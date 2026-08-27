@@ -221,18 +221,9 @@ func TestLogTargetWatchPlanDiff_NamesEveryCategoryItHas(t *testing.T) {
 	assert.NotContains(t, line, "restartCells")
 }
 
-func TestReportTargetWatchPlanDiff_ReportsAPlanItCouldNotBuild(t *testing.T) {
-	log, lines := recordingLogger()
-
-	reportTargetWatchPlanDiff(log, targetWatchPlan{}, targetWatchPlan{}, assert.AnError, false)
-
-	require.Len(t, *lines, 1)
-	assert.Contains(t, (*lines)[0], assert.AnError.Error())
-}
-
-// The no-op path returns before touching anything, so the classification has to be logged
-// before that early return or the all-keep case would never appear.
-func TestReplaceGitTargetWatches_LogsTheDiffOnTheNoOpPath(t *testing.T) {
+// An all-keep reconcile must still be classified and logged: "nothing changed" is the most
+// common outcome, and it is the one that proves no unrelated cell was replayed.
+func TestReplaceGitTargetWatches_LogsAnAllKeepReconcileAndTouchesNothing(t *testing.T) {
 	log, lines := recordingLogger()
 	gitDest := types.NewResourceReference("target", "default")
 	table := WatchedTypeTable{
@@ -242,21 +233,21 @@ func TestReplaceGitTargetWatches_LogsTheDiffOnTheNoOpPath(t *testing.T) {
 			NamespaceOps: map[string]OperationSet{"apps": {"CREATE": struct{}{}}},
 		}},
 	}
-	manager := &Manager{
-		Log: log,
-		targetWatches: map[string]*targetWatchSet{
-			gitDest.Key(): {cancel: func() {}, specs: targetWatchSpecs(table)},
-		},
+	manager := &Manager{Log: log}
+	cancelled := false
+	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+	manager.targetWatchesMu.Lock()
+	manager.targetWatchSetLocked(gitDest).streams[key.Cell()] = &runningTargetWatch{
+		key: key, spec: "[CREATE]", cancel: func() { cancelled = true },
 	}
+	manager.targetWatchesMu.Unlock()
 
 	require.NoError(t, manager.replaceGitTargetWatches(context.Background(), table))
 
-	require.Equal(t, 1, countContaining(*lines, "target watch plan diff"),
-		"the all-keep case must still be classified and logged")
+	require.Equal(t, 1, countContaining(*lines, "target watch plan reconciled"))
 	assert.Contains(t, (*lines)[0], `"keep"=1`)
 	assert.Contains(t, (*lines)[0], `"keepCells"="configmaps in apps=[CREATE]@v1"`)
-	assert.Zero(t, countContaining(*lines, "watch set reconciled"),
-		"the no-op path must stay a no-op apart from the diff log")
+	assert.False(t, cancelled, "a kept cell's stream must not be cancelled")
 }
 
 // Two resources in one group sort by resource, which is the branch a group-only comparison
@@ -276,19 +267,38 @@ func TestDiffTargetWatchPlans_SortsWithinAGroupByResource(t *testing.T) {
 	assert.Equal(t, []types.CellKey{deployments, statefulsets}, diff.Start)
 }
 
-func TestTargetWatchPlansLocked_ReportsAPriorSetThatBreaksTheInvariant(t *testing.T) {
-	gitDest := types.NewResourceReference("target", "default")
-	manager := &Manager{
-		targetWatches: map[string]*targetWatchSet{
-			gitDest.Key(): {cancel: func() {}, specs: map[targetWatchKey]string{
-				{GVR: planV1, Namespace: "team-a"}:     "[CREATE]",
-				{GVR: planV1beta, Namespace: "team-a"}: "[CREATE]",
-			}},
-		},
+// The set's own side of the diff is what is RUNNING, so a plan change is measured against the
+// streams rather than against the declaration that started them.
+func TestTargetWatchSet_PlanDescribesTheRunningStreams(t *testing.T) {
+	set := &targetWatchSet{streams: map[types.CellKey]*runningTargetWatch{}}
+	key := targetWatchKey{GVR: planV1beta, Namespace: "team-a"}
+	set.streams[key.Cell()] = &runningTargetWatch{key: key, spec: "[CREATE]", cancel: func() {}}
+
+	plan := set.plan()
+
+	assert.Equal(t,
+		map[types.CellKey]cellSpec{planCell(planV1, "team-a"): {Operations: "[CREATE]", Version: "v1beta1"}},
+		plan.Cells,
+		"the cell is versionless; the served version it opened at is spec data")
+}
+
+func TestTargetWatchSet_StopCancelsOneCellAndStopAllTheRest(t *testing.T) {
+	set := &targetWatchSet{streams: map[types.CellKey]*runningTargetWatch{}}
+	stopped := map[string]bool{}
+	for _, ns := range []string{"team-a", "team-b"} {
+		key := targetWatchKey{GVR: planV1, Namespace: ns}
+		set.streams[key.Cell()] = &runningTargetWatch{
+			key: key, spec: "[*]", cancel: func() { stopped[ns] = true },
+		}
 	}
 
-	_, _, err := manager.targetWatchPlansLocked(gitDest.Key(), nil)
+	set.stop(planCell(planV1, "team-a"))
+	assert.True(t, stopped["team-a"])
+	assert.False(t, stopped["team-b"])
+	assert.Len(t, set.streams, 1)
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "configmaps in team-a")
+	set.stop(planCell(planV1, "team-a"))
+	set.stopAll()
+	assert.True(t, stopped["team-b"])
+	assert.Empty(t, set.streams)
 }

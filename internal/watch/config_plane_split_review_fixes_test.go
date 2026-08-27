@@ -159,17 +159,16 @@ func TestResourceReferenceFromKey_RoundTrips(t *testing.T) {
 	}
 }
 
-// installFakeWatch records a cancellable watch set for a GitTarget and returns a pointer that flips
-// true when its context is cancelled (forgetGitTargetWatches calls set.cancel()).
+// installFakeWatch records one cancellable running stream for a GitTarget and returns a pointer
+// that flips true when it is cancelled (forgetGitTargetWatches stops every stream in the set).
 func installFakeWatch(m *Manager, ref types.ResourceReference) *bool {
 	cancelled := new(bool)
+	key := targetWatchKey{GVR: configmapsGVR}
 	m.targetWatchesMu.Lock()
-	if m.targetWatches == nil {
-		m.targetWatches = map[string]*targetWatchSet{}
-	}
-	m.targetWatches[ref.Key()] = &targetWatchSet{
+	m.targetWatchSetLocked(ref).streams[key.Cell()] = &runningTargetWatch{
+		key:    key,
+		spec:   "[*]",
 		cancel: func() { *cancelled = true },
-		specs:  map[targetWatchKey]string{},
 	}
 	m.targetWatchesMu.Unlock()
 	return cancelled

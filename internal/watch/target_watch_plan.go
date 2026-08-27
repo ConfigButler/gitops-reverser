@@ -36,9 +36,9 @@ type targetWatchPlan struct {
 // targetWatchPlanDiff is the classification of a previous plan against a desired one. Every cell
 // named by either plan appears in exactly one of the four lists, each sorted for a stable log.
 //
-// Nothing acts on this yet. It is computed and logged so the classification can be validated
-// against real workloads before the streams are driven from it
-// (docs/design/target-watch-plan.md, "Implementation order", step 1).
+// It is what the streams are driven from: keep leaves a stream and its readiness result alone,
+// start and restart open one, and stop cancels one and drops its key without touching files
+// (docs/design/target-watch-plan.md, "Diff the plan").
 type targetWatchPlanDiff struct {
 	// Keep is the cells whose key and specification are unchanged.
 	Keep []types.CellKey
@@ -55,8 +55,8 @@ type targetWatchPlanDiff struct {
 // spec data.
 //
 // [targetWatchStreams] guarantees one stream per cell, so the re-keying cannot collide — but a
-// collision would silently discard one of the two streams from the plan, so it is asserted here
-// rather than assumed. The error is diagnostic only: nothing acts on the plan yet.
+// collision would silently drop one of the two streams from the plan, and the plan is what the
+// streams are started from, so it is asserted here rather than assumed.
 func targetWatchPlanFor(specs map[targetWatchKey]string) (targetWatchPlan, error) {
 	plan := targetWatchPlan{Cells: make(map[types.CellKey]cellSpec, len(specs))}
 	for _, key := range sortedTargetWatchSpecKeys(specs) {
@@ -127,9 +127,9 @@ func describeCells(cells []types.CellKey, plan targetWatchPlan) string {
 	return strings.Join(parts, " | ")
 }
 
-// logTargetWatchPlanDiff records the classification once per reconcile. It is the whole
-// behavior of step 1: the streams are still replaced wholesale, so this line is the only
-// observable difference between the diff and what actually happens.
+// logTargetWatchPlanDiff records the classification once per reconcile, naming every cell it
+// acted on. An all-keep reconcile is logged too: "nothing changed" is the most common outcome
+// and the one an operator most wants confirmed.
 func logTargetWatchPlanDiff(log logr.Logger, previous, desired targetWatchPlan, diff targetWatchPlanDiff) {
 	kv := []any{
 		"keep", len(diff.Keep),
@@ -153,38 +153,5 @@ func logTargetWatchPlanDiff(log logr.Logger, previous, desired targetWatchPlan, 
 			kv = append(kv, named.key, describeCells(named.cells, named.plan))
 		}
 	}
-	log.Info("target watch plan diff (not yet acted on)", kv...)
-}
-
-// targetWatchPlansLocked builds the previous and desired plans for one GitTarget. The previous
-// plan is re-keyed from the running watch set's rendered specs, so both sides come from the same
-// renderer and compare like for like. targetWatchesMu must be held.
-func (m *Manager) targetWatchPlansLocked(
-	key string,
-	specs map[targetWatchKey]string,
-) (targetWatchPlan, targetWatchPlan, error) {
-	var previous targetWatchPlan
-	if prior := m.targetWatches[key]; prior != nil {
-		built, err := targetWatchPlanFor(prior.specs)
-		if err != nil {
-			return targetWatchPlan{}, targetWatchPlan{}, err
-		}
-		previous = built
-	}
-	desired, err := targetWatchPlanFor(specs)
-	if err != nil {
-		return targetWatchPlan{}, targetWatchPlan{}, err
-	}
-	return previous, desired, nil
-}
-
-// reportTargetWatchPlanDiff classifies and logs, or reports why it could not. A plan that failed
-// to build is a broken invariant worth surfacing, but it changes nothing: the watch set is still
-// replaced wholesale either way.
-func reportTargetWatchPlanDiff(log logr.Logger, previous, desired targetWatchPlan, err error, force bool) {
-	if err != nil {
-		log.Error(err, "target watch plan diff skipped")
-		return
-	}
-	logTargetWatchPlanDiff(log, previous, desired, diffTargetWatchPlans(previous, desired, force))
+	log.Info("target watch plan reconciled", kv...)
 }

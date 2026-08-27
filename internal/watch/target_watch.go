@@ -52,9 +52,47 @@ func targetWatchClosedErr(ctx context.Context) error {
 	}
 }
 
+// targetWatchSet is one GitTarget's running streams, keyed by the cell each one covers. The
+// plan is applied cell by cell, so cancellation is too: there is no set-wide cancel, because a
+// single one is what made adding a rule replay every unrelated cell into a queue shared with
+// other tenants (docs/design/target-watch-plan.md, "Implementation order", step 2).
 type targetWatchSet struct {
+	streams map[types.CellKey]*runningTargetWatch
+}
+
+// runningTargetWatch is one live stream: what it was started for, and how to stop it.
+type runningTargetWatch struct {
+	key    targetWatchKey
+	spec   string
 	cancel context.CancelFunc
-	specs  map[targetWatchKey]string
+}
+
+// plan is the set's side of the diff: what is running right now.
+func (s *targetWatchSet) plan() targetWatchPlan {
+	plan := targetWatchPlan{Cells: make(map[types.CellKey]cellSpec, len(s.streams))}
+	for cell, running := range s.streams {
+		plan.Cells[cell] = cellSpec{Operations: running.spec, Version: running.key.GVR.Version}
+	}
+	return plan
+}
+
+// stop cancels one cell's stream and drops it. It never touches files: a deselected cell's
+// documents are converged by a Git-side sweep, not by the watch layer
+// (docs/design/target-watch-plan.md, "Removal is a Git-side sweep").
+func (s *targetWatchSet) stop(cell types.CellKey) {
+	running, ok := s.streams[cell]
+	if !ok {
+		return
+	}
+	running.cancel()
+	delete(s.streams, cell)
+}
+
+// stopAll cancels every stream, for a GitTarget that is going away.
+func (s *targetWatchSet) stopAll() {
+	for cell := range s.streams {
+		s.stop(cell)
+	}
 }
 
 type targetWatchKey struct {
@@ -139,60 +177,122 @@ func (m *Manager) replaceGitTargetWatches(
 	streams := targetWatchStreams(table)
 	specs := renderTargetWatchSpecs(streams)
 	keys := sortedTargetWatchSpecKeys(specs)
-	childCtx, cancel := context.WithCancel(ctx)
 	force := len(forceRecheck) > 0 && forceRecheck[0]
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 
+	desired, err := targetWatchPlanFor(specs)
+	if err != nil {
+		return fmt.Errorf("build the watch plan for %s: %w", table.GitDest.String(), err)
+	}
+
 	m.targetWatchesMu.Lock()
-	if m.targetWatches == nil {
-		m.targetWatches = map[string]*targetWatchSet{}
+	set := m.targetWatchSetLocked(table.GitDest)
+	previous := set.plan()
+	diff := diffTargetWatchPlans(previous, desired, force)
+	// Cancel before starting: a restarted cell's replacement must not race its predecessor for
+	// the same cell's readiness and fidelity result.
+	for _, cell := range diff.Stop {
+		set.stop(cell)
 	}
-	key := table.GitDest.Key()
-	// Classify BEFORE the no-op early return, so the all-keep case is logged too: "nothing
-	// changed" is the most common outcome and the one an operator most wants confirmed.
-	previousPlan, desiredPlan, planErr := m.targetWatchPlansLocked(key, specs)
-	noChange := m.prepareTargetWatchSetReplacementLocked(key, specs, force)
-	if noChange {
-		m.targetWatchesMu.Unlock()
-		cancel()
-		reportTargetWatchPlanDiff(log, previousPlan, desiredPlan, planErr, force)
-		return nil
+	for _, cell := range diff.Restart {
+		set.stop(cell)
 	}
-	m.targetWatches[key] = &targetWatchSet{cancel: cancel, specs: specs}
-	m.resetTargetStreamStatesLocked(table.GitDest, keys, force)
+	starting := append(append([]types.CellKey{}, diff.Start...), diff.Restart...)
+	sortCells(starting)
 	cells := cellsForWatchKeys(keys)
-	revisions, fidelityChanged := m.reconcileTargetRenderFidelityLocked(table.GitDest, cells, cells)
+	m.resetTargetStreamStatesLocked(table.GitDest, cells, starting)
+	revisions, fidelityChanged := m.reconcileTargetRenderFidelityLocked(table.GitDest, cells, starting)
+	started := m.startTargetWatchStreamsLocked(ctx, set, keysByCell(keys), streams, specs, revisions, starting)
 	m.targetWatchesMu.Unlock()
+
 	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
 	if fidelityChanged {
 		m.enqueueGitPathChange(table.GitDest)
 	}
-
-	reportTargetWatchPlanDiff(log, previousPlan, desiredPlan, planErr, force)
-	for _, watchKey := range keys {
-		stream := targetWatchStream{
-			key:      watchKey,
-			ops:      streams[watchKey],
-			revision: revisions[watchKey.Cell()],
-		}
-		go m.runTargetWatch(childCtx, log, table.GitDest, stream)
+	logTargetWatchPlanDiff(log, previous, desired, diff)
+	for _, stream := range started {
+		go m.runTargetWatch(stream.ctx, log, table.GitDest, stream.stream)
 	}
 	// Name every declared stream, not just the count. A GVR appearing twice — once
 	// cluster-wide ("") and once under a named namespace — means the same object is
 	// delivered on two streams, which is legitimate scoping but doubles the events for
 	// objects in that namespace. That is invisible in a bare count.
-	log.Info("watch-first target watch set reconciled",
+	log.V(1).Info("watch-first target watch set reconciled",
 		"watchCount", len(keys), "streams", describeWatchKeys(keys, specs))
 	return nil
 }
 
-// resetTargetStreamStatesLocked makes the readiness surface match the declaration: cells that
-// left it are dropped, and every cell that is new (or every cell, on a forced recheck) goes back
-// to replaying. targetWatchesMu must be held.
+// targetWatchSetLocked returns the GitTarget's running set, creating it on first use.
+// targetWatchesMu must be held.
+func (m *Manager) targetWatchSetLocked(gitDest types.ResourceReference) *targetWatchSet {
+	if m.targetWatches == nil {
+		m.targetWatches = map[string]*targetWatchSet{}
+	}
+	set := m.targetWatches[gitDest.Key()]
+	if set == nil {
+		set = &targetWatchSet{streams: map[types.CellKey]*runningTargetWatch{}}
+		m.targetWatches[gitDest.Key()] = set
+	}
+	return set
+}
+
+// startingTargetWatch is a stream that has been registered but not yet launched: the goroutines
+// start after targetWatchesMu is released.
+type startingTargetWatch struct {
+	ctx    context.Context
+	stream targetWatchStream
+}
+
+// startTargetWatchStreamsLocked registers one stream per cell in starting, each with its own
+// cancel, and returns them to be launched once the lock is released. targetWatchesMu must be
+// held.
+func (m *Manager) startTargetWatchStreamsLocked(
+	ctx context.Context,
+	set *targetWatchSet,
+	byCell map[types.CellKey]targetWatchKey,
+	streams map[targetWatchKey]OperationSet,
+	specs map[targetWatchKey]string,
+	revisions map[types.CellKey]uint64,
+	starting []types.CellKey,
+) []startingTargetWatch {
+	out := make([]startingTargetWatch, 0, len(starting))
+	for _, cell := range starting {
+		watchKey, ok := byCell[cell]
+		if !ok {
+			continue
+		}
+		streamCtx, cancel := context.WithCancel(ctx)
+		set.streams[cell] = &runningTargetWatch{key: watchKey, spec: specs[watchKey], cancel: cancel}
+		out = append(out, startingTargetWatch{
+			ctx: streamCtx,
+			stream: targetWatchStream{
+				key:      watchKey,
+				ops:      streams[watchKey],
+				revision: revisions[cell],
+			},
+		})
+	}
+	return out
+}
+
+// keysByCell indexes the declared keys by the cell each one covers. targetWatchStreams
+// guarantees one key per cell, which targetWatchPlanFor has already asserted by this point.
+func keysByCell(keys []targetWatchKey) map[types.CellKey]targetWatchKey {
+	out := make(map[types.CellKey]targetWatchKey, len(keys))
+	for _, key := range keys {
+		out[key.Cell()] = key
+	}
+	return out
+}
+
+// resetTargetStreamStatesLocked makes the readiness surface match the plan: cells that left it
+// are dropped, and the cells whose streams are being started or restarted go back to replaying.
+// A cell that is merely KEPT keeps its prior clean or divergent result, because an unrelated
+// plan change is no evidence about it. targetWatchesMu must be held.
 func (m *Manager) resetTargetStreamStatesLocked(
 	gitDest types.ResourceReference,
-	keys []targetWatchKey,
-	force bool,
+	declared []types.CellKey,
+	replaying []types.CellKey,
 ) {
 	if m.targetStreamStates == nil {
 		m.targetStreamStates = map[string]map[types.CellKey]targetStreamStatus{}
@@ -203,25 +303,23 @@ func (m *Manager) resetTargetStreamStatesLocked(
 		states = map[types.CellKey]targetStreamStatus{}
 		m.targetStreamStates[targetKey] = states
 	}
-	declared := make(map[types.CellKey]struct{}, len(keys))
-	for _, watchKey := range keys {
-		declared[watchKey.Cell()] = struct{}{}
+	selected := make(map[types.CellKey]struct{}, len(declared))
+	for _, cell := range declared {
+		selected[cell] = struct{}{}
 	}
 	for cell := range states {
-		if _, ok := declared[cell]; !ok {
+		if _, ok := selected[cell]; !ok {
 			delete(states, cell)
 		}
 	}
-	for cell := range declared {
-		if _, ok := states[cell]; force || !ok {
-			m.markTargetStreamStateLocked(
-				gitDest,
-				cell,
-				StreamStateReplaying,
-				StreamReasonInitialReplay,
-				"waiting for target watch replay to complete",
-			)
-		}
+	for _, cell := range replaying {
+		m.markTargetStreamStateLocked(
+			gitDest,
+			cell,
+			StreamStateReplaying,
+			StreamReasonInitialReplay,
+			"waiting for target watch replay to complete",
+		)
 	}
 }
 
@@ -237,22 +335,6 @@ func describeWatchKeys(keys []targetWatchKey, specs map[targetWatchKey]string) s
 		parts = append(parts, fmt.Sprintf("%s@%s=%s", key.GVR.String(), scope, specs[key]))
 	}
 	return strings.Join(parts, " | ")
-}
-
-func (m *Manager) prepareTargetWatchSetReplacementLocked(
-	key string,
-	specs map[targetWatchKey]string,
-	force bool,
-) bool {
-	prior := m.targetWatches[key]
-	if prior == nil {
-		return false
-	}
-	if !force && equalTargetWatchSpecs(prior.specs, specs) {
-		return true
-	}
-	prior.cancel()
-	return false
 }
 
 func (m *Manager) refreshRunningTargetWatches(ctx context.Context) {
@@ -283,7 +365,7 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	m.targetWatchesMu.Lock()
 	defer m.targetWatchesMu.Unlock()
 	if set := m.targetWatches[gitDest.Key()]; set != nil {
-		set.cancel()
+		set.stopAll()
 		delete(m.targetWatches, gitDest.Key())
 	}
 	m.dropTargetStreamStateLocked(gitDest)
@@ -388,18 +470,6 @@ func operationSpec(ops OperationSet) string {
 		return "*"
 	}
 	return fmt.Sprint(ops.Sorted())
-}
-
-func equalTargetWatchSpecs(a, b map[targetWatchKey]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for key, av := range a {
-		if b[key] != av {
-			return false
-		}
-	}
-	return true
 }
 
 func (m *Manager) runTargetWatch(
@@ -744,6 +814,15 @@ func (m *Manager) enqueueReplayResync(
 	if m.EventRouter == nil {
 		return nil
 	}
+	// Cancellation has to be prompt on the PRODUCER side: nothing filters the branch worker's
+	// queue, so what bounds a retired stream's tail is how quickly it stops enqueuing
+	// (docs/design/target-watch-plan.md, "Cut at the producer"). A snapshot gathered for a cell
+	// that has since been stopped or restarted has nothing left to report into either.
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
 	// The revision is the one this stream was STARTED with, never the cell's current revision.
 	// A cancelled stream can still be in flight with a replay result, and reading the revision
 	// here would let it report a scope clean under a revision it never replayed for — reopening
@@ -875,6 +954,13 @@ func (m *Manager) routeLiveTargetWatchEvent(
 			return rv, nil
 		}
 		m.attachAuthor(ctx, &event, stream.key.GVR, u)
+		// Re-check after attribution, which waits on the audit grace: a stream cancelled while
+		// an event was waiting for its author must not enqueue on the way out.
+		select {
+		case <-ctx.Done():
+			return rv, nil
+		default:
+		}
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
 			log.V(1).Info("target watch route failed",
 				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "err", err.Error())

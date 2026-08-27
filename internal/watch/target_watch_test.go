@@ -605,13 +605,6 @@ func TestTargetWatchOperationHelpers(t *testing.T) {
 	keys := sortedTargetWatchSpecKeys(specs)
 	require.Len(t, keys, 2)
 	assert.Equal(t, "a", keys[0].Namespace)
-	assert.True(t, equalTargetWatchSpecs(specs, map[targetWatchKey]string{
-		{GVR: configmapsGVR, Namespace: "b"}: "[CREATE]",
-		{GVR: configmapsGVR, Namespace: "a"}: "[UPDATE]",
-	}))
-	assert.False(t, equalTargetWatchSpecs(specs, map[targetWatchKey]string{
-		{GVR: configmapsGVR, Namespace: "a"}: "[UPDATE]",
-	}))
 
 	table := WatchedTypeTable{Types: []WatchedType{{
 		GVR:          configmapsGVR,
@@ -674,17 +667,17 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	cancelled := make(chan struct{})
 	childCtx, childCancel := context.WithCancel(ctx)
 	watchKey := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-	manager := &Manager{
-		targetWatches: map[string]*targetWatchSet{
-			gitDest.Key(): {
-				cancel: func() {
-					childCancel()
-					close(cancelled)
-				},
-				specs: map[targetWatchKey]string{watchKey: "[*]"},
-			},
+	manager := &Manager{}
+	manager.targetWatchesMu.Lock()
+	manager.targetWatchSetLocked(gitDest).streams[watchKey.Cell()] = &runningTargetWatch{
+		key:  watchKey,
+		spec: "[*]",
+		cancel: func() {
+			childCancel()
+			close(cancelled)
 		},
 	}
+	manager.targetWatchesMu.Unlock()
 
 	// Forget only cancels and drops in-memory state; the durable cursors are left to
 	// expire by TTL, so a recreated GitTarget (new UID) never inherits them.
@@ -954,4 +947,206 @@ func TestFollowFactsForWatch_IsANoOpWithoutAttribution(t *testing.T) {
 	)
 	require.NotNil(t, release, "the release must be safe to defer even with attribution off")
 	release()
+}
+
+// planTestManager is a manager whose target watches open fake watches, recording each one so a
+// test can tell which cells were started and which were left alone.
+func planTestManager(t *testing.T, gitDest types.ResourceReference) (*Manager, chan openedWatch) {
+	t.Helper()
+	opened := make(chan openedWatch, 8)
+	manager := &Manager{
+		Log:              logr.Discard(),
+		WatchCursorStore: &fakeWatchCursorStore{},
+		targetWatchOpen: func(
+			_ context.Context,
+			_ schema.GroupVersionResource,
+			namespace string,
+			opts metav1.ListOptions,
+		) (watch.Interface, error) {
+			fw := watch.NewFake()
+			opened <- openedWatch{namespace: namespace, opts: opts, watch: fw}
+			return fw, nil
+		},
+	}
+	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+	return manager, opened
+}
+
+// planTable is a one-type table watching the given namespaces for CREATE.
+func planTable(gitDest types.ResourceReference, namespaces ...string) WatchedTypeTable {
+	ops := map[string]OperationSet{}
+	for _, ns := range namespaces {
+		ops[ns] = OperationSet{"CREATE": struct{}{}}
+	}
+	return WatchedTypeTable{
+		GitDest: gitDest,
+		Types:   []WatchedType{{GVR: configmapsGVR, NamespaceOps: ops}},
+	}
+}
+
+func assertStillRunning(t *testing.T, w openedWatch) {
+	t.Helper()
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, w.watch.IsStopped(),
+		"the stream for namespace %q must be left alone by an unrelated plan change", w.namespace)
+}
+
+func assertStopped(t *testing.T, w openedWatch) {
+	t.Helper()
+	assert.Eventually(t, w.watch.IsStopped, time.Second, 10*time.Millisecond,
+		"expected the stream for namespace %q to be cancelled", w.namespace)
+}
+
+// The performance goal of the whole refactor: adding a rule starts ONE cell, and every cell
+// already running keeps running. Replacing the set wholesale replayed all of them into a queue
+// shared with every other tenant on the branch.
+func TestReplaceGitTargetWatches_AddingARuleStartsOnlyTheNewCell(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager, opened := planTestManager(t, gitDest)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps")))
+	apps := receiveOpenedWatch(t, opened)
+	require.Equal(t, "apps", apps.namespace)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+
+	started := receiveOpenedWatch(t, opened)
+	assert.Equal(t, "ops", started.namespace, "only the new cell is started")
+	assertNoOpenedWatch(t, opened)
+	assertStillRunning(t, apps)
+}
+
+// Removing one of several rules cancels that cell alone. It never touches files: the mirror is
+// converged afterwards by a Git-side sweep.
+func TestReplaceGitTargetWatches_RemovingARuleStopsOnlyThatCell(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager, opened := planTestManager(t, gitDest)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+	first, second := receiveOpenedWatch(t, opened), receiveOpenedWatch(t, opened)
+	byNamespace := map[string]openedWatch{first.namespace: first, second.namespace: second}
+	require.Len(t, byNamespace, 2)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps")))
+
+	assertStopped(t, byNamespace["ops"])
+	assertStillRunning(t, byNamespace["apps"])
+	assertNoOpenedWatch(t, opened)
+	manager.targetWatchesMu.Lock()
+	_, stillTracked := manager.targetWatches[gitDest.Key()].streams[types.CellKeyFor(configmapsGVR, "ops")]
+	manager.targetWatchesMu.Unlock()
+	assert.False(t, stillTracked, "a stopped cell's key is dropped")
+}
+
+// An operation-filter change invalidates the running stream, so that cell restarts — and only
+// that cell. A diff comparing keys alone would have called it a keep.
+func TestReplaceGitTargetWatches_AnOperationEditRestartsThatCellAlone(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager, opened := planTestManager(t, gitDest)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+	first, second := receiveOpenedWatch(t, opened), receiveOpenedWatch(t, opened)
+	byNamespace := map[string]openedWatch{first.namespace: first, second.namespace: second}
+
+	edited := WatchedTypeTable{
+		GitDest: gitDest,
+		Types: []WatchedType{{
+			GVR: configmapsGVR,
+			NamespaceOps: map[string]OperationSet{
+				"apps": {"UPDATE": struct{}{}},
+				"ops":  {"CREATE": struct{}{}},
+			},
+		}},
+	}
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, edited))
+
+	restarted := receiveOpenedWatch(t, opened)
+	assert.Equal(t, "apps", restarted.namespace)
+	assert.True(t, *restarted.opts.SendInitialEvents, "a restarted cell replays under its fresh revision")
+	assertNoOpenedWatch(t, opened)
+	assertStopped(t, byNamespace["apps"])
+	assertStillRunning(t, byNamespace["ops"])
+}
+
+// Readiness is per cell, so a cell that is merely KEPT holds the result its own replay produced.
+// Resetting it would report a target as replaying because an unrelated rule was added.
+func TestReplaceGitTargetWatches_KeptCellKeepsItsReadinessResult(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager, opened := planTestManager(t, gitDest)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps")))
+	receiveOpenedWatch(t, opened)
+	manager.seedStreamState(
+		gitDest,
+		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
+		targetStreamStatus{state: StreamStateStreaming, reason: "Streaming"},
+	)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+	receiveOpenedWatch(t, opened)
+
+	manager.targetWatchesMu.Lock()
+	states := manager.targetStreamStates[gitDest.Key()]
+	apps := states[types.CellKeyFor(configmapsGVR, "apps")]
+	ops := states[types.CellKeyFor(configmapsGVR, "ops")]
+	manager.targetWatchesMu.Unlock()
+	assert.Equal(t, StreamStateStreaming, apps.state, "a kept cell keeps its prior result")
+	assert.Equal(t, StreamStateReplaying, ops.state, "a started cell is pending its first replay")
+}
+
+// A forced recheck is a recovery, not a fifth outcome: every cell restarts, including one that
+// did not change, which is what gives a widened prune policy a snapshot to sweep against.
+func TestReplaceGitTargetWatches_ForceRestartsEveryCell(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager, opened := planTestManager(t, gitDest)
+
+	table := planTable(gitDest, "apps", "ops")
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, table))
+	first, second := receiveOpenedWatch(t, opened), receiveOpenedWatch(t, opened)
+
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, true))
+
+	restarted := map[string]bool{}
+	restarted[receiveOpenedWatch(t, opened).namespace] = true
+	restarted[receiveOpenedWatch(t, opened).namespace] = true
+	assert.Equal(t, map[string]bool{"apps": true, "ops": true}, restarted)
+	assertStopped(t, first)
+	assertStopped(t, second)
+}
+
+// Nothing filters the branch worker's shared queue, so what bounds a retired stream's tail is
+// how promptly it stops producing. A cancelled stream enqueues nothing on its way out.
+func TestRouteLiveTargetWatchEvent_ACancelledStreamStopsEnqueuing(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
+	}
+	manager := &Manager{EventRouter: router}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rv, err := manager.routeLiveTargetWatchEvent(
+		ctx,
+		logr.Discard(),
+		gitDest,
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+		watch.Event{Type: watch.Added, Object: configMapObject("12")},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "12", rv, "the cursor still advances; only the enqueue is dropped")
+	assert.Empty(t, enqueuer.events)
 }
