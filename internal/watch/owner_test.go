@@ -511,23 +511,3 @@ func TestOwner_AFailedSharedRefreshAsksForAnother(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "a successful refresh asks for nothing")
 	assert.Zero(t, m.triggers().sharedFailures, "and clears the backoff behind it")
 }
-
-// A GitTarget has no watch edge on WatchRules, so the only thing that re-reconciles it after a
-// rule change is this channel. Without it the target's published StreamsRunning keeps describing
-// the plan from before the new rule for a whole settle window, and anything gating on that
-// condition proceeds before the new rule's stream exists.
-func TestOwner_ARuleTriggerEnqueuesItsGitTargetForReconcile(t *testing.T) {
-	m := ownerTestManager()
-	events := m.GitPathEvents()
-	ref := types.NewResourceReference("target", "team-a")
-
-	m.TriggerRuleChange(ref)
-
-	select {
-	case evt := <-events:
-		assert.Equal(t, "target", evt.Object.GetName())
-		assert.Equal(t, "team-a", evt.Object.GetNamespace())
-	default:
-		t.Fatal("a rule change must enqueue its GitTarget, or its status describes the previous plan")
-	}
-}

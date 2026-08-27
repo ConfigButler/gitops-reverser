@@ -588,26 +588,40 @@ So the parent of a target watch is `Manager.watchLifetime`, set once by `Start`.
 stream is the owner's decision, made per cell through the plan diff — never a side effect of a
 context going out of scope. The pass deadline bounds the pass.
 
-### A rule change has to enqueue its GitTarget
+### Toggling a rule off and on inside the window is not a replay
 
-The other half of moving the plan off the controller worker, and the easy half to drop. It is a
-correctness bug rather than a latency one.
+The behavioral consequence of coalescing that is worth stating outright, because it is a technique
+people use. Applying a rule without a type and then with it again — the "kick it" gesture — used to
+tear the stream down and re-establish it, because each apply replanned synchronously. Inside one
+settle window it is now a single pass over a plan that never changed: nothing is torn down and
+nothing replays.
 
-A GitTarget has no watch edge on WatchRules. The only thing that re-reconciles it after a rule
-change is the acceptance-event channel, which the old synchronous path happened to fire from
-INSIDE the plan application — during the rule's own reconcile. Move the plan to a loop that runs a
-settle window later and that enqueue goes with it, so for two seconds the GitTarget's published
-`StreamsRunning` describes the plan from BEFORE the new rule. A target that was already mirroring
-therefore answers "all streams running" to a question about a rule whose stream does not exist
-yet, and anything gating on that condition proceeds too early. An e2e attribution spec caught it
-by adding a rule and immediately writing to the namespace it selects.
+That is correct rather than regrettable. The pass reads the configuration as it stands, whole, and
+a net-zero change is no change. But it is a real difference in what an operator gesture does, and
+it is what an e2e prune spec was relying on to force a scoped resync. The supported way to force a
+replay is unchanged: widening `prune.mode` into a sweeping mode, which exists precisely because a
+policy change that the watch plan cannot see still has to produce one
+(see `prune_declaration.go`).
 
-So a trigger enqueues its target, and so does a shared refresh that changed a target's plan. The
-summary is computed against the current rules either way — it just has to be asked.
+For a test, the fix is to let the two halves land in different passes by observing the first one
+take effect.
 
-Worth separating from the fix: a spec that adds a rule to a target that is already mirroring
-should gate on THAT RULE's `StreamsRunning`, not on the target's roll-up. The roll-up answers a
-different question, and answers it correctly.
+### Gate on the rule, not on its target's roll-up
+
+Both e2e specs that broke were asking the GitTarget "are all your streams running" about a change
+to ONE rule. That roll-up answers True for a target that is already mirroring, before the changed
+rule has been planned at all, and it is published by a different controller than the one that
+compiled the rule — so it can still be describing the previous plan.
+
+A rule's own `StreamsRunning` has neither problem: it is written by the reconcile that compiled the
+rule, from the rule's own compiled cells. It is the right gate whenever a spec changes a rule on a
+target that is already mirroring, and `waitForWatchRuleStreamsRunning` existed unused for exactly
+this.
+
+This is also why the trigger deliberately does NOT enqueue its GitTarget. The GitTarget already
+learns that its plan moved from the pass itself, which enqueues on a render-fidelity change — the
+one moment its answer differs. A trigger-time enqueue would be a third path to the same channel,
+firing before anything it would report has changed.
 
 ### A failed shared refresh asks for another
 

@@ -176,13 +176,28 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		// issues a resync scoped to exactly (configmaps, this namespace) — the scope the seeded
 		// orphan lives in. Merely ADDING an unrelated type would churn the rule without
 		// guaranteeing the configmaps stream restarts, and the sweep would never be attempted.
-		By("toggling ConfigMaps off and back on to force a scoped replay resync")
+		//
+		// The OFF half has to LAND before the ON half is applied, and the gate below is what makes
+		// it. Every configuration change for one target inside its settle window becomes a single
+		// pass over the configuration as it then stands, so an off-then-on applied back to back is
+		// one pass over a plan that never changed: nothing is torn down and nothing replays. The
+		// toggle is two configuration changes only if the first one is observed taking effect.
+		//
+		// Gate on each RULE's own streams rather than its target's roll-up. The rule's status is
+		// written by the reconcile that compiled it, so it cannot report the previous rule's
+		// answer; the target's roll-up is published by a different controller and can still be
+		// describing the plan from before this apply.
+		By("switching the rules to Services and waiting for that plan to be live")
 		applyIsolationWatchRule(alwaysRule, testNs, alwaysTarget, `"services"`)
 		applyIsolationWatchRule(defaultRule, testNs, defaultTarget, `"services"`)
+		waitForWatchRuleStreamsRunning(alwaysRule, testNs)
+		waitForWatchRuleStreamsRunning(defaultRule, testNs)
+
+		By("switching them back to ConfigMaps, which re-establishes the stream and replays it")
 		applyIsolationWatchRule(alwaysRule, testNs, alwaysTarget, `"configmaps"`)
 		applyIsolationWatchRule(defaultRule, testNs, defaultTarget, `"configmaps"`)
-		waitForStreamsRunning(alwaysTarget, testNs)
-		waitForStreamsRunning(defaultTarget, testNs)
+		waitForWatchRuleStreamsRunning(alwaysRule, testNs)
+		waitForWatchRuleStreamsRunning(defaultRule, testNs)
 
 		// The barrier: the always target's resync reaches the same folder with the same desired
 		// snapshot as the default target's. Observing its sweep proves a resync ran and that the

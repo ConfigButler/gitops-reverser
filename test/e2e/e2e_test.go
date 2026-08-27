@@ -251,10 +251,14 @@ func waitForStreamsRunning(name, ns string) {
 	verifyResourceCondition("gittarget", name, ns, "StreamsRunning", "True", "", "", "120s")
 }
 
-// waitForWatchRuleStreamsRunning blocks until ONE WatchRule reports StreamsRunning=True. It is the
-// right gate for a spec that adds a rule to a GitTarget that is already mirroring: the target's own
-// roll-up answers "is every stream this target has running", which such a target answers True to
-// before the new rule's cell has been planned.
+// waitForWatchRuleStreamsRunning blocks until ONE WatchRule reports StreamsRunning=True.
+//
+// Prefer it over waitForStreamsRunning whenever a spec changes a rule on a GitTarget that is
+// ALREADY mirroring. Two things make the target's roll-up the wrong gate there. It answers "is
+// every stream this target has running", which such a target answers True to before the changed
+// rule has been planned at all; and it is published by the GitTarget controller, so it can still
+// be describing the plan from before this apply. A rule's own status is written by the reconcile
+// that compiled it, so it cannot report the previous rule's answer.
 func waitForWatchRuleStreamsRunning(name, ns string) {
 	GinkgoHelper()
 	verifyResourceCondition("watchrule", name, ns, "StreamsRunning", "True", "", "", "120s")
