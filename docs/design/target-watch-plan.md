@@ -9,8 +9,7 @@ related:
 
 # Target watch plan: reconcile the changed cells
 
-> **design**: open. Cell identity, the producer cut and the diff itself are
-> built; nothing acts on the diff yet.
+> **design**: open. The diff is built and applied; removal semantics are not.
 > Index: [`../INDEX.md`](../INDEX.md)
 
 **The short version.** A GitTarget's watch set is replaced wholesale today, so
@@ -418,7 +417,10 @@ removed cell leaves the target's readiness reduction.
 
 The readiness store may use an internal revision to ignore a late report, but
 that revision stays an implementation detail of the store. It is not a second
-watch protocol and it does not travel through queued work.
+watch protocol and it does not travel through queued work. That is what
+`RenderFidelityGate` now keeps: one revision per scope, issued when the cell's
+stream starts and carried by that stream alone, so a retired stream's tail is
+stale by construction.
 
 An unrelated plan change must not clear a divergence. A target held open by a
 render-fidelity divergence stays held, because adding a WatchRule is no evidence
@@ -427,14 +429,7 @@ clears it.
 
 ## Implementation order
 
-Three changes, each independently shippable. The first is done.
-
-**2. Apply the diff.** Act on `keep`, `start` and `restart`, preserve readiness
-results for `keep` cells, and make cancellation prompt. `stop` cancels the stream
-and drops the key, and continues to leave files alone. Unrelated replays stop
-here, which is the performance goal. Readiness needs less than this plan first
-assumed: `resetTargetStreamStatesLocked` is already keyed by cell and already
-preserves the result of a cell that is not new.
+Three changes, each independently shippable. The first two are done.
 
 **3. Removal semantics.** Subscribe to the registry so a settled `TypeRemoved`
 drops its cell from the plan as an authoritative cause. Give the whole-target
@@ -442,17 +437,27 @@ sweep a producer: an all-or-nothing union gather across the selected cells,
 enqueued as a nil-scope resync, under the existing `prune.mode` gate. Withdrawal
 converges on that alone. Sweeping on **intent** waits for the open decision.
 
-Then reassess coalescing, per "Whether coalescing should survive the diff". It is
-sequenced after change 2 because that is what makes it safe.
+Then reassess coalescing, per "Whether coalescing should survive the diff". It
+was sequenced after change 2 because that is what makes it safe, so it is
+unblocked: measure the real resync rate now that one rule edit produces one
+restart.
 
 Already built: cell identity (`types.CellKey`, versionless, one stream per cell),
 the source cell stamped on queued items with no lease beside it, the coalescing
 tail fence, the whole-target mark-and-sweep itself, which needs a caller rather
-than an implementation, and **change 1** — `internal/watch/target_watch_plan.go`
-computes the desired plan, classifies it against the running one, and logs the
-four outcomes. It runs before the no-op early return, so an all-`keep` reconcile
-is logged too, and nothing acts on the result: the watch set is still replaced
-wholesale.
+than an implementation, and **changes 1 and 2** — `target_watch_plan.go` computes
+the desired plan and classifies it against the running streams, and
+`replaceGitTargetWatches` acts on that classification. A `targetWatchSet` is a
+map of running streams keyed by cell, each with its own cancel, so `stop` and
+`restart` cancel one cell and `keep` touches nothing. Every reconcile logs the
+four outcomes with each cell named, an all-`keep` one included.
+
+Two things moved with it. The render-fidelity **revision is per scope**: a kept
+cell carries its revision and its result across a plan change, so an unrelated
+edit neither closes writes nor clears a divergence, and a divergence a live
+write found — which belongs to no cell — is cleared only by a plan that restarts
+every scope. The retention roll-up used that same epoch for scope eviction, so
+the plan now installs its cells and revisions instead.
 
 If a concurrency problem later resists prompt cancellation and FIFO ordering,
 document that specific failure before adding any fence, then add the smallest one
