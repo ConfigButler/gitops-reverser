@@ -266,7 +266,8 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 }
 
 // TestEnqueueResync_DoesNotCoalescePastQueuedWrites pins the ordering fence on
-// coalescing (docs/design/target-watch-plan.md §4.1). Coalescing reuses the queued
+// coalescing (docs/design/target-watch-plan.md, "Queue ordering and coalescing").
+// Coalescing reuses the queued
 // marker's FIFO POSITION, and that position is only correct while nothing for the
 // scope sits behind it. Once a write inside the scope is queued, running a newer
 // snapshot at the older position applies it BEFORE writes it already contains, and

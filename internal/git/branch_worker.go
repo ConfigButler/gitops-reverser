@@ -177,7 +177,8 @@ type BranchWorker struct {
 	// nothing for that scope was queued behind the marker. Once a write inside
 	// the scope has been enqueued, running the newer snapshot at the older
 	// position would apply it before writes it already contains, and those
-	// older writes would then overwrite it (target-watch-plan.md §4.1). The
+	// older writes would then overwrite it (target-watch-plan.md, "Queue ordering
+	// and coalescing"). The
 	// entry's tail flag records that boundary, and an arriving resync past it
 	// takes its own position at the tail instead of coalescing.
 	pendingResyncsMu sync.Mutex

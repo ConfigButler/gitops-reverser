@@ -11,7 +11,8 @@ import (
 
 // The property the whole type exists for: the served version is not identity. Two cells of
 // one logical resource that differ only in served version are ONE cell, because they are one
-// sweep boundary — the discrepancy recorded in docs/design/target-watch-plan.md §1.1.
+// sweep boundary — the discrepancy recorded in docs/design/target-watch-plan.md,
+// "Diff the plan".
 func TestCellKeyFor_DropsTheServedVersion(t *testing.T) {
 	v1 := CellKeyFor(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "team-a")
 	v1beta1 := CellKeyFor(

@@ -64,6 +64,7 @@ type targetWatchKey struct {
 
 // nextStreamLease hands out the next stream lease. It is process-wide and monotonic, so a
 // lease identifies one incarnation of one stream and never coincides with another cell's.
+// Nothing is fenced on it: see targetWatchStream.lease.
 func (m *Manager) nextStreamLease() uint64 {
 	return m.streamLeases.Add(1)
 }
@@ -71,12 +72,12 @@ func (m *Manager) nextStreamLease() uint64 {
 // targetWatchStream is one running target watch: the cell it covers, the operation filter it
 // applies, and the lease that stamps everything it queues.
 //
-// The lease is what makes a queued item traceable to the incarnation of the stream that
-// produced it. A cancelled stream's goroutine can still be in flight with an event or a
-// snapshot, and once that work is on the branch worker's FIFO the manager cannot withdraw it,
-// so the item has to carry enough to be judged on arrival. Leases are unique across the
-// process and advance only when a stream is started, so a stale effect can never coincide with
-// a live cell (docs/design/target-watch-plan.md §5.1).
+// The lease is slated for removal along with git.Provenance.Lease: it was the incarnation a
+// consumer-side fence would have judged, and no such fence is being built. It is NOT a fence. Once
+// work is on the branch worker's FIFO it will be applied, and a canceled stream's goroutine
+// can still be in flight, so a short tail of writes from a deselected cell is accepted rather
+// than rejected on arrival. The plan is applied by canceling streams, at the producer
+// (docs/design/target-watch-plan.md, "Cut at the producer").
 type targetWatchStream struct {
 	key   targetWatchKey
 	ops   OperationSet
@@ -99,7 +100,7 @@ func (s targetWatchStream) provenance() git.Provenance {
 // its replay runs under, the render-fidelity scope it reports into, and the provenance stamped
 // on the work it queues. The served version stays on the key — a stream has to open a watch
 // with a concrete version — but it is not part of the cell, so the key always round-trips to
-// the boundary it sweeps (docs/design/target-watch-plan.md §1.1).
+// the boundary it sweeps (docs/design/target-watch-plan.md, "Diff the plan").
 func (k targetWatchKey) Cell() types.CellKey {
 	return types.CellKeyFor(k.GVR, k.Namespace)
 }
@@ -171,9 +172,9 @@ func (m *Manager) replaceGitTargetWatches(
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 	for _, watchKey := range keys {
 		// Each started stream takes a fresh lease, which stamps every item it queues. A
-		// replacement therefore queues work under a lease its predecessor never used, which
-		// is what lets an item still in flight from the cancelled stream be told apart from
-		// the live one's (docs/design/target-watch-plan.md §5.1).
+		// replacement therefore queues work under a lease its predecessor never used, so a
+		// log line names the incarnation as well as the cell. Nothing is rejected on it
+		// (docs/design/target-watch-plan.md, "Cut at the producer").
 		stream := targetWatchStream{
 			key:   watchKey,
 			ops:   streams[watchKey],

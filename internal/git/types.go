@@ -436,7 +436,7 @@ type resyncKey struct {
 // that key, and whether anything for its scope has been queued behind the marker
 // that represents it in the FIFO. Once tailPassed is set the marker's position is
 // no longer a safe place to run a newer snapshot — see the pendingResyncs field on
-// BranchWorker, and docs/design/target-watch-plan.md §4.1.
+// BranchWorker, and "Queue ordering and coalescing" in docs/design/target-watch-plan.md.
 type pendingResync struct {
 	// marker is the request whose pointer sits on the FIFO for this key. It is fixed
 	// for the entry's life: coalescing swaps request, never marker. Identifying the

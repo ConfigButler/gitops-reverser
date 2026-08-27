@@ -30,8 +30,8 @@ func TestProvenance_ClaimedAndString(t *testing.T) {
 			"different producer")
 }
 
-// A restart is the case provenance exists for: same cell, different lease, so an item still in
-// flight from the cancelled stream is distinguishable from the live one's.
+// A restart is the case provenance exists for: same cell, different lease, so a log line
+// separates a restart storm from one busy cell. Nothing is rejected on the difference.
 func TestProvenance_RestartOfOneCellIsADifferentProducer(t *testing.T) {
 	assert.NotEqual(t, provenanceForTest("team-a", 7), provenanceForTest("team-a", 8))
 	assert.Equal(t, provenanceForTest("team-a", 7).Cell, provenanceForTest("team-a", 8).Cell)
