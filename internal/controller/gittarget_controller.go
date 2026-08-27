@@ -223,7 +223,20 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: gitTargetRequeue(rd)}, nil
+	requeue := gitTargetRequeue(rd)
+	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
+	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
+	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
+	// request to explain it. This is the only place that publishes the axis, so it is the only
+	// place that can say what it published and how long it intends to wait before saying anything
+	// again (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+	log.Info("GitTarget status published",
+		"gitTarget", target.Namespace+"/"+target.Name,
+		"render", string(observed.axes.Render.Status)+"/"+observed.axes.Render.Reason,
+		"streams", observed.streams.Summary(),
+		"converged", rd.converged(),
+		"requeueAfter", requeue.String())
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 // gitTargetRequeue picks the periodic cadence. Only a converged GitTarget earns the steady interval.

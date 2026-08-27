@@ -311,10 +311,37 @@ The remaining question is narrow and mechanical: why did the GitTarget not recon
    so it cannot make the condition wrong — but it can suppress or misorder the enqueue that (1)
    depends on.
 
-These are distinguishable by logging the GitTarget's reconcile and the render axis it publishes,
-which is the next instrumentation step. Note that (3) is worth fixing on its own merits regardless:
-publishing the status a drain observed rather than the gate's current status is a race with no
-upside.
+**Candidate (1) is now excluded, and §2.9 is confirmed a second time.** Run `33123538889`,
+`full-manager`, on `43c4740b` — the first build carrying the dropped-enqueue log AND the e2e
+assertion that prints the GitTarget's own conditions:
+
+```text
+22:57:26  accepted  ingresses.networking.k8s.io …  rev 5 -> True
+22:59:17  FAIL  watchrule "watchrule-test" Ready=False Rechecking
+          "… ingresses.networking.k8s.io … (owes revision 5)"
+          | gittarget "watchrule-test-dest":
+              StreamsRunning=True(5/5); GitPathAccepted=True;
+              RenderMatchesLive=Unknown(Rechecking: … ingresses … owes revision 5);
+              Ready=False(Rechecking: … )
+```
+
+- the gate reached `True` for the very scope named, at 22:57:26;
+- **zero** dropped-reconcile lines, so the notification was not lost;
+- the GitTarget's OWN published condition carries the same stale message two minutes later, which
+  is what the new e2e detail proves — the rule is not merely holding a stale copy of a healthy
+  target, the target's published status is stale too.
+
+So: the gate converges, the reconcile request is delivered, and the GitTarget's status still does
+not follow. Candidates (2) and (3) remain, plus a fourth the evidence now suggests — that the
+reconcile happens and publishes the OLD axis, or does not happen despite the event.
+
+`gitTargetRequeue` gives a non-converged target 10s, so even a lost notification should self-correct
+within ten seconds; two minutes of staleness fits neither the 10s loop nor a delivered event. The
+next step is therefore the one thing still unobserved: what the GitTarget controller publishes on
+each reconcile, and the requeue it chooses. That log is added in the commit following this one.
+
+Note that (3) is worth fixing on its own merits regardless, and has been: publishing the status a
+drain observed rather than the gate's current status is a race with no upside.
 
 ### 2.11 The failure class
 
