@@ -82,10 +82,15 @@ func TestMarkTargetStreamState_NotifiesOnTheTransitionOnly(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "team-a")
 	cell := types.CellKeyFor(configmapsGVR, "apps")
 
-	// Two subscribers, because a Go channel has one consumer and three controllers project this.
+	// One subscriber per consumer, because a Go channel has one consumer and three controllers
+	// project this state.
 	ruleEvents := m.StreamStateEvents()
 	clusterRuleEvents := m.StreamStateEvents()
-	targetEvents := m.GitPathEvents()
+	targetEvents := m.StreamStateEvents()
+	// The acceptance channel is a different class of event and must not carry these: both sends
+	// are best-effort, and a dropped acceptance or retention transition costs five minutes of
+	// stale status where a dropped stream transition costs ten seconds.
+	acceptanceEvents := m.GitPathEvents()
 
 	m.markTargetStreamState(gitDest, cell, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
 	for name, ch := range map[string]<-chan event.GenericEvent{
@@ -97,6 +102,12 @@ func TestMarkTargetStreamState_NotifiesOnTheTransitionOnly(t *testing.T) {
 		default:
 			t.Fatalf("%s were not notified of a stream-state transition", name)
 		}
+	}
+	select {
+	case <-acceptanceEvents:
+		t.Fatal("stream transitions must not share the acceptance channel; a burst would crowd out a " +
+			"retention or acceptance transition, which costs five minutes of stale status")
+	default:
 	}
 
 	// The data plane reports readiness continuously. An event per REPORT rather than per CHANGE

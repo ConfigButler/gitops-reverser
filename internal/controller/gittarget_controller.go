@@ -1135,6 +1135,16 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			r.EventRouter.WatchManager.GitPathEvents(),
 			&handler.EnqueueRequestForObject{},
 		))
+		// Stream readiness arrives on its OWN channel, not the one above. Both sends are
+		// best-effort and a full buffer drops the ARRIVING event, so sharing one would let
+		// high-volume stream transitions crowd out an acceptance or retention transition — the
+		// expensive event arrives to find the buffer full. Losing one of those leaves
+		// status describing a sweep that already happened until the 5m steady requeue, where a
+		// lost stream event costs 10s. See Manager.enqueueStreamStateChange.
+		b = b.WatchesRawSource(source.Channel(
+			r.EventRouter.WatchManager.StreamStateEvents(),
+			&handler.EnqueueRequestForObject{},
+		))
 	}
 
 	return b.Complete(r)

@@ -67,14 +67,25 @@ func (m *Manager) StreamStateEvents() <-chan event.GenericEvent {
 }
 
 // enqueueStreamStateChange emits a non-blocking GenericEvent for the GitTarget to every
-// subscriber, and to the GitTarget controller through its own channel.
+// subscriber. The GitTarget controller is one of those subscribers; it is deliberately NOT
+// notified through GitPathEvents.
 //
-// Call it only on a real transition. Stream readiness is reported continuously by the data plane,
-// and an event per report rather than per change would enqueue every rule of a target on every
-// watch event it handles.
+// Keeping the two channels apart is the point, because every send here is best-effort and a full
+// buffer is a DROP. GitPathEvents carries acceptance, render-fidelity and retention transitions,
+// and losing one of those costs up to RequeueSteadyInterval — five minutes of status describing a
+// sweep that already happened. Stream transitions are higher-volume (every cell, on every plan
+// change, plus a flap per distinct error message) and losing one costs at most
+// RequeueStreamSettleInterval. Put them in one buffer and the cheap events CROWD OUT the expensive
+// ones under exactly the load where it matters least to lose them and most to keep them.
+//
+// Crowd out, not evict: a Go buffered channel drops the ARRIVING value when it is full and never
+// displaces one already queued. So the loss is not "a stream burst throws the retention event out
+// of the buffer" — it is "the retention event arrives to find the buffer full of stream events and
+// is the one dropped". Same outcome, and worth stating precisely, because it says what to measure
+// if this is ever suspected again: the buffer depth at the moment the expensive event arrives.
+//
+// Call it only on a real change; see markTargetStreamState.
 func (m *Manager) enqueueStreamStateChange(gitDest types.ResourceReference) {
-	m.enqueueGitTargetReconcile(gitDest)
-
 	m.gitPathEventsMu.Lock()
 	subscribers := make([]chan event.GenericEvent, len(m.streamStateSubscribers))
 	copy(subscribers, m.streamStateSubscribers)
