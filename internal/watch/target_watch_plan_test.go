@@ -241,7 +241,7 @@ func TestReplaceGitTargetWatches_LogsAnAllKeepReconcileAndTouchesNothing(t *test
 		key: key, spec: "[CREATE]", cancel: func() { cancelled = true },
 	}
 
-	require.NoError(t, manager.replaceGitTargetWatches(context.Background(), table))
+	require.NoError(t, manager.replaceGitTargetWatches(context.Background(), table, ""))
 
 	require.Equal(t, 1, countContaining(*lines, "target watch plan reconciled"))
 	planLine := firstContaining(t, *lines, "target watch plan reconciled")

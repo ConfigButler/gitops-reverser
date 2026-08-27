@@ -232,6 +232,12 @@ enqueue. An accepted report that equals its predecessor is indistinguishable fro
 all, so the roll-up cannot tell "re-measured, unchanged" from "never re-measured". The force is
 consumed, the plan settles at `keep:1`, and nothing re-measures.
 
+B-2 is deliberate and stays: enqueueing on every identical report would make a steadily retaining
+target reconcile on every resync of every scope, for ever. It is what turns B-1 from a wrong number
+into a permanently wrong number, and with B-1 fixed the widened resync genuinely reports a
+different count, so the roll-up moves. The residual cost is that `observedTime` can lag on a scope
+whose count truly has not changed, which is the intended trade.
+
 ### 3.4 Why every earlier diagnostic missed it
 
 The `resync retained managed documents` Info line is throttled to once per ten minutes per
@@ -267,11 +273,17 @@ converges by waiting, the second never does. The scope now remembers the last re
 and the pending message says so. This is the asymmetry that gave B evidence and left A with none;
 the retention roll-up already logged its drops.
 
-**4.5 Do not weaken the revision gate.** A stale report from a replaced stream must still be
+**4.5 Give the resync its policy.** The prune mode now travels on the `ResyncRequest`, beside the
+desired set, the scope and the revision it already carried, and the target-watch stream carries the
+mode its plan pass was applied under exactly as it already carries the revision it must report
+under. The worker's independent cached read stays only as the fallback for a request that names no
+policy. This removes a source of truth rather than adding one.
+
+**4.6 Do not weaken the revision gate.** A stale report from a replaced stream must still be
 refused. The repair is that a scope which cannot be reported under its current revision must be
 *re-measured*, not that an old measurement may stand in for a new one.
 
-### 4.6 Order of work
+### 4.7 Order of work
 
 1. Make the pending scopes visible in the condition, with unit coverage asserting the message
    names the scope. Land this first — it is what makes the next reproduction self-diagnosing.

@@ -233,3 +233,56 @@ func TestMoreRestrictiveOf_UnrecognizedResultStillAuthorizesNothing(t *testing.T
 	assert.False(t, result.SweepsOrphans())
 	assert.False(t, result.AppliesEventDeletes())
 }
+
+// TestBuildResyncPendingWrite_RequesterPolicyWins is the regression guard for Failure B.
+//
+// The worker resolves a GitTarget through its CACHED client. A resync that was forced BY a
+// prune-mode widening can reach the worker before that cache has observed the widening, and it
+// then plans the forced replay under the very mode it was forced to replace — retaining the
+// orphan it was sent to sweep, and reporting a count identical to the previous one, which the
+// retention roll-up cannot distinguish from no report at all
+// (docs/design/watch-plane-status-convergence-failures.md, Failure B).
+//
+// So the requester's policy is authoritative: it travels on the request beside the desired set,
+// the scope and the revision, exactly like them.
+func TestBuildResyncPendingWrite_RequesterPolicyWins(t *testing.T) {
+	// The worker's cached view is STALE: it still carries the pre-widening mode.
+	worker := replayWorker(t, []client.Object{
+		gitTargetWithMode(configv1alpha3.PruneOnEvent),
+		&configv1alpha3.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "provider", Namespace: "default"},
+		},
+	}, nil)
+
+	pw, err := worker.buildResyncPendingWrite(context.Background(), &ResyncRequest{
+		GitTargetName:      replayTargetName,
+		GitTargetNamespace: replayTargetNamespace,
+		PruneMode:          configv1alpha3.PruneAlways,
+	}, &ResyncStats{})
+	require.NoError(t, err)
+
+	assert.Equal(t, configv1alpha3.PruneAlways, modeOfWrite(t, *pw),
+		"the mode the requester decided under must win over the worker's cached read")
+}
+
+// TestBuildResyncPendingWrite_FallsBackToTheStoredMode keeps the override narrow: a request that
+// names no policy (a caller that does not know one, or a legacy path) still resolves the mode from
+// the GitTarget, so the override adds a source of truth for the forced case without removing the
+// default one.
+func TestBuildResyncPendingWrite_FallsBackToTheStoredMode(t *testing.T) {
+	worker := replayWorker(t, []client.Object{
+		gitTargetWithMode(configv1alpha3.PruneAlways),
+		&configv1alpha3.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "provider", Namespace: "default"},
+		},
+	}, nil)
+
+	pw, err := worker.buildResyncPendingWrite(context.Background(), &ResyncRequest{
+		GitTargetName:      replayTargetName,
+		GitTargetNamespace: replayTargetNamespace,
+	}, &ResyncStats{})
+	require.NoError(t, err)
+
+	assert.Equal(t, configv1alpha3.PruneAlways, modeOfWrite(t, *pw),
+		"an unset request policy must fall back to the GitTarget's stored mode")
+}

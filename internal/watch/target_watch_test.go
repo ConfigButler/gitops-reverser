@@ -154,14 +154,14 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 			NamespaceOps: map[string]OperationSet{"apps": {"CREATE": struct{}{}}},
 		}},
 	}
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, first))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, first, ""))
 	initial := receiveOpenedWatch(t, opened)
 	assert.Equal(t, "apps", initial.namespace)
 	assert.True(t, *initial.opts.SendInitialEvents)
 	assert.Equal(t, metav1.ResourceVersionMatchNotOlderThan, initial.opts.ResourceVersionMatch)
 	assert.True(t, initial.opts.AllowWatchBookmarks)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, first))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, first, ""))
 	assertNoOpenedWatch(t, opened)
 
 	changed := WatchedTypeTable{
@@ -171,7 +171,7 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 			NamespaceOps: map[string]OperationSet{"apps": {"UPDATE": struct{}{}}},
 		}},
 	}
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, changed))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, changed, ""))
 	restarted := receiveOpenedWatch(t, opened)
 	assert.Equal(t, "apps", restarted.namespace)
 	assert.True(t, *restarted.opts.SendInitialEvents,
@@ -1004,11 +1004,11 @@ func TestReplaceGitTargetWatches_AddingARuleStartsOnlyTheNewCell(t *testing.T) {
 	defer cancel()
 	manager, opened := planTestManager(t, gitDest)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps")))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps"), ""))
 	apps := receiveOpenedWatch(t, opened)
 	require.Equal(t, "apps", apps.namespace)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops"), ""))
 
 	started := receiveOpenedWatch(t, opened)
 	assert.Equal(t, "ops", started.namespace, "only the new cell is started")
@@ -1024,12 +1024,12 @@ func TestReplaceGitTargetWatches_RemovingARuleStopsOnlyThatCell(t *testing.T) {
 	defer cancel()
 	manager, opened := planTestManager(t, gitDest)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops"), ""))
 	first, second := receiveOpenedWatch(t, opened), receiveOpenedWatch(t, opened)
 	byNamespace := map[string]openedWatch{first.namespace: first, second.namespace: second}
 	require.Len(t, byNamespace, 2)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps")))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps"), ""))
 
 	assertStopped(t, byNamespace["ops"])
 	assertStillRunning(t, byNamespace["apps"])
@@ -1046,7 +1046,7 @@ func TestReplaceGitTargetWatches_AnOperationEditRestartsThatCellAlone(t *testing
 	defer cancel()
 	manager, opened := planTestManager(t, gitDest)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops"), ""))
 	first, second := receiveOpenedWatch(t, opened), receiveOpenedWatch(t, opened)
 	byNamespace := map[string]openedWatch{first.namespace: first, second.namespace: second}
 
@@ -1060,7 +1060,7 @@ func TestReplaceGitTargetWatches_AnOperationEditRestartsThatCellAlone(t *testing
 			},
 		}},
 	}
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, edited))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, edited, ""))
 
 	restarted := receiveOpenedWatch(t, opened)
 	assert.Equal(t, "apps", restarted.namespace)
@@ -1078,7 +1078,7 @@ func TestReplaceGitTargetWatches_KeptCellKeepsItsReadinessResult(t *testing.T) {
 	defer cancel()
 	manager, opened := planTestManager(t, gitDest)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps")))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps"), ""))
 	receiveOpenedWatch(t, opened)
 	manager.seedStreamState(
 		gitDest,
@@ -1086,7 +1086,7 @@ func TestReplaceGitTargetWatches_KeptCellKeepsItsReadinessResult(t *testing.T) {
 		targetStreamStatus{state: StreamStateStreaming, reason: "Streaming"},
 	)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops"), ""))
 	receiveOpenedWatch(t, opened)
 
 	states := manager.watchPlane().streams[gitDest.Key()]
@@ -1105,10 +1105,10 @@ func TestReplaceGitTargetWatches_ForceRestartsEveryCell(t *testing.T) {
 	manager, opened := planTestManager(t, gitDest)
 
 	table := planTable(gitDest, "apps", "ops")
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, table))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, ""))
 	first, second := receiveOpenedWatch(t, opened), receiveOpenedWatch(t, opened)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, true))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, "", true))
 
 	restarted := map[string]bool{}
 	restarted[receiveOpenedWatch(t, opened).namespace] = true

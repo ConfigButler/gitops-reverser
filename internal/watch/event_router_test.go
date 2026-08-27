@@ -103,6 +103,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 		nil,
 		"12",
 		false,
+		"",
 	)
 
 	require.Error(t, err)
@@ -131,6 +132,7 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 		nil,
 		"12",
 		false,
+		"",
 	)
 
 	require.Error(t, err)
