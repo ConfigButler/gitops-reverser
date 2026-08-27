@@ -131,9 +131,24 @@ watchrule "quickstart-watchrule-…" condition Ready: status="False" reason="Rec
 
 **One** scope of five, named, with the revision it owes. Every previous reproduction of A produced
 `Expected <string>: False to equal <string>: True` and a round of log archaeology; this one states
-the answer in the failure text. The remaining question — whether that scope has never been replayed
-or is being fed reports under a revision the plan has moved past — is what §4.4's refused-revision
-recording answers, and it is not yet in this run.
+the answer in the failure text.
+
+Mining that job log against the named scope narrows A sharply:
+
+- the target planned **all five cells in ONE pass** (`keep=0 start=5`), so the five revisions
+  1–5 were issued by a single `Reconcile` and every stream was started with the revision that
+  `Reconcile` returned for its cell — there is no earlier incarnation for a tail to come from;
+- **every one of the five replayed**, ingresses included (`count:0`);
+- **every one of the five resyncs applied**, ingresses at 21:20:12, `committed:false` (correct for
+  an empty scope) — and the branch worker is one goroutine, so the `Handling`/`applied` pairs are
+  unambiguous;
+- the spec failed at 21:21:37, **85 seconds later**. Not slow. Stuck.
+
+So the ingresses report was made, under the revision the gate holds, and the gate did not take it.
+By elimination the remaining candidates are exactly `recordScope`'s refusal branches — an unknown
+target, a scope absent from the installed set, or a revision mismatch — plus the earlier return on
+a zero revision. **All four were silent.** §4.4 makes all four speak; until one of them fires on a
+reproduction, A's precise branch is not yet known and must not be guessed.
 
 ### 2.5 The failure class
 
@@ -266,24 +281,30 @@ out once the condition carries the answer. Net change is negative.
 **4.3 Always drain.** Remove the early return in `enqueueReplayResync` so the queue-full reply is
 read by the drain that the contract already promises will read it.
 
-**4.4 Record what the gate refuses.** A refused report — one carrying a revision the plan has moved
+**4.4 Say when a scope result is refused.** `RecordScope*` answers `applied=false` for three
+different reasons and every caller discarded that answer; a fourth path returned even earlier, on a
+report carrying no revision. All four now name the cell, the revision reported and the gate's
+current message. The retention roll-up has logged its refusals since `c24844a1`, and that asymmetry
+is the whole reason B accumulated evidence while A accumulated none.
+
+**4.5 Record what the gate refuses, on the scope itself.** A refused report — one carrying a revision the plan has moved
 past — was discarded in silence, so a scope waiting for its first replay and a scope discarding a
 steady stream of reports were indistinguishable from outside. They have opposite repairs: the first
 converges by waiting, the second never does. The scope now remembers the last revision it refused
 and the pending message says so. This is the asymmetry that gave B evidence and left A with none;
 the retention roll-up already logged its drops.
 
-**4.5 Give the resync its policy.** The prune mode now travels on the `ResyncRequest`, beside the
+**4.6 Give the resync its policy.** The prune mode now travels on the `ResyncRequest`, beside the
 desired set, the scope and the revision it already carried, and the target-watch stream carries the
 mode its plan pass was applied under exactly as it already carries the revision it must report
 under. The worker's independent cached read stays only as the fallback for a request that names no
 policy. This removes a source of truth rather than adding one.
 
-**4.6 Do not weaken the revision gate.** A stale report from a replaced stream must still be
+**4.7 Do not weaken the revision gate.** A stale report from a replaced stream must still be
 refused. The repair is that a scope which cannot be reported under its current revision must be
 *re-measured*, not that an old measurement may stand in for a new one.
 
-### 4.7 Order of work
+### 4.8 Order of work
 
 1. Make the pending scopes visible in the condition, with unit coverage asserting the message
    names the scope. Land this first — it is what makes the next reproduction self-diagnosing.
