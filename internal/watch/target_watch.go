@@ -140,15 +140,21 @@ func (m *Manager) replaceGitTargetWatches(
 	keys := sortedTargetWatchSpecKeys(specs)
 	childCtx, cancel := context.WithCancel(ctx)
 	force := len(forceRecheck) > 0 && forceRecheck[0]
+	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 
 	m.targetWatchesMu.Lock()
 	if m.targetWatches == nil {
 		m.targetWatches = map[string]*targetWatchSet{}
 	}
 	key := table.GitDest.Key()
-	if m.prepareTargetWatchSetReplacementLocked(key, specs, force) {
+	// Classify BEFORE the no-op early return, so the all-keep case is logged too: "nothing
+	// changed" is the most common outcome and the one an operator most wants confirmed.
+	previousPlan, desiredPlan, planErr := m.targetWatchPlansLocked(key, specs)
+	noChange := m.prepareTargetWatchSetReplacementLocked(key, specs, force)
+	if noChange {
 		m.targetWatchesMu.Unlock()
 		cancel()
+		reportTargetWatchPlanDiff(log, previousPlan, desiredPlan, planErr, force)
 		return nil
 	}
 	m.targetWatches[key] = &targetWatchSet{cancel: cancel, specs: specs}
@@ -159,7 +165,7 @@ func (m *Manager) replaceGitTargetWatches(
 		m.enqueueGitPathChange(table.GitDest)
 	}
 
-	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
+	reportTargetWatchPlanDiff(log, previousPlan, desiredPlan, planErr, force)
 	for _, watchKey := range keys {
 		stream := targetWatchStream{
 			key:   watchKey,

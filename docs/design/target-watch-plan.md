@@ -9,7 +9,8 @@ related:
 
 # Target watch plan: reconcile the changed cells
 
-> **design**: open. Cell identity and the producer cut are built; the diff is not.
+> **design**: open. Cell identity, the producer cut and the diff itself are
+> built; nothing acts on the diff yet.
 > Index: [`../INDEX.md`](../INDEX.md)
 
 **The short version.** A GitTarget's watch set is replaced wholesale today, so
@@ -426,16 +427,14 @@ clears it.
 
 ## Implementation order
 
-Three changes, each independently shippable.
-
-**1. Diff the plan and log it.** Compute the desired plan, classify against the
-active streams, and log the four outcomes without acting on them. This validates
-the diff against real workloads at zero behavioral risk.
+Three changes, each independently shippable. The first is done.
 
 **2. Apply the diff.** Act on `keep`, `start` and `restart`, preserve readiness
 results for `keep` cells, and make cancellation prompt. `stop` cancels the stream
 and drops the key, and continues to leave files alone. Unrelated replays stop
-here, which is the performance goal.
+here, which is the performance goal. Readiness needs less than this plan first
+assumed: `resetTargetStreamStatesLocked` is already keyed by cell and already
+preserves the result of a cell that is not new.
 
 **3. Removal semantics.** Subscribe to the registry so a settled `TypeRemoved`
 drops its cell from the plan as an authoritative cause. Give the whole-target
@@ -448,8 +447,12 @@ sequenced after change 2 because that is what makes it safe.
 
 Already built: cell identity (`types.CellKey`, versionless, one stream per cell),
 the source cell stamped on queued items with no lease beside it, the coalescing
-tail fence, and the whole-target mark-and-sweep itself, which needs a caller
-rather than an implementation.
+tail fence, the whole-target mark-and-sweep itself, which needs a caller rather
+than an implementation, and **change 1** — `internal/watch/target_watch_plan.go`
+computes the desired plan, classifies it against the running one, and logs the
+four outcomes. It runs before the no-op early return, so an all-`keep` reconcile
+is logged too, and nothing acts on the result: the watch set is still replaced
+wholesale.
 
 If a concurrency problem later resists prompt cancellation and FIFO ordering,
 document that specific failure before adding any fence, then add the smallest one
