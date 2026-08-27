@@ -238,23 +238,31 @@ func verifyResourceCondition(
 		// said "0/1 streams running (configmaps)" and the other something else entirely
 		// (docs/design/watch-plane-status-convergence-failures.md). The controller already
 		// publishes the answer; the assertion just has to print it.
-		detail := fmt.Sprintf("%s %q condition %s: status=%q reason=%q message=%q",
-			resourceType, name, conditionType, conditionStatus, conditionReason, conditionMessage)
-		// A rule's Ready is a COPY of its GitTarget's, not a live view of it: reconcileWatchRuleViaTarget
-		// reads the target's stored Ready and folds it in as an independent prerequisite. So a rule
-		// reporting a GitTarget-derived reason is ambiguous — the target may genuinely be stuck, or
-		// the target may have converged and the rule's copy be stale — and those have completely
-		// different searches. Printing the target's own conditions beside the rule's settles it in
-		// the failure text (docs/design/watch-plane-status-convergence-failures.md, Failure A).
-		detail += gitTargetConditionDetail(obj, ns)
-
-		g.Expect(conditionStatus).To(Equal(expectedStatus), "%s", detail)
-		// An empty expectedReason is a status-only gate: the caller does not assert a reason.
-		if expectedReason != "" {
-			g.Expect(conditionReason).To(Equal(expectedReason), "%s", detail)
+		// Built ONLY when the assertion is about to fail. A rule's Ready is a COPY of its
+		// GitTarget's, not a live view of it: reconcileWatchRuleViaTarget reads the target's stored
+		// Ready and folds it in as an independent prerequisite. So a rule reporting a
+		// GitTarget-derived reason is ambiguous — the target may genuinely be stuck, or the target
+		// may have converged and the rule's copy be stale — and those have completely different
+		// searches (docs/design/watch-plane-status-convergence-failures.md, Failure A).
+		//
+		// Laziness is not an optimisation here. This runs inside an Eventually that polls for up to
+		// 90s, so building it eagerly issued a `kubectl get gittarget` per poll per rule wait —
+		// load the suite does not need, on the timing-sensitive path these failures live on.
+		detail := func() string {
+			return fmt.Sprintf("%s %q condition %s: status=%q reason=%q message=%q",
+				resourceType, name, conditionType, conditionStatus, conditionReason, conditionMessage) +
+				gitTargetConditionDetail(obj, ns)
 		}
-		if expectedMessageContains != "" {
-			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains), "%s", detail)
+
+		if conditionStatus != expectedStatus {
+			g.Expect(conditionStatus).To(Equal(expectedStatus), "%s", detail())
+		}
+		// An empty expectedReason is a status-only gate: the caller does not assert a reason.
+		if expectedReason != "" && conditionReason != expectedReason {
+			g.Expect(conditionReason).To(Equal(expectedReason), "%s", detail())
+		}
+		if expectedMessageContains != "" && !strings.Contains(conditionMessage, expectedMessageContains) {
+			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains), "%s", detail())
 		}
 	}
 	Eventually(verifyStatus, resourceConditionTimeout(timeout), resourceConditionPollInterval).Should(Succeed())
