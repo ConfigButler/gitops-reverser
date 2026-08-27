@@ -26,14 +26,15 @@ about themselves than they did.
 
 | # | Symptom | Seen | Verdict |
 | --- | --- | --- | --- |
-| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 3× (CI twice, local once) | **Named.** Not a streams failure at all — the GitTarget's render-fidelity gate never converges. Same defect as B |
+| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 4× (CI 3×, local once) | **Open.** Not a streams failure at all — the GitTarget's render-fidelity gate never converges. Narrowed to the gate's four refusal branches (§2.5) |
 | **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, and narrowed to the roll-up's accept path. One hypothesis tried and withdrawn — see §3.3 |
 | C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified, and probably unrelated |
 | D | Encryption-secret recreation spec times out | 1× (CI) | **Ambient, pre-existing** — see §5 |
 
-A green run is not evidence against A or B. Run `33113743391` on `773f6cc0` was green on all six
-e2e legs, Lint and Unit, and a full local `task test-e2e` was 80/80 on the same commit. Neither
-touched the failing path. The defect is intact.
+**A green run is not evidence against A or B, and this page has now been wrong once for forgetting
+that.** Run `33113743391` was green on all six e2e legs, Lint and Unit, with a matching 80/80 local
+suite, on a commit where both defects were fully intact. A withdrawn fix (§3.3) also passed the
+spec it was meant to fix, once, while contradicting the logs. Require a mechanism, not a colour.
 
 ### 1.1 What settled it
 
@@ -393,6 +394,8 @@ Branch `feat/target-watch-cell-identity`, 2026-08-27.
 | `33100142551` | — | failure |
 | `33103011476` | `9e4e3ce9` | **full-manager: A and B**; Unit tests: D. The run that named the cause — its waiter printed `reason="Rechecking"` |
 | `33113743391` | `773f6cc0` | **success — all six e2e legs, Lint, Unit tests.** Proves nothing; the failing path was untouched |
+| `33116777679` | `fc04b15b` | **quickstart-install: A**, and the new condition message named the stuck scope outright; Unit tests: D (ambient). Remaining legs cancelled by a push |
+| `33118310453` | `cf08e467` | Lint, Unit, quickstart-install, bi-directional, source-cluster, image-refresh green |
 
 Local suites, same code:
 
@@ -402,6 +405,8 @@ Local suites, same code:
 | `task test-e2e-bi-directional` | `5e054717` | 3/3 pass, including the spec that failed as C |
 | `task test-e2e` | `c24844a1` | **75 pass, 1 fail — A** (`signing-per-event-wr`) |
 | `task test-e2e` | `773f6cc0` | 80/80 pass |
+| `task test-e2e` | `fc04b15b` | **79 pass, 1 fail — B**, the first local reproduction of B |
+| `task test-e2e` | `cf08e467` | 80/80 pass — on the since-reverted fix, so it validates nothing |
 
 Related change that landed and is **not** a suspect for either open failure: `14eeef46` split
 stream-state transitions off the acceptance channel. Sharing one 256-slot drop-on-full buffer
