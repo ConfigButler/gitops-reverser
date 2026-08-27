@@ -154,7 +154,36 @@ target, a scope absent from the installed set, or a revision mismatch — plus t
 a zero revision. **All four were silent.** §4.4 makes all four speak; until one of them fires on a
 reproduction, A's precise branch is not yet known and must not be guessed.
 
-### 2.5 The failure class
+### 2.5 The second reproduction, and what it excludes
+
+Run `33118310453`, `E2E (full-manager)`, on `cf08e467` — a build that already carried the
+refused-revision recording of §4.5:
+
+```text
+watchrule "srcns-wildcard-rule" condition Ready: status="False" reason="Rechecking"
+  message="Waiting for 1 of 4 render scopes to report under their current revision:
+           secrets in 1787866675-test-srcns-wildcard (owes revision 4)"
+```
+
+**No refusal clause.** The scope owes revision 4 and has refused nothing, which excludes the
+revision-mismatch branch outright — no report ever arrived carrying the wrong revision.
+
+The log corroborates every other link. The plan went `keep=2 start=2` at 21:40:52, so the two
+wildcard cells were issued revisions 3 and 4 by that one `Reconcile`; the secrets-wildcard replay
+completed (`count:0`, rv 3230); and its resync was handled. So the stream ran, replayed and
+enqueued, and its drain reached `MarkTargetRenderFidelityScopeClean`.
+
+Yet the gate holds no result and recorded no refusal. `recordScope` records a refusal on a revision
+mismatch, so the only way to reach the gate and leave no trace is **not to reach it at all**:
+
+- `MarkTargetRenderFidelityScopeClean` returns before calling it when `revision == 0` — the
+  stream carried no revision, though the gate issued it one; or
+- `recordScope` returned at one of its `!found` guards, which record nothing.
+
+Those two are what §4.4's line separates, and it is **not** in this build (`32b75e02` postdates
+`cf08e467`). The next reproduction on a build that carries it closes A.
+
+### 2.6 The failure class
 
 Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
 reports exactly once per revision, from
@@ -336,9 +365,10 @@ Reading the next A reproduction:
 
 | What the condition says | Branch |
 | --- | --- |
-| owes revision N, no refusal clause, and a `render scope result was not applied` line naming it | the gate holds the scope but refused the report — read `reportedRevision` against N |
-| owes revision N, no refusal clause, and NO such line | no report ever reached the gate — the search moves to the drain and to `enqueueReplayResync` |
-| `stream carries no revision` | the stream was started without a revision; the plan pass and the gate disagree about the cell |
+| `stream carries no revision` | the stream was started without one though the gate issued it one — the plan pass and the gate disagree about the cell |
+| a `render scope result was not applied` line with a non-zero `reportedRevision` | the gate holds the scope but would not take the report — one of `recordScope`'s `!found` guards |
+| owes revision N, a refusal clause naming a different revision | a stale tail; the live stream's own report is what to look for next |
+| owes revision N, no refusal clause, and NO `not applied` line at all | nothing reached the mark path — the search moves to the drain and to `enqueueReplayResync`, whose `ctx.Done()` guard returns nil as if it had succeeded |
 
 Reading the next B reproduction:
 
