@@ -49,6 +49,13 @@ type renderFidelityScopeResult struct {
 	clean      bool
 	finished   bool
 	divergence *manifestanalyzer.RenderDivergence
+	// refusedRevision is the revision of the most recent result this scope REFUSED. Refusing a
+	// stale tail is correct and must stay; being unable to see that it happened is not. A scope
+	// stuck pending looks identical whether no stream has reported yet or a stream is reporting
+	// steadily under a revision the plan has moved past, and those two have opposite repairs —
+	// the first waits, the second can wait for ever
+	// (docs/design/watch-plane-status-convergence-failures.md, §2.4).
+	refusedRevision uint64
 }
 
 type renderFidelityTargetState struct {
@@ -179,7 +186,16 @@ func (g *RenderFidelityGate) recordScope(
 		return RenderFidelityStatus{}, false
 	}
 	result, found := state.scopes[scope]
-	if !found || result.revision != revision {
+	if !found {
+		return RenderFidelityStatus{}, false
+	}
+	if result.revision != revision {
+		// Still refused — the gate's contract is unchanged. It is now RECORDED, so a scope that
+		// never converges can say whether it is waiting for a first report or discarding a
+		// steady stream of them.
+		result.refusedRevision = revision
+		state.scopes[scope] = result
+		g.targets[target.Key()] = state
 		return RenderFidelityStatus{}, false
 	}
 	// False is sticky within one revision. A later clean replay from the same scope may be a
@@ -293,7 +309,11 @@ func pendingScopesMessage(state renderFidelityTargetState, scopes []types.CellKe
 		if result.finished && result.clean {
 			continue
 		}
-		names = append(names, fmt.Sprintf("%s (revision %d)", scope.String(), result.revision))
+		name := fmt.Sprintf("%s (owes revision %d", scope.String(), result.revision)
+		if result.refusedRevision != 0 {
+			name += fmt.Sprintf("; refused a report carrying revision %d", result.refusedRevision)
+		}
+		names = append(names, name+")")
 	}
 	msg := fmt.Sprintf("Waiting for %d of %d render scopes to report under their current revision",
 		len(state.scopes)-clean, len(state.scopes))

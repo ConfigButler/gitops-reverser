@@ -322,3 +322,36 @@ func TestRenderFidelityGate_PendingMessageIsBounded(t *testing.T) {
 	assert.Contains(t, status.Message, fmt.Sprintf("%d of %d", len(scopes), len(scopes)))
 	assert.Contains(t, status.Message, "and 3 more")
 }
+
+// TestRenderFidelityGate_PendingMessageNamesARefusedReport closes the last silent path in the
+// roll-up. Refusing a report that carries a superseded revision is correct and must stay — a stale
+// tail must never reopen writes — but a scope that is refusing reports and a scope that has simply
+// not been replayed yet look identical from outside, and they have opposite repairs: one converges
+// by waiting, the other never does
+// (docs/design/watch-plane-status-convergence-failures.md, §2.4).
+func TestRenderFidelityGate_PendingMessageNamesARefusedReport(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scope := fidelityScope("apps", "deployments")
+
+	_, first := restartAll(gate, target, scope)
+	// Restart it so the scope has a PREDECESSOR revision a tail could still be carrying; a first
+	// incarnation has none, and revision 0 is the "no revision" sentinel the mark path ignores.
+	_, revisions := restartAll(gate, target, scope)
+	current := revisions[scope]
+	require.Greater(t, current, first[scope])
+
+	// A tail from the replaced stream, carrying a revision the plan has moved past.
+	_, applied := gate.RecordScopeClean(target, first[scope], scope)
+	require.False(t, applied, "a superseded revision must still be refused")
+
+	status := gate.Status(target)
+	require.Equal(t, RenderFidelityUnknown, status.State)
+	assert.Contains(t, status.Message, fmt.Sprintf("owes revision %d", current))
+	assert.Contains(t, status.Message, fmt.Sprintf("refused a report carrying revision %d", first[scope]))
+
+	// The correct report still converges the target, and clears the scope from the message.
+	status, applied = gate.RecordScopeClean(target, current, scope)
+	require.True(t, applied)
+	assert.Equal(t, RenderFidelityTrue, status.State)
+}
