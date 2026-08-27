@@ -531,11 +531,13 @@ func (m *Manager) refreshSharedSnapshotsIfDue(ctx context.Context, log logr.Logg
 		if !gathered {
 			// A refresh that could not gather leaves every target planning against snapshots that
 			// may be stale, and unlike a target pass it has no dirty entry of its own to carry the
-			// retry. Ask for another rather than waiting out the 30s sweep: a cluster that just
-			// became unreachable is exactly when the plan is most likely to be wrong. A failed
-			// refresh that keeps failing therefore retries on the sweep cadence at worst and
-			// immediately at best, and it cannot spin, because the request is served at most once
-			// per loop turn and the next attempt still carries the full timeout.
+			// retry. So it asks for another rather than waiting out the 30s sweep: a cluster that
+			// just became unreachable is exactly when the plan is most likely to be wrong.
+			//
+			// On the same ladder a target pass uses, and the floor is not decoration. An
+			// unreachable cluster is slow, but one that REFUSES the connection fails in a
+			// millisecond — a re-request with nothing under it would hammer discovery as fast as
+			// it can say no.
 			t.mu.Lock()
 			t.sharedDue = true
 			t.sweepDue = t.sweepDue || sweep
