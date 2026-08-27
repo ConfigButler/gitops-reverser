@@ -1,0 +1,339 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package watch
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/rest"
+
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+)
+
+// ownerTestManager is a Manager the owner loop can drive with no cluster behind it: discovery is
+// stubbed so a pass never reaches the network, and EventRouter is nil so EnsureGitTargetWatches
+// succeeds without opening anything. These tests are about WHEN and HOW OFTEN a pass runs, not
+// about what it installs.
+func ownerTestManager() *Manager {
+	return &Manager{Log: logr.Discard(), discoveryClient: commonTestDiscoveryClient()}
+}
+
+// settle moves a dirty target's timestamps into the past so its silence window has elapsed,
+// instead of making the test wait two real seconds for it.
+func (m *Manager) settle(ref types.ResourceReference) {
+	t := m.triggers()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	entry := t.dirty[ref.Key()]
+	if entry == nil {
+		return
+	}
+	past := time.Now().Add(-2 * settleWindow)
+	entry.firstDirty, entry.lastTrigger = past, past
+}
+
+// runTurns drives the owner until it has nothing ready left, and returns how many passes ran.
+// ownerTurn returns a zero wait exactly when it ran one.
+func (m *Manager) runTurns(t *testing.T, limit int) int {
+	t.Helper()
+	passes := 0
+	for range limit {
+		if wait := m.ownerTurn(context.Background(), logr.Discard()); wait != 0 {
+			return passes
+		}
+		passes++
+	}
+	t.Fatalf("the owner ran %d passes without going idle", limit)
+	return passes
+}
+
+// A discovery client must never run without a deadline, and a WATCH must never run with one. The
+// local cluster used to be exempted from the first half on the reasoning that it is never slow,
+// which left the legacy non-context ServerGroupsAndResources() able to hang forever.
+func TestDiscoveryRESTConfig_BoundsDiscoveryWithoutBoundingWatches(t *testing.T) {
+	cfg := &rest.Config{Host: "https://kubernetes.default.svc"}
+
+	disco := discoveryRESTConfig(cfg)
+
+	assert.Equal(t, sourceClusterDialTimeout, disco.Timeout,
+		"the discovery config carries a request timeout, local cluster included")
+	assert.Zero(t, cfg.Timeout,
+		"the config watches are built from is untouched; a deadline there would kill every watch")
+	assert.NotSame(t, cfg, disco, "the timeout is set on a COPY, which is what makes it safe")
+}
+
+// One `kubectl apply` of a GitTarget and four WatchRules is ONE piece of configuration. The API
+// server delivers it as five watch events within a few hundred milliseconds; the settle window
+// turns those into one pass.
+func TestOwner_OneApplyOfATargetAndItsRulesIsOnePass(t *testing.T) {
+	m := ownerTestManager()
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+
+	m.DeclareForGitTarget(ref, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+	for range 4 {
+		m.TriggerRuleChange(types.NewResourceReference("target", "team-a"))
+	}
+
+	require.Len(t, m.triggers().dirty, 1, "five triggers coalesce onto one dirty target")
+	assert.Equal(t, uint64(4), m.triggers().coalesced,
+		"four of the five landed on a target that was already dirty")
+
+	assert.Zero(t, m.runTurns(t, 8), "nothing runs while the target is still being edited")
+
+	m.settle(ref)
+	assert.Equal(t, 1, m.runTurns(t, 8), "the settled burst produces exactly one pass")
+	assert.Empty(t, m.triggers().dirty, "and the target is clean afterwards")
+}
+
+// A rule-side trigger carries no UID — the watch table is rule-derived and has none — so the owner
+// resolves it against the declare record rather than planning against a half-identified target.
+func TestOwner_ARuleTriggerForAnUndeclaredTargetPlansNothing(t *testing.T) {
+	m := ownerTestManager()
+
+	m.TriggerRuleChange(types.NewResourceReference("never-declared", "team-a"))
+	m.settle(types.NewResourceReference("never-declared", "team-a"))
+
+	assert.Equal(t, 1, m.runTurns(t, 4), "the owner takes the trigger off the queue")
+	assert.Empty(t, m.triggers().dirty, "and drops it rather than inventing an identity for it")
+	assert.Empty(t, m.watchPlane().passes, "no pass outcome is recorded for a target that never declared")
+}
+
+// An edit to one GitTarget must produce no pass for any other. This is the property the deleted
+// refreshRunningTargetWatches did not have: it walked every resident table on every rule change.
+func TestOwner_EditingOneTargetPlansNoOther(t *testing.T) {
+	m := ownerTestManager()
+	edited := types.NewResourceReference("edited", "team-a").WithUID("uid-a")
+	quiet := types.NewResourceReference("quiet", "team-b").WithUID("uid-b")
+
+	m.DeclareForGitTarget(edited, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+	m.DeclareForGitTarget(quiet, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+	m.settle(edited)
+	m.settle(quiet)
+	require.Equal(t, 2, m.runTurns(t, 8), "both targets declare once")
+
+	m.TriggerRuleChange(types.NewResourceReference("edited", "team-a"))
+
+	require.Len(t, m.triggers().dirty, 1)
+	_, quietDirty := m.triggers().dirty[quiet.Key()]
+	assert.False(t, quietDirty, "the untouched GitTarget is not replanned because a sibling's rule moved")
+}
+
+// The dirty sequence is what makes a change arriving mid-pass impossible to lose. Clearing the
+// dirty mark unconditionally at the end of a pass would drop it.
+func TestOwner_ATriggerDuringAPassSchedulesAnother(t *testing.T) {
+	m := ownerTestManager()
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+	m.DeclareForGitTarget(ref, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+	m.settle(ref)
+
+	// What the loop captures when the pass starts.
+	inFlight := *m.triggers().dirty[ref.Key()]
+	// ...and a rule edit that lands while it is running.
+	m.TriggerRuleChange(types.NewResourceReference("target", "team-a"))
+
+	m.clearDirty(&inFlight, nil)
+
+	entry := m.triggers().dirty[ref.Key()]
+	require.NotNil(t, entry, "the mid-pass change leaves the target dirty")
+	assert.False(t, entry.readyAt().After(time.Now()),
+		"and it runs immediately: the change it carries has already waited a window out")
+}
+
+// A pass that fails leaves the target dirty and backs off on a stated ladder, rather than being
+// retried by whatever reconcile happens to come next.
+func TestOwner_AFailedPassStaysDirtyAndBacksOff(t *testing.T) {
+	m := ownerTestManager()
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+	m.DeclareForGitTarget(ref, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+	m.settle(ref)
+	entry := *m.triggers().dirty[ref.Key()]
+
+	m.recordPassOutcome(ref, time.Now(), errors.New("discovery timed out"))
+	m.clearDirty(&entry, errors.New("discovery timed out"))
+
+	current := m.triggers().dirty[ref.Key()]
+	require.NotNil(t, current, "a failed pass never clears the target")
+	assert.Equal(t, 1, current.failures)
+	assert.True(t, current.readyAt().After(time.Now().Add(time.Second)),
+		"the retry waits out the first rung of the ladder")
+
+	status := m.DeclareStatusForGitTarget(ref)
+	assert.True(t, status.Pending, "a target whose passes keep failing must not read as idle")
+	assert.Equal(t, 1, status.Failures)
+	assert.Equal(t, "discovery timed out", status.LastError,
+		"the failure is published where an operator looks, not only in a log")
+}
+
+func TestRetryDelay_WalksTheLadderAndCapsAtTheLastRung(t *testing.T) {
+	assert.Equal(t, 2*time.Second, retryDelay(1))
+	assert.Equal(t, 5*time.Second, retryDelay(2))
+	assert.Equal(t, 10*time.Second, retryDelay(3))
+	assert.Equal(t, 30*time.Second, retryDelay(4))
+	assert.Equal(t, time.Minute, retryDelay(5))
+	assert.Equal(t, time.Minute, retryDelay(50), "the ladder caps rather than growing forever")
+}
+
+// A rolling window that is reset forever never fires, so the hard cap has to win once the target
+// has been dirty long enough.
+func TestDirtyTarget_ReadyAtIsBoundedByTheMaxWait(t *testing.T) {
+	now := time.Now()
+	churning := &dirtyTarget{firstDirty: now.Add(-maxSettleWait), lastTrigger: now}
+
+	assert.False(t, churning.readyAt().After(now),
+		"a target under continuous change runs at the cap instead of starving")
+
+	quiet := &dirtyTarget{firstDirty: now, lastTrigger: now}
+	assert.Equal(t, now.Add(settleWindow), quiet.readyAt(),
+		"an ordinary edit waits out the silence window")
+
+	backedOff := &dirtyTarget{firstDirty: now.Add(-time.Hour), lastTrigger: now, retryAt: now.Add(time.Minute)}
+	assert.Equal(t, now.Add(time.Minute), backedOff.readyAt(),
+		"a backoff outranks both, or a failing target would spin")
+}
+
+// Delete-and-recreate under the SAME namespace and name is the sequence where a stale trigger
+// resurrects state for an object that no longer exists. Testing delete alone does not cover it.
+func TestOwner_DeleteAndRecreateUnderTheSameNameDoesNotResurrect(t *testing.T) {
+	m := ownerTestManager()
+	name, namespace := "target", "team-a"
+	first := types.NewResourceReference(name, namespace).WithUID("uid-1")
+	second := types.NewResourceReference(name, namespace).WithUID("uid-2")
+
+	m.DeclareForGitTarget(first, "prod-eu-1", "", v1alpha3.PruneOnEvent)
+	m.settle(first)
+	require.Equal(t, 1, m.runTurns(t, 4))
+	require.Equal(t, "uid-1", m.watchPlane().uids[first.Key()])
+
+	// Delete, then recreate before the owner has drained the deletion.
+	m.ForgetGitTargetDeclaration(first)
+	assert.Empty(t, m.triggers().dirty,
+		"the delete drops the pending trigger in the same step, or the next pass rebuilds what it tore down")
+	m.DeclareForGitTarget(second, "prod-eu-1", "", v1alpha3.PruneOnEvent)
+	m.settle(second)
+	require.Equal(t, 1, m.runTurns(t, 4))
+
+	// Only now does the owner see the queued teardown, which belongs to the predecessor.
+	m.applyPendingTeardowns(logr.Discard())
+
+	assert.Equal(t, "uid-2", m.watchPlane().uids[second.Key()],
+		"a stale teardown must not take the successor's state with it")
+	assert.True(t, m.DeclareStatusForGitTarget(second).Declared,
+		"the recreated GitTarget is still declared")
+}
+
+// The one path that still fans out to everything is the periodic floor, and it says so.
+func TestMarkInvalidatedTargets_DirtiesOnlyTheTargetsAPlanChangeTouched(t *testing.T) {
+	m := ownerTestManager()
+	moved := types.NewResourceReference("moved", "team-a").WithUID("uid-a")
+	unaffected := types.NewResourceReference("unaffected", "team-b").WithUID("uid-b")
+	m.DeclareForGitTarget(moved, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+	m.DeclareForGitTarget(unaffected, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+	m.settle(moved)
+	m.settle(unaffected)
+	require.Equal(t, 2, m.runTurns(t, 8))
+	require.Empty(t, m.triggers().dirty)
+
+	before := map[string]uint64{moved.Key(): 1, unaffected.Key(): 7}
+	after := map[string]uint64{moved.Key(): 2, unaffected.Key(): 7}
+
+	m.markInvalidatedTargets(before, after, false)
+
+	require.Len(t, m.triggers().dirty, 1,
+		"a CRD that changes no plan for a target is no reason to replan it")
+	_, dirty := m.triggers().dirty[moved.Key()]
+	assert.True(t, dirty)
+
+	// The periodic floor is the exception, and the only one.
+	m.markInvalidatedTargets(after, after, true)
+	assert.Len(t, m.triggers().dirty, 2, "the periodic sweep marks everything, as the floor")
+}
+
+// The plan fingerprint is what the scoped invalidation compares, so it has to move on exactly the
+// things a stream is built from and nothing else.
+func TestWatchPlanFingerprint_MovesOnTheStreamSetAndNotOnTheTargetName(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "team-a")
+	base := planTable(gitDest, "apps")
+
+	assert.Equal(t, watchPlanFingerprint(base), watchPlanFingerprint(planTable(gitDest, "apps")),
+		"an identical plan fingerprints identically")
+	assert.NotEqual(t, watchPlanFingerprint(base), watchPlanFingerprint(planTable(gitDest, "apps", "ops")),
+		"a new scope is a new stream, so the plan moved")
+
+	renamed := planTable(types.NewResourceReference("other", "team-a"), "apps")
+	assert.Equal(t, watchPlanFingerprint(base), watchPlanFingerprint(renamed),
+		"the fingerprint describes the STREAM SET; it is compared per target, so the name is not in it")
+}
+
+// A timeout must never install an empty plan. A pass that could not gather is not a pass that
+// found nothing, and an ungatherable cell must never present as an absent one.
+func TestOwner_AFailedPassLeavesTheRunningPlanUntouched(t *testing.T) {
+	m := ownerTestManager()
+	// Discovery is broken, so this cluster's API surface can never be observed.
+	m.discoveryClient = func() (apiResourceDiscovery, error) {
+		return nil, errors.New("discovery is unavailable")
+	}
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	m.EventRouter = NewEventRouter(workerManager, m, nil, logr.Discard())
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+
+	// A stream that is already running, from a pass that DID gather.
+	cancelled := installFakeWatch(m, ref)
+
+	// This pass cannot gather: nothing has observed the cluster's API surface.
+	err := m.applyTargetPlan(context.Background(), declareIntent{ref: ref, clusterID: configPlaneClusterID})
+
+	require.Error(t, err, "a pass that cannot observe the surface fails rather than planning against nothing")
+	assert.False(t, *cancelled, "the running stream is left alone; the failure installs nothing")
+	assert.Len(t, m.targetWatchSet(ref).streams, 1, "and the plan it was built from still stands")
+}
+
+// A GitTarget reconcile is level-triggered: the controller re-declares the same values on every
+// steady requeue and on every event it watches. Those must not each buy a pass, and — because
+// "the declaration has landed" is a readiness input — must not keep a healthy target unsettled.
+func TestOwner_ARedeclareThatChangesNothingIsANoOp(t *testing.T) {
+	m := ownerTestManager()
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+
+	m.DeclareForGitTarget(ref, configPlaneClusterID, "route", v1alpha3.PruneOnEvent)
+	m.settle(ref)
+	require.Equal(t, 1, m.runTurns(t, 4))
+	require.True(t, m.DeclareStatusForGitTarget(ref).Settled(), "the first declaration lands")
+
+	m.DeclareForGitTarget(ref, configPlaneClusterID, "route", v1alpha3.PruneOnEvent)
+
+	assert.Empty(t, m.triggers().dirty, "an identical re-declare owes the owner nothing")
+	assert.True(t, m.DeclareStatusForGitTarget(ref).Settled(),
+		"and leaves the target converged rather than perpetually pending")
+
+	// A value that actually moved is a different matter: a widened prune policy is the one edge
+	// that must force a fresh replay.
+	m.DeclareForGitTarget(ref, configPlaneClusterID, "route", v1alpha3.PruneAlways)
+	assert.Len(t, m.triggers().dirty, 1, "a changed declaration is a change")
+}
+
+// Being dirty is the steady state of a system that replans on every rule edit and sweeps every
+// 30s. Reporting that as unsettled would flap Ready on a healthy mirror.
+func TestDeclareStatus_DirtyIsNotPendingOnceAPassHasLanded(t *testing.T) {
+	m := ownerTestManager()
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+	m.DeclareForGitTarget(ref, configPlaneClusterID, "", v1alpha3.PruneOnEvent)
+
+	assert.True(t, m.DeclareStatusForGitTarget(ref).Pending,
+		"a declaration whose pass has never run has not landed")
+
+	m.settle(ref)
+	require.Equal(t, 1, m.runTurns(t, 4))
+	m.TriggerRuleChange(types.NewResourceReference("target", "team-a"))
+
+	require.Len(t, m.triggers().dirty, 1, "precondition: the rule edit made it dirty")
+	assert.False(t, m.DeclareStatusForGitTarget(ref).Pending,
+		"a replan of a target that already mirrors is progress, not an unsettled declaration")
+}

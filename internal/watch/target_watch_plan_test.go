@@ -237,11 +237,9 @@ func TestReplaceGitTargetWatches_LogsAnAllKeepReconcileAndTouchesNothing(t *test
 	manager := &Manager{Log: log}
 	cancelled := false
 	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-	manager.targetWatchesMu.Lock()
-	manager.targetWatchSetLocked(gitDest).streams[key.Cell()] = &runningTargetWatch{
+	manager.targetWatchSet(gitDest).streams[key.Cell()] = &runningTargetWatch{
 		key: key, spec: "[CREATE]", cancel: func() { cancelled = true },
 	}
-	manager.targetWatchesMu.Unlock()
 
 	require.NoError(t, manager.replaceGitTargetWatches(context.Background(), table))
 

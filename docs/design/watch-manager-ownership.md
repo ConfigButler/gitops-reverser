@@ -1,5 +1,5 @@
 ---
-status: design
+status: implemented
 date: 2026-08-27
 related:
   - target-watch-plan.md
@@ -9,8 +9,8 @@ related:
 
 # One owner for the watch plane: triggers in, work coalesced
 
-> **design**: decided, not built. The open questions below do not block step 0 or step 1;
-> see "Implementation order".
+> **built.** All four steps have shipped; "Implementation order" records what each one deleted, and
+> "What shipped" at the end records where the implementation departed from this page and why.
 > Index: [`../INDEX.md`](../INDEX.md)
 
 **The short version.** A rule edit is applied by the controller worker that observed
@@ -522,20 +522,62 @@ one cluster and marks only the targets that reference the changed types. This is
 place a global fan-out survives, and it is worth doing separately because it needs the
 type-to-target index that steps 1 and 2 do not.
 
-## Open questions
+## What shipped
 
-Most of what stood here has been decided and moved into the design above: the retry
-ladder, the deadline semantics, the metrics, the migration depth, the snapshot
-consistency rule and the deletion ordering. What is left:
+Three things resolved differently from the page above, and one open question stayed open.
 
-1. **Where does persistent failure surface?** A target whose passes keep timing out needs
-   to be visible as a condition on the GitTarget, not only as a metric and a log line. The
-   condition and its reason are not chosen yet, and the choice interacts with
-   `StreamsRunning`, which today means "the streams are running" rather than "the plan is
-   fresh".
-2. **Does the settle window ever need to be configurable?** It is fixed on purpose. If a
-   large installation finds 2s wrong, the question is whether it becomes a flag or whether
-   the max wait absorbs it.
-3. **How far does step 3 go?** A type-to-target index is a new structure with its own
-   staleness. If the measured cost of re-planning every target on a catalog change is low
-   once steps 1 and 2 land, the index may not be worth its own bug surface.
+### Reports are a published snapshot, not a second channel
+
+Step 2 said the data-plane reports would post messages that the owner loop applies. What shipped
+splits the state in two, and the split is where the value actually was:
+
+- **The PLAN** — `targetWatches`, the running streams, the cancels — is owned by the loop and
+  carries **no mutex at all**. This is the whole of what the page was about: `targetWatchesMu` was
+  held across cancelling a stream, across starting one, and across a call into the render-fidelity
+  gate's lock, three of the four hazards listed under "Which locks stay". None of them is reachable
+  now, because there is no lock to hold.
+- **The PROJECTION** — stream readiness, the two write-safety surfaces, the retention roll-up and
+  the declare-time captures — is an immutable snapshot behind an atomic pointer
+  (`watch_plane_state.go`). Readers take a pointer load and no lock. Writers serialize on one
+  `stateMu` that is held across map writes only.
+
+A report channel would have bought one more thing — the owner as the literal sole writer — at the
+cost of a queue that has to be drained for a test to observe its own effect, and of report latency
+bounded by whatever pass is in flight. The lock it replaces is not a dangerous one by this page's
+own criteria: it is never held across I/O, a cancellation, a stream start, or another subsystem's
+lock. The six mutexes named for deletion are deleted either way.
+
+`declaredGVRs` and `declaredGVRsMu` were deleted outright rather than converted. Nothing wrote the
+map; the only surviving reference was the delete in `ForgetGitTargetDeclaration`.
+
+### Persistent failure surfaces as `WatchPlanFailing`
+
+Open question 1, answered. `DeclareStatusForGitTarget` publishes whether a declaration has ever
+landed, how many consecutive passes have failed, and the last error. The GitTarget controller
+projects that as Ready=False / Reconciling=True with reason `WatchPlanFailing`, carrying the
+failure count and the message.
+
+It is deliberately a PROGRESSING reason rather than a stall: a pass fails on a source cluster that
+is unreachable or a catalog that is not observable yet, and both recover on their own. What it buys
+is that such a target does not read as idle. It does not touch `StreamsRunning`, which keeps its
+meaning — "the streams are running" — rather than being overloaded with "the plan is fresh".
+
+The distinction that mattered in practice: **pending is "no pass has ever landed", not "the target
+is dirty right now"**. Being dirty is the steady state of a system that replans on every rule edit
+and sweeps every 30s, and reporting it as unsettled would flap Ready on a healthy mirror. For the
+same reason a re-declare that changes nothing and has already landed is a no-op — a GitTarget
+reconcile is level-triggered and re-declares identical values on every steady requeue.
+
+### Step 3 needed no type-to-target index
+
+Open question 3, answered: it does not earn its staleness. The shared refresh renders each target's
+watch plan to a fingerprint before and after the re-projection and marks dirty only the targets
+whose plan actually moved (`watchPlanFingerprint`, `markInvalidatedTargets`). A CRD that appears in
+a cluster no rule selects changes no plan and therefore dirties nothing — the property the index was
+for — derived from the tables rather than kept beside them.
+
+### Still open
+
+**Does the settle window ever need to be configurable?** It is fixed on purpose. If a large
+installation finds 2s wrong, the question is whether it becomes a flag or whether the max wait
+absorbs it. Nothing has asked yet.

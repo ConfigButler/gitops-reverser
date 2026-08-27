@@ -7,6 +7,23 @@ hypotheses.** Nothing below is a conclusion unless it says so.
 Status at the time of writing: **the branch is NOT mergeable.** A reproducible e2e
 failure is open and its cause is not established.
 
+> **Closed.** Two structural causes were found and removed by
+> [`docs/design/watch-manager-ownership.md`](docs/design/watch-manager-ownership.md), and the
+> temporary `declare-trace` phase logging this document asked for has been deleted with them:
+>
+> - `refreshRunningTargetWatches` re-planned only targets already present in `m.targetWatches`, so
+>   **a target whose first declare never completed was never picked up again** — the exact shape of
+>   "registers its event stream and then never declares". The owner's dirty set is marked on intent
+>   rather than on success and does not have that property.
+> - the local-cluster discovery call carried no request timeout at all (`cluster_context.go` applied
+>   one only for a remote), so the legacy non-context `ServerGroupsAndResources()` could hang the
+>   controller worker running it. It is bounded unconditionally now, and no watch-manager work runs
+>   on a controller worker at all.
+>
+> A pass that fails no longer disappears either: it leaves the target dirty on a stated backoff and
+> publishes `WatchPlanFailing` on the GitTarget, so the silent version of this failure cannot recur.
+> The rest of this document is kept as the record of how it was tracked down.
+
 ---
 
 ## 1. What the branch does

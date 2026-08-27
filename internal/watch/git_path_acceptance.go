@@ -27,44 +27,44 @@ func (m *Manager) ReportGitPathRefusal(
 
 // MarkTargetGitPathRefused records that the GitTarget path failed the structure-only
 // acceptance gate. The refusal is target-wide, not stream-specific.
+//
+// It is a report from a branch-worker drain goroutine. Only a real TRANSITION republishes the
+// snapshot and enqueues a reconcile, so the happy-path resync stream does not enqueue one per
+// event.
 func (m *Manager) MarkTargetGitPathRefused(gitDest types.ResourceReference, reason, message string) {
-	m.targetWatchesMu.Lock()
-	if m.targetGitPathAcceptance == nil {
-		m.targetGitPathAcceptance = map[string]GitPathAcceptanceStatus{}
-	}
-	prev, had := m.targetGitPathAcceptance[gitDest.Key()]
-	m.targetGitPathAcceptance[gitDest.Key()] = GitPathAcceptanceStatus{
+	m.reportGitPathAcceptance(gitDest, GitPathAcceptanceStatus{
 		Accepted: false,
 		Reason:   reason,
 		Message:  message,
-		At:       metav1.Now(),
-	}
-	// Emit only on a real transition (newly refused, or the refusal reason changed) so the
-	// happy-path resync stream does not enqueue a reconcile per event.
-	changed := !had || prev.Accepted || prev.Reason != reason
-	m.targetWatchesMu.Unlock()
-	if changed {
-		m.enqueueGitPathChange(gitDest)
-	}
+	})
 }
 
-// MarkTargetGitPathAccepted clears any prior refusal for the GitTarget path.
+// MarkTargetGitPathAccepted clears any prior refusal for the GitTarget path. The steady-state
+// resync calls it on every successful apply, so the fast path below has to be free: an already
+// accepted path takes a pointer load and returns.
 func (m *Manager) MarkTargetGitPathAccepted(gitDest types.ResourceReference) {
-	m.targetWatchesMu.Lock()
-	if m.targetGitPathAcceptance == nil {
-		m.targetGitPathAcceptance = map[string]GitPathAcceptanceStatus{}
+	if prior, had := m.watchPlane().acceptance[gitDest.Key()]; had && prior.Accepted {
+		return
 	}
-	prev, had := m.targetGitPathAcceptance[gitDest.Key()]
-	m.targetGitPathAcceptance[gitDest.Key()] = GitPathAcceptanceStatus{
+	m.reportGitPathAcceptance(gitDest, GitPathAcceptanceStatus{
 		Accepted: true,
 		Reason:   "GitPathAccepted",
 		Message:  "GitTarget path accepted",
-		At:       metav1.Now(),
-	}
-	// Emit only when clearing a prior refusal (recovery). The steady-state resync calls this
-	// on every successful apply; without the transition guard that would be a reconcile storm.
-	changed := had && !prev.Accepted
-	m.targetWatchesMu.Unlock()
+	})
+}
+
+func (m *Manager) reportGitPathAcceptance(gitDest types.ResourceReference, status GitPathAcceptanceStatus) {
+	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		prior, had := s.acceptance[gitDest.Key()]
+		// Compared before the write, so "changed" describes what an operator would see: newly
+		// refused, a different refusal reason, or a recovery.
+		if had && prior.Accepted == status.Accepted && prior.Reason == status.Reason {
+			return false
+		}
+		status.At = metav1.Now()
+		s.acceptance[gitDest.Key()] = status
+		return true
+	})
 	if changed {
 		m.enqueueGitPathChange(gitDest)
 	}
@@ -73,22 +73,12 @@ func (m *Manager) MarkTargetGitPathAccepted(gitDest types.ResourceReference) {
 // GitPathAcceptanceForGitTarget returns the latest acceptance status for the GitTarget.
 // Missing state means no refusal has been observed, so the path is accepted.
 func (m *Manager) GitPathAcceptanceForGitTarget(gitDest types.ResourceReference) GitPathAcceptanceStatus {
-	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
-	if m.targetGitPathAcceptance != nil {
-		if st, ok := m.targetGitPathAcceptance[gitDest.Key()]; ok {
-			return st
-		}
+	if st, ok := m.watchPlane().acceptance[gitDest.Key()]; ok {
+		return st
 	}
 	return GitPathAcceptanceStatus{
 		Accepted: true,
 		Reason:   "GitPathAccepted",
 		Message:  "GitTarget path accepted",
-	}
-}
-
-func (m *Manager) dropTargetGitPathAcceptanceLocked(gitDest types.ResourceReference) {
-	if m.targetGitPathAcceptance != nil {
-		delete(m.targetGitPathAcceptance, gitDest.Key())
 	}
 }

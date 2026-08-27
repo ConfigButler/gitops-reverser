@@ -668,8 +668,7 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	childCtx, childCancel := context.WithCancel(ctx)
 	watchKey := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	manager := &Manager{}
-	manager.targetWatchesMu.Lock()
-	manager.targetWatchSetLocked(gitDest).streams[watchKey.Cell()] = &runningTargetWatch{
+	manager.targetWatchSet(gitDest).streams[watchKey.Cell()] = &runningTargetWatch{
 		key:  watchKey,
 		spec: "[*]",
 		cancel: func() {
@@ -677,7 +676,6 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 			close(cancelled)
 		},
 	}
-	manager.targetWatchesMu.Unlock()
 
 	// Forget only cancels and drops in-memory state; the durable cursors are left to
 	// expire by TTL, so a recreated GitTarget (new UID) never inherits them.
@@ -1036,9 +1034,7 @@ func TestReplaceGitTargetWatches_RemovingARuleStopsOnlyThatCell(t *testing.T) {
 	assertStopped(t, byNamespace["ops"])
 	assertStillRunning(t, byNamespace["apps"])
 	assertNoOpenedWatch(t, opened)
-	manager.targetWatchesMu.Lock()
 	_, stillTracked := manager.targetWatches[gitDest.Key()].streams[types.CellKeyFor(configmapsGVR, "ops")]
-	manager.targetWatchesMu.Unlock()
 	assert.False(t, stillTracked, "a stopped cell's key is dropped")
 }
 
@@ -1093,11 +1089,9 @@ func TestReplaceGitTargetWatches_KeptCellKeepsItsReadinessResult(t *testing.T) {
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
 	receiveOpenedWatch(t, opened)
 
-	manager.targetWatchesMu.Lock()
-	states := manager.targetStreamStates[gitDest.Key()]
+	states := manager.watchPlane().streams[gitDest.Key()]
 	apps := states[types.CellKeyFor(configmapsGVR, "apps")]
 	ops := states[types.CellKeyFor(configmapsGVR, "ops")]
-	manager.targetWatchesMu.Unlock()
 	assert.Equal(t, StreamStateStreaming, apps.state, "a kept cell keeps its prior result")
 	assert.Equal(t, StreamStateReplaying, ops.state, "a started cell is pending its first replay")
 }

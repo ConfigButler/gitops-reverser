@@ -42,7 +42,7 @@ func TestReportGitPathRefusal_SurfacesWriteBoundaryRefusal(t *testing.T) {
 	assert.Equal(t, "WriteBoundaryRefused", gitPath.Reason,
 		"a pure write-boundary refusal must not hide behind the umbrella UnsupportedContent reason")
 	assert.Contains(t, gitPath.Message, "base/deployment.yaml", "the refusal must name the offending file")
-	assert.Empty(t, mgr.targetStreamStates, "a Git path refusal must not mutate stream readiness")
+	assert.Empty(t, mgr.watchPlane().streams, "a Git path refusal must not mutate stream readiness")
 }
 
 // TestReportGitPathRefusal_ContentRefusalKeepsUmbrellaReason pins the fallback: a live refusal
@@ -108,9 +108,7 @@ func (m *Manager) restartAllFidelityScopes(
 	keys ...targetWatchKey,
 ) map[types.CellKey]uint64 {
 	cells := cellsForWatchKeys(keys)
-	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
-	revisions, _ := m.reconcileTargetRenderFidelityLocked(target, cells, cells)
+	revisions, _ := m.reconcileTargetRenderFidelity(target, cells, cells)
 	return revisions
 }
 

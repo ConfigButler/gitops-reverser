@@ -121,15 +121,10 @@ func (r *WatchRuleReconciler) refuseSourceNamespace(
 		"reason", resolved.Reason,
 		"message", resolved.Message)
 
-	// The compiled rule is already out of the store; replan so the watch manager tears down any
-	// stream this rule was keeping alive.
+	// The compiled rule is already out of the store; trigger a replan so the watch manager tears
+	// down any stream this rule was keeping alive.
 	if r.WatchManager != nil {
-		if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
-			log.Error(err, "Failed to reconcile watch manager after refusing WatchRule",
-				"name", watchRule.Name, "namespace", watchRule.Namespace)
-			// Don't fail the reconciliation: the rule is already out of the store, so the next
-			// replan from any source converges. Publishing the refusal matters more than this.
-		}
+		r.WatchManager.TriggerRuleChange(watchRuleGitTarget(watchRule))
 	}
 
 	st.set(

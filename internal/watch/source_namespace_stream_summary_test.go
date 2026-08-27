@@ -38,17 +38,9 @@ func srcnsSummaryManager(t *testing.T) *Manager {
 
 // seedStreamState records one target's per-cell stream status, the surface the summary reads.
 func (m *Manager) seedStreamState(gitDest types.ResourceReference, key targetWatchKey, status targetStreamStatus) {
-	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
-	if m.targetStreamStates == nil {
-		m.targetStreamStates = map[string]map[types.CellKey]targetStreamStatus{}
-	}
-	states := m.targetStreamStates[gitDest.Key()]
-	if states == nil {
-		states = map[types.CellKey]targetStreamStatus{}
-		m.targetStreamStates[gitDest.Key()] = states
-	}
-	states[key.Cell()] = status
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		return setStreamState(s, gitDest.Key(), key.Cell(), status)
+	})
 }
 
 func srcnsOverrideRule(sourceNamespace string) configv1alpha3.WatchRule {

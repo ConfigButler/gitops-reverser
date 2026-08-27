@@ -225,7 +225,7 @@ func TestDrainScopedResync_RefusalMarksGitPathRefused(t *testing.T) {
 	assert.False(t, gitPath.Accepted, "a refused Git path must mark the target path unaccepted")
 	assert.Equal(t, "UnsupportedContent", gitPath.Reason)
 	assert.Contains(t, gitPath.Message, "kustomization.yaml", "the refusal message must name the offending file")
-	assert.Empty(t, mgr.targetStreamStates, "Git path refusal must not mutate stream readiness")
+	assert.Empty(t, mgr.watchPlane().streams, "Git path refusal must not mutate stream readiness")
 }
 
 func TestGitPathRefusalReason(t *testing.T) {

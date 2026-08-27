@@ -18,15 +18,18 @@ func (m *Manager) fidelityGate() *git.RenderFidelityGate {
 	return m.EventRouter.WorkerManager.RenderFidelityGate()
 }
 
-// reconcileTargetRenderFidelityLocked installs the target's current scope set and returns the
-// revision each scope's stream must report under. targetWatchesMu must be held.
+// reconcileTargetRenderFidelity installs the target's current scope set and returns the revision
+// each scope's stream must report under, plus whether the caller should enqueue a status refresh.
 //
-// Only the cells in restarted go back to pending; a cell whose stream was left running keeps
-// its revision and its result, so an unrelated plan change neither closes writes on it nor
-// clears a divergence nothing re-measured. The second return says whether the caller should
-// enqueue a status refresh after releasing the lock. A nil map means no shared gate is wired,
-// which the mark path treats as the legacy data path.
-func (m *Manager) reconcileTargetRenderFidelityLocked(
+// Only the cells in restarted go back to pending; a cell whose stream was left running keeps its
+// revision and its result, so an unrelated plan change neither closes writes on it nor clears a
+// divergence nothing re-measured. A nil map means no shared gate is wired, which the mark path
+// treats as the legacy data path.
+//
+// The gate call happens before anything is published, so the owner never holds its own state lock
+// across a call into the writer's. That coupling — two subsystems' locks with an order to get
+// wrong — is one of the four hazards the ownership design names.
+func (m *Manager) reconcileTargetRenderFidelity(
 	target types.ResourceReference,
 	cells []types.CellKey,
 	restarted []types.CellKey,
@@ -36,12 +39,7 @@ func (m *Manager) reconcileTargetRenderFidelityLocked(
 		return nil, false
 	}
 	status, revisions := gate.Reconcile(target, cells, restarted)
-	if m.targetRenderFidelity == nil {
-		m.targetRenderFidelity = map[string]git.RenderFidelityStatus{}
-	}
-	prior, had := m.targetRenderFidelity[target.Key()]
-	m.targetRenderFidelity[target.Key()] = status
-	return revisions, !had || renderFidelityStatusChanged(prior, status)
+	return revisions, m.publishRenderFidelityStatus(target, status)
 }
 
 // RenderFidelityForGitTarget returns the latest condition projection. Missing state means the
@@ -108,18 +106,26 @@ func (m *Manager) MarkTargetRenderFidelityDiverged(
 	m.recordRenderFidelityStatus(target, gate.Fail(target, divergence))
 }
 
+// recordRenderFidelityStatus is a drain goroutine's report of a gate result.
 func (m *Manager) recordRenderFidelityStatus(target types.ResourceReference, status git.RenderFidelityStatus) {
-	m.targetWatchesMu.Lock()
-	if m.targetRenderFidelity == nil {
-		m.targetRenderFidelity = map[string]git.RenderFidelityStatus{}
-	}
-	prior, had := m.targetRenderFidelity[target.Key()]
-	m.targetRenderFidelity[target.Key()] = status
-	changed := !had || renderFidelityStatusChanged(prior, status)
-	m.targetWatchesMu.Unlock()
-	if changed {
+	if m.publishRenderFidelityStatus(target, status) {
 		m.enqueueGitPathChange(target)
 	}
+}
+
+// publishRenderFidelityStatus records the projected gate state and reports whether it moved.
+func (m *Manager) publishRenderFidelityStatus(
+	target types.ResourceReference,
+	status git.RenderFidelityStatus,
+) bool {
+	return m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		prior, had := s.fidelity[target.Key()]
+		if had && !renderFidelityStatusChanged(prior, status) {
+			return false
+		}
+		s.fidelity[target.Key()] = status
+		return true
+	})
 }
 
 func renderFidelityStatusChanged(before, after git.RenderFidelityStatus) bool {
@@ -127,8 +133,15 @@ func renderFidelityStatusChanged(before, after git.RenderFidelityStatus) bool {
 		before.Message != after.Message
 }
 
-func (m *Manager) dropTargetRenderFidelityLocked(target types.ResourceReference) {
-	delete(m.targetRenderFidelity, target.Key())
+// forgetTargetRenderFidelity drops a deleted GitTarget's projection and its gate scopes.
+func (m *Manager) forgetTargetRenderFidelity(target types.ResourceReference) {
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if _, had := s.fidelity[target.Key()]; !had {
+			return false
+		}
+		delete(s.fidelity, target.Key())
+		return true
+	})
 	if gate := m.fidelityGate(); gate != nil {
 		gate.Forget(target)
 	}

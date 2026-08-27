@@ -83,33 +83,28 @@ func (m *Manager) MarkTargetRetention(
 	mode v1alpha3.PruneMode,
 	retained int,
 ) {
-	m.targetRetentionMu.Lock()
-	if m.targetRetention == nil {
-		m.targetRetention = map[string]targetRetentionState{}
-	}
-	state := m.targetRetention[gitDest.Key()]
-	scope, selected := state.scopes[cell]
-	if !selected || revision != scope.revision {
-		m.targetRetentionMu.Unlock()
-		return
-	}
-	// Captured BEFORE the write below, so "changed" compares what an operator would see on
-	// status, not what the internal map did. A re-report of the same total is not a change to
-	// them, and enqueueing for it would make every watch-set replacement reconcile twice.
-	priorTotal, priorMode, priorReported := state.total(), state.mode, state.anyReported()
-	scope.retained = retained
-	scope.reported = true
-	state.scopes[cell] = scope
-	state.mode = mode.OrDefault()
-	state.observed = time.Now()
-	m.targetRetention[gitDest.Key()] = state
-	changed := !priorReported || state.total() != priorTotal || state.mode != priorMode
-	m.targetRetentionMu.Unlock()
-
 	// Prompt a status refresh on a CHANGE only. Without it the first appearance of a retention
 	// would wait for the steady requeue (minutes), which is too long for a signal an operator
 	// consults before flipping a target to `always`; with it on every report, a steadily retaining
 	// target would enqueue on every resync of every scope forever.
+	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		state := s.retention[gitDest.Key()]
+		scope, selected := state.scopes[cell]
+		if !selected || revision != scope.revision {
+			return false
+		}
+		// Captured BEFORE the write below, so "changed" compares what an operator would see on
+		// status, not what the internal map did. A re-report of the same total is not a change to
+		// them, and enqueueing for it would make every watch-set replacement reconcile twice.
+		priorTotal, priorMode, priorReported := state.total(), state.mode, state.anyReported()
+		scope.retained = retained
+		scope.reported = true
+		state.scopes[cell] = scope
+		state.mode = mode.OrDefault()
+		state.observed = time.Now()
+		s.retention[gitDest.Key()] = state
+		return !priorReported || state.total() != priorTotal || state.mode != priorMode
+	})
 	if changed {
 		m.enqueueGitPathChange(gitDest)
 	}
@@ -118,36 +113,29 @@ func (m *Manager) MarkTargetRetention(
 // retainTargetRetentionScopes installs the cells the current watch plan selects, and the stream
 // revision each one reports under. A cell that left the plan is dropped along with its count; a
 // cell that stayed keeps the count it last reported, because its stream may not have moved.
-//
-// It must be called OUTSIDE targetWatchesMu: the roll-up has its own lock and the two are never
-// held together.
 func (m *Manager) retainTargetRetentionScopes(
 	gitDest types.ResourceReference,
 	revisions map[types.CellKey]uint64,
 ) {
-	m.targetRetentionMu.Lock()
-	defer m.targetRetentionMu.Unlock()
-	if m.targetRetention == nil {
-		m.targetRetention = map[string]targetRetentionState{}
-	}
-	state := m.targetRetention[gitDest.Key()]
-	next := make(map[types.CellKey]targetRetentionScope, len(revisions))
-	for cell, revision := range revisions {
-		scope := state.scopes[cell]
-		// A restarted stream reports under a new revision. Its previous count stands until the
-		// replacement reports, which is a truer answer than zeroing a scope nobody re-measured.
-		scope.revision = revision
-		next[cell] = scope
-	}
-	state.scopes = next
-	m.targetRetention[gitDest.Key()] = state
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		state := s.retention[gitDest.Key()]
+		next := make(map[types.CellKey]targetRetentionScope, len(revisions))
+		for cell, revision := range revisions {
+			scope := state.scopes[cell]
+			// A restarted stream reports under a new revision. Its previous count stands until the
+			// replacement reports, which is a truer answer than zeroing a scope nobody re-measured.
+			scope.revision = revision
+			next[cell] = scope
+		}
+		state.scopes = next
+		s.retention[gitDest.Key()] = state
+		return true
+	})
 }
 
 // RetentionForGitTarget returns the roll-up across the target's currently tracked scopes.
 func (m *Manager) RetentionForGitTarget(gitDest types.ResourceReference) RetentionSummary {
-	m.targetRetentionMu.Lock()
-	defer m.targetRetentionMu.Unlock()
-	state, had := m.targetRetention[gitDest.Key()]
+	state, had := m.watchPlane().retention[gitDest.Key()]
 	if !had || !state.anyReported() {
 		return RetentionSummary{}
 	}
@@ -161,7 +149,11 @@ func (m *Manager) RetentionForGitTarget(gitDest types.ResourceReference) Retenti
 
 // forgetTargetRetention drops a deleted GitTarget's roll-up.
 func (m *Manager) forgetTargetRetention(gitDest types.ResourceReference) {
-	m.targetRetentionMu.Lock()
-	defer m.targetRetentionMu.Unlock()
-	delete(m.targetRetention, gitDest.Key())
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if _, had := s.retention[gitDest.Key()]; !had {
+			return false
+		}
+		delete(s.retention, gitDest.Key())
+		return true
+	})
 }

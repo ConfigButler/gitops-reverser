@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -50,7 +49,6 @@ type targetStreamStatus struct {
 	state   StreamState
 	reason  string
 	message string
-	at      time.Time
 }
 
 // StreamSummary is a bounded status roll-up for a target or rule.
@@ -74,6 +72,16 @@ func (s StreamSummary) StreamsRunning() bool {
 	return s.Total > 0 && s.Ready == s.Total
 }
 
+// markTargetStreamState is a stream goroutine's report of its own readiness, recorded under its
+// CELL rather than under the (versioned) key the stream happens to run at. The rule-level roll-up
+// resolves what it expects from the type registry, which serves one record per version, while the
+// declared stream set runs one stream per cell. Keyed by version, a rule matching two served
+// versions of one resource would expect a stream that by construction never exists, and would
+// report permanently not-ready while its stream ran perfectly.
+//
+// It is a report, not a write to shared state a lock is being borrowed for: the stream posts what
+// it observed and the published snapshot moves, so a goroutine unwinding after its context was
+// cancelled never contends for the lock the cancellation was issued under.
 func (m *Manager) markTargetStreamState(
 	gitDest types.ResourceReference,
 	cell types.CellKey,
@@ -81,45 +89,32 @@ func (m *Manager) markTargetStreamState(
 	reason string,
 	message string,
 ) {
-	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
-	m.markTargetStreamStateLocked(gitDest, cell, state, reason, message)
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		return setStreamState(s, gitDest.Key(), cell, targetStreamStatus{
+			state:   state,
+			reason:  reason,
+			message: message,
+		})
+	})
 }
 
-// markTargetStreamStateLocked records one stream's readiness under its CELL, not under the
-// (versioned) key the stream happens to run at. The rule-level roll-up resolves what it expects
-// from the type registry, which serves one record per version, while the declared stream set
-// runs one stream per cell. Keyed by version, a rule matching two served versions of one
-// resource would expect a stream that by construction never exists, and would report
-// permanently not-ready while its stream ran perfectly.
-func (m *Manager) markTargetStreamStateLocked(
-	gitDest types.ResourceReference,
+// setStreamState records one cell's status and reports whether it moved.
+func setStreamState(
+	s *watchPlaneState,
+	targetKey string,
 	cell types.CellKey,
-	state StreamState,
-	reason string,
-	message string,
-) {
-	if m.targetStreamStates == nil {
-		m.targetStreamStates = map[string]map[types.CellKey]targetStreamStatus{}
-	}
-	targetKey := gitDest.Key()
-	states := m.targetStreamStates[targetKey]
+	status targetStreamStatus,
+) bool {
+	states := s.streams[targetKey]
 	if states == nil {
 		states = map[types.CellKey]targetStreamStatus{}
-		m.targetStreamStates[targetKey] = states
+		s.streams[targetKey] = states
 	}
-	states[cell] = targetStreamStatus{
-		state:   state,
-		reason:  reason,
-		message: message,
-		at:      time.Now(),
+	if prior, had := states[cell]; had && prior == status {
+		return false
 	}
-}
-
-func (m *Manager) dropTargetStreamStateLocked(gitDest types.ResourceReference) {
-	if m.targetStreamStates != nil {
-		delete(m.targetStreamStates, gitDest.Key())
-	}
+	states[cell] = status
+	return true
 }
 
 // StreamSummaryForGitTarget reports the GitTarget stream-readiness roll-up.
@@ -202,10 +197,7 @@ func (m *Manager) streamSummaryForExpectedKeys(
 	expected []types.CellKey,
 	displayNames map[schema.GroupResource]string,
 ) StreamSummary {
-	m.targetWatchesMu.Lock()
-	states := copyTargetStreamStates(m.targetStreamStates[gitDest.Key()])
-	m.targetWatchesMu.Unlock()
-	return streamSummaryForTypes(expected, states, displayNames)
+	return streamSummaryForTypes(expected, m.watchPlane().streams[gitDest.Key()], displayNames)
 }
 
 func streamSummaryForTypes(
@@ -360,14 +352,6 @@ func groupResourceDisplayName(gr schema.GroupResource) string {
 		return gr.Resource
 	}
 	return gr.Resource + "." + gr.Group
-}
-
-func copyTargetStreamStates(in map[types.CellKey]targetStreamStatus) map[types.CellKey]targetStreamStatus {
-	out := make(map[types.CellKey]targetStreamStatus, len(in))
-	for key, status := range in {
-		out[key] = status
-	}
-	return out
 }
 
 // cellsForWatchKeys projects a declared stream set onto the cells it covers.

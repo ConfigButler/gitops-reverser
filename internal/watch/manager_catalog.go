@@ -445,16 +445,6 @@ func (m *Manager) resolveRuleResourceStatus(
 	return true, fmt.Sprintf("watching %d resource type(s)", len(watched))
 }
 
-func (m *Manager) signalCatalogRefresh() {
-	if m.catalogRefreshCh == nil {
-		return
-	}
-	select {
-	case m.catalogRefreshCh <- struct{}{}:
-	default:
-	}
-}
-
 // ensureAPISurfaceTriggerInformers starts the CRD and APIService trigger informers, but
 // only for the resources discovery reports as served with list+watch. Neither is universal:
 // an API server without an aggregation layer serves no apiregistration.k8s.io, and a blind
@@ -500,9 +490,9 @@ func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
 	}
 
 	handler := cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(any) { m.signalCatalogRefresh() },
-		UpdateFunc: func(any, any) { m.signalCatalogRefresh() },
-		DeleteFunc: func(any) { m.signalCatalogRefresh() },
+		AddFunc:    func(any) { m.signalSharedRefresh() },
+		UpdateFunc: func(any, any) { m.signalSharedRefresh() },
+		DeleteFunc: func(any) { m.signalSharedRefresh() },
 	}
 
 	start, unserved := selectAPISurfaceTriggers(catalog, m.triggersStarted)

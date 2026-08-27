@@ -206,6 +206,33 @@ var (
 	// gittarget_namespace and gittarget_name.
 	WatchedTypes metric.Int64Gauge
 
+	// The watch-plane owner is a queue, and a queue that grows silently is what makes a stall
+	// hard to see. These six are the queue's instrument panel; see
+	// docs/design/watch-manager-ownership.md.
+
+	// WatchPlanDirtyTargets gauges how many GitTargets the owner currently owes a plan pass.
+	// It is saturation depth: a number that climbs and does not come back down.
+	WatchPlanDirtyTargets metric.Int64Gauge
+	// WatchPlanOldestDirtyAgeSeconds gauges how long the longest-waiting dirty GitTarget has
+	// been dirty. It is the single most useful operational number here: it goes up and stays
+	// up exactly when something is stuck, whether the queue is deep or holds one wedged target.
+	WatchPlanOldestDirtyAgeSeconds metric.Int64Gauge
+	// WatchPlanPassesTotal counts plan passes by {outcome, gittarget_namespace,
+	// gittarget_name}, where outcome is completed, failed, or timed_out. It separates "not
+	// running" from "running and failing", and timed_out from a real error because the two have
+	// different causes.
+	WatchPlanPassesTotal metric.Int64Counter
+	// WatchPlanPassDurationSeconds records the wall time of one plan pass. It is the input to
+	// choosing the per-target deadline.
+	WatchPlanPassDurationSeconds metric.Float64Histogram
+	// WatchPlanTriggersTotal counts triggers by {reason}: declare, rule_change, api_surface,
+	// source_namespace, periodic. It shows which source is noisy.
+	WatchPlanTriggersTotal metric.Int64Counter
+	// WatchPlanTriggersCoalescedTotal counts triggers that landed on a GitTarget that was
+	// already dirty. It is the proof that the silence window does what it claims: one
+	// `kubectl apply` of a GitTarget and four WatchRules should show four of these and one pass.
+	WatchPlanTriggersCoalescedTotal metric.Int64Counter
+
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -324,6 +351,9 @@ func registerCounters() error {
 		},
 		{"gitopsreverser_attribution_fact_follower_errors_total", &AttributionFactFollowerErrorsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
+		{"gitopsreverser_watch_plan_passes_total", &WatchPlanPassesTotal},
+		{"gitopsreverser_watch_plan_triggers_total", &WatchPlanTriggersTotal},
+		{"gitopsreverser_watch_plan_triggers_coalesced_total", &WatchPlanTriggersCoalescedTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
 		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},
@@ -350,7 +380,15 @@ func registerHistograms() error {
 	// attributionWaitBuckets span zero-wait hits up through the default grace window
 	// and slower configured waits.
 	attributionWaitBuckets := []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10}
+	// watchPlanPassBuckets span one target's plan pass: in-memory replanning (sub-millisecond)
+	// up through a first observation of a cluster and on to the per-target deadline.
+	watchPlanPassBuckets := []float64{0.0005, 0.001, 0.005, 0.025, 0.1, 0.5, 1, 5, 15, 30}
 	hists := []hSpec{
+		{
+			"gitopsreverser_watch_plan_pass_duration_seconds",
+			&WatchPlanPassDurationSeconds,
+			watchPlanPassBuckets,
+		},
 		{"gitopsreverser_audit_eventlist_duration_seconds", &AuditEventListDurationSeconds, eventListDurationBuckets},
 		{
 			"gitopsreverser_attribution_resolution_wait_seconds",
@@ -383,6 +421,8 @@ func registerGauges() error {
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
+		{"gitopsreverser_watch_plan_dirty_targets", &WatchPlanDirtyTargets},
+		{"gitopsreverser_watch_plan_oldest_dirty_age_seconds", &WatchPlanOldestDirtyAgeSeconds},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 		{"gitopsreverser_attribution_fact_index_entries", &AttributionFactIndexEntries},
 		{

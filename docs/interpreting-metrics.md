@@ -574,6 +574,78 @@ histogram_quantile(0.95,
 
 ---
 
+## Watch plane owner
+
+One loop owns the watch plane: controllers post a trigger naming a GitTarget and return, and the
+owner runs one plan pass per target once that target has been quiet for a 2 s rolling silence
+window (hard cap ~10 s). Design:
+[watch-manager-ownership.md](design/watch-manager-ownership.md).
+
+That loop is a queue, and a queue that grows silently is exactly how a stall gets missed. These
+six make it legible.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `watch_plan_dirty_targets` | gauge | — |
+| `watch_plan_oldest_dirty_age_seconds` | gauge | — |
+| `watch_plan_passes_total` | counter | `outcome` (`completed`/`failed`/`timed_out`), `gittarget_namespace`, `gittarget_name` |
+| `watch_plan_pass_duration_seconds` | histogram | — |
+| `watch_plan_triggers_total` | counter | `reason` (`declare`/`rule_change`/`shared_refresh`/`periodic`) |
+| `watch_plan_triggers_coalesced_total` | counter | — |
+
+**Is anything stuck?** This is the one to alert on. The oldest dirty target's age climbs and stays
+up exactly when a target cannot be planned — a source cluster that stopped answering, a catalog
+that never becomes observable — whether the queue is deep or holds a single wedged target. A
+healthy install sits under the settle window plus a pass, so seconds:
+
+```promql
+gitopsreverser_watch_plan_oldest_dirty_age_seconds
+```
+
+**Is it not running, or running and failing?** A silent watch plane and a retrying one look
+identical on a dirty-count panel alone. `timed_out` is broken out from `failed` because the two
+have different causes: a deadline means a pass did not finish, an error means it finished badly:
+
+```promql
+sum by (outcome) (rate(gitopsreverser_watch_plan_passes_total[15m]))
+```
+
+**Which GitTarget is failing?** The counter is per target, so a single bad tenant is nameable
+rather than being averaged into a healthy fleet:
+
+```promql
+sum by (gittarget_namespace, gittarget_name) (
+  rate(gitopsreverser_watch_plan_passes_total{outcome!="completed"}[15m]))
+```
+
+**Is the silence window earning its keep?** One `kubectl apply` of a GitTarget and four WatchRules
+should show four coalesced triggers and one pass. A coalescing ratio near zero under a busy config
+plane means edits are arriving further apart than the window, which is not a fault — it is the
+window doing nothing:
+
+```promql
+rate(gitopsreverser_watch_plan_triggers_coalesced_total[15m])
+  / rate(gitopsreverser_watch_plan_triggers_total[15m])
+```
+
+**Which source is noisy?** `periodic` is the 30 s floor and is expected to dominate a quiet
+cluster. A high `shared_refresh` rate means the API surface is flapping; a high `rule_change` rate
+means something is rewriting rules:
+
+```promql
+sum by (reason) (rate(gitopsreverser_watch_plan_triggers_total[15m]))
+```
+
+**How long does a pass take?** The input to choosing the per-target deadline. A pass is in-memory
+replanning — discovery is a shared job done once per cluster, not per target — so normal is
+sub-millisecond, and anything near a second means a target is doing I/O it should not be:
+
+```promql
+histogram_quantile(0.95, rate(gitopsreverser_watch_plan_pass_duration_seconds_bucket[5m]))
+```
+
+---
+
 ## Secret encryption
 
 Background: [architecture.md → Bootstrap, Encryption, and Signing](architecture.md#bootstrap-encryption-and-signing).
@@ -613,6 +685,8 @@ rate(gitopsreverser_secret_encryption_attempts_total[5m])
 | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. Both arms are needed — see below. |
 | `rate(gitopsreverser_resync_background_failures_total[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
 | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | Part of the API surface is hidden behind a broken APIService. |
+| `gitopsreverser_watch_plan_oldest_dirty_age_seconds > 120`, `for: 5m` | A GitTarget cannot be planned — its source cluster or catalog is unreachable — and its mirror is not converging. |
+| `rate(gitopsreverser_watch_plan_passes_total{outcome="timed_out"}[15m]) > 0` sustained | Plan passes are hitting their per-target deadline; the target stays dirty and installs nothing. |
 | `rate(gitopsreverser_secret_encryption_failures_total[10m]) > 0` | Secret writes are being rejected by the encryption path. |
 | `gitopsreverser_branch_worker_queue_depth` rising and not draining | A branch worker is backing up against a stalled remote. |
 

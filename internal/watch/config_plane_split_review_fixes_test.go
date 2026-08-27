@@ -164,13 +164,11 @@ func TestResourceReferenceFromKey_RoundTrips(t *testing.T) {
 func installFakeWatch(m *Manager, ref types.ResourceReference) *bool {
 	cancelled := new(bool)
 	key := targetWatchKey{GVR: configmapsGVR}
-	m.targetWatchesMu.Lock()
-	m.targetWatchSetLocked(ref).streams[key.Cell()] = &runningTargetWatch{
+	m.targetWatchSet(ref).streams[key.Cell()] = &runningTargetWatch{
 		key:    key,
 		spec:   "[*]",
 		cancel: func() { *cancelled = true },
 	}
-	m.targetWatchesMu.Unlock()
 	return cancelled
 }
 
@@ -199,15 +197,16 @@ func TestInvalidateClusterWatches_CancelsAndEnqueuesOnlyThatClusterTargets(t *te
 	ch := m.GitPathEvents()
 
 	m.invalidateClusterWatches(clusterA)
+	// The invalidation is POSTED; the owner applies it. Drive that step directly, which is what
+	// the loop does on its next turn before it plans anything.
+	m.applyPendingTeardowns(logr.Discard())
 
 	assert.True(t, *a1, "cluster A target watch cancelled")
 	assert.True(t, *a2, "cluster A target watch cancelled")
 	assert.False(t, *b1, "cluster B target is untouched")
 
-	m.targetWatchesMu.Lock()
 	_, a1Present := m.targetWatches[gd("a1").Key()]
 	_, b1Present := m.targetWatches[gd("b1").Key()]
-	m.targetWatchesMu.Unlock()
 	assert.False(t, a1Present, "cancelled watch set is removed")
 	assert.True(t, b1Present, "cluster B's watch set is kept")
 
@@ -232,6 +231,8 @@ func TestRefreshClusterCredentials_InvalidatesWatchesOnRotation(t *testing.T) {
 	ch := m.GitPathEvents()
 
 	m.refreshClusterCredentials(context.Background(), cc)
+	// The invalidation is POSTED; the owner applies it on its next turn, before it plans anything.
+	m.applyPendingTeardowns(logr.Discard())
 
 	assert.Equal(t, "v2", cc.configVersion, "clients rebuilt to the new version")
 	assert.Nil(t, cc.dynamicClient, "cached dynamic client dropped so the next use rebuilds it")

@@ -375,19 +375,19 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	// ...and, the point of the test, no declaration ever reached the watch manager. The Validated
 	// gate returns before DeclareForGitTarget, so the capture-on-Declare map stays empty for it.
 	gitDest := types.NewResourceReference("gt", ns).WithUID("gt-uid")
-	_, declared := watchManager.DeclaredSourceCluster(gitDest)
-	assert.False(t, declared, "a refused GitTarget must never declare watches against its source cluster")
+	assert.False(t, watchManager.DeclareStatusForGitTarget(gitDest).Declared,
+		"a refused GitTarget must never declare watches against its source cluster")
 
 	// Positive control, through the real Declare path: the same manager DOES record a declaration,
-	// so the assertion above cannot pass vacuously. DeclareForGitTarget captures the source cluster
-	// before it opens any watch, so it records even though opening watches fails here (no discovery
-	// client is wired) — which is exactly the capture a refused GitTarget must not produce.
+	// so the assertion above cannot pass vacuously. DeclareForGitTarget records the submitted
+	// source cluster whether or not the owner's pass has run yet — which is exactly the record a
+	// refused GitTarget must not produce.
 	other := types.NewResourceReference("authorized", ns).WithUID("other-uid")
-	_ = watchManager.DeclareForGitTarget(
-		context.Background(), other, providerName, providerName, configbutleraiv1alpha3.PruneOnEvent)
-	id, declaredOther := watchManager.DeclaredSourceCluster(other)
-	require.True(t, declaredOther, "the positive control must declare, or the assertion above proves nothing")
-	assert.Equal(t, providerName, id)
+	watchManager.DeclareForGitTarget(other, providerName, providerName, configbutleraiv1alpha3.PruneOnEvent)
+	declaredOther := watchManager.DeclareStatusForGitTarget(other)
+	require.True(t, declaredOther.Declared,
+		"the positive control must declare, or the assertion above proves nothing")
+	assert.Equal(t, providerName, declaredOther.ClusterID)
 }
 
 func TestClusterProviderReadiness_AllScenarios(t *testing.T) {

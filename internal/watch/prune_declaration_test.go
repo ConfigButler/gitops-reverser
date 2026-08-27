@@ -116,7 +116,7 @@ func TestForgetGitTargetPruneMode_DropsTheDeclaration(t *testing.T) {
 
 	assert.False(t, m.pruneModeRequiresReplay(gitDest, v1alpha3.PruneAlways),
 		"a forgotten target has no previous mode, so nothing to compare against")
-	assert.Empty(t, m.gitTargetPruneModes)
+	assert.Empty(t, m.watchPlane().pruneModes)
 }
 
 // TestReplaceGitTargetWatches_ForceReplaysAnUnchangedSet is the mechanism R1 relies on, asserted

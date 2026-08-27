@@ -198,11 +198,12 @@ the only path a **remote** source cluster has, because the trigger informers run
 only. Discovery has no watch verb, so there is nothing to subscribe to.
 
 The CRD and APIService informers exist to say "refresh sooner than 30 seconds". They hold no
-judgment, feed no registry, and push onto a single-slot channel that wakes
-`ReconcileForRuleChange`. Removing them would cost latency on a freshly installed CRD, not
-correctness. Each one runs under its own context rather than a shared informer factory, because a
-factory records a resource as started forever, and a trigger stopped on `Forbidden` could then never
-be re-armed.
+judgment, feed no registry, and post a shared-refresh trigger onto the watch plane owner's queue,
+which then marks dirty only the GitTargets whose rendered plan the refresh actually changed
+([watch-manager-ownership.md](design/watch-manager-ownership.md)). Removing them would cost latency
+on a freshly installed CRD, not correctness. Each one runs under its own context rather than a
+shared informer factory, because a factory records a resource as started forever, and a trigger
+stopped on `Forbidden` could then never be re-armed.
 
 ### The duplication that does exist
 

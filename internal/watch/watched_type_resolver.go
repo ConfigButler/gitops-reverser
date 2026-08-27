@@ -28,8 +28,8 @@ import (
 // so the common no-change reconcile is a cheap fingerprint compare rather than a rescan.
 //
 // Two locks: refreshMu serializes the whole resolve-and-publish so two concurrent
-// refreshes (ReconcileForRuleChange runs from both watch-rule controllers and the
-// manager loop) cannot have a slow older resolution overwrite a newer one; mu guards the
+// refreshes (the owner loop's shared refresh and the lazy first resolution a zero-value
+// Manager does in tests) cannot have a slow older resolution overwrite a newer one; mu guards the
 // published fields for concurrent readers. The registry owns the live-set removal grace,
 // so nothing in this layer tracks absence.
 type watchedTypeStore struct {
@@ -163,7 +163,7 @@ func (m *Manager) allWatchedTypeTables() []WatchedTypeTable {
 }
 
 // residentWatchedTypeTables returns the currently published tables WITHOUT triggering a
-// refresh. Callers on the reconcile hot path read this after ReconcileForRuleChange (or
+// refresh. Callers on the reconcile hot path read this after the owner's shared refresh (or
 // the snapshot gather) has already refreshed once, so per-read re-resolution stays off
 // the path that runs per watched type.
 func (m *Manager) residentWatchedTypeTables() []WatchedTypeTable {
@@ -220,12 +220,11 @@ func (m *Manager) activeRegistriesFingerprint() uint64 {
 // keeping the previous cluster's GVRs. In a single-cluster install the mapping is empty (every
 // target is local) and this is a constant, so the gate behaves exactly as before.
 func (m *Manager) clusterMappingFingerprint() uint64 {
-	m.gitTargetClustersMu.Lock()
-	parts := make([]string, 0, len(m.gitTargetClusters))
-	for gitTargetKey, clusterID := range m.gitTargetClusters {
+	clusters := m.watchPlane().clusters
+	parts := make([]string, 0, len(clusters))
+	for gitTargetKey, clusterID := range clusters {
 		parts = append(parts, gitTargetKey+"\x1f"+clusterID)
 	}
-	m.gitTargetClustersMu.Unlock()
 	sort.Strings(parts)
 	return xxhash.Sum64String(strings.Join(parts, "\x00"))
 }

@@ -134,10 +134,15 @@ func (k targetWatchKey) Cell() types.CellKey {
 	return types.CellKeyFor(k.GVR, k.Namespace)
 }
 
-// EnsureGitTargetWatches makes the GitTarget's raw watch set match its current
-// claimed, followable (GVR, scope) table. Each watch resumes from its stored
-// cursor when possible; otherwise it initializes with sendInitialEvents and a
-// scoped mark-and-sweep before streaming live object events.
+// EnsureGitTargetWatches makes the GitTarget's raw watch set match its current claimed,
+// followable (GVR, scope) table. Each watch resumes from its stored cursor when possible;
+// otherwise it initializes with sendInitialEvents and a scoped mark-and-sweep before streaming
+// live object events.
+//
+// It runs ON THE OWNER LOOP, and it does no discovery: the API catalogs and the source-namespace
+// scopes are SHARED state, refreshed once per cluster on their own cadence, and a rule edit
+// replans one target against whatever snapshots are current rather than rediscovering the world.
+// That split is what stops "one edit, N discovery calls" from coming back through another door.
 func (m *Manager) EnsureGitTargetWatches(
 	ctx context.Context,
 	gitDest types.ResourceReference,
@@ -146,24 +151,7 @@ func (m *Manager) EnsureGitTargetWatches(
 	if m.EventRouter == nil {
 		return nil
 	}
-	// Refresh ONLY this GitTarget's own source cluster on the declare path — never every active
-	// cluster. Refreshing all of them here means a healthy target's declare (which runs on the
-	// single GitTarget controller worker) blocks on an UNREACHABLE other cluster's full dial
-	// timeout, starving that healthy target's status. Cross-cluster catalog freshness and every
-	// cluster's SourceClusterReachable ride the background RefreshAPIResourceCatalog loop instead.
-	// TEMPORARY DIAGNOSTIC (see E2E-DECLARE-INVESTIGATION.md): the catalog refresh below is a
-	// synchronous discovery call, and for a LOCAL cluster it carries no request timeout
-	// (cluster_context.go applies one only when !isLocalLocked), so it can block unbounded.
-	trace := m.Log.WithName("declare-trace").WithValues("gitDest", gitDest.String())
-	trace.Info("phase", "at", "ensure-watches-begin")
-	trace.Info("phase", "at", "refresh-cluster-begin")
-	if err := m.refreshClusterForDeclare(ctx, m.clusterIDForGitTarget(gitDest)); err != nil {
-		trace.Info("phase", "at", "refresh-cluster-error", "err", err.Error())
-		return fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
-	}
-	trace.Info("phase", "at", "refresh-cluster-end")
 	m.refreshWatchedTypeTables()
-	trace.Info("phase", "at", "refresh-tables-end")
 	if !m.registryForGitTarget(gitDest).Ready() {
 		return fmt.Errorf("aborting watch setup for %s: the cluster API surface has not been observed yet",
 			gitDest.String())
@@ -175,10 +163,16 @@ func (m *Manager) EnsureGitTargetWatches(
 			gitDest.String(), gvkListSummary(retained))
 	}
 	force := len(forceRecheck) > 0 && forceRecheck[0]
-	trace.Info("phase", "at", "replace-watches-begin", "cells", len(table.Types))
 	return m.replaceGitTargetWatches(ctx, table, force)
 }
 
+// replaceGitTargetWatches brings one GitTarget's running streams into line with its table.
+//
+// No lock is taken. targetWatches is owned by the loop that calls this, and that is the whole
+// point: the previous version held targetWatchesMu across cancelling streams, across starting
+// them, and across a call into the render-fidelity gate's lock — three of the four things that
+// make a lock dangerous. A woken stream goroutine now unwinds and reports without contending for
+// anything the cancellation was issued under.
 func (m *Manager) replaceGitTargetWatches(
 	ctx context.Context,
 	table WatchedTypeTable,
@@ -195,14 +189,7 @@ func (m *Manager) replaceGitTargetWatches(
 		return fmt.Errorf("build the watch plan for %s: %w", table.GitDest.String(), err)
 	}
 
-	// TEMPORARY DIAGNOSTIC (see E2E-DECLARE-INVESTIGATION.md): change 2 cancels streams and takes
-	// the render-fidelity gate's lock while holding targetWatchesMu, so contention here is a
-	// hypothesis worth being able to see rather than infer.
-	trace := m.Log.WithName("declare-trace").WithValues("gitDest", table.GitDest.String())
-	trace.Info("phase", "at", "watches-mutex-acquire")
-	m.targetWatchesMu.Lock()
-	trace.Info("phase", "at", "watches-mutex-held")
-	set := m.targetWatchSetLocked(table.GitDest)
+	set := m.targetWatchSet(table.GitDest)
 	previous := set.plan()
 	diff := diffTargetWatchPlans(previous, desired, force)
 	// Cancel before starting: a restarted cell's replacement must not race its predecessor for
@@ -216,11 +203,9 @@ func (m *Manager) replaceGitTargetWatches(
 	starting := append(append([]types.CellKey{}, diff.Start...), diff.Restart...)
 	sortCells(starting)
 	cells := cellsForWatchKeys(keys)
-	m.resetTargetStreamStatesLocked(table.GitDest, cells, starting)
-	revisions, fidelityChanged := m.reconcileTargetRenderFidelityLocked(table.GitDest, cells, starting)
-	started := m.startTargetWatchStreamsLocked(ctx, set, keysByCell(keys), streams, specs, revisions, starting)
-	m.targetWatchesMu.Unlock()
-	trace.Info("phase", "at", "watches-mutex-released")
+	m.resetTargetStreamStates(table.GitDest, cells, starting)
+	revisions, fidelityChanged := m.reconcileTargetRenderFidelity(table.GitDest, cells, starting)
+	started := m.startTargetWatchStreams(ctx, set, keysByCell(keys), streams, specs, revisions, starting)
 
 	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
 	if fidelityChanged {
@@ -239,9 +224,8 @@ func (m *Manager) replaceGitTargetWatches(
 	return nil
 }
 
-// targetWatchSetLocked returns the GitTarget's running set, creating it on first use.
-// targetWatchesMu must be held.
-func (m *Manager) targetWatchSetLocked(gitDest types.ResourceReference) *targetWatchSet {
+// targetWatchSet returns the GitTarget's running set, creating it on first use. Owner-loop only.
+func (m *Manager) targetWatchSet(gitDest types.ResourceReference) *targetWatchSet {
 	if m.targetWatches == nil {
 		m.targetWatches = map[string]*targetWatchSet{}
 	}
@@ -254,16 +238,15 @@ func (m *Manager) targetWatchSetLocked(gitDest types.ResourceReference) *targetW
 }
 
 // startingTargetWatch is a stream that has been registered but not yet launched: the goroutines
-// start after targetWatchesMu is released.
+// start once the whole plan has been applied, so a stream cannot observe a half-applied set.
 type startingTargetWatch struct {
 	ctx    context.Context
 	stream targetWatchStream
 }
 
-// startTargetWatchStreamsLocked registers one stream per cell in starting, each with its own
-// cancel, and returns them to be launched once the lock is released. targetWatchesMu must be
-// held.
-func (m *Manager) startTargetWatchStreamsLocked(
+// startTargetWatchStreams registers one stream per cell in starting, each with its own cancel,
+// and returns them to be launched once the whole plan has been applied. Owner-loop only.
+func (m *Manager) startTargetWatchStreams(
 	ctx context.Context,
 	set *targetWatchSet,
 	byCell map[types.CellKey]targetWatchKey,
@@ -302,42 +285,45 @@ func keysByCell(keys []targetWatchKey) map[types.CellKey]targetWatchKey {
 	return out
 }
 
-// resetTargetStreamStatesLocked makes the readiness surface match the plan: cells that left it
-// are dropped, and the cells whose streams are being started or restarted go back to replaying.
-// A cell that is merely KEPT keeps its prior clean or divergent result, because an unrelated
-// plan change is no evidence about it. targetWatchesMu must be held.
-func (m *Manager) resetTargetStreamStatesLocked(
+// resetTargetStreamStates makes the readiness surface match the plan: cells that left it are
+// dropped, and the cells whose streams are being started or restarted go back to replaying. A
+// cell that is merely KEPT keeps its prior clean or divergent result, because an unrelated plan
+// change is no evidence about it.
+func (m *Manager) resetTargetStreamStates(
 	gitDest types.ResourceReference,
 	declared []types.CellKey,
 	replaying []types.CellKey,
 ) {
-	if m.targetStreamStates == nil {
-		m.targetStreamStates = map[string]map[types.CellKey]targetStreamStatus{}
-	}
-	targetKey := gitDest.Key()
-	states := m.targetStreamStates[targetKey]
-	if states == nil {
-		states = map[types.CellKey]targetStreamStatus{}
-		m.targetStreamStates[targetKey] = states
-	}
 	selected := make(map[types.CellKey]struct{}, len(declared))
 	for _, cell := range declared {
 		selected[cell] = struct{}{}
 	}
-	for cell := range states {
-		if _, ok := selected[cell]; !ok {
-			delete(states, cell)
+	replay := targetStreamStatus{
+		state:   StreamStateReplaying,
+		reason:  StreamReasonInitialReplay,
+		message: "waiting for target watch replay to complete",
+	}
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		targetKey := gitDest.Key()
+		states := s.streams[targetKey]
+		if states == nil {
+			states = map[types.CellKey]targetStreamStatus{}
+			s.streams[targetKey] = states
 		}
-	}
-	for _, cell := range replaying {
-		m.markTargetStreamStateLocked(
-			gitDest,
-			cell,
-			StreamStateReplaying,
-			StreamReasonInitialReplay,
-			"waiting for target watch replay to complete",
-		)
-	}
+		changed := false
+		for cell := range states {
+			if _, ok := selected[cell]; !ok {
+				delete(states, cell)
+				changed = true
+			}
+		}
+		for _, cell := range replaying {
+			if setStreamState(s, targetKey, cell, replay) {
+				changed = true
+			}
+		}
+		return changed
+	})
 }
 
 // describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>=<ops>"
@@ -354,40 +340,23 @@ func describeWatchKeys(keys []targetWatchKey, specs map[targetWatchKey]string) s
 	return strings.Join(parts, " | ")
 }
 
-func (m *Manager) refreshRunningTargetWatches(ctx context.Context) {
-	m.targetWatchesMu.Lock()
-	running := make(map[string]struct{}, len(m.targetWatches))
-	for key := range m.targetWatches {
-		running[key] = struct{}{}
-	}
-	m.targetWatchesMu.Unlock()
-	if len(running) == 0 {
-		return
-	}
-	for _, table := range m.residentWatchedTypeTables() {
-		if _, ok := running[table.GitDest.Key()]; !ok {
-			continue
-		}
-		if err := m.replaceGitTargetWatches(ctx, table); err != nil {
-			m.Log.Error(err, "refresh running GitTarget watches failed", "gitDest", table.GitDest.String())
-		}
-	}
-}
-
 // forgetGitTargetWatches cancels and drops the in-memory watch set for a GitTarget.
 // It does not touch the durable resume cursors: those are UID-keyed and TTL-bounded,
 // so a deleted GitTarget's cursors expire on their own and a recreated one (new UID)
 // never inherits them.
 func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
-	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
 	if set := m.targetWatches[gitDest.Key()]; set != nil {
 		set.stopAll()
 		delete(m.targetWatches, gitDest.Key())
 	}
-	m.dropTargetStreamStateLocked(gitDest)
-	m.dropTargetGitPathAcceptanceLocked(gitDest)
-	m.dropTargetRenderFidelityLocked(gitDest)
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		_, hadStreams := s.streams[gitDest.Key()]
+		_, hadAcceptance := s.acceptance[gitDest.Key()]
+		delete(s.streams, gitDest.Key())
+		delete(s.acceptance, gitDest.Key())
+		return hadStreams || hadAcceptance
+	})
+	m.forgetTargetRenderFidelity(gitDest)
 	m.forgetTargetRetention(gitDest)
 }
 
@@ -1235,19 +1204,20 @@ func (m *Manager) recordTargetWatchCursor(
 	return m.WatchCursorStore.RecordWatchCursor(ctx, uid, key.GVR, key.Namespace, rv)
 }
 
-// rememberGitTargetUID records the UID the controller observed for a GitTarget so the
-// watch data plane can key its cursors by UID even though the rule-derived watch tables
-// carry only namespace/name.
+// rememberGitTargetUID records the UID the controller observed for a GitTarget so the watch data
+// plane can key its cursors by UID even though the rule-derived watch tables carry only
+// namespace/name.
 func (m *Manager) rememberGitTargetUID(gitDest types.ResourceReference) {
 	if gitDest.UID == "" {
 		return
 	}
-	m.gitTargetUIDsMu.Lock()
-	defer m.gitTargetUIDsMu.Unlock()
-	if m.gitTargetUIDs == nil {
-		m.gitTargetUIDs = map[string]string{}
-	}
-	m.gitTargetUIDs[gitDest.Key()] = gitDest.UID
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if s.uids[gitDest.Key()] == gitDest.UID {
+			return false
+		}
+		s.uids[gitDest.Key()] = gitDest.UID
+		return true
+	})
 }
 
 // forgetGitTargetUID drops the remembered UID for a deleted GitTarget, but only when the stored
@@ -1261,11 +1231,13 @@ func (m *Manager) forgetGitTargetUID(gitDest types.ResourceReference) {
 	if gitDest.UID == "" {
 		return
 	}
-	m.gitTargetUIDsMu.Lock()
-	defer m.gitTargetUIDsMu.Unlock()
-	if m.gitTargetUIDs[gitDest.Key()] == gitDest.UID {
-		delete(m.gitTargetUIDs, gitDest.Key())
-	}
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if s.uids[gitDest.Key()] != gitDest.UID {
+			return false
+		}
+		delete(s.uids, gitDest.Key())
+		return true
+	})
 }
 
 // resolveGitTargetUID returns the GitTarget UID for a cursor operation, preferring the
@@ -1275,9 +1247,7 @@ func (m *Manager) resolveGitTargetUID(gitDest types.ResourceReference) string {
 	if gitDest.UID != "" {
 		return gitDest.UID
 	}
-	m.gitTargetUIDsMu.Lock()
-	defer m.gitTargetUIDsMu.Unlock()
-	return m.gitTargetUIDs[gitDest.Key()]
+	return m.watchPlane().uids[gitDest.Key()]
 }
 
 func bufferTargetWatchEvents(ctx context.Context, in <-chan watch.Event, out chan<- watch.Event) {

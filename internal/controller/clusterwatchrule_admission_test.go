@@ -31,7 +31,6 @@ import (
 // stop-before-status ordering contract is asserted.
 type cwaWatchManager struct {
 	replans     int
-	replanErr   error
 	onReconcile func()
 
 	// scope is the source-scope service this double hands back. It stays nil unless a test needs
@@ -39,12 +38,18 @@ type cwaWatchManager struct {
 	scope watch.SourceScopeService
 }
 
-func (m *cwaWatchManager) ReconcileForRuleChange(context.Context) error {
+func (m *cwaWatchManager) TriggerRuleChange(internaltypes.ResourceReference) {
 	m.replans++
 	if m.onReconcile != nil {
 		m.onReconcile()
 	}
-	return m.replanErr
+}
+
+func (m *cwaWatchManager) TriggerAllRuleChange() {
+	m.replans++
+	if m.onReconcile != nil {
+		m.onReconcile()
+	}
 }
 
 func (m *cwaWatchManager) ResolveWatchRuleResources(
