@@ -213,7 +213,37 @@ That is the same asymmetry this page has now found three times — a component t
 rejects and stays silent about what it takes. §4.4's line closed it for the refusals; the accept
 path is closed in the commit that follows this one.
 
-### 2.7 The failure class
+### 2.7 A rule's Ready is a COPY, and that was being read as a live view
+
+Caught live on a passing run, mid-spec:
+
+```text
+GitTarget srcns-granted        Ready=True   RenderMatchesLive=True "Every rendered token matches live"
+WatchRule srcns-granted-rule   Ready=False  Rechecking  2/2
+WatchRule srcns-wildcard-rule  Ready=False  Rechecking  2/2
+```
+
+Both rules caught up within seconds, so this instance was the ordinary convergence transient. But
+it exposes an assumption this page had been making without checking: **a rule's `Ready` is a copy
+of its GitTarget's, not a live view of the gate.** `reconcileWatchRuleViaTarget` reads the target's
+STORED `Ready` and folds it in as an independent prerequisite, so a rule reporting `Rechecking`
+means only that the target said so *when the rule last reconciled*.
+
+That splits Failure A in two, with completely different searches:
+
+- the GitTarget is genuinely stuck at `Rechecking` for 90s — the gate never converges; or
+- the GitTarget converged and the RULE's copy went stale — the rule is not being re-reconciled, or
+  is reading a stale cached target.
+
+Every reproduction so far has been read as the first. The evidence is consistent with it — the
+rule reconciles every ~10s in the logs, and a rule that re-reads a Ready target goes Ready — but
+**it has never been directly confirmed**, because the failure text prints only the rule.
+
+The e2e assertion now prints the referenced GitTarget's own `Ready`, `RenderMatchesLive`,
+`StreamsRunning` and `GitPathAccepted` beside the rule's condition, so the next reproduction says
+which of the two it is without inference.
+
+### 2.8 The failure class
 
 Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
 reports exactly once per revision, from

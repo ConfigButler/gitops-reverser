@@ -240,6 +240,13 @@ func verifyResourceCondition(
 		// publishes the answer; the assertion just has to print it.
 		detail := fmt.Sprintf("%s %q condition %s: status=%q reason=%q message=%q",
 			resourceType, name, conditionType, conditionStatus, conditionReason, conditionMessage)
+		// A rule's Ready is a COPY of its GitTarget's, not a live view of it: reconcileWatchRuleViaTarget
+		// reads the target's stored Ready and folds it in as an independent prerequisite. So a rule
+		// reporting a GitTarget-derived reason is ambiguous — the target may genuinely be stuck, or
+		// the target may have converged and the rule's copy be stale — and those have completely
+		// different searches. Printing the target's own conditions beside the rule's settles it in
+		// the failure text (docs/design/watch-plane-status-convergence-failures.md, Failure A).
+		detail += gitTargetConditionDetail(obj, ns)
 
 		g.Expect(conditionStatus).To(Equal(expectedStatus), "%s", detail)
 		// An empty expectedReason is a status-only gate: the caller does not assert a reason.
@@ -251,6 +258,52 @@ func verifyResourceCondition(
 		}
 	}
 	Eventually(verifyStatus, resourceConditionTimeout(timeout), resourceConditionPollInterval).Should(Succeed())
+}
+
+// gitTargetConditionDetail renders the referenced GitTarget's conditions for a rule assertion's
+// failure message, or "" when the object is not a rule (or names no target). It never fails the
+// assertion itself: it is diagnostic garnish, and a lookup error is reported inline rather than
+// masking the condition the caller actually asserted — which is also why it takes no Gomega.
+func gitTargetConditionDetail(obj unstructured.Unstructured, ns string) string {
+	kind := strings.ToLower(obj.GetKind())
+	if kind != "watchrule" && kind != "clusterwatchrule" {
+		return ""
+	}
+	targetName, found, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "name")
+	if !found || targetName == "" {
+		return ""
+	}
+	targetNS := ns
+	if kind == "clusterwatchrule" {
+		if v, ok, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "namespace"); ok {
+			targetNS = v
+		}
+	}
+	out, err := kubectlRun("get", "gittarget", targetName, "-n", targetNS, "-o", "json")
+	if err != nil {
+		return fmt.Sprintf(" | gittarget %q lookup failed: %v", targetName, err)
+	}
+	var target unstructured.Unstructured
+	if err := json.Unmarshal([]byte(out), &target.Object); err != nil {
+		return fmt.Sprintf(" | gittarget %q unreadable: %v", targetName, err)
+	}
+	conditions, _, _ := unstructured.NestedSlice(target.Object, "status", "conditions")
+	parts := make([]string, 0, len(conditions))
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch condMap["type"] {
+		case "Ready", "RenderMatchesLive", "StreamsRunning", "GitPathAccepted":
+			parts = append(parts, fmt.Sprintf("%v=%v(%v: %v)",
+				condMap["type"], condMap["status"], condMap["reason"], condMap["message"]))
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf(" | gittarget %q has no conditions yet", targetName)
+	}
+	return fmt.Sprintf(" | gittarget %q: %s", targetName, strings.Join(parts, "; "))
 }
 
 // waitForStreamsRunning blocks until the GitTarget reports StreamsRunning=True. Specs that assert
