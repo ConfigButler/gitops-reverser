@@ -64,6 +64,7 @@ overlay owns (a pure passthrough overlay is adopted yet `editable: 0`).
 | Controller-expanded resources and provenance | [Expansion boundary](expansion-boundary-and-corpus-organisation.md), [orchestrator knowledge](orchestrator-knowledge-boundary.md) |
 | Git-authored Helm values and ConfigMap-backed content | [Values-content architecture](values-content-architecture.md), [values-file projection](values-file-projection.md) |
 | Kpt packages and KRM functions | [Kpt and KRM functions](kpt-and-krm-functions.md) |
+| Reversing a local in-repo Helm chart | [Helm-light support boundary](helm-light-support-boundary.md) |
 | Secrets and other document capabilities | [Resource capability model](resource-capability-model.md), [write-only encrypted secrets](write-only-encrypted-secrets.md) |
 
 ## Permanent refusals

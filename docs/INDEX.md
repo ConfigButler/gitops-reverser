@@ -109,6 +109,11 @@ three open RBAC items.
 reviews the configuration docs and argues the API never caught up with what the
 folder analysis learned — a look-before-you-write mode, a `status.layout`
 projection, an inference switch, and moving `commitWindow` onto the GitTarget.
+[`direction-and-configuration-surface.md`](future/direction-and-configuration-surface.md)
+is the strategy review on top of it: the config-as-data direction as the headline with
+brownfield mirroring as the on-ramp, a decided Helm standpoint (declaration editing plus
+the values projection; helm-light inversion parked behind entry criteria), and worked
+examples of where the configuration surface should go.
 Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
