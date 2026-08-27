@@ -17,7 +17,7 @@ intermittent, both survive a re-run, and both are new to this branch.
 
 | # | Symptom | Seen | Verdict |
 | --- | --- | --- | --- |
-| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 2× (CI once, **local once**) | **Open, new** |
+| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 2× (CI once, **local once**) | **Mechanism reproduced (A2); cause moved to the plan side — see §2.6** |
 | **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 2× (CI) | **Open, new** |
 | C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified |
 | D | Encryption-secret recreation spec times out | 1× (CI) | **Ambient, pre-existing** — see §5 |
@@ -68,7 +68,7 @@ roll-up is computing not-ready while the streams are running, which means the ce
 That is a mismatch, not a latency problem, and no amount of waiting fixes it. It resolves only
 when something changes the plan or the registry.
 
-### 2.3 Hypotheses — both unproven
+### 2.3 Findings
 
 Both live in [`stream_readiness.go`](../../internal/watch/stream_readiness.go), in code this
 branch rewrote from GVR keys to cell keys.
@@ -84,12 +84,17 @@ func (s StreamSummary) StreamsRunning() bool {
 `Total == 0` reports **not running**, forever. `StreamSummaryForWatchRule` returns
 `streamSummaryForTypes(nil, nil, nil)` when `m.RuleStore` is nil or `GetWatchRule` misses, and
 `Total` is `len(byType)`, which is empty when `reg.Followable()` returns nothing at that instant.
-A rule that resolves zero types is indistinguishable from one whose streams are all down.
+A rule that resolves zero types is indistinguishable from one whose streams are all down. This is
+a real status semantics gap for an empty-but-valid rule, but it does **not** explain this failure:
+the failing target had five opened cells and the rule was repeatedly reconciled. The relevant
+implementation is [`StreamsRunning`](../../internal/watch/stream_readiness.go), and the controller
+maps its false result directly to `StreamsRunning=False` in
+[`streamConditionStatus`](../../internal/controller/stream_status.go).
 
-**A2 — expected and opened are computed from different snapshots.**
+**A2 — expected and opened are computed from different snapshots. Confirmed as the failure class.**
 
 The rule's expected set is rebuilt from `reg.Followable()` at **read** time, on the controller
-worker:
+worker, in [`StreamSummaryForWatchRule`](../../internal/watch/stream_readiness.go):
 
 ```go
 reg := m.registryForGitTarget(gitDest)
@@ -97,10 +102,16 @@ m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 records := reg.Followable()
 ```
 
-The plan's opened set came from the watched-type table at **plan** time, on the owner loop. A
-type that becomes followable between the two makes the rule expect a stream that by construction
-does not exist yet. The e2e suite installs CRDs concurrently across specs, which is exactly the
-condition that produces it.
+The plan's opened set came from the watched-type table at **plan** time, on the owner loop, in
+[`replaceGitTargetWatches`](../../internal/watch/target_watch.go). A type that becomes followable
+between the two makes the rule expect a cell that by construction does not exist yet. The e2e
+suite installs CRDs concurrently across specs, which is exactly the condition that produces it.
+
+This is not merely a missed notification. The WatchRule controller's own comment says the summary
+read describes state from **before** the owner pass ([`watchrule_controller.go`](../../internal/controller/watchrule_controller.go)).
+That makes a persistent false result possible whenever the registry moves after the plan snapshot
+but before a controller status read. The existing wildcard and source-namespace tests prove the
+cell-key and compiled-rule behavior, but do not cover this cross-snapshot interleaving.
 
 The doc comment on `StreamSummaryForWatchRule` already warns about this class one level up
 ("a perfectly healthy wildcard rule would report permanently not-ready while its streams run —
@@ -114,7 +125,73 @@ against the **reported** ones. That converts "Ready=False for 90s" into a line n
 specific cell nobody opened, and distinguishes A1 (expected set empty) from A2 (expected set
 contains a cell the plan never opened) on the first occurrence.
 
-This is the same one-line-diagnostic-then-fix loop already applied to B in §3.4.
+This is the same one-line-diagnostic-then-fix loop already applied to B in §3.4. The diagnostic
+should be emitted from the summary path when the result is not running, and should include:
+
+- the expected cell set derived from the compiled rule;
+- the reported cell set currently present in `watchPlane().streams`; and
+- the target watch plan's cell set, read without refreshing it.
+
+That gives three-way evidence. Expected but absent from both reported and planned identifies a
+registry/compiled-rule mismatch; expected and planned but not reported identifies a stream that
+has not reached or has left `Streaming`; expected but not planned identifies the A2 race directly.
+
+### 2.5 Fix plan for A
+
+1. Add a deterministic unit test that freezes the plan table, advances the registry, and proves
+  the current implementation can derive an expected cell that the frozen plan does not contain.
+  Keep the existing cell-key tests as regression coverage for the version and namespace cases.
+2. Make the status read use the same resident watched-type table as the owner plan, or publish the
+  plan's expected cells as part of the immutable watch-plane snapshot. The first option is the
+  smaller repair if the table already contains the compiled rule's resolved cells; the second
+  gives all status readers one atomic source if that invariant cannot be maintained.
+3. Add a test that changes discovery between plan and status reads and asserts that a running plan
+  cannot report a cell outside its opened set. Then run the focused `internal/watch` and
+  `internal/controller` tests before any e2e rerun.
+4. Decide separately whether `0/0` should mean `StreamsRunning=True` for an admitted rule with no
+  resolved types. That is not part of Failure A and should not be mixed into its fix.
+
+### 2.6 Attempted fix, and why it was not landed
+
+Step 2 of §2.5 — narrow the status read to the cells the plan opened — was implemented and
+reverted. It works, and it is the wrong change to make on the evidence available.
+
+**What was built.** A reproduction test first: a wildcard rule whose compiled namespace set has
+expanded to two namespaces while the plan has opened one. It fails against the current
+implementation exactly as predicted, which confirms the A2 mechanism is reachable and is not
+merely a reading of the code.
+
+Narrowing was then tried two ways — intersecting against the resident watched-type table, and
+against the published readiness surface (which `resetTargetStreamStates` maintains as exactly the
+declared cell set, making it the atomic in-snapshot answer §2.5 step 2 asks for). Both make the
+reproduction pass.
+
+**Why it was reverted.** Both break three pre-existing tests that encode the *opposite* invariant
+deliberately:
+
+| Test | What it asserts |
+| --- | --- |
+| `TestStreamSummaryForWatchRule_WildcardWithOnePendingNamespaceIsNotReady` | "one namespace of a wildcard still converging must hold the type back" |
+| `TestStreamSummaryForWatchRule_WrongNamespaceKeyMisses` | a stream keyed on the wrong namespace is not found, and "the rule still expects its one type" |
+| `TestStreamSummaryForWatchRule_LegacyRuleUnchanged` | a rule expects its type whether or not a plan is resident |
+
+Those say: **an expected cell with no stream must hold the rule not-ready.** That is the defence
+against a summary quietly ignoring a stream that was never opened, and narrowing removes it. A
+rule would then report `Ready=True` while a cell it requires has no stream at all — the same
+class of silent wrongness as the retention roll-up in Failure B, arrived at from the other side.
+
+**What that reframes.** Reporting not-ready for an unopened cell is defensible and is the current
+design. The defect is not that the rule says not-ready; it is that **the plan never opens the cell
+and never converges**. `markInvalidatedTargets` compares each target's rendered plan fingerprint
+across a re-projection and marks it dirty when it moves, so a compiled rule gaining a namespace
+*should* produce a replan within one sweep. In both observed failures it did not, for ninety
+seconds.
+
+So the open question moves from the status side to the plan side: **why did the fingerprint diff
+not mark the target dirty, or why did the replanned table not contain the cell the compiled rule
+requires?** Answering that is what §2.4's diagnostic is for, and it must come before any change
+to what a rule is allowed to expect. Landing the narrowing first would have converted a visible
+failure into an invisible one.
 
 ---
 
@@ -158,15 +235,17 @@ sits stale until the steady requeue, minutes past any test budget.
 Note the asymmetry: two resync commits, one handle/apply pair. The second commit also re-deletes
 a file the first already removed, which means its gather predates the first apply.
 
-### 3.3 Hypotheses — both unproven
+### 3.3 Findings — root cause still unclassified
 
-**B1 — the revision gate.** `MarkTargetRetention` drops any report whose revision the plan has
-moved past, or whose cell the plan no longer holds. Dropping is correct; it is how a tail from a
+**B1 — the revision gate.** [`MarkTargetRetention`](../../internal/watch/retention_rollup.go)
+drops any report whose revision the plan has moved past, or whose cell the plan no longer holds.
+Dropping is correct; it is how a tail from a
 replaced stream is kept out. The consequence is a published count that no longer describes the
 mirror with nothing scheduled to correct it.
 
-**B2 — the superseded path.** `handleScopedResyncError` returns on `ErrResyncSuperseded` without
-marking acceptance, fidelity or retention, on the reasoning that the replacement marks them
+**B2 — the superseded path.** [`handleScopedResyncError`](../../internal/watch/event_router.go)
+returns on `ErrResyncSuperseded` without marking acceptance, fidelity or retention, on the
+reasoning that the replacement marks them
 instead. That holds only if the replacement's own report is then accepted — which B1 can prevent.
 The comment there says "nothing was missed", and for **writes** that is true; for **reports** it
 is an assumption.
@@ -196,7 +275,27 @@ Reading the next failure:
 | `superseded … roll-up reports were skipped`, no drop line | **B2** — coalescing |
 | Neither, count still stale | Both wrong; the report was never made, and the search moves to resync dispatch |
 
-As of `c24844a1` neither line has fired: the local run that failed did so on **A**, not B.
+As of `c24844a1` neither line has fired: the local run that failed did so on **A**, not B. The
+existing tests cover each behavior in isolation, but not the ordering that matters here: an old
+report is superseded or rejected, the replacement stream runs, and the replacement's zero report
+is either accepted or dropped.
+
+### 3.5 Fix plan for B
+
+1. Add a deterministic `EventRouter` test for two same-cell resyncs: supersede the first, drain
+  both results, and assert that the replacement's zero retention report is accepted and enqueues
+  the target status refresh.
+2. Add a deterministic revision-order test: report a non-zero count, install a new revision,
+  deliver the old report, then deliver the replacement's zero report. Assert that the final
+  roll-up is reported, uses the replacement mode, and contains zero.
+3. Preserve the revision gate and superseded semantics unless the tests show that a valid
+  replacement report is being discarded. The stale old report must remain unable to overwrite a
+  newer stream's result.
+4. If either deterministic test fails, add the existing Info diagnostics to the assertion or
+  capture them in the test so the repair targets dispatch, supersession, or revision acceptance
+  rather than weakening stale-report protection.
+5. Only after these tests pass, rerun the focused prune e2e spec. Treat a green full suite without
+  the sequencing tests as insufficient evidence for B.
 
 ---
 
@@ -292,13 +391,14 @@ the fix stands on that reasoning. It does not explain B, which predates it.
 
 ## 7. Next steps
 
-1. **Add the §2.4 diagnostic for A** — log expected cells against reported ones when a rule
-   reports not-ready. A is now reproducible locally, which makes it the cheaper of the two.
-2. **Wait for B's diagnostic to fire.** It is armed as of `c24844a1` and has not yet caught a
-   failing run.
-3. **Do not merge on a green run.** Both failures are intermittent and both have already produced
-   a green run on a commit that failed elsewhere. A report dropped for a legitimate reason still
-   leaves the roll-up wrong.
-4. **Classify C.** The Argo `selfHeal` failure has been seen once and never re-run, and passes
-   locally. It may be a third instance of "status settles later than the assertion samples", or
-   ambient.
+1. **Fix A using one plan snapshot** — add the interleaving test, align status expectations with
+  the resident plan, and add the expected/reported/planned diagnostic.
+2. **Add B's two sequencing tests** — supersession-to-zero and stale-revision-before-replacement-
+  to-zero.
+3. **Run focused unit tests**, then the focused A and B e2e specs. Do not treat a green full run
+  as evidence unless the deterministic tests pass.
+4. **Keep the B diagnostics until classified.** A dropped report may be correctly rejected while
+  still leaving status stale; the fix must restore a report path without allowing stale writes.
+5. **Classify C separately.** The Argo `selfHeal` failure has been seen once and never re-run, and
+  passes locally. It may be a third instance of status settling later than the assertion samples,
+  or ambient.

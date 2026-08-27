@@ -273,10 +273,21 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 
 		By("and status follows the sweep back to a converged zero under the new mode")
 		waitForStreamsRunning(defaultTarget, testNs)
+		// Read BOTH halves before asserting either, and report them together. The count and the mode
+		// are written by the same MarkTargetRetention call, so which of them moved says where the
+		// roll-up stopped: mode=Always with a stale count means a report DID land under the new
+		// mode and a later one was lost, while mode=OnEvent means no post-widen report landed at
+		// all. Asserting the count alone threw that away and cost a round of controller-log
+		// archaeology (docs/design/watch-plane-status-convergence-failures.md, Failure B).
 		Eventually(func(g Gomega) {
-			g.Expect(retainedDocumentsOf(g, defaultTarget, testNs)).To(Equal(0),
-				"a resync that retains nothing must drive the count back to zero, not leave it stale")
-			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("Always"))
+			retained := retainedDocumentsOf(g, defaultTarget, testNs)
+			mode := retentionModeOf(g, defaultTarget, testNs)
+			g.Expect(retained).To(Equal(0),
+				"a resync that retains nothing must drive the count back to zero, not leave it "+
+					"stale; retainedDocuments=%d mode=%q", retained, mode)
+			g.Expect(mode).To(Equal("Always"),
+				"the mode must be the one the count was produced under; retainedDocuments=%d mode=%q",
+				retained, mode)
 		}).Should(Succeed())
 
 		By("the target still mirrors live events after the forced replay")

@@ -231,13 +231,23 @@ func verifyResourceCondition(
 			}
 		}
 
-		g.Expect(conditionStatus).To(Equal(expectedStatus))
+		// Every assertion below carries the condition's REASON and MESSAGE, because without them a
+		// timeout reports only `Expected <string>: False to equal <string>: True` -- which names
+		// neither what the controller was waiting for nor what it thought was wrong. Two 90s
+		// failures on this helper cost a round of controller-log archaeology each to learn that one
+		// said "0/1 streams running (configmaps)" and the other something else entirely
+		// (docs/design/watch-plane-status-convergence-failures.md). The controller already
+		// publishes the answer; the assertion just has to print it.
+		detail := fmt.Sprintf("%s %q condition %s: status=%q reason=%q message=%q",
+			resourceType, name, conditionType, conditionStatus, conditionReason, conditionMessage)
+
+		g.Expect(conditionStatus).To(Equal(expectedStatus), "%s", detail)
 		// An empty expectedReason is a status-only gate: the caller does not assert a reason.
 		if expectedReason != "" {
-			g.Expect(conditionReason).To(Equal(expectedReason))
+			g.Expect(conditionReason).To(Equal(expectedReason), "%s", detail)
 		}
 		if expectedMessageContains != "" {
-			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains))
+			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains), "%s", detail)
 		}
 	}
 	Eventually(verifyStatus, resourceConditionTimeout(timeout), resourceConditionPollInterval).Should(Succeed())
