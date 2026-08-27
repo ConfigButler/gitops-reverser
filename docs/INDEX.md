@@ -67,6 +67,15 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 
 ## What is being decided now — [`design/`](design/)
 
+[`gittarget-configuration-freshness.md`](design/gittarget-configuration-freshness.md) is
+**deferred, kept as a decision record** rather than an active proposal. It works out what a
+target-level desired/applied configuration identity would have to be, and why it is not worth
+building yet: as sequenced, both markers move together inside one pass, so the only mismatch they
+can show is a failing pass that existing status already reports, and everything the page is for
+lives in the window where nothing has been published. The one part that stood on its own has
+shipped — the e2e rule barrier now requires `observedGeneration == generation` before it accepts
+`StreamsRunning=True`. The page carries the trigger conditions for picking the rest up.
+
 **The live workstream** is [`design/support-boundary/`](design/support-boundary/) — editing
 existing GitOps folders through the Kubernetes API. Start at
 [`support-contract.md`](design/support-boundary/support-contract.md) — **the single page that

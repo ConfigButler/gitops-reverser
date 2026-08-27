@@ -251,7 +251,8 @@ func waitForStreamsRunning(name, ns string) {
 	verifyResourceCondition("gittarget", name, ns, "StreamsRunning", "True", "", "", "120s")
 }
 
-// waitForWatchRuleStreamsRunning blocks until ONE WatchRule reports StreamsRunning=True.
+// waitForWatchRuleStreamsRunning blocks until ONE WatchRule reports StreamsRunning=True FOR ITS
+// CURRENT GENERATION.
 //
 // Prefer it over waitForStreamsRunning whenever a spec changes a rule on a GitTarget that is
 // ALREADY mirroring. Two things make the target's roll-up the wrong gate there. It answers "is
@@ -259,9 +260,64 @@ func waitForStreamsRunning(name, ns string) {
 // rule has been planned at all; and it is published by the GitTarget controller, so it can still
 // be describing the plan from before this apply. A rule's own status is written by the reconcile
 // that compiled it, so it cannot report the previous rule's answer.
+//
+// The generation check is what makes that last sentence true in practice. Between an edit landing
+// and its reconcile, the rule still carries the PREVIOUS generation's conditions, and those can
+// legitimately read StreamsRunning=True. Without the check this helper returns on the old answer,
+// which is the same class of stale-read the target roll-up has.
 func waitForWatchRuleStreamsRunning(name, ns string) {
 	GinkgoHelper()
-	verifyResourceCondition("watchrule", name, ns, "StreamsRunning", "True", "", "", "120s")
+	By(fmt.Sprintf("verifying watchrule '%s' in ns '%s' has StreamsRunning=True for its current generation",
+		name, ns))
+	Eventually(func(g Gomega) {
+		output, err := kubectlRunInNamespace(ns, "get", "watchrule", name, "-o", "json")
+		g.Expect(err).NotTo(HaveOccurred())
+		var obj unstructured.Unstructured
+		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+		running, why := streamsRunningAtCurrentGeneration(obj)
+		g.Expect(running).To(BeTrue(), "%s", why)
+	}, resourceConditionTimeout([]string{"120s"}), resourceConditionPollInterval).Should(Succeed())
+}
+
+// streamsRunningAtCurrentGeneration is the predicate itself, over a fetched rule object. It is
+// separate from the fetch so a spec can assert it against a known-stale status without racing a
+// controller.
+func streamsRunningAtCurrentGeneration(obj unstructured.Unstructured) (bool, string) {
+	// Both generations are read as present-or-refuse rather than defaulted. A missing
+	// metadata.generation would otherwise read as 0 and compare equal to a missing
+	// status.observedGeneration, so an object carrying neither would satisfy the barrier.
+	generation, found, err := unstructured.NestedInt64(obj.Object, "metadata", "generation")
+	if err != nil || !found {
+		return false, "metadata.generation is absent or malformed; this is not a reconcilable rule"
+	}
+	observed, found, err := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	if err != nil || !found {
+		return false, "status.observedGeneration is absent; the rule has not been reconciled yet"
+	}
+	if observed != generation {
+		return false, fmt.Sprintf(
+			"status is stale: observedGeneration %d, generation %d — StreamsRunning describes the previous spec",
+			observed, generation)
+	}
+
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if !found {
+		return false, "status.conditions is absent"
+	}
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]interface{})
+		if !ok || condMap["type"] != "StreamsRunning" {
+			continue
+		}
+		status, _ := condMap["status"].(string)
+		message, _ := condMap["message"].(string)
+		if status == "True" {
+			return true, ""
+		}
+		return false, fmt.Sprintf("StreamsRunning is %s at generation %d: %s", status, generation, message)
+	}
+	return false, "the rule publishes no StreamsRunning condition"
 }
 
 // createReadyGitProvider creates a GitProvider (branch "main", no commit window) and blocks until
