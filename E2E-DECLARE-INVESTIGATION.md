@@ -107,6 +107,7 @@ normally throughout the same window.
 | CI `E2E (full-manager)` run `33057523968` | `e2685f51` | **FAIL** 54 passed / 1 failed | Manager WatchRule / delete Git file when ConfigMap is deleted `[manager]` |
 | Local `[signing]` only (5 specs) | `eeb231ab` | **PASS** 5/5 | — |
 | Local `[manager]` subset (55 specs) | `eeb231ab` | **PASS** 55/55 in 8m23s | — |
+| Local full, trace armed (71 specs) | `bd2d186b` | **PASS** 71/71 in 11m26s | — |
 
 Both failures are the same shape, in **different specs**. The failing GitTargets were
 `signing-reconcile-dest` and `watchrule-delete-test-dest` respectively.
@@ -120,10 +121,16 @@ write-divergence guard in `RenderFidelityGate.Reconcile`, which has no path to t
 declare code and is very unlikely to be the reason; but it is a difference, and the
 comparison is confounded until a full run is repeated on one commit.
 
-Reading the four rows together: both LARGE runs failed and both SUBSET runs passed,
-which is what an intermittent, load- or timing-dependent fault looks like. Two out of
-two large runs failing is a high hit rate for a flake, and no large run has yet been
-made on `main` for comparison.
+**A repeat of the failing configuration did NOT reproduce it.** The full suite was run
+again on `bd2d186b`, which carries the phase trace described below and an armed watcher
+that would have captured any GitTarget sitting at `StreamsRunning=False` for more than
+45s. 71 specs passed, and the watcher never fired. So the fault is **intermittent**: it
+is not a deterministic consequence of change 2, and it did not reproduce on the third
+large run.
+
+Tally so far: two large runs failed (both on `e2685f51`), three runs passed (two subsets
+and one large, on `eeb231ab` and `bd2d186b`). No large run has yet been made on `main`
+for comparison, so the branch is still the only place it has been seen.
 
 Verbatim, from the local run, all 19 log lines mentioning `signing-reconcile-dest`
 reduce to:
