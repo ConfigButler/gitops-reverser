@@ -201,18 +201,27 @@ out once the condition carries the answer. Net change is negative.
 **4.3 Always drain.** Remove the early return in `enqueueReplayResync` so the queue-full reply is
 read by the drain that the contract already promises will read it.
 
-**4.4 Do not weaken the revision gate.** A stale report from a replaced stream must still be
+**4.4 Record what the gate refuses.** A refused report — one carrying a revision the plan has moved
+past — was discarded in silence, so a scope waiting for its first replay and a scope discarding a
+steady stream of reports were indistinguishable from outside. They have opposite repairs: the first
+converges by waiting, the second never does. The scope now remembers the last revision it refused
+and the pending message says so. This is the asymmetry that gave B evidence and left A with none;
+the retention roll-up already logged its drops.
+
+**4.5 Do not weaken the revision gate.** A stale report from a replaced stream must still be
 refused. The repair is that a scope which cannot be reported under its current revision must be
 *re-measured*, not that an old measurement may stand in for a new one.
 
-### 4.5 Order of work
+### 4.6 Order of work
 
 1. Make the pending scopes visible in the condition, with unit coverage asserting the message
    names the scope. Land this first — it is what makes the next reproduction self-diagnosing.
 2. Remove the temporary diagnostics it replaces.
 3. Fix the always-drain defect.
-4. Then, with the condition naming the scope, take the next reproduction and close whichever of
-   §2.4's three paths it points at.
+4. Then, with the condition naming the scope, its owed revision and any revision it has refused,
+   take the next reproduction and close whichever of §2.4's three paths it points at. The message
+   distinguishes them without a log: a scope that owes a revision and has refused none has never
+   been replayed; one that has refused a report is being fed by a stream the plan has moved past.
 
 Do not treat a green full run as evidence at any step. Both failures have produced fully green CI
 on a commit that failed locally, and vice versa.
