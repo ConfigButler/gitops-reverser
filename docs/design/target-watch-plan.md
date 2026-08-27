@@ -9,7 +9,8 @@ related:
 
 # Target watch plan: reconcile the changed cells
 
-> **design**: open. The diff is built and applied; removal semantics are not.
+> **design**: open. The diff is built and applied. Removal semantics are not,
+> and the deletion the diff unlocks has not been made.
 > Index: [`../INDEX.md`](../INDEX.md)
 
 **The short version.** A GitTarget's watch set is replaced wholesale today, so
@@ -29,12 +30,14 @@ served API version is data carried by the stream rather than part of the cell's
 identity, because Git paths are versionless and a storage-version bump must not
 move a file.
 
-The desired watch set is already a map from a cell to an operation filter. But
-any difference in that map cancels every stream for the target and replays every
-cell, so adding one rule replays unrelated resources and can fill the branch
-worker's shared queue.
+The desired watch set was already a map from a cell to an operation filter, but
+any difference in that map canceled every stream for the target and replayed
+every cell, so adding one rule replayed unrelated resources and could fill the
+branch worker's shared queue.
 
-The refactor changes the unit of work from the whole target to the changed cells.
+The refactor changes the unit of work from the whole target to the changed
+cells. That part is built; what remains is what a cell LEAVING means, and the
+mechanism the old behavior forced into existence and no longer justifies.
 
 ## The queue is shared, so it stays dumb
 
@@ -114,24 +117,10 @@ is a larger change.
 
 ## Diff the plan
 
-The manager computes a desired plan from the authoritative watched-type table:
-
-```go
-type CellKey struct {
-    Group     string
-    Resource  string
-    Namespace string
-}
-
-type CellSpec struct {
-    Operations string // canonical, sorted operation filter
-    Version    string // served version used to open the watch
-}
-
-type TargetWatchPlan struct {
-    Cells map[CellKey]CellSpec
-}
-```
+**Built**, in `internal/watch/target_watch_plan.go`. The manager computes a
+desired plan from the authoritative watched-type table: a map from cell to
+specification, where the specification is the canonical operation filter and the
+served version the stream opens at.
 
 Comparing the previous and desired plans gives four outcomes:
 
@@ -142,11 +131,19 @@ Comparing the previous and desired plans gives four outcomes:
 | `restart` | key in both, specification changed | Cancel, replace, and replay that cell |
 | `stop` | key only in the previous plan | Cancel and drop the key |
 
-An operation-filter change is a `restart` rather than a `keep`. Today's
-whole-set replacement handles that correctly by accident, and a diff comparing
-keys alone would regress it. A served-version change is also a `restart`, because
-a watch is opened at a concrete version. A forced recovery can classify every
-cell as `restart` and needs no state machine of its own.
+An operation-filter change is a `restart` rather than a `keep`. The whole-set
+replacement handled that correctly by accident, and a diff comparing keys alone
+would have regressed it. A served-version change is also a `restart`, because a
+watch is opened at a concrete version. A forced recovery classifies every cell as
+`restart` and needs no state machine of its own.
+
+One subtlety is invisible in that table and worth stating, because getting it
+wrong looks like working code. A running stream is keyed by a watch key that
+embeds the full GVR, so diffing THOSE keys would read a storage-version bump as a
+`stop` of one key plus a `start` of another: the cell would be canceled,
+replayed, and stripped of its readiness result, for a change that moves no file.
+The plan is keyed by the cell and carries the version as specification data,
+which makes the same event a single `restart`.
 
 Because nothing filters the queue, `stop` is cheap: cancel the stream, drop the
 key, and let whatever is already queued drain. `stop` never touches files. The
@@ -418,46 +415,122 @@ removed cell leaves the target's readiness reduction.
 The readiness store may use an internal revision to ignore a late report, but
 that revision stays an implementation detail of the store. It is not a second
 watch protocol and it does not travel through queued work. That is what
-`RenderFidelityGate` now keeps: one revision per scope, issued when the cell's
-stream starts and carried by that stream alone, so a retired stream's tail is
-stale by construction.
+`RenderFidelityGate` keeps: one revision per scope, issued when the cell's stream
+starts and carried by that stream alone, so a retired stream's tail is stale by
+construction.
 
 An unrelated plan change must not clear a divergence. A target held open by a
 render-fidelity divergence stays held, because adding a WatchRule is no evidence
 that the divergence was resolved. Only a successful replay of the divergent cell
 clears it.
 
-## Implementation order
+The gate used to key this on a single per-target epoch that every declaration
+bumped, which was coherent only while every declaration restarted every stream.
+Applying the plan per cell breaks it in both directions at once: a kept cell
+would sit pending under an epoch it never replayed for, holding the target
+Unknown and closing its writes forever, and an unrelated edit would clear a
+divergence nothing had re-measured. The revision had to become per scope before
+the diff could be applied at all.
 
-Three changes, each independently shippable. The first two are done.
+Retention rides the same revisions, because it used that epoch for scope
+eviction. The roll-up is keyed by cell, so the plan installs its selected cells
+and their revisions, and a count is accepted only for a cell the plan holds, at
+the revision it holds. A cell that leaves takes its count with it; a cell that is
+kept keeps the count nothing re-measured.
 
-**3. Removal semantics.** Subscribe to the registry so a settled `TypeRemoved`
-drops its cell from the plan as an authoritative cause. Give the whole-target
-sweep a producer: an all-or-nothing union gather across the selected cells,
-enqueued as a nil-scope resync, under the existing `prune.mode` gate. Withdrawal
-converges on that alone. Sweeping on **intent** waits for the open decision.
+### The one divergence that belongs to no cell
 
-Then reassess coalescing, per "Whether coalescing should survive the diff". It
-was sequenced after change 2 because that is what makes it safe, so it is
-unblocked: measure the real resync rate now that one rule edit produces one
-restart.
+A divergence a live WRITE discovers is target-level, and it cannot be filed under
+a cell. Two facts settle that, and both were checked rather than assumed:
 
-Already built: cell identity (`types.CellKey`, versionless, one stream per cell),
-the source cell stamped on queued items with no lease beside it, the coalescing
-tail fence, the whole-target mark-and-sweep itself, which needs a caller rather
-than an implementation, and **changes 1 and 2** — `target_watch_plan.go` computes
-the desired plan and classifies it against the running streams, and
-`replaceGitTargetWatches` acts on that classification. A `targetWatchSet` is a
-map of running streams keyed by cell, each with its own cancel, so `stop` and
-`restart` cancel one cell and `keep` touches nothing. Every reconcile logs the
-four outcomes with each cell named, an all-`keep` one included.
+- a commit window batches events from several cells of one GitTarget, so the
+  refused flush is not one cell's work;
+- the refusal names Git **paths**, and resolving a path back to a type needs the
+  GVK-to-GVR mapping this plan deliberately stopped depending on (see "What this
+  deletes from the plan").
 
-Two things moved with it. The render-fidelity **revision is per scope**: a kept
-cell carries its revision and its result across a plan change, so an unrelated
-edit neither closes writes nor clears a divergence, and a divergence a live
-write found — which belongs to no cell — is cleared only by a plan that restarts
-every scope. The retention roll-up used that same epoch for scope eviction, so
-the plan now installs its cells and revisions instead.
+So the gate holds it beside the scopes rather than inside one, and only a plan
+that restarts every scope clears it: a forced recheck, or a target starting from
+nothing. That is stricter than `GitPathAccepted`, which any one successful resync
+clears, and the asymmetry is deliberate. Acceptance is a property of the subtree
+that any successful flush re-proves. Fidelity is per-cell evidence, and one
+cell's clean replay says nothing about a token another cell writes.
+
+## Where this stands, and what to merge
+
+Three changes, each independently shippable. **The first two are built.**
+
+### Built
+
+Cell identity (`types.CellKey`, versionless, one stream per cell); the source
+cell stamped on queued items, with no lease beside it; the coalescing tail fence;
+the whole-target mark-and-sweep itself, which needs a caller rather than an
+implementation; and:
+
+**1. The diff.** `target_watch_plan.go` computes the desired plan and classifies
+it against the running streams into `keep` / `start` / `restart` / `stop`. Every
+reconcile logs the four outcomes with each cell named, an all-`keep` one
+included.
+
+**2. Applying it.** A `targetWatchSet` is a map of running streams keyed by cell,
+each with its own cancel, so `stop` and `restart` cancel one cell and `keep`
+touches nothing. Readiness follows: a kept cell holds the result its own replay
+produced. Cancellation is prompt at the producer: a canceled stream stops
+enqueuing before routing a live event and before enqueueing a replay snapshot it
+can no longer report on. The render-fidelity revision and the retention roll-up
+moved with it, for the reasons under "Readiness".
+
+Two mechanisms went with the wholesale replacement they existed for: the
+set-wide cancel, and the whole-map specification comparison that answered "did
+anything change". The diff answers that per cell, so an unchanged reconcile is
+"nothing to start, nothing to stop" rather than an early return.
+
+### The merge boundary is here
+
+Changes 1 and 2 are a merge point, and the argument is that nothing waits on
+change 3.
+
+`stop` canceling a stream without touching files is not an interim state. It is
+what [`configuration.md`](../configuration.md) promises today: a deselected
+namespace's documents stay in Git. The sweep converges the mirror afterwards, and
+the plan owes it nothing in the meantime. A reader of the repository sees the
+behavior the documentation already describes, reached more cheaply.
+
+Bundling change 3 would put an unresolved product decision ("The one decision
+still open") inside a pull request whose other half is finished, and would hold a
+performance fix hostage to it. Merge here.
+
+### Then, in this order
+
+1. **Measure, then delete coalescing.** This is the largest deletion available,
+   and change 2 is what makes it safe (see "Whether coalescing should survive the
+   diff"). It needs a number from a running workload, which is a second reason to
+   merge first: the measurement is the real resync rate once one rule edit
+   produces one restart. If it sits comfortably inside the queue, `pendingResyncs`,
+   `tailPassed`, `ErrResyncSuperseded` and the tail fence go together.
+2. **Change 3, removal semantics.** Subscribe to the registry so a settled
+   `TypeRemoved` drops its cell as an authoritative cause, and give the
+   whole-target sweep a producer: an all-or-nothing union gather across the
+   selected cells, enqueued as a nil-scope resync under the existing `prune.mode`
+   gate. Withdrawal converges on that alone. Sweeping on **intent** waits for the
+   open decision.
+
+The order is deliberate. Change 3 carries a product question and adds a new
+resync producer; the coalescing deletion carries neither and is pure subtraction.
+Doing the subtraction first also means change 3's sweep is measured against a
+queue whose behavior is settled, rather than against one being changed underneath
+it.
+
+### What this left behind
+
+Two small debts, recorded so they are paid rather than discovered:
+
+- `streamRevisions` fills in zero revisions when no shared fidelity gate is
+  wired. That path exists only because the gate can be absent in test wiring, and
+  it is a fork in the code that a required gate would delete.
+- The retention roll-up now drops a count for a cell its plan has not installed
+  yet. That is the correct fence, but it is an ordering requirement a caller can
+  trip, where eviction by epoch could not be got wrong.
 
 If a concurrency problem later resists prompt cancellation and FIFO ordering,
 document that specific failure before adding any fence, then add the smallest one
@@ -465,18 +538,22 @@ that prevents it.
 
 ## Acceptance scenarios
 
-A scenario list rather than a test plan. Each needs a failing-first test.
+A scenario list rather than a test plan. Each needs a failing-first test. The
+ones changes 1 and 2 cover are marked; the rest belong to the work still ahead.
 
-**Classification.** Adding a rule starts one cell and leaves every existing cell
-running. Removing one of several rules stops one cell and leaves the others
-untouched. An operation-filter edit restarts that cell alone. A no-op edit, such
-as a status write, classifies everything as `keep` and preserves readiness
-results.
+**Classification**, covered in `internal/watch/target_watch_test.go`. Adding a
+rule starts one cell and leaves every existing cell running. Removing one of
+several rules stops one cell and leaves the others untouched. An operation-filter
+edit restarts that cell alone. A no-op edit, such as a status write, classifies
+everything as `keep` and preserves readiness results.
 
-**The accepted tail.** Work queued before a cell was deselected is still applied,
-and its commit is well-formed. A canceled stream stops enqueuing promptly, so the
-tail is bounded by the queue rather than by how long the goroutine lives. A write
-and a drop record both name the producing cell, with no lease.
+**The accepted tail**, partly covered. Work queued before a cell was deselected
+is still applied, and its commit is well-formed. A canceled stream stops
+enqueuing promptly, so the tail is bounded by the queue rather than by how long
+the goroutine lives. A write and a drop record both name the producing cell, with
+no lease. What is asserted today is the producer half: a canceled stream
+enqueues nothing. That the tail's own commit is well-formed is an end-to-end
+claim no unit test makes.
 
 **Ordering.** A restart while events for that scope are queued does not apply an
 older event after a newer snapshot. A resync never coalesces past a queued write
@@ -495,6 +572,7 @@ only under the mode the open decision names. Auxiliary and retained files inside
 an accepted folder are never touched. A sweep run twice with no cluster change is
 a no-op the second time.
 
-**Render fidelity.** A diverged cell stays diverged across an unrelated plan
-change, and writes do not reopen. The diverged cell reporting clean reopens
-writes, once.
+**Render fidelity**, covered in `internal/git/render_fidelity_gate_test.go`. A
+diverged cell stays diverged across an unrelated plan change, and writes do not
+reopen. The diverged cell reporting clean reopens writes, once. A divergence a
+live write found is cleared only by a plan that restarts every scope.
