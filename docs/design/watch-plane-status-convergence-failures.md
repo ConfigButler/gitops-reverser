@@ -322,17 +322,35 @@ refused. The repair is that a scope which cannot be reported under its current r
 
 ### 4.8 Order of work
 
-1. Make the pending scopes visible in the condition, with unit coverage asserting the message
-   names the scope. Land this first — it is what makes the next reproduction self-diagnosing.
-2. Remove the temporary diagnostics it replaces.
-3. Fix the always-drain defect.
-4. Then, with the condition naming the scope, its owed revision and any revision it has refused,
-   take the next reproduction and close whichever of §2.5's three paths it points at. The message
-   distinguishes them without a log: a scope that owes a revision and has refused none has never
-   been replayed; one that has refused a report is being fed by a stream the plan has moved past.
+Steps 1-5 have LANDED. What remains is step 6, and it needs a reproduction rather than a theory.
+
+1. ✅ Pending scopes named in the condition, with the revision each owes (§4.1).
+2. ✅ Temporary A1/A2 diagnostics removed; supersession log back to `V(1)` (§4.2).
+3. ✅ The drain starts even when the enqueue was dropped (§4.3).
+4. ✅ Every fidelity refusal named, on all four branches (§4.4), and recorded on the scope (§4.5).
+5. ✅ The retention roll-up says when it accepts a report that publishes nothing (§4.6).
+6. ⬜ **Take the next reproduction and read what it says.** Do not guess between the branches; §3.3
+   is what guessing cost last time.
+
+Reading the next A reproduction:
+
+| What the condition says | Branch |
+| --- | --- |
+| owes revision N, no refusal clause, and a `render scope result was not applied` line naming it | the gate holds the scope but refused the report — read `reportedRevision` against N |
+| owes revision N, no refusal clause, and NO such line | no report ever reached the gate — the search moves to the drain and to `enqueueReplayResync` |
+| `stream carries no revision` | the stream was started without a revision; the plan pass and the gate disagree about the cell |
+
+Reading the next B reproduction:
+
+| What the log says | Meaning |
+| --- | --- |
+| `retention report accepted but published nothing` | the report landed and matched the previous values — so the count was already what the sweep produced, and the bug is upstream of the roll-up |
+| `retention report dropped` | the revision gate or the plan membership refused it |
+| neither, count still stale | `MarkTargetRetention` was never called; the search moves to the drain |
 
 Do not treat a green full run as evidence at any step. Both failures have produced fully green CI
-on a commit that failed locally, and vice versa.
+on a commit that failed locally, and vice versa — and §3.3 records a fix that passed the very spec
+it targeted while contradicting the logs.
 
 ---
 
