@@ -401,6 +401,13 @@ Reading the next A reproduction:
 | a `render scope result accepted` line for the cell, yet the condition still names it | the gate took the report and the scope is STILL pending — the disagreement is inside the gate, or a later `Reconcile` reset it |
 | no `accepted` line and no `not applied` line | nothing reached the mark path — the search moves to the drain and to `enqueueReplayResync`, whose `ctx.Done()` guard returns nil as if it had succeeded |
 
+There is a fifth silent branch, and it is deliberately left silent: `MarkTargetRenderFidelity*`
+returns without a word when `fidelityGate()` is nil, which is the no-gate-wired legacy path used by
+tests. It cannot explain any failure in which OTHER scopes of the same target reported, because the
+gate is a single instance created in `NewWorkerManager` and shared by every worker and the watch
+manager — if it were nil, no scope would ever report and the target would read vacuously ready.
+Do not spend a run on it.
+
 Reading the next B reproduction:
 
 | What the log says | Meaning |
