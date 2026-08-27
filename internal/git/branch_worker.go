@@ -403,7 +403,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.Log.V(1).Info("Resync request coalesced into the one already queued",
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
-			"provenance", request.Provenance.String())
+			"sourceCell", sourceCellForLog(request.SourceCell))
 		return true
 	} else if queued {
 		// A write inside this scope was queued behind the marker. Coalescing here
@@ -431,7 +431,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
-			"provenance", request.Provenance.String())
+			"sourceCell", sourceCellForLog(request.SourceCell))
 		return true
 	default:
 		w.inflightItems.Add(-1)
@@ -439,7 +439,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.pendingResyncsMu.Unlock()
 		w.Log.Error(nil, "Event queue full, resync request dropped",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
-			"provenance", request.Provenance.String())
+			"sourceCell", sourceCellForLog(request.SourceCell))
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
@@ -548,7 +548,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName,
-			"provenance", request.provenance().String())
+			"sourceCell", sourceCellForLog(request.sourceCell()))
 		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
 		// the loop republishes on every received item, so the gauge converges
 		// without an enqueue-side write that could latch a stale value.
@@ -563,7 +563,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName,
-			"provenance", request.provenance().String())
+			"sourceCell", sourceCellForLog(request.sourceCell()))
 		return false
 	}
 }

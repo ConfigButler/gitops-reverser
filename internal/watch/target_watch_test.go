@@ -210,10 +210,10 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 	assert.Empty(t, event.Object.GetResourceVersion(), "live events are sanitized before entering Git")
 }
 
-// Provenance is stamped where both halves are known. Downstream it cannot be reconstructed: a
+// The source cell is stamped where it is known. Downstream it cannot be reconstructed: a
 // cluster-wide and a namespaced stream deliver the same object, so the producing cell is not
-// recoverable from the event, and the incarnation is not recoverable at all.
-func TestRouteLiveTargetWatchEvent_StampsTheProducingCellAndLease(t *testing.T) {
+// recoverable from the event itself.
+func TestRouteLiveTargetWatchEvent_StampsTheProducingCell(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	enqueuer := &recordingEnqueuer{}
 	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
@@ -223,9 +223,8 @@ func TestRouteLiveTargetWatchEvent_StampsTheProducingCellAndLease(t *testing.T) 
 	}
 	manager := &Manager{EventRouter: router}
 	watching := targetWatchStream{
-		key:   targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		ops:   OperationSet{"CREATE": struct{}{}},
-		lease: 42,
+		key: targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
+		ops: OperationSet{"CREATE": struct{}{}},
 	}
 
 	_, err := manager.routeLiveTargetWatchEvent(
@@ -238,22 +237,7 @@ func TestRouteLiveTargetWatchEvent_StampsTheProducingCellAndLease(t *testing.T) 
 
 	require.NoError(t, err)
 	require.Len(t, enqueuer.events, 1)
-	assert.Equal(t, git.Provenance{Cell: types.CellKeyFor(configmapsGVR, "apps"), Lease: 42},
-		enqueuer.events[0].Provenance)
-}
-
-// Every started stream takes its own lease, so two incarnations of one cell — and two cells of
-// one GitTarget — never stamp the same provenance.
-func TestReplaceGitTargetWatches_LeasesAreUniquePerStartedStream(t *testing.T) {
-	manager := &Manager{}
-	seen := map[uint64]struct{}{}
-	for range 4 {
-		lease := manager.nextStreamLease()
-		assert.NotZero(t, lease, "zero means unclaimed; a started stream always claims")
-		_, repeated := seen[lease]
-		assert.False(t, repeated, "a lease identifies one incarnation and is never reused")
-		seen[lease] = struct{}{}
-	}
+	assert.Equal(t, types.CellKeyFor(configmapsGVR, "apps"), enqueuer.events[0].SourceCell)
 }
 
 func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {

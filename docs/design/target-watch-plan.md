@@ -9,7 +9,7 @@ related:
 
 # Target watch plan: reconcile the changed cells
 
-> **design**: open. Cell identity is built; the diff is not.
+> **design**: open. Cell identity and the producer cut are built; the diff is not.
 > Index: [`../INDEX.md`](../INDEX.md)
 
 **The short version.** A GitTarget's watch set is replaced wholesale today, so
@@ -78,7 +78,7 @@ All three are dropped, and this table exists so none of them grows back:
 
 | Dropped | Why it existed | Why it goes |
 | --- | --- | --- |
-| Per-cell **lease** on every queued item | Tell a canceled stream's in-flight item from its replacement's | A late item is allowed, so there is nothing to reject |
+| Per-cell **lease** on every queued item | Tell a canceled stream's in-flight item from its replacement's | A late item is allowed, so there is nothing to reject. **Removed** |
 | **Tombstones** for stopped cells | Reject queued work after a `stop` | Retiring one meant knowing no work carrying it could remain in flight, which the queue cannot answer |
 | Target-wide **plan generation** and `BeginDelta` | Order plan transitions and reset readiness per epoch | Readiness is per cell and keeps its own revision internally |
 
@@ -87,12 +87,13 @@ of the mirror it speaks for. That is what a saturated queue has to be diagnosed
 from. Nothing is rejected on it, and nothing should be: the moment the worker
 judges an item, the shared queue has learned about tenant configuration again.
 
-The **lease** goes with the fence it was built for. It was the stream incarnation
+The **lease** went with the fence it was built for. It was the stream incarnation
 stamped beside the cell, and its only purpose was to let a consumer tell a
 canceled stream's item from its replacement's. Keeping a field against a fence
-that will never be built is how a retired design grows back. Removing it leaves
-`git.Provenance` holding one field, so the type collapses: queued work carries a
-`types.CellKey` directly.
+that will never be built is how a retired design grows back, so it was deleted
+rather than deprecated. That left `git.Provenance` holding one field, so the type
+collapsed with it: queued work now carries a `types.CellKey` named `SourceCell`,
+and `sourceCellForLog` renders the zero cell as "unclaimed".
 
 ### Where the bound is thin
 
@@ -425,12 +426,7 @@ clears it.
 
 ## Implementation order
 
-Four changes, each independently shippable.
-
-**0. Delete the lease.** Drop `Provenance.Lease` and the stream lease counter
-that feeds it, collapse `git.Provenance` to the cell it carries, and keep the
-cell on every live event and replay request. Pure subtraction, and it clears a
-retired design out of the way.
+Three changes, each independently shippable.
 
 **1. Diff the plan and log it.** Compute the desired plan, classify against the
 active streams, and log the four outcomes without acting on them. This validates
@@ -451,8 +447,9 @@ Then reassess coalescing, per "Whether coalescing should survive the diff". It i
 sequenced after change 2 because that is what makes it safe.
 
 Already built: cell identity (`types.CellKey`, versionless, one stream per cell),
-the cell stamped on queued items, the coalescing tail fence, and the whole-target
-mark-and-sweep itself, which needs a caller rather than an implementation.
+the source cell stamped on queued items with no lease beside it, the coalescing
+tail fence, and the whole-target mark-and-sweep itself, which needs a caller
+rather than an implementation.
 
 If a concurrency problem later resists prompt cancellation and FIFO ordering,
 document that specific failure before adding any fence, then add the smallest one

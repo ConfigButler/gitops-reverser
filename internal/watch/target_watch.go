@@ -62,26 +62,17 @@ type targetWatchKey struct {
 	Namespace string
 }
 
-// nextStreamLease hands out the next stream lease. It is process-wide and monotonic, so a
-// lease identifies one incarnation of one stream and never coincides with another cell's.
-// Nothing is fenced on it: see targetWatchStream.lease.
-func (m *Manager) nextStreamLease() uint64 {
-	return m.streamLeases.Add(1)
-}
-
-// targetWatchStream is one running target watch: the cell it covers, the operation filter it
-// applies, and the lease that stamps everything it queues.
+// targetWatchStream is one running target watch: the cell it covers and the operation filter
+// it applies.
 //
-// The lease is slated for removal along with git.Provenance.Lease: it was the incarnation a
-// consumer-side fence would have judged, and no such fence is being built. It is NOT a fence. Once
-// work is on the branch worker's FIFO it will be applied, and a canceled stream's goroutine
-// can still be in flight, so a short tail of writes from a deselected cell is accepted rather
-// than rejected on arrival. The plan is applied by canceling streams, at the producer
+// Nothing about a stream fences the work it queues. Once an item is on the branch worker's
+// FIFO it will be applied, and a canceled stream's goroutine can still be in flight, so a
+// short tail of writes from a deselected cell is accepted rather than rejected on arrival. The
+// plan is applied by canceling streams, at the producer
 // (docs/design/target-watch-plan.md, "Cut at the producer").
 type targetWatchStream struct {
-	key   targetWatchKey
-	ops   OperationSet
-	lease uint64
+	key targetWatchKey
+	ops OperationSet
 	// epoch is the render-fidelity epoch this stream was started into. It is captured at
 	// start, not read when a replay result is ready: a cancelled stream that read the epoch
 	// on its way out would report its scope clean in an epoch it never replayed for. Since a
@@ -90,14 +81,13 @@ type targetWatchStream struct {
 	epoch uint64
 }
 
-// provenance is what this stream stamps on the work it queues: which cell produced it, and
-// which incarnation of that cell.
-func (s targetWatchStream) provenance() git.Provenance {
-	return git.Provenance{Cell: s.key.Cell(), Lease: s.lease}
+// sourceCell is what this stream stamps on the work it queues: the cell that produced it.
+func (s targetWatchStream) sourceCell() types.CellKey {
+	return s.key.Cell()
 }
 
 // Cell is this stream's identity everywhere it crosses a subsystem boundary: the sweep scope
-// its replay runs under, the render-fidelity scope it reports into, and the provenance stamped
+// its replay runs under, the render-fidelity scope it reports into, and the source cell stamped
 // on the work it queues. The served version stays on the key — a stream has to open a watch
 // with a concrete version — but it is not part of the cell, so the key always round-trips to
 // the boundary it sweeps (docs/design/target-watch-plan.md, "Diff the plan").
@@ -171,14 +161,9 @@ func (m *Manager) replaceGitTargetWatches(
 
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 	for _, watchKey := range keys {
-		// Each started stream takes a fresh lease, which stamps every item it queues. A
-		// replacement therefore queues work under a lease its predecessor never used, so a
-		// log line names the incarnation as well as the cell. Nothing is rejected on it
-		// (docs/design/target-watch-plan.md, "Cut at the producer").
 		stream := targetWatchStream{
 			key:   watchKey,
 			ops:   streams[watchKey],
-			lease: m.nextStreamLease(),
 			epoch: epoch,
 		}
 		go m.runTargetWatch(childCtx, log, table.GitDest, stream)
@@ -756,7 +741,7 @@ func (m *Manager) enqueueReplayResync(
 	// writes on the strength of a snapshot the new declaration never gathered. The gate
 	// already ignores a stale epoch; capturing it at start is what makes it stale.
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.provenance(), desired, revision, false)
+		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, revision, false)
 	if err != nil {
 		return err
 	}
@@ -866,7 +851,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		// Stamp the producing cell and stream incarnation before the event leaves the stream.
 		// It is the only place both are known: downstream, a cluster-wide and a namespaced
 		// stream deliver the same object and the cell can no longer be recovered from it.
-		event.Provenance = stream.provenance()
+		event.SourceCell = stream.sourceCell()
 		// Carry the source cluster so the git writer resolves this document's GVK->GVR
 		// against the cluster it was watched on, never a union of all clusters.
 		event.SourceCluster = m.clusterIDForGitTarget(gitDest)

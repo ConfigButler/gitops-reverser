@@ -97,30 +97,29 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	assert.Len(t, w.eventQueue, 1, "a scope taken off the queue can be queued again")
 }
 
-// Coalescing swaps the whole request, so the provenance that reaches the worker is the
-// SURVIVING snapshot's — not the marker's. A restart is exactly the case that produces two
-// snapshots for one cell, and reading the retired stream's provenance off the applied one
-// would misreport which incarnation the mirror now reflects.
-func TestEnqueueResync_CoalescingCarriesTheSurvivingProvenance(t *testing.T) {
+// Coalescing swaps the whole request, so what reaches the worker is the SURVIVING snapshot,
+// not the marker's. Running the retired payload at the surviving position would mirror state
+// the cluster has already moved past.
+func TestEnqueueResync_CoalescingCarriesTheSurvivingRequest(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
 	cell := types.CellKeyFor(configmapsGVRForScope, "team-a")
 	scope := ResyncScopeFor(configmapsGVRForScope, "team-a")
 
 	require.True(t, w.EnqueueResync(&ResyncRequest{
 		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "1", Scope: &scope,
-		Provenance: Provenance{Cell: cell, Lease: 1}, Result: make(chan ResyncResult, 1),
+		SourceCell: cell, Result: make(chan ResyncResult, 1),
 	}))
 	require.True(t, w.EnqueueResync(&ResyncRequest{
 		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "2", Scope: &scope,
-		Provenance: Provenance{Cell: cell, Lease: 2}, Result: make(chan ResyncResult, 1),
+		SourceCell: cell, Result: make(chan ResyncResult, 1),
 	}))
 
 	item := <-w.eventQueue
 	require.NotNil(t, item.Resync)
 	current := w.takePendingResync(item.Resync)
-	assert.Equal(t, uint64(2), current.Provenance.Lease,
-		"the restarted stream's snapshot is the one that runs, and it says so")
-	assert.Equal(t, cell, current.Provenance.Cell)
+	assert.Equal(t, "2", current.Revision,
+		"the newer snapshot is the one that runs, at the marker's position")
+	assert.Equal(t, cell, current.SourceCell, "and it still names the cell that gathered it")
 }
 
 // TestEnqueueResync_AcceptedRequestAlwaysRuns pins the atomicity of insert-and-queue

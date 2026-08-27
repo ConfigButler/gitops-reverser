@@ -197,7 +197,7 @@ func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	scope git.ResyncScope,
-	provenance git.Provenance,
+	sourceCell types.CellKey,
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 	heal bool,
@@ -213,7 +213,7 @@ func (r *EventRouter) enqueueScopedResync(
 		GitTargetName:      gitDest.Name,
 		GitTargetNamespace: gitDest.Namespace,
 		Scope:              &scope,
-		Provenance:         provenance,
+		SourceCell:         sourceCell,
 		Heal:               heal,
 		Result:             resultCh,
 	})
