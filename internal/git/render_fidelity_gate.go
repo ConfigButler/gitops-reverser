@@ -54,7 +54,7 @@ type renderFidelityScopeResult struct {
 	// stuck pending looks identical whether no stream has reported yet or a stream is reporting
 	// steadily under a revision the plan has moved past, and those two have opposite repairs —
 	// the first waits, the second can wait for ever
-	// (docs/design/watch-plane-status-convergence-failures.md, §2.4).
+	// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
 	refusedRevision uint64
 }
 

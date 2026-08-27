@@ -119,7 +119,23 @@ constant string.
 **This is the defect that made a two-hour bug into a three-day one**, and it is the first thing
 §4 fixes. A running system must be able to say what it is waiting for.
 
-### 2.4 The failure class
+### 2.4 The diagnostic working, first time out
+
+Run `33116777679`, `E2E (quickstart-install)`, on the commit that added §4.1:
+
+```text
+watchrule "quickstart-watchrule-…" condition Ready: status="False" reason="Rechecking"
+  message="Waiting for 1 of 5 render scopes to report under their current revision:
+           ingresses.networking.k8s.io in …-test-quickstart-framework (revision 5)"
+```
+
+**One** scope of five, named, with the revision it owes. Every previous reproduction of A produced
+`Expected <string>: False to equal <string>: True` and a round of log archaeology; this one states
+the answer in the failure text. The remaining question — whether that scope has never been replayed
+or is being fed reports under a revision the plan has moved past — is what §4.4's refused-revision
+recording answers, and it is not yet in this run.
+
+### 2.5 The failure class
 
 Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
 reports exactly once per revision, from
@@ -154,32 +170,75 @@ rather than *derived*. Any disagreement between the mirrors is unobservable and 
 
 ---
 
-## 3. Failure B — the same defect on the retention roll-up
+## 3. Failure B — named, with a local reproduction
 
-The evidence recorded for B is unchanged and still accurate; only its classification moves.
-
-`Manager GitTarget prune policy` → "converges an existing orphan when `prune.mode` is widened,
-without touching the WatchRule",
-[`prune_mode_e2e_test.go:280`](../../test/e2e/prune_mode_e2e_test.go):
+Reproduced **locally** for the first time on `fc04b15b`, which is what settled it. The local
+failure carries one field the CI reproductions did not print:
 
 ```text
-Timed out after 30.000s.
-a resync that retains nothing must drive the count back to zero, not leave it stale
-Expected <int>: 1 to equal <int>: 0
+a resync that retains nothing must drive the count back to zero, not leave it stale;
+retainedDocuments=1 mode="OnEvent"
 ```
 
-The force replay fires (`restart:1`), the sweep works — both orphans leave Git, which is why the
-file assertions passed — and then the plan reports only `keep`, so nothing re-measures and the
-published count sits stale past any test budget. The asymmetry noted at the time (two resync
-commits, one handle/apply pair, the second commit re-deleting a file the first removed) is the
-same "a result was produced that no roll-up counted" shape as A.
+`mode` is the **pre-widening** value, and that is the whole diagnosis.
 
-`MarkTargetRetention` has A's problem 2 verbatim: it drops any report whose revision the plan has
-moved past, or whose cell the plan no longer holds, and the published count then describes nothing
-with nothing scheduled to correct it. Dropping the *stale* report is correct. Leaving the roll-up
-permanently unmeasured afterwards is not.
+### 3.1 The timeline
 
----
+For `prune-default-target`, all inside 32 seconds:
+
+| Time | Event |
+| --- | --- |
+| 21:11:03 | `resync retained managed documents … retained:1 pruneMode:"OnEvent"` |
+| 21:11:19 | widen patch applied (`prune.mode: Always`) |
+| **21:11:25** | plan reconciled — **`restart:1`** — the force replay fires correctly |
+| 21:11:25 | replay complete `count:2`; `Handling resync request` → **`Resync request applied`, `committed:true deleted:1`** |
+| 21:11:27 → 21:11:57 | `keep:1` only. No restart, no further resync |
+
+The force replay works. The resync applied and committed. And the roll-up never moved.
+
+### 3.2 The proof, by elimination
+
+`MarkTargetRetention` assigns `state.mode = mode.OrDefault()` **unconditionally** on its accepted
+path. So a published `mode` still reading `OnEvent` admits only two explanations: no report
+arrived, or the report itself carried `OnEvent`.
+
+A report certainly arrived — the resync applied successfully, and `drainScopedResync` calls
+`MarkTargetRetention` unconditionally on a successful result. No `retention report dropped` line
+fired, so it was not refused. Therefore **the report carried `PruneMode: OnEvent`**, on a resync
+that ran *after* the widening, *because of* the widening.
+
+### 3.3 The cause: two sources of truth for one policy
+
+The replay is forced by the watch-plane owner, which learned the new mode from the GitTarget
+controller's declare — a value read by a controller that had already observed the patch. The
+resync is then planned by the branch worker, which re-derives the mode independently in
+[`resolveTargetMetadata`](../../internal/git/pending_writes.go) via `target.EffectivePruneMode()`
+on `w.Client` — the **cached** client.
+
+When the worker's cache has not yet caught the patch, the pass that was forced *because the mode
+changed* runs under the *old* mode. The planner then retains the orphan instead of sweeping it,
+and reports `Retained: 1, PruneMode: OnEvent` — `deleted:1` alongside it is not a contradiction,
+because `onEvent` does drop a document whose scope saw an event.
+
+Two things then conspire to make it permanent:
+
+**B-1, the cause.** A resync is "make Git match this desired set, for this scope, under this
+policy". Three of those four travel on the request; the policy is re-read from a different
+snapshot at the far end, so it can disagree with the decision that scheduled the work.
+
+**B-2, why it never recovers.** The report is accepted and is byte-identical to the previous one,
+so `changed` is false and `mutateWatchPlane` **discards the whole mutation** — no publish, no
+enqueue. An accepted report that equals its predecessor is indistinguishable from no report at
+all, so the roll-up cannot tell "re-measured, unchanged" from "never re-measured". The force is
+consumed, the plan settles at `keep:1`, and nothing re-measures.
+
+### 3.4 Why every earlier diagnostic missed it
+
+The `resync retained managed documents` Info line is throttled to once per ten minutes per
+`gitTarget@base` by `shouldLogRetention`. It fired at 21:11:03, so the one that would have named
+the stale mode at 21:11:25 was suppressed; its unthrottled twin is `V(1)`, which CI does not run.
+The drop diagnostic could not fire because nothing was dropped. B1 and B2 as originally posed —
+the revision gate and the superseded path — are both retired.
 
 ## 4. The fix, and why it removes code
 
@@ -219,7 +278,7 @@ refused. The repair is that a scope which cannot be reported under its current r
 2. Remove the temporary diagnostics it replaces.
 3. Fix the always-drain defect.
 4. Then, with the condition naming the scope, its owed revision and any revision it has refused,
-   take the next reproduction and close whichever of §2.4's three paths it points at. The message
+   take the next reproduction and close whichever of §2.5's three paths it points at. The message
    distinguishes them without a log: a scope that owes a revision and has refused none has never
    been replayed; one that has refused a report is being fed by a stream the plan has moved past.
 

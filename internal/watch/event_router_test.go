@@ -339,7 +339,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 // fidelity and retention for the cell, so the render-fidelity scope owed a report under a revision
 // no running stream would ever report again — which pins the GitTarget at Ready=False and, through
 // GitTargetReady, every WatchRule pointing at it
-// (docs/design/watch-plane-status-convergence-failures.md, §2.4).
+// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
 //
 // The drain must consume the result rather than block on it. Nothing was written, so it also must
 // not move any readiness the caller would read as convergence.
