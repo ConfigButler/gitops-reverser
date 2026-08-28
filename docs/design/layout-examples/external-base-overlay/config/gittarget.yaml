@@ -1,0 +1,20 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: podinfo-production
+  namespace: podinfo-prod
+spec:
+  providerRef:
+    name: homelab-repository
+  branch: main
+  path: apps/podinfo/overlays/prod
+  allowedSourceNamespaces:
+    names: [podinfo-prod]
+  mode: Write
+  layout:
+    kind: Kustomize
+    scope: SingleNamespace
+    namespace: podinfo-prod
+    writeNamespace: Never
+    kustomize:
+      root: .

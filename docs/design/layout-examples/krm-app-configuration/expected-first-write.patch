@@ -1,0 +1,27 @@
+diff --git a/apps/shop/kustomization.yaml b/apps/shop/kustomization.yaml
+new file mode 100644
+index 0000000..84c775d
+--- /dev/null
++++ b/apps/shop/kustomization.yaml
+@@ -0,0 +1,5 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++namespace: shop
++resources:
++  - shopconfiguration-storefront.yaml
+diff --git a/apps/shop/shopconfiguration-storefront.yaml b/apps/shop/shopconfiguration-storefront.yaml
+new file mode 100644
+index 0000000..eeb4e6e
+--- /dev/null
++++ b/apps/shop/shopconfiguration-storefront.yaml
+@@ -0,0 +1,10 @@
++apiVersion: config.shop.example/v1alpha1
++kind: ShopConfiguration
++metadata:
++  name: storefront
++spec:
++  theme: dark
++  primaryColor: teal
++  requests:
++    cpu: 100m
++    memory: 128Mi

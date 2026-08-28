@@ -1,0 +1,15 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: homelab
+spec:
+  interval: 1m
+  url: https://github.com/example/homelab.git
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: jellyfin
+spec:
+  interval: 1h
+  url: https://jellyfin.github.io/jellyfin-helm

@@ -92,6 +92,10 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
+[`design/layout-examples/`](design/layout-examples/README.md) makes the proposed `GitTarget`
+layout model tangible. Each scenario contains a repository folder and the matching proposed
+`GitTarget` and rule configuration; the examples are design material, not current install manifests.
+
 Eighteen other open items:
 
 | Doc | Open question |

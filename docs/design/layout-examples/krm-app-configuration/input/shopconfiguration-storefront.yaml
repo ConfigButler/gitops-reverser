@@ -1,0 +1,11 @@
+apiVersion: config.shop.example/v1alpha1
+kind: ShopConfiguration
+metadata:
+  name: storefront
+  namespace: shop
+spec:
+  theme: dark
+  primaryColor: teal
+  requests:
+    cpu: 100m
+    memory: 128Mi

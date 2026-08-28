@@ -1,0 +1,10 @@
+diff --git a/apps/podinfo/overlays/prod/kustomization.yaml b/apps/podinfo/overlays/prod/kustomization.yaml
+index 7d7f47d..86bfb80 100644
+--- a/apps/podinfo/overlays/prod/kustomization.yaml
++++ b/apps/podinfo/overlays/prod/kustomization.yaml
+@@ -5,4 +5,4 @@ resources:
+   - ../../base
+ images:
+   - name: ghcr.io/stefanprodan/podinfo
+-    newTag: 6.6.0
++    newTag: 6.6.1

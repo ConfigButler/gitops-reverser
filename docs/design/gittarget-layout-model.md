@@ -12,6 +12,10 @@
 > `commitWindow` move, CommitRequest lifecycle) is in
 > [`gittarget-api-wave.md`](gittarget-api-wave.md), which also records the two places where those
 > items change this design rather than merely accompanying it.
+>
+> Concrete repository folders and matching proposed configurations live in
+> [`layout-examples/`](layout-examples/README.md). They are intended for reviewing this model, not
+> as manifests for the current API.
 
 ## Why the current shape keeps producing dead ends
 
@@ -53,6 +57,7 @@ spec:
   layout:
     kind: Kustomize            # Auto | Kustomize | Tree | Flat | Template
     scope: SingleNamespace     # SingleNamespace | MultiNamespace
+    namespace: team-a          # required when scope is SingleNamespace
     writeNamespace: Never      # FromContext | Always | Never
     kustomize:
       root: .                  # relative to spec.path; where the kustomization.yaml lives
@@ -100,9 +105,9 @@ undeclared. This one has a name, appears in the spec, and reports what it resolv
 
 ## Namespace scope belongs to the layout
 
-A folder that omits the namespace from its paths is a folder for **one** namespace. That is what makes
-`Flat` legible, and it is an assumption the layout has to carry, because the thing that would otherwise
-carry it lives somewhere else.
+A folder that omits the namespace from its paths is a folder for **one named namespace**. That is
+what makes `Flat` legible. It is also what lets a newly created Kustomize root establish a namespace
+convention without learning it from the first object that arrives.
 
 ```yaml
 spec:
@@ -110,26 +115,34 @@ spec:
     names: [team-a]
   layout:
     kind: Flat
-    scope: SingleNamespace        # STRUCTURE: what shape this folder has
+    scope: SingleNamespace        # STRUCTURE: folder cardinality
+    namespace: team-a             # STRUCTURE: the folder's namespace identity
 ```
 
-**These are two different questions and they must agree.** `allowedSourceNamespaces` is a permission
-bound owned by the destination
-([`gittarget_types.go`](../../api/v1alpha3/gittarget_types.go)); `layout.scope` is a structural claim.
-Validation checks the direction it can, at admission: a matcher that admits more than one namespace
-alongside `scope: SingleNamespace` is refused.
+**These are two different questions and they must agree.** `allowedSourceNamespaces` remains the
+permission bound owned by the destination
+([`gittarget_types.go`](../../api/v1alpha3/gittarget_types.go)). Its name is therefore correct and
+should not be repurposed to mean folder structure. `layout.scope` says how many source namespaces
+the folder can represent; `layout.namespace` says which namespace a single-namespace folder means.
 
-**Why the layout cannot derive it.** Two reasons, and the second is the one that matters:
+For `scope: SingleNamespace`, admission requires an exact one-name
+`allowedSourceNamespaces.names` list, no selector, and equality between that name and
+`layout.namespace`. The duplication is deliberate: a reviewer can see the authorization decision
+and the folder's structural identity where each belongs. A target that authorizes `team-a` while
+declaring `layout.namespace: team-b` is refused rather than waiting for an event to reveal the
+contradiction.
+
+**Why the values must be stated.** Two reasons, and the second is the one that matters:
 
 - `allowedSourceNamespaces` is an upper bound and may be **absent**, which
   [`NamespaceMatcher`](../../api/v1alpha3/namespace_matcher.go) defines as "no policy declared" rather
-  than as "one namespace". There is often nothing to derive from.
+  than as "one namespace". There is often nothing safe to derive from.
 - the namespaces that do arrive come from **N WatchRule objects that do not own the folder**. A
-  derived single-namespace assumption could be invalidated later by a rule created in another object,
-  which would turn a layout guarantee into a path collision. Declaring the scope makes that
-  invalidation a **refusal** instead: a document from a second namespace is declined with a message
-  naming both namespaces and counted as a placement refusal, rather than landing on a path another
-  object already occupies.
+  rule-derived single-namespace assumption could be invalidated later by a rule created in another
+  object, which would turn a layout guarantee into a path collision. Declaring the scope and value
+  makes that invalidation a **refusal** instead: a document from a second namespace is declined with
+  a message naming both namespaces and counted as a placement refusal, rather than landing on a
+  path another object already occupies.
 
 That is the same distinction the whole redesign rests on. Reading the world is fine when the reading
 is declared and its failure is loud; it is not fine when it silently re-decides.
@@ -156,8 +169,8 @@ layout:
 applier happens to be pointed at, which is a different object with the same name.
 
 **And this is where bootstrapping closes its own loop.** `kind: Kustomize` with `create: true` and
-`scope: SingleNamespace` lets the operator write `namespace: team-a` into the `kustomization.yaml` it
-creates, and then legitimately omit `metadata.namespace` from every file it places. The convention is
+`scope: SingleNamespace` writes `layout.namespace` into the `kustomization.yaml` it creates, and
+then legitimately omits `metadata.namespace` from every file it places. The convention is
 **established** rather than guessed, which is the thing inference structurally cannot do on an empty
 folder.
 
@@ -231,6 +244,8 @@ spec:
   path: clusters/prod
   layout:
     kind: Kustomize
+    scope: SingleNamespace
+    namespace: team-a
     kustomize:
       create: true
 ```
@@ -277,6 +292,7 @@ spec:
   layout:
     kind: Flat
     scope: SingleNamespace
+    namespace: team-a
     writeNamespace: Always     # nothing here supplies the namespace, so the file must carry it
 ```
 
@@ -292,9 +308,10 @@ An earlier draft of this example wrote `Never` with the comment "the build suppl
 does", which is exactly the hand-wave the `Never` guard exists to refuse.
 
 As a *kind* rather than a template, that is checkable instead of a caveat in prose. `Flat` requires
-`scope: SingleNamespace`, admission refuses it beside an `allowedSourceNamespaces` matcher that admits
-more than one namespace, and a document arriving from a second namespace is refused at the write
-boundary with a message naming both. A template can only document the hazard; a kind can decline it.
+`scope: SingleNamespace` and `layout.namespace`. Admission requires the matching one-name
+`allowedSourceNamespaces.names` list, and a document arriving from a second namespace is refused at
+the write boundary with a message naming both namespaces. A template can only document the hazard;
+a kind can decline it.
 
 ### 5. `Template`, the escape hatch, with the invariant still in force
 
@@ -509,15 +526,6 @@ Nothing already planned is wasted, and one item should wait:
   avoided outside identity capture.
 - Does `writeNamespace: Never` need to name its supplier (`Kustomize`, `FluxTargetNamespace`,
   `Asserted`) so validation can check the guarantee rather than trust it?
-- **Where does the namespace VALUE come from?** `scope: SingleNamespace` constrains cardinality; it
-  does not say *which* namespace, and the bootstrap case is exactly the one that cannot read it off
-  existing resources. Writing `namespace: team-a` into a `kustomization.yaml` we create presupposes
-  knowing `team-a`. The obvious source is `allowedSourceNamespaces.names` when it admits exactly one,
-  which every example here implicitly assumes, and that is worth making explicit rather than implied:
-  it would mean `create: true` plus `SingleNamespace` is refused when the admitted set is a selector
-  or is empty, because there is no name to write. The alternative — take it from the first document
-  that arrives — makes the folder's convention depend on arrival order, which is the failure mode this
-  whole model exists to remove.
 - Does `kind: Kustomize` imply `create: true`? Asserting a folder is a kustomize folder arguably
   asserts the file exists, and requiring both feels like ceremony. The argument for keeping them
   separate is that creating a file in someone's repository should always be something they asked for.

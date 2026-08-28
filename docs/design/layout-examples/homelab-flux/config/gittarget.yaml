@@ -1,0 +1,20 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: flux-system
+  namespace: flux-system
+spec:
+  providerRef:
+    name: homelab-repository
+  branch: main
+  path: clusters/home/flux-system
+  allowedSourceNamespaces:
+    names: [flux-system]
+  mode: Write
+  layout:
+    kind: Kustomize
+    scope: SingleNamespace
+    namespace: flux-system
+    writeNamespace: Never
+    kustomize:
+      root: .

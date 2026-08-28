@@ -1,0 +1,11 @@
+apiVersion: config.shop.example/v1alpha1
+kind: ShopConfiguration
+metadata:
+  name: storefront
+spec:
+  catalog:
+    defaultCurrency: USD
+  checkout:
+    sessionTimeout: 15m
+  theme:
+    primaryColor: blue

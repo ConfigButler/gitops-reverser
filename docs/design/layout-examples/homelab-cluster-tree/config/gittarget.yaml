@@ -1,0 +1,19 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: home-state
+  namespace: homelab-config
+spec:
+  providerRef:
+    name: homelab-repository
+  clusterProviderRef:
+    name: home
+  branch: main
+  path: clusters/home
+  allowedSourceNamespaces:
+    names: [media, monitoring]
+  mode: Write
+  layout:
+    kind: Tree
+    scope: MultiNamespace
+    writeNamespace: Always

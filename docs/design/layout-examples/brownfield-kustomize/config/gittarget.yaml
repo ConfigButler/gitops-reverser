@@ -1,0 +1,18 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  path: apps/demo
+  allowedSourceNamespaces:
+    names: [demo]
+  mode: Observe
+  layout:
+    kind: Auto
+    scope: SingleNamespace
+    namespace: demo
+    writeNamespace: FromContext

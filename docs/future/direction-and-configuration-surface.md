@@ -139,16 +139,15 @@ content. No new source-side API is needed for either direction.
 The rules and the layout model meet at `layout.scope`, and the meeting produces two
 validations worth declaring:
 
-- **`scope: SingleNamespace` requires `allowedSourceNamespaces` to be an exact one-name
-  list — and that name *is* the single namespace.** The question "which namespace is the
-  single one?" must not be answered by the rules: N rules do not own the folder, and the
-  first-writer-wins alternative is exactly the silent re-deciding the layout model
-  exists to forbid. So the identity lives on the GitTarget, as the authorization bound
-  collapsing into a structural fact: one exact name, no selector (a label selector cannot
-  guarantee singularity), and CEL can check it at admission. Rules then merely subscribe
-  within it — an omitted `sourceNamespace`, an explicit match, or `"*"` all resolve to
-  that one namespace, and a rule naming any other namespace refuses loudly under the
-  existing bilateral check.
+- **`scope: SingleNamespace` requires `layout.namespace`, plus an exact matching one-name
+  `allowedSourceNamespaces.names` list.** The question "which namespace is the single one?"
+  must not be answered by the rules: N rules do not own the folder, and the first-writer-wins
+  alternative is exactly the silent re-deciding the layout model exists to forbid. The identity
+  therefore lives on the GitTarget as a structural layout field, while the authorization bound
+  stays an authorization bound. A selector cannot guarantee singularity, and CEL can check the
+  equality at admission. Rules then merely subscribe within it: an omitted `sourceNamespace`, an
+  explicit match, or `"*"` all resolve to that one namespace, and a rule naming any other namespace
+  refuses loudly under the existing bilateral check.
 - **A `ClusterWatchRule` referencing a `scope: SingleNamespace` target is refused, at the
   rule, by name.** The payoff of `SingleNamespace` plus `writeNamespace: Never` is a
   *portable* folder — deployable into any namespace at apply time. Cluster-scoped content
@@ -186,12 +185,14 @@ spec:
   mode: Write
   commitWindow: 30s            # moved from GitProvider: batching describes this folder
   allowedSourceNamespaces:
-    names: [shop]              # under SingleNamespace: exactly one name — this IS the namespace
+    names: [shop]              # authorizes capture from shop
   layout:
     kind: Kustomize
-    create: true               # an empty repo becomes a buildable folder
     scope: SingleNamespace
+    namespace: shop
     writeNamespace: Never      # the artifact is environment-agnostic; namespace at deploy
+    kustomize:
+      create: true             # an empty repo becomes a buildable folder
 ```
 
 and the folder is inert until the tenant subscribes content to it:
@@ -211,8 +212,8 @@ spec:
 ```
 
 Everything direction B needs is here and nowhere else: the folder is described on the
-GitTarget, the single namespace is *named* on the GitTarget (the one-name
-`allowedSourceNamespaces` list is what `scope: SingleNamespace` requires), the WatchRule
+GitTarget, the single namespace is *named* on the GitTarget in `layout.namespace` and authorized by
+the matching one-name `allowedSourceNamespaces` list, the WatchRule
 is the artifact's manifest, structure can be brought into existence, and the artifact's
 shape is a declared fact a reviewer can read. A `ClusterWatchRule` pointed at this target
 is refused by name: cluster-scoped content would break the portability that

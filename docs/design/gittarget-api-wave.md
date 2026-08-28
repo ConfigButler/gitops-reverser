@@ -116,17 +116,17 @@ independent edits.
 
 ### 6. Namespace scope makes `allowedSourceNamespaces` and the layout answer to each other
 
-The layout's `scope: SingleNamespace` is a structural claim, and `spec.allowedSourceNamespaces` is an
-authorization bound. They are different questions about the same folder, and after this wave they are
-checked against each other at admission: a matcher admitting more than one namespace beside a
-single-namespace layout is refused.
+The layout's `scope: SingleNamespace` and `namespace` are structural claims, and
+`spec.allowedSourceNamespaces` is an authorization bound. They are different questions about the
+same folder. After this wave, admission requires an exact one-name authorization list with no
+selector, and that name must equal `layout.namespace`.
 
 This is the connection the wave makes available, and it is not one either item asks for alone.
 Authorization already exists and already has a two-party delegation the review praises; the layout is
 what turns "who may write here" into "and therefore what this folder looks like", including whether
 `metadata.namespace` is written into the files at all. The namespace-in-file question is inference
 today, and it is the one piece of inference an empty folder cannot perform, which is why bootstrapping
-needs it declared.
+needs the namespace declared in the layout.
 
 ## The GitTarget after the wave
 
@@ -147,7 +147,8 @@ spec:
   # --- what the folder is ---
   layout:                           # immutable, except a widening transition
     kind: Kustomize                 # Auto | Kustomize | Tree | Flat | Template
-    scope: SingleNamespace          # must agree with allowedSourceNamespaces
+    scope: SingleNamespace
+    namespace: prod                 # must match allowedSourceNamespaces.names[0]
     writeNamespace: Never           # the created kustomization carries namespace:
     kustomize:
       create: true
