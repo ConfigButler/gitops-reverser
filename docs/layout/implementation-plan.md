@@ -37,7 +37,7 @@ That leaves the risk concentrated in one place rather than two:
 | 1 | The worked examples as an executable corpus. The [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) correctness fixes it was to carry **shipped** in 0.42.1 | no | — |
 | 2 | `spec.suspend`, and the reconcile-request annotation | no | 1 |
 | 3 | `status.placement`, and the post-scan validation pass | no | 2 |
-| 4 | `serializeNamespace` and `kustomizeRoot` | no | 1, 3 |
+| 4 | `serializeNamespace` and `kustomizeRoot` ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no | 1, 3 |
 | 5 | `commitWindow` and `commit.message` move off `GitProvider` | **yes** | — |
 | 6 | The riders: the asserted CommitRequest author, its lifecycle, `meta.LocalObjectReference`, `TooManyStreams`, the ClusterProvider default message | **yes** | the source-scope change, for `TooManyStreams` only |
 

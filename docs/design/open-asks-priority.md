@@ -236,8 +236,8 @@ and is not independently schedulable.
 |---|---|---|---|---|
 | 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** | — |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
-| n/a | A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path | [`placement-visibility-and-declared-defaults.md`](../layout/placement-visibility-and-declared-defaults.md) | **1** | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) |
-| n/a | `spec.layout`: declare what the folder is | [`../layout/model.md`](../layout/model.md) | **2** | [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), wave |
+| ~~n/a~~ | ~~A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path~~ **SHIPPED** in 0.42.1 | [`placement-visibility-and-declared-defaults.md`](../layout/placement-visibility-and-declared-defaults.md) | — | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), [#319](https://github.com/ConfigButler/gitops-reverser/pull/319) |
+| n/a | `serializeNamespace` and `kustomizeRoot`: the two things a path template cannot say (`spec.layout` was reversed) | [`../layout/model.md`](../layout/model.md) | **2** | [#322](https://github.com/ConfigButler/gitops-reverser/issues/322), **not** breaking, so not the wave |
 | F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see [`../layout/api-wave.md`](../layout/api-wave.md)) | maintainer review | **2** | wave |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
@@ -245,7 +245,7 @@ and is not independently schedulable.
 | 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** | wave |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
-| B2 | `GitTarget.status.layout` | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
+| B2 | `GitTarget.status.placement` (was `status.layout`) | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
 | n/a | The ambiguous render root, the `declared` metric split, `{kindLower}`, canonical-as-template | [`placement-visibility-and-declared-defaults.md`](../layout/placement-visibility-and-declared-defaults.md) | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
 | F9 | The `scope: Namespaced` status-write envtest | maintainer review | **3** | outside the wave, deliberately |
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** | — |
