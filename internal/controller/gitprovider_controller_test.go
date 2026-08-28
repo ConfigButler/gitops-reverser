@@ -21,6 +21,25 @@ import (
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
+// expectSteadyRequeue asserts the reconcile asked to come back on its steady cadence — or on the
+// SETTLE cadence, which is the correct answer when this reconcile's status write lost a race.
+//
+// These specs call Reconcile directly while the suite's manager reconciles the same object, so the
+// two status patches can collide on the optimistic lock. reconcileStatus.requeueAfter then shortens
+// the cadence deliberately: an object whose published status is the WINNER's older answer must be
+// revisited sooner than its converged interval, because the winning write is status-only and every
+// For() filters those out, so nothing else re-enqueues it
+// (docs/design/watch-plane-status-convergence-failures.md, §2).
+//
+// Pinning the exact interval made these specs depend on winning that race — they passed locally and
+// failed under CI contention. The flag itself is covered deterministically by
+// TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack and its counterpart, so nothing is lost
+// by accepting either value here.
+func expectSteadyRequeue(result reconcile.Result) {
+	GinkgoHelper()
+	Expect(result.RequeueAfter).To(BeElementOf(RequeueSteadyInterval, RequeueStreamSettleInterval))
+}
+
 var _ = Describe("GitProvider Controller", func() {
 	Context("Credential Extraction", func() {
 		var reconciler *GitProviderReconciler
@@ -313,7 +332,7 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
+			expectSteadyRequeue(result)
 
 			// Verify the resource was updated with failure condition
 			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
@@ -376,7 +395,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// Control-plane reconciles now share one steady fallback cadence; see
 			// docs/rbac.md.
-			Expect(result.RequeueAfter).To(Equal(RequeueSteadyInterval))
+			expectSteadyRequeue(result)
 
 			// Verify the resource was updated with failure condition
 			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
@@ -436,7 +455,7 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(RequeueSteadyInterval))
+			expectSteadyRequeue(result)
 
 			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
 			err = k8sClient.Get(
@@ -485,7 +504,7 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
+			expectSteadyRequeue(result)
 
 			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
 			err = k8sClient.Get(
