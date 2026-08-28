@@ -96,6 +96,11 @@ how secrets are handled.
 layout model tangible. Each scenario contains a repository folder and the matching proposed
 `GitTarget` and rule configuration; the examples are design material, not current install manifests.
 
+[`design/gittarget-layout-implementation-plan.md`](design/gittarget-layout-implementation-plan.md)
+is the order that work is built in: six PRs of which exactly one release is breaking, the corpus
+harness that turns the examples into the definition of done, and six design changes the examples
+produced.
+
 Eighteen other open items:
 
 | Doc | Open question |
