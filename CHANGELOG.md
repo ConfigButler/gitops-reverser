@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.41.2...v0.42.0) (2026-08-28)
+
+
+### Features
+
+* **watch:** one owner for the watch plane, diffed per cell ([#315](https://github.com/ConfigButler/gitops-reverser/issues/315)) ([fc78c5b](https://github.com/ConfigButler/gitops-reverser/commit/fc78c5b46edc65e78a75f1591f5287222970a24d))
+
+
+### Bug Fixes
+
+* **devcontainer:** configure verification for an externally supplied signing key ([#311](https://github.com/ConfigButler/gitops-reverser/issues/311)) ([b2a1b25](https://github.com/ConfigButler/gitops-reverser/commit/b2a1b25b6177a06152c781d08f272391b8cc9516))
+* never coalesce a resync past writes queued into its scope ([#314](https://github.com/ConfigButler/gitops-reverser/issues/314)) ([ff966f5](https://github.com/ConfigButler/gitops-reverser/commit/ff966f5de335509968e5dab14bf831bb3dcced56))
+* **watch:** stop resync storms starving other GitTargets on a branch ([#312](https://github.com/ConfigButler/gitops-reverser/issues/312)) ([27fb1e6](https://github.com/ConfigButler/gitops-reverser/commit/27fb1e6ebdc8b5349084995725d7eb2bdd4155ff))
+
 ## [0.41.2](https://github.com/ConfigButler/gitops-reverser/compare/v0.41.1...v0.41.2) (2026-08-25)
 
 
