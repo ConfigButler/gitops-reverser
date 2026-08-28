@@ -22,9 +22,9 @@
 > a fact about the last week, not a revision of the rule.
 >
 > Three backlogs are open at once and they overlap: the gitops-api consumer asks (revision 11,
-> 2026-07-28, which is the revision that filed #23), the maintainer review's unbuilt block in
-> [`flux-maintainer-review-status-and-config-model.md`](../future/flux-maintainer-review-status-and-config-model.md)
-> (F6, F9, F10), and the config-surface proposal in
+> 2026-07-28, which is the revision that filed #23), the API-surface block left unbuilt by the
+> status and configuration-model review — now sequenced in
+> [`../layout/api-wave.md`](../layout/api-wave.md) — and the config-surface proposal in
 > [`config-surface-for-a-structured-repository.md`](../future/config-surface-for-a-structured-repository.md)
 > (B1–B6). This page merges them into one queue and says where we deliberately do **not** do
 > what was asked.

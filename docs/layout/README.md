@@ -34,7 +34,7 @@ These are `design/`-class: intent, not shipped behavior.
 
 | Document | What it found |
 |---|---|
-| [`flux-maintainer-review.md`](flux-maintainer-review.md) | `L1`-`L27` over the model, the plan and the examples, read as a Flux maintainer. Its companion covering status and the configuration model is [`../future/flux-maintainer-review-status-and-config-model.md`](../future/flux-maintainer-review-status-and-config-model.md), which stayed in `future/` because it is not about layout |
+| [`flux-maintainer-review.md`](flux-maintainer-review.md) | `L1`-`L27` over the model, the plan and the examples, read as a Flux maintainer. The earlier review covering status and the configuration model has been retired into the documents that own its findings |
 
 ## Worked examples
 

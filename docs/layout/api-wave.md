@@ -8,9 +8,11 @@
 > than apart:
 >
 > - the layout model, [`model.md`](model.md);
-> - the still-open API-surface block of the maintainer review,
->   [`flux-maintainer-review-status-and-config-model.md`](../future/flux-maintainer-review-status-and-config-model.md)
->   §4 "Then": **F6**, **F9**, **F10**, plus F12's reference-type nit and §3's pushbacks;
+> - the API-surface work left over from the status and configuration-model review: `spec.suspend`,
+>   `spec.interval` and the reconcile-request annotation; the `CommitRequest` lifecycle hole; the
+>   `meta.LocalObjectReference` reference-type nit; and the `TooManyStreams` cap and `default`
+>   `ClusterProvider` message. That review has been retired into the documents that own its
+>   findings, and this is where its unbuilt block landed;
 > - the Tier 2 breaking items in [`open-asks-priority.md`](../design/open-asks-priority.md): **B4**, **B1**,
 >   **#5**, **#6**.
 >
@@ -29,7 +31,7 @@ and building them separately means deciding it four times, inconsistently.
 
 - `spec.layout` says what the folder **is** (layout model).
 - `spec.mode: Observe|Write` says whether we write to it at all (B1).
-- `spec.suspend` says whether we write to it *now* (F6).
+- `spec.suspend` says whether we write to it *now*.
 - `commitWindow` and `commit.message` say how writes to it are batched and phrased, and today they
   live on `GitProvider`, which is the connection (B4, and §3's "GitProvider is doing three jobs").
 
@@ -63,7 +65,7 @@ accumulated since. The current half is the useful one, and it has a hole: a repo
 on a write or a resync, so a stable target that writes nothing may not scan for a long time, and the
 field a user consults would be stamped with a revision from last week.
 
-`spec.interval` (F6) plus `Observe`'s scan-without-writing is the mechanism that closes it: a
+`spec.interval` plus `Observe`'s scan-without-writing is the mechanism that closes it: a
 periodic observation pass refreshes `renderRoot` and `observedRevision` whether or not anything was
 written. Neither piece was proposed for this reason, and together they answer a question neither
 answers alone.
@@ -71,7 +73,7 @@ answers alone.
 ### 3. `spec.suspend` is a precondition for a layout that creates files
 
 `kind: Kustomize` with `create: true` writes a `kustomization.yaml` the user did not author. That is
-the right behavior and it raises the stakes on the review's central complaint (F6): *this controller
+the right behavior and it raises the stakes on the review's central complaint: *this controller
 writes to a Git repository and there is no way to make it stop that is not deleting the object.*
 
 So `suspend` is not a rider here, it is a precondition. A layout that creates structure must ship
@@ -84,11 +86,11 @@ resource writes, which is a detail worth stating before either is built.
 whether a fall-back to canonical should raise an Event on the GitTarget, and it reasoned that this
 was expensive because placement runs on the branch worker with no recorder.
 
-That is no longer true. **F7 shipped an `EventRecorder` on every reconciler**
+That is no longer true. **An `EventRecorder` shipped on every reconciler**
 (review §6), and the roll-up seam projects data-plane facts into status with an enqueue on change. So
 the Event is now: emit when `status.layout` changes in a way a human should know about, which is
 `renderRootReason` becoming `Ambiguous`, or a type falling back for the first time. One Event per
-persisted change, the pattern F7 already established for `Ready`.
+persisted change, the pattern already established for `Ready`.
 
 ### 5. Layout is immutable, which puts it with `path` rather than with `prune`
 
@@ -136,7 +138,7 @@ kind: GitTarget
 metadata:
   name: prod
   annotations:
-    reconcile.configbutler.ai/requestedAt: "2026-07-30T09:14:22Z"   # F6
+    reconcile.configbutler.ai/requestedAt: "2026-07-30T09:14:22Z"
 spec:
   # --- the connection: unchanged, and now only the connection ---
   providerRef:
@@ -157,8 +159,8 @@ spec:
 
   # --- whether and when we write it ---
   mode: Write                       # B1: Observe | Write
-  suspend: false                    # F6
-  interval: 5m                      # F6, and what keeps status.layout fresh
+  suspend: false
+  interval: 5m                      # what keeps status.layout fresh
   prune:
     mode: OnEvent
 
@@ -177,7 +179,7 @@ status:
     observedTime: "2026-07-30T09:14:22Z"
     placedResources: 14
     refusedResources: 0
-  lastHandledReconcileAt: "2026-07-30T09:14:22Z"                    # F6
+  lastHandledReconcileAt: "2026-07-30T09:14:22Z"
   observedDestination:                                              # 6
     branch: main
     path: clusters/prod
@@ -193,18 +195,40 @@ consumer should pay once, not because they interact with the layout:
 
 - **#5, `CommitRequest.spec.author`, SAR-guarded.** Independent, and it stands on the argument that
   attribution needs an audit webhook a hosted control plane will not give you.
-- **F10, CommitRequest lifecycle** (`ttlSecondsAfterFinished` or an `ownerReference`, plus the
+- **The `CommitRequest` lifecycle hole** (`ttlSecondsAfterFinished` or an `ownerReference`, plus the
   `delete` verb). Unrelated to placement; it is the other object in the API with a lifecycle hole.
-- **F12's reference types**: embedding `meta.LocalObjectReference` for the name half of our six
+- **The reference types**: embedding `meta.LocalObjectReference` for the name half of our six
   near-identical reference shapes. If GitTarget is breaking anyway, this is the moment.
 - **§3's `TooManyStreams` cap** for `sourceNamespace: "*"` fan-out. A `Stalled` reason plus a bound,
   rather than discovering the cliff as apiserver watch pressure.
 - **§3's `ClusterProvider` "default" message.** One error string, and the most likely first-run
   support ticket.
 
-**F9** is not in the wave at all: it is one envtest against the minimum supported Kubernetes version,
-and its outcome (widen the enum, or keep it) should be known *before* anyone plans an API change
-around it.
+### The envtest that has to run before any of this is planned
+
+One question is not in the wave at all, and its answer constrains the enum work, so it should be
+settled before anyone plans an API change around it.
+
+`ClusterWatchRule`'s `rules[].scope` enum is narrowed to `Cluster` only, deliberately keeping the
+field so that re-applying a stored `Namespaced` value **fails**
+([`clusterwatchrule_types.go`](../../api/v1alpha3/clusterwatchrule_types.go)). The concern is what
+that does to the object's own ability to explain itself. For CRDs the apiserver validates the
+**whole object** against the OpenAPI schema on **status-subresource** updates too, not only on spec
+updates. If that holds here, the controller cannot write `Stalled=True` onto an object whose stored
+`spec.rules[].scope` is `Namespaced` — the status update is rejected 422, and the one object that
+most needs to explain itself is the one that cannot.
+
+The mitigating factor is CRD Validation Ratcheting, which skips re-validation of *unchanged* fields
+and is beta and default-on from 1.30, GA in 1.33. So the exposure is older clusters, or a cluster
+with the feature gate off — which is exactly why the test has to name a version.
+
+**The test.** Create a `ClusterWatchRule` with `scope: Namespaced` through a client that bypasses
+the enum (or against an older CRD), then attempt a status update, on the minimum supported
+Kubernetes version.
+
+**The fallback if it fails.** Widen the enum back and rely on the compile-path refusal plus a loud
+`Stalled` condition. Refusing at admission is nice, but not at the cost of being unable to report
+the refusal.
 
 ## Version strategy: stay `v1alpha3`
 
@@ -229,8 +253,9 @@ is one coordinated bump.
 
 Dependencies first, then the things that only need the object to be breaking.
 
-1. **F9's envtest.** Not an API change; its answer constrains the enum work. Do it before planning.
-2. **`spec.suspend`** (F6). Precondition for anything that creates files, and independently the
+1. **The `scope: Namespaced` envtest**, above. Not an API change; its answer constrains the enum
+   work. Do it before planning.
+2. **`spec.suspend`**. Precondition for anything that creates files, and independently the
    review's highest-value gap.
 3. **`spec.layout`** with `byType`, plus rule 1 (every written file is registered with the
    kustomization that governs it) and rule 2 (a structural kind excludes a blanket `default`).
@@ -238,12 +263,13 @@ Dependencies first, then the things that only need the object to be breaking.
 4. **`status.layout`**, current half from the scan, historical half from the roll-up. Needed before
    `Observe` is useful, because `Observe` with nothing to read is a mode that does nothing.
 5. **`spec.mode: Observe|Write`** (B1). Now an adoption path rather than a switch.
-6. **`spec.interval` + `requestedAt` + `lastHandledReconcileAt`** (F6, rest). Closes the freshness
+6. **`spec.interval` + `requestedAt` + `lastHandledReconcileAt`**. Closes the freshness
    hole in step 4 and gives the object the reflexes a Flux user already has.
-7. **Events on layout change**, over F7's existing recorder.
+7. **Events on layout change**, over the existing recorder.
 8. **B4**: `commitWindow` and `commit.message` move from `GitProvider` to `GitTarget`. Last of the
    principle items, and the one that makes the object coherent.
-9. **The riders**: #5, F10, F12 references, `TooManyStreams`, the `default` ClusterProvider message.
+9. **The riders**: #5, the `CommitRequest` lifecycle, the reference types, `TooManyStreams`, the
+   `default` ClusterProvider message.
 
 Steps 2 to 8 are one release. Step 1 gates the planning. Step 9 can be trimmed if the wave gets too
 big to review, since nothing else depends on it.
@@ -267,7 +293,7 @@ big to review, since nothing else depends on it.
 - **Should `suspend` and `mode: Observe` be one field?** They are close: both stop writes. They differ
   in intent (temporary versus declared) and in what they do to status, and Flux keeps `suspend`
   separate from everything else. Two fields, but the field docs must each say what the other is for.
-- **Where does `interval` live?** `GitProvider` needs it for `ls-remote` cadence (review F6);
+- **Where does `interval` live?** `GitProvider` needs it for `ls-remote` cadence;
   `GitTarget` needs it for the observation pass. Two fields with one name on two objects is a smell,
   and one field on the provider cannot express a per-folder observation cadence.
 - **Is `Auto` still the right layout default once `Observe` exists?** With a dry-run mode available,

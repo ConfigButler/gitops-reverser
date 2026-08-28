@@ -181,10 +181,6 @@ is the strategy review on top of it: the config-as-data direction as the headlin
 brownfield mirroring as the on-ramp, a decided Helm standpoint (declaration editing plus
 the values projection; helm-light inversion parked behind entry criteria), and worked
 examples of where the configuration surface should go.
-[`flux-maintainer-review-status-and-config-model.md`](future/flux-maintainer-review-status-and-config-model.md)
-is the first external review, `F1`-`F12` over status and the configuration model; most of it
-shipped on `feat/flux-status-contract`, and `F6`, `F9` and `F10` are still open. Its layout
-companion is [`layout/flux-maintainer-review.md`](layout/flux-maintainer-review.md).
 Four more ideas sit beside them.
 
 ## History — [`finished/`](finished/)

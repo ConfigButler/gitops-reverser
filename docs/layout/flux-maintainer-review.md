@@ -3,9 +3,9 @@
 > Status: external review. Findings open, nothing here binds until scheduled.
 > Date: 2026-08-28. Index: [`../INDEX.md`](../INDEX.md).
 >
-> Second pass of the review recorded in
-> [`flux-maintainer-review-status-and-config-model.md`](../future/flux-maintainer-review-status-and-config-model.md),
-> which covered status and the configuration model at `f37a7ba`. That one is `F1`-`F12`. This one
+> Second pass. The first covered status and the configuration model at `f37a7ba`; it has been
+> retired into the documents that own its findings, with its unbuilt API block sequenced in
+> [`api-wave.md`](api-wave.md). This one
 > is `L1`-`L27` and covers the material written since: the layout model, its implementation order,
 > and the six worked examples. It ends with a long section the first review did not reach, on
 > `allowSourceNamespaceOverride` and whether service-account impersonation belongs here.
