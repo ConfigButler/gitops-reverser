@@ -448,26 +448,15 @@ assertion now prints both, so never infer the target's state from the rule's mes
 
 ## 5. Flake inventory — what is ambient, and must not be misattributed
 
-Three separate branches have now been blamed for failures that reproduce on `main`. Check this
-table before bisecting.
+Branches have been blamed for failures that reproduce on `main`. Check this table before
+bisecting.
 
 ### 5.1 Ambient, confirmed
 
 | Flake | Signature | Rate | Notes |
 | --- | --- | --- | --- |
-| **Encryption-secret recreation** | `secrets "recreated-sops-age-key" not found`, 45s, `gittarget_controller_test.go:1140` | ~1 in 11 historically; **3 of 4 CI runs on 2026-08-27** | Unit tests. See [`TODO.md`](../TODO.md). Passes on a re-run of identical code. |
 | **Refused-GitTarget recovery** | `GitPathAccepted` projection racy both ways; next requeue up to 10 min | Reproduces locally and deterministically in the `unsupported-folder` refusal spec | Do not chase when the diff is test/docs-only. |
 | **`target_watch` forbidden race** | `TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden` | Only under `-race`; CI does not use it | Pre-existing shutdown race. |
-
-**The encryption-secret flake's rate is much worse than recorded.** On 2026-08-27 it failed the
-Unit job in runs `33116777679`, `33119960052` and `33120703394`, passing only `33118310453` — three
-in four, against a documented ~1 in 11. It is not caused by this branch: the failing path touches
-neither the watch plane nor anything this branch changes, `task test` passes locally on the same
-commits, and the controller log shows the secret being generated (`Generated missing encryption
-secret with age key … default/recreated-sops-age-key`) while the test's `Get` never observes it —
-the create-then-read race exactly as described. But at this rate **it alone will keep CI from going
-green**, so it needs its own fix before this branch can merge on a green run rather than on a
-re-run.
 
 ### 5.2 Environmental, not code
 

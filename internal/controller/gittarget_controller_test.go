@@ -1117,18 +1117,11 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// Recreation rides the PERIODIC requeue, not a watch: this controller deliberately runs
 			// no control-plane Secret watch (SetupWithManager explains why), so nothing enqueues the
 			// GitTarget when its age-key Secret disappears. The wait must therefore exceed a full
-			// RequeueStreamSettleInterval — with the shared 10s `timeout` it equalled one, so a
-			// deletion landing just after a reconcile lost the race by milliseconds.
+			// RequeueStreamSettleInterval, which the shared 10s `timeout` alone does not.
 			//
-			// Three and a half intervals, not two: the two-interval budget was still exactly 30s and a
-			// CI runner busy enough to drop a tick failed the spec on timing alone — twice, months
-			// apart. Eventually returns as soon as the Secret is back, so the extra room is free on
-			// every run that was going to pass anyway; it is only ever spent by a run that was going
-			// to fail, and 15 seconds is a cheap price for not re-litigating a red build.
-			//
-			// It is deliberately still a BOUND rather than a generous number. The budget is this
-			// spec's implicit SLO — recreation must happen within about four ticks of the deletion —
-			// so a regression that made the requeue path slow rather than broken still fails here.
+			// The budget is deliberately a BOUND rather than a generous number: it is this spec's
+			// implicit SLO — recreation must happen within about four ticks of the deletion — so a
+			// regression that made the requeue path slow rather than broken still fails here.
 			Eventually(func(g Gomega) {
 				var recreated corev1.Secret
 				err := k8sClient.Get(ctx, secretKey, &recreated)
