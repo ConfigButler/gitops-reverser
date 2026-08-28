@@ -25,7 +25,7 @@ These are `design/`-class: intent, not shipped behavior.
 
 | Document | What it proposes |
 |---|---|
-| [`model.md`](model.md) | the proposal: a path template is the wrong primitive, so declare what the folder **is**. `spec.layout` as a discriminated union, with registration as an invariant rather than a rung |
+| [`model.md`](model.md) | the proposal, reversed and much smaller: the path template **stays**, because #319 made registration an invariant and retired three of the five arguments against it. Two additive fields instead of a discriminated union — `serializeNamespace` and `kustomizeRoot` |
 | [`implementation-plan.md`](implementation-plan.md) | the order the work is built in: six PRs of which exactly one release is breaking, the corpus harness that turns the examples into the definition of done, and six design changes the examples produced |
 | [`api-wave.md`](api-wave.md) | how the layout break sequences with the other `feat(api)!` work on `GitTarget`, so the consumer pays one bump |
 | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | the three questions the sibling-inference deletion left. Decided, mostly unbuilt, and its Question 2 is superseded by [`model.md`](model.md) |
