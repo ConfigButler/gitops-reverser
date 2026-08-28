@@ -66,7 +66,7 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Revisit output layout. **Now designed and postponed, not open-ended.** The answer is to declare
   what the folder *is* rather than a path template: `GitTarget.spec.layout`, designed in
-  [gittarget-layout-model.md](design/gittarget-layout-model.md) and filed as
+  [layout/model.md](layout/model.md) and filed as
   [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), sequenced with the rest of the
   breaking `GitTarget` work as [#294](https://github.com/ConfigButler/gitops-reverser/issues/294).
   Deliberately **not** in 0.41.0, which already carries the new attribution model and the

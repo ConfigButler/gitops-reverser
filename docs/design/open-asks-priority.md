@@ -8,8 +8,8 @@
 > sticky removal pointer, the metric relabel, the name tier, and the analyzer/encoder corrections,
 > plus PR #291's sibling-inference deletion and placement counters. That is a large breaking release
 > on its own, and **the GitTarget work is deliberately not in it**. The layout model and the API wave
-> ([`gittarget-layout-model.md`](gittarget-layout-model.md),
-> [`gittarget-api-wave.md`](gittarget-api-wave.md)) are postponed to a later deployment and tracked as
+> ([`../layout/model.md`](../layout/model.md),
+> [`../layout/api-wave.md`](../layout/api-wave.md)) are postponed to a later deployment and tracked as
 > GitHub issues, so the queue below is read with one standing caveat: **every Tier 2 entry that
 > changes a `GitTarget` field is now part of that postponed wave, not independently schedulable.**
 > The Tier 1 entries are not, and should not wait for it.
@@ -68,7 +68,7 @@ do not own.
 > **Built.** `resolveInferred` through `allSameDir` are gone, the kustomize-root fallback stayed, and no
 > enum was added. What building it added to the argument below is recorded in
 > [what the deletion taught](#what-the-deletion-taught). The spec's Option C sections are retained as
-> history in [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md),
+> history in [`../layout/new-file-placement-rules.md`](../layout/new-file-placement-rules.md),
 > and the behaviour change has a [`docs/UPGRADING.md`](../UPGRADING.md) entry.
 
 The config-surface proposal's **B3** offers `spec.placement.mode: Infer|Declared|Strict`: an
@@ -77,7 +77,7 @@ cohort ladder entirely**, keep the kustomize-root fallback, and ship no enum at 
 
 ### What inference is, precisely
 
-[`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md) Option C.
+[`../layout/new-file-placement-rules.md`](../layout/new-file-placement-rules.md) Option C.
 It fires **only** for a resource that has no document in Git yet; everything already written is
 match-first and never moves. For that narrow case it finds the largest cohort of similar existing
 documents (step 1: same type + namespace; step 2: same type, any namespace) and puts the new
@@ -236,8 +236,8 @@ and is not independently schedulable.
 |---|---|---|---|---|
 | 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** | — |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
-| n/a | A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | **1** | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) |
-| n/a | `spec.layout`: declare what the folder is | [`gittarget-layout-model.md`](gittarget-layout-model.md) | **2** | [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), wave |
+| n/a | A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path | [`placement-visibility-and-declared-defaults.md`](../layout/placement-visibility-and-declared-defaults.md) | **1** | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) |
+| n/a | `spec.layout`: declare what the folder is | [`../layout/model.md`](../layout/model.md) | **2** | [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), wave |
 | F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** | wave |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
@@ -246,7 +246,7 @@ and is not independently schedulable.
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
 | B2 | `GitTarget.status.layout` | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
-| n/a | The ambiguous render root, the `declared` metric split, `{kindLower}`, canonical-as-template | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
+| n/a | The ambiguous render root, the `declared` metric split, `{kindLower}`, canonical-as-template | [`placement-visibility-and-declared-defaults.md`](../layout/placement-visibility-and-declared-defaults.md) | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
 | F9 | The `scope: Namespaced` status-write envtest | maintainer review | **3** | outside the wave, deliberately |
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** | — |
 | n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`../spec/attribution.md`](../spec/attribution.md#what-the-shape-driven-rules-reach-and-what-they-do-not) | **3** | — |
@@ -581,7 +581,7 @@ defects.
    fall-back-to-canonical Event.~~ **Done for the removal and the entry**; the Event is still
    undecided, and the metric now carries the actionable part in the meantime.
 3. ~~Rewriting Option C's sections in
-   [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md).~~
+   [`../layout/new-file-placement-rules.md`](../layout/new-file-placement-rules.md).~~
    **Done**: the ladder is documented as three steps, the kustomize-root fallback keeps its section
    and gained the namespace-match rule, and P1–P10 are annotated one by one with which are retired by
    the deletion and which (P7, P9, P10) are facts about the code that remains.
@@ -608,5 +608,5 @@ defects.
 9. Not letting a decided-but-unbuilt list read as imminent. The placement work is filed as
    [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) (correctness) and
    [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) (visibility);
-   [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md)
+   [`placement-visibility-and-declared-defaults.md`](../layout/placement-visibility-and-declared-defaults.md)
    now says which of its eight items shipped, which is **none of them**.

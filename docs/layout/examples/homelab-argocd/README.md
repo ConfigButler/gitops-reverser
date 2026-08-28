@@ -46,7 +46,7 @@ For a field that both the Argo CD UI and Git can change, the Application's autom
 `selfHeal: false`. The Git host also sends a push webhook to Argo CD so a commit is reconciled back
 to the cluster. These are the two settings that let one declaration have a live editing path and a
 Git reconciliation path; see
-[Argo CD and bi-directional GitOps](../../support-boundary/argocd-bi-directional.md).
+[Argo CD and bi-directional GitOps](../../../design/support-boundary/argocd-bi-directional.md).
 
 This is a declaration-editing scenario. It does not reverse Argo-generated application resources,
 nor does it reverse a Helm chart rendered by an Application.

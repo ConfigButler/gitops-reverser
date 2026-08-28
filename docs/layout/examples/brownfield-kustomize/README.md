@@ -65,6 +65,6 @@ an arbitrary root. A folder with no Kustomize root instead follows the `Tree` or
 its declared layout permits.
 
 The example stays within the
-[Kustomize support boundary](../../support-boundary/kustomize-support-boundary.md): it edits local
+[Kustomize support boundary](../../../design/support-boundary/kustomize-support-boundary.md): it edits local
 declarations and verifies the resulting render. It does not invert generators, plugins, remote
 bases, or chart output.

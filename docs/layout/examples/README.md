@@ -3,10 +3,10 @@
 > **design**: concrete repository and configuration examples for the proposed `GitTarget` layout
 > model. The API fields shown here are not available in the current release.
 >
-> Read this beside [`../gittarget-layout-model.md`](../gittarget-layout-model.md) and
-> [`../gittarget-api-wave.md`](../gittarget-api-wave.md). The current supported Kustomize
+> Read this beside [`../model.md`](../model.md) and
+> [`../api-wave.md`](../api-wave.md). The current supported Kustomize
 > boundary remains in
-> [`../support-boundary/kustomize-support-boundary.md`](../support-boundary/kustomize-support-boundary.md).
+> [`../support-boundary/kustomize-support-boundary.md`](../../design/support-boundary/kustomize-support-boundary.md).
 
 These folders make a review question concrete: what does a `GitTarget` say about a Git folder, and
 what files does that statement cause the operator to create or update?
@@ -53,4 +53,4 @@ repository owner's intent.
 
 The examples do not make Kustomize a general source inverse. They stay inside the support
 boundary: one writable expression, a local render root, and a re-rendered proposal. See the
-[support contract](../support-boundary/support-contract.md) for the authoritative limits.
+[support contract](../../design/support-boundary/support-contract.md) for the authoritative limits.

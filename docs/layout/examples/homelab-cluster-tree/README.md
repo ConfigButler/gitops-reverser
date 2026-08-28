@@ -58,4 +58,4 @@ The target has one write scope, `clusters/home`. It does not use one target for 
 several environments. The per-overlay model remains the right choice when a repository has bases
 and environment-specific overlays; see [GitTarget granularity].
 
-[GitTarget granularity]: ../../support-boundary/gittarget-granularity-and-cross-environment-edits.md
+[GitTarget granularity]: ../../../design/support-boundary/gittarget-granularity-and-cross-environment-edits.md

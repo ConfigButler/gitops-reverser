@@ -44,5 +44,5 @@ Deployment identity. If the overlay cannot express a live field change through a
 transformer, the operator reports a refusal rather than editing the rendered base.
 
 The exact support boundary remains the
-[Kustomize support contract](../../support-boundary/support-contract.md). This example narrows its
+[Kustomize support contract](../../../design/support-boundary/support-contract.md). This example narrows its
 write scope further than that contract: rendering may cross into the base, but writing does not.

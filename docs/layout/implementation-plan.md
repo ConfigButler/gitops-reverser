@@ -1,13 +1,13 @@
 # Building the layout model: the order of the work
 
-> **plan**: the implementation order for [`gittarget-layout-model.md`](gittarget-layout-model.md)
-> and [`gittarget-api-wave.md`](gittarget-api-wave.md), under the direction recorded in
+> **plan**: the implementation order for [`model.md`](model.md)
+> and [`api-wave.md`](api-wave.md), under the direction recorded in
 > [`../future/direction-and-configuration-surface.md`](../future/direction-and-configuration-surface.md).
 > Date: 2026-08-28. Index: [`../INDEX.md`](../INDEX.md).
 >
 > The designs it sequences remain proposals; this page is the sequencing decision and the
 > definition of done for each step. It also folds in six design changes that came out of
-> reviewing the worked examples in [`layout-examples/`](layout-examples/README.md), each
+> reviewing the worked examples in [`examples/README.md`](examples/README.md), each
 > recorded below with the finding that produced it.
 
 ## Why the order carries most of the risk
@@ -67,7 +67,7 @@ Both are direction-agnostic correctness and neither touches the API.
 
 ### Half two: the corpus harness
 
-[`layout-examples/`](layout-examples/README.md) already has the shape of a golden-file suite —
+[`examples/README.md`](examples/README.md) already has the shape of a golden-file suite —
 `repository/`, `config/`, `input/`, `expected-*.patch` — and is read by nobody but a human.
 Wiring it up is what stops the design and the implementation drifting, and it converts the
 PR 4 review from "does this prose hold together" into "does the diff match the patch".
@@ -182,7 +182,7 @@ Six changes to the designs above, each from reviewing the worked examples.
 
 ### 1. The namespace agreement is checked when present, not required
 
-`gittarget-layout-model.md` argues that the namespace must be declared **because**
+`model.md` argues that the namespace must be declared **because**
 `allowedSourceNamespaces` may be absent, and then requires an exact one-name list under
 `scope: SingleNamespace`. The field that may be absent becomes mandatory in the most common
 case, and the four-field quickstart becomes six.

@@ -48,7 +48,7 @@ The configuration captures the layer a person would edit in Git:
 
 This is Flux declaration editing, not Helm inversion. A chart folder is skipped as a unit, and the
 operator never turns a rendered Deployment edit into a speculative values change. The current
-[support contract](../../support-boundary/support-contract.md) owns that boundary.
+[support contract](../../../design/support-boundary/support-contract.md) owns that boundary.
 
 A free-standing values file is a separate planned projection, so it is absent from this first
 scenario. Inline `HelmRelease.spec.values` are KRM and stay inside the declaration surface.

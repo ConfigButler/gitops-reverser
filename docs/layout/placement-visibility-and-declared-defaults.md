@@ -13,7 +13,7 @@
 > Reading it in order matters, because the two halves have different standing. The **findings** are
 > checkable facts about the tree and they are why the calls are what they are. The **calls** are still
 > the calls. Question 2 (a CRD default for `placement.default`) has since been superseded outright by
-> [`gittarget-layout-model.md`](gittarget-layout-model.md), which argues that a path template is the
+> [`model.md`](model.md), which argues that a path template is the
 > wrong primitive to be defaulting at all.
 
 Three questions came out of reviewing #291, and one of them (a CRD default for
@@ -103,7 +103,7 @@ fixing F4.
 `MarkTargetRetention` records a fact from the write path into an epoch-scoped per-target roll-up and
 calls `enqueueGitPathChange` **on a change only**, and the controller projects it in
 `gitTargetRetentionStatus`. This retires the objection recorded in
-[`open-asks-priority.md`](open-asks-priority.md) that placement facts cannot reach the GitTarget
+[`open-asks-priority.md`](../design/open-asks-priority.md) that placement facts cannot reach the GitTarget
 promptly because "a refusal recorded on the data plane does not enqueue the GitTarget". One does
 already. `status.retention` is proof.
 
@@ -503,7 +503,7 @@ because they are worth different urgency:
 | `{kindLower}` | **filed, legibility** | Small, self-contained |
 | Canonical path as a template constant | **filed, cleanup** | Removes the hand-written duplication; what a future default would reuse |
 | `renderRootReason: Ambiguous` | **filed** | Belongs with `status.layout`, and the layout model decides the refuse-or-write policy |
-| A CRD default for `placement.default` | **superseded** | [`gittarget-layout-model.md`](gittarget-layout-model.md): the primitive is wrong. `layout.kind` is the defaultable thing, because it names the structural rule instead of standing in front of it |
+| A CRD default for `placement.default` | **superseded** | [`model.md`](model.md): the primitive is wrong. `layout.kind` is the defaultable thing, because it names the structural rule instead of standing in front of it |
 
 The original build list follows, because each entry says *how* to build the thing and that is the part
 an issue should not have to restate.
@@ -539,7 +539,7 @@ Ordered by risk, smallest first.
 
 **Not now, with the trigger written down:** a CRD default for `placement.default`. This was already
 "not now" when the page was written, and it has since become "not this shape at all", because
-[`gittarget-layout-model.md`](gittarget-layout-model.md) replaces the template with a declared
+[`model.md`](model.md) replaces the template with a declared
 `layout.kind` and `Auto` is a safe default where a path never was. The freezing question (F5) is a
 trade we could take; the shadowing question is not, and the layout model dissolves it rather than
 answering it. `spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the

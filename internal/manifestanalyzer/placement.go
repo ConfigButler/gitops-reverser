@@ -13,7 +13,7 @@ import (
 )
 
 // PlacementPolicy is a resolved GitTarget placement declaration (Option B2 of
-// docs/spec/gittarget-new-file-placement-rules.md): a single
+// docs/layout/new-file-placement-rules.md): a single
 // exact-type map plus a fallback default template, consulted for every resource
 // regardless of sensitivity. It mirrors api/v1alpha3.GitTargetPlacementSpec
 // field-for-field but is defined locally so this analyzer package stays free of any
@@ -36,7 +36,7 @@ type PlacementPolicy struct {
 // PlacementRequest describes a resource with no existing document in Git — the
 // only case placement runs for (an existing document is always updated in place at
 // its current location; see docs/design/manifest/version2/
-// gittarget-new-file-placement-rules.md, "Existing manifests are still match-first").
+// new-file-placement-rules.md, "Existing manifests are still match-first").
 type PlacementRequest struct {
 	Identifier types.ResourceIdentifier
 	Kind       string
@@ -161,7 +161,7 @@ func (e *PlacementRefusedError) Error() string { return e.detail }
 func (e *PlacementRefusedError) Unwrap() error { return e.cause }
 
 // LocateNew resolves the placement of a resource with no existing document, per
-// docs/spec/gittarget-new-file-placement-rules.md: a declared template (Option B)
+// docs/layout/new-file-placement-rules.md: a declared template (Option B)
 // wins when present; otherwise the folder's one supported kustomize root, if it has
 // exactly one; otherwise the canonical path.
 //

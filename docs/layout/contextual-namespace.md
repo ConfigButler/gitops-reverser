@@ -8,11 +8,11 @@
 > Captured: 2026-06-08
 > Updated: 2026-06-08
 > Related:
-> [file-agnostic-placement.md](gittarget-new-file-placement-rules.md),
-> [manifest-inventory-file-agnostic-placement.md](manifest-system.md),
-> [current-manifest-support-review.md](current-manifest-support-review.md),
-> [version2/gittarget-repository-validity-and-placement.md](gittarget-new-file-placement-rules.md),
-> [version2/gittarget-new-file-placement-rules.md](gittarget-new-file-placement-rules.md)
+> [file-agnostic-placement.md](new-file-placement-rules.md),
+> [manifest-inventory-file-agnostic-placement.md](../spec/manifest-system.md),
+> [current-manifest-support-review.md](../spec/current-manifest-support-review.md),
+> [version2/gittarget-repository-validity-and-placement.md](new-file-placement-rules.md),
+> [new-file-placement-rules.md](new-file-placement-rules.md)
 
 ## Summary
 

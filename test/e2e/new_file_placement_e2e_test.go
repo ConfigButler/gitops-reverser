@@ -14,7 +14,7 @@ import (
 
 // Validates new-file placement end-to-end: a brand-new resource with no
 // existing document in Git — the "install something extra in test" launch use
-// case (docs/spec/gittarget-new-file-placement-rules.md,
+// case (docs/layout/new-file-placement-rules.md,
 // docs/design/support-boundary/README.md) — lands inside the kustomize-managed overlay
 // directory it belongs to, not the canonical GVR-tree path, and the overlay's
 // kustomization.yaml gains the resources: entry so kustomize actually renders it.
