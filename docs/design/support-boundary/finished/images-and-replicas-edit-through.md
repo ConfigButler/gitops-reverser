@@ -10,7 +10,7 @@
 > Captured: 2026-07-06
 > Related:
 > [../README.md](../README.md),
-> [contextual-namespace-and-kustomize-folder-editing.md](../../../spec/contextual-namespace-and-kustomize-folder-editing.md),
+> [contextual-namespace-and-kustomize-folder-editing.md](../../../layout/contextual-namespace.md),
 > [manifestedit/DECISION.md](../../../../internal/git/manifestedit/DECISION.md)
 
 ## Problem

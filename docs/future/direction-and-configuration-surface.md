@@ -5,8 +5,8 @@
 > Date: 2026-08-27.
 > Companions: [`config-surface-for-a-structured-repository.md`](config-surface-for-a-structured-repository.md)
 > (the field-level review this extends),
-> [`../design/gittarget-layout-model.md`](../design/gittarget-layout-model.md) and
-> [`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md) (the API work this
+> [`../design/gittarget-layout-model.md`](../layout/model.md) and
+> [`../design/gittarget-api-wave.md`](../layout/api-wave.md) (the API work this
 > sequences), and
 > [`../design/support-boundary/helm-light-support-boundary.md`](../design/support-boundary/helm-light-support-boundary.md)
 > (the Helm option this deliberately parks).

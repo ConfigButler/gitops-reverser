@@ -128,7 +128,7 @@ func applyKustomizationEdit(root *yaml.Node, e KustomizationEdit) error {
 
 // AppendKustomizationResource adds one entry to an existing kustomization.yaml's
 // resources: sequence — the mechanism half of the "add to the right kustomize
-// file" (docs/spec/gittarget-new-file-placement-rules.md): a
+// file" (docs/layout/new-file-placement-rules.md): a
 // new sibling file placed inside a kustomize-governed directory must also be named
 // in that directory's resources: list, or kustomize never renders it.
 //

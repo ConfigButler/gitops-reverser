@@ -47,7 +47,7 @@ identity (group, kind, namespace, name). The store indexes by that identity and
 writes an edit back to wherever the document already lives — *match-first
 placement*. Being strict about which file a resource "should" live in was
 explicitly rejected. Only a genuinely new resource needs a placement decision, and
-that is [`gittarget-new-file-placement-rules.md`](gittarget-new-file-placement-rules.md).
+that is [`gittarget-new-file-placement-rules.md`](../layout/new-file-placement-rules.md).
 
 **A GitTarget makes an all-or-nothing claim on its folder.** It either manages
 everything in the subtree or it refuses the folder. There is no partial ownership,
@@ -111,7 +111,7 @@ beside it. Raw identity (what the bytes say) and effective identity (what kustom
 would produce) are tracked separately, and an inherited namespace is kept *out* of
 the file bytes on write. The supported subset, and why everything outside it is
 refused rather than unimplemented, is
-[`contextual-namespace-and-kustomize-folder-editing.md`](contextual-namespace-and-kustomize-folder-editing.md).
+[`contextual-namespace-and-kustomize-folder-editing.md`](../layout/contextual-namespace.md).
 
 The governing constraint is invertibility: an edit must round-trip in both
 directions. Generators, `patches*`, `namePrefix`/`nameSuffix`, `components`, remote

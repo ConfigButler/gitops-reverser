@@ -10,7 +10,7 @@
 > This is a `feat(api)!` change to `GitTarget`. It does not fit in PR #291 and is not proposed for it.
 > How it sequences with the other breaking work on the same object (`spec.suspend`, `spec.mode`, the
 > `commitWindow` move, CommitRequest lifecycle) is in
-> [`gittarget-api-wave.md`](gittarget-api-wave.md), which also records the two places where those
+> [`gittarget-api-wave.md`](api-wave.md), which also records the two places where those
 > items change this design rather than merely accompanying it.
 
 ## Why the current shape keeps producing dead ends
@@ -478,7 +478,7 @@ and starts registering its files instead.
 `spec.placement` becomes a loud rejection for one release rather than a silent alias, following the
 pattern `ClusterWatchRule.spec.rules[].scope` set: refusing a stored field the user can see beats
 translating it behind their back. It rides the Tier 2 breaking wave in
-[`open-asks-priority.md`](open-asks-priority.md), so the consumer pays one coordinated bump.
+[`open-asks-priority.md`](../design/open-asks-priority.md), so the consumer pays one coordinated bump.
 
 ## What this changes about the work already queued
 

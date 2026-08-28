@@ -17,7 +17,7 @@
 >
 > **That change now has a shape.** F6, F10, F12's reference-type nit and §3's pushbacks are sequenced
 > together with the new-file-placement redesign in
-> [`gittarget-api-wave.md`](../design/gittarget-api-wave.md), on the principle that the folder is
+> [`gittarget-api-wave.md`](../layout/api-wave.md), on the principle that the folder is
 > described on the GitTarget and the connection describes only the connection. Two of this review's
 > findings change that design rather than accompanying it: `spec.mode: Observe` (config-surface B1)
 > becomes the way a layout is adopted safely, and `spec.interval` is what keeps the layout's
@@ -640,7 +640,7 @@ criticism.
 
 **Then** (API surface — do the breaking ones while still `v1alpha3`). These are the wave, and they
 are now sequenced with the layout model in
-[`gittarget-api-wave.md`](../design/gittarget-api-wave.md) rather than scheduled from here:
+[`gittarget-api-wave.md`](../layout/api-wave.md) rather than scheduled from here:
 
 1. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
    GitProvider at minimum; jitter the requeue; `reconcile.configbutler.ai/requestedAt` +

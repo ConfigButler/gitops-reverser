@@ -27,9 +27,9 @@ If you change one of these behaviours, change the document in the same commit.
 |---|---|
 | [`attribution.md`](attribution.md) | **how a commit gets its author**: deletion-at-intent, the publish and join halves, the tier ladder, the audit-route partition, and what the metrics can and cannot answer |
 | [`current-manifest-support-review.md`](current-manifest-support-review.md) | the manifest store, plan/apply/flush, and the all-or-nothing folder claim |
-| [`contextual-namespace-and-kustomize-folder-editing.md`](contextual-namespace-and-kustomize-folder-editing.md) | kustomize graph-aware namespace inference; the supported subset |
+| [`contextual-namespace-and-kustomize-folder-editing.md`](../layout/contextual-namespace.md) | kustomize graph-aware namespace inference; the supported subset |
 | [`reconcile-via-watchlist-mark-and-sweep.md`](reconcile-via-watchlist-mark-and-sweep.md) | initial reconcile; **no bookmark, no sweep** |
-| [`gittarget-new-file-placement-rules.md`](gittarget-new-file-placement-rules.md) | where a brand-new resource's file goes |
+| [`gittarget-new-file-placement-rules.md`](../layout/new-file-placement-rules.md) | where a brand-new resource's file goes |
 | [`manifestedit-field-ownership-spike.md`](manifestedit-field-ownership-spike.md) | "the API wins" — full-object ownership, and the do-not-build list |
 | [`type-followability.md`](type-followability.md) | is a type followable, and if not, the single reason |
 | [`type-lifecycle-events-and-wobble-settling.md`](type-lifecycle-events-and-wobble-settling.md) | removal grace and flap coalescing |

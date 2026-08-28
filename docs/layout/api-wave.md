@@ -7,11 +7,11 @@
 > Combines three pieces of work that are all `feat(api)!` on `GitTarget` and are cheaper together
 > than apart:
 >
-> - the layout model, [`gittarget-layout-model.md`](gittarget-layout-model.md);
+> - the layout model, [`gittarget-layout-model.md`](model.md);
 > - the still-open API-surface block of the maintainer review,
 >   [`flux-maintainer-review-status-and-config-model.md`](../future/flux-maintainer-review-status-and-config-model.md)
 >   §4 "Then": **F6**, **F9**, **F10**, plus F12's reference-type nit and §3's pushbacks;
-> - the Tier 2 breaking items in [`open-asks-priority.md`](open-asks-priority.md): **B4**, **B1**,
+> - the Tier 2 breaking items in [`open-asks-priority.md`](../design/open-asks-priority.md): **B4**, **B1**,
 >   **#5**, **#6**.
 >
 > It does not touch Tier 1 (the removal-wait decision, #15's condition). Those are not breaking and
@@ -80,7 +80,7 @@ resource writes, which is a detail worth stating before either is built.
 
 ### 4. The Events question is already answered, and the layout is what to say
 
-[`open-asks-priority.md`](open-asks-priority.md) left one thing open about the inference deletion:
+[`open-asks-priority.md`](../design/open-asks-priority.md) left one thing open about the inference deletion:
 whether a fall-back to canonical should raise an Event on the GitTarget, and it reasoned that this
 was expensive because placement runs on the branch worker with no recorder.
 
@@ -107,7 +107,7 @@ which file came from which.
 So: immutable, with a CEL exception for a **widening** transition (`Flat` to `Tree`) that cannot lose
 the identity-completeness the folder already had. And `Auto` resolves once and is pinned in status,
 because immutability of a field that says "look at the folder" pins nothing. The reasoning is in
-[`gittarget-layout-model.md`](gittarget-layout-model.md).
+[`gittarget-layout-model.md`](model.md).
 
 This settles a question **#6** would otherwise have to reopen: if `path` ever becomes movable
 (`status.observedDestination`), the layout moves with it, because a new folder may have a different
