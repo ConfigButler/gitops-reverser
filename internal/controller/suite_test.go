@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -71,8 +72,25 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
+	// Mirror the production client wiring (cmd/main.go): Secrets are NEVER cached. The control
+	// plane runs no Secret watch, so a cached read is served by a lazily started cluster-wide
+	// Secret informer whose view lags every write the suite makes — and a stale answer here is not
+	// a slow test, it is a wrong one. The GitTarget encryption gate reads its age-key Secret by
+	// name, and any error or stale hit there parks the target on RequeueSteadyInterval (5 minutes),
+	// far past what a spec waits for. That is what made "Should recreate encryption secret when it
+	// is deleted while GitTarget still exists" fail roughly one run in ten: the reconcile that
+	// should have seen the deletion was served the deleted Secret from cache, or read back a
+	// just-created one that the informer had not observed yet.
+	//
+	// Keep this in step with setupManager in cmd/main.go: a suite whose client is wired
+	// differently from the binary tests a controller that does not ship.
 	mgr, err = manager.New(cfg, manager.Options{
 		Scheme: scheme.Scheme,
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Secret{}},
+			},
+		},
 	})
 	Expect(err).NotTo(HaveOccurred())
 
