@@ -9,6 +9,9 @@ app-of-apps folder, and the watched objects all live in Argo CD's `argocd` names
 Application created in the Argo CD UI receives a sibling file such as `paperless.yaml`
 and an entry in the root's `resources:` list.
 
+The tree below shows the target's path in the real repository;
+[`repository/`](repository/) in this folder **is** `bootstrap/argocd-applications/`.
+
 ```text
 bootstrap/argocd-applications/
   kustomization.yaml

@@ -6,7 +6,8 @@ Kustomize root to decide where a new object goes.
 
 ## Resulting repository folder
 
-[`repository/`](repository/) shows the structure after three writes:
+[`repository/`](repository/) shows the structure after three writes. The tree below uses the
+target's path in the real repository; `repository/` in this folder **is** `clusters/home/`.
 
 ```text
 clusters/home/

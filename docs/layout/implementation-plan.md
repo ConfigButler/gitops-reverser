@@ -84,12 +84,21 @@ Per scenario folder:
 2. Build the write event from `input/`.
 3. Derive the flush policy from `config/gittarget.yaml`.
 4. Flush, diff the worktree against the seed commit, and compare with `expected-*.patch`.
+5. For a scenario carrying `expected-status.yaml` instead of a patch, compare the observation the
+   post-scan pass produced with that file. Two scenario shapes need this and neither can assert a
+   patch: a `Never` declaration with no supplier, and an ambiguous folder covering two roots.
 
 Two details decide whether this stays maintainable:
 
 - **Normalize the diff.** Blob hashes and index lines are noise; compare paths, modes and
   hunks. A helper that renders a canonical patch from the worktree diff keeps the committed
   `.patch` files reviewable as documents.
+- **Normalize the status the same way.** `expected-status.yaml` holds the placement observation and
+  the conditions it implies, with the fields that cannot be stable in a fixture dropped before
+  comparison: `observedRevision` (a commit hash the harness creates), `observedGeneration`, and any
+  timestamp. Compare the remainder as parsed YAML, not as text, so field order in the fixture is
+  free. Until PR 3 exists there is nothing to capture, so these scenarios are skipped for it by
+  name, exactly like the PR 4 cases.
 - **Regenerate rather than hand-edit.** A `-update` flag that rewrites the `.patch` files
   makes the corpus cheap to extend, and the review of a regenerated patch is the review of
   the behaviour change.

@@ -16,4 +16,4 @@ spec:
         - name: web
           image: nginx:1.27.4
           ports:
-            - containerPort: 8080
+            - containerPort: 80
