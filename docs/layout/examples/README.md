@@ -16,7 +16,8 @@ Every scenario contains:
 - `repository/`: the relevant repository subtree. Each scenario states whether it is the starting
   state or the state after the illustrated change.
 - `config/`: the `GitTarget` and watcher objects that describe the target. The `GitTarget` files
-  deliberately use the proposed `spec.layout` and `spec.mode` fields.
+  deliberately use the proposed `serializeNamespace` and `kustomizeRoot` fields, which do not exist
+  yet, and `spec.suspend`, which does not either.
 - `input/`: one representative live object or source event, **as the operator receives it from the
   API server** — not as it is written to Git.
 - `expected-*.patch`: the exact change proposed for Git. It makes the write boundary reviewable
