@@ -64,11 +64,14 @@ This file is meant to track the smaller current backlog, not historical notes.
   Secrets and CozyStack `tenantsecrets`; resources with sensitive fields under shapes such as
   `spec.credentials` need an explicit field policy or full-file encryption decision.
 
-- [ ] Revisit output layout. **Now designed and postponed, not open-ended.** The answer is to declare
-  what the folder *is* rather than a path template: `GitTarget.spec.layout`, designed in
-  [layout/model.md](layout/model.md) and filed as
-  [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), sequenced with the rest of the
-  breaking `GitTarget` work as [#294](https://github.com/ConfigButler/gitops-reverser/issues/294).
+- [ ] Revisit output layout. **Now designed and postponed, not open-ended, and the answer has
+  reversed since [#293](https://github.com/ConfigButler/gitops-reverser/issues/293) was filed.** The
+  path template **stays**; what it could not express becomes two additive fields,
+  `serializeNamespace` and `kustomizeRoot`. [layout/model.md](layout/model.md) carries the reversal
+  and [layout/implementation-plan.md](layout/implementation-plan.md) the order. The placement work
+  is no longer breaking, so it no longer needs
+  [#294](https://github.com/ConfigButler/gitops-reverser/issues/294); the issues still describe the
+  discriminated union and want updating.
   Deliberately **not** in 0.41.0, which already carries the new attribution model and the
   sibling-inference removal. Multiple resources per file is bundle support, which exists for
   match-first today and is a separate question from where a *new* file goes.
