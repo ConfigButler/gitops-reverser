@@ -725,6 +725,10 @@ Branch `feat/target-watch-cell-identity`, 2026-08-27.
 | `33113743391` | `773f6cc0` | **success — all six e2e legs, Lint, Unit tests.** Proves nothing; the failing path was untouched |
 | `33116777679` | `fc04b15b` | **quickstart-install: A**, and the new condition message named the stuck scope outright; Unit tests: D (ambient). Remaining legs cancelled by a push |
 | `33118310453` | `cf08e467` | Lint, Unit, quickstart-install, bi-directional, source-cluster, image-refresh green |
+| `33120703394` | `e3356796` | **full-manager: A**, and the accept log proved the gate reaches True — the run that solved A's shape; **quickstart-install: A** independently |
+| `33123538889` | `43c4740b` | **full-manager: A**; drop log fired 0×, excluding the dropped-enqueue candidate |
+| `33126282153` | `26cd36c3` | **quickstart-install: A** with the publish log — 12 publishes, last computing True/5m, object stale 100s later |
+| `33127240827` | `a339d783` | **success — all six e2e legs, Lint, Unit tests**, on the A fix |
 
 Local suites, same code:
 
@@ -736,6 +740,10 @@ Local suites, same code:
 | `task test-e2e` | `773f6cc0` | 80/80 pass |
 | `task test-e2e` | `fc04b15b` | **79 pass, 1 fail — B**, the first local reproduction of B |
 | `task test-e2e` | `cf08e467` | 80/80 pass — on the since-reverted fix, so it validates nothing |
+| `task test-e2e` | `f277f074` | **79 pass, 1 fail — A**, fully instrumented; the run that eliminated every gate branch |
+| `task test-e2e` | `26cd36c3` | **A reproduced** on a 61-scope target: 66 publishes, the last computing True/5m |
+| `task test-e2e` | `a339d783` | 80/80 pass on the fix, with 74 lost-write races handled at 10s |
+| focused `--focus='WatchRule source namespace'` ×8 | `f277f074` | 8/8 pass — A needs concurrent load, not this spec alone |
 
 Related change that landed and is **not** a suspect for either open failure: `14eeef46` split
 stream-state transitions off the acceptance channel. Sharing one 256-slot drop-on-full buffer
