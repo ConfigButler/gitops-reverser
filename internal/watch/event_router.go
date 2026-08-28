@@ -197,6 +197,7 @@ func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	scope git.ResyncScope,
+	sourceCell types.CellKey,
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 	heal bool,
@@ -212,6 +213,7 @@ func (r *EventRouter) enqueueScopedResync(
 		GitTargetName:      gitDest.Name,
 		GitTargetNamespace: gitDest.Namespace,
 		Scope:              &scope,
+		SourceCell:         sourceCell,
 		Heal:               heal,
 		Result:             resultCh,
 	})
@@ -223,7 +225,7 @@ func (r *EventRouter) enqueueScopedResync(
 // stream gathered, and the namespace its sweep may touch — are derived from ONE value and
 // cannot drift apart at a call site.
 func resyncScopeForWatchKey(key targetWatchKey) git.ResyncScope {
-	return git.ResyncScope{GVR: key.GVR, Namespace: key.Namespace}
+	return git.ResyncScopeFor(key.GVR, key.Namespace)
 }
 
 // drainScopedResync logs a per-type reconcile/sweep's outcome and, on failure or timeout,
@@ -232,7 +234,7 @@ func resyncScopeForWatchKey(key targetWatchKey) git.ResyncScope {
 // never re-fires the gather.
 func (r *EventRouter) drainScopedResync(
 	gitDest types.ResourceReference,
-	key targetWatchKey,
+	cell types.CellKey,
 	kind string,
 	renderFidelityEpoch uint64,
 	resultCh chan git.ResyncResult,
@@ -240,20 +242,20 @@ func (r *EventRouter) drainScopedResync(
 	select {
 	case result := <-resultCh:
 		if result.Err != nil {
-			r.handleScopedResyncError(gitDest, key, kind, renderFidelityEpoch, result.Err)
+			r.handleScopedResyncError(gitDest, cell, kind, renderFidelityEpoch, result.Err)
 			return
 		}
 		r.Log.V(1).Info("per-type "+kind+" applied",
-			"gitDest", gitDest.String(), "gvr", key.GVR.String(),
+			"gitDest", gitDest.String(), "cell", cell.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		if r.WatchManager != nil {
 			r.WatchManager.MarkTargetGitPathAccepted(gitDest)
-			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, key)
+			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, cell)
 			// Recorded for every applied resync, including the ones that retained nothing: zero
 			// is the converged signal and is only meaningful if it is published as actively as a
 			// non-zero count.
 			r.WatchManager.MarkTargetRetention(
-				gitDest, key, renderFidelityEpoch, result.Stats.PruneMode, result.Stats.Retained)
+				gitDest, cell, renderFidelityEpoch, result.Stats.PruneMode, result.Stats.Retained)
 		}
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
@@ -262,7 +264,7 @@ func (r *EventRouter) drainScopedResync(
 			r.WatchManager.recordTargetReconcileCompleted(gitDest, "type_reconcile")
 		}
 	case <-time.After(resyncSignalTimeout):
-		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "gvr", key.GVR.String())
+		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "cell", cell.String())
 		r.recordBackgroundResyncFailure(gitDest)
 	}
 }
@@ -274,7 +276,7 @@ func (r *EventRouter) drainScopedResync(
 // remains observable.
 func (r *EventRouter) handleScopedResyncError(
 	gitDest types.ResourceReference,
-	key targetWatchKey,
+	cell types.CellKey,
 	kind string,
 	renderFidelityEpoch uint64,
 	err error,
@@ -283,28 +285,38 @@ func (r *EventRouter) handleScopedResyncError(
 	if errors.As(err, &refused) {
 		if refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive) {
 			r.Log.Info("per-type "+kind+" found a render-vs-live divergence",
-				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
+				"gitDest", gitDest.String(), "cell", cell.String(), "detail", refused.Error())
 			if r.WatchManager != nil {
 				r.WatchManager.MarkTargetRenderFidelityScopeDiverged(
-					gitDest, renderFidelityEpoch, key, renderFidelityDivergence(refused))
+					gitDest, renderFidelityEpoch, cell, renderFidelityDivergence(refused))
 			}
 			return
 		}
 		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget path content",
-			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
+			"gitDest", gitDest.String(), "cell", cell.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
 			r.WatchManager.MarkTargetGitPathRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
 		}
 		return
 	}
 	if errors.Is(err, git.ErrResyncSuperseded) {
-		// A newer resync for the same scope replaced this one while it was queued
-		// and runs in its place, so nothing was missed and nothing failed.
-		r.Log.V(1).Info("per-type "+kind+" superseded by a newer resync",
-			"gitDest", gitDest.String(), "gvr", key.GVR.String())
+		// A newer resync for the same scope replaced this one while it was queued and runs in its
+		// place, so no WRITE was missed. Its REPORTS are skipped, on the reasoning that the
+		// replacement marks acceptance, render fidelity and retention instead. That holds only if
+		// the replacement's own report is then accepted, and a report is refused when it arrives
+		// under a revision the plan has moved past.
+		//
+		// TEMPORARY at Info, restored. It is normally V(1) because coalescing is routine under
+		// exactly the load it protects against, and it was lowered once on the assumption that the
+		// render-fidelity condition had made every lost report visible. It has not: this path
+		// skips the RETENTION report too, and lowering it re-blinded that path in the very local
+		// reproduction of Failure B that followed. Lower it again only when B is closed
+		// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+		r.Log.Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
+			"gitDest", gitDest.String(), "cell", cell.String())
 		return
 	}
-	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "gvr", key.GVR.String())
+	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "cell", cell.String())
 	r.recordBackgroundResyncFailure(gitDest)
 }
 

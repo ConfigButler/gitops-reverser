@@ -35,7 +35,7 @@ func TestStreamLiveTargetWatchEvents_CanceledContextIsNotAnError(t *testing.T) {
 		events := make(chan watch.Event)
 		close(events) // ...which is why the watch closed
 
-		err := m.streamLiveTargetWatchEvents(ctx, logr.Discard(), gitDest, key, OperationSet{}, events)
+		err := m.streamLiveTargetWatchEvents(ctx, logr.Discard(), gitDest, testStream(key, OperationSet{}), events)
 		require.NoErrorf(t, err, "iteration %d: a closed watch during shutdown is not an error", i)
 	}
 }
@@ -53,6 +53,6 @@ func TestStreamLiveTargetWatchEvents_ClosedChannelWhileRunningIsAnError(t *testi
 	close(events)
 
 	err := m.streamLiveTargetWatchEvents(
-		context.Background(), logr.Discard(), gitDest, key, OperationSet{}, events)
+		context.Background(), logr.Discard(), gitDest, testStream(key, OperationSet{}), events)
 	require.ErrorIs(t, err, errTargetWatchClosed)
 }

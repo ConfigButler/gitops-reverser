@@ -19,7 +19,20 @@ import (
 // WatchManagerInterface defines the interface for watch manager reconciliation.
 // This allows for easier testing by enabling mock implementations.
 type WatchManagerInterface interface {
-	ReconcileForRuleChange(ctx context.Context) error
+	// TriggerRuleChange marks the GitTarget a rule names as needing a new plan pass, and returns.
+	// The watch-plane owner runs the pass once that target has been quiet for its settle window.
+	//
+	// It replaces a ReconcileForRuleChange that did the work inline, on the controller worker
+	// that observed the rule: a discovery call, a namespace list, a full re-projection, and then a
+	// replan of every running GitTarget. A rule edit now replans the ONE target the rule names.
+	// See docs/design/watch-manager-ownership.md.
+	TriggerRuleChange(gitDest types.ResourceReference)
+
+	// TriggerAllRuleChange marks every declared GitTarget. It is the rule-DELETION path only: the
+	// object is already gone, so it cannot be read for the target it named and the owner does not
+	// pretend to narrow the invalidation.
+	TriggerAllRuleChange()
+
 	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha3.WatchRule) (bool, string)
 	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha3.ClusterWatchRule) (bool, string)
 	StreamSummaryForGitTarget(gitDest types.ResourceReference) watch.StreamSummary
@@ -34,6 +47,16 @@ type WatchManagerInterface interface {
 	// instead of dialling that cluster itself on every pass. It may return nil (the data plane is
 	// not wired), which degrades to exact-name policy evaluation — never to a denial.
 	SourceScope() watch.SourceScopeService
+
+	// StreamStateEvents is the channel a rule controller wires via source.Channel so a stream
+	// reaching (or leaving) Streaming re-reconciles the rules that project it, instead of leaving
+	// them to discover it on RequeueStreamSettleInterval. A stream coming up is the last thing
+	// that has to happen before a rule can honestly report StreamsRunning=True, and the data plane
+	// is the only thing that knows when it did.
+	//
+	// Every call registers a NEW subscriber: a Go channel has one consumer, and three controllers
+	// project this state. It may return nil when no data plane is wired.
+	StreamStateEvents() <-chan event.GenericEvent
 
 	// SourceNamespaceEvents is the channel the WatchRule controller wires via source.Channel so a
 	// SOURCE-cluster Namespace label change re-reconciles the rules it grants or revokes. Those

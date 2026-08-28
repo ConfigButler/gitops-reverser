@@ -163,7 +163,7 @@ func (r *GitProviderReconciler) commitProvider(
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
 }
 
 // signingKeyFailureReason classifies an ensureSigningKey failure for the Stalled reason.

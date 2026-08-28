@@ -5,59 +5,40 @@ related:
   - target-watch-plan.md
   - reconcile-triggering.md
   - watch-and-catalog-architecture.md
-  - watchrule-source-namespace/pr2-stream-scope-collapse.md
-  - watchrule-source-namespace/pr5-gittarget-deletion-safety.md
   - ../spec/reconcile-via-watchlist-mark-and-sweep.md
   - ../spec/type-lifecycle-events-and-wobble-settling.md
 ---
 
-# Data-plane triggering: from an event pipe to a dirty set
+# Data-plane triggering: why one config change replays everything
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
->
-> **Not a specification.** This document is incident analysis, rationale, and
-> ordering research. The implementable plan for this refactor is
-> [TargetWatchPlan](target-watch-plan.md); policy semantics live in its parent,
-> [Watch and catalog architecture](watch-and-catalog-architecture.md). Where this
-> page and either of those disagree, they win. Sections 5 to 8 record proposals
-> that were superseded during review and are kept only as the reasoning that led
-> to the plan.
+> **design**: background, open. Index: [`../INDEX.md`](../INDEX.md)
 
-The reading order for this refactor:
+**The short version.** Adding a single WatchRule tears down and replays every
+watch stream a GitTarget has. Under load that floods a queue which is shared with
+other tenants. The fix is to reconcile only the cells that changed, and it lives
+in [TargetWatchPlan](target-watch-plan.md). This page is the background: what
+went wrong, how the pipeline works, and the one ordering rule any fix has to
+respect.
 
-1. [Watch and catalog architecture](watch-and-catalog-architecture.md), the
-   parent architecture and policy semantics.
-2. [TargetWatchPlan](target-watch-plan.md), the canonical implementable plan.
-3. This document, for why any of it is necessary.
+Read [Watch and catalog architecture](watch-and-catalog-architecture.md) for the
+model, [TargetWatchPlan](target-watch-plan.md) for what is being built, and this
+page for why it is worth building. Where this page disagrees with either of
+those, they win.
 
 [`reconcile-triggering.md`](./reconcile-triggering.md) asks how the **control
 plane** wakes up. This asks the same question one layer down, about the **data
-plane**: the branch worker's event queue, what travels on it, and which of those
-things should not be travelling on a queue at all.
-
-It starts from a concrete production failure, walks the pipeline as it works
-today, separates the two jobs the queue is doing, and records why the current
-shape is not accidental: the snapshot and its FIFO position together solve a real
-double-apply problem, and any replacement has to solve it again.
-
----
+plane**.
 
 ## 1. What happened
 
-CI run 32848418546 dropped **595 resync requests in 16 seconds**, and all 595
-were for a *single* GitTarget whose namespace was being deleted:
-
-```text
-total dropped resyncs: 595
-distinct GitTargets   : 1
-    595  …test-manager-unsupported-folder/unsupported-folder-dest
-```
+CI run 32848418546 dropped **595 resync requests in 16 seconds**, all for a
+single GitTarget whose namespace was being deleted.
 
 A branch worker's `eventQueue` is a 100-slot FIFO shared by **every GitTarget on
-one provider and branch**. One target saturated it; unrelated GitTargets on the
-same branch then waited on resyncs that never entered the queue, and their
-WatchRules never reached `Ready`. Five different e2e specs failed this way across
-three attempts, which is why it read as flakiness rather than as one bug.
+one provider and branch**. One target saturated it, so unrelated GitTargets on
+the same branch waited on resyncs that never entered the queue, and their
+WatchRules never reached `Ready`. Five e2e specs failed this way, which is why it
+read as flakiness rather than as one bug.
 
 ```mermaid
 flowchart LR
@@ -82,25 +63,21 @@ flowchart LR
     class H1,H2 bad;
 ```
 
-The mechanism was edge-triggered pathology. Each stream of the deleted target
-looped `replay → enqueue resync → fail → reconnect → replay`, minting a **new
-payload every 2 s backoff**, for a target that could never come back.
+Each stream of the deleted target looped `replay → enqueue resync → fail →
+reconnect → replay`, minting a new payload every two seconds, for a target that
+could never come back.
 
-Two fixes shipped in [#312](https://github.com/ConfigButler/gitops-reverser/pull/312):
+[#312](https://github.com/ConfigButler/gitops-reverser/pull/312) fixed it twice
+over: a deleted GitTarget is now terminal for its watches, so the loop stops; and
+queued resyncs coalesce by `(GitTarget, scope)`, so queue depth is bounded by the
+number of distinct scopes rather than by the request rate.
 
-1. A deleted GitTarget is now **terminal** for its target watches (`errGitTargetGone`),
-   so the loop stops instead of reconnecting. This removed the storm at source.
-2. Queued resyncs **coalesce** by `(GitTarget, scope)`, so queue depth is bounded
-   by the number of distinct scopes rather than by the request rate.
-
-Fix 2 is the interesting one, because of what it implies.
-
----
+That stopped the bleeding. It did not address the shape underneath, which the
+next section is about.
 
 ## 2. How the pipeline works today
 
-Two independent inputs converge on one FIFO. Understanding why they converge is
-what makes the rest of this document decidable.
+Two independent inputs converge on one FIFO.
 
 ```mermaid
 flowchart TB
@@ -111,7 +88,7 @@ flowchart TB
     API -->|"audit webhook"| AUD["audit ingest"]
     AUD --> FS["per-type audit fact stream<br/>(Redis)"]
 
-    API -->|"watch"| TW["target watch<br/>one goroutine per<br/>(GitTarget, GVR, scope)"]
+    API -->|"watch"| TW["target watch<br/>one goroutine per<br/>(GitTarget, cell)"]
 
     TW --> SAN["sanitize + followability<br/>+ no-op suppression"]
     SAN --> GR["attribution grace window<br/>(head-of-line, per event)"]
@@ -126,61 +103,32 @@ flowchart TB
     C --> P["push (5s cooldown)"]
 ```
 
-The parts that matter here:
+Three properties carry the rest of this page:
 
-- **Object state comes from watch, not from polling.** There is no periodic object
-  LIST and no hourly drift sweep. A watch that is lost and re-established replays
-  with `sendInitialEvents=true` and runs a **mark-and-sweep**: everything replayed
-  is marked, and at the `initial-events-end` bookmark any managed Git file that
-  was not marked is deleted, because the object is gone. That sweep is the only
-  thing that reconciles a delete which happened while no watch was running.
-- **Attribution comes from a different source.** The audit webhook feeds a
-  per-type fact stream; the grace window waits on it to name the author. This is
-  why an event is not recomputable: the author of a past change exists only in
-  that stream.
-- **Everything funnels through one FIFO per branch.** `GitTargetEventStream →
-  BranchWorker` is a synchronous FIFO, so same-object and same-type order is
-  strictly preserved, and the commit window groups by `(author, GitTarget)`.
+- **Object state comes from watch, never from polling.** A watch that is lost and
+  re-established replays with `sendInitialEvents=true` and runs a
+  **mark-and-sweep**: everything replayed is marked, and at the
+  `initial-events-end` bookmark any managed Git file left unmarked is deleted,
+  because its object is gone. That sweep is the only thing that reconciles a
+  delete which happened while no watch was running.
+- **Attribution comes from somewhere else.** The audit webhook feeds a fact
+  stream, and the grace window waits on it to name the author. An event therefore
+  cannot be recomputed: the author of a past change exists only there.
+- **Everything funnels through one FIFO per branch**, so same-object order is
+  strictly preserved and the commit window groups by `(author, GitTarget)`.
 
-See [`../architecture.md`](../architecture.md) sections "State ingestion and not
-losing deletes", "Watch event ordering", and "Mark and sweep resync" for the full
-treatment.
+[`../architecture.md`](../architecture.md) has the full treatment, under "State
+ingestion and not losing deletes", "Watch event ordering", and "Mark and sweep
+resync".
 
----
+### 2.1 The stream set was declarative already; only the diff was missing
 
-### 2.1 The stream set is already declarative, but the diff is all or nothing
-
-This is the finding that reframes the rest of this document.
-
-`targetWatchSpecs(table)` already computes the desired stream set as a map from
-`(GVR, namespace)` to that stream's operation filter. The model is there. What is
-missing is a **per-key** diff:
-
-```go
-func (m *Manager) prepareTargetWatchSetReplacementLocked(...) bool {
-    prior := m.targetWatches[key]
-    if prior == nil { return false }
-    if !force && equalTargetWatchSpecs(prior.specs, specs) {
-        return true          // identical set: leave everything running
-    }
-    prior.cancel()           // ANY difference: cancel EVERY stream for this GitTarget
-    return false
-}
-```
-
-`equalTargetWatchSpecs` is whole-set equality. So a declaration is either
-untouched or replaced wholesale: adding one WatchRule cancels every stream the
-GitTarget has and restarts all of them, and each restarted stream replays and
-enqueues its own resync.
-
-That is the storm shape from §1, reached by ordinary configuration change rather
-than by deletion.
-
-The reason is structural, and the code says so: the render-fidelity **epoch is
-per-target**, not per-stream. `beginTargetRenderFidelityEpochLocked(target, keys)`
-opens one epoch covering every scope, so a scope that resumed from its cursor
-instead of replaying "would otherwise leave that scope pending in the new epoch
-forever."
+This is the finding that reframed everything else, and it is now built:
+[target-watch-plan.md](target-watch-plan.md) carries the design and the state.
+`targetWatchSpecs(table)` already computed the desired stream set as a map from
+one cell to that stream's operation filter, and what was missing was a
+**per-cell** diff. The comparison was whole-set equality, so a declaration was
+either untouched or replaced wholesale:
 
 ```mermaid
 flowchart TB
@@ -201,14 +149,24 @@ flowchart TB
     class R4 want;
 ```
 
-Only the bold one is new work. The other three are a full re-replay of state that
-never changed.
+Only the bold stream is new work. The other three re-replay state that never
+changed, which is the storm shape from §1 reached by ordinary configuration
+change instead of by deletion.
 
----
+The cause is structural: the render-fidelity **epoch is per-target**. One epoch
+covers every scope, so a scope that resumed from its cursor instead of replaying
+would stay pending in the new epoch forever. Making readiness per cell is what
+unlocks the diff.
+
+One subtlety worth carrying forward: when a rule **moves**, both scopes are
+invalidated. Editing a rule's `sourceNamespace` from `team-b` to `team-c`
+produces a `stop` for the old cell and a `start` for the new one. What happens to
+the departing cell's documents is decided by the cause table in
+[TargetWatchPlan](target-watch-plan.md), "What a cell leaving means".
 
 ## 3. The queue is doing two unrelated jobs
 
-`WorkItem` carries three shapes. They do not have the same nature.
+`WorkItem` carries three shapes, and they do not share a nature.
 
 ```mermaid
 flowchart TD
@@ -225,68 +183,26 @@ flowchart TD
     RL --> RLN["can always be recomputed"]
 ```
 
-### 3.1 A write is edge-triggered and irreducible
-
-```go
-type Event struct {
-    Operation   string // CREATE / UPDATE / DELETE
-    Identifier  types.ResourceIdentifier
-    Attribution AttributionOutcome // whether an actor was sought, and found
-    …
-}
-```
-
-An `Event` is an *observation of something that happened*. "alice deleted this
+**A write is an observation of something that happened.** "alice deleted this
 ConfigMap" cannot be recomputed from cluster state: the object is gone, and the
-author exists only in the attribution fact stream, joined within a bounded grace
-window. Commit windows are keyed per `(author, GitTarget)`, so the author is part
-of what decides where the write lands, not decoration on top of it.
+author exists only in the attribution fact stream. Order and attribution both
+matter, and both are destroyed by collapsing a write to "something changed". This
+half stays a log.
 
-Order matters, attribution matters, and both are destroyed by collapsing this to
-"something changed." **This half must stay a log.**
-
-> This snippet described `Event.AuditStreamID` when it was written: a Redis stream
-> position `"<rv>-<seq>"` that a per-target coverage watermark compared against to
-> suppress an audit-log entry a reconcile had already folded. That field and that
-> gate belonged to the splice model and were deleted in August 2026. The argument
-> above does not depend on them, so it is restated on the fields the `Event`
-> carries today.
-
-### 3.2 A resync is level-triggered and recomputable
-
-```go
-type ResyncRequest struct {
-    Desired  []manifestanalyzer.DesiredResource // gathered from the live cluster
-    Scope    *ResyncScope
-    …
-}
-```
-
-`Desired` is a *statement about current state*, gathered by listing the live
-cluster. Throwing one away loses nothing: the next gather reconstructs it, and
-reconstructs it fresher. The cluster is the source of truth.
-
-**This half does not need a queue.**
-
----
+**A resync is a statement about current state**, gathered by listing the live
+cluster. Throwing one away loses nothing, because the next gather reconstructs it
+fresher. The cluster is the source of truth.
 
 ## 4. Why a resync carries both a snapshot and a position
 
-This is the part that is easy to get wrong, and it is the reason the current
-design looks heavier than it needs to.
+This is the part that is easy to get wrong, and the reason the design looks
+heavier than it first seems.
 
-A resync is not applied into a vacuum. Live events for the same scope are
-arriving while it is in flight, and the snapshot it carries was gathered at some
-revision. Both facts have to be reconciled, and FIFO position is how.
-
-The clearest case is the LIST fallback, where the ordering is explicit in the
-code. When `sendInitialEvents` is unsupported, `targetWatchListAndStream`:
-
-1. opens the watch and **buffers** its events without applying them;
-2. LISTs a snapshot;
-3. enqueues the resync for that snapshot;
-4. records the cursor;
-5. only then releases the buffered live events downstream.
+A resync is not applied into a vacuum. Live events for the same scope arrive
+while it is in flight, and the snapshot it carries was gathered at some revision.
+FIFO position is what reconciles the two. The LIST fallback makes the ordering
+explicit: buffer the watch without applying it, LIST a snapshot, enqueue the
+resync, record the cursor, and only then release the buffered events.
 
 ```mermaid
 sequenceDiagram
@@ -308,163 +224,71 @@ sequenceDiagram
     Note over W: state ends at rv 102
 ```
 
-Invert those and the snapshot lands **after** the edits it does not contain, and
-mark-and-sweep reverts them. The events are not merely redundant, they are
-unapplyable out of order: an event may already be included in the snapshot, so
-its value is only defined relative to the snapshot boundary.
+Invert those and the snapshot lands after edits it does not contain, and
+mark-and-sweep reverts them. The events are not merely redundant. They are
+unapplyable out of order, because an event may already be included in the
+snapshot, so its value is defined only relative to the snapshot boundary.
 
-A second gate used to exist for the same hazard on the attribution side, and it is
-worth knowing why it is gone rather than rediscovering the hazard. Under the splice
-model the audit log was itself a source of object content, so a per-target coverage
-head `Hc` had to mark how far a reconcile had covered: an entry at or below it was
-historical (already folded) and one above it was live. Without that gate, entries
-applied twice, once by the reconcile and once by the tail. The full account is in
-[the snapshot tail replay investigation](../finished/signing-snapshot-tail-replay-failure-investigation.md).
+**So a FIFO position is not an implementation detail that can be discarded for
+free.** It is the boundary that makes "snapshot, then deltas" well defined, and
+any redesign has to solve that again. It is why
+[TargetWatchPlan](target-watch-plan.md) keeps a coalescing fence, and why a
+proposal to replace the resync payload with a bare dirty set was dropped.
 
-Watch-first ingestion removed the hazard at its root rather than fixing the gate.
-Audit never carries content now: it supplies an author for an event the watch
-already delivered. There is nothing on that side left to apply twice, so the only
-ordering constraint that survives is the one above, between a snapshot and the
-deltas that follow it.
+## 5. Where we are
 
-So the FIFO position is not an implementation detail a dirty set can discard for
-free. It is the boundary that makes "snapshot, then deltas" well defined.
+The plan lives in [TargetWatchPlan](target-watch-plan.md), which is the single
+place to read it from. In outline: diff the plan by cell and log it, then apply
+the diff so unrelated replays stop. The semantics of removal come after,
+deliberately.
 
----
+That plan applies its decisions by starting and canceling streams, and nothing
+filters the queue. A branch worker serves one GitProvider and branch rather than
+one GitTarget, so its queue is shared across tenants and must not hold per-tenant
+configuration. A short tail of writes from a cell that has been deselected is
+therefore accepted: it is bounded by the queue, and the files it touches are
+retained anyway.
 
-## 5. What was proposed here, and where it went
-
-Three proposals were drafted in this document and are **not** reproduced, because
-[TargetWatchPlan](target-watch-plan.md) carries their successors in implementable
-form. They are recorded here only so the path is legible:
-
-| Drafted here | Outcome |
-|---|---|
-| A dirty set replacing the resync payload | Superseded. It moved the ordering problem of §4 rather than avoiding it |
-| Diffing the stream set into `start` / `stop` / `keep` | Adopted, and **corrected**: it omitted `restart`, the case where a key survives and its operation filter changes. See [TargetWatchPlan](target-watch-plan.md) §2 |
-| A folder-wide coverage sweep of anything no live stream covers | Superseded. It collapsed three different removal causes into one action, and one of them (an incomplete or degraded view) must never delete. See [TargetWatchPlan](target-watch-plan.md) §3 |
-
-Two findings from this document survive intact and are load-bearing for the plan:
-
-- **§4's ordering constraint.** A snapshot cannot be separated from the events
-  behind it, which is why the plan needs an explicit fence rather than an
-  assumption. That section also surfaced a live regression in the shipped
-  coalescing, diagnosed in [TargetWatchPlan](target-watch-plan.md) §4.1 and since
-  fenced by its §4.3.
-- **§2's finding** that the stream set is already declarative and only the diff
-  is missing, which is what made an incremental plan a small change rather than
-  a rewrite.
-
----
-
-## 6. One level up: invalidation granularity
-
-The same argument applies to the config surface. A small change to one WatchRule
-among many should not imply a full resync of its GitTarget.
-
-```mermaid
-flowchart TD
-    CP["ClusterProvider"] --> GT["GitTarget"]
-    GP["GitProvider"] --> GT
-    WR1["WatchRule A<br/>(configmaps, ns=team-a)"] --> GT
-    WR2["WatchRule B<br/>(secrets, ns=team-b)"] --> GT
-    WR3["WatchRule C<br/>(deployments, ns=team-c)"] --> GT
-
-    WR2 -.->|"edit"| D["invalidate:<br/>(GitTarget, secrets, team-b)"]
-    D --> N["other scopes untouched"]
-```
-
-An event pipe quietly encourages "resync everything, it is easier." Invalidation
-keyed by `(target, GVR, namespace)` makes precision the natural thing to express
-instead.
-
-One subtlety the diagram flattens: when a rule **moves** rather than changes in
-place, both scopes are invalidated, not just the new one. Editing WatchRule B's
-`sourceNamespace` from `team-b` to `team-c` produces a `stop` for
-`(secrets, team-b)` and a `start` for `(secrets, team-c)`, and deleting the rule
-outright produces the `stop` alone. Invalidating only the arriving scope leaves
-the departing one's managed documents in Git with nothing watching them. What
-should happen to those documents is not a granularity question, which is why it
-is decided by [TargetWatchPlan](target-watch-plan.md) §3's cause table (this is
-the *intent* row) rather than here.
-
-The relationship graph needed for this already half-exists in the control plane:
-`gitTargetToWatchRules`, `gitProviderToWatchRules`, `clusterProviderToWatchRules`
-mappers, and level-triggered status marks (`MarkTargetGitPathRefused` /
-`MarkTargetGitPathAccepted`, render-fidelity scope clean/diverged). The control
-plane already thinks in relationships and levels; the data plane still thinks in
-events for both of its jobs.
-
----
-
-## 7. Related work
-
-Everything below already exists. This note sits on top of it rather than beside
-it.
-
-**The layer above.** [Reconcile triggering](reconcile-triggering.md) asks the same
-question for the control plane: how controllers wake up, why a periodic requeue is
-a safety net rather than a mechanism, and which dependency edges are missing. This
-document is its data-plane counterpart.
-
-**How ingestion works.**
-[Architecture](../architecture.md) is the reference, in particular "State
-ingestion and not losing deletes", "Watch event ordering", and "Mark and sweep
-resync". [Watch-first ingestion](../finished/watch-first-ingestion-architecture.md)
-is how the watch-first model was arrived at, and
-[Reconcile via WatchList and mark-and-sweep](../spec/reconcile-via-watchlist-mark-and-sweep.md)
-is the mechanism this note's §4 depends on.
-[Watch event ordering under the attribution grace window](../facts/watch-event-ordering-and-attribution-grace.md)
-has the worked examples behind the ordering claims.
-
-**Scopes and streams.**
-[Namespace-scoped resync](watchrule-source-namespace/pr1-namespace-scoped-resync.md)
-and [stream scope collapse](watchrule-source-namespace/pr2-stream-scope-collapse.md)
-established the per-scope stream model and why a cluster-wide scope is a peer of a
-named one rather than a replacement. That is the overlap
-[TargetWatchPlan](target-watch-plan.md) §3 has to handle.
-
-**Deletion and retention.**
-[GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
-draws the line between observed evidence and inferred deletion, which is the line
-a scope close has to be placed against.
-[Retention visibility](watchrule-source-namespace/pr5-retention-visibility.md)
-makes a suppressed sweep observable.
-
-**Types and identity.**
-[Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
-gives `RemovalGrace`, which the plan consumes rather than re-deciding.
-[Typeset owns discovery grace](../spec/typeset-owns-discovery-grace.md) is where
-that grace lives. [Type followability](../spec/type-followability.md) defines what
-may be mirrored at all, and
-[the GVK/GVR mapping layer](../spec/gvk-gvr-mapping-layer.md) is the identity
-resolution the plan's cell identity question turns on
-([TargetWatchPlan](target-watch-plan.md) §1.1).
-[Unsupported folder refusal](../spec/unsupported-folder-refusal-plan.md) is the
-acceptance gate that decides what a folder may contain before any of this runs.
-
-**The longer-range picture.**
-[Watch and catalog architecture](watch-and-catalog-architecture.md) is the target
-model for how rules become concrete watched types.
-
----
-
-## 8. Where we are
-
-The build order for this refactor lives in
-[TargetWatchPlan](target-watch-plan.md) §7, which is the single place it should
-be read from. In outline: fence the coalescing regression, add provenance to
-queued items, settle the cell identity question, then diff the plan so unrelated
-replays stop. The semantics of removal come after, deliberately.
-
-Two things have shipped already. In
-[#312](https://github.com/ConfigButler/gitops-reverser/pull/312) resyncs became
-keyed and coalesced, and the storm source is fixed; that was a backstop rather
-than a cure, and it introduced an ordering hazard. That hazard is now fenced —
-coalescing stops at the first write queued into the snapshot's scope
-([TargetWatchPlan](target-watch-plan.md) §4.3) — which retires step 1 of the
-build order. The rest of the plan is unbuilt.
+Shipped so far: the storm source is fixed and resyncs coalesce
+([#312](https://github.com/ConfigButler/gitops-reverser/pull/312)); the ordering
+hazard that coalescing introduced is fenced; and cell identity is settled, with
+one stream per cell and the producing cell stamped on queued work. The diff
+itself is unbuilt.
 
 The writes stay a log throughout. Only the resync half of the queue is in
 question, and the answer is to make the stream set incremental rather than to
 replace the queue.
+
+## 6. Related work
+
+**The layer above.** [Reconcile triggering](reconcile-triggering.md) asks the
+same question for the control plane.
+
+**How ingestion works.** [Architecture](../architecture.md) is the reference.
+[Watch-first ingestion](../finished/watch-first-ingestion-architecture.md) is how
+the model was arrived at, and
+[Reconcile via WatchList and mark-and-sweep](../spec/reconcile-via-watchlist-mark-and-sweep.md)
+is the mechanism §4 depends on.
+[Watch event ordering under the attribution grace window](../facts/watch-event-ordering-and-attribution-grace.md)
+has the worked examples.
+
+**Scopes and streams.** A sweep is bounded by the exact slice its snapshot was
+gathered over, and a cluster-wide scope is a **peer** of a named namespace rather
+than a replacement for it: collapsing the two widened the named rule's stream to
+every namespace its credential could read and discarded its operation filter.
+
+**Deletion and retention.** `spec.prune.mode`
+([`../configuration.md`](../configuration.md), deletion policy) already draws the
+line: an observed DELETE is evidence, a mark-and-sweep drop is an inference, and
+only the second is gated. `status.retention` makes a suppressed sweep visible.
+
+**Types and identity.**
+[Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
+gives `RemovalGrace`, which the plan consumes rather than re-decides.
+[Typeset owns discovery grace](../spec/typeset-owns-discovery-grace.md) is where
+that grace lives, [Type followability](../spec/type-followability.md) defines
+what may be mirrored at all, and
+[the GVK/GVR mapping layer](../spec/gvk-gvr-mapping-layer.md) is the identity
+resolution the plan's cell turns on.
+[Unsupported folder refusal](../spec/unsupported-folder-refusal-plan.md) decides
+what a folder may contain before any of this runs.

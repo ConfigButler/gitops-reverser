@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -249,11 +250,9 @@ func (m *Manager) ClusterTypeLookup(clusterID string) typeset.Lookup {
 // is immutable and a GitTarget property, so there is no rules-disagree window to reconcile.
 func (m *Manager) activeClusterIDs() []string {
 	seen := map[string]struct{}{configPlaneClusterID: {}}
-	m.gitTargetClustersMu.Lock()
-	for _, id := range m.gitTargetClusters {
+	for _, id := range m.watchPlane().clusters {
 		seen[id] = struct{}{}
 	}
-	m.gitTargetClustersMu.Unlock()
 	out := make([]string, 0, len(seen))
 	for id := range seen {
 		out = append(out, id)
@@ -262,17 +261,30 @@ func (m *Manager) activeClusterIDs() []string {
 	return out
 }
 
+// rememberDeclareCapture records everything the GitTarget controller knows and the rule-derived
+// watch tables do not: the object UID the data plane keys resume cursors by, the source cluster
+// the target mirrors from, and that cluster's audit route. It is the owner's first act in a pass.
+func (m *Manager) rememberDeclareCapture(gitDest types.ResourceReference, clusterID, auditRoute string) {
+	m.rememberGitTargetUID(gitDest)
+	m.rememberGitTargetCluster(gitDest, clusterID)
+	m.rememberClusterAuditRoute(clusterID, auditRoute)
+}
+
 // rememberGitTargetCluster captures the source cluster a GitTarget mirrors from, keyed by
 // GitTarget — the same capture-on-Declare pattern as rememberGitTargetUID. Because
 // spec.clusterProviderRef is immutable, this is learned once and never changes for a given
 // GitTarget, so there is no per-rule propagation and no cross-rule disagreement window.
 func (m *Manager) rememberGitTargetCluster(gitDest types.ResourceReference, clusterID string) {
-	m.gitTargetClustersMu.Lock()
-	defer m.gitTargetClustersMu.Unlock()
-	if m.gitTargetClusters == nil {
-		m.gitTargetClusters = map[string]string{}
-	}
-	m.gitTargetClusters[gitDest.Key()] = clusterID
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		// Presence, not equality: configPlaneClusterID is the empty string, so an equality check
+		// would make declaring the config plane indistinguishable from never having declared —
+		// which is exactly the distinction DeclaredSourceCluster exists to report.
+		if prior, had := s.clusters[gitDest.Key()]; had && prior == clusterID {
+			return false
+		}
+		s.clusters[gitDest.Key()] = clusterID
+		return true
+	})
 }
 
 // rememberClusterAuditRoute captures the audit route a source cluster's attribution facts are keyed
@@ -287,12 +299,13 @@ func (m *Manager) rememberClusterAuditRoute(clusterID, auditRoute string) {
 	if auditRoute == "" {
 		return
 	}
-	m.gitTargetClustersMu.Lock()
-	defer m.gitTargetClustersMu.Unlock()
-	if m.clusterAuditRoutes == nil {
-		m.clusterAuditRoutes = map[string]string{}
-	}
-	m.clusterAuditRoutes[clusterID] = auditRoute
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if s.auditRoutes[clusterID] == auditRoute {
+			return false
+		}
+		s.auditRoutes[clusterID] = auditRoute
+		return true
+	})
 }
 
 // auditRouteForCluster resolves the audit route a source cluster's facts are keyed under. An
@@ -300,34 +313,17 @@ func (m *Manager) rememberClusterAuditRoute(clusterID, auditRoute string) {
 // exactly what AuditRoute() defaults to, so a lookup racing the first Declare reads the same key a
 // provider with no auditRoute set would.
 func (m *Manager) auditRouteForCluster(clusterID string) string {
-	m.gitTargetClustersMu.Lock()
-	defer m.gitTargetClustersMu.Unlock()
-	if route := m.clusterAuditRoutes[clusterID]; route != "" {
+	if route := m.watchPlane().auditRoutes[clusterID]; route != "" {
 		return route
 	}
 	return clusterID
-}
-
-// DeclaredSourceCluster reports the source cluster captured for a GitTarget at Declare time and
-// whether that GitTarget has declared at all. It is the observable form of the capture-on-Declare
-// contract: a GitTarget the controller's Validated gate refused never reaches DeclareForGitTarget,
-// so it never appears here. That makes "an unauthorized namespace starts no watch" assertable from
-// outside this package — unlike clusterIDForGitTarget, which deliberately hides the
-// not-yet-declared case behind the local-cluster default.
-func (m *Manager) DeclaredSourceCluster(gitDest types.ResourceReference) (string, bool) {
-	m.gitTargetClustersMu.Lock()
-	defer m.gitTargetClustersMu.Unlock()
-	id, ok := m.gitTargetClusters[gitDest.Key()]
-	return id, ok
 }
 
 // clusterIDForGitTarget resolves the source cluster of a GitTarget from the Declare-time
 // capture, defaulting to the local cluster for a GitTarget that has not declared yet (a
 // status read racing the first Declare) or that names no source cluster.
 func (m *Manager) clusterIDForGitTarget(gitDest types.ResourceReference) string {
-	m.gitTargetClustersMu.Lock()
-	defer m.gitTargetClustersMu.Unlock()
-	if id := m.gitTargetClusters[gitDest.Key()]; id != "" {
+	if id := m.watchPlane().clusters[gitDest.Key()]; id != "" {
 		return id
 	}
 	return configPlaneClusterID
@@ -338,24 +334,30 @@ func (m *Manager) clusterIDForGitTarget(gitDest types.ResourceReference) string 
 // never torn down. Without this a deleted remote GitTarget would leak a discovery client and
 // a dynamic client set for the life of the process.
 func (m *Manager) forgetGitTargetCluster(gitDest types.ResourceReference) {
-	m.gitTargetClustersMu.Lock()
-	clusterID, had := m.gitTargetClusters[gitDest.Key()]
-	if had {
-		delete(m.gitTargetClusters, gitDest.Key())
-	}
-	stillReferenced := false
-	for _, id := range m.gitTargetClusters {
-		if id == clusterID {
-			stillReferenced = true
-			break
+	var (
+		clusterID       string
+		had             bool
+		stillReferenced bool
+	)
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		clusterID, had = s.clusters[gitDest.Key()]
+		if !had {
+			return false
 		}
-	}
-	// The captured route dies with the cluster it belongs to, so a provider recreated against a
-	// different audit route cannot inherit its predecessor's key.
-	if had && !stillReferenced {
-		delete(m.clusterAuditRoutes, clusterID)
-	}
-	m.gitTargetClustersMu.Unlock()
+		delete(s.clusters, gitDest.Key())
+		for _, id := range s.clusters {
+			if id == clusterID {
+				stillReferenced = true
+				break
+			}
+		}
+		// The captured route dies with the cluster it belongs to, so a provider recreated against a
+		// different audit route cannot inherit its predecessor's key.
+		if !stillReferenced {
+			delete(s.auditRoutes, clusterID)
+		}
+		return true
+	})
 
 	if !had || clusterID == configPlaneClusterID || stillReferenced {
 		return
@@ -585,25 +587,44 @@ func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterCont
 	}
 }
 
-// invalidateClusterWatches cancels the active watches of every GitTarget mirroring from a cluster
-// and enqueues those targets for reconcile. It is how a credential CHANGE or LOSS is cleaned up on
-// the refresh cadence instead of waiting for a chance disconnect. The GitTarget->cluster mapping is
-// kept (only the watches are cancelled), so the enqueued reconcile re-declares each target — which
-// rebuilds its watch on the freshly-rebuilt client for a rotation, or holds it Validated=False for a
+// invalidateClusterWatches asks the owner to cancel the active watches of every GitTarget
+// mirroring from a cluster, and to replan each one. It is how a credential CHANGE or LOSS is
+// cleaned up on the refresh cadence instead of waiting for a chance disconnect. The
+// GitTarget->cluster mapping is kept (only the watches are cancelled), so the replan rebuilds each
+// target's watch on the freshly-rebuilt client for a rotation, or fails and holds it dirty for a
 // revocation. No Secret watch is involved; this rides the existing catalog-refresh loop.
+//
+// It POSTS rather than tears down, because credential refresh runs one goroutine per remote
+// cluster: cancelling streams and dropping watch sets from there would be a second writer of the
+// state the owner loop owns. The owner applies it on its next turn, before it plans anything.
 func (m *Manager) invalidateClusterWatches(clusterID string) {
-	m.gitTargetClustersMu.Lock()
+	t := m.triggers()
+	t.mu.Lock()
+	t.invalidatedClusters = append(t.invalidatedClusters, clusterID)
+	t.mu.Unlock()
+	t.signal()
+}
+
+// applyClusterInvalidation is the owner's side: stop every affected target's streams and mark it
+// dirty so the next pass re-establishes them.
+func (m *Manager) applyClusterInvalidation(clusterID string) {
 	affected := make([]types.ResourceReference, 0)
-	for key, id := range m.gitTargetClusters {
+	for key, id := range m.watchPlane().clusters {
 		if id == clusterID {
 			affected = append(affected, resourceReferenceFromKey(key))
 		}
 	}
-	m.gitTargetClustersMu.Unlock()
+	now := time.Now()
 	for _, gitDest := range affected {
 		m.forgetGitTargetWatches(gitDest)
-		m.enqueueGitPathChange(gitDest)
+		m.enqueueGitTargetReconcile(gitDest)
 	}
+	t := m.triggers()
+	t.mu.Lock()
+	for _, gitDest := range affected {
+		t.markDirtyLocked(gitDest, TriggerReasonSharedRefresh, now)
+	}
+	t.mu.Unlock()
 }
 
 // resourceReferenceFromKey reconstructs the ResourceReference a gitTargetClusters key encodes. The
@@ -674,6 +695,24 @@ func (m *Manager) clusterDynamicClient(ctx context.Context, clusterID string) (d
 	return dc, nil
 }
 
+// discoveryRESTConfig returns the config a cluster's discovery client is built from: a COPY of
+// the cluster's config carrying a request timeout.
+//
+// Discovery uses the legacy, non-context ServerGroupsAndResources(), and no config reaching here
+// carries a request-level timeout of its own — a source config deliberately does not, because its
+// watches must stay open. The copy is what makes the deadline safe: a timeout on the discovery
+// client cannot deadline a watch built from the shared config.
+//
+// Unconditional, LOCAL cluster included. It used to be applied only to a remote, on the reasoning
+// that the local API server is never slow. The local path therefore ran the non-context
+// ServerGroupsAndResources() with no deadline at all, on whatever goroutine called it, and one
+// hung call took that goroutine with it. The copy argument is no weaker for the local cluster.
+func discoveryRESTConfig(cfg *rest.Config) *rest.Config {
+	discoCfg := rest.CopyConfig(cfg)
+	discoCfg.Timeout = sourceClusterDialTimeout
+	return discoCfg
+}
+
 // clusterDiscovery returns the discovery client backing a cluster's API-resource catalog.
 func (m *Manager) clusterDiscovery(ctx context.Context, clusterID string) (apiResourceDiscovery, error) {
 	cc := m.cluster(clusterID)
@@ -692,19 +731,7 @@ func (m *Manager) clusterDiscovery(ctx context.Context, clusterID string) (apiRe
 	if err != nil {
 		return nil, err
 	}
-	discoCfg := cfg
-	// isLocalLocked, not isLocal: clientsMu is held here, and clusterRESTConfigLocked has just
-	// resolved cc.inCluster, so this reads the freshly-decided verdict.
-	if !cc.isLocalLocked() {
-		// Discovery uses the legacy, non-context ServerGroupsAndResources(), and a remote config
-		// deliberately carries no request-level timeout (its watches must stay open). Bound the
-		// finite discovery call with a request timeout on a COPY, so a remote that accepts the
-		// connection but hangs on the response cannot stall the catalog refresh — without ever
-		// deadlining a watch built from the shared config.
-		discoCfg = rest.CopyConfig(cfg)
-		discoCfg.Timeout = sourceClusterDialTimeout
-	}
-	disco, err := discovery.NewDiscoveryClientForConfig(discoCfg)
+	disco, err := discovery.NewDiscoveryClientForConfig(discoveryRESTConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("create discovery client for cluster %q: %w", describeCluster(clusterID), err)
 	}

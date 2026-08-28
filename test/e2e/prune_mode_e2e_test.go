@@ -15,8 +15,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This spec is the end-to-end proof for GitTarget.spec.prune.mode (see
-// docs/design/watchrule-source-namespace/pr5-gittarget-deletion-safety.md). It exercises the two
+// This spec is the end-to-end proof for GitTarget.spec.prune.mode (documented in
+// docs/configuration.md, "Deletion policy"). It exercises the two
 // deletion paths SEPARATELY, because the whole design rests on them being independently
 // controlled — `onEvent`, the effective default, differs from `always` on exactly one of them.
 //
@@ -176,13 +176,28 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		// issues a resync scoped to exactly (configmaps, this namespace) — the scope the seeded
 		// orphan lives in. Merely ADDING an unrelated type would churn the rule without
 		// guaranteeing the configmaps stream restarts, and the sweep would never be attempted.
-		By("toggling ConfigMaps off and back on to force a scoped replay resync")
+		//
+		// The OFF half has to LAND before the ON half is applied, and the gate below is what makes
+		// it. Every configuration change for one target inside its settle window becomes a single
+		// pass over the configuration as it then stands, so an off-then-on applied back to back is
+		// one pass over a plan that never changed: nothing is torn down and nothing replays. The
+		// toggle is two configuration changes only if the first one is observed taking effect.
+		//
+		// Gate on each RULE's own streams rather than its target's roll-up. The rule's status is
+		// written by the reconcile that compiled it, so it cannot report the previous rule's
+		// answer; the target's roll-up is published by a different controller and can still be
+		// describing the plan from before this apply.
+		By("switching the rules to Services and waiting for that plan to be live")
 		applyIsolationWatchRule(alwaysRule, testNs, alwaysTarget, `"services"`)
 		applyIsolationWatchRule(defaultRule, testNs, defaultTarget, `"services"`)
+		waitForWatchRuleStreamsRunning(alwaysRule, testNs)
+		waitForWatchRuleStreamsRunning(defaultRule, testNs)
+
+		By("switching them back to ConfigMaps, which re-establishes the stream and replays it")
 		applyIsolationWatchRule(alwaysRule, testNs, alwaysTarget, `"configmaps"`)
 		applyIsolationWatchRule(defaultRule, testNs, defaultTarget, `"configmaps"`)
-		waitForStreamsRunning(alwaysTarget, testNs)
-		waitForStreamsRunning(defaultTarget, testNs)
+		waitForWatchRuleStreamsRunning(alwaysRule, testNs)
+		waitForWatchRuleStreamsRunning(defaultRule, testNs)
 
 		// The barrier: the always target's resync reaches the same folder with the same desired
 		// snapshot as the default target's. Observing its sweep proves a resync ran and that the
@@ -258,10 +273,21 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 
 		By("and status follows the sweep back to a converged zero under the new mode")
 		waitForStreamsRunning(defaultTarget, testNs)
+		// Read BOTH halves before asserting either, and report them together. The count and the mode
+		// are written by the same MarkTargetRetention call, so which of them moved says where the
+		// roll-up stopped: mode=Always with a stale count means a report DID land under the new
+		// mode and a later one was lost, while mode=OnEvent means no post-widen report landed at
+		// all. Asserting the count alone threw that away and cost a round of controller-log
+		// archaeology (docs/design/watch-plane-status-convergence-failures.md, Failure B).
 		Eventually(func(g Gomega) {
-			g.Expect(retainedDocumentsOf(g, defaultTarget, testNs)).To(Equal(0),
-				"a resync that retains nothing must drive the count back to zero, not leave it stale")
-			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("Always"))
+			retained := retainedDocumentsOf(g, defaultTarget, testNs)
+			mode := retentionModeOf(g, defaultTarget, testNs)
+			g.Expect(retained).To(Equal(0),
+				"a resync that retains nothing must drive the count back to zero, not leave it "+
+					"stale; retainedDocuments=%d mode=%q", retained, mode)
+			g.Expect(mode).To(Equal("Always"),
+				"the mode must be the one the count was produced under; retainedDocuments=%d mode=%q",
+				retained, mode)
 		}).Should(Succeed())
 
 		By("the target still mirrors live events after the forced replay")

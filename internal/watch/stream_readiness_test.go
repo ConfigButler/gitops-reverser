@@ -5,22 +5,26 @@ package watch
 import (
 	"testing"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestStreamSummaryForTypes_AggregatesByGVR(t *testing.T) {
+func TestStreamSummaryForTypes_AggregatesByType(t *testing.T) {
 	configmaps := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	secrets := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-	expected := []targetWatchKey{
-		{GVR: configmaps, Namespace: "a"},
-		{GVR: configmaps, Namespace: "b"},
-		{GVR: secrets, Namespace: "a"},
+	expected := []types.CellKey{
+		types.CellKeyFor(configmaps, "a"),
+		types.CellKeyFor(configmaps, "b"),
+		types.CellKeyFor(secrets, "a"),
 	}
-	states := map[targetWatchKey]targetStreamStatus{
-		{GVR: configmaps, Namespace: "a"}: {state: StreamStateStreaming},
-		{GVR: configmaps, Namespace: "b"}: {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
-		{GVR: secrets, Namespace: "a"}:    {state: StreamStateStreaming},
+	states := map[types.CellKey]targetStreamStatus{
+		types.CellKeyFor(configmaps, "a"): {state: StreamStateStreaming},
+		types.CellKeyFor(configmaps, "b"): {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
+		types.CellKeyFor(secrets, "a"):    {state: StreamStateStreaming},
 	}
 
 	summary := streamSummaryForTypes(expected, states, nil)
@@ -35,10 +39,10 @@ func TestStreamSummaryForTypes_AggregatesByGVR(t *testing.T) {
 func TestStreamSummaryForTypes_BlockedOutranksReplaying(t *testing.T) {
 	configmaps := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	secrets := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-	expected := []targetWatchKey{{GVR: configmaps}, {GVR: secrets}}
-	states := map[targetWatchKey]targetStreamStatus{
-		{GVR: configmaps}: {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
-		{GVR: secrets}:    {state: StreamStateBlocked, reason: StreamReasonWatchError},
+	expected := []types.CellKey{types.CellKeyFor(configmaps, ""), types.CellKeyFor(secrets, "")}
+	states := map[types.CellKey]targetStreamStatus{
+		types.CellKeyFor(configmaps, ""): {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
+		types.CellKeyFor(secrets, ""):    {state: StreamStateBlocked, reason: StreamReasonWatchError},
 	}
 
 	summary := streamSummaryForTypes(expected, states, nil)
@@ -48,4 +52,77 @@ func TestStreamSummaryForTypes_BlockedOutranksReplaying(t *testing.T) {
 	assert.Equal(t, 1, summary.Replaying)
 	assert.Equal(t, StreamReasonWatchError, summary.Reason)
 	assert.False(t, summary.StreamsRunning())
+}
+
+// The regression this keying exists to prevent. A rule can match two SERVED VERSIONS of one
+// resource (a `*` apiVersions wildcard over, say, autoscaling/v1 and autoscaling/v2), while the
+// declared set runs exactly one stream for that cell. Expecting a per-version stream meant
+// expecting one that by construction never exists, and the rule reported permanently
+// not-ready while its stream ran perfectly.
+func TestStreamSummaryForTypes_TwoServedVersionsAreOneStream(t *testing.T) {
+	v1 := schema.GroupVersionResource{Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"}
+	v2 := schema.GroupVersionResource{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"}
+	expected := []types.CellKey{types.CellKeyFor(v1, "team-a"), types.CellKeyFor(v2, "team-a")}
+	states := map[types.CellKey]targetStreamStatus{
+		types.CellKeyFor(v2, "team-a"): {state: StreamStateStreaming},
+	}
+
+	summary := streamSummaryForTypes(expected, states, nil)
+
+	assert.Equal(t, 1, summary.Total, "one cell is one stream, whatever versions serve it")
+	assert.Equal(t, 1, summary.Ready)
+	assert.True(t, summary.StreamsRunning())
+}
+
+// A stream reaching Streaming is the last thing that has to happen before a target and its rules
+// can honestly report StreamsRunning=True, and it used to notify nobody: the data plane converged
+// in about two seconds and status followed up to ten seconds later, on the settle requeue.
+func TestMarkTargetStreamState_NotifiesOnTheTransitionOnly(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	gitDest := types.NewResourceReference("target", "team-a")
+	cell := types.CellKeyFor(configmapsGVR, "apps")
+
+	// One subscriber per consumer, because a Go channel has one consumer and three controllers
+	// project this state.
+	ruleEvents := m.StreamStateEvents()
+	clusterRuleEvents := m.StreamStateEvents()
+	targetEvents := m.StreamStateEvents()
+	// The acceptance channel is a different class of event and must not carry these: both sends
+	// are best-effort, and a dropped acceptance or retention transition costs five minutes of
+	// stale status where a dropped stream transition costs ten seconds.
+	acceptanceEvents := m.GitPathEvents()
+
+	m.markTargetStreamState(gitDest, cell, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
+	for name, ch := range map[string]<-chan event.GenericEvent{
+		"watch rules": ruleEvents, "cluster watch rules": clusterRuleEvents, "the GitTarget": targetEvents,
+	} {
+		select {
+		case evt := <-ch:
+			assert.Equal(t, "target", evt.Object.GetName(), "%s are told which target moved", name)
+		default:
+			t.Fatalf("%s were not notified of a stream-state transition", name)
+		}
+	}
+	select {
+	case <-acceptanceEvents:
+		t.Fatal("stream transitions must not share the acceptance channel; a burst would crowd out a " +
+			"retention or acceptance transition, which costs five minutes of stale status")
+	default:
+	}
+
+	// The data plane reports readiness continuously. An event per REPORT rather than per CHANGE
+	// would enqueue every rule of a target on every watch event it handles.
+	m.markTargetStreamState(gitDest, cell, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
+	select {
+	case <-ruleEvents:
+		t.Fatal("a re-report of an unchanged state must not enqueue anything")
+	default:
+	}
+
+	m.markTargetStreamState(gitDest, cell, StreamStateStreaming, StreamReasonAllStreamsReady, "streaming")
+	select {
+	case <-ruleEvents:
+	default:
+		t.Fatal("reaching Streaming is a transition and must be announced")
+	}
 }

@@ -23,7 +23,7 @@
   its own: where the plan still refers to that axis it says explicitly that the axis is
   deleted, so nothing here has to be mentally subtracted. `Registry.Subscribe` and
   `LifecycleEvent` survive with no production consumer, deliberately: see
-  [target-watch-plan.md](../design/target-watch-plan.md) §3.3.
+  [target-watch-plan.md](../design/target-watch-plan.md#what-a-cell-leaving-means).
 - `Stats()`/`DegradedGroupVersions()` survive as per-scan facts (gauge/log surfaces
   unchanged); registry tests for the relocated semantics live in
   `internal/typeset/scan_test.go`.
@@ -68,9 +68,10 @@ and makes retention decisions of its own:
 
 The registry then applies its *own* time-based judgement on top: `RemovalGrace = 60 s`
 (absent → `Retained` → `Refused`) and the `SettleWindow` activation debounce. The
-`TypeWobbling` transition is emitted for a consumer to honour; there is none today,
-and [target-watch-plan.md](../design/target-watch-plan.md) §3.3 is where one is
-specified.
+`TypeWobbling` transition is emitted for a consumer to honour; there is none today. The
+watch plan consumes the settled withdrawal distinction when that consumer is added, and
+[target-watch-plan.md](../design/target-watch-plan.md) records why a settled `TypeRemoved`
+is the signal to use instead of a CRD delete observed directly.
 
 ### 2.1 The exact typeset surface today, and who reads it
 

@@ -98,7 +98,8 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	resultCh, enqueued, err := router.enqueueScopedResync(
 		context.Background(),
 		types.NewResourceReference("team-a-config", "team-a"),
-		git.ResyncScope{GVR: configmapsGVR},
+		git.ResyncScopeFor(configmapsGVR, ""),
+		types.CellKey{},
 		nil,
 		"12",
 		false,
@@ -125,7 +126,8 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 	_, enqueued, err := router.enqueueScopedResync(
 		context.Background(),
 		types.NewResourceReference("deleted-target", "team-a"),
-		git.ResyncScope{GVR: configmapsGVR},
+		git.ResyncScopeFor(configmapsGVR, ""),
+		types.CellKey{},
 		nil,
 		"12",
 		false,
@@ -155,7 +157,7 @@ func TestDrainScopedResync_TreatsSupersededAsSuccess(t *testing.T) {
 		defer close(done)
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
-			targetWatchKey{GVR: configmapsGVR},
+			types.CellKeyFor(configmapsGVR, ""),
 			"sweep",
 			0,
 			resultCh,
@@ -181,7 +183,7 @@ func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	go func() {
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
-			targetWatchKey{GVR: configmapsGVR},
+			types.CellKeyFor(configmapsGVR, ""),
 			"reconcile",
 			0,
 			resultCh,
@@ -216,14 +218,14 @@ func TestDrainScopedResync_RefusalMarksGitPathRefused(t *testing.T) {
 	resultCh := make(chan git.ResyncResult, 1)
 	resultCh <- git.ResyncResult{Err: fmt.Errorf("execute pending writes: %w", refusal)}
 
-	router.drainScopedResync(gitDest, key, "reconcile", 0, resultCh)
+	router.drainScopedResync(gitDest, key.Cell(), "reconcile", 0, resultCh)
 
 	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
 
 	assert.False(t, gitPath.Accepted, "a refused Git path must mark the target path unaccepted")
 	assert.Equal(t, "UnsupportedContent", gitPath.Reason)
 	assert.Contains(t, gitPath.Message, "kustomization.yaml", "the refusal message must name the offending file")
-	assert.Empty(t, mgr.targetStreamStates, "Git path refusal must not mutate stream readiness")
+	assert.Empty(t, mgr.watchPlane().streams, "Git path refusal must not mutate stream readiness")
 }
 
 func TestGitPathRefusalReason(t *testing.T) {
@@ -326,4 +328,46 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	}, 5*time.Second, 50*time.Millisecond, "the worker must resolve the attached request")
 	assert.Equal(t, git.FinalizeNoOpenWindow, result.Outcome)
 	assert.Equal(t, "main", result.Branch)
+}
+
+// TestDrainScopedResync_QueueFullIsDrainedNotOrphaned guards the ordering invariant behind
+// Failure A/B: EnqueueResync answers a dropped request on its reply channel, so the drain MUST be
+// started even when the request never entered the FIFO.
+//
+// enqueueReplayResync used to return on !enqueued BEFORE starting the drain, leaving that reply in
+// a buffered channel nobody read. With it went the only calls that mark acceptance, render
+// fidelity and retention for the cell, so the render-fidelity scope owed a report under a revision
+// no running stream would ever report again — which pins the GitTarget at Ready=False and, through
+// GitTargetReady, every WatchRule pointing at it
+// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
+//
+// The drain must consume the result rather than block on it. Nothing was written, so it also must
+// not move any readiness the caller would read as convergence.
+func TestDrainScopedResync_QueueFullIsDrainedNotOrphaned(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	mgr := &Manager{Log: logr.Discard()}
+	router := NewEventRouter(workerManager, mgr, client, logr.Discard())
+
+	gitDest := types.NewResourceReference("team-a-config", "team-a")
+	cell := types.CellKeyFor(configmapsGVR, "")
+	resultCh := make(chan git.ResyncResult, 1)
+	resultCh <- git.ResyncResult{Err: git.ErrFinalizeQueueFull}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.drainScopedResync(gitDest, cell, "reconcile", 1, resultCh)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a queue-full resync result must be drained, not left in an orphaned channel")
+	}
+
+	assert.Empty(t, resultCh, "the drain must consume the queue-full reply")
+	assert.Empty(t, mgr.watchPlane().streams,
+		"a resync that never queued wrote nothing, so it must not move stream readiness")
 }

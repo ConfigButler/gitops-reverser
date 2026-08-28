@@ -77,16 +77,92 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Collapse wildcard source-namespace stream fan-out.
   `WatchRule.spec.rules[].sourceNamespace: "*"` expands to one selection per admitted namespace, and
-  `targetWatchSpecs` opens one stream per `(GVR, namespace)` while `git.ResyncScope` names a single
-  namespace — so a wildcard over N admitted namespaces and M matched types costs N×M informers and
-  N×M resync scopes, where a cluster-wide ClusterWatchRule costs M. Expansion is deliberate (it is
-  what keeps the mark-and-sweep scope narrow, per
-  [pr1-namespace-scoped-resync.md](design/watchrule-source-namespace/pr1-namespace-scoped-resync.md)),
+  `targetWatchSpecs` opens one stream per cell (one type in one named namespace, or one type
+  cluster-wide) while `git.ResyncScope` names a single namespace, so a wildcard over N admitted
+  namespaces and M matched types costs N×M informers and N×M resync scopes, where a cluster-wide
+  ClusterWatchRule costs M. Expansion is deliberate — one
+  stream per namespace is what keeps each mark-and-sweep bounded by exactly the slice it gathered —
   but the cost grows with tenant count. The direction is a cluster-wide stream whose resync scope
   carries a namespace **set** rather than one name, so the gather stays exactly as narrow while the
   stream count drops to M. Also revisit `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap
-  stops being representative at N×M. Context:
-  [pr4-cluster-scope-only.md § wildcard fan-out](design/watchrule-source-namespace/pr4-cluster-scope-only.md#7-wildcard-fan-out-is-an-accepted-cost).
+  stops being representative at N×M.
+
+- [ ] Subscribe the watch plane to `typeset.Registry` lifecycle events.
+  `Registry.Subscribe` has **no production observer**: the events are computed on every `Update`
+  and dispatched to nobody, because the Materializer that consumed them is gone. It is the producer
+  of the only signal that can separate a type genuinely withdrawn (a settled `TypeRemoved`, past
+  `RemovalGrace`) from a discovery wobble, and mistaking the second for the first deletes a user's
+  manifests. Its intended consumer is the `stop` classification in
+  [target-watch-plan.md](design/target-watch-plan.md), "What a cell leaving means": a settled
+  removal drops its cell from the plan and the Git-side sweep converges the mirror under the
+  target's existing `spec.prune.mode`. Nothing has to be decided first — only removal on *intent*
+  waits on an open question. Tracked here so an unconsumed producer with a good comment on it does
+  not quietly rot into dead code.
+
+- [ ] Decide whether the watch-plane settle window should be configurable.
+  `settleWindow` (2s) and `maxSettleWait` (10s) in [owner.go](../internal/watch/owner.go) are fixed,
+  on the same reasoning `DefaultCommitWindow` gives one layer down: what a user cares about is how
+  quickly their config takes effect, not how the controller batches its internal work. Revisit if a
+  real deployment reports either that config changes feel slow or that a busy config plane replans
+  too often — and note the observable consequence already shipped, that toggling a rule off and on
+  *inside* the window is no longer a replay.
+
+- [ ] Settle whether a retention report can be dropped on a revision mismatch.
+  `MarkTargetRetention` discards any report whose revision does not match the scope's currently
+  installed one, and `retainTargetRetentionScopes` deliberately KEEPS the previous count when a
+  stream is restarted rather than zeroing a scope nobody re-measured — both in
+  [retention_rollup.go](../internal/watch/retention_rollup.go). Together those produce a stale
+  count with no notification involved: sweep succeeds, `status.retention.retainedDocuments` stays
+  at its old value, and on a converged GitTarget the next correction is ~5 minutes away.
+
+  That is exactly the signature of an intermittent `E2E (full-manager)` failure in the
+  `prune_mode` spec "converges an existing orphan when `prune.mode` is widened"
+  (`retainedDocuments` frozen at 1 for 30s while the files it counts had already been swept).
+  A shared-event-channel fix landed for that failure and is the more likely cause, but this path
+  is **independent of it** and would produce the same symptom, so a green run does not retire it.
+
+  Full evidence, the controller-log timeline, and the diagnostics now armed for it are in
+  [watch-plane-status-convergence-failures.md](design/watch-plane-status-convergence-failures.md)
+  §3.
+
+  **The question to answer:** widening `prune.mode` sets `force`, which classifies every cell as
+  `restart` and issues fresh revisions, while the 30s periodic sweep also re-runs
+  `retainTargetRetentionScopes` for every declared target. Can a pass landing *while a replay is
+  in flight* install a revision that differs from the one the in-flight replay captured at start?
+  If yes, that replay's report is dropped on arrival and the count stays stale until something
+  else re-measures it. CI is slower than a dev machine, which would widen that window and explain
+  why it has never reproduced locally.
+
+- [ ] Fix the encryption-secret recreation flake, and settle what its contract actually is.
+  `internal/controller/gittarget_controller_test.go` "Should recreate encryption secret when it
+  is deleted while GitTarget still exists" fails roughly **1 run in 11, on branches and on main**,
+  with `secrets "recreated-sops-age-key" not found` after its 45s budget. It has been
+  misattributed to at least two innocent branches, so treat a red build on this spec as ambient
+  until proven otherwise.
+
+  **Do not fix it with a Secret watch.** Any watch needs `list`+`watch` on Secrets, which this
+  project deliberately does not grant: `cmd/main.go` excludes Secrets from the manager cache,
+  [gittarget_controller.go](../internal/controller/gittarget_controller.go) records that a
+  full-object Secret watch was tried and removed because it retained every Secret value in
+  memory, and [rbac.md](rbac.md) advertises "cannot enumerate Secrets" as a security guarantee.
+  Recovery must stay polled; only the cadence is in question. Nor is a third widening of the
+  budget the answer — it has already been raised twice, months apart, and is capped deliberately
+  as the spec's implicit SLO.
+
+  Ambient-flake context, and the traps in reading CI for it, are inventoried in
+  [watch-plane-status-convergence-failures.md](design/watch-plane-status-convergence-failures.md)
+  §5.
+
+  **Unconfirmed root cause, to verify first:** recreation rides the periodic requeue, and
+  `gitTargetRequeue` returns `RequeueStreamSettleInterval` (10s) only for a NON-converged target
+  — 45s is 4.5 ticks of that. Several early-return gate paths return `RequeueSteadyInterval`
+  (**5 minutes**) regardless of convergence: the `Validated` gate and both `EncryptionConfigured`
+  gates. A reconcile landing on one of those after the deletion puts the next one five minutes
+  out, which no 45s budget survives. Note the tension that exposes: the code comment beside the
+  no-Secret-watch decision says recovery is picked up by "the periodic reconcile
+  (`RequeueSteadyInterval`)" — so the documented contract may be five minutes while the spec
+  asserts forty-five seconds, in which case the spec is asserting something the design never
+  promised. Settle which is wrong before changing either.
 
 - [ ] Re-enable the `goconst` linter with a path-scoped exclusion instead of the current repo-wide
   disable in [.golangci.yml](../.golangci.yml). Exempting `test/` and `internal/git/commit.go`

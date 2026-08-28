@@ -158,7 +158,11 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 			NotTo(HaveOccurred(), "failed to apply the overriding WatchRule")
 		verifyResourceCondition("watchrule", overrideRule, testNs,
 			"SourceNamespaceAuthorized", "True", "SourceNamespaceAllowed", "")
-		waitForStreamsRunning(gitTargetName, testNs)
+		// Gate on THIS rule's streams, not the target's roll-up. The roll-up answers "is every
+		// stream this target has running", which a target that was already mirroring answers True
+		// to before the new rule's cell has been planned at all. What this spec depends on is the
+		// new cell, and the rule-scoped summary is the thing that names it.
+		waitForWatchRuleStreamsRunning(overrideRule, testNs)
 		DeferCleanup(func() { cleanupWatchRule(overrideRule, testNs) })
 
 		assertCommitAuthor(sourceNs, fmt.Sprintf("audit-route-src-cm-%d", GinkgoRandomSeed()),

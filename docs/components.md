@@ -39,7 +39,7 @@ flowchart TB
 
     subgraph DP["Data plane"]
         WM["watch.Manager<br/>runnable, leader-elected"]
-        TW["target watches<br/>one per (GitTarget, GVR, scope)"]
+        TW["target watches<br/>one per (GitTarget, cell)"]
         ER["EventRouter"]
         GTES["reconcile.GitTargetEventStream"]
         SAN["internal/sanitize"]
@@ -93,15 +93,16 @@ this GitTarget claim". Every source cluster gets its own instance of the whole s
 | `APIResourceCatalog` | [`internal/watch/api_resource_catalog.go`](../internal/watch/api_resource_catalog.go) | turns one discovery result into a policy-annotated `typeset.Scan`. Holds no judgment |
 | Followability registry | [`internal/typeset/registry.go`](../internal/typeset/registry.go) | applies "additions fast, removals slow": retain-on-error, and a removal grace before a type is called withdrawn |
 | Relevance funnel | [`internal/typeset/funnel.go`](../internal/typeset/funnel.go) | the pure function that judges one type followable, and names the single reason when it is not |
-| `WatchedTypeTable` | [`internal/watch/watched_type_table.go`](../internal/watch/watched_type_table.go) | the per-GitTarget resident set of claimed and followable `(GVR, scope)` with its operation filter |
+| `WatchedTypeTable` | [`internal/watch/watched_type_table.go`](../internal/watch/watched_type_table.go) | the per-GitTarget resident set of claimed and followable `(GVR, scope)` with its operation filter, which `targetWatchStreams` collapses to one stream per cell |
 | Source-namespace scope | [`internal/watch/source_namespace_scope.go`](../internal/watch/source_namespace_scope.go) | Namespace label snapshots for `allowedSourceNamespaces` selectors, refreshed on the manager's cadence rather than by an informer |
 | `clusterContext` | [`internal/watch/cluster_context.go`](../internal/watch/cluster_context.go) | one per distinct cluster: catalog, registry, dynamic client, discovery client, reachability |
-| Type lifecycle | [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) | names each verdict transition (`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`) so a consumer reacts to an edge instead of diffing tables. `Registry.Subscribe` has no observer yet: it is the withdrawal signal [`design/target-watch-plan.md`](design/target-watch-plan.md) §3.3 is built to consume |
+| Type lifecycle | [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) | names each verdict transition (`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`) so a consumer reacts to an edge instead of diffing tables. `Registry.Subscribe` has no observer yet; it is a future input to the watch plan |
 
 ### Data plane
 
-State ingestion. One raw watch per `(GitTarget, GVR, scope)`, sanitized and routed to a branch
-worker.
+State ingestion. One raw watch per `(GitTarget, cell)`, where a cell is group, resource and
+namespace and the served version is carried as data rather than identity. Each is sanitized and
+routed to a branch worker.
 
 | Component | Path | Role |
 |---|---|---|
@@ -197,11 +198,12 @@ the only path a **remote** source cluster has, because the trigger informers run
 only. Discovery has no watch verb, so there is nothing to subscribe to.
 
 The CRD and APIService informers exist to say "refresh sooner than 30 seconds". They hold no
-judgment, feed no registry, and push onto a single-slot channel that wakes
-`ReconcileForRuleChange`. Removing them would cost latency on a freshly installed CRD, not
-correctness. Each one runs under its own context rather than a shared informer factory, because a
-factory records a resource as started forever, and a trigger stopped on `Forbidden` could then never
-be re-armed.
+judgment, feed no registry, and post a shared-refresh trigger onto the watch plane owner's queue,
+which then marks dirty only the GitTargets whose rendered plan the refresh actually changed
+([watch-manager-ownership.md](design/watch-manager-ownership.md)). Removing them would cost latency
+on a freshly installed CRD, not correctness. Each one runs under its own context rather than a
+shared informer factory, because a factory records a resource as started forever, and a trigger
+stopped on `Forbidden` could then never be re-armed.
 
 ### The duplication that does exist
 
@@ -214,9 +216,9 @@ watched-type table:
 
 They agree today only because each re-derives the same answer from the same inputs, and the runner
 then cancels and rebuilds every stream whenever any part of the set changes. That is the problem
-[`design/target-watch-plan.md`](design/target-watch-plan.md) sets out to fix, with one diffed plan,
-four outcomes (`keep`, `restart`, `start`, `stop`), and a per-cell lease instead of a target-wide
-generation.
+[`design/target-watch-plan.md`](design/target-watch-plan.md) sets out to fix: diff the plan by cell,
+and start, restart or cancel only the cells that changed. The branch worker's queue is untouched by
+that plan, so a canceled cell's already-queued work still runs.
 
 ## From a served type to an open stream
 
@@ -241,7 +243,7 @@ sequenceDiagram
     R->>R: additions fast, removals slow
     R->>W: followable set
     Note over W: intersect with compiled rules<br/>and the admitted namespaces
-    W->>S: claimed ∩ followable (GVR, scope)
+    W->>S: claimed ∩ followable, one stream per cell
     S->>K: WATCH sendInitialEvents=true
     K-->>S: ADDED replay, then initial-events-end
     S->>G: desired set + mark-and-sweep

@@ -553,6 +553,13 @@ That snapshot is smaller than reality and indistinguishable from a converged one
 it into deleted manifests. `OnEvent` is the defense, and it also covers the outage case in depth. Failing
 closed there is a property of how the gather works today, and not a guarantee the API makes.
 
+Revoking access to a namespace is neither of those two paths, and removes nothing. When a namespace
+leaves a target's watch set (a rule deleted, a `sourceNamespace` narrowed, a label revoked), the
+documents already mirrored from it stay in Git, whatever `spec.prune.mode` says, and no automatic
+process removes them. That is deliberate: deleting a tenant's manifests as a side effect of a policy
+edit is destructive and a typo in a selector would be enough to trigger it. Removing them is an
+operator action.
+
 | Mode | Explicit source DELETE | Resync mark-and-sweep | Use it for |
 |---|---|---|---|
 | `Never` | kept | kept | an archive or tombstone mirror that only ever gains documents |

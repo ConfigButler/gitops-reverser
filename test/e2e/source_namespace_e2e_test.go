@@ -14,8 +14,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This spec covers WatchRule.spec.rules[].sourceNamespace end to end (see
-// docs/design/watchrule-source-namespace/pr4-cluster-scope-only.md).
+// This spec covers WatchRule.spec.rules[].sourceNamespace end to end (documented in
+// docs/configuration.md and docs/security-model.md).
 //
 // The load-bearing assertion is the GIT PATH one. The whole design rests on a claim that is
 // invisible from the API types: sourceNamespace changes which namespace is WATCHED and nothing

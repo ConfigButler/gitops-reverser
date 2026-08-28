@@ -96,10 +96,10 @@ default would reintroduce the retarget hazard directly.
 
 > Downstream consequence: locality is derived from `kubeConfig`, never from the name, and
 > `GitTarget.IsLocalSource()` — despite the name — **is a name test** that only seeds the
-> pre-discovery `SourceClusterReachable` default. It is not a locality predicate. A later design
-> took the further step of not deriving *permissions* from locality at all: see
-> [`../design/watchrule-source-namespace/`](../design/watchrule-source-namespace/README.md), whose
-> PR 3 page restates this trap verbatim.
+> pre-discovery `SourceClusterReachable` default. It is not a locality predicate. The source-namespace work later took
+> the further step of not deriving *permissions* from locality at all: a
+> ClusterWatchRule's attachment to a GitTarget is authorized explicitly, never inferred from the
+> two being in the same cluster.
 
 ### Namespace authorization enforced once, on reconcile
 

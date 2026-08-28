@@ -141,7 +141,7 @@ func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scope := ResyncScope{GVR: tc.gvr}
+			scope := ResyncScopeFor(tc.gvr, "")
 			message, err := renderReconcileCommitMessage(
 				tc.count, "demo", &scope, tc.revision, ResolveCommitConfig(nil))
 			require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestRenderReconcileCommitMessage_NilScopeRendersCleanly(t *testing.T) {
 }
 
 func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t *testing.T) {
-	scope := ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}}
+	scope := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
 	message, err := renderReconcileCommitMessage(
 		6,
 		"signing-snapshot-dest",

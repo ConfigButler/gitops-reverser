@@ -125,9 +125,19 @@ Concretely:
 ## 1.6 A cell can disappear for several reasons; the cause decides the action
 
 This is the most important semantic to get right. "Cell removed" is **not** one
-case — and collapsing them all into one policy is wrong. A cell can leave a
+case, and collapsing them all into one policy is wrong. A cell can leave a
 target's desired set because of an **intent** change or because of an
 **observability** change, and the mirror must treat those oppositely:
+
+> **The table below is superseded on two rows; the intent-versus-observability
+> split above is what survives.**
+> [target-watch-plan.md](target-watch-plan.md) is authoritative for the actions.
+> A withdrawn type is **swept**, not kept, because a manifest whose CRD is gone
+> takes its Kustomization or Application out of `Ready` rather than sitting
+> inert, and `prune.mode: Never` already exists for anyone who wants an archive.
+> Deselection by **intent** is an open decision, and today it **retains**, which
+> is what [`../configuration.md`](../configuration.md) promises users. Read the
+> `Delete` entries as the direction this page was heading, not as the contract.
 
 | Cause | Class | Mirror action |
 |---|---|---|
@@ -150,14 +160,13 @@ given cell owns, so "delete the cell's files" is well-defined and scoped.
 
 Beyond the four beliefs above, a complete design needs:
 
-- **Deterministic file ownership (managed projection).** There must be a
-  deterministic mapping from a cell `{GitTarget, GVR, scope, namespaces}` to the
-  set of repo paths it owns, and a way to enumerate/diff *only* those paths. This
-  underpins two things at once: deleting exactly a deselected cell's files (1.6),
-  and **cell-scoped repo diffing** so a per-cell reconcile never has to read or
-  rewrite the whole GitTarget path (which would smuggle whole-target behavior
-  back in). Files not owned by any current cell are "unmanaged" and are never
-  touched unless an intent change brought them into scope.
+- **Deterministic file ownership (managed projection).** ~~There must be a
+  deterministic mapping from a cell to the set of repo paths it owns.~~
+  **Dropped.** [target-watch-plan.md](target-watch-plan.md) turns the question
+  around: rather than asking which files a cell owns, the sweep walks the managed
+  documents and asks of each whether it is still wanted. That needs no projection
+  and keeps file knowledge on the Git side, where the acceptance gate and the
+  retention policy already live.
 
 - **RBAC / least privilege.** "Watch everything" means the controller's
   ServiceAccount must `list`/`watch` every selected GVR. A wildcard implies broad
@@ -238,6 +247,14 @@ ReconcileForRuleChange  (manager.go:740)
    │     └─ whole-target cluster list, ABORTS on any blocking miss/list error
    └─ completeReconciliationForTargets      → flush buffered events
 ```
+
+> **Part 2 predates the watch-first rewrite and is a survey, not a current map.** The snapshot
+> path it describes — `currentRuleSetSnapshots`, `emitSnapshotForRuleChange`, `RequestClusterState`,
+> the `compareGVRs` informer diff — no longer exists: object state comes from target watches, one
+> stream per cell, replaying under a scoped mark-and-sweep
+> ([data-plane-triggering.md](data-plane-triggering.md), [target-watch-plan.md](target-watch-plan.md)).
+> The REQUIREMENTS in Part 1 and the target model in Part 3 stand; read 2.3 and 2.4 as the reasoning
+> that led here rather than as a description of the tree.
 
 ## 2.3 What already works in our favor
 

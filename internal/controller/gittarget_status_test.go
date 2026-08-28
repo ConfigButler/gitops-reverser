@@ -3,13 +3,21 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -228,4 +236,61 @@ func TestGitTargetRetentionStatus_ReportsTheEffectiveMode(t *testing.T) {
 	assert.Equal(t, int32(3), projected.RetainedDocuments)
 	assert.Equal(t, configbutleraiv1alpha3.PruneOnEvent, projected.Mode)
 	assert.Equal(t, observed, projected.ObservedTime.Time)
+}
+
+// TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack is the regression guard for Failure A.
+//
+// A status write that loses an optimistic-lock race leaves the object holding the WINNER's older
+// answer. Discarding this reconcile's observation is correct — it is stale by then — but the old
+// code also returned success, so the caller chose its CONVERGED requeue and nothing re-enqueued
+// the object: every For() here carries a GenerationChangedPredicate, which exists to filter the
+// status-only updates controllers write themselves.
+//
+// A 61-scope GitTarget produced ~66 reconciles in four seconds; the one that computed
+// RenderMatchesLive=True lost the race, vanished, and left every WatchRule on that target reading
+// "Rechecking" for five minutes (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+func TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "tenant-acme", ResourceVersion: "1"},
+	}
+	conflicting := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(
+				context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption,
+			) error {
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: "configbutler.ai", Resource: "gittargets"}, "acme",
+					errors.New("the object has been modified"))
+			},
+		}).Build()
+
+	st := beginStatus(conflicting, nil, target, &target.Status.Conditions)
+	st.set(GitTargetConditionReady, metav1.ConditionTrue, ReasonSucceeded, "converged")
+
+	require.NoError(t, st.commit(context.Background()),
+		"a lost race is expected and must not be reported as a reconcile failure")
+	assert.True(t, st.writeLost(),
+		"the caller must be able to tell that its status never landed, or it will wait out its "+
+			"converged requeue holding the loser's answer")
+}
+
+// TestStatusCommit_SuccessfulWriteIsNotFlaggedAsLost keeps the flag meaningful: an ordinary write
+// must leave it clear, or every reconcile would take the shortened requeue.
+func TestStatusCommit_SuccessfulWriteIsNotFlaggedAsLost(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "tenant-acme", ResourceVersion: "1"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).
+		WithStatusSubresource(target).Build()
+
+	st := beginStatus(c, nil, target, &target.Status.Conditions)
+	st.set(GitTargetConditionReady, metav1.ConditionTrue, ReasonSucceeded, "converged")
+
+	require.NoError(t, st.commit(context.Background()))
+	assert.False(t, st.writeLost())
 }

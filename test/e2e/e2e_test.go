@@ -231,16 +231,87 @@ func verifyResourceCondition(
 			}
 		}
 
-		g.Expect(conditionStatus).To(Equal(expectedStatus))
-		// An empty expectedReason is a status-only gate: the caller does not assert a reason.
-		if expectedReason != "" {
-			g.Expect(conditionReason).To(Equal(expectedReason))
+		// Every assertion below carries the condition's REASON and MESSAGE, because without them a
+		// timeout reports only `Expected <string>: False to equal <string>: True` -- which names
+		// neither what the controller was waiting for nor what it thought was wrong. Two 90s
+		// failures on this helper cost a round of controller-log archaeology each to learn that one
+		// said "0/1 streams running (configmaps)" and the other something else entirely
+		// (docs/design/watch-plane-status-convergence-failures.md). The controller already
+		// publishes the answer; the assertion just has to print it.
+		// Built ONLY when the assertion is about to fail. A rule's Ready is a COPY of its
+		// GitTarget's, not a live view of it: reconcileWatchRuleViaTarget reads the target's stored
+		// Ready and folds it in as an independent prerequisite. So a rule reporting a
+		// GitTarget-derived reason is ambiguous — the target may genuinely be stuck, or the target
+		// may have converged and the rule's copy be stale — and those have completely different
+		// searches (docs/design/watch-plane-status-convergence-failures.md, Failure A).
+		//
+		// Laziness is not an optimisation here. This runs inside an Eventually that polls for up to
+		// 90s, so building it eagerly issued a `kubectl get gittarget` per poll per rule wait —
+		// load the suite does not need, on the timing-sensitive path these failures live on.
+		detail := func() string {
+			return fmt.Sprintf("%s %q condition %s: status=%q reason=%q message=%q",
+				resourceType, name, conditionType, conditionStatus, conditionReason, conditionMessage) +
+				gitTargetConditionDetail(obj, ns)
 		}
-		if expectedMessageContains != "" {
-			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains))
+
+		if conditionStatus != expectedStatus {
+			g.Expect(conditionStatus).To(Equal(expectedStatus), "%s", detail())
+		}
+		// An empty expectedReason is a status-only gate: the caller does not assert a reason.
+		if expectedReason != "" && conditionReason != expectedReason {
+			g.Expect(conditionReason).To(Equal(expectedReason), "%s", detail())
+		}
+		if expectedMessageContains != "" && !strings.Contains(conditionMessage, expectedMessageContains) {
+			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains), "%s", detail())
 		}
 	}
 	Eventually(verifyStatus, resourceConditionTimeout(timeout), resourceConditionPollInterval).Should(Succeed())
+}
+
+// gitTargetConditionDetail renders the referenced GitTarget's conditions for a rule assertion's
+// failure message, or "" when the object is not a rule (or names no target). It never fails the
+// assertion itself: it is diagnostic garnish, and a lookup error is reported inline rather than
+// masking the condition the caller actually asserted — which is also why it takes no Gomega.
+func gitTargetConditionDetail(obj unstructured.Unstructured, ns string) string {
+	kind := strings.ToLower(obj.GetKind())
+	if kind != "watchrule" && kind != "clusterwatchrule" {
+		return ""
+	}
+	targetName, found, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "name")
+	if !found || targetName == "" {
+		return ""
+	}
+	targetNS := ns
+	if kind == "clusterwatchrule" {
+		if v, ok, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "namespace"); ok {
+			targetNS = v
+		}
+	}
+	out, err := kubectlRun("get", "gittarget", targetName, "-n", targetNS, "-o", "json")
+	if err != nil {
+		return fmt.Sprintf(" | gittarget %q lookup failed: %v", targetName, err)
+	}
+	var target unstructured.Unstructured
+	if err := json.Unmarshal([]byte(out), &target.Object); err != nil {
+		return fmt.Sprintf(" | gittarget %q unreadable: %v", targetName, err)
+	}
+	conditions, _, _ := unstructured.NestedSlice(target.Object, "status", "conditions")
+	parts := make([]string, 0, len(conditions))
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch condMap["type"] {
+		case "Ready", "RenderMatchesLive", "StreamsRunning", "GitPathAccepted":
+			parts = append(parts, fmt.Sprintf("%v=%v(%v: %v)",
+				condMap["type"], condMap["status"], condMap["reason"], condMap["message"]))
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf(" | gittarget %q has no conditions yet", targetName)
+	}
+	return fmt.Sprintf(" | gittarget %q: %s", targetName, strings.Join(parts, "; "))
 }
 
 // waitForStreamsRunning blocks until the GitTarget reports StreamsRunning=True. Specs that assert
@@ -251,9 +322,73 @@ func waitForStreamsRunning(name, ns string) {
 	verifyResourceCondition("gittarget", name, ns, "StreamsRunning", "True", "", "", "120s")
 }
 
-func waitForWatchRuleStreamsRunning(name, ns string) { //nolint:unused // Helper for specs that need a rule-scoped gate.
+// waitForWatchRuleStreamsRunning blocks until ONE WatchRule reports StreamsRunning=True FOR ITS
+// CURRENT GENERATION.
+//
+// Prefer it over waitForStreamsRunning whenever a spec changes a rule on a GitTarget that is
+// ALREADY mirroring. Two things make the target's roll-up the wrong gate there. It answers "is
+// every stream this target has running", which such a target answers True to before the changed
+// rule has been planned at all; and it is published by the GitTarget controller, so it can still
+// be describing the plan from before this apply. A rule's own status is written by the reconcile
+// that compiled it, so it cannot report the previous rule's answer.
+//
+// The generation check is what makes that last sentence true in practice. Between an edit landing
+// and its reconcile, the rule still carries the PREVIOUS generation's conditions, and those can
+// legitimately read StreamsRunning=True. Without the check this helper returns on the old answer,
+// which is the same class of stale-read the target roll-up has.
+func waitForWatchRuleStreamsRunning(name, ns string) {
 	GinkgoHelper()
-	verifyResourceCondition("watchrule", name, ns, "StreamsRunning", "True", "", "", "120s")
+	By(fmt.Sprintf("verifying watchrule '%s' in ns '%s' has StreamsRunning=True for its current generation",
+		name, ns))
+	Eventually(func(g Gomega) {
+		output, err := kubectlRunInNamespace(ns, "get", "watchrule", name, "-o", "json")
+		g.Expect(err).NotTo(HaveOccurred())
+		var obj unstructured.Unstructured
+		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+		running, why := streamsRunningAtCurrentGeneration(obj)
+		g.Expect(running).To(BeTrue(), "%s", why)
+	}, resourceConditionTimeout([]string{"120s"}), resourceConditionPollInterval).Should(Succeed())
+}
+
+// streamsRunningAtCurrentGeneration is the predicate itself, over a fetched rule object. It is
+// separate from the fetch so a spec can assert it against a known-stale status without racing a
+// controller.
+func streamsRunningAtCurrentGeneration(obj unstructured.Unstructured) (bool, string) {
+	// Both generations are read as present-or-refuse rather than defaulted. A missing
+	// metadata.generation would otherwise read as 0 and compare equal to a missing
+	// status.observedGeneration, so an object carrying neither would satisfy the barrier.
+	generation, found, err := unstructured.NestedInt64(obj.Object, "metadata", "generation")
+	if err != nil || !found {
+		return false, "metadata.generation is absent or malformed; this is not a reconcilable rule"
+	}
+	observed, found, err := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	if err != nil || !found {
+		return false, "status.observedGeneration is absent; the rule has not been reconciled yet"
+	}
+	if observed != generation {
+		return false, fmt.Sprintf(
+			"status is stale: observedGeneration %d, generation %d — StreamsRunning describes the previous spec",
+			observed, generation)
+	}
+
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if !found {
+		return false, "status.conditions is absent"
+	}
+	for _, cond := range conditions {
+		condMap, ok := cond.(map[string]interface{})
+		if !ok || condMap["type"] != "StreamsRunning" {
+			continue
+		}
+		status, _ := condMap["status"].(string)
+		message, _ := condMap["message"].(string)
+		if status == "True" {
+			return true, ""
+		}
+		return false, fmt.Sprintf("StreamsRunning is %s at generation %d: %s", status, generation, message)
+	}
+	return false, "the rule publishes no StreamsRunning condition"
 }
 
 // createReadyGitProvider creates a GitProvider (branch "main", no commit window) and blocks until

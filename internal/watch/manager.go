@@ -27,8 +27,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
-	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
-	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -131,19 +129,6 @@ type Manager struct {
 	// folder, on the branch-worker goroutine, so it must not contend on clustersMu with the
 	// reconcile loop.
 	clusterOrder atomic.Pointer[[]*clusterContext]
-	// gitTargetClusters maps a GitTarget key to the source-cluster id it mirrors from,
-	// captured on Declare (the gitTargetUIDs pattern). Because spec.clusterProviderRef is immutable
-	// this is learned once and never changes — no per-rule propagation, no disagreement
-	// window. Guarded by gitTargetClustersMu.
-	gitTargetClustersMu sync.Mutex
-	gitTargetClusters   map[string]string
-
-	// clusterAuditRoutes maps a source-cluster id to the audit route its attribution facts are
-	// keyed under (ClusterProvider.AuditRoute()), also captured on Declare. It is keyed by CLUSTER
-	// rather than by GitTarget because the route belongs to the provider, and unlike the cluster id
-	// it is mutable. Guarded by gitTargetClustersMu, alongside the map it is captured with.
-	clusterAuditRoutes map[string]string
-
 	// resourceCatalogMu guards every clusterContext's catalog/registry edge-triggered
 	// logging state (catalogDegradedLogged, typeRefusalsLogged).
 	resourceCatalogMu sync.Mutex
@@ -153,8 +138,6 @@ type Manager struct {
 	resourceCatalog *APIResourceCatalog
 	// discoveryClient overrides REST-config discovery construction for the LOCAL cluster in tests.
 	discoveryClient func() (apiResourceDiscovery, error)
-	// catalogRefreshCh coalesces API-surface trigger watch events into manager reconciliation.
-	catalogRefreshCh chan struct{}
 	// triggersMu guards the API-surface trigger informer set below. The informers are
 	// (re-)evaluated after every catalog refresh — which controllers drive, not just the
 	// manager's own loop — so this is not a startup-only structure.
@@ -185,21 +168,41 @@ type Manager struct {
 	watchedTypeInit sync.Once
 	watchedTypes    *watchedTypeStore
 
-	// targetWatches is the data plane: one raw watch per (GitTarget, GVR, namespace
-	// scope), and the only source of live object state. Its initial desired set comes from
-	// the replay, or from the buffered LIST fallback when sendInitialEvents is unsupported.
-	targetWatchesMu sync.Mutex
-	targetWatches   map[string]*targetWatchSet
-	// targetStreamStates is the readiness surface for targetWatches. It is keyed
-	// by GitTarget and watch key, and projected into status by controllers.
-	targetStreamStates map[string]map[targetWatchKey]targetStreamStatus
-	// targetGitPathAcceptance is the target-side acceptance surface. It is keyed by
-	// GitTarget and projected into GitTarget status as GitPathAccepted.
-	targetGitPathAcceptance map[string]GitPathAcceptanceStatus
-	// targetRenderFidelity is the projected state of the shared worker gate. It keeps the
-	// target-watch epoch observable without making a last successful scoped resync overwrite a
-	// sibling scope's divergence.
-	targetRenderFidelity map[string]git.RenderFidelityStatus
+	// targetWatches is the data plane: one raw watch per (GitTarget, GVR, namespace scope), and
+	// the only source of live object state. Its initial desired set comes from the replay, or from
+	// the buffered LIST fallback when sendInitialEvents is unsupported.
+	//
+	// It carries no mutex, deliberately. It is owned by the watch-plane owner loop, which is its
+	// only writer and its only reader, so cancelling a stream and starting one no longer happen
+	// under a lock that the woken goroutine then has to contend for. See owner.go.
+	targetWatches map[string]*targetWatchSet
+
+	// watchLifetime is the parent of every target watch's context: the manager's own lifetime,
+	// set once by Start.
+	//
+	// It is deliberately NOT the context of the pass that starts a stream. A pass runs under a
+	// deadline and its context is cancelled the moment it returns, so parenting a stream to it
+	// would kill that stream the instant the plan finished being applied — the plan would read as
+	// applied while nothing was watching. A stream's lifetime is the manager's; the pass's
+	// deadline bounds the pass. Cancelling one stream is the owner's decision, made per cell
+	// through the plan diff, never a side effect of a context going out of scope.
+	//
+	// nil on a Manager that was never started, which is the shape tests drive; streamParent then
+	// falls back to the caller's context, which in that setting IS the manager's lifetime.
+	watchLifetime atomic.Pointer[context.Context]
+
+	// watchTriggers is the coalescing intake the owner drains: the dirty set, the declare records,
+	// and the pending deletions. triggerInit builds it lazily so a zero-value Manager works in
+	// tests.
+	triggerInit   sync.Once
+	watchTriggers *watchPlaneTriggers
+
+	// watchPlaneSnapshot is the immutable projection every reader outside the owner takes: stream
+	// readiness, the two write-safety surfaces, the retention roll-up, and the four values
+	// captured at declare. stateMu serializes the read-modify-publish and is never held across
+	// anything that can block. See watch_plane_state.go.
+	stateMu            sync.Mutex
+	watchPlaneSnapshot atomic.Pointer[*watchPlaneState]
 
 	// gitPathEventsCh carries a GenericEvent for a GitTarget whenever its GitPath acceptance
 	// state TRANSITIONS, so the GitTarget controller re-projects GitPathAccepted promptly
@@ -209,32 +212,9 @@ type Manager struct {
 	// created by GitPathEvents() and guarded by gitPathEventsMu.
 	gitPathEventsMu sync.Mutex
 	gitPathEventsCh chan event.GenericEvent
-
-	// gitTargetUIDs maps a GitTarget's namespace/name key to its object UID, captured
-	// from the controller on Declare. The watch data plane keys resume cursors by this
-	// UID — the rule-derived watch tables don't carry it — so a GitTarget recreated
-	// under the same name never inherits its predecessor's cursor.
-	gitTargetUIDsMu sync.Mutex
-	gitTargetUIDs   map[string]string
-
-	// gitTargetPruneModes maps a GitTarget key to the effective spec.prune.mode of its LAST
-	// successful Declare. Unlike the UID and the source cluster this value is mutable, and it is
-	// remembered for exactly one reason: to detect the edge where an operator widens the policy to
-	// one that sweeps, which must force a fresh replay or the newly authorized cleanup never runs.
-	// See prune_declaration.go. Guarded by gitTargetPruneModesMu.
-	gitTargetPruneModesMu sync.Mutex
-	gitTargetPruneModes   map[string]v1alpha3.PruneMode
-
-	// targetRetention holds each GitTarget's per-scope retained-document counts, epoch-keyed so a
-	// scope that leaves the watch plan takes its count with it. Projected onto status.retention.
-	// See retention_rollup.go. Guarded by targetRetentionMu.
-	targetRetentionMu sync.Mutex
-	targetRetention   map[string]targetRetentionState
-
-	// declaredGVRsMu guards declaredGVRs: the type-set each GitTarget last Declared. The watch-first
-	// data plane reads it to drive the per-(GitTarget, type) watch set; re-declaring is idempotent.
-	declaredGVRsMu sync.Mutex
-	declaredGVRs   map[string]map[schema.GroupVersionResource]struct{}
+	// streamStateSubscribers are the channels StreamStateEvents has handed out, one per consumer.
+	// Guarded by gitPathEventsMu, which already guards the sibling channel above.
+	streamStateSubscribers []chan event.GenericEvent
 
 	// sourceNamespaceScope is the source-scope service: the per-source-cluster Namespace label
 	// snapshot that GitTarget.allowedSourceNamespaces selectors are evaluated against, plus the
@@ -264,14 +244,16 @@ const (
 	periodicReconcileInterval = 30 * time.Second
 )
 
-// Start begins the watch ingestion manager and blocks until context cancellation.
-// Performs initial reconciliation then runs periodic discovery refresh.
+// Start begins the watch ingestion manager and blocks until context cancellation. Everything the
+// watch plane does happens on the loop it enters: controllers submit intent, this owns the state.
 func (m *Manager) Start(ctx context.Context) error {
 	log := m.Log.WithName("watch")
 	log.Info("watch ingestion manager starting (watch-first ingestion)")
 	defer log.Info("watch ingestion manager stopping")
 
-	m.initializeManagerState()
+	// Every target watch is parented here, not to the pass that starts it.
+	m.watchLifetime.Store(&ctx)
+
 	// Arm the trigger informers before the first refresh: each successful catalog refresh
 	// re-evaluates which triggers discovery actually serves, and starts the ones that
 	// became available. They are stopped by this context, never by a reconcile's.
@@ -281,77 +263,13 @@ func (m *Manager) Start(ctx context.Context) error {
 		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")
 	}
 
-	// Perform initial reconciliation
-	if err := m.ReconcileForRuleChange(ctx); err != nil {
-		log.Error(err, "Initial reconciliation failed, will retry periodically")
-	}
-
-	// Periodic reconciliation for CRD detection and missed changes
-	periodicTicker := time.NewTicker(periodicReconcileInterval)
-	defer periodicTicker.Stop()
-
-	// Heartbeat ticker to make liveness observable in logs and tests.
-	heartbeatTicker := time.NewTicker(heartbeatInterval)
-	defer heartbeatTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-
-		case <-periodicTicker.C:
-			log.V(1).Info("Periodic reconciliation triggered")
-			if err := m.ReconcileForRuleChange(ctx); err != nil {
-				log.Error(err, "Periodic reconciliation failed")
-			}
-
-		case <-m.catalogRefreshCh:
-			log.V(1).Info("API surface trigger reconciliation")
-			if err := m.ReconcileForRuleChange(ctx); err != nil {
-				log.Error(err, "API surface trigger reconciliation failed")
-			}
-
-		case <-heartbeatTicker.C:
-			log.V(1).Info("Watch manager heartbeat")
-		}
-	}
-}
-
-func (m *Manager) initializeManagerState() {
-	if m.catalogRefreshCh == nil {
-		m.catalogRefreshCh = make(chan struct{}, 1)
-	}
+	m.runOwnerLoop(ctx, log.WithName("owner"))
+	return nil
 }
 
 // NeedLeaderElection ensures only the elected leader runs the watch manager.
 func (m *Manager) NeedLeaderElection() bool {
 	return true
-}
-
-// ReconcileForRuleChange refreshes the trusted API catalog and the resident watched-type
-// tables when rules change or a CRD is installed/removed. The catalog refresh drives the
-// followability registry; the tables are re-resolved from it, and the running target watches
-// are brought into line with what the tables now say. Called by the WatchRule/ClusterWatchRule
-// controllers after rule modifications, by the periodic ticker, and by the API-surface trigger.
-func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
-	log := m.Log.WithName("reconcile")
-	log.V(1).Info("Reconciling watch manager for rule change")
-
-	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
-		return err
-	}
-
-	// Re-list the source-cluster Namespace labels any selector policy has asked about, BEFORE the
-	// tables are re-resolved: this is where a source-namespace grant or revocation is observed,
-	// and a change enqueues the affected GitTargets so their WatchRules re-run the gate.
-	m.refreshSourceNamespaceScopes(ctx)
-
-	// Re-resolve the resident watched-type tables now that the catalog is fresh. This is
-	// gated on a rule-set change or catalog generation bump, so a periodic reconcile with
-	// neither reuses the resolved tables. The target-watch runner reads these tables.
-	m.refreshWatchedTypeTables()
-	m.refreshRunningTargetWatches(ctx)
-	return nil
 }
 
 // recordTargetReconcileCompleted increments the per-GitTarget recovery counter once a

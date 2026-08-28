@@ -92,6 +92,12 @@ const (
 	GitTargetReadyReasonValidationFailed        = "ValidationFailed"
 	GitTargetReadyReasonEncryptionNotConfigured = "EncryptionNotConfigured"
 	GitTargetReadyReasonWorkerUnavailable       = "WorkerUnavailable"
+	// GitTargetReasonWatchPlanFailing is Ready=False/Reconciling=True while the watch-plane
+	// owner's pass for this GitTarget keeps failing and being retried on its backoff ladder. It
+	// is deliberately a PROGRESSING reason rather than a stall: a pass fails on a source cluster
+	// that is unreachable or a catalog that is not observable yet, both of which recover on their
+	// own. What it buys is that such a target does not read as idle.
+	GitTargetReasonWatchPlanFailing = "WatchPlanFailing"
 
 	GitTargetStreamsRunningReasonNotReady = "NotReady"
 )
@@ -195,7 +201,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, sourceProviderErr
 	}
 
-	observed := r.observeDataPlane(ctx, &target, sourceProvider, gitPathWasRefused, log)
+	observed := r.observeDataPlane(&target, sourceProvider, gitPathWasRefused, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
 	st.setValue(GitTargetConditionGitPathAccepted, observed.axes.GitPath)
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
@@ -217,7 +223,24 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: gitTargetRequeue(rd)}, nil
+	// requeueAfter shortens the cadence when the status write lost a race: the object then holds
+	// the WINNER's older answer and nothing re-enqueues it, because the For() predicate filters
+	// status-only updates by design (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+	requeue := st.requeueAfter(gitTargetRequeue(rd))
+	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
+	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
+	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
+	// request to explain it. This is the only place that publishes the axis, so it is the only
+	// place that can say what it published and how long it intends to wait before saying anything
+	// again (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+	log.Info("GitTarget status published",
+		"writeLost", st.writeLost(),
+		"gitTarget", target.Namespace+"/"+target.Name,
+		"render", string(observed.axes.Render.Status)+"/"+observed.axes.Render.Reason,
+		"streams", observed.streams.Summary(),
+		"converged", rd.converged(),
+		"requeueAfter", requeue.String())
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 // gitTargetRequeue picks the periodic cadence. Only a converged GitTarget earns the steady interval.
@@ -454,15 +477,15 @@ type gitTargetAxes struct {
 type dataPlaneObservation struct {
 	axes    gitTargetAxes
 	streams watch.StreamSummary
-	// declareFailed records that the stream declaration did not land, so the axes describe a
-	// surface that is not yet observable rather than a converged one.
-	declareFailed bool
+	// declare records whether the watch-plane owner has applied a plan for this GitTarget yet and
+	// how its last pass ended, so a target whose passes keep failing reads as failing rather than
+	// as an idle one whose axes happen to describe a surface nothing has observed.
+	declare watch.DeclareStatus
 }
 
 // observeDataPlane declares this GitTarget's streams, reads back what the watch manager knows, and
 // projects the three data-plane axes. It mutates only the roll-up fields of status.
 func (r *GitTargetReconciler) observeDataPlane(
-	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 	sourceProvider *configbutleraiv1alpha3.ClusterProvider,
 	gitPathWasRefused bool,
@@ -491,20 +514,25 @@ func (r *GitTargetReconciler) observeDataPlane(
 	manager := r.EventRouter.WatchManager
 	gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
 
-	observation := dataPlaneObservation{}
-	if declareErr := manager.DeclareForGitTarget(
-		ctx,
+	// Submitting the declaration is all this does. The watch-plane owner runs the pass once the
+	// target has been quiet for its settle window, so this reconcile has no result to wait for —
+	// it reads back the LAST pass's outcome, which is the honest thing to project: the reconcile
+	// has never observed its own effect, it previously observed an intermediate state that merely
+	// looked more immediate. See docs/design/watch-manager-ownership.md.
+	manager.DeclareForGitTarget(
 		gitDest,
 		target.SourceCluster(),
 		sourceProvider.AuditRoute(),
 		target.EffectivePruneMode(),
 		gitPathWasRefused,
-	); declareErr != nil {
-		log.V(1).Info("stream declaration skipped; surface not observable",
-			"gitDest", gitDest.String(), "err", declareErr.Error())
-		observation.declareFailed = true
-	}
+	)
 
+	observation := dataPlaneObservation{declare: manager.DeclareStatusForGitTarget(gitDest)}
+	if observation.declare.Failures > 0 {
+		log.V(1).Info("the last watch-plan pass for this GitTarget failed; it is dirty and will retry",
+			"gitDest", gitDest.String(), "failures", observation.declare.Failures,
+			"err", observation.declare.LastError)
+	}
 	observation.streams = manager.StreamSummaryForGitTarget(gitDest)
 	observation.axes = gitTargetAxes{
 		Streams: streamsAxis(observation.streams),
@@ -630,9 +658,17 @@ func gitTargetReadinessGates(
 		observed.axes.Render.Reason, observed.axes.Render.Message)
 	rd.progressingIf(observed.axes.Streams.Status != metav1.ConditionTrue, metav1.ConditionFalse,
 		observed.axes.Streams.Reason, observed.axes.Streams.Message)
-	// Last: the declaration itself did not land, so every axis above describes a surface that was
-	// never observed. Nothing else objected, but this target is not converged either.
-	rd.progressingIf(observed.declareFailed, metav1.ConditionFalse, ReasonProgressing,
+	// Last: the declaration has not landed, so every axis above describes a surface that has not
+	// been observed under the current configuration. Nothing else objected, but this target is not
+	// converged either. A pass that keeps FAILING says so — and says why — instead of reading as a
+	// target that is merely still settling, which is the difference between a mirror that is
+	// converging and one whose source cluster has been unreachable for an hour.
+	rd.progressingIf(observed.declare.Failures > 0, metav1.ConditionFalse,
+		GitTargetReasonWatchPlanFailing,
+		fmt.Sprintf("The watch plan for this GitTarget has failed %d time(s) and is being retried: %s",
+			observed.declare.Failures, observed.declare.LastError))
+	rd.progressingIf(observed.declare.Pending && observed.declare.Failures == 0,
+		metav1.ConditionFalse, ReasonProgressing,
 		"Stream declaration has not landed yet; the data-plane surface is not observable")
 }
 
@@ -1114,6 +1150,16 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		b = b.WatchesRawSource(source.Channel(
 			r.EventRouter.WatchManager.GitPathEvents(),
+			&handler.EnqueueRequestForObject{},
+		))
+		// Stream readiness arrives on its OWN channel, not the one above. Both sends are
+		// best-effort and a full buffer drops the ARRIVING event, so sharing one would let
+		// high-volume stream transitions crowd out an acceptance or retention transition — the
+		// expensive event arrives to find the buffer full. Losing one of those leaves
+		// status describing a sweep that already happened until the 5m steady requeue, where a
+		// lost stream event costs 10s. See Manager.enqueueStreamStateChange.
+		b = b.WatchesRawSource(source.Channel(
+			r.EventRouter.WatchManager.StreamStateEvents(),
 			&handler.EnqueueRequestForObject{},
 		))
 	}

@@ -157,7 +157,7 @@ func TestManager_RefreshPopulatesTypeRegistry(t *testing.T) {
 	m := &Manager{Log: logr.Discard(), discoveryClient: func() (apiResourceDiscovery, error) {
 		return followableDiscovery(), nil
 	}}
-	require.NoError(t, m.RefreshAPIResourceCatalog(context.Background()))
+	require.NoError(t, m.refreshAPIResourceCatalog(context.Background()))
 
 	followable := m.FollowableTypeRecords()
 	all := m.TypeRecords()

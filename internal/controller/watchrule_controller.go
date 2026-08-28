@@ -21,6 +21,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	reverserTypes "github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
@@ -85,12 +86,10 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				scope.ForgetSourceScopeGrant(req.NamespacedName)
 			}
 
-			// Trigger WatchManager reconciliation for deletion
+			// The rule is gone, so the GitTarget it named cannot be read off it. Mark them all;
+			// each one's pass is a cheap diff against a plan that has not moved.
 			if r.WatchManager != nil {
-				if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
-					log.Error(err, "Failed to reconcile watch manager after rule deletion")
-					// Don't fail the reconciliation - log and continue
-				}
+				r.WatchManager.TriggerAllRuleChange()
 			}
 
 			return ctrl.Result{}, nil
@@ -144,6 +143,16 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // reconcileWatchRuleViaTarget validates and stores a WatchRule that references a GitTarget.
+// watchRuleGitTarget names the GitTarget a WatchRule writes through. targetRef is a
+// LocalTargetReference, so the GitTarget is always in the rule's own namespace.
+//
+// It carries no UID, and that is correct rather than an omission: a rule-derived reference has
+// none to carry, and the watch-plane owner resolves the trigger against the UID the GitTarget
+// controller captured. See resolveGitTargetUID.
+func watchRuleGitTarget(rule *configbutleraiv1alpha3.WatchRule) reverserTypes.ResourceReference {
+	return reverserTypes.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+}
+
 func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	ctx context.Context,
 	st *reconcileStatus,
@@ -199,12 +208,11 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 		return result, err
 	}
 
-	// Trigger WatchManager reconciliation for new/updated rule
+	// Submit the change and return. The pass runs on the watch-plane owner, after this target has
+	// been quiet for the settle window, so the stream summary read below describes the state from
+	// BEFORE it — see the status contract in docs/design/watch-manager-ownership.md.
 	if r.WatchManager != nil {
-		if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
-			log.Error(err, "Failed to reconcile watch manager after rule update")
-			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
-		}
+		r.WatchManager.TriggerRuleChange(watchRuleGitTarget(watchRule))
 		r.setResourceResolutionCondition(ctx, st, watchRule)
 		r.setStreamsReadyCondition(st, watchRule, r.WatchManager.StreamSummaryForWatchRule(*watchRule))
 	} else {
@@ -250,7 +258,7 @@ func (r *WatchRuleReconciler) commitRule(
 	if rd.converging() {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
 }
 
 func (r *WatchRuleReconciler) setResourceResolutionCondition(
@@ -319,6 +327,15 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// internal/watch/source_namespace_scope.go.
 	if r.WatchManager != nil {
 		if events := r.WatchManager.SourceNamespaceEvents(); events != nil {
+			b = b.WatchesRawSource(source.Channel(
+				events,
+				handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
+			))
+		}
+		// React to a stream of this rule's GitTarget reaching or leaving Streaming. Without it a
+		// rule whose streams came up two seconds ago keeps publishing StreamsRunning=False until
+		// its 10s settle requeue, because nothing tells it otherwise.
+		if events := r.WatchManager.StreamStateEvents(); events != nil {
 			b = b.WatchesRawSource(source.Channel(
 				events,
 				handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),

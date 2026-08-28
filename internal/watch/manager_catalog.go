@@ -57,12 +57,12 @@ func apiServiceTriggerGVR() schema.GroupVersionResource {
 	}
 }
 
-// RefreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery, for the
+// refreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery, for the
 // local cluster and every source cluster a GitTarget currently mirrors from. It returns the
 // LOCAL cluster's error only: a remote that cannot be reached fails its OWN GitTargets (through
 // their unready registries and a SourceClusterReachable=False projection), never the local
 // cluster's reconcile. A remote rotation is also picked up here, on the refresh cadence.
-func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
+func (m *Manager) refreshAPIResourceCatalog(ctx context.Context) error {
 	var (
 		localErr error
 		remotes  []*clusterContext
@@ -111,26 +111,6 @@ func (m *Manager) refreshRemoteCatalogsConcurrently(ctx context.Context, remotes
 		}(cc)
 	}
 	wg.Wait()
-}
-
-// refreshClusterForDeclare refreshes ONE source cluster's credentials, catalog, and reachability —
-// the on-declare path for a single GitTarget. It deliberately touches only that GitTarget's own
-// cluster: refreshing every active cluster on the declare path (which runs on the single GitTarget
-// controller worker) blocks on any UNREACHABLE cluster's full dial timeout, starving healthy
-// targets. The background RefreshAPIResourceCatalog loop keeps every OTHER cluster fresh. A remote's
-// refresh error is not returned — the caller gates on registryForGitTarget().Ready() instead, so an
-// unreachable remote simply leaves its own target "not observed yet" without failing the declare.
-func (m *Manager) refreshClusterForDeclare(ctx context.Context, clusterID string) error {
-	cc := m.cluster(clusterID)
-	if !cc.isLocal() {
-		m.refreshClusterCredentials(ctx, cc)
-	}
-	err := m.refreshClusterCatalog(ctx, cc)
-	m.recordClusterReachability(cc, err)
-	if cc.isLocal() {
-		return err
-	}
-	return nil
 }
 
 // refreshClusterCatalog refreshes ONE cluster's discovery-backed catalog and republishes its
@@ -445,16 +425,6 @@ func (m *Manager) resolveRuleResourceStatus(
 	return true, fmt.Sprintf("watching %d resource type(s)", len(watched))
 }
 
-func (m *Manager) signalCatalogRefresh() {
-	if m.catalogRefreshCh == nil {
-		return
-	}
-	select {
-	case m.catalogRefreshCh <- struct{}{}:
-	default:
-	}
-}
-
 // ensureAPISurfaceTriggerInformers starts the CRD and APIService trigger informers, but
 // only for the resources discovery reports as served with list+watch. Neither is universal:
 // an API server without an aggregation layer serves no apiregistration.k8s.io, and a blind
@@ -500,9 +470,9 @@ func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
 	}
 
 	handler := cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(any) { m.signalCatalogRefresh() },
-		UpdateFunc: func(any, any) { m.signalCatalogRefresh() },
-		DeleteFunc: func(any) { m.signalCatalogRefresh() },
+		AddFunc:    func(any) { m.signalSharedRefresh() },
+		UpdateFunc: func(any, any) { m.signalSharedRefresh() },
+		DeleteFunc: func(any) { m.signalSharedRefresh() },
 	}
 
 	start, unserved := selectAPISurfaceTriggers(catalog, m.triggersStarted)

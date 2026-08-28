@@ -266,8 +266,8 @@ func (m *Manager) unusableSnapshot(
 		if ok && snapshot.err != nil {
 			reason = fmt.Sprintf("the source-cluster Namespace cache is not usable yet: %v", snapshot.err)
 		}
-		// Nudge the loop so the first answer does not wait for the periodic tick.
-		m.signalCatalogRefresh()
+		// Nudge the owner so the first answer does not wait for the periodic tick.
+		m.signalSharedRefresh()
 		return authz.SourceScopeResult{Verdict: authz.SourceScopeUnknown, Message: reason}, true
 	default:
 		return authz.SourceScopeResult{}, false
@@ -397,8 +397,8 @@ func labelSetsEqual(a, b map[string]map[string]string) bool {
 // other tenant's grants and revocations. The timeout is the other half of that — a source config
 // deliberately carries no rest.Config.Timeout (its watches must stay open) and only its DIAL is
 // bounded, so a cluster that accepts the connection and then hangs on the response would otherwise
-// block ReconcileForRuleChange forever, and the watched-type tables and target watches after this
-// call would never refresh at all.
+// block the owner loop forever, and the watched-type tables and target watches after this call
+// would never refresh at all.
 func (m *Manager) refreshSourceNamespaceScopes(ctx context.Context) {
 	scope := m.sourceScope()
 	clusters := scope.wantedClusters()
@@ -494,14 +494,12 @@ func (m *Manager) enqueueSourceNamespaceChange(clusterID string) {
 		return
 	}
 
-	m.gitTargetClustersMu.Lock()
 	affected := make([]types.ResourceReference, 0)
-	for key, id := range m.gitTargetClusters {
+	for key, id := range m.watchPlane().clusters {
 		if id == clusterID {
 			affected = append(affected, resourceReferenceFromKey(key))
 		}
 	}
-	m.gitTargetClustersMu.Unlock()
 
 	for _, gitDest := range affected {
 		evt := event.GenericEvent{Object: &configv1alpha3.GitTarget{

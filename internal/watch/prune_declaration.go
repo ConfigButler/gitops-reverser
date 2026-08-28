@@ -36,9 +36,7 @@ import (
 // there is no watch set to replace, and the declare that follows opens one whose first session
 // replays anyway.
 func (m *Manager) pruneModeRequiresReplay(gitDest types.ResourceReference, mode v1alpha3.PruneMode) bool {
-	m.gitTargetPruneModesMu.Lock()
-	defer m.gitTargetPruneModesMu.Unlock()
-	previous, known := m.gitTargetPruneModes[gitDest.Key()]
+	previous, known := m.watchPlane().pruneModes[gitDest.Key()]
 	if !known {
 		return false
 	}
@@ -52,12 +50,13 @@ func (m *Manager) pruneModeRequiresReplay(gitDest types.ResourceReference, mode 
 // attempt that never reached the data plane — the mode is remembered as "what the running watches
 // were built for", not as "what was last requested".
 func (m *Manager) rememberGitTargetPruneMode(gitDest types.ResourceReference, mode v1alpha3.PruneMode) {
-	m.gitTargetPruneModesMu.Lock()
-	defer m.gitTargetPruneModesMu.Unlock()
-	if m.gitTargetPruneModes == nil {
-		m.gitTargetPruneModes = map[string]v1alpha3.PruneMode{}
-	}
-	m.gitTargetPruneModes[gitDest.Key()] = mode.OrDefault()
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if prior, had := s.pruneModes[gitDest.Key()]; had && prior == mode.OrDefault() {
+			return false
+		}
+		s.pruneModes[gitDest.Key()] = mode.OrDefault()
+		return true
+	})
 }
 
 // forgetGitTargetPruneMode drops a deleted GitTarget's declared mode. The value describes the
@@ -66,7 +65,11 @@ func (m *Manager) rememberGitTargetPruneMode(gitDest types.ResourceReference, mo
 // against a predecessor's policy. That is harmless today — a recreation has no watch set to
 // replace, so its first declare replays regardless — but it is a claim about state that is gone.
 func (m *Manager) forgetGitTargetPruneMode(gitDest types.ResourceReference) {
-	m.gitTargetPruneModesMu.Lock()
-	defer m.gitTargetPruneModesMu.Unlock()
-	delete(m.gitTargetPruneModes, gitDest.Key())
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if _, had := s.pruneModes[gitDest.Key()]; !had {
+			return false
+		}
+		delete(s.pruneModes, gitDest.Key())
+		return true
+	})
 }

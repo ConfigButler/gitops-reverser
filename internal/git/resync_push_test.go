@@ -97,6 +97,31 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	assert.Len(t, w.eventQueue, 1, "a scope taken off the queue can be queued again")
 }
 
+// Coalescing swaps the whole request, so what reaches the worker is the SURVIVING snapshot,
+// not the marker's. Running the retired payload at the surviving position would mirror state
+// the cluster has already moved past.
+func TestEnqueueResync_CoalescingCarriesTheSurvivingRequest(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
+	cell := types.CellKeyFor(configmapsGVRForScope, "team-a")
+	scope := ResyncScopeFor(configmapsGVRForScope, "team-a")
+
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "1", Scope: &scope,
+		SourceCell: cell, Result: make(chan ResyncResult, 1),
+	}))
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "2", Scope: &scope,
+		SourceCell: cell, Result: make(chan ResyncResult, 1),
+	}))
+
+	item := <-w.eventQueue
+	require.NotNil(t, item.Resync)
+	current := w.takePendingResync(item.Resync)
+	assert.Equal(t, "2", current.Revision,
+		"the newer snapshot is the one that runs, at the marker's position")
+	assert.Equal(t, cell, current.SourceCell, "and it still names the cell that gathered it")
+}
+
 // TestEnqueueResync_AcceptedRequestAlwaysRuns pins the atomicity of insert-and-queue
 // under a full queue. The invariant: a request told enqueued=true must either have
 // the FIFO marker for its scope, or have been superseded by a later one. Anything
@@ -176,12 +201,9 @@ func raceEnqueuesOnOneScope(t *testing.T) (int, int, int) {
 func TestEnqueueResync_DistinctScopesDoNotCoalesce(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
 
-	configMaps := ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}}
-	secrets := ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}}
-	sameTypeOtherNS := ResyncScope{
-		GVR:       schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
-		Namespace: "other",
-	}
+	configMaps := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
+	secrets := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
+	sameTypeOtherNS := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "other")
 
 	for _, scope := range []ResyncScope{configMaps, secrets, sameTypeOtherNS} {
 		require.True(t, w.EnqueueResync(&ResyncRequest{
@@ -220,7 +242,7 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 	// A type-scoped resync for a DIFFERENT type with an empty desired set: it closes
 	// the open window (resync-before-apply) but its own mark-and-sweep — scoped to a
 	// type with no documents — changes nothing, so the resync itself does not commit.
-	scope := ResyncScope{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}}
+	scope := ResyncScopeFor(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "")
 	resultCh := make(chan ResyncResult, 1)
 	loop.handleResyncRequest(&ResyncRequest{
 		GitTargetName:      "team-a",
@@ -243,7 +265,8 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 }
 
 // TestEnqueueResync_DoesNotCoalescePastQueuedWrites pins the ordering fence on
-// coalescing (docs/design/target-watch-plan.md §4.1). Coalescing reuses the queued
+// coalescing (docs/design/target-watch-plan.md, "Queue ordering and coalescing").
+// Coalescing reuses the queued
 // marker's FIFO POSITION, and that position is only correct while nothing for the
 // scope sits behind it. Once a write inside the scope is queued, running a newer
 // snapshot at the older position applies it BEFORE writes it already contains, and
@@ -256,7 +279,7 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 // that set those fields by hand and never trip in production.
 func TestEnqueueResync_DoesNotCoalescePastQueuedWrites(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
-	scope := &ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, Namespace: "app"}
+	scope := resyncScopePtr(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "app")
 
 	first := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
@@ -327,7 +350,7 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedAttach(t *testing.T) {
 // writes of its own) stays fully coalesced.
 func TestEnqueueResync_CoalescesPastUnrelatedWrites(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
-	scope := &ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, Namespace: "app"}
+	scope := resyncScopePtr(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "app")
 
 	superseded := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
@@ -420,7 +443,7 @@ type fifoTally struct {
 func raceWritesAndResyncsOnOneScope(t *testing.T) (fifoTally, int, int) {
 	t.Helper()
 	const producers = 64
-	scope := &ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, Namespace: "app"}
+	scope := resyncScopePtr(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "app")
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 512)}
 
 	var wg sync.WaitGroup

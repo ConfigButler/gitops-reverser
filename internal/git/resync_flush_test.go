@@ -229,7 +229,7 @@ func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
 	secretFull := seedPlacedManifest(t, worktree, "apps/secret.yaml", secretManifest("sec"))
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
-	scope := &ResyncScope{GVR: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}}
+	scope := resyncScopePtr(schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}, "")
 	stats, changed, err := w.applyResyncToWorktree(
 		context.Background(),
 		worktree,

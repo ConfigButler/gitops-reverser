@@ -18,39 +18,28 @@ func (m *Manager) fidelityGate() *git.RenderFidelityGate {
 	return m.EventRouter.WorkerManager.RenderFidelityGate()
 }
 
-func renderFidelityScopes(keys []targetWatchKey) []git.RenderFidelityScope {
-	scopes := make([]git.RenderFidelityScope, 0, len(keys))
-	for _, key := range keys {
-		scopes = append(scopes, git.RenderFidelityScope{GVR: key.GVR, Namespace: key.Namespace})
-	}
-	return scopes
-}
-
-// beginTargetRenderFidelityEpochLocked replaces the target's scope set. targetWatchesMu must be
-// held. The returned bool tells the caller to enqueue a status refresh after releasing the lock.
-func (m *Manager) beginTargetRenderFidelityEpochLocked(
+// reconcileTargetRenderFidelity installs the target's current scope set and returns the revision
+// each scope's stream must report under, plus whether the caller should enqueue a status refresh.
+//
+// Only the cells in restarted go back to pending; a cell whose stream was left running keeps its
+// revision and its result, so an unrelated plan change neither closes writes on it nor clears a
+// divergence nothing re-measured. A nil map means no shared gate is wired, which the mark path
+// treats as the legacy data path.
+//
+// The gate call happens before anything is published, so the owner never holds its own state lock
+// across a call into the writer's. That coupling — two subsystems' locks with an order to get
+// wrong — is one of the four hazards the ownership design names.
+func (m *Manager) reconcileTargetRenderFidelity(
 	target types.ResourceReference,
-	keys []targetWatchKey,
-) bool {
+	cells []types.CellKey,
+	restarted []types.CellKey,
+) (map[types.CellKey]uint64, bool) {
 	gate := m.fidelityGate()
 	if gate == nil {
-		return false
+		return nil, false
 	}
-	status := gate.Begin(target, renderFidelityScopes(keys))
-	if m.targetRenderFidelity == nil {
-		m.targetRenderFidelity = map[string]git.RenderFidelityStatus{}
-	}
-	prior, had := m.targetRenderFidelity[target.Key()]
-	m.targetRenderFidelity[target.Key()] = status
-	return !had || renderFidelityStatusChanged(prior, status)
-}
-
-// RenderFidelityEpochForGitTarget returns the epoch a replay result must carry. A zero epoch
-// means no shared gate is wired, so callers preserve the legacy data path.
-func (m *Manager) RenderFidelityEpochForGitTarget(target types.ResourceReference) uint64 {
-	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
-	return m.targetRenderFidelity[target.Key()].Epoch
+	status, revisions := gate.Reconcile(target, cells, restarted)
+	return revisions, m.publishRenderFidelityStatus(target, status)
 }
 
 // RenderFidelityForGitTarget returns the latest condition projection. Missing state means the
@@ -64,47 +53,99 @@ func (m *Manager) RenderFidelityForGitTarget(target types.ResourceReference) Ren
 	return gate.Status(target)
 }
 
-// MarkTargetRenderFidelityScopeClean records one complete clean replay result from the current
-// epoch. A stale cancellation tail is ignored by the gate and cannot reopen a failed target.
+// MarkTargetRenderFidelityScopeClean records one complete clean replay result from the cell's
+// current stream. A stale cancellation tail carries the retired stream's revision, so the gate
+// ignores it and it cannot reopen a failed target.
 func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	target types.ResourceReference,
-	epoch uint64,
-	key targetWatchKey,
+	revision uint64,
+	cell types.CellKey,
 ) {
 	gate := m.fidelityGate()
-	if gate == nil || epoch == 0 {
+	if gate == nil {
 		return
 	}
-	status, applied := gate.RecordScopeClean(
-		target,
-		epoch,
-		git.RenderFidelityScope{GVR: key.GVR, Namespace: key.Namespace},
-	)
-	if applied {
-		m.recordRenderFidelityStatus(target, status)
+	if revision == 0 {
+		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
+		// started without one. Its result is unusable and its scope keeps owing a report.
+		m.logUnappliedFidelityReport(target, cell, revision, "clean (stream carries no revision)")
+		return
 	}
+	status, applied := gate.RecordScopeClean(target, revision, cell)
+	if !applied {
+		m.logUnappliedFidelityReport(target, cell, revision, "clean")
+		return
+	}
+	// TEMPORARY at Info, while Failure A is open. The refusal paths above are logged and the
+	// accept path was not, so SILENCE from this function was ambiguous between "never called" and
+	// "called and accepted" -- and the reproduction that finally carried every other diagnostic
+	// produced exactly that silence, which decided nothing
+	// (docs/design/watch-plane-status-convergence-failures.md, §2.7).
+	//
+	// It is bounded: a scope accepts one report per revision, and a revision only moves when the
+	// plan restarts the cell. Lower it to V(1) once A is named.
+	m.Log.WithName("render-fidelity").Info("render scope result accepted",
+		"gitDest", target.String(), "cell", cell.String(), "revision", revision,
+		"state", string(status.State), "status", status.Message)
+	// Publish the gate's CURRENT status, not the one this drain observed. Sibling drains record
+	// concurrently and their publishes can reorder, so a drain that saw "1 of 4 pending" could
+	// write that over a fresh "True" written moments earlier by the drain that completed the set.
+	// Re-reading costs one RLock and removes a race with no upside.
+	m.recordRenderFidelityStatus(target, m.RenderFidelityForGitTarget(target))
+}
+
+// logUnappliedFidelityReport names a scope result the gate would not take.
+//
+// This is the last silent branch in the roll-up. RecordScope* answers applied=false for three
+// different reasons — the target is unknown, the scope is not in the current plan, or the result
+// carries a superseded revision — and every caller used to drop that answer on the floor. A scope
+// then owes a report for ever with nothing to say why, which is Failure A's signature
+// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
+//
+// The retention roll-up already logs its refusals, and that asymmetry is exactly why B had
+// evidence and A had none. Info, because it is rare by construction: a healthy plan produces one
+// accepted report per scope per revision, and a report nobody can accept means the target will not
+// converge on its own.
+func (m *Manager) logUnappliedFidelityReport(
+	target types.ResourceReference,
+	cell types.CellKey,
+	revision uint64,
+	kind string,
+) {
+	m.Log.WithName("render-fidelity").Info(
+		"a render scope result was not applied; this scope still owes a report and cannot converge alone",
+		"gitDest", target.String(), "cell", cell.String(), "reportedRevision", revision, "result", kind,
+		"status", m.RenderFidelityForGitTarget(target).Message)
 }
 
 // MarkTargetRenderFidelityScopeDiverged records a replay refusal caused by a rendered token.
 func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 	target types.ResourceReference,
-	epoch uint64,
-	key targetWatchKey,
+	revision uint64,
+	cell types.CellKey,
 	divergence manifestanalyzer.RenderDivergence,
 ) {
 	gate := m.fidelityGate()
-	if gate == nil || epoch == 0 {
+	if gate == nil {
 		return
 	}
-	status, applied := gate.RecordScopeDivergence(
-		target, epoch, git.RenderFidelityScope{GVR: key.GVR, Namespace: key.Namespace}, divergence)
-	if applied {
-		m.recordRenderFidelityStatus(target, status)
+	if revision == 0 {
+		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
+		// started without one. Its result is unusable and its scope keeps owing a report.
+		m.logUnappliedFidelityReport(target, cell, revision, "diverged (stream carries no revision)")
+		return
 	}
+	_, applied := gate.RecordScopeDivergence(target, revision, cell, divergence)
+	if !applied {
+		m.logUnappliedFidelityReport(target, cell, revision, "diverged")
+		return
+	}
+	// Current status, for the same reason as the clean path above.
+	m.recordRenderFidelityStatus(target, m.RenderFidelityForGitTarget(target))
 }
 
 // MarkTargetRenderFidelityDiverged closes normal writes immediately when a live window hits the
-// same boundary outside a scoped replay. A fresh watch epoch is the only recovery route.
+// same boundary outside a scoped replay. Restarting every scope is the only recovery route.
 func (m *Manager) MarkTargetRenderFidelityDiverged(
 	target types.ResourceReference,
 	divergence manifestanalyzer.RenderDivergence,
@@ -116,27 +157,42 @@ func (m *Manager) MarkTargetRenderFidelityDiverged(
 	m.recordRenderFidelityStatus(target, gate.Fail(target, divergence))
 }
 
+// recordRenderFidelityStatus is a drain goroutine's report of a gate result.
 func (m *Manager) recordRenderFidelityStatus(target types.ResourceReference, status git.RenderFidelityStatus) {
-	m.targetWatchesMu.Lock()
-	if m.targetRenderFidelity == nil {
-		m.targetRenderFidelity = map[string]git.RenderFidelityStatus{}
+	if m.publishRenderFidelityStatus(target, status) {
+		m.enqueueGitTargetReconcile(target)
 	}
-	prior, had := m.targetRenderFidelity[target.Key()]
-	m.targetRenderFidelity[target.Key()] = status
-	changed := !had || renderFidelityStatusChanged(prior, status)
-	m.targetWatchesMu.Unlock()
-	if changed {
-		m.enqueueGitPathChange(target)
-	}
+}
+
+// publishRenderFidelityStatus records the projected gate state and reports whether it moved.
+func (m *Manager) publishRenderFidelityStatus(
+	target types.ResourceReference,
+	status git.RenderFidelityStatus,
+) bool {
+	return m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		prior, had := s.fidelity[target.Key()]
+		if had && !renderFidelityStatusChanged(prior, status) {
+			return false
+		}
+		s.fidelity[target.Key()] = status
+		return true
+	})
 }
 
 func renderFidelityStatusChanged(before, after git.RenderFidelityStatus) bool {
-	return before.Epoch != after.Epoch || before.State != after.State || before.Reason != after.Reason ||
+	return before.Revision != after.Revision || before.State != after.State || before.Reason != after.Reason ||
 		before.Message != after.Message
 }
 
-func (m *Manager) dropTargetRenderFidelityLocked(target types.ResourceReference) {
-	delete(m.targetRenderFidelity, target.Key())
+// forgetTargetRenderFidelity drops a deleted GitTarget's projection and its gate scopes.
+func (m *Manager) forgetTargetRenderFidelity(target types.ResourceReference) {
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		if _, had := s.fidelity[target.Key()]; !had {
+			return false
+		}
+		delete(s.fidelity, target.Key())
+		return true
+	})
 	if gate := m.fidelityGate(); gate != nil {
 		gate.Forget(target)
 	}

@@ -19,9 +19,11 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	reverserTypes "github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
@@ -68,6 +70,16 @@ type ClusterWatchRuleReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+// clusterWatchRuleGitTarget names the GitTarget a ClusterWatchRule writes through. Unlike a
+// WatchRule's, its targetRef carries a namespace of its own.
+//
+// It carries no UID, and that is correct rather than an omission: a rule-derived reference has
+// none to carry, and the watch-plane owner resolves the trigger against the UID the GitTarget
+// controller captured. See resolveGitTargetUID.
+func clusterWatchRuleGitTarget(rule *configbutleraiv1alpha3.ClusterWatchRule) reverserTypes.ResourceReference {
+	return reverserTypes.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
+}
+
 func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("ClusterWatchRuleReconciler")
 
@@ -75,7 +87,6 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Fetch the ClusterWatchRule instance
 	var clusterRule configbutleraiv1alpha3.ClusterWatchRule
-	//nolint:nestif // Deletion handling requires nested error checks
 	if err := r.Get(ctx, req.NamespacedName, &clusterRule); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("ClusterWatchRule not found, was likely deleted", "name", req.Name)
@@ -83,12 +94,10 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			r.RuleStore.DeleteClusterWatchRule(req.NamespacedName)
 			log.Info("ClusterWatchRule deleted, removed from store", "name", req.Name)
 
-			// Trigger WatchManager reconciliation for deletion
+			// The rule is gone, so the GitTarget it named cannot be read off it. Mark them all;
+			// each one's pass is a cheap diff against a plan that has not moved.
 			if r.WatchManager != nil {
-				if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
-					log.Error(err, "Failed to reconcile watch manager after cluster rule deletion")
-					// Don't fail the reconciliation - log and continue
-				}
+				r.WatchManager.TriggerAllRuleChange()
 			}
 
 			return ctrl.Result{}, nil
@@ -205,12 +214,11 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 		return result, err
 	}
 
-	// Trigger WatchManager reconciliation for new/updated rule
+	// Submit the change and return. The pass runs on the watch-plane owner, after this target has
+	// been quiet for the settle window, so the stream summary read below describes the state from
+	// BEFORE it — see the status contract in docs/design/watch-manager-ownership.md.
 	if r.WatchManager != nil {
-		if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
-			log.Error(err, "Failed to reconcile watch manager after cluster rule update")
-			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
-		}
+		r.WatchManager.TriggerRuleChange(clusterWatchRuleGitTarget(clusterRule))
 		r.setResourceResolutionCondition(ctx, st, clusterRule)
 		r.setStreamsReadyCondition(st, clusterRule, r.WatchManager.StreamSummaryForClusterWatchRule(*clusterRule))
 	} else {
@@ -293,15 +301,10 @@ func (r *ClusterWatchRuleReconciler) refuseClusterWatchRule(
 		"reason", decision.Reason,
 		"message", decision.Message)
 
-	// The compiled rule is already out of the store; replan so the watch manager tears down a
-	// stream this rule was keeping alive.
+	// The compiled rule is already out of the store; trigger a replan so the watch manager tears
+	// down a stream this rule was keeping alive.
 	if r.WatchManager != nil {
-		if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
-			log.Error(err, "Failed to reconcile watch manager after refusing cluster rule",
-				"name", clusterRule.Name)
-			// Don't fail the reconciliation: the rule is already out of the store, so the next
-			// replan from any source converges. Publishing the refusal matters more than this.
-		}
+		r.WatchManager.TriggerRuleChange(clusterWatchRuleGitTarget(clusterRule))
 	}
 
 	st.set(
@@ -349,7 +352,7 @@ func (r *ClusterWatchRuleReconciler) commitRule(
 	if rd.converging() {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
 }
 
 func (r *ClusterWatchRuleReconciler) setGitTargetReadyCondition(
@@ -386,7 +389,7 @@ func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		// A For() predicate is not an optimisation here, it closes a self-triggering edge: a status
 		// write bumps resourceVersion and fires an Update watch event that EnqueueRequestForObject
 		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
@@ -426,8 +429,22 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterWatchRules),
 			builder.WithPredicates(predicate.LabelChangedPredicate{}),
 		).
-		Named("clusterwatchrule").
-		Complete(r)
+		Named("clusterwatchrule")
+
+	// React to a stream of this rule's GitTarget reaching or leaving Streaming, for the reason the
+	// WatchRule controller wires the same channel: the data plane is the only thing that knows when
+	// a stream came up, and without the edge the rule publishes StreamsRunning=False until its 10s
+	// settle requeue.
+	if r.WatchManager != nil {
+		if events := r.WatchManager.StreamStateEvents(); events != nil {
+			b = b.WatchesRawSource(source.Channel(
+				events,
+				handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
+			))
+		}
+	}
+
+	return b.Complete(r)
 }
 
 // clusterProviderToClusterWatchRules maps a ClusterProvider policy change to every ClusterWatchRule
