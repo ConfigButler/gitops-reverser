@@ -238,7 +238,7 @@ and is not independently schedulable.
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
 | n/a | A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path | [`placement-visibility-and-declared-defaults.md`](../layout/placement-visibility-and-declared-defaults.md) | **1** | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) |
 | n/a | `spec.layout`: declare what the folder is | [`../layout/model.md`](../layout/model.md) | **2** | [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), wave |
-| F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** | wave |
+| F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see [`../layout/api-wave.md`](../layout/api-wave.md)) | maintainer review | **2** | wave |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
 | ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` on a still-scanning target is the same dry run with one field | config surface | — | [`../layout/api-wave.md`](../layout/api-wave.md) |

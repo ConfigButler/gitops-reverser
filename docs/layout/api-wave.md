@@ -12,7 +12,8 @@
 > What remains:
 >
 > - the API-surface work left over from the status and configuration-model review: `spec.suspend`,
->   `spec.interval` and the reconcile-request annotation; the `CommitRequest` lifecycle hole; the
+>   `GitProvider.spec.interval` and the reconcile-request annotation; the `CommitRequest` lifecycle
+>   hole; the
 >   `meta.LocalObjectReference` reference-type nit; and the `TooManyStreams` cap and `default`
 >   `ClusterProvider` message. That review has been retired into the documents that own its
 >   findings, and this is where its unbuilt block landed;
@@ -75,18 +76,52 @@ sentence, because it is the only place we differ from a convention a Flux user b
 rather than a switch a colleague can flip. `mode` is the answer if that arrives; a permission is
 not, and neither is a comment.
 
-### 2. `spec.interval` is what keeps the observation fresh
+### 2. Dissolved: `GitTarget.spec.interval`
 
-The placement status has two halves ([the other document](placement-visibility-and-declared-defaults.md)
-records why): a **current** half derived from the last repository scan, and a **historical** half
-accumulated since. The current half is the useful one, and it has a hole: a repository scan happens
-on a write or a resync, so a stable target that writes nothing may not scan for a long time, and the
-field a user consults would be stamped with a revision from last week.
+**Dropped. We watch, and a watch is already the freshness mechanism.**
 
-`spec.interval` is the mechanism that closes it: a periodic observation pass refreshes `renderRoot`
-and `observedRevision` whether or not anything was written. It was not proposed for this reason, and
-it is the piece that makes the dry run above hold still: a suspended target with no interval
-observes once and then goes stale.
+The hole it was proposed for is real: the current half of `status.placement` is derived from the
+last repository scan, a scan happens on a write or a resync, and a target that writes nothing could
+carry a `renderRoot` stamped with last week's revision. A timer closes that. So does noticing that
+nothing in this system is waiting on a timer in the first place.
+
+Every input that can change what a scan would conclude arrives as an event, on a watch, in
+milliseconds: a live object appears, a rule changes, a spec changes. Flux polls because **a Git
+remote cannot be watched**, which is exactly why `GitProvider.spec.interval` stays and is the
+honest one of the pair. `GitTarget` sits on the other side of that asymmetry: its inputs are API
+objects, and we are already streaming them.
+
+What remains uncovered is narrow enough to name in one sentence: a repository whose folder was
+changed **by someone else** while our target wrote nothing. That is a poll of the output, we would
+be paying it on every target forever to catch it, and the reconcile-request annotation refreshes it
+on demand for the one person who wants it now. A stale `observedRevision` on an idle target is a
+legible cost; a periodic scan on every target is not.
+
+The inverted reading, a periodic **re-list of the API** so the mirror re-derives desired state from
+the cluster rather than from the event stream, is the one that would actually correspond to Flux's
+interval, because desired state lives in the cluster here. It is a real design with a real cost, and
+nobody has asked for it. Not now.
+
+**It is not a re-apply, and the name would have made people think it was.** In Flux, `interval` is
+the drift-correction cadence: re-fetch the source, re-apply the desired state stored in Git. Had we
+put the field on `GitTarget`, a Flux user would have read it as that, and it would have driven
+neither of the two passes they were picturing:
+
+| | reads | writes | decides deletions |
+|---|---|---|---|
+| the observation pass | this target's folder, to resolve the render root and stamp `observedRevision` | never | never |
+| the resync mark-and-sweep | the API, via the streaming list's initial-events snapshot | yes | yes, where `spec.prune.mode` allows |
+
+The sweep is enqueued from the watch plane with a cluster-gathered `desired` snapshot
+([`event_router.go`](../../internal/watch/event_router.go),
+[`reconcile-via-watchlist-mark-and-sweep.md`](../spec/reconcile-via-watchlist-mark-and-sweep.md)),
+scoped per cell. Nothing about a Git-side scan is qualified to infer a deletion, because a document
+whose object is gone and a document nobody has written yet look identical from that side. Dropping
+the field removes the only place on `GitTarget` where that confusion had somewhere to attach.
+
+**Re-open trigger**: a user who needs an idle target's `status.placement` to track a repository
+other people edit, and for whom the reconcile-request annotation is not enough. Then it is a scan
+cadence, named for scanning.
 
 ### 3. `spec.suspend` is a precondition for `kustomizeRoot: Create`
 
@@ -200,7 +235,6 @@ spec:
 
   # --- whether and when we write it ---
   suspend: false                    # the only stop-writes switch; a suspended target still scans
-  interval: 5m                      # what keeps status.placement fresh
   prune:
     mode: OnEvent
 
@@ -310,8 +344,9 @@ Dependencies first, then the things that only need the object to be breaking.
    review's highest-value gap.
 3. **`status.placement`** plus the post-scan validation pass. Needed before a suspended target is
    useful to look at, because a dry run with nothing to read previews nothing.
-4. **`spec.interval` + `requestedAt` + `lastHandledReconcileAt`**. Closes the freshness
-   hole in step 3 and gives the object the reflexes a Flux user already has.
+4. **`requestedAt` + `lastHandledReconcileAt`**. On-demand refresh of the status in step 3, and the
+   one reflex a Flux user brings that we do keep. `GitTarget.spec.interval` was step 4 and is
+   dropped, per interaction 2.
 5. **Events on a changed resolution**, over the existing recorder.
 6. **B4**: `commitWindow` and `commit.message` move from `GitProvider` to `GitTarget`. Last of the
    principle items, and the one that makes the object coherent.
@@ -350,10 +385,7 @@ big to review, since nothing else depends on it.
 - ~~**Does `mode: Observe` write status only, or also refuse admission of new WatchRules?**~~
   ~~**Should `suspend` and `mode: Observe` be one field?**~~ **Both closed by dropping `mode`**: one
   field, and a suspended target keeps observing. See interaction 1.
-- ~~**Where does `interval` live?**~~ **Decided: both objects, one name.** `spec.interval` appears on
-  `GitRepository`, `OCIRepository`, `HelmRepository`, `Bucket`, `Kustomization`, `HelmRelease`,
-  `ImageRepository` and `Receiver`, meaning the same thing on each — how often this object
-  reconciles. Two objects having a reconcile cadence is the convention, not a collision, and
-  `GitProvider.spec.interval` is the one that matches Flux most exactly since it really is an
-  `ls-remote` cadence. Each field's documentation says what it drives; `GitTarget`'s is where the
-  meaning is novel, and that is a doc string rather than a name.
+- ~~**Where does `interval` live?**~~ **Decided: only on `GitProvider`.** Two objects with a
+  reconcile cadence would have been the Flux convention rather than a collision, and the name was
+  never the problem. The problem was that `GitTarget` did not need the field: a Git remote cannot be
+  watched and an API object can, so the poll belongs on the side that polls. Interaction 2.

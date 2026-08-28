@@ -35,7 +35,7 @@ That leaves the risk concentrated in one place rather than two:
 | PR | Content | Breaking | Depends on |
 |---|---|---|---|
 | 1 | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) correctness fixes, plus the worked examples as an executable corpus | no | — |
-| 2 | `spec.suspend`, `spec.interval` | no | 1 |
+| 2 | `spec.suspend`, and the reconcile-request annotation | no | 1 |
 | 3 | `status.placement`, and the post-scan validation pass | no | 2 |
 | 4 | `serializeNamespace` and `kustomizeRoot` | no | 1, 3 |
 | 5 | `commitWindow` and `commit.message` move off `GitProvider` | **yes** | — |
@@ -125,23 +125,24 @@ examples describe is the API shape that got built.
 - Every skipped case names the PR that unskips it.
 - The corpus gaps below are filled.
 
-## PR 2 — `spec.suspend`, `spec.interval`
+## PR 2 — `spec.suspend`, and the reconcile-request annotation
 
-Additive, and the wave's order is right that `suspend` comes before anything that creates
-files. Ship the two together because they answer one question (whether and when this folder is
-written), and because `interval` is what keeps a scan-derived status fresh.
+Additive, and the wave's order is right that `suspend` comes before anything that creates files.
 
 - `suspend` stops resource writes **and** bootstrap creation. State that before either exists.
 - `suspend` does **not** stop scanning: a suspended target still resolves its render root and
   publishes `status.placement`, which is what makes it a dry run rather than an off switch. This
   deviates from Flux, where `suspend` stops reconciliation altogether, so the field's documentation
   says so in one sentence.
-- `interval` drives that observation pass, so a suspended target does not observe once and go stale.
+- `reconcile.configbutler.ai/requestedAt` plus `status.lastHandledReconcileAt` refresh that
+  observation on demand.
 
-**`spec.mode: Observe|Write` was a third field here and is dropped**, with the reasoning in
-[`api-wave.md`](api-wave.md). A suspended target that keeps observing is the same dry run with one
-field instead of two, and two of the wave's open questions were about the pair rather than about
-either field.
+**`spec.mode: Observe|Write` and `spec.interval` were both fields here and are both dropped**, with
+the reasoning in [`api-wave.md`](api-wave.md). `mode` because a suspended target that keeps
+observing is the same dry run with one field instead of two; `interval` because every input that
+changes what a scan would conclude already arrives on a watch, and the only gap a timer closed is a
+repository someone else edits, which the annotation covers on demand. PR 2 is one field and one
+annotation, which is the smallest this part of the wave has been.
 
 ## PR 3 — `status.placement`, and the post-scan pass
 
@@ -270,18 +271,17 @@ templated file register with the root that governs it.
 There is no `kind` to default. `serializeNamespace: Auto` is a default in the ordinary sense, and it
 names today's inference rather than standing in front of a structural rule.
 
-### 5. `interval` keeps one name on both objects
+### 5. Dissolved: `interval` on two objects
 
-Reversed. This plan argued that one name on two objects is a smell, and that `GitProvider`'s field
-should be renamed for what it polls. That is backwards for the audience: `spec.interval` appears on
-`GitRepository`, `OCIRepository`, `HelmRepository`, `Bucket`, `Kustomization`, `HelmRelease`,
-`ImageRepository` and `Receiver`, meaning the same thing on every one — how often this object
-reconciles. Users learn it once, and `GitProvider.spec.interval` is the field whose behavior matches
-that most exactly, since it really is an `ls-remote` cadence.
+Reversed twice, and it ends smaller than either draft. This plan first argued that one name on two
+objects is a smell; then that it is the Flux convention and each field's docs should say what it
+drives. Both were arguing about the **name**, and the name was never the problem.
 
-Two objects having a reconcile cadence is the convention, not a collision. Both are `interval`, and
-each field's documentation says what it drives. If anything wants distinguishing it is `GitTarget`,
-where an observation pass over a folder is the novel meaning — and that is a doc string, not a name.
+`GitTarget` does not need the field. Flux polls because a Git remote cannot be watched, which is
+what `GitProvider.spec.interval` is for and why it stays. A `GitTarget`'s inputs are API objects we
+are already streaming, so its status is refreshed by the events that change it, plus the
+reconcile-request annotation for the one case a watch cannot see: someone else editing the
+repository. One `interval`, on the object that actually polls.
 
 ### 6. Namespace-local `GitProvider` is a recorded gap, not a blocker
 
