@@ -925,6 +925,18 @@ Recommended variables:
 | `{name}` | metadata name |
 | `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
 
+**A template carries its own extension.** Nothing is appended: `"{namespace}/{name}"` is rejected by
+[path validation](#path-validation), which requires a recognized YAML suffix, and
+`"{namespace}/{name}.yaml"` is the correct spelling. `{sensitiveSuffix}` is the one variable that
+supplies the extension itself, because it has to choose between `.yaml` and `.sops.yaml`. Any
+example that shows a template without a visible suffix is wrong.
+
+`{kindLower}` — the lower-cased kind, so `ConfigMap` becomes `configmap` — is **decided and not yet
+built**. It is a variable rather than a `toLower` function because a function invites an expression
+language into a field that is deliberately not one. It is what a user writes to ask for the
+`configmap-cache.yaml` convention that the built-in rungs do not produce: the kustomize root names a
+new sibling `{name}.yaml` and never infers a naming convention from the folder's existing files.
+
 With those variables, the built-in canonical layout is **namespace-first, no
 version segment** (as implemented in `ResourceIdentifier.ToGitPath`):
 

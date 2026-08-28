@@ -1,7 +1,7 @@
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
-  name: demo
+  name: demo-workloads
   namespace: demo
 spec:
   providerRef:
@@ -11,8 +11,9 @@ spec:
   allowedSourceNamespaces:
     names: [demo]
   mode: Observe
-  layout:
-    kind: Auto
-    scope: SingleNamespace
-    namespace: demo
-    writeNamespace: FromContext
+  # No placement declared, so the built-in ladder applies: the folder's one
+  # kustomize root places new files beside it. serializeNamespace: Auto is the
+  # default too, and both are spelled out here because the scenario is about
+  # what adoption resolves to.
+  serializeNamespace: Auto
+  kustomizeRoot: Adopt

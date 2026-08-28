@@ -5,11 +5,11 @@ diff --git a/bootstrap/argocd-applications/kustomization.yaml b/bootstrap/argocd
  resources:
    - application-jellyfin.yaml
    - application-nextcloud.yaml
-+  - application-paperless.yaml
-diff --git a/bootstrap/argocd-applications/application-paperless.yaml b/bootstrap/argocd-applications/application-paperless.yaml
++  - paperless.yaml
+diff --git a/bootstrap/argocd-applications/paperless.yaml b/bootstrap/argocd-applications/paperless.yaml
 new file mode 100644
 --- /dev/null
-+++ b/bootstrap/argocd-applications/application-paperless.yaml
++++ b/bootstrap/argocd-applications/paperless.yaml
 @@ -0,0 +1,17 @@
 +apiVersion: argoproj.io/v1alpha1
 +kind: Application

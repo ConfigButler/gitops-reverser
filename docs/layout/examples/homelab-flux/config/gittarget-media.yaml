@@ -15,10 +15,5 @@ spec:
   allowedSourceNamespaces:
     names: [flux-system]
   mode: Observe
-  layout:
-    kind: Kustomize
-    scope: SingleNamespace
-    namespace: flux-system
-    writeNamespace: Never
-    kustomize:
-      root: .
+  serializeNamespace: Never
+  kustomizeRoot: Require

@@ -45,20 +45,24 @@ paths carry scope, but the source API keeps their authority separate.
 ## Scenario contract
 
 - Starting repository: [`repository/`](repository/) after the three documents shown above.
-- Live input: [`input/configmap-grafana-dashboards.yaml`](input/configmap-grafana-dashboards.yaml).
+- Live input: [`input/grafana-dashboards.yaml`](input/grafana-dashboards.yaml).
 - First observation, before any commit. A `Tree` folder has no render root, so the reason says so
   rather than leaving the field unexplained:
 
   ```yaml
   status:
-    layout:
-      declaredKind: Tree
-      kind: Tree
-      renderRootReason: None
+    conditions:
+      - type: LayoutResolved
+        status: "True"
+        reason: None
+        message: "no kustomization governs this subtree; new files take the canonical path"
+    placement:
+      renderRoot: ""
+      serializeNamespace: Always
   ```
 
 - Expected Git change:
-  [`expected-configmap-grafana-dashboards.patch`](expected-configmap-grafana-dashboards.patch), after
+  [`expected-grafana-dashboards.patch`](expected-grafana-dashboards.patch), after
   a reviewer changes `mode` to `Write`.
 - Expected status: `Ready=True` with a `Tree` layout and a path derived from the input identity.
 - Boundary: content outside `clusters/home`, a namespace not on the target, or an unsupported
@@ -71,8 +75,13 @@ or an operator appear as reviewable Git documents without choosing a bundle conv
 GitOps deployer can consume the tree through a recursively scanned directory or through a root
 Kustomization that the repository owner maintains.
 
-`writeNamespace: Always` keeps each namespaced document portable outside this tree. Unlike a
+`serializeNamespace: Always` keeps each namespaced document portable outside this tree. Unlike a
 single-namespace Kustomize folder, no common namespace transformer supplies an omitted value.
+
+**The field governs namespaced resources only.** This folder also captures a `ClusterRole` through
+its `ClusterWatchRule`, and a `ClusterRole` has no namespace to serialize, so
+`serializeNamespace` is ignored for it rather than being an error. A tree is the shape most likely
+to carry both kinds, which is why it is worth saying here.
 
 ## Boundary
 

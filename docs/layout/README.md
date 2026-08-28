@@ -30,12 +30,6 @@ These are `design/`-class: intent, not shipped behavior.
 | [`api-wave.md`](api-wave.md) | how the layout break sequences with the other `feat(api)!` work on `GitTarget`, so the consumer pays one bump |
 | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | the three questions the sibling-inference deletion left. Decided, mostly unbuilt, and its Question 2 is superseded by [`model.md`](model.md) |
 
-## Reviewed
-
-| Document | What it found |
-|---|---|
-| [`flux-maintainer-review.md`](flux-maintainer-review.md) | `L1`-`L27` over the model, the plan and the examples, read as a Flux maintainer. The earlier review covering status and the configuration model has been retired into the documents that own its findings |
-
 ## Worked examples
 
 [`examples/`](examples/README.md) makes the proposal tangible: six scenarios, each with a

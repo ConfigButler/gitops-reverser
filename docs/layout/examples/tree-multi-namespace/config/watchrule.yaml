@@ -5,7 +5,7 @@ metadata:
   namespace: homelab-config
 spec:
   targetRef:
-    name: home-state
+    name: home-cluster-state
   rules:
     - apiGroups: [""]
       apiVersions: ["v1"]

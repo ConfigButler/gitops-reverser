@@ -11,10 +11,9 @@ spec:
   allowedSourceNamespaces:
     names: [argocd]
   mode: Observe
-  layout:
-    kind: Kustomize
-    scope: SingleNamespace
-    namespace: argocd
-    writeNamespace: Never
-    kustomize:
-      root: .
+  # Never is safe here only because the folder's kustomization.yaml supplies
+  # namespace: argocd — and that file belongs to the repository owner, not to us.
+  # Require is the guard: if the root is deleted, stop writing rather than commit
+  # documents that land in whatever namespace the applier defaults to.
+  serializeNamespace: Never
+  kustomizeRoot: Require

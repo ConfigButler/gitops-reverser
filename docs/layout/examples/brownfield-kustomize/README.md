@@ -19,19 +19,24 @@ apps/demo/
 
 ## Proposed configuration
 
-[`config/gittarget.yaml`](config/gittarget.yaml) chooses `mode: Observe`. It constrains the source
-to `demo`, declares that the target is single-namespace, and leaves the structural kind as `Auto`.
+[`config/gittarget.yaml`](config/gittarget.yaml) chooses `mode: Observe` and declares no
+`placement` at all, so the built-in ladder applies: the folder's one kustomize root places new
+files beside it. `serializeNamespace: Auto` and `kustomizeRoot: Adopt` are both defaults, spelled
+out here because this scenario is about what adoption resolves to.
 [`config/watchrule.yaml`](config/watchrule.yaml) supplies the namespaced resource subscription.
 
 The first observation records a result equivalent to:
 
 ```yaml
 status:
-  layout:
-    declaredKind: Auto
-    kind: Kustomize
+  conditions:
+    - type: LayoutResolved
+      status: "True"
+      reason: SingleKustomization
+      message: "render root '.' governs new files"
+  placement:
     renderRoot: .
-    renderRootReason: SingleKustomization
+    serializeNamespace: Auto
 ```
 
 No commit is made in `Observe` mode. After a reviewer confirms that result, changing the target to
@@ -39,8 +44,8 @@ No commit is made in `Observe` mode. After a reviewer confirms that result, chan
 
 ```text
 apps/demo/
-  kustomization.yaml             # adds configmap-cache.yaml to resources
-  configmap-cache.yaml           # omits metadata.namespace
+  kustomization.yaml             # adds cache.yaml to resources
+  cache.yaml           # omits metadata.namespace
   deployment-web.yaml
   service-web.yaml
 ```
@@ -51,18 +56,24 @@ The Kustomize root supplies the omitted namespace, so the new document still rep
 ## Scenario contract
 
 - Starting repository: [`repository/`](repository/), already recognized in `Observe` mode.
-- Live input: [`input/configmap-cache.yaml`](input/configmap-cache.yaml).
-- Expected Git change: [`expected-configmap-cache.patch`](expected-configmap-cache.patch), after a
+- Live input: [`input/cache.yaml`](input/cache.yaml).
+- Expected Git change: [`expected-cache.patch`](expected-cache.patch), after a
   reviewer changes `mode` to `Write`.
-- Expected status: `Ready=True` with `kind: Kustomize` and `renderRoot: .` during observation.
+- Expected status: `Ready=True` with `LayoutResolved=True` and `renderRoot: .` during observation.
 - Boundary: a second Kustomize root or an unsupported expression makes the target refuse the write.
 
 ## What this example rules out
 
-This target does not infer a custom file convention from its siblings. A second Kustomize root in
-the target path makes a declared `Kustomize` target invalid; it does not cause the operator to pick
-an arbitrary root. A folder with no Kustomize root instead follows the `Tree` or `Flat` rule that
-its declared layout permits.
+This target does not infer a custom file convention from its siblings, and the new file's name is
+where that shows. The folder holds `deployment-web.yaml` and `service-web.yaml`, so a reader might
+expect `configmap-cache.yaml`. The operator writes **`cache.yaml`**: the rung names a new sibling
+`{name}.yaml` and does not learn a naming convention by looking at the neighbours. That inference
+was deliberately deleted, and declaring `placement.default: "{kindLower}-{name}.yaml"` is how you
+ask for the other convention on purpose.
+
+A second kustomize root in the target path is a misconfiguration of the GitTarget rather than a
+placement puzzle; it does not cause the operator to pick an arbitrary root. A folder with no
+kustomize root falls through to the canonical identity path.
 
 The example stays within the
 [Kustomize support boundary](../../../design/support-boundary/kustomize-support-boundary.md): it edits local

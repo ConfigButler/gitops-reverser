@@ -29,14 +29,14 @@ Each target needs a `GitProvider` in the target's namespace. See the
 cluster rule. Connection credentials are outside the layout decision. A source `ClusterProvider`
 is named only where that choice explains the scenario.
 
-| Scenario | Layout question it exercises |
+| Scenario | Question it exercises |
 |---|---|
-| [Brownfield Kustomize adoption](brownfield-kustomize/README.md) | How does an existing folder become a target without a first write? |
-| [Application configuration as KRM](krm-app-configuration/README.md) | How does an empty repository become a deployable, single-namespace folder? |
-| [Homelab cluster tree](homelab-cluster-tree/README.md) | How does a small cluster mirror several namespaces and cluster resources safely? |
-| [Homelab Argo CD](homelab-argocd/README.md) | How does an app-of-apps folder remain a narrow, editable Kustomize target? |
+| [Brownfield kustomize adoption](brownfield-kustomize/README.md) | How does an existing folder become a target without a first write? |
+| [Empty-repo bootstrap](empty-repo-bootstrap/README.md) | How does an empty repository become a deployable, single-namespace folder? |
+| [Tree, multi-namespace](tree-multi-namespace/README.md) | How does a small cluster mirror several namespaces and cluster resources safely? |
+| [Homelab Argo CD](homelab-argocd/README.md) | How does an app-of-apps folder remain a narrow, editable target? |
 | [Homelab Flux](homelab-flux/README.md) | How do Flux declarations stay editable without treating chart output as source? |
-| [External base and overlay](external-base-overlay/README.md) | How can an environment overlay change a supported field without claiming ownership of its base? |
+| [Overlay-scoped target](overlay-scoped-target/README.md) | How can an environment overlay change a supported field without claiming ownership of its base? **Write path, not placement** |
 
 ## Two fixture conventions
 
@@ -60,23 +60,42 @@ starting state, which is the property the index line was pretending to have.
 
 ## How to read the proposed fields
 
-`layout.kind` names the folder's structural rule. `Kustomize` creates files beside one root and
-adds each file to `resources:`. `Tree` writes an identity-complete namespace and type tree.
-`scope` says whether the folder can receive one namespace or several. For a
-`SingleNamespace` layout, `layout.namespace` records the folder's namespace identity. The exact
-one-name `allowedSourceNamespaces.names` list separately authorizes that namespace, and admission
-requires the two values to match. `writeNamespace` records whether `metadata.namespace` appears in
-source files, instead of leaving that result to an unstated convention.
+Two fields are proposed on top of the `spec.placement` the current release already has. Everything
+else in these scenarios ships today.
+
+`serializeNamespace` (`Auto`, `Always`, `Never`) decides whether `metadata.namespace` appears inside
+the committed document. A path cannot express it: kustomize takes the namespace from either the
+document or a governing root, and where the file sits decides neither. `Never` is honest only when
+something guarantees the namespace, which is why two scenarios pair it with `Require`.
+
+`kustomizeRoot` (`Adopt`, `Create`, `Require`) decides what happens when **no** kustomization governs
+the path. When one does, every value registers the new file in its `resources:` — that is an
+invariant, not a setting. `Adopt` writes the file anyway, `Create` writes the missing
+`kustomization.yaml` first, and `Require` refuses the write.
+
+Where a new file goes is the template's job, and most scenarios here declare no template at all: the
+built-in ladder places a new document beside the folder's one kustomize root, or at the canonical
+identity path when there is no root. The file is named `{name}.yaml`. The operator does not copy a
+naming convention from the neighbouring files — that inference was deliberately deleted — so a folder
+of `deployment-web.yaml` and `service-web.yaml` receives `cache.yaml`, and
+`placement.default: "{kindLower}-{name}.yaml"` is how to ask for the other convention on purpose.
 
 `mode: Observe` is the adoption path: the operator scans and publishes what it resolved without
 writing. Change it to `Write` only after the resolved root and prospective paths match the
 repository owner's intent.
 
-Every brownfield scenario here opens in `Observe` and shows the observed `status.layout` before it
-shows a patch, because that is the path the paragraph above describes and a set of examples that
-opened straight into `Write` would be advertising something else.
-[`krm-app-configuration`](krm-app-configuration/README.md) is the one honest exception: its
-repository is empty, so there is nothing to observe.
+Every brownfield scenario here opens in `Observe` and shows the observed status before it shows a
+patch, because that is the path the paragraph above describes and a set of examples that opened
+straight into `Write` would be advertising something else.
+[`empty-repo-bootstrap`](empty-repo-bootstrap/README.md) is the one honest exception: its repository
+is empty, so there is nothing to observe.
+
+## One product, three names
+
+A reader meets all three inside a single scenario, so it is worth defusing once: `configbutler.ai`
+is the API group, **GitOps Reverser** is the product, and `gitops-reverser` is the repository and
+binary name. Flux is uniformly `*.toolkit.fluxcd.io` and pays nothing for it; we have a split, and
+these examples are where it is most visible.
 
 The examples do not make Kustomize a general source inverse. They stay inside the support
 boundary: one writable expression, a local render root, and a re-rendered proposal. See the

@@ -4,7 +4,7 @@ metadata:
   name: home-cluster-rbac
 spec:
   targetRef:
-    name: home-state
+    name: home-cluster-state
     namespace: homelab-config
   rules:
     - apiGroups: ["rbac.authorization.k8s.io"]

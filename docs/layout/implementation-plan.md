@@ -1,4 +1,4 @@
-# Building the layout model: the order of the work
+# Building the placement work: the order
 
 > **plan**: the implementation order for [`model.md`](model.md)
 > and [`api-wave.md`](api-wave.md), under the direction recorded in
@@ -6,29 +6,29 @@
 > Date: 2026-08-28. Index: [`../INDEX.md`](../INDEX.md).
 >
 > The designs it sequences remain proposals; this page is the sequencing decision and the
-> definition of done for each step. It also folds in six design changes that came out of
-> reviewing the worked examples in [`examples/README.md`](examples/README.md), each
-> recorded below with the finding that produced it.
+> definition of done for each step. Rewritten after the model reversed: the placement work is no
+> longer breaking, so the order it once protected — everything queued behind one coordinated bump —
+> mostly dissolved.
 
-## Why the order carries most of the risk
+## Why the order carries less risk than it did
 
-The layout model reads like a rewrite and is not one. The four-rung placement ladder is a
-single function, [`LocateNew`](../../internal/manifestanalyzer/placement.go), with a single
-caller in [`plan_flush.go`](../../internal/git/plan_flush.go). Everything downstream of the
-path decision — registering a new file with the kustomization that governs it, the render
-fidelity gate, refusal accounting, the metrics — already exists and stays where it is.
-`spec.layout` is a dispatch on `kind` in place of a fallthrough, plus a spec field, plus
-validation, plus status.
+The placement work reads like a rewrite and never was one. The four-rung ladder is a single
+function, [`LocateNew`](../../internal/manifestanalyzer/placement.go), with a single caller in
+[`plan_flush.go`](../../internal/git/plan_flush.go). Everything downstream of the path decision —
+registering a new file with the kustomization that governs it, the render fidelity gate, refusal
+accounting, the metrics — already exists and stays where it is.
 
-So the risk is concentrated in two places that have nothing to do with the size of the diff:
+Under the model as it now stands, `LocateNew` is not touched at all. The ladder stays and two fields
+sit beside it, so what was the largest breaking change in the queue is a pair of additive fields
+whose defaults equal today's behavior.
 
-- **Review surface.** The wave document names this as its largest cost, and it is right.
-- **One coordinated consumer bump.** The consumer pins the image, the Go module and the
-  `require` line, so each breaking release is a scheduling event.
+That leaves the risk concentrated in one place rather than two:
 
-The order below is built around one rule: **exactly one release is breaking, and every step
-before it ships on its own.** Steps 2 and 3 deliver user-visible value under today's API and
-retire most of the wave's uncertainty before the breaking change is written.
+- **Review surface**, which is why the corpus in PR 1 matters more than any prose acceptance
+  criteria.
+- The **one coordinated consumer bump** still applies to PRs 5 and 6, which are breaking for reasons
+  unrelated to placement. The consumer pins the image, the Go module and the `require` line, so each
+  breaking release is a scheduling event — but placement no longer has to wait for one.
 
 ## The order
 
@@ -36,14 +36,19 @@ retire most of the wave's uncertainty before the breaking change is written.
 |---|---|---|---|
 | 1 | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) correctness fixes, plus the worked examples as an executable corpus | no | — |
 | 2 | `spec.suspend`, `spec.mode`, `spec.interval` | no | 1 |
-| 3 | `status.layout` over today's placement model | no | 2 |
-| 4 | `spec.layout`, the `LocateNew` rewrite, `spec.placement` as a loud rejection | **yes** | 1, 3 |
+| 3 | `status.placement`, and the post-scan validation pass | no | 2 |
+| 4 | `serializeNamespace` and `kustomizeRoot` | no | 1, 3 |
 | 5 | `commitWindow` and `commit.message` move off `GitProvider` | **yes** | — |
 | 6 | The riders: the asserted CommitRequest author, its lifecycle, `meta.LocalObjectReference`, `TooManyStreams`, the ClusterProvider default message | **yes** | — |
 
-PRs 4, 5 and 6 land in one release. They are reviewed as three changes and paid for as one
-bump, which is the wave's argument applied to the review rather than only to the consumer.
-PR 6 is the trim handle: nothing depends on it.
+**PR 4 stopped being breaking**, which is the largest change to this plan since it was written.
+The model no longer replaces `spec.placement` with a discriminated union; it keeps the template and
+adds two fields whose defaults equal today's behavior. So there is no loud rejection, no `LocateNew`
+rewrite, and no migration — and PRs 1 through 4, the whole placement story, ship without a
+coordinated consumer bump.
+
+What remains breaking is PRs 5 and 6, neither of which is about placement. They land in one release,
+reviewed as two changes and paid for as one bump. PR 6 is the trim handle: nothing depends on it.
 
 `F9`'s envtest against the minimum supported Kubernetes version stays outside this order, as
 the wave document says. Its answer constrains the enum work, so run it before PR 4 is planned.
@@ -57,7 +62,7 @@ first entries the corpus asserts.
 
 - **The ancestor walk.** A declared path into a subdirectory of a kustomize folder is
   registered with the nearest governing kustomization, whether that kustomization is a
-  sibling or an ancestor. This is rule 1 of the layout model, built one release early under
+  sibling or an ancestor. This is the registration invariant the whole model rests on, built
   the current API, where it is a bug fix rather than a new invariant.
 - **The versionless identity gate.** `IdentityCompletePlacementTemplate` demands `{version}`,
   which contradicts the deliberate versionless canonical path. The gate accepts a versionless
@@ -131,37 +136,78 @@ is written — and because `interval` is what keeps a scan-derived status fresh.
 `suspend` and `mode` stay two fields, per the wave's open question, on the Flux convention that
 a suspend switch is its own thing. Each field's documentation must say what the other is for.
 
-## PR 3 — `status.layout` under today's model
+## PR 3 — `status.placement`, and the post-scan pass
 
-The wave puts `status.layout` after the layout field. Inverting that is the highest-value
-change in this plan: `status.layout` is useful now, because `renderRoot`, `renderRootReason`
-and `observedRevision` are facts about the folder that today's placement model already
-computes and discards. Publishing them turns `Observe` from a mode that does nothing into an
-adoption dry run, one release early.
+The wave put status after the layout field. Inverting that is still the highest-value change in
+this plan, and now it is also where the model's remaining machinery lives: `renderRoot` and the
+resolution are facts about the folder that today's placement already computes and discards.
 
-`declaredKind` and the resolved `kind` join the same field in PR 4. The two-halves rule holds
-from the start: a current half stamped with the revision it came from, and a historical half
-accumulated since, with the current half never depending on a placement having happened.
+```yaml
+status:
+  observedGeneration: 4
+  conditions:
+    - type: LayoutResolved
+      status: "True"
+      reason: SingleKustomization        # SingleKustomization | Ambiguous | None
+      message: "render root '.' governs new files"
+      observedGeneration: 4
+  placement:
+    renderRoot: .
+    serializeNamespace: Auto
+    byTypeEntries: 1
+    observedRevision: 9f3c1ab
+    observedTime: "2026-07-30T09:14:22Z"
+    examples: []                         # capped at three, illustrative
+```
 
-Ship the `Ambiguous` render-root condition and the Event over the existing `EventRecorder`
-here as well. Both are about the folder rather than about the layout field.
+Three decisions are taken here rather than deferred, because each one is cheaper to take before the
+field exists than after:
 
-## PR 4 — `spec.layout` (the breaking one)
+- **The resolution reason is a condition reason, not a field.** `renderRootReason` would have been a
+  reason enum in a bespoke field, and shipping it here — one release before the model that defines
+  it — would have meant breaking a field sold as stable.
+- **No accumulating counters.** `placedResources`, `overriddenTypes` and `refusedResources` are
+  metrics; `placements_total` carries them with better labels. A monotonic counter in status is a
+  status write per event, which re-creates the self-triggering reconcile edge the status work
+  already fixed once.
+- **`conditions` and `observedGeneration` are in the stanza**, because every scenario README already
+  asserts `Ready=True`.
 
-- `spec.layout` with `kind`, `scope`, `namespace`, `writeNamespace`, `kustomize`, `byType`.
-- `LocateNew` becomes a dispatch on the resolved kind.
-- `spec.placement` becomes a loud rejection naming the replacement, following the
-  `ClusterWatchRule.spec.rules[].scope` precedent.
-- CEL: immutability with the widening exception, and the namespace agreement rule as amended
-  below.
-- `Auto` resolves once and is pinned.
+**The post-scan validation pass ships here too**, because it is the same scan. Three rules whose
+precondition is a property of the observed folder rather than of the spec, so no CEL rule can reach
+them:
 
-The one genuinely new coupling is the pin, and it needs deciding before the code is written.
-The resolution is computed on the branch worker from a repository scan, while the pin is
-reported in status. **Do not put a status read into the write path.** The worker holds the
-resolution keyed by `observedRevision` and the roll-up seam projects it into status; a later
-folder state that would resolve differently raises a condition instead of re-laying-out the
-folder. Status reports the pin; it does not store it for the writer to read back.
+| Rule | Precondition |
+|---|---|
+| `serializeNamespace: Never` requires a namespace supplier | a kustomization with `namespace:` governs the path |
+| `kustomizeRoot: Require` needs a root | one governs the path |
+| a declared single-root assertion | the folder has exactly one root |
+
+One pass, one condition shape, `Validated=False` naming the offending field and what the folder
+actually contains. A corpus scenario per row, with an `expected-status.yaml` instead of a patch.
+
+The pass is written in PR 3 against the two rules that exist today; PR 4 adds the third row when it
+adds the field. That ordering is deliberate: the machinery is proven before a new field depends on
+it.
+
+## PR 4 — `serializeNamespace` and `kustomizeRoot`
+
+Additive, both defaulting to current behavior, so an object that says nothing behaves exactly as it
+does today.
+
+- `serializeNamespace: Auto | Always | Never`. `Auto` is what `namespaceIsInheritedFromContext`
+  already does, so the work is the two explicit values plus the `Never` row of the post-scan pass.
+- `kustomizeRoot: Adopt | Create | Require`. `Adopt` is the ancestor walk that shipped in
+  [#319](https://github.com/ConfigButler/gitops-reverser/pull/319). `Require` is a refusal on the
+  existing scan. **`Create` is the only genuinely new machinery in the whole placement story**:
+  writing a `kustomization.yaml` that does not exist, with `namespace:` set when the folder is
+  single-namespace, and registering into it in the same commit.
+
+Build `Create` last and on its own. It is the one value that writes a file nobody asked for by
+name, it is what makes `Never` provable on an empty folder, and it is the only part of this PR that
+cannot be verified by pointing the corpus at an existing fixture.
+
+`LocateNew` is not rewritten. The ladder stays; the two fields sit beside it.
 
 ## PR 5 — `commitWindow` and `commit.message` move to `GitTarget`
 
@@ -178,62 +224,49 @@ release because they are breaking and the consumer should pay once. Trim from he
 
 ## Design changes this plan folds in
 
-Six changes to the designs above, each from reviewing the worked examples.
+Each came from reviewing the worked examples. Three of the original six are gone, because the
+fields they amended no longer exist.
 
-### 1. The namespace agreement is checked when present, not required
+### 1. Dissolved: the namespace agreement rule
 
-`model.md` argues that the namespace must be declared **because**
-`allowedSourceNamespaces` may be absent, and then requires an exact one-name list under
-`scope: SingleNamespace`. The field that may be absent becomes mandatory in the most common
-case, and the four-field quickstart becomes six.
+This plan used to amend `model.md`'s requirement that `scope: SingleNamespace` demand an exact
+one-name `allowedSourceNamespaces` list. Neither field exists now. A folder is single-namespace
+because no `{namespace}` appears in its paths, and a document from a second namespace is refused at
+the write boundary — which was always the thing actually enforcing singularity.
 
-**Amendment:** `layout.namespace` is the structural identity and stands alone. The CEL rule is
-"if `allowedSourceNamespaces` is set, it must be exactly `[layout.namespace]` with no
-selector". A document arriving from a second namespace is refused at the write boundary either
-way, which is what enforces singularity. A target that declares both still reads to a reviewer
-as the design intends.
+### 2. The post-scan validation class, generalized
 
-### 2. `Auto` needs post-scan validation, because per-kind rules are not admission-checkable
+Still the right shape, and now it carries three rules instead of one. Moved into PR 3, above, where
+the scan that feeds it lives.
 
-`Flat` may not use `writeNamespace: FromContext` or `Never`: a flat directory has no build step
-and nothing supplies the namespace. Under `kind: Auto` that violation depends on the folder,
-so no CEL rule can catch it.
+The brownfield example is not evidence of the violation, and an earlier draft of this plan said it
+was. It declares a namespace inheritance that is valid for its folder; the violation appears only if
+the `kustomization.yaml` is later deleted. That is a better illustration anyway, because it is the
+argument for observing per scan: the declaration never changed, only the folder did.
 
-The brownfield example is not evidence of the violation, and an earlier draft of this plan said
-it was. `brownfield-kustomize` declares `writeNamespace: FromContext` under `Auto`, and `Auto`
-resolves to `Kustomize` there, where `FromContext` is valid. What the example shows is the
-*latent* case: delete its `kustomization.yaml` and the folder re-resolves to `Flat`, where the
-same declaration is invalid. That is a better illustration than a violation on day one, because
-it is also the argument for pinning — the declaration never changed, only the folder did.
+### 3. Dissolved: `kind: Template` leaves the wave
 
-**Amendment:** per-kind field validity is a **post-scan** validation class. When `Auto` resolves
-to a kind whose rules the declared fields violate, the target goes `Validated=False` naming the
-resolved kind and the field, in the same shape as the ambiguous-root refusal. Add the case to
-the corpus with an expected status rather than an expected patch.
+There are no kinds to leave. `placement.default` was never in danger, because it is not being
+replaced — the fear was that a blanket default silently disables the render root, and #319 made a
+templated file register with the root that governs it.
 
-### 3. `kind: Template` leaves the wave
+### 4. Dissolved: `Auto` stays the CRD default
 
-`Template` exists to preserve `placement.default`, and a blanket default is the rung that
-produced the unrendered-file class of bug. With one consumer and an established loud-rejection
-pattern, the migration for `placement.default` can be "declare a structural kind" rather than a
-new kind that carries the old hazard forward.
+There is no `kind` to default. `serializeNamespace: Auto` is a default in the ordinary sense, and it
+names today's inference rather than standing in front of a structural rule.
 
-Honest accounting: this removes one kind, rule 2 (a structural kind excludes a blanket
-`default`), and the obligation to make registration correct against arbitrary blanket paths. It
-does **not** remove the template engine, which `byType` still needs. Add `Template` when a user
-asks for something the structural kinds cannot express, and let that request name the case.
+### 5. `interval` keeps one name on both objects
 
-### 4. `Auto` stays the CRD default
+Reversed. This plan argued that one name on two objects is a smell, and that `GitProvider`'s field
+should be renamed for what it polls. That is backwards for the audience: `spec.interval` appears on
+`GitRepository`, `OCIRepository`, `HelmRepository`, `Bucket`, `Kustomization`, `HelmRelease`,
+`ImageRepository` and `Receiver`, meaning the same thing on every one — how often this object
+reconciles. Users learn it once, and `GitProvider.spec.interval` is the field whose behavior matches
+that most exactly, since it really is an `ls-remote` cadence.
 
-The wave asks whether a dry-run mode makes an explicit `kind` affordable. It does, and it is
-still not worth it: pinning plus `declaredKind` beside `kind` already removes the harm, and
-defaulting is what keeps the quickstart at four fields.
-
-### 5. `interval` keeps two names rather than one field
-
-`GitProvider` needs an `ls-remote` cadence and `GitTarget` needs an observation cadence. The
-smell is one name on two objects, so name the provider's field for what it polls. Two fields,
-two names, no merge.
+Two objects having a reconcile cadence is the convention, not a collision. Both are `interval`, and
+each field's documentation says what it drives. If anything wants distinguishing it is `GitTarget`,
+where an observation pass over a folder is the novel meaning — and that is a doc string, not a name.
 
 ### 6. Namespace-local `GitProvider` is a recorded gap, not a blocker
 
@@ -245,12 +278,12 @@ examples' prerequisites so a reader does not read the duplication as intended de
 
 ## Corpus gaps to fill in PR 1
 
-- **A refusal scenario.** Every example is a happy path, while the model's headline claim is
-  what it makes unstatable. One folder covering two roots under a declared `Kustomize` kind, a
-  second source namespace under `SingleNamespace`, and a `ClusterWatchRule` against a
-  `SingleNamespace` target, with `expected-status.yaml` in place of a patch. This is the
-  scenario that proves the design.
-- **The missing `ClusterProvider`.** `krm-app-configuration` references
+- **A refusal scenario.** Every example is a happy path, and the post-scan pass is the part with
+  the least coverage. One folder per row of the table in PR 3: a `serializeNamespace: Never` whose
+  governing kustomization has no `namespace:`, a `kustomizeRoot: Require` with no root, and a
+  folder covering two roots. `expected-status.yaml` in place of a patch. These are the scenarios
+  that prove the guards, and they are the reason the guards are worth building.
+- **The missing `ClusterProvider`.** `empty-repo-bootstrap` references
   `clusterProviderRef: app-intent` and no such object appears anywhere. It is the intent
   cluster, which is the whole direction-B thesis, so it deserves a concrete specimen beside the
   cluster-tree one.
@@ -259,8 +292,8 @@ examples' prerequisites so a reader does not read the duplication as intended de
 ## What this plan does not decide
 
 - The helm standpoint, which is decided in the direction review and parked with entry criteria.
-- Whether a layout is ever its own CRD. The trigger is written down in the layout model: revisit
-  for the `byType` map first.
-- Whether `scope` is derived and materialized at creation. It stays declared here.
-- Whether `writeNamespace: Never` names its supplier.
+- Whether the `byType` map is ever shared across targets. The trigger is written down in the model:
+  that map is the only part with real reuse pressure.
+- Whether `kustomizeRoot: CreatePerDirectory` is built. Deferred in the model with its trigger.
+- Whether `serializeNamespace: Never` names its supplier.
 - The `F9` enum question, which is measured before PR 4 is planned.

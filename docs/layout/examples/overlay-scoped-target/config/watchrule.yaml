@@ -1,11 +1,11 @@
 apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
-  name: podinfo-production-content
+  name: podinfo-prod-overlay-content
   namespace: podinfo-prod
 spec:
   targetRef:
-    name: podinfo-production
+    name: podinfo-prod-overlay
   rules:
     - apiGroups: ["apps"]
       apiVersions: ["v1"]

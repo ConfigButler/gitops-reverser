@@ -35,10 +35,10 @@ account in that namespace comes along with the identity.
 log. There is no intersection between what the impersonator may do and what the impersonated
 subject may do.
 
-> This last one is worth stating loudly, because the natural assumption is the opposite, and
-> [`../layout/flux-maintainer-review.md`](../layout/flux-maintainer-review.md) records the
-> assumption as fact: "the operator's own `ClusterRole` remains the outer bound, and the effective
-> permission becomes the intersection of three things". It does not. The effective permission is
+> This last one is worth stating loudly, because the natural assumption is the opposite, and an
+> earlier design review recorded that assumption as fact — that the operator's own `ClusterRole`
+> remains the outer bound, so the effective permission is the intersection of what the operator may
+> read and what the impersonated subject may read. It is not. The effective permission is
 > exactly what the impersonated subject may do, which is why `resourceNames` scoping would be
 > load-bearing rather than tidy: without it, `impersonate` on `serviceaccounts` is
 > admin-equivalent in the target cluster.

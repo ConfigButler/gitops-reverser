@@ -23,7 +23,7 @@ provider in another namespace.
 The ordinary examples use the operator's in-cluster source. A target that captures objects from a
 different source namespace needs its `ClusterProvider` to delegate that override. The cluster-tree
 example includes a concrete
-[`ClusterProvider`](../homelab-cluster-tree/config/clusterprovider.yaml) with
+[`ClusterProvider`](../tree-multi-namespace/config/clusterprovider.yaml) with
 `allowSourceNamespaceOverride: true`.
 
 The source-cluster rule and source-namespace authorization are separate checks. The

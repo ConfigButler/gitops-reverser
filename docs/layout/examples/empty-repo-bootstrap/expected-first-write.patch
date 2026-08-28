@@ -7,11 +7,11 @@ new file mode 100644
 +kind: Kustomization
 +namespace: shop
 +resources:
-+  - shopconfiguration-storefront.yaml
-diff --git a/apps/shop/shopconfiguration-storefront.yaml b/apps/shop/shopconfiguration-storefront.yaml
++  - storefront.yaml
+diff --git a/apps/shop/storefront.yaml b/apps/shop/storefront.yaml
 new file mode 100644
 --- /dev/null
-+++ b/apps/shop/shopconfiguration-storefront.yaml
++++ b/apps/shop/storefront.yaml
 @@ -0,0 +1,11 @@
 +apiVersion: config.shop.example/v1alpha1
 +kind: ShopConfiguration

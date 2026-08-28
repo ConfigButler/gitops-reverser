@@ -5,11 +5,11 @@ diff --git a/apps/demo/kustomization.yaml b/apps/demo/kustomization.yaml
  resources:
    - deployment-web.yaml
    - service-web.yaml
-+  - configmap-cache.yaml
-diff --git a/apps/demo/configmap-cache.yaml b/apps/demo/configmap-cache.yaml
++  - cache.yaml
+diff --git a/apps/demo/cache.yaml b/apps/demo/cache.yaml
 new file mode 100644
 --- /dev/null
-+++ b/apps/demo/configmap-cache.yaml
++++ b/apps/demo/cache.yaml
 @@ -0,0 +1,6 @@
 +apiVersion: v1
 +kind: ConfigMap

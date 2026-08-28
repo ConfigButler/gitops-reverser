@@ -5,7 +5,7 @@ metadata:
   namespace: demo
 spec:
   targetRef:
-    name: demo
+    name: demo-workloads
   rules:
     - apiGroups: [""]
       apiVersions: ["v1"]

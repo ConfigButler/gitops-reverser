@@ -1,7 +1,7 @@
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
-  name: podinfo-production
+  name: podinfo-prod-overlay
   namespace: podinfo-prod
 spec:
   providerRef:
@@ -11,10 +11,5 @@ spec:
   allowedSourceNamespaces:
     names: [podinfo-prod]
   mode: Observe
-  layout:
-    kind: Kustomize
-    scope: SingleNamespace
-    namespace: podinfo-prod
-    writeNamespace: Never
-    kustomize:
-      root: .
+  serializeNamespace: Never
+  kustomizeRoot: Require

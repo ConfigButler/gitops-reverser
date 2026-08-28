@@ -3,9 +3,8 @@
 > Status: design. Nothing here is built, and nothing binds until it is scheduled.
 > Date: 2026-08-28. Index: [`../INDEX.md`](../INDEX.md).
 >
-> Answers the authorization section of
-> [`../layout/flux-maintainer-review.md`](../layout/flux-maintainer-review.md), which proposed
-> adding `serviceAccountName` impersonation. Evidence for the impersonation half is in
+> Answers a design review's proposal to adopt Flux-style `serviceAccountName` impersonation for
+> source reads, by declining it. Evidence for the impersonation half is in
 > [`../facts/kubernetes-impersonation-and-flux-identity.md`](../facts/kubernetes-impersonation-and-flux-identity.md),
 > including a correction to a claim in that review.
 

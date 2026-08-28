@@ -6,11 +6,11 @@ diff --git a/infrastructure/home/sources/kustomization.yaml b/infrastructure/hom
  resources:
    - gitrepository-homelab.yaml
    - helmrepository-jellyfin.yaml
-+  - helmrepository-bitnami.yaml
-diff --git a/infrastructure/home/sources/helmrepository-bitnami.yaml b/infrastructure/home/sources/helmrepository-bitnami.yaml
++  - bitnami.yaml
+diff --git a/infrastructure/home/sources/bitnami.yaml b/infrastructure/home/sources/bitnami.yaml
 new file mode 100644
 --- /dev/null
-+++ b/infrastructure/home/sources/helmrepository-bitnami.yaml
++++ b/infrastructure/home/sources/bitnami.yaml
 @@ -0,0 +1,7 @@
 +apiVersion: source.toolkit.fluxcd.io/v1
 +kind: HelmRepository

@@ -1,6 +1,18 @@
-# External base and overlay
+# Overlay-scoped target
 
-This scenario gives one environment overlay a writable Kustomize root while treating its shared
+> **This scenario exercises the write path, not placement.** Its expected patch edits an `images:`
+> transformer in a file that already exists: no file is placed, no `resources:` entry is added, and
+> the placement ladder never runs. It sits here because the question it answers — what a target may
+> write when its render root reads a folder it does not own — is the one people ask immediately after
+> the placement question, and because it is the scenario that proves `spec.path` is the write
+> boundary. A corpus harness needs a separate entry point for it: seeding a worktree and comparing a
+> patch is the same, but the event is a field change rather than a new document.
+>
+> The folder was called `external-base-overlay`. The base is in the same repository one directory
+> up, so nothing about it is external — and "external base" names precisely what the Kustomize
+> support boundary refuses, a remote base. The name now says what the scenario is *for*.
+
+This scenario gives one environment overlay a writable kustomize root while treating its shared
 base as read-only input. It captures a Deployment change that the overlay can express as an image
 tag update.
 
@@ -36,11 +48,14 @@ The scenario assumes the Deployment image is a supported writable expression in 
 
   ```yaml
   status:
-    layout:
-      declaredKind: Kustomize
-      kind: Kustomize
+    conditions:
+      - type: LayoutResolved
+        status: "True"
+        reason: SingleKustomization
+        message: "render root '.' governs new files"
+    placement:
       renderRoot: .
-      renderRootReason: SingleKustomization
+      serializeNamespace: Never
   ```
 
 - Expected Git change: [`expected-image-update.patch`](expected-image-update.patch), after a
