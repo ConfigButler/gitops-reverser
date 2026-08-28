@@ -251,7 +251,12 @@ against `ToGitPath()` byte-for-byte, and solve F9 first, because nothing else on
 until a defaulted value can coexist with the render-root step. Status is worth having either way, so
 nothing built now is wasted.
 
-## `status.layout`
+## `status.layout`, renamed `status.placement`
+
+> **The field is `status.placement` now.** [`model.md`](model.md) renamed it when `spec.layout`
+> stopped existing, and [`implementation-plan.md`](implementation-plan.md) builds it under that
+> name in PR 3. The shape below is unchanged and this page is still where it is argued; read every
+> `status.layout` here as `status.placement`.
 
 An **observation, not a condition**, in the sense
 [`GitTargetStatus.Retention`](../../api/v1alpha3/gittarget_types.go) already establishes: nothing
@@ -496,14 +501,14 @@ because they are worth different urgency:
 
 | Item | State | Why it is where it is |
 |---|---|---|
-| F10: register a declared path with the kustomization that governs it | **filed, correctness** | One `byType` line into a subdirectory silently produces a file nothing renders. Reachable today |
-| Drop the `{version}` requirement from `IdentityCompletePlacementTemplate` | **filed, correctness** | It contradicts the versionless-path decision, and it is what makes any future spec default fail our own gate |
+| F10: register a declared path with the kustomization that governs it | **SHIPPED** in 0.42.1 (#319) | One `byType` line into a subdirectory silently produced a file nothing renders. The fix made registration an invariant, which is what reversed [`model.md`](model.md) |
+| Drop the `{version}` requirement from `IdentityCompletePlacementTemplate` | **SHIPPED** in 0.42.1 (#319) | It contradicted the versionless-path decision, and it was what made any future spec default fail our own gate |
 | `status.layout` | **filed** | The durable half of "what did the operator understand about this folder". Wants the layout model's vocabulary, so it follows it |
 | Split `declared` into `byType` and `default`; unify the prose on "canonical" | **filed, legibility** | A catch-all quietly swallowing a type you meant to name looks identical to a rule working |
 | `{kindLower}` | **filed, legibility** | Small, self-contained |
 | Canonical path as a template constant | **filed, cleanup** | Removes the hand-written duplication; what a future default would reuse |
 | `renderRootReason: Ambiguous` | **filed** | Belongs with `status.layout`, and the layout model decides the refuse-or-write policy |
-| A CRD default for `placement.default` | **superseded** | [`model.md`](model.md): the primitive is wrong. `layout.kind` is the defaultable thing, because it names the structural rule instead of standing in front of it |
+| A CRD default for `placement.default` | **re-opened** | The reversal took away the answer this row used to give. There is no `layout.kind`; the template stays, and now that the ancestor walk registers a defaulted path, the objection is legibility rather than correctness. It is an open question in [`model.md`](model.md) |
 
 The original build list follows, because each entry says *how* to build the thing and that is the part
 an issue should not have to restate.
@@ -537,12 +542,15 @@ Ordered by risk, smallest first.
 8. **Docs**: the spec's resolution-ladder section, `configuration.md`, `interpreting-metrics.md` for
    the new label values, and the `UPGRADING.md` entry extended with the metric-value split.
 
-**Not now, with the trigger written down:** a CRD default for `placement.default`. This was already
-"not now" when the page was written, and it has since become "not this shape at all", because
-[`model.md`](model.md) replaces the template with a declared
-`layout.kind` and `Auto` is a safe default where a path never was. The freezing question (F5) is a
-trade we could take; the shadowing question is not, and the layout model dissolves it rather than
-answering it. `spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the
+**Not now, with the trigger written down:** a CRD default for `placement.default`. This was "not
+now" when the page was written and it stays "not now", but for a weaker reason than the page
+originally gave. An earlier revision said the layout model dissolved the question by replacing the
+template with a defaultable `layout.kind`; the model has since reversed and the template stays, so
+the question is live again. What changed in its favour is the shipped ancestor walk: a defaulted
+path into a subdirectory is now registered with the kustomization that governs it, so F9's
+shadowing objection is no longer a correctness wall. The freezing question (F5) is a trade we could
+take. What is left is legibility, and that is materially weaker than the case this page refused.
+`spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the
 observation before inventing the assertion.
 
 ## Open questions

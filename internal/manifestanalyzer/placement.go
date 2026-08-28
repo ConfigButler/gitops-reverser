@@ -35,8 +35,8 @@ type PlacementPolicy struct {
 
 // PlacementRequest describes a resource with no existing document in Git — the
 // only case placement runs for (an existing document is always updated in place at
-// its current location; see docs/design/manifest/version2/
-// new-file-placement-rules.md, "Existing manifests are still match-first").
+// its current location; see docs/layout/new-file-placement-rules.md,
+// "Existing manifests are still match-first").
 type PlacementRequest struct {
 	Identifier types.ResourceIdentifier
 	Kind       string

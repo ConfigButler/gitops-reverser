@@ -34,7 +34,7 @@ That leaves the risk concentrated in one place rather than two:
 
 | PR | Content | Breaking | Depends on |
 |---|---|---|---|
-| 1 | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) correctness fixes, plus the worked examples as an executable corpus | no | — |
+| 1 | The worked examples as an executable corpus. The [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) correctness fixes it was to carry **shipped** in 0.42.1 | no | — |
 | 2 | `spec.suspend`, and the reconcile-request annotation | no | 1 |
 | 3 | `status.placement`, and the post-scan validation pass | no | 2 |
 | 4 | `serializeNamespace` and `kustomizeRoot` | no | 1, 3 |
@@ -55,24 +55,19 @@ the trim handle: nothing depends on it.
 `F9`'s envtest against the minimum supported Kubernetes version stays outside this order, as
 the wave document says. Its answer constrains the enum work, so run it before PR 4 is planned.
 
-## PR 1 — correctness, and an executable corpus (this PR)
+## PR 1 — an executable corpus
 
-Two halves that belong together: the corpus is what proves the fixes, and the fixes are the
-first entries the corpus asserts.
+**The correctness half has shipped.** Both #295 fixes are on `main` and released in 0.42.1
+([#319](https://github.com/ConfigButler/gitops-reverser/pull/319)): a declared path into a
+subdirectory is registered with its nearest ancestor kustomization inside the write jail, and
+`IdentityCompletePlacementTemplate` no longer demands `{version}`, so the versionless canonical
+shape passes our own gate. That is why this plan reversed: the ancestor walk made registration an
+invariant, which is what the path template needed to stop being the wrong primitive.
 
-### Half one: the #295 fixes
+So PR 1 is the corpus alone, and the shipped fixes become the first thing it asserts rather than
+the thing it accompanies.
 
-- **The ancestor walk.** A declared path into a subdirectory of a kustomize folder is
-  registered with the nearest governing kustomization, whether that kustomization is a
-  sibling or an ancestor. This is the registration invariant the whole model rests on, built
-  the current API, where it is a bug fix rather than a new invariant.
-- **The versionless identity gate.** `IdentityCompletePlacementTemplate` demands `{version}`,
-  which contradicts the deliberate versionless canonical path. The gate accepts a versionless
-  identity-complete template.
-
-Both are direction-agnostic correctness and neither touches the API.
-
-### Half two: the corpus harness
+### The corpus harness
 
 [`examples/README.md`](examples/README.md) already has the shape of a golden-file suite —
 `repository/`, `config/`, `input/`, `expected-*.patch` — and is read by nobody but a human.
@@ -106,8 +101,9 @@ with the PR that will unskip it named in the skip message. **PR 4 is finished wh
 skip is gone.** That is the definition of done this plan is built to produce, and it is worth
 more than any prose acceptance criteria.
 
-The scenarios that should assert real behaviour immediately are the ones the #295 fixes cover:
-`brownfield-kustomize` (the ancestor walk) and any `byType` case pointing into a subdirectory.
+The scenarios that assert real behaviour immediately are the ones the shipped fixes cover:
+`brownfield-kustomize` (the ancestor walk) and any `byType` case pointing into a subdirectory. They
+are regression cover for 0.42.1 as much as scaffolding for what follows.
 
 ### Config parsing without the API
 
@@ -121,7 +117,8 @@ examples describe is the API shape that got built.
 
 - `task lint` and `task test` pass; e2e is unaffected.
 - Every scenario folder is loaded by the harness; none is silently unreferenced.
-- Non-skipped assertions cover both #295 fixes.
+- Non-skipped assertions cover both shipped #295 fixes, so the corpus is regression cover from
+  its first commit.
 - Every skipped case names the PR that unskips it.
 - The corpus gaps below are filled.
 
