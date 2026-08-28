@@ -124,11 +124,14 @@ source cluster, which is the cost this whole exercise is trying to remove. Three
 | Option | Meaning | Cost |
 |---|---|---|
 | **Delete `*`** | items name namespaces | safest, and a breaking change for anyone using it |
-| **Redefine as cluster-wide** | one watch at `metav1.NamespaceAll`, all or nothing | implementable with no `Namespace` access, and a real widening: it reaches everything the credential can see |
+| **Redefine as cluster-wide** | one watch and one list at `metav1.NamespaceAll`, all or nothing | implementable with no `Namespace` access, and a real widening: it reaches everything the credential can see |
 | **Keep enumeration** | as today, against some other policy | keeps the cross-cluster `Namespace` read, which was the point of the deletion |
 
-Recommendation: **redefine as cluster-wide**, rejected outright while `allowAnySourceNamespace` is
-false.
+**Decided: redefine as cluster-wide**, rejected outright while `allowAnySourceNamespace` is false.
+It applies to **both** halves of a cell's traffic (the initial list that warms the cell, and the
+watch that follows it), because they are the same collection read two ways, and splitting them
+would mean enumerating namespaces for the replay after all, which is the read this exercise
+deletes.
 
 The plumbing already exists, which makes this the cheapest of the three as well as the clearest.
 `CellKey.Namespace` is already documented as "empty is a genuinely cluster-wide (all-namespaces)
@@ -147,9 +150,16 @@ cell on the same type, never a replacement, because each rule carries its own `o
 rule's stream to every namespace its credential could read and discarded its operation filter". So
 a target carrying both `*` and a named rule for one type runs two streams over overlapping objects,
 and that is correct rather than something to optimize away.
-It is what a Kubernetes reader expects `*` to mean, it is one stream instead of N, and its failure
-is a clean 403 rather than a silent empty set. Take **delete** if that widening is unwelcome. Do
-not take the third.
+It is what a Kubernetes reader expects `*` to mean, and its failure is a clean 403 rather than a
+silent empty set.
+
+**It is also the largest single efficiency win in this proposal, and that is a reason in its own
+right.** A `*` rule over a type in a hundred-namespace cluster is a hundred watch connections and a
+hundred list calls at warm-up today, one per namespace, each with its own cursor, its own retry
+schedule and its own share of apiserver watch cache. Cluster-wide makes it one of each, and the
+saving grows with the cluster, which is exactly the direction the enumeration got worse in. The
+`TooManyStreams` cap was queued for the fan-out this deletes; see
+[`../layout/api-wave.md`](../layout/api-wave.md), where that rider is now smaller than it was.
 
 ## Consequences, including two breaking semantic changes
 
@@ -160,7 +170,11 @@ is **not** the current posture exactly. It matches the no-policy path, which is 
 deliberate simplification for anyone who declared a policy that excluded their own namespace. Say
 so in the migration note rather than claiming continuity.
 
-**`*` changes meaning or disappears**, per the decision above.
+**`*` changes meaning**, per the decision above: it widens from "every namespace this GitTarget
+admits" to "every namespace this credential can read", and it stops being available at all unless
+`allowAnySourceNamespace` is true. For a user who had no `allowedSourceNamespaces` policy the old
+`*` already resolved to whatever the credential could see, so the widening is narrower in practice
+than it reads; for a user who had one, it is real.
 
 **Label selectors over source namespaces are lost.** Admitting every namespace carrying a label,
 following namespaces as they appear, has no RBAC equivalent short of a binding per namespace. This
@@ -205,7 +219,9 @@ for superseded fields:
 - `allowSourceNamespaceOverride` becomes `allowAnySourceNamespace`: same type, same default, same
   semantics, so the shim is a pure rename.
 - `allowedNamespaces` becomes `accessFrom`, same shape, same semantics.
-- `sourceNamespace: "*"` per the decision above.
+- `sourceNamespace: "*"` becomes one cluster-wide list and watch, per the decision above, and is
+  rejected while `allowAnySourceNamespace` is false. This is a semantic change to a value that
+  keeps its spelling, so it needs its own `docs/UPGRADING.md` paragraph rather than a shim.
 
 Then the deletion, then the `SelfSubjectAccessReview` work, which is additive and can ship later.
 
@@ -220,7 +236,7 @@ Then the deletion, then the `SelfSubjectAccessReview` work, which is additive an
 
 ## Open questions
 
-- Which `*` option is taken.
+- ~~Which `*` option is taken.~~ **Decided: cluster-wide**, list and watch both, above.
 - `CellKey.String()` renders an empty namespace as a bare type name ("configmaps"), which read as
   cluster-scoped when only `ClusterWatchRule` produced those cells. Once `*` produces them for
   namespaced types it wants a distinct rendering, "configmaps in all namespaces" or similar, in

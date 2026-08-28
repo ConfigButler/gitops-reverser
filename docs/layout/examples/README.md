@@ -80,13 +80,13 @@ naming convention from the neighbouring files — that inference was deliberatel
 of `deployment-web.yaml` and `service-web.yaml` receives `cache.yaml`, and
 `placement.default: "{kindLower}-{name}.yaml"` is how to ask for the other convention on purpose.
 
-`mode: Observe` is the adoption path: the operator scans and publishes what it resolved without
-writing. Change it to `Write` only after the resolved root and prospective paths match the
+`suspend: true` is the adoption path: a suspended target still scans and publishes what it
+resolved, and writes nothing. Clear it only after the resolved root and prospective paths match the
 repository owner's intent.
 
-Every brownfield scenario here opens in `Observe` and shows the observed status before it shows a
+Every brownfield scenario here opens suspended and shows the observed status before it shows a
 patch, because that is the path the paragraph above describes and a set of examples that opened
-straight into `Write` would be advertising something else.
+writing would be advertising something else.
 [`empty-repo-bootstrap`](empty-repo-bootstrap/README.md) is the one honest exception: its repository
 is empty, so there is nothing to observe.
 

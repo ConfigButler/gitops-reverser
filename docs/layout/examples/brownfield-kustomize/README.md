@@ -19,7 +19,7 @@ apps/demo/
 
 ## Proposed configuration
 
-[`config/gittarget.yaml`](config/gittarget.yaml) chooses `mode: Observe` and declares no
+[`config/gittarget.yaml`](config/gittarget.yaml) opens suspended and declares no
 `placement` at all, so the built-in ladder applies: the folder's one kustomize root places new
 files beside it. `serializeNamespace: Auto` and `kustomizeRoot: Adopt` are both defaults, spelled
 out here because this scenario is about what adoption resolves to.
@@ -39,8 +39,8 @@ status:
     serializeNamespace: Auto
 ```
 
-No commit is made in `Observe` mode. After a reviewer confirms that result, changing the target to
-`mode: Write` lets a new ConfigMap named `cache` produce this commit:
+No commit is made while the target is suspended. After a reviewer confirms that result, clearing
+`suspend` lets a new ConfigMap named `cache` produce this commit:
 
 ```text
 apps/demo/
@@ -55,7 +55,7 @@ The Kustomize root supplies the omitted namespace, so the new document still rep
 
 ## Scenario contract
 
-- Starting repository: [`repository/`](repository/), already recognized in `Observe` mode.
+- Starting repository: [`repository/`](repository/), already recognized while suspended.
 - Live input: [`input/cache.yaml`](input/cache.yaml).
 - Expected Git change: [`expected-cache.patch`](expected-cache.patch), after a
   reviewer changes `mode` to `Write`.

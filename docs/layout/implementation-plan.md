@@ -35,11 +35,11 @@ That leaves the risk concentrated in one place rather than two:
 | PR | Content | Breaking | Depends on |
 |---|---|---|---|
 | 1 | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) correctness fixes, plus the worked examples as an executable corpus | no | — |
-| 2 | `spec.suspend`, `spec.mode`, `spec.interval` | no | 1 |
+| 2 | `spec.suspend`, `spec.interval` | no | 1 |
 | 3 | `status.placement`, and the post-scan validation pass | no | 2 |
 | 4 | `serializeNamespace` and `kustomizeRoot` | no | 1, 3 |
 | 5 | `commitWindow` and `commit.message` move off `GitProvider` | **yes** | — |
-| 6 | The riders: the asserted CommitRequest author, its lifecycle, `meta.LocalObjectReference`, `TooManyStreams`, the ClusterProvider default message | **yes** | — |
+| 6 | The riders: the asserted CommitRequest author, its lifecycle, `meta.LocalObjectReference`, `TooManyStreams`, the ClusterProvider default message | **yes** | the source-scope change, for `TooManyStreams` only |
 
 **PR 4 stopped being breaking**, which is the largest change to this plan since it was written.
 The model no longer replaces `spec.placement` with a discriminated union; it keeps the template and
@@ -48,7 +48,9 @@ rewrite, and no migration — and PRs 1 through 4, the whole placement story, sh
 coordinated consumer bump.
 
 What remains breaking is PRs 5 and 6, neither of which is about placement. They land in one release,
-reviewed as two changes and paid for as one bump. PR 6 is the trim handle: nothing depends on it.
+reviewed as two changes and paid for as one bump, together with the source-scope deletion, which is
+not this plan's work but breaks the same object in the same release (design change 7 below). PR 6 is
+the trim handle: nothing depends on it.
 
 `F9`'s envtest against the minimum supported Kubernetes version stays outside this order, as
 the wave document says. Its answer constrains the enum work, so run it before PR 4 is planned.
@@ -123,18 +125,23 @@ examples describe is the API shape that got built.
 - Every skipped case names the PR that unskips it.
 - The corpus gaps below are filled.
 
-## PR 2 — `spec.suspend`, `spec.mode`, `spec.interval`
+## PR 2 — `spec.suspend`, `spec.interval`
 
 Additive, and the wave's order is right that `suspend` comes before anything that creates
-files. Ship the three together because they answer one question — whether and when this folder
-is written — and because `interval` is what keeps a scan-derived status fresh.
+files. Ship the two together because they answer one question (whether and when this folder is
+written), and because `interval` is what keeps a scan-derived status fresh.
 
 - `suspend` stops resource writes **and** bootstrap creation. State that before either exists.
-- `mode: Observe` scans, resolves and publishes without writing.
-- `interval` drives an observation pass on the target.
+- `suspend` does **not** stop scanning: a suspended target still resolves its render root and
+  publishes `status.placement`, which is what makes it a dry run rather than an off switch. This
+  deviates from Flux, where `suspend` stops reconciliation altogether, so the field's documentation
+  says so in one sentence.
+- `interval` drives that observation pass, so a suspended target does not observe once and go stale.
 
-`suspend` and `mode` stay two fields, per the wave's open question, on the Flux convention that
-a suspend switch is its own thing. Each field's documentation must say what the other is for.
+**`spec.mode: Observe|Write` was a third field here and is dropped**, with the reasoning in
+[`api-wave.md`](api-wave.md). A suspended target that keeps observing is the same dry run with one
+field instead of two, and two of the wave's open questions were about the pair rather than about
+either field.
 
 ## PR 3 — `status.placement`, and the post-scan pass
 
@@ -222,10 +229,18 @@ the same release.
 reference types, the `TooManyStreams` cap, and the ClusterProvider default message. In the
 release because they are breaking and the consumer should pay once. Trim from here first.
 
+**`TooManyStreams` is sequenced behind the `*` decision**, which is the one dependency this PR has
+on work outside the plan. `sourceNamespace: "*"` is being redefined as a single cluster-wide list
+and watch (design change 7 below), and that is where most of the fan-out the cap was written for
+goes. Either land the `*` change first and size the cap against enumerated rules, or drop the cap
+from this PR: it is the trim handle inside the trim handle, and sizing it against today's
+per-namespace fan-out would bake in a number that is wrong the moment `*` lands.
+
 ## Design changes this plan folds in
 
-Each came from reviewing the worked examples. Three of the original six are gone, because the
-fields they amended no longer exist.
+Each came from reviewing the worked examples, except the last, which came from the source-scope
+decision and lands on the same PRs. Three of the original six are gone, because the fields they
+amended no longer exist.
 
 ### 1. Dissolved: the namespace agreement rule
 
@@ -275,6 +290,29 @@ needing its own `GitProvider` — three copies of one credential in a single-own
 `ClusterProvider` already has the `allowedNamespaces` and fail-closed SAR machinery a
 cluster-scoped Git provider would need. Out of scope for this order; file it, and say so in the
 examples' prerequisites so a reader does not read the duplication as intended design.
+
+### 7. The source-scope simplification shares this release
+
+Not placement work, and folded in here because it lands on the same objects, in the same breaking
+release, and moves a number this plan quotes.
+[`source-scope-simplification.md`](../design/source-scope-simplification.md) deletes
+`GitTarget.spec.allowedSourceNamespaces`, renames two `ClusterProvider` fields, and redefines
+`sourceNamespace: "*"` as a single cluster-wide list and watch at `metav1.NamespaceAll`, rejected
+while `allowAnySourceNamespace` is false.
+
+Three consequences for this plan:
+
+- **It rides PR 5's release, not PR 5.** It breaks `GitTarget`, as PR 5 does, so it must be in the
+  same bump; it is otherwise independent and reviews as its own change. Sequenced as step 8 in
+  [`api-wave.md`](api-wave.md).
+- **PR 6's `TooManyStreams` cap shrinks**, as recorded above. It was queued for `*` fan-out; after
+  this it bounds explicit enumeration only, so plan it after the `*` change or drop it.
+- **The corpus is unaffected, and that is worth checking rather than assuming.** Records carry the
+  object's own `metadata.namespace` rather than the cell's, so a document arriving from a
+  cluster-wide cell is placed exactly as it is today, and no example's expected patch moves. The
+  corpus should nonetheless grow one `sourceNamespace: "*"` scenario once the change lands, because
+  "the cell is cluster-wide but the path still carries `{namespace}`" is precisely the pair a
+  reader gets wrong.
 
 ## Corpus gaps to fill in PR 1
 

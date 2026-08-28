@@ -65,8 +65,8 @@ Two targets, one per layer:
 | [`config/gittarget.yaml`](config/gittarget.yaml) | `infrastructure/home/sources` | `GitRepository`, `HelmRepository` ([`config/watchrule.yaml`](config/watchrule.yaml)) |
 | [`config/gittarget-media.yaml`](config/gittarget-media.yaml) | `apps/home/media` | `HelmRelease` ([`config/watchrule-media.yaml`](config/watchrule-media.yaml)) |
 
-Both declare a one-root Kustomize folder with one source namespace, and both open in
-`mode: Observe`. Each folder's `namespace: flux-system` transformer supplies the namespace for every
+Both declare a one-root Kustomize folder with one source namespace, and both open suspended. Each
+folder's `namespace: flux-system` transformer supplies the namespace for every
 document in it, so the committed documents omit `metadata.namespace`.
 
 The `HelmRelease` object living in `flux-system` does not put jellyfin there:
@@ -108,8 +108,8 @@ not adopted yet, so deleting a recreated object would block on a controller that
   ```
 
 - Expected Git change:
-  [`expected-bitnami.patch`](expected-bitnami.patch), after a reviewer
-  changes `flux-sources` to `mode: Write`.
+  [`expected-bitnami.patch`](expected-bitnami.patch), after a reviewer clears `suspend` on
+  `flux-sources`.
 - Expected status: `Ready=True` after the root renders the new declaration.
 - Boundary: a rendered object has no writable home; only selected Flux declarations can produce a
   Git change.

@@ -8,8 +8,6 @@ spec:
     name: homelab-repository
   branch: main
   path: apps/podinfo/overlays/prod
-  allowedSourceNamespaces:
-    names: [podinfo-prod]
-  mode: Observe
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
   serializeNamespace: Never
   kustomizeRoot: Require

@@ -17,7 +17,10 @@
 >   `ClusterProvider` message. That review has been retired into the documents that own its
 >   findings, and this is where its unbuilt block landed;
 > - the Tier 2 breaking items in [`open-asks-priority.md`](../design/open-asks-priority.md): **B4**,
->   **B1**, **#5**, **#6**.
+>   **#5**, **#6**. **B1 (`spec.mode: Observe|Write`) has been dropped**, see below;
+> - the breaking half of
+>   [`source-scope-simplification.md`](../design/source-scope-simplification.md), which arrived
+>   after this document was written and is the only member that makes the API **smaller**.
 >
 > It does not touch Tier 1 (the removal-wait decision, #15's condition). Those are not breaking and
 > should not wait for this.
@@ -34,8 +37,7 @@ inconsistently.
 
 > **The folder is described on the GitTarget. The connection describes only the connection.**
 
-- `spec.mode: Observe|Write` says whether we write to the folder at all (B1).
-- `spec.suspend` says whether we write to it *now*.
+- `spec.suspend` says whether we write to the folder.
 - `commitWindow` and `commit.message` say how writes to it are batched and phrased, and today they
   live on `GitProvider`, which is the connection (B4, and the config-model review's "GitProvider is
   doing three jobs").
@@ -49,19 +51,29 @@ alone would still assert half of it, which is the reason to keep the rest togeth
 
 These are the reasons to combine, as opposed to merely batch. Each one changes what gets built.
 
-### 1. `spec.mode: Observe` is how a folder is adopted safely
+### 1. Adoption is a dry run, and `spec.suspend` is enough to give it
 
 Adoption is the weakest point of any placement scheme: placement only ever affects *new* documents,
-so there is nothing to preview by inspection — you find out where files go by letting one be
-written.
+so there is nothing to preview by inspection. You find out where files go by letting one be written.
 
-`Observe` mode plus `status.placement` is that preview. In `Observe` the operator scans, resolves the
-render root, publishes it and what it *would* do, and writes nothing. Flip to `Write`
-when the status says what you expected. That turns "declare and hope" into a dry run, and
-it costs nothing extra because both halves are already in the wave.
+A suspended target plus `status.placement` is that preview. The operator scans, resolves the render
+root, publishes it and what it *would* do, and writes nothing; clear `suspend` when the status says
+what you expected. That turns "declare and hope" into a dry run, and it needs no second field.
 
-This also gives `Observe` a purpose beyond "a safety switch nobody uses". It is the mode you adopt a
-repository in.
+**`spec.mode: Observe|Write` (B1) was here and has been dropped.** It bought one thing over a
+suspended target: the difference between a temporary pause and a declared, permanent read-only
+posture. That is a distinction in intent, not in behavior, and paying an enum plus its own status
+semantics for it made the wave harder to hold in your head than the capability was worth. Two of
+this document's open questions were about nothing else, and both close with the deletion.
+
+The cost is stated rather than hidden: **`suspend` must keep observing.** Flux's `suspend` stops
+reconciliation altogether; ours stops *writes* and keeps scanning, so the status a user is waiting
+on stays fresh while they wait. That deviation belongs in the field's documentation, in one
+sentence, because it is the only place we differ from a convention a Flux user brings with them.
+
+**Re-open trigger**: someone who needs a target that can never write, as a property of the object
+rather than a switch a colleague can flip. `mode` is the answer if that arrives; a permission is
+not, and neither is a comment.
 
 ### 2. `spec.interval` is what keeps the observation fresh
 
@@ -71,10 +83,10 @@ accumulated since. The current half is the useful one, and it has a hole: a repo
 on a write or a resync, so a stable target that writes nothing may not scan for a long time, and the
 field a user consults would be stamped with a revision from last week.
 
-`spec.interval` plus `Observe`'s scan-without-writing is the mechanism that closes it: a
-periodic observation pass refreshes `renderRoot` and `observedRevision` whether or not anything was
-written. Neither piece was proposed for this reason, and together they answer a question neither
-answers alone.
+`spec.interval` is the mechanism that closes it: a periodic observation pass refreshes `renderRoot`
+and `observedRevision` whether or not anything was written. It was not proposed for this reason, and
+it is the piece that makes the dry run above hold still: a suspended target with no interval
+observes once and then goes stale.
 
 ### 3. `spec.suspend` is a precondition for `kustomizeRoot: Create`
 
@@ -97,6 +109,38 @@ That is no longer true. **An `EventRecorder` shipped on every reconciler**
 the Event is now: emit when `status.placement` changes in a way a human should know about, which
 is the `LayoutResolved` reason becoming `Ambiguous`, or a type falling back for the first time. One Event per
 persisted change, the pattern already established for `Ready`.
+
+### 4b. The source-scope deletion is the only member that shrinks the API
+
+[`source-scope-simplification.md`](../design/source-scope-simplification.md) decided four things,
+and three of them are breaking:
+
+| Change | Object | Kind |
+|---|---|---|
+| `spec.allowedSourceNamespaces` deleted, selector machinery with it | `GitTarget` | removal |
+| `allowSourceNamespaceOverride` renamed `allowAnySourceNamespace` | `ClusterProvider` | pure rename |
+| `allowedNamespaces` renamed `accessFrom` | `ClusterProvider` | pure rename |
+| `sourceNamespace: "*"` becomes one cluster-wide list and watch | `WatchRule` semantics | redefinition |
+
+It belongs in this wave for the ordinary reason first: **it removes a field from `GitTarget`**, and
+B4 already breaks `GitTarget` in the same release. Shipping them apart costs the consumer two bumps
+for one object.
+
+The better reason is what it does to the review surface. Every other member of this wave adds a
+field. This one deletes 4,569 lines and a whole three-valued verdict, and it deletes the only
+cross-cluster read in the authorization path. A wave that is otherwise all addition is easier to
+justify when the object it lands on comes out simpler than it went in, and easier to describe in
+one `UPGRADING.md` entry.
+
+Two interactions worth naming, because they change what gets built rather than merely when:
+
+- **The `SelfSubjectAccessReview` pass is the same shape as the dry run.** Both answer "tell me what
+  you would do before you do it": a suspended target plus `status.placement` for the Git side, the
+  SAR pass for the source side. They are separate conditions on separate objects and neither depends on the
+  other, so the SAR work stays additive and can ship after the wave. Whoever writes the second
+  should read the first, because a user adopting a repository and a user asking which source cells
+  are reachable are the same user on the same afternoon.
+- **`TooManyStreams` is sized by the `*` decision**, below.
 
 ### 5. Dissolved: layout immutability
 
@@ -144,6 +188,8 @@ spec:
     name: platform
   branch: main
   path: clusters/prod
+  # allowedSourceNamespaces is gone: the provider's credential bounds what can be read,
+  # and ClusterProvider.accessFrom bounds who may wield it.
 
   # --- what the documents in it look like: ADDITIVE, not part of the wave ---
   placement:                        # unchanged from today
@@ -153,8 +199,7 @@ spec:
   kustomizeRoot: Create
 
   # --- whether and when we write it ---
-  mode: Write                       # B1: Observe | Write
-  suspend: false
+  suspend: false                    # the only stop-writes switch; a suspended target still scans
   interval: 5m                      # what keeps status.placement fresh
   prune:
     mode: OnEvent
@@ -195,8 +240,15 @@ consumer should pay once, not because they interact with anything else here:
   `delete` verb). Unrelated to placement; it is the other object in the API with a lifecycle hole.
 - **The reference types**: embedding `meta.LocalObjectReference` for the name half of our six
   near-identical reference shapes. If GitTarget is breaking anyway, this is the moment.
-- **The `TooManyStreams` cap** for `sourceNamespace: "*"` fan-out. A `Stalled` reason plus a bound,
-  rather than discovering the cliff as apiserver watch pressure.
+- **The `TooManyStreams` cap**, now smaller than it was.
+  [`source-scope-simplification.md`](../design/source-scope-simplification.md) has decided that
+  `sourceNamespace: "*"` compiles to **one cluster-wide list and watch** rather than one stream per
+  admitted namespace, which removes the fan-out this cap was queued for. What is left to bound is
+  explicit enumeration (a rule naming many namespaces, or many rules on one target), so the cap is
+  still worth a `Stalled` reason plus a bound rather than discovering the cliff as apiserver watch
+  pressure, but it is no longer guarding the case that produced it. Size it against enumerated
+  rules, and do not let it be planned before the `*` change lands, or it will be sized against a
+  fan-out that no longer exists.
 - **The `ClusterProvider` "default" message.** One error string, and the most likely first-run
   support ticket.
 
@@ -238,9 +290,12 @@ A wave this size invites `v1alpha4`, and I would not take it.
   replacement, for one release. `ClusterWatchRule.spec.rules[].scope` set that precedent, and the
   reasoning holds better here: refusing a stored field the user can see beats translating it behind
   their back.
-- `spec.placement` therefore becomes a rejection that says "use `spec.layout`; `byType` moves
-  verbatim, `default` becomes `layout.kind: Template`". The mapping is mechanical, which is what makes
-  the rejection kind rather than merely strict.
+- The pattern's members are now the source-scope changes rather than `spec.placement`, which no
+  longer moves at all. `allowedSourceNamespaces` becomes a rejection naming what replaced it (the
+  provider's own credential, plus `allowAnySourceNamespace` for the cluster-wide case), and the two
+  `ClusterProvider` renames are mechanical enough that the message can name the new field and
+  nothing else. A rename is exactly the case loud rejection is kindest on: the user's next `apply`
+  tells them the new spelling.
 
 If a second consumer appears before this ships, revisit: the calculus that makes loud rejection cheap
 is one coordinated bump.
@@ -253,16 +308,20 @@ Dependencies first, then the things that only need the object to be breaking.
    work. Do it before planning.
 2. **`spec.suspend`**. Precondition for anything that creates files, and independently the
    review's highest-value gap.
-3. **`status.placement`** plus the post-scan validation pass. Needed before `Observe` is useful,
-   because `Observe` with nothing to read is a mode that does nothing.
-4. **`spec.mode: Observe|Write`** (B1). Now an adoption path rather than a switch.
-5. **`spec.interval` + `requestedAt` + `lastHandledReconcileAt`**. Closes the freshness
+3. **`status.placement`** plus the post-scan validation pass. Needed before a suspended target is
+   useful to look at, because a dry run with nothing to read previews nothing.
+4. **`spec.interval` + `requestedAt` + `lastHandledReconcileAt`**. Closes the freshness
    hole in step 3 and gives the object the reflexes a Flux user already has.
-6. **Events on a changed resolution**, over the existing recorder.
-7. **B4**: `commitWindow` and `commit.message` move from `GitProvider` to `GitTarget`. Last of the
+5. **Events on a changed resolution**, over the existing recorder.
+6. **B4**: `commitWindow` and `commit.message` move from `GitProvider` to `GitTarget`. Last of the
    principle items, and the one that makes the object coherent.
+7. **The source-scope deletion**: `allowedSourceNamespaces` removed, the two `ClusterProvider`
+   renames, and `*` redefined as cluster-wide. Independent of every step above, so it can be written
+   in parallel; it is placed here because it is the one member whose review is a deletion, and a
+   deletion reviews better once the additions it is not entangled with are settled.
 8. **The riders**: #5, the `CommitRequest` lifecycle, the reference types, `TooManyStreams`, the
-   `default` ClusterProvider message.
+   `default` ClusterProvider message. `TooManyStreams` must come after step 7, which removes the
+   fan-out it was written to bound.
 
 **`serializeNamespace` and `kustomizeRoot` are deliberately absent from this list.** They are
 additive, so they do not belong in a breaking wave's ordering at all; their order is
@@ -277,19 +336,20 @@ big to review, since nothing else depends on it.
 - **One coordinated consumer bump**, for a much smaller set than this document originally proposed:
   `commitWindow` and `commit.message` change object, the riders change shape, and everything else
   here is additive.
-- **One `docs/UPGRADING.md` entry** covering the two field moves and the riders. The placement work
-  needs no migration entry at all, which is the largest single change to this document.
+- **One `docs/UPGRADING.md` entry** covering the two field moves, the source-scope removal and
+  renames, the `*` redefinition, and the riders. The placement work needs no migration entry at all,
+  which is the largest single change to this document. The `*` paragraph is the one that has to be
+  written carefully: it is the only change here that keeps its spelling and changes its meaning.
+- **A capability genuinely lost**: source-side label selectors, priced in the source-scope document.
+  It is the only thing in this wave a user can do today and cannot do afterwards.
 - **A review surface that is now ordinary.** The argument for trimming the riders first still holds,
   but the wave is no longer the largest change this project has taken.
 
 ## Open questions
 
-- **Does `mode: Observe` write status only, or also refuse admission of new WatchRules?** Observe
-  should be silent about everything except what it observed, but a user in Observe mode with rules
-  piling up may expect to be told nothing will happen.
-- **Should `suspend` and `mode: Observe` be one field?** They are close: both stop writes. They differ
-  in intent (temporary versus declared) and in what they do to status, and Flux keeps `suspend`
-  separate from everything else. Two fields, but the field docs must each say what the other is for.
+- ~~**Does `mode: Observe` write status only, or also refuse admission of new WatchRules?**~~
+  ~~**Should `suspend` and `mode: Observe` be one field?**~~ **Both closed by dropping `mode`**: one
+  field, and a suspended target keeps observing. See interaction 1.
 - ~~**Where does `interval` live?**~~ **Decided: both objects, one name.** `spec.interval` appears on
   `GitRepository`, `OCIRepository`, `HelmRepository`, `Bucket`, `Kustomization`, `HelmRelease`,
   `ImageRepository` and `Receiver`, meaning the same thing on each — how often this object

@@ -10,8 +10,6 @@ spec:
   # Not clusters/home/flux-system. That directory belongs to `flux bootstrap`, and a
   # GitTarget must not point at a path another controller writes.
   path: infrastructure/home/sources
-  allowedSourceNamespaces:
-    names: [flux-system]
-  mode: Observe
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
   serializeNamespace: Never
   kustomizeRoot: Require

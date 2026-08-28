@@ -88,7 +88,7 @@ two places — the document, or a governing kustomization's `namespace:`.
 | `Never` | never write it, and prove something else does |
 
 The name deliberately avoids `writeNamespace`. "Write" is the most loaded word in this API —
-`spec.mode: Write`, the write boundary, the write jail, `WriteBoundaryRefused` — so `writeNamespace:
+the write boundary, the write jail, `WriteBoundaryRefused` — so `writeNamespace:
 Never` invites the reading *"never write to this namespace"*, a permission, which is precisely what
 the neighbouring `sourceNamespace` fields are. `serializeNamespace` names the moment the decision is
 made (when the document is produced) and cannot be read as policy.

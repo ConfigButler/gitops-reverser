@@ -10,9 +10,7 @@ spec:
     name: home
   branch: main
   path: clusters/home
-  allowedSourceNamespaces:
-    names: [media, monitoring]
-  mode: Observe
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
   # No placement declared and no kustomization anywhere in the subtree, so the
   # ladder falls through to the canonical identity path. Nothing to register, so
   # Adopt does nothing; the documents must carry their own namespace.

@@ -10,9 +10,6 @@ spec:
     name: app-intent
   branch: main
   path: apps/shop
-  allowedSourceNamespaces:
-    names: [shop]
-  mode: Write
   # The folder does not exist yet, so the root that supplies the namespace has to
   # be created before Never can be true. Create is what makes the omission
   # provable rather than trusted: the operator owns the kustomization.yaml it

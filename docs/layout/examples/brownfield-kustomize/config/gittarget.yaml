@@ -8,9 +8,7 @@ spec:
     name: app-repository
   branch: main
   path: apps/demo
-  allowedSourceNamespaces:
-    names: [demo]
-  mode: Observe
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
   # No placement declared, so the built-in ladder applies: the folder's one
   # kustomize root places new files beside it. serializeNamespace: Auto is the
   # default too, and both are spelled out here because the scenario is about
