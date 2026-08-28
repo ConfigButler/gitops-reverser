@@ -364,20 +364,40 @@ func namespaceIsInheritedFromContext(k *KustomizationInfo, req PlacementRequest)
 }
 
 // governingKustomization returns the kustomization whose resources: list a new file at
-// resolvedPath must join to render: the one in its own directory, or — under render-root
-// scoping, when the file lands in a subdirectory of the overlay that has no kustomization of
-// its own — the write scope's own render root, which reaches the file by a relative resources
-// entry. Without this an overlay's new object would be committed to a file no kustomization
-// includes, so it would never render and the oracle (armed only for governed writes) would not
-// catch it — a silent divergence.
+// resolvedPath must join to render: the NEAREST one at or above the file's own directory,
+// bounded by the write jail. Without this an overlay's new object would be committed to a
+// file no kustomization includes, so it would never render and the oracle (armed only for
+// governed writes) would not catch it — a silent divergence.
+//
+// The walk is what makes a DECLARED path into a subdirectory behave like every other path
+// (#295). Before it, the lookup was the file's own directory plus a special case for the
+// write scope's root, so `byType: {v1/configmaps: "configmaps/{name}.yaml"}` in a kustomize
+// folder committed a document nothing renders — and the two cases differed by render-root
+// scoping, which the user cannot see. It also silently skipped
+// namespaceIsInheritedFromContext, writing a namespace: line the folder's own documents omit.
+//
+// The jail is the bound, and it is load-bearing: writeScope is where the target may write, so
+// a kustomization ABOVE it is a read-only ancestor (a base pulled into the scan by render-root
+// scoping) whose resources: list is not ours to edit. With no scope the whole scanned subtree
+// is the target's own, so the walk may reach its root.
 func governingKustomization(store *ManifestStore, writeScope, resolvedPath string) *KustomizationInfo {
-	if k := store.Kustomizations[slashDir(resolvedPath)]; k != nil {
-		return k
+	jail := path.Clean(writeScope)
+	if writeScope == "" {
+		jail = "."
 	}
-	if writeScope != "" {
-		return store.Kustomizations[writeScope]
+	for dir := slashDir(resolvedPath); ; {
+		if k := store.Kustomizations[dir]; k != nil {
+			return k
+		}
+		if dir == jail || dir == "." {
+			return nil
+		}
+		parent := slashDir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
 	}
-	return nil
 }
 
 func kustomizationListsResource(k *KustomizationInfo, resolvedPath string) bool {
@@ -642,6 +662,12 @@ func ValidPlacementTemplatePath(tmpl string) error {
 // itself already names one exact type); a Default template must additionally carry
 // the type variables since it applies across every type the class does not name
 // explicitly.
+//
+// The type variables are {groupPath} and {resource}, and deliberately NOT {version}
+// (#295): the built-in canonical path is versionless because two served versions of one
+// group/resource are the SAME object, so a version segment separates no identities — it
+// splits one. Requiring it also judged the canonical shape we would default to as not
+// identity-complete, which is what made a spec-level default fail our own validation gate.
 func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool {
 	hasName := strings.Contains(tmpl, "{name}")
 	hasScope := strings.Contains(tmpl, "{namespace}") || strings.Contains(tmpl, "{namespaceOrCluster}")
@@ -651,9 +677,7 @@ func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool
 	if narrowedToOneType {
 		return true
 	}
-	return strings.Contains(tmpl, "{groupPath}") &&
-		strings.Contains(tmpl, "{version}") &&
-		strings.Contains(tmpl, "{resource}")
+	return strings.Contains(tmpl, "{groupPath}") && strings.Contains(tmpl, "{resource}")
 }
 
 // --- Write-safety helpers for an already-occupied destination ------------------

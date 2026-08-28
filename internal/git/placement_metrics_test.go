@@ -347,3 +347,37 @@ func TestPlacementMetrics_RefusedPlacementLeavesTheKustomizationAlone(t *testing
 	})
 	assert.Zero(t, added, "a refused resource must never count as an added resources: entry")
 }
+
+// The metric's own regression test for #295: a declared path into a subdirectory of a
+// kustomize folder used to produce no entry at all — the document was committed, the
+// resources: list never mentioned it, and the counter recorded nothing, so the one signal
+// that a file is rendered by nothing stayed silent. The ancestor walk makes it an `added`.
+func TestPlacementMetrics_DeclaredSubdirectoryEntryIsAdded(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	worktree := newWorktreeForTest(t)
+	seedPlacedManifest(t, worktree, "kustomization.yaml",
+		"namespace: app\nresources:\n  - deployment.yaml\n")
+	seedPlacedManifest(t, worktree, "deployment.yaml",
+		"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n")
+	policy := &manifestanalyzer.PlacementPolicy{
+		ByType: map[string]string{"v1/configmaps": "configmaps/{name}.yaml"},
+	}
+
+	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
+
+	entries, ok := telemetry.CollectInt64Sum(reader, kustomizationEntriesMetric, map[string]string{
+		"gittarget_namespace": metricsTestGitTargetNamespace,
+		"gittarget_name":      metricsTestGitTargetName,
+		"outcome":             "added",
+	})
+	require.True(t, ok, "a declared subdirectory path must still be registered with its ancestor root")
+	assert.Equal(t, int64(1), entries)
+
+	failed, hasFailed := telemetry.CollectInt64Sum(reader, kustomizationEntriesMetric, map[string]string{
+		"gittarget_namespace": metricsTestGitTargetNamespace,
+		"gittarget_name":      metricsTestGitTargetName,
+		"outcome":             "failed",
+	})
+	assert.False(t, hasFailed && failed > 0, "no entry may be counted as failed")
+}

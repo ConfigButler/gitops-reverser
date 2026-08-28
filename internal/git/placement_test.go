@@ -745,3 +745,35 @@ func TestPlacement_ColdBundleCollision_ViaResync(t *testing.T) {
 	require.NoError(t, readErr)
 	assert.Equal(t, 2, strings.Count(string(got), "kind: ConfigMap"), "both resync creates must survive")
 }
+
+// A declared path into a SUBDIRECTORY of a kustomize folder must still be registered
+// with the root that governs it (#295). Before the ancestor walk, governingKustomization
+// looked only in the new file's own directory (plus the write scope's root under
+// render-root scoping), so one byType line put a document in Git that no kustomization
+// lists — committed, and rendered by nothing.
+func TestPlacement_DeclaredSubdirectory_RegistersWithTheAncestorKustomization(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+	seedPlacedManifest(t, worktree, "kustomization.yaml",
+		"namespace: app\nresources:\n  - deployment.yaml\n")
+	seedPlacedManifest(t, worktree, "deployment.yaml",
+		"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n")
+	policy := &manifestanalyzer.PlacementPolicy{
+		ByType: map[string]string{"v1/configmaps": "configmaps/{name}.yaml"},
+	}
+
+	changed := applyEventsWithPolicy(t, worktree, policy, newConfigMapEvent("cache", "app"))
+	require.True(t, changed)
+
+	newFile, err := os.ReadFile(filepath.Join(root, "configmaps/cache.yaml"))
+	require.NoError(t, err, "the declared path must be honoured")
+	assert.Contains(t, string(newFile), "name: cache")
+
+	kust, err := os.ReadFile(filepath.Join(root, "kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "configmaps/cache.yaml",
+		"the ancestor kustomization must list the new file, or kustomize never renders it")
+
+	assert.NotContains(t, string(newFile), "namespace:",
+		"the governing kustomization's namespace: transformer supplies the namespace")
+}
