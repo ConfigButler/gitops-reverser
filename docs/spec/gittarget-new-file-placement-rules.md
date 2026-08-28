@@ -623,6 +623,28 @@ one root, not from picking the largest matching cohort of similar documents. Con
   That is invisible in the folder, so it is counted:
   `placement_kustomization_entries_total{outcome="failed"}`.
 
+### Registration follows the nearest ancestor kustomization
+
+Registration is a property of **where the file lands**, so it applies to every resolved path
+rather than to the fallback that produced one. The kustomization a new file joins is the
+nearest one at or above its own directory, bounded by the write jail: a path in the file's own
+directory first, then each parent up to `spec.path` (or, under render-root scoping, up to the
+write scope, because a kustomization above it is a read-only base whose `resources:` list is
+not ours to edit).
+
+The walk is what makes a declared path behave like the fallback. A single line —
+
+```yaml
+placement:
+  byType:
+    v1/configmaps: "configmaps/{name}.yaml"
+```
+
+— in a folder whose root has a `kustomization.yaml` used to commit a document that no
+kustomization lists, which `kubectl apply -k` therefore never renders, and which the namespace
+rule below also skipped. The two cases differed by whether render-root scoping happened to be
+in force, which is not something the user can see.
+
 ### Namespace style follows the governing kustomization
 
 A document in a directory whose kustomization sets a `namespace:` transformer does not carry

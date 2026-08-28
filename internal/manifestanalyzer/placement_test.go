@@ -664,7 +664,14 @@ func TestIdentityCompletePlacementTemplate(t *testing.T) {
 		want              bool
 	}{
 		{"full identity", "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml", false, true},
+		{
+			"versionless canonical shape",
+			"{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+			false,
+			true,
+		},
 		{"missing resource for default", "{groupPath}/{version}/{namespaceOrCluster}/{name}.yaml", false, false},
+		{"missing group for default", "{version}/{resource}/{namespaceOrCluster}/{name}.yaml", false, false},
 		{"narrowed type needs only scope+name", "{namespace}/secret-{name}.sops.yaml", true, true},
 		{"narrowed type missing name", "{namespace}/secret.sops.yaml", true, false},
 		{"narrowed type missing scope", "secret-{name}.sops.yaml", true, false},

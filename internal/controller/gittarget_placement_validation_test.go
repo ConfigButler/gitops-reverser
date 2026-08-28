@@ -42,6 +42,13 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			true,
 		},
 		{
+			"the versionless canonical default is accepted (#295)",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
 			"bundling default with no Secret route is rejected",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "all.yaml",
