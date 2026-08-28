@@ -4,6 +4,12 @@ metadata:
   name: jellyfin
 spec:
   interval: 30m
+  # The HelmRelease object lives in flux-system with the rest of the Flux
+  # declarations; the release it installs does not. targetNamespace is what puts
+  # jellyfin in `media`, and storageNamespace keeps its Helm storage beside the
+  # controller that manages it.
+  targetNamespace: media
+  storageNamespace: flux-system
   chart:
     spec:
       chart: jellyfin

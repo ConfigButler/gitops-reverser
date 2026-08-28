@@ -4,8 +4,8 @@ metadata:
   name: storefront
 spec:
   catalog:
-    defaultCurrency: USD
+    defaultCurrency: EUR
   checkout:
     sessionTimeout: 15m
   theme:
-    primaryColor: blue
+    primaryColor: teal

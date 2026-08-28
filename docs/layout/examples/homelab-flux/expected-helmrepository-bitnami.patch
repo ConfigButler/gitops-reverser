@@ -1,21 +1,21 @@
-diff --git a/clusters/home/flux-system/kustomization.yaml b/clusters/home/flux-system/kustomization.yaml
-index 617a9c0..2a15468 100644
---- a/clusters/home/flux-system/kustomization.yaml
-+++ b/clusters/home/flux-system/kustomization.yaml
-@@ -4,3 +4,4 @@ kind: Kustomization
+diff --git a/infrastructure/home/sources/kustomization.yaml b/infrastructure/home/sources/kustomization.yaml
+--- a/infrastructure/home/sources/kustomization.yaml
++++ b/infrastructure/home/sources/kustomization.yaml
+@@ -3,4 +3,5 @@ kind: Kustomization
+ namespace: flux-system
  resources:
-   - sources.yaml
-   - media.yaml
+   - gitrepository-homelab.yaml
+   - helmrepository-jellyfin.yaml
 +  - helmrepository-bitnami.yaml
-diff --git a/clusters/home/flux-system/helmrepository-bitnami.yaml b/clusters/home/flux-system/helmrepository-bitnami.yaml
+diff --git a/infrastructure/home/sources/helmrepository-bitnami.yaml b/infrastructure/home/sources/helmrepository-bitnami.yaml
 new file mode 100644
-index 0000000..521a283
 --- /dev/null
-+++ b/clusters/home/flux-system/helmrepository-bitnami.yaml
-@@ -0,0 +1,6 @@
++++ b/infrastructure/home/sources/helmrepository-bitnami.yaml
+@@ -0,0 +1,7 @@
 +apiVersion: source.toolkit.fluxcd.io/v1
 +kind: HelmRepository
 +metadata:
 +  name: bitnami
 +spec:
++  interval: 1h
 +  url: https://charts.bitnami.com/bitnami

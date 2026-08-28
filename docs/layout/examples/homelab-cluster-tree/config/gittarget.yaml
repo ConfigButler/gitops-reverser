@@ -12,7 +12,7 @@ spec:
   path: clusters/home
   allowedSourceNamespaces:
     names: [media, monitoring]
-  mode: Write
+  mode: Observe
   layout:
     kind: Tree
     scope: MultiNamespace

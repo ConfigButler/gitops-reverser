@@ -1,5 +1,4 @@
 diff --git a/apps/demo/kustomization.yaml b/apps/demo/kustomization.yaml
-index 9434b9f..a9f7d06 100644
 --- a/apps/demo/kustomization.yaml
 +++ b/apps/demo/kustomization.yaml
 @@ -4,3 +4,4 @@ kind: Kustomization
@@ -9,7 +8,6 @@ index 9434b9f..a9f7d06 100644
 +  - configmap-cache.yaml
 diff --git a/apps/demo/configmap-cache.yaml b/apps/demo/configmap-cache.yaml
 new file mode 100644
-index 0000000..d3fdd51
 --- /dev/null
 +++ b/apps/demo/configmap-cache.yaml
 @@ -0,0 +1,6 @@

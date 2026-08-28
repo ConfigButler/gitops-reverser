@@ -197,7 +197,14 @@ as the design intends.
 
 `Flat` may not use `writeNamespace: FromContext` or `Never`: a flat directory has no build step
 and nothing supplies the namespace. Under `kind: Auto` that violation depends on the folder,
-so no CEL rule can catch it — and the brownfield example declares exactly that combination.
+so no CEL rule can catch it.
+
+The brownfield example is not evidence of the violation, and an earlier draft of this plan said
+it was. `brownfield-kustomize` declares `writeNamespace: FromContext` under `Auto`, and `Auto`
+resolves to `Kustomize` there, where `FromContext` is valid. What the example shows is the
+*latent* case: delete its `kustomization.yaml` and the folder re-resolves to `Flat`, where the
+same declaration is invalid. That is a better illustration than a violation on day one, because
+it is also the argument for pinning — the declaration never changed, only the folder did.
 
 **Amendment:** per-kind field validity is a **post-scan** validation class. When `Auto` resolves
 to a kind whose rules the declared fields violate, the target goes `Validated=False` naming the

@@ -64,12 +64,35 @@
 The authorization section that follows the findings is not numbered, because it is a design
 question rather than a defect.
 
+## What has been addressed
+
+The findings below are answered in this repository; the rest are open. Each entry says where, so a
+reader can check the fix rather than trust this table.
+
+| # | Where it was answered |
+|---|---|
+| L1 | `homelab-flux` now targets `infrastructure/home/sources` and `apps/home/media`, two targets on two layers, with the bootstrap directory shown and left alone. The rule is stated in the scenario README and recorded as [the repository-level peer](../design/support-boundary/render-root-scoping.md#5-the-repository-level-peer-paths-another-controller-writes) in the support boundary |
+| L2 | `homelab-argocd` and `homelab-flux` inputs are captured objects, carrying the tracking-id annotation and the Flux finalizer respectively. The other four say they are abridged, and [`examples/README.md`](examples/README.md) states the convention and why the diff is the assertion |
+| L12 | `krm-app-configuration` is one schema across `input/`, `repository/` and the patch; the patch body and the committed files are now byte-identical |
+| L13 | Every `index` line is gone from all six patches, and each patch was checked to `git apply` against its scenario's stated starting state |
+| L14 | Every brownfield scenario opens in `Observe` and shows the observed `status.layout` before the patch. `krm-app-configuration` stays in `Write` as the empty-repository exception, and both READMEs say so |
+| L21 | `homelab-cluster-tree` names both conventions and links the grammar: the core group collapses to no segment, and `_cluster` cannot collide because an underscore is invalid in a namespace name |
+| L23 | The plan no longer claims the brownfield example declares the invalid combination; it describes the latent case, which is also the argument for pinning |
+| L24 | Shipped as [#319](https://github.com/ConfigButler/gitops-reverser/pull/319), separately from the layout work, so it can be released on its own |
+| L7, `serviceAccountName` | Answered in [`../design/source-scope-simplification.md`](../design/source-scope-simplification.md), which declines impersonation and keeps `allowedNamespaces` as `accessFrom` |
+
 ## L1. The scenario a Flux maintainer would stop at
+
+> **Addressed.** The paths and files named below are the fixture as it was reviewed; it has since
+> been restructured along the lines this finding recommends. See
+> [`examples/homelab-flux/README.md`](examples/homelab-flux/README.md) for what it is now. The
+> finding is kept in its original terms because the argument, not the fixture, is the thing worth
+> preserving.
 
 `homelab-flux` points its `GitTarget` at `clusters/home/flux-system`. That path is owned by
 `flux bootstrap` and by flux-operator. In a bootstrapped repository it holds `gotk-components.yaml`,
 `gotk-sync.yaml`, and a `kustomization.yaml` listing both. The scenario's
-[`kustomization.yaml`](examples/homelab-flux/repository/kustomization.yaml) lists
+`repository/kustomization.yaml` listed
 neither, so no reader who has run `flux bootstrap` recognizes the folder as theirs.
 
 The deeper problem is not recognition. An operator that adds `resources:` entries to the bootstrap
@@ -80,7 +103,7 @@ opposite of the rule.
 Two further tells in the same fixture:
 
 - `namespace: flux-system` on the root transformer means `HelmRelease/jellyfin` in
-  [`media.yaml`](examples/homelab-flux/repository/media.yaml) installs jellyfin
+  `repository/media.yaml` installs jellyfin
   into `flux-system`. There is no `targetNamespace` and no `storageNamespace`. Nobody runs a media
   server in `flux-system`.
 - Flux's documented repository structures keep `clusters/<name>/` holding `Kustomization` pointers,

@@ -20,6 +20,16 @@ clusters/home/
 name. A Deployment named `jellyfin` in another namespace receives another path. This property is
 why `Tree` is the safe default for multi-namespace capture.
 
+Two conventions in those paths are load-bearing, and both come from the canonical grammar in
+[`new-file-placement-rules.md`](../../new-file-placement-rules.md#template-variables):
+
+- **The core group collapses to nothing.** `configmaps` sits directly under the namespace segment,
+  where `rbac.authorization.k8s.io` sits in the ClusterRole path, because the core group has no
+  name to write.
+- **`_cluster` stands in for the namespace segment** of a cluster-scoped resource. An underscore is
+  invalid in a namespace name, so the sentinel cannot collide with a real namespace — which is why
+  it is a sentinel and not a reserved word.
+
 ## Proposed configuration
 
 [`config/clusterprovider.yaml`](config/clusterprovider.yaml) gives the homelab configuration
@@ -36,8 +46,20 @@ paths carry scope, but the source API keeps their authority separate.
 
 - Starting repository: [`repository/`](repository/) after the three documents shown above.
 - Live input: [`input/configmap-grafana-dashboards.yaml`](input/configmap-grafana-dashboards.yaml).
+- First observation, before any commit. A `Tree` folder has no render root, so the reason says so
+  rather than leaving the field unexplained:
+
+  ```yaml
+  status:
+    layout:
+      declaredKind: Tree
+      kind: Tree
+      renderRootReason: None
+  ```
+
 - Expected Git change:
-  [`expected-configmap-grafana-dashboards.patch`](expected-configmap-grafana-dashboards.patch).
+  [`expected-configmap-grafana-dashboards.patch`](expected-configmap-grafana-dashboards.patch), after
+  a reviewer changes `mode` to `Write`.
 - Expected status: `Ready=True` with a `Tree` layout and a path derived from the input identity.
 - Boundary: content outside `clusters/home`, a namespace not on the target, or an unsupported
   type is refused without probing for a sibling convention.

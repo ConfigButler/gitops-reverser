@@ -1,6 +1,5 @@
 diff --git a/clusters/home/monitoring/configmaps/grafana-dashboards.yaml b/clusters/home/monitoring/configmaps/grafana-dashboards.yaml
 new file mode 100644
-index 0000000..2e1bc1b
 --- /dev/null
 +++ b/clusters/home/monitoring/configmaps/grafana-dashboards.yaml
 @@ -0,0 +1,7 @@

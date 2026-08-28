@@ -1,5 +1,4 @@
 diff --git a/bootstrap/argocd-applications/kustomization.yaml b/bootstrap/argocd-applications/kustomization.yaml
-index d3ad041..5c57613 100644
 --- a/bootstrap/argocd-applications/kustomization.yaml
 +++ b/bootstrap/argocd-applications/kustomization.yaml
 @@ -4,3 +4,4 @@ kind: Kustomization
@@ -9,7 +8,6 @@ index d3ad041..5c57613 100644
 +  - application-paperless.yaml
 diff --git a/bootstrap/argocd-applications/application-paperless.yaml b/bootstrap/argocd-applications/application-paperless.yaml
 new file mode 100644
-index 0000000..fac065b
 --- /dev/null
 +++ b/bootstrap/argocd-applications/application-paperless.yaml
 @@ -0,0 +1,17 @@

@@ -10,7 +10,7 @@ spec:
   path: bootstrap/argocd-applications
   allowedSourceNamespaces:
     names: [argocd]
-  mode: Write
+  mode: Observe
   layout:
     kind: Kustomize
     scope: SingleNamespace

@@ -10,7 +10,7 @@ spec:
   path: apps/podinfo/overlays/prod
   allowedSourceNamespaces:
     names: [podinfo-prod]
-  mode: Write
+  mode: Observe
   layout:
     kind: Kustomize
     scope: SingleNamespace

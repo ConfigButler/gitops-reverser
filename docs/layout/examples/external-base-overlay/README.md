@@ -32,7 +32,19 @@ The scenario assumes the Deployment image is a supported writable expression in 
 - Starting repository:
   [`repository/apps/podinfo/overlays/prod/`](repository/apps/podinfo/overlays/prod/).
 - Live input: [`input/deployment-podinfo.yaml`](input/deployment-podinfo.yaml).
-- Expected Git change: [`expected-image-update.patch`](expected-image-update.patch).
+- First observation, before any commit:
+
+  ```yaml
+  status:
+    layout:
+      declaredKind: Kustomize
+      kind: Kustomize
+      renderRoot: .
+      renderRootReason: SingleKustomization
+  ```
+
+- Expected Git change: [`expected-image-update.patch`](expected-image-update.patch), after a
+  reviewer changes `mode` to `Write`.
 - Expected status: `Ready=True` after the changed overlay renders successfully.
 - Boundary: the target may read `../../base` to render, but it never writes outside the overlay.
 
