@@ -15,26 +15,24 @@ this page to `docs/finished/` when the fix has landed and held.
 The data plane is not implicated in either failure. Files land in Git correctly and on time in
 every case examined — what fails is the **status that describes them**.
 
-**A and B share a shape, and probably a defect.** Both are per-cell, revision-gated roll-ups in
-which a scope's result is produced but never lands, and in which nothing re-measures afterwards. B
-loses a retention count. A loses a render-fidelity scope result — which pins the GitTarget at
-not-Ready, which pins **every WatchRule pointing at it** at `Ready=False`. That is why A looked
-like a rule-level streams failure for three reproductions running. It never was one.
-
-Neither root cause is closed. What IS closed is where to look, and both roll-ups now say far more
-about themselves than they did.
+**A is solved and fixed; B is open and probably the same defect.** Both are status roll-ups whose
+result is produced correctly and then fails to reach the object that publishes it. A lost a
+render-fidelity result — which pins the GitTarget at not-Ready, and through it **every WatchRule
+pointing at it**. That is why A read as a rule-level streams failure for three reproductions
+running. It never was one.
 
 | # | Symptom | Seen | Verdict |
 | --- | --- | --- | --- |
-| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 6× (CI 4×, local 2×) | **SOLVED (§2.12).** A status write that loses an optimistic-lock race is dropped, the reconcile reports success, and nothing re-enqueues it — the winning write is status-only and every `For()` filters those |
-| **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, and narrowed to the roll-up's accept path. One hypothesis tried and withdrawn — see §3.3 |
+| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 6× (CI 4×, local 2×) | **SOLVED (§2).** A status write that loses an optimistic-lock race is discarded, the reconcile is told it succeeded, and nothing re-enqueues it — the winning write is status-only and every `For()` filters those |
+| **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, narrowed to the roll-up's accept path; predicted to be the same defect as A, with a falsifier — see §3.5 |
 | C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified, and probably unrelated |
-| D | Encryption-secret recreation spec times out | 1× (CI) | **Ambient, pre-existing** — see §5 |
+| D | Encryption-secret recreation spec times out | 4× in one day | **Ambient, pre-existing** — and now the dominant CI blocker; see §5.1 |
 
-**A green run is not evidence against A or B, and this page has now been wrong once for forgetting
-that.** Run `33113743391` was green on all six e2e legs, Lint and Unit, with a matching 80/80 local
-suite, on a commit where both defects were fully intact. A withdrawn fix (§3.3) also passed the
-spec it was meant to fix, once, while contradicting the logs. Require a mechanism, not a colour.
+**A green run is not evidence, and this page has been wrong twice for forgetting that.** Run
+`33113743391` was green on all six e2e legs with a matching 80/80 local suite, on a commit where
+both defects were fully intact; and a withdrawn fix (§3.3) passed the very spec it targeted, once,
+while contradicting the logs. Require a mechanism, not a colour — including for A, whose fix rests
+on the mechanism in §2.3 rather than on run `33127240827` being green.
 
 ### 1.1 What settled it
 
@@ -53,403 +51,226 @@ reaches the WatchRule because `Ready` gates on `GitTargetReady` as an independen
 see [`ruleReadiness`](../../internal/controller/stream_status.go), fed from the GitTarget's own
 published Ready by [`gitTargetReadyCondition`](../../internal/controller/gittarget_dependency_status.go).
 
-**One printed reason string replaced three rounds of log archaeology.** That is the lesson of this
-page, and §4 is the change that generalises it.
+**One printed reason string replaced three rounds of log archaeology**, and every subsequent step
+followed the same shape: a reproduction arrived, its evidence could not distinguish two branches,
+and the fix was to make the component say what it had done. §2.8 tabulates all eight of those.
 
 ---
 
-## 2. Failure A — what actually happens
+## 2. Failure A — SOLVED
 
-### 2.1 The observation, restated correctly
+A status write that loses an optimistic-lock race is discarded, the reconcile is told it succeeded,
+and nothing brings it back. The object keeps the winner's older answer for a full steady interval —
+five minutes for a GitTarget — and every WatchRule copies that into its own `Ready`.
 
-`Eventually` at [`e2e_test.go:234`](../../test/e2e/e2e_test.go) times out after 90s waiting for a
-WatchRule's `Ready`. Two reproductions, on `srcns-wildcard-rule` and on `signing-per-event-wr`.
+Fixed in `8ad84416` (record the loss, shorten the requeue) and `fcdb3de9` (the same repair for all
+five controllers). First fully green CI run: `33127240827`.
 
-The rule's own streams are fine. In run `33103011476`, for `1787855423-test-srcns-config/srcns-granted`:
+### 2.1 The defect
 
-| Time | Event |
-| --- | --- |
-| 18:34:14 | plan reconciled, `start:2` — the two `…-source` cells |
-| 18:34:14 | both replays complete; both resyncs **`Handling resync request`** then **`Resync request applied`** |
-| 18:34:37 | plan reconciled, `keep:2 start:2` — the two `…-wildcard` cells added |
-| 18:34:37 | both wildcard replays complete; both resyncs **handled and applied** |
-| 18:34:39 → 18:36:05 | `keep:4` steady. No restarts, no failures |
-| 18:36:05 | spec fails: `Ready=False`, `reason="Rechecking"` |
-
-So: four cells planned, four streams replayed, **four resyncs applied**. And the render-fidelity
-gate still reported that some scope had not reported under its current revision, for 90 seconds.
-
-### 2.2 What is excluded, by evidence rather than by argument
-
-- **A1 and A2 are not the cause.** The stream-readiness diagnostic added in `9e4e3ce9`/`773f6cc0`
-  fired **zero times** for `srcns-wildcard-rule` across its 138 mentions in the log. It fired only
-  for a *different* rule during ordinary bootstrap, with `plannedCells:[]` — the `plan not
-  resident` case it was extended to classify. The rule's expected cells were never in
-  disagreement with the plan's.
-- **The narrowing reverted in the old §2.6 was correctly reverted**, and would not have helped:
-  the cells were never the problem.
-- **Not a dropped enqueue.** Zero `Event queue full` lines in the whole run.
-- **Not a supersession.** Zero `superseded by a newer resync` lines.
-- **Not the retention revision gate.** Zero `retention report dropped` lines.
-- **Not a timeout.** Zero. `resyncSignalTimeout` is 5 minutes, so a stuck drain could not have
-  logged inside the 90s window either way — but nothing was stuck: every resync applied.
-
-Both diagnostics added in `c24844a1` were live and **neither fired**. By the old §3.4 table that
-retires B1 and B2 as mechanisms. The report is not being dropped in transit. It is not being made,
-or it is not being counted.
-
-### 2.3 Why nobody could see which scope
-
-[`reduceRenderFidelity`](../../internal/git/render_fidelity_gate.go) computes exactly the fact
-needed to diagnose this, and then throws it away:
-
-```go
-if clean != len(state.scopes) {
-    return RenderFidelityStatus{
-        Revision: state.revision, State: RenderFidelityUnknown, Reason: "Rechecking",
-        Message:    "Waiting for every render scope to report under its current revision",
-        ScopeCount: len(state.scopes), CleanScopes: clean,
-    }
-}
-```
-
-`ScopeCount` and `CleanScopes` are carried on the struct and never rendered.
-[`renderAxis`](../../internal/controller/gittarget_controller.go) publishes `renderFidelity.Message`
-verbatim, so the GitTarget condition — the one surface an operator or a test can actually read —
-says only that *something* is pending, never *what*, never *how many*, and never *under which
-revision*. The gate holds a per-scope table of `(revision, finished, clean)` and reports a
-constant string.
-
-**This is the defect that made a two-hour bug into a three-day one**, and it is the first thing
-§4 fixes. A running system must be able to say what it is waiting for.
-
-### 2.4 The diagnostic working, first time out
-
-Run `33116777679`, `E2E (quickstart-install)`, on the commit that added §4.1:
-
-```text
-watchrule "quickstart-watchrule-…" condition Ready: status="False" reason="Rechecking"
-  message="Waiting for 1 of 5 render scopes to report under their current revision:
-           ingresses.networking.k8s.io in …-test-quickstart-framework (revision 5)"
-```
-
-**One** scope of five, named, with the revision it owes. Every previous reproduction of A produced
-`Expected <string>: False to equal <string>: True` and a round of log archaeology; this one states
-the answer in the failure text.
-
-Mining that job log against the named scope narrows A sharply:
-
-- the target planned **all five cells in ONE pass** (`keep=0 start=5`), so the five revisions
-  1–5 were issued by a single `Reconcile` and every stream was started with the revision that
-  `Reconcile` returned for its cell — there is no earlier incarnation for a tail to come from;
-- **every one of the five replayed**, ingresses included (`count:0`);
-- **every one of the five resyncs applied**, ingresses at 21:20:12, `committed:false` (correct for
-  an empty scope) — and the branch worker is one goroutine, so the `Handling`/`applied` pairs are
-  unambiguous;
-- the spec failed at 21:21:37, **85 seconds later**. Not slow. Stuck.
-
-So the ingresses report was made, under the revision the gate holds, and the gate did not take it.
-By elimination the remaining candidates are exactly `recordScope`'s refusal branches — an unknown
-target, a scope absent from the installed set, or a revision mismatch — plus the earlier return on
-a zero revision. **All four were silent.** §4.4 makes all four speak; until one of them fires on a
-reproduction, A's precise branch is not yet known and must not be guessed.
-
-### 2.5 The second reproduction, and what it excludes
-
-Run `33118310453`, `E2E (full-manager)`, on `cf08e467` — a build that already carried the
-refused-revision recording of §4.5:
-
-```text
-watchrule "srcns-wildcard-rule" condition Ready: status="False" reason="Rechecking"
-  message="Waiting for 1 of 4 render scopes to report under their current revision:
-           secrets in 1787866675-test-srcns-wildcard (owes revision 4)"
-```
-
-**No refusal clause.** The scope owes revision 4 and has refused nothing, which excludes the
-revision-mismatch branch outright — no report ever arrived carrying the wrong revision.
-
-The log corroborates every other link. The plan went `keep=2 start=2` at 21:40:52, so the two
-wildcard cells were issued revisions 3 and 4 by that one `Reconcile`; the secrets-wildcard replay
-completed (`count:0`, rv 3230); and its resync was handled. So the stream ran, replayed and
-enqueued, and its drain reached `MarkTargetRenderFidelityScopeClean`.
-
-Yet the gate holds no result and recorded no refusal. `recordScope` records a refusal on a revision
-mismatch, so the only way to reach the gate and leave no trace is **not to reach it at all**:
-
-- `MarkTargetRenderFidelityScopeClean` returns before calling it when `revision == 0` — the
-  stream carried no revision, though the gate issued it one; or
-- `recordScope` returned at one of its `!found` guards, which record nothing.
-
-Those two are what §4.4's line separates, and it is **not** in this build (`32b75e02` postdates
-`cf08e467`). The next reproduction on a build that carries it closes A.
-
-### 2.6 The third reproduction — local, fully instrumented, and still silent
-
-`task test-e2e` on `f277f074` reproduced A locally, same spec and same shape:
-
-```text
-watchrule "srcns-wildcard-rule" condition Ready: status="False" reason="Rechecking"
-  message="Waiting for 1 of 4 render scopes to report under their current revision:
-           secrets in 1787867245-test-srcns-wildcard (owes revision 4)"
-```
-
-This build carried every diagnostic. What it says:
-
-| Signal | Count | Meaning |
-| --- | --- | --- |
-| `a render scope result was not applied` | **0** | the gate never refused a report, on any branch, and was never handed a zero revision |
-| `superseded by a newer resync` | **0** | restored to Info, so this zero is now meaningful |
-| `per-type reconcile failed/refused/timed out` | 23, **none for this target** | all belong to the intentional refusal specs |
-
-And upstream is again clean: the plan went `keep=2 start=2` at 21:53:33 issuing revisions 3 and 4,
-the secrets-wildcard replay completed, and its resync was handled.
-
-**The remaining ambiguity is a hole in the instrumentation itself.**
-`MarkTargetRenderFidelityScopeClean` logs its refusals and says nothing when it succeeds, so
-silence from it means EITHER "never called" OR "called and accepted". Those are opposite
-conclusions and the reproduction cannot distinguish them.
-
-That is the same asymmetry this page has now found three times — a component that reports what it
-rejects and stays silent about what it takes. §4.4's line closed it for the refusals; the accept
-path is closed in the commit that follows this one.
-
-### 2.7 A rule's Ready is a COPY, and that was being read as a live view
-
-Caught live on a passing run, mid-spec:
-
-```text
-GitTarget srcns-granted        Ready=True   RenderMatchesLive=True "Every rendered token matches live"
-WatchRule srcns-granted-rule   Ready=False  Rechecking  2/2
-WatchRule srcns-wildcard-rule  Ready=False  Rechecking  2/2
-```
-
-Both rules caught up within seconds, so this instance was the ordinary convergence transient. But
-it exposes an assumption this page had been making without checking: **a rule's `Ready` is a copy
-of its GitTarget's, not a live view of the gate.** `reconcileWatchRuleViaTarget` reads the target's
-STORED `Ready` and folds it in as an independent prerequisite, so a rule reporting `Rechecking`
-means only that the target said so *when the rule last reconciled*.
-
-That splits Failure A in two, with completely different searches:
-
-- the GitTarget is genuinely stuck at `Rechecking` for 90s — the gate never converges; or
-- the GitTarget converged and the RULE's copy went stale — the rule is not being re-reconciled, or
-  is reading a stale cached target.
-
-Every reproduction so far has been read as the first. The evidence is consistent with it — the
-rule reconciles every ~10s in the logs, and a rule that re-reads a Ready target goes Ready — but
-**it has never been directly confirmed**, because the failure text prints only the rule.
-
-The e2e assertion now prints the referenced GitTarget's own `Ready`, `RenderMatchesLive`,
-`StreamsRunning` and `GitPathAccepted` beside the rule's condition, so the next reproduction says
-which of the two it is without inference.
-
-### 2.8 What a HEALTHY target looks like mid-plan
-
-Worth knowing before watching a live cluster and misreading it: a target that has just been
-(re)planned briefly publishes `RenderMatchesLive=Unknown` naming its pending scopes, then converges
-within seconds. Observed repeatedly on passing runs, e.g.
-
-```text
-STUCK tilt-playground/playground-target :: Waiting for 3 of 5 render scopes …
-  configmaps in tilt-playground (owes revision 1), deployments.apps … (owes revision 4), …
-```
-
-— which read `RenderMatchesLive=True, 5/5 streams` moments later. Mixed revisions across scopes are
-normal too: a revision is issued per cell when that cell is first planned or restarted, so a
-long-lived target accumulates different numbers per scope.
-
-**The failure is not the pending state; it is the failure to leave it.** Any live watch on this
-condition must require the state to persist (60s+) before treating it as a reproduction, or it will
-fire on every ordinary replan.
-
-### 2.9 SOLVED SHAPE: the gate converges and the GitTarget's status does not follow
-
-Run `33120703394`, `E2E (full-manager)`, on `e3356796` — the first build carrying the accept-path
-log. The rule failed with the usual message, and the controller log answers it outright:
-
-```text
-22:16:18  accepted  secrets in …-srcns-source     rev 2 -> Unknown
-22:16:18  accepted  configmaps in …-srcns-source  rev 1 -> True
-22:16:43  accepted  configmaps in …-srcns-wildcard rev 3 -> Unknown
-22:16:43  accepted  secrets in …-srcns-wildcard   rev 4 -> True   "Every rendered token matches live"
-```
-
-**The gate accepted every report, including the one the condition said was owed, and reached
-`True` at 22:16:43.** The spec failed at 22:19:14 with the rule still reporting
-`secrets in … (owes revision 4)`.
-
-Zero `not applied` lines. Zero superseded lines. The gate was never stuck.
-
-**So Failure A is not a watch-plane defect at all. It is a status-publication defect.** Every
-earlier section of this page read the rule's message as a live view of the gate; it is a copy of
-the GitTarget's stored condition (§2.7), and the copy went stale.
-
-Which copy is proven, too:
-
-- the WatchRule reconciled **every 10s** from 22:16:43 to past 22:18:03 and stayed `False`, so the
-  rule's own requeue is not at fault;
-- `renderAxis` is fed from `RenderFidelityForGitTarget`, which returns `gate.Status(target)` —
-  a LIVE read — so **any** GitTarget reconcile after 22:16:43 would have published `True`.
-
-Therefore the GitTarget was **not reconciled at all** for ~2.5 minutes after its gate converged.
-
-### 2.10 What remains for A
-
-The remaining question is narrow and mechanical: why did the GitTarget not reconcile?
-
-1. **A dropped enqueue.** `enqueueGitTargetReconcile` is a non-blocking send into a single
-   256-slot channel and is silently dropped when full — the hazard `14eeef46` split stream
-   transitions out of, for exactly this reason. Under the load this leg runs (163 WatchRule
-   reconciles in the window) a load-bearing fidelity enqueue can be crowded out.
-2. **The 5-minute steady requeue.** `gitTargetRequeue` gives a CONVERGED target
-   `RequeueSteadyInterval` (5 min) and a non-converged one 10s. A target that converged, then had
-   cells added, then lost its enqueue, waits the full five minutes — which matches the observed
-   2.5-minute-and-counting staleness better than the 10s loop does.
-3. **A publish-ordering artefact.** The two accepts land in the same second and publish the status
-   each drain OBSERVED, not the gate's current one, so a stale `Unknown` can be written to
-   `watchPlaneState.fidelity` after a fresh `True`. That surface is only used for change detection,
-   so it cannot make the condition wrong — but it can suppress or misorder the enqueue that (1)
-   depends on.
-
-**Candidate (1) is now excluded, and §2.9 is confirmed a second time.** Run `33123538889`,
-`full-manager`, on `43c4740b` — the first build carrying the dropped-enqueue log AND the e2e
-assertion that prints the GitTarget's own conditions:
-
-```text
-22:57:26  accepted  ingresses.networking.k8s.io …  rev 5 -> True
-22:59:17  FAIL  watchrule "watchrule-test" Ready=False Rechecking
-          "… ingresses.networking.k8s.io … (owes revision 5)"
-          | gittarget "watchrule-test-dest":
-              StreamsRunning=True(5/5); GitPathAccepted=True;
-              RenderMatchesLive=Unknown(Rechecking: … ingresses … owes revision 5);
-              Ready=False(Rechecking: … )
-```
-
-- the gate reached `True` for the very scope named, at 22:57:26;
-- **zero** dropped-reconcile lines, so the notification was not lost;
-- the GitTarget's OWN published condition carries the same stale message two minutes later, which
-  is what the new e2e detail proves — the rule is not merely holding a stale copy of a healthy
-  target, the target's published status is stale too.
-
-So: the gate converges, the reconcile request is delivered, and the GitTarget's status still does
-not follow. Candidates (2) and (3) remain, plus a fourth the evidence now suggests — that the
-reconcile happens and publishes the OLD axis, or does not happen despite the event.
-
-`gitTargetRequeue` gives a non-converged target 10s, so even a lost notification should self-correct
-within ten seconds; two minutes of staleness fits neither the 10s loop nor a delivered event. The
-next step is therefore the one thing still unobserved: what the GitTarget controller publishes on
-each reconcile, and the requeue it chooses. That log is added in the commit following this one.
-
-Note that (3) is worth fixing on its own merits regardless, and has been: publishing the status a
-drain observed rather than the gate's current status is a race with no upside.
-
-## 2.12 SOLVED: a status write that loses a race is dropped, and nothing comes back
-
-Reproduced locally on `26cd36c3` — the build carrying the publish log — on a 61-scope wildcard
-target. Every link is now observed:
-
-```text
-23:32:13-17  66 "GitTarget status published" lines for ONE target, one per scope report
-             …  Unknown/Rechecking  converged=false  requeue=10s   (×65)
-23:32:17     True/RenderMatchesLive  converged=true   requeue=5m0s  ← the LAST one
-23:33:41     FAIL: gittarget "…-dest" RenderMatchesLive=Unknown(Rechecking: … owes revision 44)
-```
-
-The gate accepted every scope and reached `True`. No dropped reconcile requests. The controller
-computed `True` and logged that it published it. **And 84 seconds later the object still read
-`Unknown`.**
-
-The cause is in [`reconcileStatus.commit`](../../internal/controller/status.go):
+[`reconcileStatus.commit`](../../internal/controller/status.go) used to end a conflict like this:
 
 ```go
 case apierrors.IsConflict(err):
     log.V(1).Info("status write skipped; object changed during reconcile", …)
-    return nil          // ← the write is dropped AND the reconcile reports success
+    return nil          // the write is dropped AND the reconcile reports success
 ```
 
-Dropping the write is right: by then the observation is stale. Dropping the reconcile with it was
-not. The comment justified it as *"The write that beat us enqueued us again"* — and that is **false
-by construction here**. The winning write is a STATUS-only update, and every `For()` in this
-package carries `predicate.GenerationChangedPredicate`, which exists precisely to filter those out
-and break the status-write-triggers-reconcile loop.
+Dropping the **write** is right: by the time the conflict is known, the observation describes a
+generation that is no longer current. Dropping the **reconcile** with it was not. The comment
+justified that with *"The write that beat us enqueued us again"*, and that is **false by
+construction in this package**: the winning write is a STATUS-only update, and every `For()` carries
+`predicate.GenerationChangedPredicate` precisely to filter those out and break the
+status-write-triggers-reconcile loop.
 
-So the sequence is:
+So the loser's observation vanished, its caller saw success and chose its CONVERGED cadence, and
+nothing was left to correct the object.
 
-1. a 61-scope target produces ~66 reconciles in four seconds, one per scope report;
-2. reconcile *N* computes `Unknown` and wins the write;
-3. reconcile *N+1* computes `True`, loses the optimistic lock, and is silently discarded;
-4. it returns `converged=true`, so the caller picks **`RequeueAfter: 5m`**;
-5. the winning write was status-only, so the predicate re-enqueues nothing;
-6. the object holds `Rechecking` for five minutes, and every WatchRule copies it.
+### 2.2 How the code flows, and where it broke
 
-That accounts for every observation, including the two that resisted explanation longest: why it is
-**load-dependent** (it needs concurrent reconciles to produce a conflict, which is why all eight
-focused low-load attempts passed) and why the staleness lasts **minutes rather than the 10s** a
-non-converged target would wait.
+Everything from the watch stream to the published condition, with the failure point marked. Each
+box names the function that does the work.
 
-**The race is common, not exotic.** With the fix in place, one local e2e run logged
-`status write lost a race` **74 times**, and **55** of those were on a reconcile that had computed a
-CONVERGED status — every one of which would previously have taken the five-minute cadence holding a
-stale answer. A was therefore happening dozens of times per run and only being NOTICED when the
-stalled object was one a spec was waiting on inside its 90s budget. That is the whole of its
-apparent intermittency, and it is why an earlier draft of the fix comment calling the race "by
-definition, rare" was wrong.
+```mermaid
+flowchart TD
+  subgraph owner["internal/watch — owner loop (single goroutine)"]
+    PLAN["replaceGitTargetWatches()<br/>target_watch.go"]
+    GATE0["RenderFidelityGate.Reconcile()<br/>issues one revision per cell"]
+    START["startTargetWatchStreams()<br/>stream carries its revision"]
+    PLAN --> GATE0 --> START
+  end
 
-Post-fix the same publishes read `True/RenderMatchesLive converged=true requeue=10s` — the
-shortened cadence doing its job.
+  subgraph cell["per-cell stream goroutine (one per watched cell)"]
+    REPLAY["runTargetWatch() → replay complete"]
+    ENQ["enqueueReplayResync()<br/>→ enqueueScopedResync()"]
+    START --> REPLAY --> ENQ
+  end
 
-**Confirmed independently**, same run, different spec and a different scale — `quickstart-install`
-on a 5-scope target:
+  subgraph worker["internal/git — branch worker (one goroutine per branch)"]
+    APPLY["applyResync()<br/>mark-and-sweep, commit"]
+    REPLY["req.reply(ResyncResult)"]
+    ENQ --> APPLY --> REPLY
+  end
 
-```text
-gate: ingresses.networking.k8s.io … rev 5 -> True
-12 publishes, the LAST:  True/RenderMatchesLive  converged=true  requeue=5m0s
-~100s later:             gittarget … RenderMatchesLive=Unknown(Rechecking: … owes revision 5)
+  subgraph drain["drain goroutine (one per resync)"]
+    DRAIN["drainScopedResync()"]
+    MARK["MarkTargetRenderFidelityScopeClean(revision, cell)"]
+    REPLY --> DRAIN --> MARK
+  end
+
+  subgraph gatestate["RenderFidelityGate — the authority"]
+    REC["recordScope(): revision must match"]
+    RED["reduceRenderFidelity()<br/>True once every scope is clean"]
+    MARK --> REC --> RED
+  end
+
+  PUB["publishRenderFidelityStatus()<br/>change detection only"]
+  ENQC["enqueueGitTargetReconcile()<br/>best-effort GenericEvent"]
+  RED --> PUB --> ENQC
+
+  subgraph ctrl["internal/controller — GitTargetReconciler"]
+    AXIS["renderAxis(RenderFidelityForGitTarget())<br/>reads gate.Status() LIVE"]
+    COMMIT["reconcileStatus.commit()<br/>optimistic-lock status patch"]
+    RQ["gitTargetRequeue(): converged → 5m, else 10s"]
+    ENQC --> AXIS --> COMMIT --> RQ
+  end
+
+  BUG{"patch conflicts?"}
+  COMMIT --> BUG
+  BUG -->|"no"| OK["status written"]
+  BUG -->|"yes — THE DEFECT"| LOST["write dropped, commit returns nil<br/>caller still thinks it converged → 5m"]
+
+  RULE["WatchRuleReconciler<br/>gitTargetReadyCondition() COPIES the target's stored Ready"]
+  OK --> RULE
+  LOST --> RULE
+
+  style LOST fill:#c0392b,color:#ffffff
+  style BUG fill:#e67e22,color:#ffffff
 ```
 
-Twelve reconciles rather than sixty-six, five scopes rather than sixty-one, and the same outcome:
-the reconcile that computed `True` lost the write and took the converged cadence with it. The
-mechanism does not need a large scope count, only two reconciles close enough together to conflict.
+Two properties of this picture did most of the damage during the investigation:
 
-**The fix** records the loss rather than returning it — a conflict is expected and must not become
-a reconcile error for every controller using this helper — and the GitTarget reconcile asks
-`writeLost()` before choosing its requeue, taking the 10s settle interval instead of the converged
-five minutes. The stale-observation protection is untouched.
+- **`renderAxis` reads the gate LIVE**, so the published condition is not a cache of the gate — any
+  reconcile at all would have published the right answer. That is what proves the gate was never
+  the problem.
+- **A rule's `Ready` is a COPY.** `gitTargetReadyCondition` folds the GitTarget's *stored* condition
+  into the rule as an independent prerequisite, so a rule reporting `Rechecking` says only what the
+  target said when the rule last reconciled. Every earlier draft of this page read that message as
+  a live view of the gate.
 
-### 2.13 The failure class
+### 2.3 The race itself
 
-Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
-reports exactly once per revision, from
-[`drainScopedResync`](../../internal/watch/event_router.go), under the revision its stream was
-**started** with. Recovery from a missing report requires the cell's stream to be restarted by a
-plan change, because a replay is the only thing that produces a report.
+Concurrency is what makes the conflict, and a scope-per-cell design supplies it: each scope report
+enqueues the GitTarget, so a 61-scope target produced ~66 reconciles in four seconds.
 
-So any scope that ends up holding a revision no running stream will ever report under is stuck
-**permanently**, and the target is stuck with it. Three code paths can produce that state, and all
-three are silent:
+```mermaid
+sequenceDiagram
+  autonumber
+  participant D1 as drain (scope 60)
+  participant D2 as drain (scope 61)
+  participant G as RenderFidelityGate
+  participant R1 as GitTarget reconcile A
+  participant R2 as GitTarget reconcile B
+  participant K as apiserver
 
-1. **The drain never runs.** `enqueueReplayResync` returns early when the worker's queue was full
-   — *before* starting the drain — even though `EnqueueResync` has already delivered
-   `ErrFinalizeQueueFull` on the reply channel for the drain to record. The contract comment on
-   [`enqueueScopedResync`](../../internal/watch/event_router.go) says the failure "is still
-   delivered on resultCh for the drain to record"; the caller in
-   [`target_watch.go`](../../internal/watch/target_watch.go) makes that impossible. Nothing marks
-   acceptance, fidelity or retention, and nothing re-measures. Latent in the observed runs (no
-   queue-full lines), but real, and it is a code *deletion* to fix.
-2. **The drain runs and reports, but the gate rejects it.** `recordScope` returns `applied=false`
-   when `result.revision != revision`, and the caller discards the result. A scope handed a fresh
-   revision without its stream being restarted is in exactly this state for ever.
-3. **Supersession skips the reports.** [`handleScopedResyncError`](../../internal/watch/event_router.go)
-   returns on `ErrResyncSuperseded` without marking acceptance, **fidelity** or retention, on the
-   reasoning that the replacement marks them instead. Its own comment names all three; the earlier
-   drafts of this page connected it only to retention.
+  D1->>G: RecordScopeClean(rev 43)
+  G-->>D1: Unknown (1 of 61 pending)
+  D1->>R1: enqueue
+  D2->>G: RecordScopeClean(rev 44)
+  G-->>D2: True (every scope clean)
+  D2->>R2: enqueue
 
-The common structure is what matters: **three separate mirrors of "the current cell set" must
-agree** — the running streams in `targetWatchSet.streams`, the readiness surface in
-`watchPlaneState.streams`, and the gate's `scopes` — and the roll-up is *accumulated* by push
-rather than *derived*. Any disagreement between the mirrors is unobservable and permanent.
+  R1->>G: Status() → Unknown
+  R2->>G: Status() → True
+  R1->>K: patch status = Rechecking (resourceVersion N)
+  K-->>R1: OK, now N+1
+  R2->>K: patch status = True (resourceVersion N)
+  K-->>R2: 409 Conflict
 
----
+  Note over R2: commit drops the write and returns nil
+  Note over R2: rd.converged is true → RequeueAfter 5m
+  Note over K: object still holds Rechecking<br/>the winning write was status-only, so<br/>GenerationChangedPredicate re-enqueues nothing
+```
+
+Reconcile B computed the correct answer, could not write it, and was told it had succeeded — so it
+chose the cadence for a healthy target. Nothing revisited the object for five minutes.
+
+### 2.4 The evidence, in the order it eliminated things
+
+Each row is a reproduction that removed a branch. None of it was reasoning ahead of measurement;
+two hypotheses that were reasoned ahead of measurement are in §2.7, both withdrawn.
+
+| Run | What it proved |
+| --- | --- |
+| `33103011476` | The condition reason is `Rechecking`, a RENDER-FIDELITY reason — A is not a streams failure, which is where three reproductions had been spent |
+| `33116777679` | The new message names ONE scope of five and its revision, replacing log archaeology |
+| `33118310453` | No refusal clause on the named scope ⇒ no report ever arrived under a wrong revision |
+| local, `f277f074` | Zero `not applied`, zero superseded, no error path — every gate refusal branch excluded |
+| `33120703394` | **The gate ACCEPTED the named scope and reached `True`.** The gate was never stuck |
+| `33123538889` | Zero dropped-reconcile lines ⇒ the notification was delivered; and the GitTarget's OWN condition is stale, not just the rule's copy |
+| local, `26cd36c3` | 66 publishes for one target; the LAST computes `True` with `requeue=5m0s`; object still `Unknown` 84s later |
+| `33126282153` | The same signature independently on quickstart: 5 scopes, 12 publishes, same outcome |
+
+The chain from watch stream to published condition is now instrumented at every hop, which is what
+made the last step a lookup rather than a guess.
+
+### 2.5 Why it looked intermittent
+
+It was not intermittent. With the fix in place, one local e2e run logged `status write lost a race`
+**74 times**, **55** of them on a reconcile that had computed a CONVERGED status and would therefore
+have taken the five-minute cadence.
+
+So A was happening dozens of times per run throughout, and only FAILED a spec when a stalled object
+happened to be one an assertion was waiting on inside its 90-second budget. That is the whole of its
+apparent randomness — and it is why an early draft of the fix comment calling the race "by
+definition, rare" was wrong, and why eight focused low-load runs of the A-prone spec all passed.
+
+### 2.6 The fix
+
+`commit()` still drops the stale write; it now RECORDS that it did, and
+`reconcileStatus.requeueAfter` shortens the caller's cadence to the settle interval when the write
+was lost. Five controllers share `commit()` and the same `GenerationChangedPredicate`, so all five
+ask it — fixing only the GitTarget would have left a WatchRule's own stale `Ready` for five
+minutes, which is the value the failing assertion actually reads.
+
+The conflict is deliberately NOT returned as an error: it is expected and frequent, and turning it
+into a reconcile failure would distort every controller's error metrics for a race the system is
+designed to lose sometimes.
+
+### 2.7 Two hypotheses tried and withdrawn
+
+Recorded so they are not re-derived.
+
+**A1/A2 — cell-identity mismatch.** The theory was that the rule's expected cell set and the plan's
+opened set were computed from different snapshots. A diagnostic was built for it, and a narrowing
+fix written and reverted for breaking three tests that deliberately encode the opposite invariant.
+The diagnostic then fired **zero times** for the rule that failed. It was instrumenting the wrong
+subsystem: the cells never disagreed.
+
+**A stale prune mode on the resync** (Failure B's first theory, §3.3) — implemented, passed the very
+spec it targeted once, and reverted when the logs contradicted its mechanism.
+
+Both cost real time, and both were withdrawn on evidence rather than quietly dropped. The lesson the
+page keeps re-learning: **require a mechanism, not a colour.**
+
+### 2.8 The pattern underneath all of it
+
+Six components in this chain logged what they REJECTED and said nothing about what they ACCEPTED:
+
+| Component | Before | Now |
+| --- | --- | --- |
+| the render-fidelity condition | a constant string naming nothing | names each pending scope and the revision it owes |
+| `recordScope` revision mismatch | silent | recorded on the scope, surfaced in the condition |
+| `recordScope` `!found` guards | silent | logged, naming cell and revision |
+| zero-revision report | silent early return | logged as anomalous |
+| fidelity accept path | silent | logged (this is what proved the gate converged) |
+| retention roll-up accept | silent | Info on the one ambiguous shape, V(1) otherwise |
+| `enqueueGitTargetReconcile` drop | silent | logged as load-bearing |
+| **`commit()` lost write** | **`V(1)`, and reports success** | **Info, and the caller is told** |
+
+`commit()` was the last and the fatal one. A component that reports its refusals and hides its
+successes cannot be debugged from the outside, and every hour of this investigation that produced
+progress was an hour spent closing one of these rather than theorising about the watch plane.
 
 ## 3. Failure B — named, with a local reproduction
 
@@ -564,96 +385,66 @@ The `resync retained managed documents` Info line is throttled to once per ten m
 The drop diagnostic could not fire because nothing was dropped. B1 and B2 as originally posed — the
 revision gate and the superseded path — are both retired.
 
-## 4. The fix, and why it removes code
+## 4. What was changed, and what is left
 
-The instinct on a status bug is to add a reporter. This one is the opposite: the system already
-computes everything needed and declines to publish it, and it maintains three mirrors of one fact.
+Nothing here was a new reporter bolted on. The system already computed every fact needed and
+declined to publish it — so most of the work was making components say what they had done, and the
+one behavioural fix (§4.9) is four lines.
 
-**4.1 Make the gate say what it is waiting for.** `reduceRenderFidelity` already knows the pending
-scopes by name. Render them into the message. The GitTarget condition then reads
-`Waiting for 1 of 4 render scopes: secrets in ns-x (revision 3)`, which is visible to
-`kubectl get gittarget`, to the WatchRule condition that inherits it, and to the e2e failure text
-that already prints `message`. No new logging, no new plumbing.
+### 4.1 Landed
 
-**4.2 Delete the temporary diagnostics this replaces.** `explainNotRunning`, `notRunningHypothesis`
-and `cellNames` in [`stream_readiness.go`](../../internal/watch/stream_readiness.go) exist only to
-diagnose Failure A, and they were looking in the wrong place. The supersession log line in
-`handleScopedResyncError` was raised V(1) → Info as `TEMPORARY` for the same hunt. Both go back
-out once the condition carries the answer. Net change is negative.
+| # | Change | Commit |
+| --- | --- | --- |
+| 1 | The render-fidelity condition names its pending scopes and the revision each owes, instead of a constant string | `c87db68d` |
+| 2 | Deleted `explainNotRunning` / `notRunningHypothesis` / `cellNames` — ~70 lines aimed at the wrong subsystem — and lowered the supersession log | `17a57352` |
+| 3 | The resync drain starts even when the enqueue was dropped, so a queue-full reply is read by the drain the contract promises will read it | `fc04b15b` |
+| 4 | All four fidelity refusal branches name the cell, the revision and the gate's message | `32b75e02` |
+| 5 | A refused revision is recorded on the scope and surfaced in the condition | `f1ae80a9` |
+| 6 | The retention roll-up reports the one ambiguous acceptance (re-measured, same answer) at Info and the routine one at `V(1)` | `8ceb5902` |
+| 7 | The fidelity accept path is logged — this is what proved the gate converges | `e3356796` |
+| 8 | A stale fidelity snapshot can no longer overwrite a fresh one; a dropped reconcile request is logged | `43c4740b` |
+| 9 | The GitTarget publishes what it published and how long it will wait | `26cd36c3` |
+| 10 | **A lost status write is recorded and requeued promptly** — the fix | `8ad84416` |
+| 11 | The same repair for all five controllers, via `reconcileStatus.requeueAfter` | `fcdb3de9` |
+| 12 | The e2e assertion prints the referenced GitTarget's own conditions beside a failing rule's | `9b6142d4` |
 
-**4.3 Always drain.** Remove the early return in `enqueueReplayResync` so the queue-full reply is
-read by the drain that the contract already promises will read it.
+Two invariants were deliberately NOT weakened along the way:
 
-**4.4 Say when a scope result is refused.** `RecordScope*` answers `applied=false` for three
-different reasons and every caller discarded that answer; a fourth path returned even earlier, on a
-report carrying no revision. All four now name the cell, the revision reported and the gate's
-current message. The retention roll-up has logged its refusals since `c24844a1`, and that asymmetry
-is the whole reason B accumulated evidence while A accumulated none.
+- **The revision gate still refuses stale reports.** A report from a replaced stream must not stand
+  in for a fresh one; the repair was to make the refusal visible, not permissive.
+- **`commit()` still drops the stale write.** By the time a conflict is known the observation is
+  out of date. Only the silence was fixed.
 
-**4.5 Record what the gate refuses, on the scope itself.** A refused report — one carrying a revision the plan has moved
-past — was discarded in silence, so a scope waiting for its first replay and a scope discarding a
-steady stream of reports were indistinguishable from outside. They have opposite repairs: the first
-converges by waiting, the second never does. The scope now remembers the last revision it refused
-and the pending message says so. This is the asymmetry that gave B evidence and left A with none;
-the retention roll-up already logged its drops.
+### 4.2 Left
 
-**4.6 Instrument what the retention roll-up ACCEPTS.** It logs every refusal and says nothing when
-it takes a report, and `mutateWatchPlane` discards the whole mutation when nothing an operator
-would see moved — so "accepted and unchanged" and "never reported" are the same silence. Closing
-that is what §3.4 needs, and it is the same repair §4.4 made on the fidelity side.
+1. **Failure B.** Narrowed to the roll-up's accept path, with a falsifiable prediction that
+   `8ad84416` already fixed it (§3.5). Needs a reproduction, not a theory — §3.3 records what
+   guessing cost.
+2. **The encryption-secret unit flake (§5.1).** It failed 3 of 4 CI runs on 2026-08-27 against a
+   recorded rate of ~1 in 11. It is unrelated to this branch, and at that rate it alone keeps CI
+   from going green, so it needs its own fix before this branch merges on a real green run rather
+   than a re-run.
+3. **Lower the TEMPORARY logs.** The fidelity accept line, the supersession line and the GitTarget
+   publish line are at Info while B is open. Lower them when it closes; the condition-level
+   diagnostics stay.
 
-**4.7 Do not weaken the revision gate.** A stale report from a replaced stream must still be
-refused. The repair is that a scope which cannot be reported under its current revision must be
-*re-measured*, not that an old measurement may stand in for a new one.
+### 4.3 Reading a future reproduction
 
-### 4.8 Order of work
+The chain in §2.2 is instrumented at every hop, so a reproduction should be read, not theorised.
 
-Steps 1-5 have LANDED. What remains is step 6, and it needs a reproduction rather than a theory.
-
-1. ✅ Pending scopes named in the condition, with the revision each owes (§4.1).
-2. ✅ Temporary A1/A2 diagnostics removed; supersession log back to `V(1)` (§4.2).
-3. ✅ The drain starts even when the enqueue was dropped (§4.3).
-4. ✅ Every fidelity refusal named, on all four branches (§4.4), and recorded on the scope (§4.5).
-5. ✅ The retention roll-up says when it accepts a report that publishes nothing (§4.6).
-6. ⬜ **Take the next reproduction and read what it says.** Do not guess between the branches; §3.3
-   is what guessing cost last time.
-
-Reading the next A reproduction:
-
-| What the condition says | Branch |
+| Signal | Meaning |
 | --- | --- |
-| `stream carries no revision` | the stream was started without one though the gate issued it one — the plan pass and the gate disagree about the cell |
-| a `render scope result was not applied` line with a non-zero `reportedRevision` | the gate holds the scope but would not take the report — one of `recordScope`'s `!found` guards |
-| owes revision N, a refusal clause naming a different revision | a stale tail; the live stream's own report is what to look for next |
-| a `render scope result accepted` line for the cell, yet the condition still names it | the gate took the report and the scope is STILL pending — the disagreement is inside the gate, or a later `Reconcile` reset it |
-| no `accepted` line and no `not applied` line | nothing reached the mark path — the search moves to the drain and to `enqueueReplayResync`, whose `ctx.Done()` guard returns nil as if it had succeeded |
+| `status write lost a race` on the target, then a stale condition | A's mechanism, recurring — check the requeue that followed it |
+| `render scope result accepted` … `state:True`, condition still stale | the gate is fine; the failure is downstream in publication |
+| `a render scope result was not applied` | the gate refused a report — read `reportedRevision` against the owed revision |
+| `stream carries no revision` | the plan pass and the gate disagree about the cell |
+| `a GitTarget reconcile request was dropped` | a load-bearing notification was crowded out |
+| `retention report accepted but published nothing` | a re-measurement produced the count already published — the bug is upstream of the roll-up |
+| `superseded by a newer resync` | the coalescing path skipped this scope's reports; check the replacement reported |
+| none of the above, condition still stale | nothing reached the mark path — go to the drain and `enqueueReplayResync` |
 
-There is a fifth silent branch, and it is deliberately left silent: `MarkTargetRenderFidelity*`
-returns without a word when `fidelityGate()` is nil, which is the no-gate-wired legacy path used by
-tests. It cannot explain any failure in which OTHER scopes of the same target reported, because the
-gate is a single instance created in `NewWorkerManager` and shared by every worker and the watch
-manager — if it were nil, no scope would ever report and the target would read vacuously ready.
-Do not spend a run on it.
-
-Reading the next B reproduction:
-
-| What the log says | Meaning |
-| --- | --- |
-| `retention report accepted but published nothing` | the report landed and matched the previous values — so the count was already what the sweep produced, and the bug is upstream of the roll-up |
-| `retention report dropped` | the revision gate or the plan membership refused it |
-| `superseded by a newer resync` | the coalescing path skipped this scope's reports; check that the REPLACEMENT then reported |
-| neither, count still stale | `MarkTargetRetention` was never called; the search moves to the drain |
-
-The supersession line is at Info **while B is open**. It was lowered to `V(1)` once, on the
-assumption the fidelity condition had made every lost report visible; it had not — that path skips
-the retention report too, and lowering it re-blinded the path in the very local reproduction that
-followed. Zero occurrences of it in a run built after that lowering therefore proves nothing.
-
-Do not treat a green full run as evidence at any step. Both failures have produced fully green CI
-on a commit that failed locally, and vice versa — and §3.3 records a fix that passed the very spec
-it targeted while contradicting the logs.
-
----
+And the trap that cost the most: **a rule's `Ready` is a copy of its GitTarget's.** The e2e
+assertion now prints both, so never infer the target's state from the rule's message again.
 
 ## 5. Flake inventory — what is ambient, and must not be misattributed
 
