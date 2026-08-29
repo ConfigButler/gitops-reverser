@@ -87,7 +87,7 @@ func (r ResourceIdentifier) Key() string {
 // once any layout exists in the target, sibling inference follows it, and an
 // existing document is always edited in place at its current location (match-first),
 // so changing this shape never moves a file that is already in Git. See
-// docs/spec/gittarget-new-file-placement-rules.md.
+// docs/layout/new-file-placement-rules.md.
 //
 // That omitted version is the other half of the decision recorded at
 // [ResourceIdentifier.Key]: this versionless identity is the durable one — the object stays

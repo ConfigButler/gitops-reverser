@@ -1,0 +1,19 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: shop-configuration
+  namespace: shop
+spec:
+  providerRef:
+    name: artifacts-repository
+  clusterProviderRef:
+    name: app-intent
+  branch: main
+  path: apps/shop
+  placement:
+    # The folder does not exist yet, so the root that supplies the namespace has to
+    # be created before Never can be true. Create is what makes the omission
+    # provable rather than trusted: the operator owns the kustomization.yaml it
+    # writes namespace: shop into.
+    serializeNamespace: Never
+    kustomizeRoot: Create

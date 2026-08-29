@@ -14,7 +14,7 @@
 > [kustomize-support-boundary.md](kustomize-support-boundary.md),
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md),
 > [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md),
-> [../manifest/file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md),
+> [../manifest/file-agnostic-placement.md](../../layout/new-file-placement-rules.md),
 > [../../finished/current-manifest-support-review.md](../../spec/current-manifest-support-review.md)
 
 ## Why this exists
@@ -49,7 +49,7 @@ Repo-wide target discovery is therefore a **new axis**, not a new operator
 feature. Putting it in the operator would fight both the simplicity goal and the
 one-owner invariant. It belongs in the CLI/library, and anything built on top of the
 operator consumes its report — exactly the division already recorded in
-[file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md) and the
+[file-agnostic-placement.md](../../layout/new-file-placement-rules.md) and the
 [README](README.md) responsibilities table:
 
 | Layer | Owns | Gains repo-wide discovery? |

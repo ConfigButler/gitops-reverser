@@ -1,0 +1,17 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: demo-workloads
+  namespace: demo
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  path: apps/demo
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
+  placement:
+    # No byType or default template declared, so the built-in ladder applies: the
+    # folder's one kustomize root places new files beside it. Both fields below are
+    # defaults too, spelled out because the scenario is about what adoption resolves to.
+    serializeNamespace: Auto
+    kustomizeRoot: Adopt

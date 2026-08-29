@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: flux-media
+  namespace: flux-system
+spec:
+  targetRef:
+    name: flux-media
+  rules:
+    - apiGroups: ["helm.toolkit.fluxcd.io"]
+      apiVersions: ["v2"]
+      resources: ["helmreleases"]

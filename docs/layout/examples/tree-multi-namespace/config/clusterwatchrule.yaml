@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterWatchRule
+metadata:
+  name: home-cluster-rbac
+spec:
+  targetRef:
+    name: home-cluster-state
+    namespace: homelab-config
+  rules:
+    - apiGroups: ["rbac.authorization.k8s.io"]
+      apiVersions: ["v1"]
+      resources: ["clusterroles"]

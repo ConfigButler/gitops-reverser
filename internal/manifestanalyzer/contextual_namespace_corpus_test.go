@@ -25,7 +25,7 @@ type wantDoc struct {
 // testdata/contextual-namespace. Each folder is built as a GitTarget subtree and the
 // per-document namespace provenance is asserted, so the supported boundary is pinned by
 // real layouts rather than prose. See
-// docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
+// docs/layout/contextual-namespace.md.
 func TestContextualNamespaceCorpus(t *testing.T) {
 	cases := []struct {
 		dir           string

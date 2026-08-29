@@ -1,0 +1,18 @@
+# The second target. HelmReleases are a different layer from the sources they pull
+# from, so they get their own folder and their own GitTarget rather than sharing one
+# with the sources — which is the shape Flux's documented repository structures exist
+# to produce.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: flux-media
+  namespace: flux-system
+spec:
+  providerRef:
+    name: homelab-repository
+  branch: main
+  path: apps/home/media
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
+  placement:
+    serializeNamespace: Never
+    kustomizeRoot: Require

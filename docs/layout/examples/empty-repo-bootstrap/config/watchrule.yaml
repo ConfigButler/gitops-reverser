@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: shop-configuration-content
+  namespace: shop
+spec:
+  targetRef:
+    name: shop-configuration
+  rules:
+    - apiGroups: ["config.shop.example"]
+      apiVersions: ["v1alpha1"]
+      resources: ["shopconfigurations"]

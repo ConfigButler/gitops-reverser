@@ -5,8 +5,8 @@
 > Status: decided
 > Captured: 2026-06-08
 > Related:
-> [file-agnostic-placement.md](gittarget-new-file-placement-rules.md),
-> [contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md),
+> [file-agnostic-placement.md](../layout/new-file-placement-rules.md),
+> [../layout/contextual-namespace.md](../layout/contextual-namespace.md),
 > [../sops-repo-bootstrap-and-key-management-architecture.md](../finished/sops-repo-bootstrap-and-key-management-architecture.md),
 > [../sops-repo-bootstrap-out-of-scope.md](../finished/sops-repo-bootstrap-out-of-scope.md)
 
@@ -17,7 +17,7 @@ SOPS file**. We do **not** write SOPS-encrypted multi-document YAML (no
 `\n---\n`-separated documents inside an encrypted file).
 
 Plaintext manifests may still be multi-document where that is convenient (see
-[file-agnostic-placement.md](gittarget-new-file-placement-rules.md)); this decision is
+[file-agnostic-placement.md](../layout/new-file-placement-rules.md)); this decision is
 scoped to files we encrypt with SOPS.
 
 ## Why this came up
