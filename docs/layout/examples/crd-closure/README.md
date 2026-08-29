@@ -89,9 +89,15 @@ For application configuration it also puts the wrong team in charge: the app dev
 
 ## What this scenario cannot show
 
-The definition is necessary and not always sufficient. A CRD declaring
-`spec.conversion.strategy: Webhook`, or a type whose real cluster mutates objects through a
-defaulting webhook, needs a **running controller**, which a workload-less branch cluster does not
-have. The objects are accepted and are quietly not what production would have stored. That is
-recorded in [`crd-handling.md`](../../../design/crd-handling.md) as the finding to settle before the
-first branch cluster is built.
+The definition is necessary and not always sufficient. `Widget` converts with nothing running, which
+is why its manifest entry says `conversion: {strategy: None}` and why this scenario stays simple. A
+type whose CRD declares `spec.conversion.strategy: Webhook`, or whose real cluster mutates objects
+through a mutating admission webhook, needs something to answer, and a workload-less branch cluster
+has nothing to answer with. The objects are accepted and are quietly not what production would have
+stored.
+
+It does not need a *controller*, though, only an endpoint: `WebhookClientConfig` takes a `url` as
+well as a `service`, and `url` is precisely the form for a webhook that does not run in the cluster.
+The ladder, the constraints on that URL, and what it would take for ConfigButler to host
+transformations rather than every team exposing an endpoint, are in
+[`crd-handling.md`](../../../design/crd-handling.md).

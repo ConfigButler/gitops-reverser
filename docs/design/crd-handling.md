@@ -109,18 +109,75 @@ The ladder, in the order it should be tried:
 
 ## The finding that matters most for the branch cluster
 
-**A workload-less cluster cannot run a conversion or defaulting webhook.** A CRD with
-`spec.conversion.strategy: Webhook` needs a running service to convert between stored versions, and
-any type whose real cluster mutates objects through a defaulting webhook will hold *unmutated*
-objects in the branch cluster. Installing the CRD is therefore necessary and not always sufficient,
-and the gap is invisible: the object is accepted, it is simply not what the real cluster would have
-stored.
+**A workload-less cluster runs no webhook of its own.** A CRD with
+`spec.conversion.strategy: Webhook` needs something to convert between stored versions, and a type
+whose real cluster mutates objects through a mutating admission webhook will hold *unmutated*
+objects in the branch cluster. Installing the CRD is necessary and not always sufficient, and the
+gap is invisible: the object is accepted, it is simply not what production would have stored.
 
-This is a property of the vision rather than of this page, but it belongs here because it is
-discovered when the CRD is installed. Three honest responses, none of them free: refuse to hydrate
-types whose CRD declares a webhook conversion; hydrate them and mark the session as
-non-authoritative for those types; or run the controller after all, which stops the cluster being
-workload-less. Decide it before the first branch cluster is built, not after.
+Three things narrow that, in increasing order of ambition. Take them in this order.
+
+**1. Most defaulting is not a webhook at all.** Structural-schema defaults are applied by the API
+server itself
+([`pkg/apiserver/schema/defaulting`](https://github.com/kubernetes/apiextensions-apiserver)), so a
+CRD's `default:` values work in a cluster with nothing running. Only *mutating admission* is
+missing, which is a much smaller set than "defaulting".
+
+**2. Conversion only fires when versions differ.** If the branch cluster installs the CRD with the
+versions the folder actually uses, and serves what it stores, no conversion runs. Narrowing the
+installed version list is a subset of the real CRD rather than a synthesized schema, so it does not
+fall into option D, and it is the cheapest honest answer for the common case of a folder written at
+one version.
+
+**3. The webhook can live outside the cluster, and this is the interesting one.**
+`WebhookClientConfig` takes **either** `service` **or** `url`
+([apiextensions v1 types](https://github.com/kubernetes/apiextensions-apiserver), verified at
+v0.36.4), and the upstream field documentation is explicit that `url` is for a webhook that is *not*
+running in the cluster: the API server cannot resolve in-cluster DNS, so `service` is the in-cluster
+form and `url` is the external one. The same shape exists on admission webhook configurations.
+
+So a branch cluster can install the CRD pointed at a conversion endpoint that runs somewhere else,
+and the type converts correctly with nothing deployed. The constraints, all from the field's own
+contract:
+
+- **`https` only.** No query string, no fragment, no `user:password@`. A path *is* allowed and may
+  carry an arbitrary string, which upstream itself suggests using as a cluster identifier.
+- **`caBundle` is optional**: omitted, the API server uses its system trust roots, so a publicly
+  trusted certificate needs no bundle at all. A private CA needs one, and needs it rotated.
+- **The API server sends no bearer token.** Client credentials for webhooks come from API
+  server-level configuration, not from anything a per-CRD `url` can carry. An external endpoint
+  therefore authenticates its caller by mTLS or by the path identifier above, and must assume the
+  path is the only secret it has.
+- **Reachability runs the other way from usual.** The branch cluster's control plane makes the
+  outbound call, so the endpoint has to be reachable from wherever we run those clusters, and every
+  object of that type is sent to it. That is an egress policy question and a data exposure question
+  before it is a design question.
+- **It is in the edit path.** Latency and availability of that endpoint become latency and
+  availability of editing a branch.
+
+### Hosted transformations
+
+The natural extension: rather than every team exposing an endpoint, ConfigButler hosts one, with
+common transformations composed by the user (clicked together, or scripted, or generated) and
+addressed per branch through the URL path.
+
+It is a real product direction and the mechanism is already proven, since it is the same webhook
+contract with us as the operator. Two things have to be true before it is safe, and they are worth
+writing down now:
+
+- **A transformation is code, and it must be pinned.** A branch cluster whose behavior depends on
+  the current state of a hosted rule set is not reproducible: the same branch hydrates differently
+  next week. The reference manifest is the place to pin the transformation version, next to the
+  CRD digest it belongs to.
+- **Divergence from the app's real webhook must be loud.** If our transformation and the
+  application's own conversion disagree, the branch cluster stores objects production would not, and
+  we have recreated the invisible gap this section opened with, except now we caused it. A type
+  served by a hosted transformation rather than by the app's own endpoint should be marked
+  non-authoritative in the session, and the marking should survive into whatever the branch produces.
+
+The honest ladder is therefore: **narrow the versions** so nothing converts; else **point at the
+application's own endpoint**, which is where that code already lives and where the app team already
+owns it; and only then **host a transformation**, for types whose owner has no endpoint to point at.
 
 ## Placement consequences
 
@@ -150,8 +207,15 @@ is recomputed when rules change, over the isolation seam that already exists for
   object, so any drift shows.
 - One manifest **per target folder** or one **per repository**? Two targets in one repository will
   reference overlapping types.
-- Does the branch cluster install **only CRDs**, or the controllers too? The answer decides whether
-  the webhook finding above is a limitation or a bug.
+- Does the branch cluster install **only CRDs**, or the controllers too? With `url` webhooks the
+  question narrows: what has to run is an *endpoint*, not a controller, and it does not have to run
+  in the branch cluster at all.
+- Does the reference manifest record a type's **conversion strategy** and, where it is `Webhook`,
+  the endpoint the branch cluster should point at? The manifest is the only place that knows both
+  the type and its origin, so it is the natural home, and it makes "this folder needs a reachable
+  endpoint to be editable" a reviewable fact rather than a runtime surprise.
+- Who **owns the caBundle** for an app-hosted endpoint, and what happens to a branch when it
+  rotates?
 - Should `Vendored` **strip Helm and Flux ownership metadata** on the way out? It would make the
   vendored copy applicable elsewhere, at the cost of `sanitize` acquiring a rule that exists for one
   option of one field.
