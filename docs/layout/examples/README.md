@@ -37,6 +37,7 @@ is named only where that choice explains the scenario.
 | [Tree, multi-namespace](tree-multi-namespace/README.md) | How does a small cluster mirror several namespaces and cluster resources safely? |
 | [Homelab Argo CD](homelab-argocd/README.md) | How does an app-of-apps folder remain a narrow, editable target? |
 | [Homelab Flux](homelab-flux/README.md) | How do Flux declarations stay editable without treating chart output as source? |
+| [CRD closure](crd-closure/README.md) | What else does a folder of custom resources need to be applied elsewhere? **A question, not a decision** |
 | [Overlay-scoped target](overlay-scoped-target/README.md) | How can an environment overlay change a supported field without claiming ownership of its base? **Write path, not placement** |
 
 ## Two fixture conventions

@@ -1,0 +1,7 @@
+apiVersion: apps.example.com/v1alpha1
+kind: Widget
+metadata:
+  name: checkout
+spec:
+  replicas: 2
+  variant: express

@@ -1,0 +1,16 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: shop-configuration
+  namespace: shop
+spec:
+  targetRef:
+    name: shop-configuration
+  rules:
+    # No rule names customresourcedefinitions. The closure is DERIVED from the
+    # types these rules actually match, which is the whole point: a rule for
+    # CRDs would mirror every CRD in the cluster.
+    - apiGroups: ["apps.example.com"]
+      resources: ["widgets"]
+    - apiGroups: [""]
+      resources: ["configmaps"]

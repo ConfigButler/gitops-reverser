@@ -50,8 +50,9 @@ it places. The convention is **established** rather than guessed.
 The folder is single-namespace by construction rather than by declaration: no `{namespace}` appears
 in any path, because no `placement` is declared and the created root places files beside itself. A
 second source namespace has nowhere to go that would not collide, and nothing on the target says so.
-The WatchRule feeding it is namespaced and names its own source namespace, which is the fence that
-actually holds.
+The WatchRule feeding it is namespaced and names its own source namespace, which is the whole fence
+after
+[`source-scope-simplification.md`](../../../design/source-scope-simplification.md).
 
 This example is the configuration-as-data path from
 [the direction review](../../../future/direction-and-configuration-surface.md). The folder is a

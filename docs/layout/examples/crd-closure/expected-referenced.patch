@@ -1,0 +1,46 @@
+diff --git a/apps/shop/kustomization.yaml b/apps/shop/kustomization.yaml
+--- a/apps/shop/kustomization.yaml
++++ b/apps/shop/kustomization.yaml
+@@ -3,4 +3,5 @@ kind: Kustomization
+ namespace: shop
+ resources:
+   - configmap-storefront.yaml
+   - widget-checkout.yaml
++  - widget-search.yaml
+diff --git a/apps/shop/widget-search.yaml b/apps/shop/widget-search.yaml
+new file mode 100644
+--- /dev/null
++++ b/apps/shop/widget-search.yaml
+@@ -0,0 +1,8 @@
++apiVersion: apps.example.com/v1alpha1
++kind: Widget
++metadata:
++  name: search
++spec:
++  replicas: 3
++  variant: faceted
+diff --git a/apps/shop/type-dependencies.yaml b/apps/shop/type-dependencies.yaml
+new file mode 100644
+--- /dev/null
++++ b/apps/shop/type-dependencies.yaml
+@@ -0,0 +1,19 @@
++# Generated. The types this folder contains that the API server does not serve
++# on its own, and where their definitions come from. Not applied: this file is
++# read by whatever hydrates the folder into a cluster.
++apiVersion: configbutler.ai/v1alpha3
++kind: TypeDependencies
++observedAt: "2026-08-29T09:12:51Z"
++types:
++  - group: apps.example.com
++    resource: widgets
++    kind: Widget
++    servedVersions: [v1alpha1]
++    definition: widgets.apps.example.com
++    specDigest: sha256:8f2a1c9d
++    # Whether a cluster can serve this type with nothing running. Webhook here
++    # would name the endpoint a branch cluster has to point its CRD at.
++    conversion: {strategy: None}
++    source:
++      kind: HelmRelease
++      name: widget-operator
++      namespace: widget-system

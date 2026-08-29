@@ -17,15 +17,16 @@
 | 3 | `status.placement`, and the post-scan validation pass | no | 2 |
 | 4 | `placement.serializeNamespace` and `placement.kustomizeRoot` ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no | 1, 3 |
 | 5 | `commitWindow` and `commit.message` move off `GitProvider`, as `GitTarget.spec.commit` | **yes** | — |
-| 6 | The riders: the asserted CommitRequest author, its lifecycle, `meta.LocalObjectReference`, `TooManyStreams`, the ClusterProvider default message | **yes** | — |
+| 6 | The riders: the asserted CommitRequest author, its lifecycle, `meta.LocalObjectReference`, `TooManyStreams`, the ClusterProvider default message | **yes** | the source-scope change, for `TooManyStreams` only |
 
 **PRs 1 to 4 are not breaking**, which is the largest change to this plan since it was written. The
 model no longer replaces `spec.placement` with a discriminated union; it keeps the template and adds
 two members whose defaults equal today's behavior. So there is no loud rejection, no `LocateNew`
 rewrite, no migration, and the whole placement story ships without a coordinated consumer bump.
 
-What remains breaking is PRs 5 and 6, neither of which is about placement. They land in one release,
-reviewed as two changes and paid for as one bump. PR 6 is the trim handle: nothing depends on it.
+What remains breaking is PRs 5 and 6, neither of which is about placement. They land in one release
+together with the source-scope deletion, which is not this plan's work but breaks the same object in
+the same release (design change 3 below). PR 6 is the trim handle: nothing depends on it.
 
 **`F9`'s envtest stays outside this order and gates it.** Its answer constrains the enum work, so run
 it before PR 4 is planned; the question and the fallback are in [`api-wave.md`](api-wave.md).
@@ -209,12 +210,16 @@ release.
 types, the `TooManyStreams` cap, and the ClusterProvider default message. In the release because they
 are breaking and the consumer should pay once. Trim from here first.
 
-**Size `TooManyStreams` against what actually produces the fan-out**, which is the wildcard
-source-namespace expansion, not the number of rules. It is the trim handle inside the trim handle.
+**`TooManyStreams` is sequenced behind the `*` decision**, the one dependency this PR has on work
+outside the plan. `sourceNamespace: "*"` is being redefined as a single cluster-wide list and watch,
+and that is where most of the fan-out the cap was written for goes. Either land the `*` change first
+and size the cap against enumerated rules, or drop the cap from this PR: sizing it against today's
+per-namespace fan-out would bake in a number that is wrong the moment `*` lands.
 
 ## Design changes this plan folds in
 
-Each came from reviewing the worked examples. The reversal dissolved four earlier entries — the
+Each came from reviewing the worked examples, except the last, which came from the source-scope
+decision and lands on the same PRs. The reversal dissolved four earlier entries outright — the
 namespace agreement rule, `kind: Template` leaving the wave, `Auto` as the CRD default, and
 `interval` on two objects — because every field they amended is gone. They are not restated here.
 
@@ -232,9 +237,27 @@ argument for observing per scan: the declaration never changed, only the folder 
 
 The homelab examples put a `GitTarget` in `argocd`, `flux-system` and `homelab-config`, each needing
 its own `GitProvider` — three copies of one credential in a single-owner cluster. `ClusterProvider`
-already has the `allowedNamespaces` and fail-closed SAR machinery a cluster-scoped Git provider would need.
+already has the `accessFrom` and fail-closed SAR machinery a cluster-scoped Git provider would need.
 Out of scope for this order; file it, and say so in the examples' prerequisites so a reader does not
 read the duplication as intended design.
+
+### 3. The source-scope simplification shares this release
+
+Not placement work, and folded in here because it lands on the same objects, in the same breaking
+release, and moves a number this plan quotes.
+[`source-scope-simplification.md`](../design/source-scope-simplification.md) deletes
+`GitTarget.spec.allowedSourceNamespaces`, renames two `ClusterProvider` fields, and redefines
+`sourceNamespace: "*"` as a single cluster-wide list and watch at `metav1.NamespaceAll`, rejected
+while `allowAnySourceNamespace` is false.
+
+- **It rides PR 5's release, not PR 5.** It breaks `GitTarget`, as PR 5 does, so it must be in the
+  same bump; it is otherwise independent and reviews as its own change.
+- **PR 6's `TooManyStreams` cap shrinks**, as recorded above.
+- **The corpus is unaffected, and that is worth checking rather than assuming.** Records carry the
+  object's own `metadata.namespace` rather than the cell's, so a document arriving from a cluster-wide
+  cell is placed exactly as it is today and no expected patch moves. The corpus should nonetheless
+  grow one `sourceNamespace: "*"` scenario once the change lands, because "the cell is cluster-wide
+  but the path still carries `{namespace}`" is precisely the pair a reader gets wrong.
 
 ## Corpus gaps to fill in PR 1
 

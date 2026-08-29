@@ -14,7 +14,8 @@
 | Member | Object | Why breaking |
 |---|---|---|
 | **B4**: `commitWindow` and `commit.message` move off the connection | `GitProvider` → `GitTarget` | fields change object |
-| The riders: **#5** asserted `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole, `meta.LocalObjectReference` for our six reference shapes, the `TooManyStreams` cap (a `Stalled` reason and a bound on stream fan-out), the `default` `ClusterProvider` message | various | shape changes |
+| The source-scope deletion ([`source-scope-simplification.md`](../design/source-scope-simplification.md)) | `GitTarget`, `ClusterProvider`, `WatchRule` | one removal, two renames, one redefinition |
+| The riders: **#5** asserted `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole, `meta.LocalObjectReference` for our six reference shapes, the `TooManyStreams` cap, the `default` `ClusterProvider` message | various | shape changes |
 
 Additive, and therefore **not** wave members even though they are discussed here: `spec.suspend`,
 `status.placement` and the post-scan pass, the reconcile-request annotation, and the two placement
@@ -65,9 +66,9 @@ Two groupings, and one deliberate exception:
   reaches for it, and a `spec.write` wrapper invented to hold it plus `prune` plus `commit` would be
   a category we made up rather than one the API already has. `prune` is its own struct already.
 
-After the wave the spec reads as named axes rather than a list: the immutable destination
-(`providerRef`/`branch`/`path`), `encryption`, the source-scope fields, `placement`, `commit`,
-`prune`, and the one switch. That is the test for the next field too — a new member either joins an axis or
+After the wave the spec reads as six named axes rather than a list: the immutable destination
+(`providerRef`/`branch`/`path`), `encryption`, `clusterProviderRef`, `placement`, `commit`, `prune`,
+and the one switch. That is the test for the next field too — a new member either joins an axis or
 names a new one, and if it can do neither it is probably not a `GitTarget` field.
 
 ## The interactions that change the design
@@ -129,7 +130,27 @@ data-plane facts into status with an enqueue on change. So the Event is: emit wh
 changes in a way a human should know about — `LayoutResolved` becoming `Ambiguous`, or a type falling
 back for the first time. One Event per persisted change, the pattern already established for `Ready`.
 
-### 5. Two facts kept from arguments that dissolved
+### 5. The source-scope deletion is the only member that shrinks the API
+
+It belongs here for the ordinary reason first: it removes a field from `GitTarget`, and B4 already
+breaks `GitTarget` in the same release, so shipping them apart costs the consumer two bumps for one
+object. The better reason is the review surface. Every other member adds a field; this one deletes
+4,569 lines, a three-valued verdict, and the only cross-cluster read in the authorization path. A
+wave that is otherwise all addition is easier to justify when the object comes out simpler than it
+went in.
+
+Two interactions worth naming, because they change what gets built rather than merely when:
+
+- **The `SelfSubjectAccessReview` pass is the same shape as the dry run.** Both answer "tell me what
+  you would do before you do it". They are separate conditions on separate objects and neither
+  depends on the other, so the SAR work stays additive and can ship after the wave — but whoever
+  writes the second should read the first.
+- **`TooManyStreams` is sized by the `*` decision.** `sourceNamespace: "*"` compiling to one
+  cluster-wide list and watch removes the fan-out the cap was queued for. What is left to bound is
+  explicit enumeration, so the cap is still worth a `Stalled` reason and a bound — sized against
+  enumerated rules, and not planned before the `*` change lands.
+
+### 6. Two facts kept from arguments that dissolved
 
 `spec.layout` immutability and the namespace-agreement rule were both settled by the reversal:
 neither field exists. Two facts from underneath them survive and will be reached for again.
@@ -158,6 +179,8 @@ spec:
     name: platform
   branch: main
   path: clusters/prod
+  # allowedSourceNamespaces is gone: the provider's credential bounds what can be read,
+  # and ClusterProvider.accessFrom bounds who may wield it.
 
   # --- what the documents look like: ADDITIVE, not part of the wave ---
   placement:
@@ -231,8 +254,8 @@ wave cost two, on two schedules. Two things follow, and both belong on this repo
 than only on the consumer's:
 
 - **Each wave leaves residue.** A refused field stays in the schema to say "no, not that anymore" —
-  one per removal, and it is paid per wave, so the number of remaining waves on `v1alpha3` is
-  finite. That graveyard is a real cost to a newcomer reading the CRD. Sweeping
+  `allowedSourceNamespaces` now, more later. That graveyard is a real cost to a newcomer reading the
+  CRD, and it is paid per wave, so the number of remaining waves on `v1alpha3` is finite. Sweeping
   the refusals is what `v1alpha4` should be for, and it should be one version bump carrying the
   removals rather than a version bump per change.
 - **The coupling is a dependency, not a courtesy.** Staying on `v1alpha3` requires the consumer to
@@ -253,15 +276,22 @@ Dependencies first, then the things that only need the object to be breaking.
 4. **`requestedAt` + `lastHandledReconcileAt`.** On-demand refresh of step 3.
 5. **Events on a changed resolution**, over the existing recorder.
 6. **B4**, as `spec.commit`. Last of the principle items, and the one that makes the object coherent.
-7. **The riders.** Nothing else depends on them.
+7. **The source-scope deletion.** Independent of every step above, so it can be written in parallel;
+   placed here because a deletion reviews better once the additions it is not entangled with are
+   settled.
+8. **The riders.** `TooManyStreams` must come after step 7, which removes the fan-out it was written
+   to bound.
 
-Steps 2 to 5 are additive and need no bump. Steps 6 and 7 are one release; step 1 gates the planning;
-step 7 can be trimmed if the wave gets too big to review, since nothing else depends on it. The
+Steps 2 to 5 are additive and need no bump. Steps 6 to 8 are one release; step 1 gates the planning;
+step 8 can be trimmed if the wave gets too big to review, since nothing else depends on it. The
 placement fields are absent from this list on purpose: their order is
 [`implementation-plan.md`](implementation-plan.md)'s.
 
 ## What this costs, stated plainly
 
-- **One coordinated consumer bump**, for `spec.commit` and the riders.
-- **One `docs/UPGRADING.md` entry**, covering the field move and the riders. The placement work needs
-  no migration entry at all.
+- **One coordinated consumer bump**, for `spec.commit`, the source-scope changes and the riders.
+- **One `docs/UPGRADING.md` entry.** The placement work needs no migration entry at all. The `*`
+  paragraph is the one to write carefully: it is the only change here that keeps its spelling and
+  changes its meaning.
+- **A capability genuinely lost**: source-side label selectors, priced in the source-scope document.
+  It is the only thing in this wave a user can do today and cannot do afterwards.
