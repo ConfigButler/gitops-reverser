@@ -23,17 +23,31 @@ document.
 ```yaml
 spec:
   path: apps/demo
+  serializeNamespace: false                         # optional bool, unset = infer
   placement:
     byType:                                         # unchanged, as shipped
       v1/secrets: "secrets/{name}{sensitiveSuffix}"
     default: "{namespace}/{resource}/{name}.yaml"   # unchanged, as shipped
     useKustomize: true                              # bool, default false
-    serializeNamespace: false                       # optional bool, unset = infer
 ```
 
-Two booleans, inside the struct that already holds the placement axis. No discriminator, no
-`spec.layout`, no `kind`, no `scope`, no new CRD, and no enum. `spec.placement` is an existing
-optional struct, so both are additive: an object that says nothing behaves exactly as it does today.
+Two booleans. No discriminator, no `spec.layout`, no `kind`, no `scope`, no new CRD, and no enum.
+Both are additive: an object that says nothing behaves exactly as it does today.
+
+**They sit at different levels, and the line between them is retroactivity.** `spec.placement`
+decides where a **new** document goes; everything already written is match-first and never moves,
+which is the guarantee that makes a template safe to change. `useKustomize` keeps that property — it
+decides whether a new file's directory has a root to join, and creates one if not — so it belongs
+inside `placement`.
+
+`serializeNamespace` does not. It governs the bytes of **every** write, not just the first one, and
+the code already has two separate paths for it: [`plan_flush.go`](../../internal/git/plan_flush.go)
+strips `metadata.namespace` from a new document using the placement result, and strips it from an
+**update** using the document's own observed namespace source. It also decides how a managed
+document is *found* — a document whose namespace is inherited is located in the file bytes by a
+namespace-less identity. A field with those effects nested inside a struct documented as "new files
+only" is a trap: changing it rewrites existing documents as they are next touched. So it is
+`spec.serializeNamespace`, one level up, where its blast radius is legible.
 
 ## What changed
 
@@ -147,6 +161,32 @@ be read as policy.
 **It governs namespaced resources only.** A `ClusterRole` has no namespace, so the field is ignored
 for cluster-scoped documents rather than being an error — worth stating in the field documentation,
 because a tree folder is the type most likely to carry both.
+
+### Is a folder-wide claim reasonable?
+
+Setting the flag says something about *every* namespaced document in the folder, which sounds like a
+strong claim until you notice it is the claim the ecosystem's two commonest folder shapes already
+make.
+
+- **"No document carries its namespace" is the portable-artifact convention.** It is what a kustomize
+  base is: written namespace-free, with an overlay's `namespace:` transformer stamping one at build
+  time. Flux says the same thing from outside the repository with `Kustomization.spec.targetNamespace`,
+  Argo CD with `Application.spec.destination.namespace`, and a Helm chart by templating
+  `.Release.Namespace` rather than hard-coding a namespace. A folder that follows it can be deployed
+  into any namespace; a folder that half-follows it cannot, and nothing warns you.
+- **"Every document carries its namespace" is the convention for a folder applied directly.** A flat
+  mirror handed to `kubectl apply -f`, or a cluster-state tree, has nothing downstream to supply one,
+  so a document without a namespace is ambiguous rather than portable.
+
+Two things keep the claim from being coarser than reality. **Cluster-scoped resources are exempt**,
+so a folder holding both a `ClusterRole` and a `Deployment` is ordinary rather than mixed. And a
+folder is genuinely allowed to be non-uniform when it is a **tree of nested roots** — fact 2 above —
+each subtree taking its namespace from its own `kustomization.yaml`. That case is exactly what the
+default handles: inference runs per document against the root that governs *that* path, so a tree
+resolves each subtree correctly without anyone declaring anything.
+
+So the uniform claim is what an explicit setting is *for*, and the non-uniform folder is what unset
+is for. That is also why unset cannot be spelled `false`.
 
 ### The guard on `false`, and why it is a post-scan check
 

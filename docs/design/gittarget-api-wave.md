@@ -46,19 +46,22 @@ breaking anyway, and costs a bump in every release that is not.
 
 `GitTargetSpec` today is flat: `providerRef`, `branch`, `path`, `encryption`, `placement`,
 `clusterProviderRef`, `allowedSourceNamespaces`, `prune`. Queued on top of it were `suspend`,
-`useKustomize`, `serializeNamespace`, `commitWindow` and `commit.message` — five more members on a
+`serializeNamespace`, `useKustomize`, `commitWindow` and `commit.message` — five more members on a
 spec that already flattens six orthogonal axes. Left alone, this object accumulates faster than it
 sheds, and moving `commit.message` off `GitProvider` for exactly that reason while doing it just
 relocates the problem one hop.
 
 Two groupings, and one deliberate exception:
 
-- **`useKustomize` and `serializeNamespace` nest under `spec.placement`**, where an earlier draft of
-  [`model.md`](../layout/model.md) had them at the top level beside it. They are placement concerns by
-  their own argument — one decides what governs the produced document, the other what is inside it —
-  and `spec.placement` is an existing optional struct, so nesting them is **still purely additive**.
-  It costs no bump, it is free only before they exist, and it means the placement axis is one member
-  of the spec rather than three.
+- **`useKustomize` nests under `spec.placement`**, where an earlier draft of
+  [`model.md`](../layout/model.md) had it at the top level beside it. `spec.placement` is an existing
+  optional struct, so nesting is **still purely additive**, and it is free only before the field
+  exists. The test it passes is retroactivity: like every other placement field, it only ever affects
+  a **new** document.
+- **`serializeNamespace` stays at the top level**, and that is not an exception to the grouping rule
+  but the same rule applied. It governs the bytes of every write, updates included, and the identity
+  a managed document is located by; nesting it inside a struct documented as "new files only" would
+  have hidden a field that rewrites existing documents. Group by blast radius, not by topic.
 - **`commitWindow` and `commit.message` land as `spec.commit`**, not as two top-level fields:
   `spec.commit.window` and `spec.commit.message.template`. The move is breaking either way, so the
   grouping is free, and `GitProvider.spec.commit` is the shape they already have.
@@ -68,8 +71,9 @@ Two groupings, and one deliberate exception:
 
 After the wave the spec reads as named axes rather than a list: the immutable destination
 (`providerRef`/`branch`/`path`), `encryption`, `clusterProviderRef`, `placement`, `commit`, `prune`,
-and the one switch. That is the test for the next field too — a new member either joins an axis or
-names a new one, and if it can do neither it is probably not a `GitTarget` field.
+and two object-level switches — `suspend` and `serializeNamespace`. That is the test for the next
+field too: a new member joins an axis, or names a new one, or is genuinely object-level — and if it
+can do none of the three it is probably not a `GitTarget` field.
 
 ## The interactions that change the design
 
@@ -183,11 +187,11 @@ spec:
   # and ClusterProvider.accessFrom bounds who may wield it.
 
   # --- what the documents look like: ADDITIVE, not part of the wave ---
+  serializeNamespace: false       # every write, updates included
   placement:
     byType:
       v1/secrets: "secrets/{name}{sensitiveSuffix}"
     useKustomize: true            # the created kustomization carries namespace:
-    serializeNamespace: false
 
   # --- whether we write, and how those writes are batched and phrased ---
   suspend: false                  # the only stop-writes switch; a suspended target still scans

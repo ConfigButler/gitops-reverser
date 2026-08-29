@@ -10,10 +10,10 @@ spec:
     name: app-intent
   branch: main
   path: apps/shop
+  # The folder does not exist yet, so the root that supplies the namespace has to
+  # be created before the namespace can be left out. useKustomize is what makes
+  # the omission provable rather than trusted: the operator owns the
+  # kustomization.yaml it writes namespace: shop into.
+  serializeNamespace: false
   placement:
-    # The folder does not exist yet, so the root that supplies the namespace has to
-    # be created before the namespace can be left out. useKustomize is what makes
-    # the omission provable rather than trusted: the operator owns the
-    # kustomization.yaml it writes namespace: shop into.
     useKustomize: true
-    serializeNamespace: false

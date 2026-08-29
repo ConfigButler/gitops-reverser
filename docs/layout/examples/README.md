@@ -61,16 +61,19 @@ starting state, which is the property the index line was pretending to have.
 
 ## How to read the proposed fields
 
-Two optional booleans are proposed as new members of the `spec.placement` the current release
-already has. Everything else in these scenarios ships today, and most scenarios set neither flag.
+Two optional booleans are proposed. Everything else in these scenarios ships today, and most
+scenarios set neither flag.
 
-`useKustomize` decides what happens when **no** kustomization governs the path: `true` creates one
-at `spec.path` and registers the new file in it. When a kustomization *does* govern the path, the
-new file joins its `resources:` either way — that is an invariant, not a setting, which is why
-[brownfield-kustomize](brownfield-kustomize/README.md) adopts a kustomize folder with no
-configuration at all.
+`spec.placement.useKustomize` decides what happens when **no** kustomization governs the path:
+`true` creates one at `spec.path` and registers the new file in it. When a kustomization *does*
+govern the path, the new file joins its `resources:` either way — that is an invariant, not a
+setting, which is why [brownfield-kustomize](brownfield-kustomize/README.md) adopts a kustomize
+folder with no configuration at all. It is inside `placement` because, like every other placement
+field, it only ever affects a **new** document.
 
-`serializeNamespace` decides whether `metadata.namespace` appears inside the committed document. A
+`spec.serializeNamespace` is one level up, because it does not: it decides the bytes of every write,
+including updates to documents already in Git, and it decides whether `metadata.namespace` appears
+inside the committed document. A
 path cannot express it: kustomize takes the namespace from either the document or a governing root,
 and where the file sits decides neither. Left unset it is inferred, which is today's behavior and
 what most folders want. `true` is the flat-folder answer — nothing downstream supplies a namespace,

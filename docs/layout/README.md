@@ -13,7 +13,7 @@ had in the old layout. Read the label before you read the page.
 |---|---|---|
 | [`new-file-placement-rules.md`](new-file-placement-rules.md) | **spec** | where a brand-new resource's file goes: declared, the folder's one kustomize root, canonical. Go source cites it by path, and `task lint-docs` checks those citations |
 | [`contextual-namespace.md`](contextual-namespace.md) | **spec** | kustomize graph-aware namespace inference, and the supported subset. This is the inference `serializeNamespace` overrides |
-| [`model.md`](model.md) | **design** | the proposal, reversed and much smaller: the path template **stays**, and gains two optional booleans on `spec.placement` — `useKustomize` and `serializeNamespace`. Carries the status stanza, the post-scan pass, and the order the work is built in |
+| [`model.md`](model.md) | **design** | the proposal, reversed and much smaller: the path template **stays**, and gains two optional booleans — `spec.placement.useKustomize`, and `spec.serializeNamespace` one level up because it governs every write rather than only new files. Carries the status stanza, the post-scan pass, and the order the work is built in |
 
 [`examples/`](examples/README.md) makes the proposal tangible: six scenarios, each with a repository
 folder, the matching `GitTarget` and rule configuration, one live input, and the exact patch the

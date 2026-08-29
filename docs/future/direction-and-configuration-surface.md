@@ -180,9 +180,9 @@ spec:
   branch: main
   path: apps/shop
   commitWindow: 30s            # moved from GitProvider: batching describes this folder
+  serializeNamespace: false    # the artifact is environment-agnostic; namespace at deploy
   placement:
     useKustomize: true         # an empty repo becomes a buildable folder
-    serializeNamespace: false  # the artifact is environment-agnostic; namespace at deploy
 ```
 
 and the folder is inert until the tenant subscribes content to it:

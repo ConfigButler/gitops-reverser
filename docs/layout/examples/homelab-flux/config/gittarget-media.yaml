@@ -13,5 +13,4 @@ spec:
   branch: main
   path: apps/home/media
   suspend: true          # adoption dry run: scans and publishes, writes nothing
-  placement:
-    serializeNamespace: false   # the folder's own kustomization.yaml supplies it
+  serializeNamespace: false   # the folder's own kustomization.yaml supplies it

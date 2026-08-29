@@ -66,8 +66,8 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Revisit output layout. **Now designed and postponed, not open-ended, and the answer has
   reversed since [#293](https://github.com/ConfigButler/gitops-reverser/issues/293) was filed.** The
-  path template **stays**; what it could not express becomes two optional booleans on
-  `spec.placement`, `useKustomize` and `serializeNamespace`. [layout/model.md](layout/model.md)
+  path template **stays**; what it could not express becomes two optional booleans,
+  `spec.placement.useKustomize` and `spec.serializeNamespace`. [layout/model.md](layout/model.md)
   carries the reversal, the fields and the order. The placement work
   is no longer breaking, so it no longer needs
   [#294](https://github.com/ConfigButler/gitops-reverser/issues/294); the issues still describe the
