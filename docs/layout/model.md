@@ -201,6 +201,16 @@ It is one post-scan rule, on the scan that already runs, setting `Validated=Fals
 naming the field and what the folder actually contains. With `useKustomize: true` the rule is
 satisfied by construction, because the operator wrote the supplier.
 
+**Nothing here is the last line of defence, which is why the guard can be a report rather than a
+refusal.** The render check at the write path already refuses a write whose document does not render
+to the live object, and it holds for both shapes where the store's view and kustomize's disagree: a
+document naming a namespace the governing transformer overrides, and a folder whose nested roots both
+assign one. Both are measured, not assumed, and both are pinned by
+[`namespace_context_refusal_test.go`](../../internal/git/namespace_context_refusal_test.go) with the
+read-side halves in the contextual-namespace corpus. What the post-scan rule adds is not safety but
+legibility: today those failures surface as an opaque render error rather than as the one fixable
+thing that is wrong.
+
 ## Collisions are already decided
 
 What happens when two resources resolve to the same path is specified and shipped in

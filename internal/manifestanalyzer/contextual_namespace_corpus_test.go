@@ -54,6 +54,17 @@ func TestContextualNamespaceCorpus(t *testing.T) {
 			},
 		},
 		{
+			// A tree whose parent root assigns nothing and whose children each carry
+			// their own namespace: transformer. Each document takes the namespace of the
+			// root that governs IT, so one folder legitimately holds two namespaces —
+			// the shape docs/layout/model.md leaves to inference rather than to a flag.
+			dir: "supported/nested-roots-per-namespace",
+			docs: []wantDoc{
+				{namespace: "media", name: "m", source: NamespaceKustomize},
+				{namespace: "monitoring", name: "n", source: NamespaceKustomize},
+			},
+		},
+		{
 			dir:  "supported/explicit-namespace",
 			docs: []wantDoc{{namespace: "explicit-ns", name: "cm", source: NamespaceExplicit}},
 		},
@@ -61,6 +72,27 @@ func TestContextualNamespaceCorpus(t *testing.T) {
 			dir:           "unsupported/ambiguous-two-roots",
 			docs:          []wantDoc{{name: "shared", source: NamespaceNone}},
 			ambiguousDiag: true,
+		},
+		{
+			// The nested form of the same conflict: a parent and its child root both
+			// assign, so two namespaces reach one document. kustomize is deterministic
+			// here (the parent transformer runs last and wins) and we deliberately are
+			// not: guessing would hand the document to a namespace nobody wrote down.
+			// The write-side consequence is pinned by
+			// TestPlanFlush_RefusesWhenNestedRootsBothSetNamespace.
+			dir:           "unsupported/nested-both-namespaces",
+			docs:          []wantDoc{{name: "m", source: NamespaceNone}},
+			ambiguousDiag: true,
+		},
+		{
+			// The document names beta; the governing kustomization's transformer rewrites
+			// it to alpha, so the folder renders an object the store does not index. The
+			// store reports Explicit with NO diagnostic, because an explicit namespace is
+			// authoritative as written and the transformer is not consulted. This is the
+			// one shape in the corpus whose refusal lives entirely at the write path:
+			// TestPlanFlush_RefusesWhenTransformerOverridesExplicitNamespace.
+			dir:  "unsupported/conflicting-explicit-namespace",
+			docs: []wantDoc{{namespace: "beta", name: "cm", source: NamespaceExplicit}},
 		},
 		{dir: "unsupported/patches", docs: []wantDoc{{name: "cm", source: NamespaceNone}}},
 		{dir: "unsupported/generators", docs: []wantDoc{{name: "cm", source: NamespaceNone}}},
