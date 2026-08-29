@@ -5,7 +5,7 @@
 > Date: 2026-08-27.
 > Companions: [`config-surface-for-a-structured-repository.md`](config-surface-for-a-structured-repository.md)
 > (the field-level review this extends),
-> [`../design/gittarget-layout-model.md`](../design/gittarget-layout-model.md) and
+> [`../layout/model.md`](../layout/model.md) and
 > [`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md) (the API work this
 > sequences), and
 > [`../design/support-boundary/helm-light-support-boundary.md`](../design/support-boundary/helm-light-support-boundary.md)
@@ -136,28 +136,24 @@ namespaced kind is the tenant-ownable self-service surface, the cluster kind is
 platform-owned, and #146's `objectSelector` is the inclusion predicate for curated
 content. No new source-side API is needed for either direction.
 
-The rules and the layout model meet at `layout.scope`, and the meeting produces two
-validations worth declaring:
+The rules and the layout model meet at the folder's own shape, and the meeting produces two
+things worth declaring. Both were originally written against a `layout.scope` enum;
+[`../layout/model.md`](../layout/model.md) has since reversed that, so they are restated here
+against what actually exists.
 
-- **`scope: SingleNamespace` requires `allowedSourceNamespaces` to be an exact one-name
-  list — and that name *is* the single namespace.** The question "which namespace is the
-  single one?" must not be answered by the rules: N rules do not own the folder, and the
-  first-writer-wins alternative is exactly the silent re-deciding the layout model
-  exists to forbid. So the identity lives on the GitTarget, as the authorization bound
-  collapsing into a structural fact: one exact name, no selector (a label selector cannot
-  guarantee singularity), and CEL can check it at admission. Rules then merely subscribe
-  within it — an omitted `sourceNamespace`, an explicit match, or `"*"` all resolve to
-  that one namespace, and a rule naming any other namespace refuses loudly under the
-  existing bilateral check.
-- **A `ClusterWatchRule` referencing a `scope: SingleNamespace` target is refused, at the
-  rule, by name.** The payoff of `SingleNamespace` plus `writeNamespace: Never` is a
-  *portable* folder — deployable into any namespace at apply time. Cluster-scoped content
-  breaks that portability, so admitting it would quietly void the structural claim the
-  layout declared. The recorded objection is the app folder that carries a `ClusterRole`
-  or CRD as a passenger; the honest escapes are `scope: MultiNamespace`, a second
-  GitTarget for the cluster-scoped half, or — if the pattern proves common — a future
-  third scope value, argued on its own. Silently mixing is the one option the surface
-  should not offer.
+- **Singularity is structural, not declared.** A folder is single-namespace because no
+  `{namespace}` appears in any of its paths — there is nowhere for a second namespace to go that
+  would not collide. That removes the question "which namespace is the single one?" from the API
+  rather than answering it with an enum plus an admission rule keeping the enum in agreement with
+  the authorization bound. N rules still do not own the folder: a document from an unadmitted
+  namespace is refused at the write boundary, which was always the thing enforcing singularity.
+- **Cluster-scoped content in a portable folder is a caution, not an admission rule.** The payoff
+  of a single-namespace folder plus `serializeNamespace: false` is a *portable* folder, deployable
+  into any namespace at apply time, and a `ClusterRole` or CRD riding along breaks that. The honest
+  escapes are a second GitTarget for the cluster-scoped half, or accepting that the folder is not
+  portable and saying so. Refusing a `ClusterWatchRule` by name was proposed when the portability
+  claim was a structural enum the operator had to defend; with no such claim in the API, the
+  operator has nothing to defend, and the trade belongs to whoever writes the rule.
 
 ## Where the configuration surface should go — by example
 
@@ -183,15 +179,10 @@ spec:
     name: artifacts-repo
   branch: main
   path: apps/shop
-  mode: Write
   commitWindow: 30s            # moved from GitProvider: batching describes this folder
-  allowedSourceNamespaces:
-    names: [shop]              # under SingleNamespace: exactly one name — this IS the namespace
-  layout:
-    kind: Kustomize
-    create: true               # an empty repo becomes a buildable folder
-    scope: SingleNamespace
-    writeNamespace: Never      # the artifact is environment-agnostic; namespace at deploy
+  placement:
+    useKustomize: true         # an empty repo becomes a buildable folder
+    serializeNamespace: false  # the artifact is environment-agnostic; namespace at deploy
 ```
 
 and the folder is inert until the tenant subscribes content to it:
@@ -210,13 +201,12 @@ spec:
       resources: ["*"]         # the team's configuration CRDs are the artifact's content
 ```
 
-Everything direction B needs is here and nowhere else: the folder is described on the
-GitTarget, the single namespace is *named* on the GitTarget (the one-name
-`allowedSourceNamespaces` list is what `scope: SingleNamespace` requires), the WatchRule
-is the artifact's manifest, structure can be brought into existence, and the artifact's
-shape is a declared fact a reviewer can read. A `ClusterWatchRule` pointed at this target
-is refused by name: cluster-scoped content would break the portability that
-`writeNamespace: Never` promises.
+Everything direction B needs is here and nowhere else: the folder is described on the GitTarget,
+the single namespace is structural (no `{namespace}` in any path) and authorized by the rule that
+subscribes content, the WatchRule is the artifact's manifest, structure can be brought into
+existence by `useKustomize`, and the artifact's shape is a fact a reviewer can read. Cluster-scoped
+content pointed at this target would break the portability `serializeNamespace: false` promises,
+which is a trade to make deliberately rather than a refusal the operator enforces.
 
 ### Example 2 — brownfield adoption with a dry run (direction A's front door)
 

@@ -154,7 +154,7 @@ type writeBatch struct {
 	// and therefore cannot see coming — form one deterministic, resource-identity-
 	// sorted multi-document file instead of each writeWholeFile call silently
 	// discarding the one before it. See
-	// docs/spec/gittarget-new-file-placement-rules.md,
+	// docs/layout/new-file-placement-rules.md,
 	// "Collision and append behavior": "if several new plaintext resources in one
 	// plan render to the same path, write a multi-document file in deterministic
 	// resource-identity order."
@@ -339,7 +339,7 @@ func wroteBytes(o upsertOutcome) bool {
 
 // createNew resolves the placement of a resource with no existing document —
 // declared policy (Option B), the folder's one kustomize root, or the canonical
-// fallback — per docs/spec/gittarget-new-file-placement-rules.md,
+// fallback — per docs/layout/new-file-placement-rules.md,
 // adds the kustomize resources: entry the placement may require, and writes the new
 // document: a brand-new file, or an additional document appended to an existing
 // accepted plaintext bundle. A placement LocateNew cannot honour safely (today, only

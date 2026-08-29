@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jellyfin
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example/homelab-apps.git
+    targetRevision: main
+    path: media/jellyfin
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false

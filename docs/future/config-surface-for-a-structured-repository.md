@@ -2,8 +2,10 @@
 
 > Status: proposal — review findings and an ordered plan. Nothing here binds until scheduled.
 > Date: 2026-07-24
-> Companion to [flux-maintainer-review-status-and-config-model.md](flux-maintainer-review-status-and-config-model.md),
-> whose §4 "Then (API surface)" block (F6, F9, F10) this plan absorbs and extends.
+> Absorbs and extends the API-surface block left unbuilt by the status and configuration-model
+> review — `spec.suspend`, `spec.interval` and the reconcile-request annotation, the
+> `CommitRequest` lifecycle, and the `ClusterWatchRule` scope question — which is now sequenced in
+> [`../layout/api-wave.md`](../design/gittarget-api-wave.md).
 
 ## The one-sentence finding
 

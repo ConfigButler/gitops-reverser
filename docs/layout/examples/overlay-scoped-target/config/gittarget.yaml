@@ -1,0 +1,13 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: podinfo-prod-overlay
+  namespace: podinfo-prod
+spec:
+  providerRef:
+    name: homelab-repository
+  branch: main
+  path: apps/podinfo/overlays/prod
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
+  placement:
+    serializeNamespace: false   # the overlay's kustomization.yaml supplies it

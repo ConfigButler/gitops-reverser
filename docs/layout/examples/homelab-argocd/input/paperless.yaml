@@ -1,0 +1,47 @@
+# The object as the operator receives it from the API server, not as it is written to
+# Git. Everything above `spec` except `name` is removed by sanitization, which is why
+# expected-application-paperless.patch is shorter than this file: the difference
+# between the two is the sanitization assertion.
+#
+# The tracking-id annotation is the one that matters most here. It identifies the Argo
+# CD Application that owns the live object, so committing it would make this document
+# claim ownership on behalf of another Application and hard-fail that Application's
+# sync. Sanitization denies it by exact key rather than by an `argocd.argoproj.io/`
+# prefix strip, because the rest of that prefix is user data.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: paperless
+  namespace: argocd
+  uid: 4d9f1e2c-6a1b-4c9e-9f2a-1b3c5d7e9f01
+  resourceVersion: "184203"
+  generation: 2
+  creationTimestamp: "2026-08-12T09:41:07Z"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/tracking-id: paperless:argoproj.io/Application:argocd/paperless
+  managedFields:
+    - manager: argocd-server
+      operation: Update
+      apiVersion: argoproj.io/v1alpha1
+      time: "2026-08-12T09:41:07Z"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example/homelab.git
+    path: apps/paperless
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: paperless
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+status:
+  sync:
+    status: Synced
+    revision: 7b1c4a9
+  health:
+    status: Healthy

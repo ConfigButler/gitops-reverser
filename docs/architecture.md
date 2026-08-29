@@ -1139,7 +1139,7 @@ Placement runs **only for a resource with no existing document** in the target. 
 manifest identity rather than by path, instead of recomputing placement. So a change to how new files are
 placed never moves a file already in Git. A new resource is placed by the first of these that applies
 ([internal/manifestanalyzer/placement.go](../internal/manifestanalyzer/placement.go),
-[design](spec/gittarget-new-file-placement-rules.md)):
+[design](layout/new-file-placement-rules.md)):
 
 1. **Declared policy (`spec.placement`).** A `GitTarget` can declare a `byType` map (exact
    `[group/]version/resource` → path template) plus a `default` template, rendered from a small

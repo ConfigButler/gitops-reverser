@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: flux-sources
+  namespace: flux-system
+spec:
+  targetRef:
+    name: flux-sources
+  rules:
+    - apiGroups: ["source.toolkit.fluxcd.io"]
+      apiVersions: ["v1"]
+      resources: ["gitrepositories", "helmrepositories"]

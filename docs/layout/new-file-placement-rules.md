@@ -15,12 +15,12 @@
 > Captured: 2026-06-05. Option C removed: 2026-07-29.
 > Related:
 > [open-asks-priority.md](../design/open-asks-priority.md) — **the argument for deleting Option C**,
-> [contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md),
-> [gittarget-repository-validity-and-placement.md](gittarget-new-file-placement-rules.md),
-> [current-manifest-support-review.md](current-manifest-support-review.md),
-> [manifestedit-new-file-placement-spike.md](gittarget-new-file-placement-rules.md),
-> [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
-> [gitpath-foreign-content-stringency.md](gitpath-foreign-content-stringency.md)
+> [contextual-namespace.md](contextual-namespace.md),
+> [gittarget-repository-validity-and-placement.md](new-file-placement-rules.md),
+> [current-manifest-support-review.md](../spec/current-manifest-support-review.md),
+> [manifestedit-new-file-placement-spike.md](new-file-placement-rules.md),
+> [reconcile-via-watchlist-mark-and-sweep.md](../spec/reconcile-via-watchlist-mark-and-sweep.md),
+> [gitpath-foreign-content-stringency.md](../spec/gitpath-foreign-content-stringency.md)
 
 ## Summary
 
@@ -123,7 +123,7 @@ The current `GitTargetSpec` has `providerRef`, `branch`, `path`, and optional
 ([api/v1alpha3/gittarget_types.go](../../api/v1alpha3/gittarget_types.go)).
 
 The writer already uses the materialized-model direction described in
-[current-manifest-support-review.md](current-manifest-support-review.md):
+[current-manifest-support-review.md](../spec/current-manifest-support-review.md):
 
 - steady-state writes scan the GitTarget subtree into a content-derived store,
   then apply a commit-scoped plan
@@ -649,7 +649,7 @@ in force, which is not something the user can see.
 
 A document in a directory whose kustomization sets a `namespace:` transformer does not carry
 `metadata.namespace` — the build context supplies it (see
-[contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md)).
+[contextual-namespace.md](contextual-namespace.md)).
 A new document placed there must follow that convention, or it breaks the folder's own
 style, and this applies to **every** resolved path: a declared template pointing into a
 governed directory is under the same obligation as the kustomize-root fallback.
@@ -811,7 +811,7 @@ because the answer does not depend on the folder's history.*
 **P7 — A resolved path is still subject to the write-time ignore invariant.** Any resolved
 path — declared, kustomize-root, or canonical — can collide with a `.gittargetignore`
 pattern and trip the §4.3 `IgnoreShadowsManagedPath` precondition
-([gitpath-foreign-content-stringency.md](gitpath-foreign-content-stringency.md)), aborting
+([gitpath-foreign-content-stringency.md](../spec/gitpath-foreign-content-stringency.md)), aborting
 the flush. *Still live, and unrelated to inference: placement inherits this failure mode
 rather than creating it.*
 
@@ -924,6 +924,18 @@ Recommended variables:
 | `{namespaceOrCluster}` | namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for cluster-scoped resources |
 | `{name}` | metadata name |
 | `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
+
+**A template carries its own extension.** Nothing is appended: `"{namespace}/{name}"` is rejected by
+[path validation](#path-validation), which requires a recognized YAML suffix, and
+`"{namespace}/{name}.yaml"` is the correct spelling. `{sensitiveSuffix}` is the one variable that
+supplies the extension itself, because it has to choose between `.yaml` and `.sops.yaml`. Any
+example that shows a template without a visible suffix is wrong.
+
+`{kindLower}` — the lower-cased kind, so `ConfigMap` becomes `configmap` — is **decided and not yet
+built**. It is a variable rather than a `toLower` function because a function invites an expression
+language into a field that is deliberately not one. It is what a user writes to ask for the
+`configmap-cache.yaml` convention that the built-in rungs do not produce: the kustomize root names a
+new sibling `{name}.yaml` and never infers a naming convention from the folder's existing files.
 
 With those variables, the built-in canonical layout is **namespace-first, no
 version segment** (as implemented in `ResourceIdentifier.ToGitPath`):

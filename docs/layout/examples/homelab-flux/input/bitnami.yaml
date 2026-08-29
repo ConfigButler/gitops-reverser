@@ -1,0 +1,40 @@
+# The object as the operator receives it from the API server. Everything above `spec`
+# except `name` is removed by sanitization, so the committed document in
+# expected-helmrepository-bitnami.patch is much shorter than this file: the difference
+# between the two is the sanitization assertion.
+#
+# The Flux finalizer is the one worth naming. `finalizers.fluxcd.io` is how
+# source-controller keeps the object alive long enough to garbage-collect its artifact
+# storage. A committed copy would make Git assert a finalizer against an object Flux
+# has not adopted yet, so a `flux delete` of a recreated object would block on a
+# controller that never put it there.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: bitnami
+  namespace: flux-system
+  uid: 8c2a71f4-3d5e-4b18-9c07-2e6f1a4b8d33
+  resourceVersion: "902441"
+  generation: 1
+  creationTimestamp: "2026-08-19T14:02:55Z"
+  finalizers:
+    - finalizers.fluxcd.io
+  managedFields:
+    - manager: flux
+      operation: Apply
+      apiVersion: source.toolkit.fluxcd.io/v1
+      time: "2026-08-19T14:02:55Z"
+spec:
+  interval: 1h
+  url: https://charts.bitnami.com/bitnami
+status:
+  observedGeneration: 1
+  artifact:
+    revision: sha256:3f9c1e0d
+    lastUpdateTime: "2026-08-19T14:03:02Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Succeeded
+      message: stored artifact for revision 'sha256:3f9c1e0d'
+      lastTransitionTime: "2026-08-19T14:03:02Z"

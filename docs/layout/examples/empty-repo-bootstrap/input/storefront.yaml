@@ -1,0 +1,15 @@
+# Abridged: a captured object also carries uid, resourceVersion, generation,
+# creationTimestamp, managedFields and status. See ../homelab-argocd/input/ for a
+# fixture that keeps them, and ../README.md for why only two scenarios do.
+apiVersion: config.shop.example/v1alpha1
+kind: ShopConfiguration
+metadata:
+  name: storefront
+  namespace: shop
+spec:
+  catalog:
+    defaultCurrency: EUR
+  checkout:
+    sessionTimeout: 15m
+  theme:
+    primaryColor: teal

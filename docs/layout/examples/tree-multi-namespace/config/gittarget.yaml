@@ -1,0 +1,18 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: home-cluster-state
+  namespace: homelab-config
+spec:
+  providerRef:
+    name: homelab-repository
+  clusterProviderRef:
+    name: home
+  branch: main
+  path: clusters/home
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
+  placement:
+    # No template declared and no kustomization anywhere in the subtree, so the
+    # ladder falls through to the canonical identity path. Nothing supplies a
+    # namespace, so every namespaced document has to carry its own.
+    serializeNamespace: true

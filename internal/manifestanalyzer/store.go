@@ -263,7 +263,7 @@ type DocumentModel struct {
 // It replaces an earlier "namespace came from kustomize" boolean so the store can also
 // explain the no-context and ambiguous cases to status, duplicate diagnostics, and
 // future placement — see
-// docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
+// docs/layout/contextual-namespace.md.
 type NamespaceSourceKind string
 
 const (
@@ -796,7 +796,7 @@ func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*Kustomiz
 // namespace transformer, its resources/bases graph entries, and whether it uses any
 // feature outside the supported contextual-namespace subset (which disqualifies it as
 // a namespace source). See the "Kustomize subset proposal" in
-// docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
+// docs/layout/contextual-namespace.md.
 type kustomizationDoc struct {
 	path      string            // kustomization file path (slash)
 	namespace string            // the namespace: transformer value

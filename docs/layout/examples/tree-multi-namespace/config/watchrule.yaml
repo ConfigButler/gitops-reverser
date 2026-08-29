@@ -1,0 +1,21 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: home-workloads
+  namespace: homelab-config
+spec:
+  targetRef:
+    name: home-cluster-state
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]
+      sourceNamespace: media
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      resources: ["deployments"]
+      sourceNamespace: media
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]
+      sourceNamespace: monitoring
