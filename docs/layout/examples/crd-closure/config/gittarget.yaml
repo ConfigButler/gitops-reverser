@@ -1,0 +1,17 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: shop-configuration
+  namespace: shop
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  path: apps/shop
+  suspend: true          # adoption dry run: scans and publishes, writes nothing
+  # The proposed field. None is the default and the posture this folder would have
+  # without the line: instances here, definitions owned by whoever installs the
+  # operator. Referenced commits a manifest of references, never schemas.
+  includeTypeDefinitions: Referenced
+  serializeNamespace: Never
+  kustomizeRoot: Require

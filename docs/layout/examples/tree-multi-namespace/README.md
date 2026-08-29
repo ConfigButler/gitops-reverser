@@ -64,7 +64,7 @@ paths carry scope, but the source API keeps their authority separate.
 
 - Expected Git change:
   [`expected-grafana-dashboards.patch`](expected-grafana-dashboards.patch), after
-  a reviewer changes `mode` to `Write`.
+  a reviewer clears `suspend`.
 - Expected status: `Ready=True` with a `Tree` layout and a path derived from the input identity.
 - Boundary: content outside `clusters/home`, a namespace not on the target, or an unsupported
   type is refused without probing for a sibling convention.

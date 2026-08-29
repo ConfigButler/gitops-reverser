@@ -59,7 +59,7 @@ The scenario assumes the Deployment image is a supported writable expression in 
   ```
 
 - Expected Git change: [`expected-image-update.patch`](expected-image-update.patch), after a
-  reviewer changes `mode` to `Write`.
+  reviewer clears `suspend`.
 - Expected status: `Ready=True` after the changed overlay renders successfully.
 - Boundary: the target may read `../../base` to render, but it never writes outside the overlay.
 

@@ -1,0 +1,18 @@
+# A second Widget, created in the intent cluster. It is an ordinary placement:
+# the folder's one kustomize root takes it, and the CRD question below is about
+# what ELSE the folder needs to be applied anywhere but the cluster it came from.
+apiVersion: apps.example.com/v1alpha1
+kind: Widget
+metadata:
+  name: search
+  namespace: shop
+  uid: 6d1b0e4c-6f0e-4a2f-9a0e-2c1b7f0a5d31
+  resourceVersion: "418302"
+  generation: 1
+  creationTimestamp: "2026-08-29T09:12:44Z"
+spec:
+  replicas: 3
+  variant: faceted
+status:
+  observedGeneration: 1
+  readyReplicas: 3

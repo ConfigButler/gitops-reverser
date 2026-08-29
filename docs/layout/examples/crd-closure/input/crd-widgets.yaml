@@ -1,0 +1,40 @@
+# The live CustomResourceDefinition backing apps.example.com/v1alpha1 Widget,
+# as the operator reads it from the source cluster. Schema trimmed; a real one
+# runs to hundreds of lines, and Argo CD's Application CRD to about a megabyte.
+#
+# Note what it carries. The Helm ownership metadata is NOT stripped by sanitize
+# (internal/sanitize/types.go strips Flux, kro, applyset and two exact Argo keys),
+# so a vendored copy arrives in Git still claiming to belong to a release in
+# another cluster. The Flux label IS stripped, which is why provenance has to be
+# captured here, live, and can never be read back out of the repository.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.apps.example.com
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    kustomize.toolkit.fluxcd.io/name: widget-operator
+    kustomize.toolkit.fluxcd.io/namespace: flux-system
+  annotations:
+    meta.helm.sh/release-name: widget-operator
+    meta.helm.sh/release-namespace: widget-system
+spec:
+  group: apps.example.com
+  scope: Namespaced
+  names:
+    plural: widgets
+    singular: widget
+    kind: Widget
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                replicas: {type: integer}
+                variant: {type: string}

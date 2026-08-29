@@ -58,7 +58,7 @@ The Kustomize root supplies the omitted namespace, so the new document still rep
 - Starting repository: [`repository/`](repository/), already recognized while suspended.
 - Live input: [`input/cache.yaml`](input/cache.yaml).
 - Expected Git change: [`expected-cache.patch`](expected-cache.patch), after a
-  reviewer changes `mode` to `Write`.
+  reviewer clears `suspend`.
 - Expected status: `Ready=True` with `LayoutResolved=True` and `renderRoot: .` during observation.
 - Boundary: a second Kustomize root or an unsupported expression makes the target refuse the write.
 

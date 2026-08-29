@@ -77,7 +77,7 @@ because the rest of that prefix is user data. See
 
 - Expected Git change:
   [`expected-paperless.patch`](expected-paperless.patch), after a reviewer
-  changes `mode` to `Write`.
+  clears `suspend`.
 - Expected status: `Ready=True` after the root renders the added Application.
 - Boundary: only `Application` declarations in `argocd` are eligible. An Argo-created workload has
   no writable home in this target.
