@@ -54,6 +54,11 @@ const (
 	IssueIgnoreShadowsManaged IssueKind = "ignore-shadows-managed"
 	// IssueWriteEscapesScope marks a planned write that would leave the GitTarget's path.
 	IssueWriteEscapesScope IssueKind = "write-escapes-scope"
+	// IssueAmbiguousLayout marks a GitTarget path covering more than one kustomize render root,
+	// so a new document has no single root to be placed into. It is a property of the observed
+	// folder rather than of the spec, so nothing can reject it before the folder is read; the
+	// fix is to point the GitTarget at one of the roots it covers.
+	IssueAmbiguousLayout IssueKind = "ambiguous-layout"
 	// IssueWriteFanIn marks an in-place edit of a source file that more than one kustomize
 	// render root reaches.
 	IssueWriteFanIn IssueKind = "write-fan-in"

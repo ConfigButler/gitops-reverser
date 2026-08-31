@@ -349,6 +349,8 @@ func gitPathRefusalReason(refused *manifestanalyzer.AcceptanceRefusedError) stri
 	switch {
 	case refused.AllIssuesOfKinds(manifestanalyzer.IssueIgnoreShadowsManaged):
 		return "IgnoreShadowsManagedPath"
+	case refused.AllIssuesOfKinds(manifestanalyzer.IssueAmbiguousLayout):
+		return "AmbiguousLayout"
 	case refused.AllIssuesOfKinds(
 		manifestanalyzer.IssueWriteEscapesScope,
 		manifestanalyzer.IssueWriteFanIn,

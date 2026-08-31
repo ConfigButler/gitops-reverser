@@ -22,11 +22,10 @@ import (
 // run would show a stale answer with no way to tell.
 
 // suspendedTarget is a resolved target metadata record with suspend set, writing at base.
-func suspendedTarget(base string, suspend bool) ResolvedTargetMetadata {
+func suspendedTarget(suspend bool) ResolvedTargetMetadata {
 	return ResolvedTargetMetadata{
 		Name:      "checkout",
 		Namespace: "shop",
-		Path:      base,
 		Suspend:   suspend,
 	}
 }
@@ -49,7 +48,7 @@ func TestSuspend_LiveWriteCreatesNothing(t *testing.T) {
 
 	event := newConfigMapEvent("cache", "app")
 	targets := map[pendingTargetKey]ResolvedTargetMetadata{
-		{}: suspendedTarget("", true),
+		{}: suspendedTarget(true),
 	}
 
 	changed, err := worker.applyPendingWriteEvents(t.Context(), repoFor(t, worktree), worktree, []Event{event}, targets)
@@ -68,7 +67,7 @@ func TestSuspend_UnsuspendedTargetStillWrites(t *testing.T) {
 	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 
 	targets := map[pendingTargetKey]ResolvedTargetMetadata{
-		{}: suspendedTarget("", false),
+		{}: suspendedTarget(false),
 	}
 	changed, err := worker.applyPendingWriteEvents(
 		t.Context(), repoFor(t, worktree), worktree, []Event{newConfigMapEvent("cache", "app")}, targets)
@@ -93,7 +92,7 @@ func TestSuspend_StillPublishesTheResolvedLayout(t *testing.T) {
 	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	reports := captureLayout(worker)
 	targets := map[pendingTargetKey]ResolvedTargetMetadata{
-		{}: suspendedTarget("", true),
+		{}: suspendedTarget(true),
 	}
 
 	_, err := worker.applyPendingWriteEvents(
@@ -117,7 +116,7 @@ func TestLayoutReport_PublishedBeforeAnythingIsWritten(t *testing.T) {
 	reports := captureLayout(worker)
 
 	// An empty folder: no kustomization, no documents, and no write has ever happened here.
-	err := worker.refuseUnsafeWorktree(t.Context(), worktree, "", suspendedTarget("", true))
+	err := worker.refuseUnsafeWorktree(t.Context(), worktree, "", suspendedTarget(true))
 	require.NoError(t, err)
 
 	require.Len(t, *reports, 1)
@@ -145,7 +144,7 @@ func TestLayoutReport_ExamplesFollowTheDeclaredTypes(t *testing.T) {
 	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	reports := captureLayout(worker)
 
-	target := suspendedTarget("", true)
+	target := suspendedTarget(true)
 	target.Placement = &manifestanalyzer.PlacementPolicy{
 		ByType: map[string]string{"v1/secrets": "secrets/{name}.yaml"},
 	}

@@ -3,6 +3,7 @@
 package manifestanalyzer
 
 import (
+	"fmt"
 	"path"
 	"sort"
 	"strings"
@@ -104,13 +105,13 @@ func ResolveLayout(
 	roots := writableRenderRoots(store, writeScope)
 	resolution := LayoutResolution{RenderRoots: roots}
 
-	switch len(roots) {
-	case 0:
+	switch {
+	case len(roots) == 0:
 		resolution.Reason = LayoutNone
 		// No kustomization governs anything here, so nothing downstream supplies a namespace
 		// and every namespaced document has to carry its own.
 		resolution.SerializeNamespace = boolPtr(true)
-	case 1:
+	case len(roots) == 1:
 		resolution.Reason = LayoutSingleKustomization
 		resolution.RenderRoot = relativeToScope(roots[0], writeScope)
 		// The root's namespace: transformer is the supplier, exactly as
@@ -223,13 +224,15 @@ func layoutExamples(
 // parts. The second return is false for anything else, so a malformed byType key illustrates
 // nothing rather than illustrating a type nobody named.
 func ParsePlacementTypeKey(key string) (schema.GroupVersionResource, bool) {
+	// A core key is "{version}/{resource}"; a grouped one is "{group}/{version}/{resource}".
+	const coreParts, groupedParts = 2, 3
 	switch parts := strings.Split(strings.TrimSpace(key), "/"); len(parts) {
-	case 2:
+	case coreParts:
 		if parts[0] == "" || parts[1] == "" {
 			return schema.GroupVersionResource{}, false
 		}
 		return schema.GroupVersionResource{Version: parts[0], Resource: parts[1]}, true
-	case 3:
+	case groupedParts:
 		if parts[0] == "" || parts[1] == "" || parts[2] == "" {
 			return schema.GroupVersionResource{}, false
 		}
@@ -240,3 +243,41 @@ func ParsePlacementTypeKey(key string) (schema.GroupVersionResource, bool) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// IssueAmbiguousLayout marks a GitTarget folder covering more than one render root. It is a
+// property of the OBSERVED folder rather than of the spec, so no CEL rule and no admission
+// check can reach it — the folder is only ambiguous once the operator has read it.
+const IssueAmbiguousLayout IssueKind = "ambiguous-layout"
+
+// AmbiguousLayoutRefusal is the write-path form of the Ambiguous verdict: a folder covering
+// several render roots is refused rather than silently placed into whichever one an arbitrary
+// rule picks.
+//
+// It refuses at the WRITE rather than at the GitTarget's Validated gate, and the difference is
+// recoverability. Validated is evaluated before the data plane exists, so a target failing it
+// never registers a worker, never scans, and could therefore never observe that the folder had
+// been fixed — the refusal would be permanent, and for a target that had never scanned it could
+// never fire in the first place. Refusing here keeps the target declared and scanning: the
+// periodic resync re-reads the folder, so splitting the target down to a leaf overlay clears the
+// refusal the same way fixing any other unsupported content does.
+//
+// It returns no issue for a folder that is not ambiguous, so the caller can raise it
+// unconditionally.
+func AmbiguousLayoutRefusal(resolution LayoutResolution, specPath string) []AcceptanceIssue {
+	if resolution.Reason != LayoutAmbiguous {
+		return nil
+	}
+	return []AcceptanceIssue{{
+		Kind: IssueAmbiguousLayout,
+		Path: orDot(specPath),
+		Message: fmt.Sprintf(
+			"%s covers %d kustomize render roots (%s), so there is no single one to place new "+
+				"documents into; point the GitTarget at one of them instead",
+			orDot(specPath), len(resolution.RenderRoots), strings.Join(resolution.RenderRoots, ", ")),
+		// The repository author fixes it, and one GitTarget edit does: it is a scoping mistake,
+		// not a support boundary. See docs/layout/shapes/README.md, "Why only a leaf can be a
+		// kustomize target".
+		Solvable: true,
+		Actor:    ActorRepositoryAuthor,
+	}}
+}

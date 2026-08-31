@@ -19,6 +19,7 @@ import (
 // can tell a fresh answer from one taken before the folder changed.
 type LayoutReport struct {
 	manifestanalyzer.LayoutResolution
+
 	// ByTypeEntries is how many placement.byType templates the target declares. It comes from
 	// the spec rather than the scan, and is carried here so status.placement has one source.
 	ByTypeEntries int
@@ -51,17 +52,33 @@ func (w *BranchWorker) reportLayout(ctx context.Context, batch *writeBatch, revi
 	if w.layoutReporter == nil || batch.target.name == "" || batch.target.namespace == "" {
 		return
 	}
-	report := LayoutReport{
-		LayoutResolution: manifestanalyzer.ResolveLayout(
-			batch.store, batch.policy, batch.writeSubdir, declaredTypeKeys(batch.policy)),
-		ByTypeEntries: byTypeEntryCount(batch.policy),
-		Revision:      revision,
-		ObservedTime:  time.Now(),
-	}
+	// Re-resolved with the target's declared types so the EXAMPLES illustrate them; the verdict
+	// is identical to batch.layout's, which is resolved without them at construction.
+	resolution := manifestanalyzer.ResolveLayout(
+		batch.store, batch.policy, batch.writeSubdir, declaredTypeKeys(batch.policy))
 	log.FromContext(ctx).V(1).Info("GitTarget layout resolved",
 		"gitTarget", batch.target.namespace+"/"+batch.target.name,
-		"reason", report.Reason, "renderRoot", report.RenderRoot, "revision", revision)
-	w.layoutReporter(itypes.NewResourceReference(batch.target.name, batch.target.namespace), report)
+		"reason", resolution.Reason, "renderRoot", resolution.RenderRoot, "revision", revision)
+	w.layoutReporter(
+		itypes.NewResourceReference(batch.target.name, batch.target.namespace),
+		LayoutReport{
+			LayoutResolution: resolution,
+			ByTypeEntries:    byTypeEntryCount(batch.policy),
+			Revision:         revision,
+			ObservedTime:     time.Now(),
+		})
+}
+
+// scanLayout resolves a folder's layout, publishes it, and arms the batch with the verdict.
+//
+// It never refuses on its own. Ambiguity is a PLACEMENT problem — a new document has no single
+// root to go into — and an existing document is edited where it already lives, whatever the
+// folder covers. Refusing the whole flush here would also pre-empt the file-level write-boundary
+// preconditions (L1 and L2), whose messages name the offending file rather than the folder, so
+// the specific answer would be replaced by a general one. The refusal is raised in createNew,
+// where the problem actually is.
+func (w *BranchWorker) scanLayout(ctx context.Context, batch *writeBatch, worktree *gogit.Worktree) {
+	w.reportLayout(ctx, batch, worktreeRevision(worktree))
 }
 
 // declaredTypeKeys is which types the placement examples illustrate: the ones the target

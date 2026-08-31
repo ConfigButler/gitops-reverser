@@ -46,6 +46,10 @@ type watchPlaneState struct {
 	// passes records how each target's most recent plan pass ended, so a target whose passes keep
 	// failing is visible on its own status instead of only in a log line.
 	passes map[string]targetPassStatus
+	// layouts is each GitTarget's most recently resolved folder layout, published as
+	// status.placement and the LayoutResolved condition. It is a report from a scan, not from a
+	// write, so it is present for a target that has never written and for a suspended one.
+	layouts map[string]git.LayoutReport
 }
 
 // targetPassStatus is how one GitTarget's most recent plan pass ended.
@@ -101,6 +105,7 @@ func newWatchPlaneState() *watchPlaneState {
 		auditRoutes: map[string]string{},
 		pruneModes:  map[string]v1alpha3.PruneMode{},
 		passes:      map[string]targetPassStatus{},
+		layouts:     map[string]git.LayoutReport{},
 	}
 }
 
@@ -118,6 +123,7 @@ func (s *watchPlaneState) clone() *watchPlaneState {
 		auditRoutes: copyMap(s.auditRoutes),
 		pruneModes:  copyMap(s.pruneModes),
 		passes:      copyMap(s.passes),
+		layouts:     copyMap(s.layouts),
 	}
 	for key, cells := range s.streams {
 		out.streams[key] = copyMap(cells)

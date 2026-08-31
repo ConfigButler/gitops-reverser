@@ -100,6 +100,10 @@ const (
 	GitTargetReasonWatchPlanFailing = "WatchPlanFailing"
 
 	GitTargetStreamsRunningReasonNotReady = "NotReady"
+
+	// GitTargetReasonSuspended is Ready=True on a target whose spec.suspend stops it writing. It
+	// is True on purpose: suppressing writes on request is a configured outcome, not ill health.
+	GitTargetReasonSuspended = "Suspended"
 )
 
 const (
@@ -118,6 +122,11 @@ type GitTargetReconciler struct {
 	// Recorder emits a Kubernetes Event on every persisted Ready transition. It may be nil in
 	// tests, in which case no Event is recorded and nothing else changes.
 	Recorder record.EventRecorder
+
+	// reconcileRequests remembers which reconcile-request annotation values have been acted on,
+	// so a standing annotation forces one re-read rather than one per reconcile forever. Its zero
+	// value is usable.
+	reconcileRequests reconcileRequestTracker
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
@@ -144,6 +153,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st := beginStatus(r.Client, r.Recorder, &target, &target.Status.Conditions)
 	target.Status.ObservedGeneration = target.Generation
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
+
+	// Ahead of every gate, so a target held unready still shows what its folder resolved to.
+	// status.placement exists to be readable BEFORE the target is doing anything — that is what
+	// makes it a dry run — and a projection that ran only on the happy path would be missing
+	// exactly when it is wanted.
+	layout, scanned := r.observeLayout(&target)
+	publishLayout(st, &target, layout, scanned)
 
 	providerNS := target.Namespace
 	validated, validationMsg, validationResult, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS)
@@ -201,7 +217,12 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, sourceProviderErr
 	}
 
-	observed := r.observeDataPlane(&target, sourceProvider, gitPathWasRefused, log)
+	// A standing reconcile request forces the same re-check a refused Git path does: the watch
+	// plane re-anchors the target's streams, which is what makes it re-read the folder rather than
+	// wait for the periodic pass. Taken once per distinct annotation value.
+	forceRecheck := gitPathWasRefused || r.reconcileRequests.take(
+		types.NewResourceReference(target.Name, target.Namespace), reconcileRequestedAt(&target))
+	observed := r.observeDataPlane(&target, sourceProvider, forceRecheck, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
 	st.setValue(GitTargetConditionGitPathAccepted, observed.axes.GitPath)
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
@@ -217,6 +238,19 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st.setValue(GitTargetConditionClusterProviderReady, clusterProvider)
 
 	rd := newGitTargetReadiness()
+	// A suspended target is healthy, not faulty: not writing is the configured outcome, and no
+	// condition may go False for one — that is what trains operators to ignore the conditions
+	// that mean the mirror is genuinely broken. status.retention is the precedent. So Ready stays
+	// True and only its reason changes, which is what makes the state legible without making it
+	// look like a fault. Every real gate below still applies: a suspended target with a broken
+	// provider is still not Ready.
+	if target.Spec.Suspend {
+		rd.convergesAs(conditionValue{
+			Status:  metav1.ConditionTrue,
+			Reason:  GitTargetReasonSuspended,
+			Message: "GitTarget is suspended: it scans and publishes what it resolved, and writes nothing",
+		})
+	}
 	gitTargetReadinessGates(rd, observed, provider, clusterProvider, sourceReach)
 	st.applyReadiness(rd)
 
@@ -488,7 +522,7 @@ type dataPlaneObservation struct {
 func (r *GitTargetReconciler) observeDataPlane(
 	target *configbutleraiv1alpha3.GitTarget,
 	sourceProvider *configbutleraiv1alpha3.ClusterProvider,
-	gitPathWasRefused bool,
+	forceRecheck bool,
 	log logr.Logger,
 ) dataPlaneObservation {
 	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
@@ -524,7 +558,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 		target.SourceCluster(),
 		sourceProvider.AuditRoute(),
 		target.EffectivePruneMode(),
-		gitPathWasRefused,
+		forceRecheck,
 	)
 
 	observation := dataPlaneObservation{declare: manager.DeclareStatusForGitTarget(gitDest)}
@@ -1022,11 +1056,14 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	namespacedName k8stypes.NamespacedName,
 	log logr.Logger,
 ) {
+	gitDest := types.NewResourceReference(namespacedName.Name, namespacedName.Namespace)
+	// Unconditionally, and before the EventRouter check below: the tracker is the reconciler's own
+	// memory, so it must be released for a deleted target whether or not a data plane is wired.
+	r.reconcileRequests.forget(gitDest)
+
 	if r.EventRouter == nil {
 		return
 	}
-
-	gitDest := types.NewResourceReference(namespacedName.Name, namespacedName.Namespace)
 
 	r.EventRouter.UnregisterGitTargetEventStream(gitDest)
 
@@ -1091,7 +1128,9 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
 		// matches what GitProvider and ClusterProvider already do.
-		For(&configbutleraiv1alpha3.GitTarget{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// It additionally admits a change to the reconcile-request annotation, which does not bump
+		// metadata.generation and would otherwise be filtered out along with the status writes.
+		For(&configbutleraiv1alpha3.GitTarget{}, builder.WithPredicates(reconcileRequestedOrSpecChanged())).
 		// No control-plane Secret watch. Reacting to age-key Secret changes with a
 		// full-object Secret watch made the process retain every Secret value in the
 		// cluster. Generated-age-Secret recovery and out-of-band age-key updates are

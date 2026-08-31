@@ -314,8 +314,9 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 	}
 	// This is the scan every target gets, events or not: the periodic resync runs it whether or
 	// not anything changed, and a SUSPENDED target reaches here and stops just after. It is
-	// therefore the reason status.placement is populated on a target that has never written.
-	w.reportLayout(ctx, batch, worktreeRevision(worktree))
+	// therefore the reason status.placement is populated on a target that has never written, and
+	// the reason an ambiguous folder can stop being ambiguous.
+	w.scanLayout(ctx, batch, worktree)
 	return nil
 }
 

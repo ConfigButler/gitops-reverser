@@ -4,7 +4,6 @@ package git
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -187,6 +186,15 @@ func layoutCorpus() []corpusScenario {
 			patch:  "expected-checkout-config.patch",
 		},
 		{
+			// The one refusal in the corpus that asserts a rule this PR ships: a target at the
+			// app root covers four render roots, so a new document has no single one to be
+			// placed into. expected-app-root-status.yaml is the pair of conditions a user reads.
+			dir:         "shapes/6-kustomize-base-and-overlays",
+			config:      "gittarget-app-root.yaml",
+			input:       "checkout-config.yaml",
+			wantRefusal: "covers 4 kustomize render roots",
+		},
+		{
 			dir:    "shapes/7-kustomize-layered",
 			config: "gittarget-prod.yaml",
 			input:  "checkout-config.yaml",
@@ -280,7 +288,7 @@ func assertCorpusPatch(t *testing.T, path, got string) {
 		require.NoError(t, os.WriteFile(path, []byte(got), 0o600))
 		return
 	}
-	want, err := os.ReadFile(path) //nolint:gosec // a fixture path built from the corpus table
+	want, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, string(want), got,
 		"the write path and %s disagree; re-run with -update if the new diff is the intended one", path)
@@ -289,7 +297,7 @@ func assertCorpusPatch(t *testing.T, path, got string) {
 // readCorpusGitTarget decodes one scenario's GitTarget through the harness-local struct.
 func readCorpusGitTarget(t *testing.T, path string) corpusGitTarget {
 	t.Helper()
-	raw, err := os.ReadFile(path) //nolint:gosec // a fixture path built from the corpus table
+	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var target corpusGitTarget
 	require.NoError(t, yaml.Unmarshal(raw, &target), "parsing %s", path)
@@ -302,7 +310,7 @@ func readCorpusGitTarget(t *testing.T, path string) corpusGitTarget {
 // because the difference between it and the expected patch IS the sanitization assertion.
 func readCorpusInput(t *testing.T, path string) *unstructured.Unstructured {
 	t.Helper()
-	raw, err := os.ReadFile(path) //nolint:gosec // a fixture path built from the corpus table
+	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	obj := &unstructured.Unstructured{}
 	require.NoError(t, yaml.Unmarshal(raw, &obj.Object), "parsing %s", path)
@@ -345,7 +353,7 @@ func seedCorpusWorktree(t *testing.T, repositoryDir string) (*gogit.Worktree, *o
 		if relErr != nil {
 			return relErr
 		}
-		body, readErr := os.ReadFile(path) //nolint:gosec // walking a fixture folder
+		body, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return readErr
 		}
@@ -460,22 +468,22 @@ func TestLayoutCorpus_ConfigParsesAgainstTheRealAPI(t *testing.T) {
 			path := filepath.Join(layoutCorpusRoot, sc.dir, "config", sc.configFile())
 			harness := readCorpusGitTarget(t, path)
 
-			raw, err := os.ReadFile(path) //nolint:gosec // a fixture path built from the corpus table
+			raw, err := os.ReadFile(path)
 			require.NoError(t, err)
 			// The unbuilt fields are stripped, not tolerated: decoding them into the real
 			// type is exactly the thing that must start working in PR 2, and letting the
 			// decoder ignore them here would hide the day it does.
-			var real v1alpha3.GitTarget
-			require.NoError(t, yaml.Unmarshal(withoutUnbuiltFields(t, raw), &real), "parsing %s", path)
+			var shipped v1alpha3.GitTarget
+			require.NoError(t, yaml.Unmarshal(withoutUnbuiltFields(t, raw), &shipped), "parsing %s", path)
 
-			require.Equal(t, harness.Spec.Path, real.Spec.Path, "spec.path")
-			require.Equal(t, harness.Metadata.Name, real.Name, "metadata.name")
-			require.Equal(t, harness.Metadata.Namespace, real.Namespace, "metadata.namespace")
-			require.Equal(t, harness.Spec.Branch, real.Spec.Branch, "spec.branch")
+			require.Equal(t, harness.Spec.Path, shipped.Spec.Path, "spec.path")
+			require.Equal(t, harness.Metadata.Name, shipped.Name, "metadata.name")
+			require.Equal(t, harness.Metadata.Namespace, shipped.Namespace, "metadata.namespace")
+			require.Equal(t, harness.Spec.Branch, shipped.Spec.Branch, "spec.branch")
 			if policy := harness.policy(); policy != nil {
-				require.NotNil(t, real.Spec.Placement, "spec.placement")
-				require.Equal(t, policy.ByType, real.Spec.Placement.ByType, "spec.placement.byType")
-				require.Equal(t, policy.Default, real.Spec.Placement.Default, "spec.placement.default")
+				require.NotNil(t, shipped.Spec.Placement, "spec.placement")
+				require.Equal(t, policy.ByType, shipped.Spec.Placement.ByType, "spec.placement.byType")
+				require.Equal(t, policy.Default, shipped.Spec.Placement.Default, "spec.placement.default")
 			}
 		})
 	}
@@ -530,7 +538,7 @@ func TestLayoutCorpus_EveryFixtureFolderIsExecuted(t *testing.T) {
 				continue // a folder with no input/ illustrates prerequisites, not a write
 			}
 			require.True(t, executed[dir],
-				fmt.Sprintf("%s has an input/ but no scenario in layoutCorpus() runs it", dir))
+				"%s has an input/ but no scenario in layoutCorpus() runs it", dir)
 		}
 	}
 }
