@@ -231,6 +231,14 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	// resolved has already been published. A suspended target therefore reports what it would do
 	// and does none of it, which is the dry run spec.suspend exists to be. Returning zero
 	// commits leaves the pending write unretained and unpushed.
+	//
+	// It returns SUCCESS, so the drain marks this scope render-fidelity clean and reports zero
+	// retained documents without either having been measured. Both are accurate enough to leave
+	// alone and neither is load-bearing while writes are off: the fidelity gate only gates
+	// writes, and a target that wrote nothing has nothing that could have diverged. Resuming
+	// re-measures both on the first real resync. What would NOT be acceptable is returning an
+	// error here — a suspended target is not a failing one, and saying so would put it on the
+	// background-failure path and hold it unready.
 	if target.Suspend {
 		log.FromContext(ctx).V(1).Info("resync suppressed: GitTarget is suspended",
 			"gitTarget", target.Namespace+"/"+target.Name, "path", base)
