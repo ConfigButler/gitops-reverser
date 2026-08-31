@@ -37,16 +37,23 @@ func (m *Manager) LayoutForGitTarget(gitDest types.ResourceReference) (git.Layou
 	return report, ok
 }
 
-// sameLayout compares two reports by what a reader would see in status, deliberately ignoring
-// the observed revision and time.
+// sameLayout compares two reports by what a reader would see in status.
 //
-// Those two advance on every scan of an unchanged folder, so comparing them would republish the
-// whole immutable snapshot and enqueue a reconcile once per resync per target, forever, to
-// advance a clock nobody reads a decision from. It is the same trap targetPassStatus avoided by
-// dropping its timestamps. The cost is that observedTime lags a folder that never changes,
-// which is the correct trade: the field exists to date the RESOLUTION, and the resolution is
-// exactly what has not changed.
+// The observed time is deliberately not compared: it advances on every scan of an unchanged
+// folder, so comparing it would republish the whole immutable snapshot and enqueue a reconcile
+// once per resync per target, forever, to advance a clock nobody reads a decision from. It is the
+// same trap targetPassStatus avoided by dropping its timestamps.
+//
+// The observed REVISION is not compared either, for the same reason — every commit to the branch
+// moves it, whichever target caused the commit — with one exception, below: a report that has one
+// where the last had none is always a change. Without that exception the field would be written
+// once, at the first scan of a branch that usually has no commit yet, and then never advance,
+// which would leave it permanently empty on exactly the targets it is meant to inform. What it
+// therefore means is the revision this resolution was FIRST observed at, not the latest scanned.
 func sameLayout(a, b git.LayoutReport) bool {
+	if a.Revision == "" && b.Revision != "" {
+		return false
+	}
 	if a.Reason != b.Reason || a.RenderRoot != b.RenderRoot || a.ByTypeEntries != b.ByTypeEntries {
 		return false
 	}

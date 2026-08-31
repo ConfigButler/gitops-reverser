@@ -132,6 +132,9 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 		By("the suspended target now dates its resolution to a real revision")
 		// The branch has a commit now, so the scan has a revision to name. Before the barrier it
 		// did not, which is why this assertion lives here rather than with the rest of the stanza.
+		// The reconcile request is what makes this prompt rather than a wait on the periodic pass,
+		// and asserting through it is the point: it is the loop a user iterating on a dry run runs.
+		requestReconcile(suspendedTarget, testNs)
 		Eventually(func(g Gomega) {
 			placement := placementStatusOf(g, suspendedTarget, testNs)
 			g.Expect(placement).To(HaveKeyWithValue("observedRevision", Not(BeEmpty())),

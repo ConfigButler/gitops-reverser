@@ -300,9 +300,14 @@ type GitTargetPlacementStatus struct {
 	// +optional
 	ByTypeEntries int32 `json:"byTypeEntries,omitempty"`
 
-	// ObservedRevision is the Git revision the scan read, and ObservedTime is when it ran. A
-	// placement stanza older than the last commit to the folder describes a folder that has since
-	// changed.
+	// ObservedRevision is the Git revision this resolution was first observed at. It is not
+	// re-stamped on every scan: a resolution that has not changed is not republished, because
+	// doing so would write status once per commit to the branch, whichever target caused the
+	// commit. So it dates the RESOLUTION, not the last scan — a revision older than the branch
+	// head means the folder's layout has not changed since, not that nothing has looked.
+	//
+	// It is empty when the branch had no commit at the time (a folder nothing has written to yet)
+	// and is filled in by the first scan that finds one.
 	// +optional
 	ObservedRevision string `json:"observedRevision,omitempty"`
 
