@@ -223,8 +223,18 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	target := pendingWrite.Target()
 	base := sanitizePath(target.Path)
 
-	if err := w.refuseUnsafeWorktree(ctx, worktree, base, target.SourceCluster); err != nil {
+	if err := w.refuseUnsafeWorktree(ctx, worktree, base, target); err != nil {
 		return 0, err
+	}
+
+	// Suspend stops the write and nothing before it: the scan above ran, and the layout it
+	// resolved has already been published. A suspended target therefore reports what it would do
+	// and does none of it, which is the dry run spec.suspend exists to be. Returning zero
+	// commits leaves the pending write unretained and unpushed.
+	if target.Suspend {
+		log.FromContext(ctx).V(1).Info("resync suppressed: GitTarget is suspended",
+			"gitTarget", target.Namespace+"/"+target.Name, "path", base)
+		return 0, nil
 	}
 
 	// Stage the path's bootstrap template (its directory and any .sops.yaml) before
@@ -285,16 +295,28 @@ func (w *BranchWorker) executeResyncPendingWrite(
 func (w *BranchWorker) refuseUnsafeWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
-	base, clusterID string,
+	base string,
+	target ResolvedTargetMetadata,
 ) error {
 	root := worktree.Filesystem().Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return err
 	}
-	// The acceptance gate never places a resource, so no placement policy is needed here.
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapperForCluster(clusterID), scoped.scan, nil, scoped.writeSubdir)
-	return batch.refusal()
+	// The acceptance gate never places a resource, but the layout report resolved from the same
+	// scan does, so the target's declared policy is carried in rather than passed as nil.
+	batch := newWriteBatch(
+		ctx, w.contentWriter, w.mapperForCluster(target.SourceCluster),
+		scoped.scan, target.Placement, scoped.writeSubdir)
+	batch.target = placementTarget{namespace: target.Namespace, name: target.Name}
+	if err := batch.refusal(); err != nil {
+		return err
+	}
+	// This is the scan every target gets, events or not: the periodic resync runs it whether or
+	// not anything changed, and a SUSPENDED target reaches here and stops just after. It is
+	// therefore the reason status.placement is populated on a target that has never written.
+	w.reportLayout(ctx, batch, worktreeRevision(worktree))
+	return nil
 }
 
 // applyResyncToWorktree is the streaming mark-and-sweep resync apply (M8), described

@@ -88,6 +88,10 @@ func (w *BranchWorker) flushEventsToWorktree(
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
+	// Publish what this folder's shape resolved to before folding anything in. It is a fact
+	// about the scan, so it must not depend on the events applying — or on their being applied
+	// at all, which is what makes it available to a suspended target.
+	w.reportLayout(ctx, batch, worktreeRevision(worktree))
 	for _, event := range events {
 		if err := batch.applyEvent(ctx, event); err != nil {
 			return false, err

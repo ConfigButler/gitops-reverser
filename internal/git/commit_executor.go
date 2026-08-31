@@ -179,6 +179,19 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	byBase := groupEventsByBase(events)
 	anyChanges := false
 	for _, base := range sortedBaseKeys(byBase) {
+		// A suspended target scans and publishes what it resolved, and writes nothing. The scan
+		// is not skipped with the write: dropping it would leave status.placement frozen at
+		// whatever the folder looked like when suspension began, which is the one thing a dry
+		// run must not do. Its events are dropped rather than deferred — resuming replays the
+		// cluster's current state on the next resync, not a backlog of stale intermediate ones.
+		if md, ok := targetForBase(targets, base); ok && md.Suspend {
+			if err := w.refuseUnsafeWorktree(ctx, worktree, base, md); err != nil {
+				return false, err
+			}
+			log.FromContext(ctx).V(1).Info("live write suppressed: GitTarget is suspended",
+				"gitTarget", md.Namespace+"/"+md.Name, "path", base, "events", len(byBase[base]))
+			continue
+		}
 		changed, err := w.flushEventsToWorktree(
 			ctx,
 			worktree,

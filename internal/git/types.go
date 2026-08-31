@@ -263,6 +263,12 @@ type ResolvedTargetMetadata struct {
 	// documents' GVK->GVR against that cluster's registry, so a folder mirroring a remote is swept
 	// against the right cluster's mapping.
 	SourceCluster string
+
+	// Suspend is the GitTarget's spec.suspend, captured with the rest of its metadata so a write
+	// replayed after a rebase honours the policy it was planned under. It suppresses the WRITE
+	// only: the scan that precedes it still runs, and the layout that scan resolves is still
+	// published, which is what makes a suspended target a dry run rather than an off switch.
+	Suspend bool
 }
 
 // PendingWrite is the unit retained until a push succeeds.

@@ -170,6 +170,7 @@ func (w *BranchWorker) resolveTargetMetadata(
 		Placement:        resolvePlacementPolicy(target.Spec.Placement),
 		PruneMode:        target.EffectivePruneMode(),
 		SourceCluster:    target.SourceCluster(),
+		Suspend:          target.Spec.Suspend,
 	}, nil
 }
 
@@ -225,6 +226,22 @@ func placementPolicyForBase(
 		}
 	}
 	return nil
+}
+
+// targetForBase returns the resolved metadata of the GitTarget writing at base, and whether
+// one was found. The three per-base lookups above answer one question each; this one exists for
+// the callers that need the whole record — the layout report names the target, and the suspend
+// gate reads a field with no safe default (a missing target must not read as suspended).
+func targetForBase(
+	targets map[pendingTargetKey]ResolvedTargetMetadata,
+	base string,
+) (ResolvedTargetMetadata, bool) {
+	for _, md := range targets {
+		if sanitizePath(md.Path) == base {
+			return md, true
+		}
+	}
+	return ResolvedTargetMetadata{}, false
 }
 
 // MessageKind is derived from the pending write's shape.
