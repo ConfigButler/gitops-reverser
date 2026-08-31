@@ -544,6 +544,10 @@ spec:
                       SerializeNamespace is whether a new document in this folder carries its own
                       metadata.namespace. Absent when the folder resolves no single answer — no render root
                       governs it, or more than one does — in which case the question is decided per document.
+
+                      It describes documents the folder's render root governs, which is every document in a
+                      folder that receives one source namespace. An object arriving from a different namespace
+                      than the root supplies carries its namespace regardless of what this reports.
                     type: boolean
                 type: object
               retention:

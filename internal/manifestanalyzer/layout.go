@@ -114,9 +114,16 @@ func ResolveLayout(
 	case len(roots) == 1:
 		resolution.Reason = LayoutSingleKustomization
 		resolution.RenderRoot = relativeToScope(roots[0], writeScope)
-		// The root's namespace: transformer is the supplier, exactly as
-		// namespaceIsInheritedFromContext decides it per document: a root that sets one supplies
-		// it, and a root that sets none leaves the document to carry its own.
+		// The root's namespace: transformer is the supplier: a root that sets one supplies it, and
+		// a root that sets none leaves the document to carry its own.
+		//
+		// This is a folder-wide answer to a question decided per document, and the gap is worth
+		// naming: namespaceIsInheritedFromContext omits the namespace only when the root's value
+		// equals THIS object's own namespace, so an object arriving from some other namespace has
+		// its namespace written even here. The folder-wide reading is the right one to publish
+		// because a namespace-free folder that receives two source namespaces is a contradiction
+		// rather than a nuance — it is the shape PR 2's one-source-namespace rule refuses — and
+		// reporting per-object would mean reporting a list that grows with the cluster.
 		resolution.SerializeNamespace = boolPtr(store.Kustomizations[roots[0]].Namespace == "")
 	default:
 		resolution.Reason = LayoutAmbiguous
