@@ -78,17 +78,16 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
-- [ ] Collapse wildcard source-namespace stream fan-out.
-  `WatchRule.spec.rules[].sourceNamespace: "*"` expands to one selection per admitted namespace, and
-  `targetWatchSpecs` opens one stream per cell (one type in one named namespace, or one type
-  cluster-wide) while `git.ResyncScope` names a single namespace, so a wildcard over N admitted
-  namespaces and M matched types costs N×M informers and N×M resync scopes, where a cluster-wide
-  ClusterWatchRule costs M. Expansion is deliberate — one
-  stream per namespace is what keeps each mark-and-sweep bounded by exactly the slice it gathered —
-  but the cost grows with tenant count. The direction is a cluster-wide stream whose resync scope
-  carries a namespace **set** rather than one name, so the gather stays exactly as narrow while the
-  stream count drops to M. Also revisit `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap
-  stops being representative at N×M.
+- [ ] Collapse wildcard source-namespace stream fan-out. **Superseded as a standalone item** —
+  [`source-scope-simplification.md`](design/source-scope-simplification.md#sourcenamespace--needs-its-own-decision)
+  is the definition of record for `sourceNamespace: "*"`, and the redefinition it decides deletes
+  this fan-out rather than optimizing it. The direction recorded here (a cluster-wide stream whose
+  resync scope carries a namespace **set**) is *not* what was decided, and building it would be
+  building the thing the wave removes.
+
+  What survives the redefinition and still needs doing: revisit
+  `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap stops being representative once a
+  wildcard produces one cluster-wide cell instead of N named ones.
 
 - [ ] Subscribe the watch plane to `typeset.Registry` lifecycle events.
   `Registry.Subscribe` has **no production observer**: the events are computed on every `Update`

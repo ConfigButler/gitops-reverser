@@ -111,6 +111,22 @@ flowchart LR
 
 ## `sourceNamespace: "*"` needs its own decision
 
+> **This section is the definition of record for `sourceNamespace: "*"`.** Both readings live here
+> and nowhere else: the shipped one, and the one this wave replaces it with. Other documents state
+> the consequence they care about and link here rather than restating the semantics — if you find a
+> second copy of the definition, that copy is the bug.
+>
+> **Shipped today**: every source namespace the `GitTarget` admits, resolved live through
+> `allowedSourceNamespaces` into a concrete set, one stream per namespace. This is what
+> [`configuration.md`](../configuration.md#bounding-which-source-namespaces-reach-a-target),
+> [`architecture.md`](../architecture.md) and
+> [`watchrule_types.go`](../../api/v1alpha3/watchrule_types.go) describe, and they are correct until
+> the wave lands.
+>
+> **Decided for the wave**: one cluster-wide list and watch, rejected outright while
+> `allowAnySourceNamespace` is false. Unbuilt. The reference docs above change in the same commit
+> that changes the behavior, never before.
+
 Today `*` means "every source namespace this `GitTarget` admits", resolved live through
 `allowedSourceNamespaces` into a concrete set, which is then planned as one stream per namespace.
 [`watchrule_types.go`](../../api/v1alpha3/watchrule_types.go) says so in the constant's own doc:
@@ -159,7 +175,7 @@ hundred list calls at warm-up today, one per namespace, each with its own cursor
 schedule and its own share of apiserver watch cache. Cluster-wide makes it one of each, and the
 saving grows with the cluster, which is exactly the direction the enumeration got worse in. The
 `TooManyStreams` cap was queued for the fan-out this deletes; see
-[`../layout/api-wave.md`](gittarget-api-wave.md), where that rider is now smaller than it was.
+[`gittarget-api-wave.md`](gittarget-api-wave.md), where that rider is now smaller than it was.
 
 ## Consequences, including two breaking semantic changes
 

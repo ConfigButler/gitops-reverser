@@ -302,7 +302,7 @@ locally, no plugins, no network, in-memory filesystem as the jail.
 
 How helm-light surfaces on the API (`layout.kind`, or a renderer property of the
 structural kind) belongs to the GitTarget API wave
-([../../layout/api-wave.md](../gittarget-api-wave.md)), not to this boundary.
+([`gittarget-api-wave.md`](../gittarget-api-wave.md)), not to this boundary.
 
 ## Where the arguments live
 

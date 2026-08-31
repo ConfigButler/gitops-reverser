@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: checkout-prod-content
+  namespace: shop-prod
+spec:
+  targetRef:
+    name: checkout-prod
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]

@@ -1,0 +1,15 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout-prod
+  namespace: shop-prod
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  # The leaf again, and here it is not a preference. envs/prod and envs/test both
+  # include layers/observability, so every file in that layer has fan-in 2 and is
+  # refused as a write target (L2). The leaf is the only folder in this tree with a
+  # fan-in of one, which is what makes it the write partition.
+  path: apps/checkout/envs/prod
+  suspend: true               # adoption dry run: scans and publishes, writes nothing

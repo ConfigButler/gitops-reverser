@@ -1,9 +1,0 @@
-apiVersion: configbutler.ai/v1alpha3
-kind: ClusterProvider
-metadata:
-  name: home
-spec:
-  allowedNamespaces:
-    names: [homelab-config]
-  # The WatchRule selects source namespaces other than its own namespace.
-  allowSourceNamespaceOverride: true

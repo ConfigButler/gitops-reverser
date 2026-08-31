@@ -1,0 +1,9 @@
+# Abridged live object: the captured original also carries uid, resourceVersion,
+# generation, creationTimestamp and managedFields, none of which reach Git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: checkout-config
+  namespace: shop-prod
+data:
+  timeout: "15m"

@@ -1,0 +1,31 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: prod-mirror
+  namespace: homelab-config
+spec:
+  providerRef:
+    name: mirror-repository
+  clusterProviderRef:
+    name: prod
+  branch: main
+  path: mirror/prod
+  suspend: true               # adoption dry run: scans and publishes, writes nothing
+  # The WatchRule beside this file names source namespaces other than its own, so
+  # the folder owner must say which ones may arrive here. Without it the rule is
+  # refused (SourceNamespaceAuthorized=False) — the deny-by-default posture.
+  # NOTE: the wave in docs/design/source-scope-simplification.md DELETES this field;
+  # afterwards the ClusterProvider's allowAnySourceNamespace is the only grant needed.
+  allowedSourceNamespaces:
+    names: [shop, billing]
+  # Flat is a DECLARED shape. Without a template the built-in ladder ends at the
+  # canonical identity path, which is a tree. One file per object, directly in the
+  # folder, is what this template says.
+  placement:
+    default: "{namespace}-{name}.yaml"
+  # Nothing downstream supplies a namespace, so every namespaced document carries
+  # its own. Unset would infer the same thing here; declaring it pins the folder's
+  # convention so a later kustomization.yaml appearing beside it cannot change the
+  # bytes of the next write. `true` is also what lets this folder hold TWO source
+  # namespaces at all: the one-source-namespace rule binds only explicit `false`.
+  serializeNamespace: true

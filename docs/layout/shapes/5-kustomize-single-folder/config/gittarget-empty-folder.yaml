@@ -1,0 +1,18 @@
+# The same folder, when it does not exist yet. This is the ONLY difference
+# between adopting a kustomize folder and creating one.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  path: apps/checkout
+  # There is nothing to infer from, so both halves are declared. useKustomize
+  # writes the root; serializeNamespace: false is honest BECAUSE the operator owns
+  # the root it wrote namespace: shop into.
+  serializeNamespace: false
+  placement:
+    useKustomize: true

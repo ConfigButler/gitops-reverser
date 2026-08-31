@@ -134,7 +134,7 @@ controller is the tell, not the licence.
 This is a rule for the person choosing `spec.path`, not something the operator can enforce: nothing
 in the repository marks a folder as bootstrap-owned. It is stated here so the answer exists in the
 support boundary rather than only in an example, and
-[`homelab-flux`](../../layout/examples/homelab-flux/README.md) is the worked case.
+[`homelab-flux`](../../layout/specific-examples/homelab-flux/README.md) is the worked case.
 
 ## 6. Remaining work
 

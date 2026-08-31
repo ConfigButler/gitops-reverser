@@ -5,7 +5,7 @@
 > Absorbs and extends the API-surface block left unbuilt by the status and configuration-model
 > review — `spec.suspend`, `spec.interval` and the reconcile-request annotation, the
 > `CommitRequest` lifecycle, and the `ClusterWatchRule` scope question — which is now sequenced in
-> [`../layout/api-wave.md`](../design/gittarget-api-wave.md).
+> [`gittarget-api-wave.md`](../design/gittarget-api-wave.md).
 
 ## The one-sentence finding
 

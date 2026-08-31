@@ -12,9 +12,12 @@
 >
 > Reading it in order matters, because the two halves have different standing. The **findings** are
 > checkable facts about the tree and they are why the calls are what they are. The **calls** are still
-> the calls. Question 2 (a CRD default for `placement.default`) has since been superseded outright by
-> [`model.md`](../layout/model.md), which argues that a path template is the
-> wrong primitive to be defaulting at all.
+> the calls. Question 2 (a CRD default for `placement.default`) has since been **reopened rather
+> than superseded**. An earlier revision of this note said [`model.md`](../layout/model.md) had
+> argued the path template was the wrong primitive to default at all; model.md has since reversed
+> that. The template stays, #319's ancestor walk removed the correctness objection, and what is left
+> is the legibility trade this page already priced — now an open question in
+> [`model.md`](../layout/model.md#open-questions).
 
 Three questions came out of reviewing #291, and one of them (a CRD default for
 `placement.default`) is a better idea than my first answer to it gave credit for. This document

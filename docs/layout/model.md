@@ -8,7 +8,9 @@
 > a quiet edit.
 >
 > Concrete repository folders and matching configurations live in
-> [`examples/README.md`](examples/README.md).
+> [`specific-examples/README.md`](specific-examples/README.md), for the Argo CD and Flux cases, and in
+> [`shapes/README.md`](shapes/README.md), which is the cross-product of folder shapes with the
+> decision flow drawn out and an empty-folder column for every one of them.
 
 Placement today is a ladder of four rungs, three of which are path templates and one of which is not:
 
@@ -211,6 +213,64 @@ read-side halves in the contextual-namespace corpus. What the post-scan rule add
 legibility: today those failures surface as an opaque render error rather than as the one fixable
 thing that is wrong.
 
+### The second guard: one source namespace, and this one refuses
+
+**A `GitTarget` with an explicit `serializeNamespace: false` admits exactly one source namespace.
+The second is refused.**
+
+The guard above asks whether a supplier exists. This one asks how many namespaces that supplier is
+being asked to speak for, and the answer can only ever be one: a document with no
+`metadata.namespace` takes its namespace from a single supplier, so two source namespaces reaching
+the folder is a contradiction in the setting itself. What follows is not a collision but a **match** —
+`shop/config` and `billing/config` both resolve to a `config.yaml` whose bytes carry no namespace, so
+their manifest identities are equal, the bundling rule never fires, and each write flips one document
+between two live objects. Everywhere else in this model, losing a distinction produces a refusal or a
+bundle; only here does it produce a match, which is why this guard refuses where the other reports.
+
+It is **derived from one setting, not inferred from two.** An earlier draft proposed a separate
+`enforceSingleNamespace` boolean, on the objection that a refusal derived from other fields is the
+kind of inference that got deleted from placement. That objection applied to a rule keyed on
+`serializeNamespace: false` *plus* a template with no `{namespace}`. Drop the template half — the
+path is irrelevant, because a deployer applies bytes rather than filenames — and what is left is the
+field's own meaning rather than a correlation between two fields. So there is no new field.
+
+**Explicit `false` only. Inference is never constrained by it.** That asymmetry is what makes the
+refusal safe next to kustomize, and it is the same line [`Is a folder-wide claim
+reasonable?`](#is-a-folder-wide-claim-reasonable) already draws. A tree of nested roots (fact 2) is
+legitimately multi-namespace *and* namespace-free in its documents, and it is the case unset exists
+for: inference resolves each document against the root governing its own path. Such a folder must
+never declare `false`, because `false` is a folder-wide uniform claim and that folder is not uniform.
+The refusal therefore costs that user nothing — it pushes them onto the setting that was already
+correct for them.
+
+**With `useKustomize: true` the multi-namespace case is worse, not better.** A created root carries
+`namespace:` only when the folder is single-namespace; with two namespaces reaching the target the
+operator can write no `namespace:` at all, so it creates a root that supplies nothing and then places
+namespace-less documents beneath it — the operator actively constructing the silent-mislabel folder.
+This is the one place refusing is not merely permissible but the only defensible behavior.
+
+**It needs no scan and no repository state**, which is what separates it from the guard above. The
+set of source namespaces reaching a target is `{the target's own namespace} ∪ {the explicit
+rules[].sourceNamespace names of every WatchRule pointing at it}`, all of it in the config cluster.
+A `sourceNamespace: "*"` item is refused outright and statically, with no enumeration, and that
+holds under **either** reading of `*` — the shipped one or the one the wave replaces it with
+([definition of record](../design/source-scope-simplification.md#sourcenamespace--needs-its-own-decision)).
+Neither can be proven to be one namespace from the spec alone, which is all this rule needs.
+
+This is deliberately **not** the job `GitTarget.spec.allowedSourceNamespaces` does, and it does not
+depend on that field, which the same document deletes. That field is an authorization fence, deleted
+because the chain from a folder back to the object that fills it never leaves one namespace, so RBAC
+on `watchrules` already answers who may write. This rule asks whether the folder still means what it
+claims — a correctness question about the bytes, untouched by that argument and homeless after it.
+
+**`fails` needs a subject, and it is both.** Refusing only the write leaves a target that refuses
+forever with no obvious fix; refusing the second `WatchRule` at admission is atomic feedback at the
+moment the mistake is made, and is what the fail-open webhook is for. So: an admission check for the
+feedback, and a write-plan precondition as the correctness layer, since admission is one-shot and
+cannot see a `serializeNamespace` flipped to `false` after the rules were created — the same
+reasoning [`../spec/where-validation-lives.md`](../spec/where-validation-lives.md) applies to every
+other gate in this repository.
+
 ## Collisions are already decided
 
 What happens when two resources resolve to the same path is specified and shipped in
@@ -308,6 +368,11 @@ them: `serializeNamespace: false` requires a namespace supplier, and a folder co
 `Ambiguous` rather than silently picking one. One pass, one condition shape, `Validated=False` naming
 the offending field and what the folder actually contains.
 
+The [one-source-namespace rule](#the-second-guard-one-source-namespace-and-this-one-refuses) is
+**not** part of this pass, though it guards the same field. Its input is the set of `WatchRule`
+objects naming the target, which is in the config cluster and needs no scan, and its outcome is a
+refusal rather than a report. It ships with the field, in PR 4.
+
 ## How it gets built
 
 `LocateNew` is not rewritten. The four-rung ladder is a single function,
@@ -321,14 +386,14 @@ where it is. The two flags sit beside the ladder.
 | 1 | The worked examples as an executable corpus | no |
 | 2 | `spec.suspend`, and the reconcile-request annotation | no |
 | 3 | `status.placement`, and the post-scan validation pass | no |
-| 4 | `useKustomize` and `serializeNamespace` ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no |
+| 4 | `useKustomize` and `serializeNamespace`, with the one-source-namespace refusal ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no |
 
 None of it is breaking, so none of it waits for a coordinated consumer bump. What is breaking on
 `GitTarget` is unrelated to placement and is sequenced in
 [`gittarget-api-wave.md`](../design/gittarget-api-wave.md).
 
 **PR 1 is the corpus, and it is the reason the rest is reviewable.**
-[`examples/README.md`](examples/README.md) already has the shape of a golden-file suite —
+[`shapes/README.md`](shapes/README.md) already has the shape of a golden-file suite —
 `repository/`, `config/`, `input/`, `expected-*.patch` — and is read by nobody but a human. Wiring it
 up converts the PR 4 review from "does this prose hold together" into "does the diff match the
 patch". The seam exists: `newWorktreeForTest` and `flushEventsToWorktree` in
@@ -349,8 +414,16 @@ is new is writing a `kustomization.yaml` that does not exist, with `namespace:` 
 is single-namespace, and registering into it in the same commit. Build that last and on its own: it
 is the one thing that writes a file nobody asked for by name.
 
+**The one-source-namespace refusal ships in PR 4 too, and it is the cheapest thing in it**: no scan,
+no repository state, no new field. Build the write-plan precondition first, because it is the
+correctness layer and it holds whatever admission did; the admission check on `WatchRule` is the
+feedback half and can follow in the same PR. It also decides the `useKustomize` question above — a
+created root's `namespace:` is written when the folder is single-namespace, and under this rule an
+explicit `serializeNamespace: false` guarantees it is.
+
 Two gaps the corpus should fill in PR 1: **a refusal scenario** (every example is a happy path, and
-the post-scan pass has the least coverage — a `serializeNamespace: false` with no supplier, and a
+the post-scan pass has the least coverage — a `serializeNamespace: false` with no supplier, a
+`serializeNamespace: false` target that a second source namespace reaches, and a
 folder covering two roots, each asserting `expected-status.yaml` instead of a patch), and **the
 missing `ClusterProvider`** that `empty-repo-bootstrap` references as `clusterProviderRef: app-intent`
 without a specimen existing anywhere.
@@ -361,9 +434,12 @@ without a specimen existing anywhere.
   `FluxTargetNamespace`, `Asserted`) so the post-scan pass can check the guarantee rather than infer
   which one was meant?
 - Should a `useKustomize: true` folder create a **nested** root per directory the template writes
-  into, each carrying its own `namespace:`? Fact 2 proves it works, and it is what would make
-  `serializeNamespace: false` safe in a multi-namespace tree. Deferred: materially more machinery,
-  and nobody has asked for a multi-namespace folder without namespaces in its documents.
+  into, each carrying its own `namespace:`? Fact 2 proves it works. Deferred, and now more firmly:
+  it was the thing that would have made `serializeNamespace: false` safe in a multi-namespace tree,
+  and the [one-source-namespace rule](#the-second-guard-one-source-namespace-and-this-one-refuses)
+  removes that motivation by refusing the combination outright. Such a tree is an unset folder, which
+  inference already handles per document. Re-open trigger: someone who needs a multi-namespace folder
+  whose documents omit their namespaces, and for whom leaving the field unset is not enough.
 - Should the operator ever **refuse** a write when a root that used to govern the path is gone,
   rather than reporting `LayoutResolved: None` and carrying on? Report first; escalate if someone
   says the status was not enough.

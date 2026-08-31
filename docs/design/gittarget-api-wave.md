@@ -149,10 +149,11 @@ Two interactions worth naming, because they change what gets built rather than m
   you would do before you do it". They are separate conditions on separate objects and neither
   depends on the other, so the SAR work stays additive and can ship after the wave — but whoever
   writes the second should read the first.
-- **`TooManyStreams` is sized by the `*` decision.** `sourceNamespace: "*"` compiling to one
-  cluster-wide list and watch removes the fan-out the cap was queued for. What is left to bound is
-  explicit enumeration, so the cap is still worth a `Stalled` reason and a bound — sized against
-  enumerated rules, and not planned before the `*` change lands.
+- **`TooManyStreams` is sized by the `*` decision**
+  ([definition of record](source-scope-simplification.md#sourcenamespace--needs-its-own-decision)),
+  which removes the fan-out the cap was queued for. What is left to bound is explicit enumeration,
+  so the cap is still worth a `Stalled` reason and a bound — sized against enumerated rules, and not
+  planned before the `*` change lands.
 
 ### 6. Two facts kept from arguments that dissolved
 

@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Shared by every environment below it. Fan-in 2, so nothing here is writable by a
+# target rooted at an environment.
+resources:
+  - ../../base
+patches:
+  - path: scrape-annotations.yaml
+    target:
+      kind: Deployment

@@ -1,0 +1,14 @@
+# The second half of this scenario, and the one worth reviewing: an edit to the
+# scrape annotation the shared layer patches in. The live object changed, the only
+# expression of that field is in layers/observability, and that folder is outside
+# this target's write scope. No file is written, and the refusal names the boundary
+# rather than searching for another document with the same identity.
+status:
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        shop-prod/checkout: the changed field is expressed in
+        apps/checkout/layers/observability, outside this target's path
+        apps/checkout/envs/prod
