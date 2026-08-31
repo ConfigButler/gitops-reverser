@@ -24,22 +24,16 @@ Three environments are **three `GitTarget` objects**, each rooted at a leaf:
 [`config/gittarget-test.yaml`](config/gittarget-test.yaml) are the same object with the environment
 swapped, and neither declares any layout configuration at all.
 
-A single target at `apps/checkout` is refused by three independent rules that happen to agree:
+A single target at `apps/checkout` is refused, by three independent rules that happen to agree:
+it covers four render roots, `base/` has fan-in three *from that target's point of view*, and a
+target is a write partition. The argument is cross-cutting — it decides this shape and
+[shape 7](../7-kustomize-layered/README.md) identically — so it lives in
+[Why only a leaf can be a kustomize target](../README.md#why-only-a-leaf-can-be-a-kustomize-target).
 
-- **It covers four render roots**, which resolves to `LayoutResolved: Ambiguous` rather than to an
-  arbitrary pick.
-- **`base/` has fan-in three, from that target's point of view.** A file more than one render root
-  consumes is never written (L2). Fan-in is counted over the roots **in the scan**, so a target
-  spanning `apps/checkout` sees three overlays referencing one base and refuses every write into it.
-  From a leaf target the same base has fan-in one, because the scan holds one root; there, L1 is
-  what keeps it read-only. See [what happens if you mount the base](#what-if-a-target-mounts-the-base).
-- **A target is a write partition.** One overlay = one environment = one watch scope = one write
-  scope, so authorization, audit, status and review all line up with the environment boundary. That
-  is [Option A of the granularity decision](../../../design/support-boundary/gittarget-granularity-and-cross-environment-edits.md),
-  and it is a product decision, not a limitation to be lifted later.
-
-So yes: **only a leaf**. "Manage the app as one thing" is a grouping concern for a layer above the
-operator, over N targets.
+What is specific to this shape: the base is read-only from a leaf because of **L1**, the write jail,
+not because of fan-in — from `overlays/prod` the scan holds one render root and nothing has fan-in
+above one. Which is also why [mounting the base directly](#what-if-a-target-mounts-the-base) is not
+refused at all.
 
 ## Scenario contract
 
@@ -130,13 +124,8 @@ with the four steps, the blast radius, and what it looks like from outside the o
 
 ## Empty folder
 
-**Half-bootstrappable, and the missing half is not a flag.** `useKustomize: true` pointed at an empty
-`apps/checkout/overlays/prod` creates a `kustomization.yaml` with `namespace: shop-prod` and the
-documents the operator places. It cannot create `resources: [../../base]`, because no live object
-mentions that path and nothing in the folder implies it. The result renders green and is a
-**standalone folder, not an overlay** — a different folder from the one the user asked for, which is
-worse than a failure.
-
-Creating an overlay is a scaffolding operation — a repository template, or the onboarding CLI — not
-a placement one. Worth saying in the `useKustomize` field documentation, because "creates the
-kustomization.yaml" sounds like it covers this case.
+**Half-bootstrappable.** `useKustomize: true` on an empty `apps/checkout/overlays/prod` writes a
+root with `namespace: shop-prod` and registers what the operator places — and cannot write
+`resources: [../../base]`, which is the line that makes the folder an overlay rather than a
+standalone one. Why no flag fixes that, and where the missing half belongs instead, is
+[the third empty-folder finding](../README.md#pointing-each-shape-at-an-empty-folder).

@@ -371,7 +371,7 @@ the offending field and what the folder actually contains.
 The [one-source-namespace rule](#the-second-guard-one-source-namespace-and-this-one-refuses) is
 **not** part of this pass, though it guards the same field. Its input is the set of `WatchRule`
 objects naming the target, which is in the config cluster and needs no scan, and its outcome is a
-refusal rather than a report. It ships with the field, in PR 4.
+refusal rather than a report. It ships with the field, in PR 2.
 
 ## How it gets built
 
@@ -381,40 +381,49 @@ refusal rather than a report. It ships with the field, in PR 4.
 registration, the render fidelity gate, refusal accounting, the metrics — already exists and stays
 where it is. The two flags sit beside the ladder.
 
+These two PRs are **track A** of [`../design/build-order.md`](../design/build-order.md), which is
+the only page that carries the cross-track order and the authority on the cut. Two other tracks are
+in flight and neither is covered here: the breaking source-scope wave (PR 3 there), and patch
+authoring. Nothing below waits for either — see
+[the couplings that do not exist](../design/build-order.md#three-couplings-people-expect-and-that-do-not-exist).
+
 | PR | Content | Breaking |
 |---|---|---|
-| 1 | The worked examples as an executable corpus | no |
-| 2 | `spec.suspend`, and the reconcile-request annotation | no |
-| 3 | `status.placement`, and the post-scan validation pass | no |
-| 4 | `useKustomize` and `serializeNamespace`, with the one-source-namespace refusal ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no |
+| 1 | The worked examples as an executable corpus, `spec.suspend` and the reconcile-request annotation, `status.placement`, and the post-scan pass's `Ambiguous` rule | no |
+| 2 | `useKustomize` and `serializeNamespace`, with the post-scan pass's supplier rule and the one-source-namespace refusal ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no |
 
-None of it is breaking, so none of it waits for a coordinated consumer bump. What is breaking on
+PR 1's four parts are one review, because none of them changes what the operator writes: a suspended
+target that publishes what it resolved is the whole feature, and the corpus is what proves it. The
+post-scan pass is the one thing that does **not** land whole — its `Ambiguous` rule reads only the
+scan, while its supplier rule reads a field PR 2 introduces.
+
+Neither PR is breaking, so neither waits for a coordinated consumer bump. What is breaking on
 `GitTarget` is unrelated to placement and is sequenced in
 [`gittarget-api-wave.md`](../design/gittarget-api-wave.md).
 
 **PR 1 is the corpus, and it is the reason the rest is reviewable.**
 [`shapes/README.md`](shapes/README.md) already has the shape of a golden-file suite —
 `repository/`, `config/`, `input/`, `expected-*.patch` — and is read by nobody but a human. Wiring it
-up converts the PR 4 review from "does this prose hold together" into "does the diff match the
+up converts the PR 2 review from "does this prose hold together" into "does the diff match the
 patch". The seam exists: `newWorktreeForTest` and `flushEventsToWorktree` in
 [`internal/git`](../../internal/git/placement_test.go) already do this at a smaller scale. Per
 scenario: seed a worktree from `repository/`, build the write event from `input/`, derive the flush
 policy from `config/gittarget.yaml`, flush, and compare the normalized diff with `expected-*.patch`.
 Blob hashes and index lines are noise; a `-update` flag that rewrites the patches keeps the corpus
-cheap to extend. Scenarios describing behavior PR 4 introduces are written now and skipped with the
-PR that unskips them named in the skip message, so **PR 4 is finished when the last skip is gone.**
+cheap to extend. Scenarios describing behavior PR 2 introduces are written now and skipped with the
+PR that unskips them named in the skip message, so **PR 2 is finished when the last skip is gone.**
 `config/gittarget.yaml` uses fields that do not exist yet, so it parses into a harness-local struct
-until PR 4 deletes that mapping — which is itself a check that the API the examples describe is the
+until PR 2 deletes that mapping — which is itself a check that the API the examples describe is the
 API that got built.
 
-**PR 4 builds the `true` half of each flag.** Everything else is already there: registration into an
+**PR 2 builds the `true` half of each flag.** Everything else is already there: registration into an
 existing root shipped in #319, and inference is what
 [`namespaceIsInheritedFromContext`](../../internal/manifestanalyzer/placement.go) already does. What
 is new is writing a `kustomization.yaml` that does not exist, with `namespace:` set when the folder
 is single-namespace, and registering into it in the same commit. Build that last and on its own: it
 is the one thing that writes a file nobody asked for by name.
 
-**The one-source-namespace refusal ships in PR 4 too, and it is the cheapest thing in it**: no scan,
+**The one-source-namespace refusal ships in PR 2 too, and it is the cheapest thing in it**: no scan,
 no repository state, no new field. Build the write-plan precondition first, because it is the
 correctness layer and it holds whatever admission did; the admission check on `WatchRule` is the
 feedback half and can follow in the same PR. It also decides the `useKustomize` question above — a

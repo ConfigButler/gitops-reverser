@@ -52,15 +52,13 @@ into an empty repository is the same write as the thousandth. Nothing to declare
 
 ## Consumers
 
-`kubectl apply -R -f clusters/home/` — the `-R` is required, because `kubectl apply -f` on a
-directory reads only that directory's own files. Flux deploys it with no root in the repository at
-all: `kustomize-controller` finding no `kustomization.yaml` at `spec.path` generates one by walking
-the subtree. Argo CD needs `directory.recurse: true`.
+`kubectl apply -R -f clusters/home/` — the `-R` is required. Flux deploys it with no root in the
+repository at all, and Argo CD needs `directory.recurse: true`. Why each of those is so is measured
+in [What the consumers actually do](../README.md#what-the-consumers-actually-do).
 
-**Do not give any of them a target namespace.** A Flux `targetNamespace` or an Argo
-`destination.namespace` becomes a kustomize `namespace:` transformer, which rewrites every
-document's namespace rather than filling in blanks — it would collapse this whole mirror into one
-namespace, and `serializeNamespace: true` does not prevent it.
+**Do not give any of them a target namespace.** It would collapse this whole multi-namespace mirror
+into one namespace, and `serializeNamespace: true` does not prevent it — which is the single most
+important thing to know about consuming this shape.
 
 A closely related use case with the same shape, including its `ClusterWatchRule` and source-cluster
 configuration, was a separate `tree-multi-namespace` scenario; it is deleted, because this shape

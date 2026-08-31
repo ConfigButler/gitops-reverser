@@ -32,7 +32,7 @@ where `envs/prod` is the only root and nothing has fan-in above one. L2 is silen
 jail at `spec.path` — is what makes the layer and the base read-only. The two preconditions cover
 different mistakes rather than the same one twice, and only one of them is a graph fact.
 
-**This is what the user meant by layering influencing the other design decisions.** Adding a layer
+**This is where layering influences the other design decisions.** Adding a layer
 does not change where a new file goes — it still goes beside the leaf's root — but it moves more of
 the repository out of reach, and it makes more live changes unexpressible inside the target. That is
 the trade the shape buys its reuse with.

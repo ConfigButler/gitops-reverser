@@ -70,7 +70,7 @@ copy of the information that would have told the two objects apart.
 admits exactly one source namespace, and the second is refused.** The argument is in
 [the shapes README](../README.md#a-namespace-free-folder-needs-a-fence-around-one-namespace) and in
 [`model.md`](../../model.md#the-second-guard-one-source-namespace-and-this-one-refuses); it ships
-with the field, in PR 4. Unlike the supplier question above, it is answerable entirely inside the
+with the field, in PR 2. Unlike the supplier question above, it is answerable entirely inside the
 cluster: the set of source namespaces reaching a target comes from the rules that name it, not from
 the folder — so this shape gets a real fence even though its *supplier* stays unverifiable.
 

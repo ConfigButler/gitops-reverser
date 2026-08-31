@@ -48,7 +48,8 @@ object. This shape and shape 3 are the two that bootstrap themselves.
 
 ## Consumers
 
-`kubectl apply -f mirror/prod/` — one directory, no recursion flag. A Flux `Kustomization` or Argo
-`Application` also works, provided neither asserts a namespace: a Flux `targetNamespace` or an Argo
-`destination.namespace` becomes a kustomize `namespace:` transformer that **overrides** what these
-documents carry, collapsing both namespaces into one.
+`kubectl apply -f mirror/prod/` — one directory, no recursion flag, which is what this shape is for.
+A Flux `Kustomization` or Argo `Application` also works, provided neither asserts a namespace: a
+target namespace **overrides** what these documents carry rather than filling a blank, and would
+collapse both namespaces into one. The measurement behind that is in
+[What the consumers actually do](../README.md#what-the-consumers-actually-do).

@@ -232,22 +232,13 @@ design goal. The design goal is that the folder is legible on its own.
 [shape 4](4-tree-namespace-free/README.md), and now decided.** Both shapes are single-namespace *by
 construction* — no `{namespace}` in the template — but construction is not enforcement. Two
 `WatchRule` objects may point at one `GitTarget`, and one of them may name a different
-`sourceNamespace`. The folder then loses information in two ways, and the second is why this became
-a rule rather than a caveat:
-
-- **Silently, without any collision.** `shop/web` and `billing/invoices` land in the same folder as
-  two namespace-free documents. The deployer names one namespace, so `billing`'s object is applied
-  into `shop`. Nothing in Git records that this was ever wrong: the folder is exactly what it claims
-  to be, and the claim was false.
-- **Destructively, on a name collision.** `shop/config` and `billing/config` both resolve to
-  `config.yaml`, and with the namespace stripped from the bytes their manifest identities are equal.
-  The collision rule that would append a second document into a bundle never fires, because the
-  second object **matches** the first document instead. Two live objects, one Git document, and each
-  write flips it. Everywhere else in the model, losing a distinction produces a refusal or a bundle;
-  only here does it produce a match.
+`sourceNamespace`. The folder then loses information two ways — silently, by applying one
+namespace's objects into another, and destructively, when two same-named objects collapse onto one
+namespace-less document. [Shape 2](2-flat-namespace-free/README.md#what-if-two-namespaces-reach-this-target)
+works both through on its own fixtures.
 
 **The answer is a rule, not a field: an explicit `serializeNamespace: false` admits exactly one
-source namespace, and the second is refused.** It ships with the field in PR 4. The argument — why
+source namespace, and the second is refused.** It ships with the field in PR 2. The argument — why
 no third boolean, why explicit `false` only, why `useKustomize: true` makes it mandatory rather than
 optional, and where the refusal lives — is in
 [`model.md`](../model.md#the-second-guard-one-source-namespace-and-this-one-refuses) and is not
