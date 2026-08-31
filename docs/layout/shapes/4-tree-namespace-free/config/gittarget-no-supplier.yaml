@@ -1,0 +1,22 @@
+# The post-scan supplier guard, as a fixture. Same folder and same flag as gittarget.yaml, and
+# the ONLY difference is what is not there: no consumer declaration accompanies it, so nothing
+# names the deployer that supplies the namespace these documents omit.
+#
+# The operator cannot tell this apart from gittarget.yaml, and that is the point of the fixture
+# rather than an oversight in it. `serializeNamespace: false` is honest only when something
+# guarantees the namespace; where the guarantee lives outside the repository the post-scan pass
+# has nothing to check, so it can only report. See ../../model.md, "The guard on false", and the
+# open question about naming the supplier, which is what would let this folder say so.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout-artifact-unsupplied
+  namespace: shop
+spec:
+  providerRef:
+    name: artifacts-repository
+  branch: main
+  path: apps/checkout
+  placement:
+    default: "{resource}/{name}.yaml"
+  serializeNamespace: false

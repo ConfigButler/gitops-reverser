@@ -1,0 +1,28 @@
+# The fence around "one namespace", as a fixture. Same folder and same flag as
+# gittarget.yaml; what differs is that TWO WatchRules reach it, from two source namespaces.
+#
+# An explicit `serializeNamespace: false` admits exactly one source namespace, and the second is
+# refused. The reason is not a collision but a MATCH: shop/checkout-config and
+# billing/checkout-config both resolve to a checkout-config.yaml whose bytes carry no namespace,
+# so their manifest identities are equal, the bundling rule never fires, and each write flips one
+# document between two live objects. See ../../model.md, "The second guard".
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout-artifact
+  namespace: shop
+spec:
+  providerRef:
+    name: artifacts-repository
+  clusterProviderRef:
+    name: apps
+  branch: main
+  path: apps/checkout
+  allowedSourceNamespaces:
+    names: [shop, billing]
+  placement:
+    default: "{name}.yaml"
+  # The declaration the rule binds to. Unset would be untouched by it: inference resolves each
+  # document against the root governing its own path, so a legitimately multi-namespace folder
+  # must use unset rather than false, and the refusal is what pushes it there.
+  serializeNamespace: false

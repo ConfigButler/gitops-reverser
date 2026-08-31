@@ -430,12 +430,13 @@ feedback half and can follow in the same PR. It also decides the `useKustomize` 
 created root's `namespace:` is written when the folder is single-namespace, and under this rule an
 explicit `serializeNamespace: false` guarantees it is.
 
-Two gaps the corpus should fill in PR 1: **a refusal scenario** (every example is a happy path, and
-the post-scan pass has the least coverage — a `serializeNamespace: false` with no supplier, a
-`serializeNamespace: false` target that a second source namespace reaches, and a
-folder covering two roots, each asserting `expected-status.yaml` instead of a patch), and **the
-missing `ClusterProvider`** that `empty-repo-bootstrap` references as `clusterProviderRef: app-intent`
-without a specimen existing anywhere.
+The refusal scenarios are part of PR 1 even where the rule is not: every worked example used to be
+a happy path, and the post-scan pass had the least coverage of anything here. Four exist now, each
+asserting an `expected-*-status.yaml` instead of a patch — a `serializeNamespace: false` with no
+supplier, a `serializeNamespace: false` target a second source namespace reaches, a folder covering
+two roots, and the base-owned field edit. Only the two-roots one asserts a rule PR 1 ships; the
+other two are written and skipped naming PR 2, and the supplier one additionally needs a third
+assertion mode in the harness, because it reports rather than refuses.
 
 ## Open questions
 

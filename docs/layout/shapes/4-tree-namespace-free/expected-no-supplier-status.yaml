@@ -1,0 +1,16 @@
+# A REPORT, not a refusal, and the distinction is the whole design of this guard: the render check
+# at the write path is already the last line of defence for the shapes where the store's view and
+# kustomize's disagree, so what the post-scan pass adds is legibility rather than safety. Documents
+# keep being written; the target says what it cannot verify.
+#
+# This scenario therefore asserts no patch AND no write refusal, which is a third assertion mode
+# the corpus harness does not have yet. PR 2 adds it along with the rule.
+status:
+  conditions:
+    - type: Validated
+      status: "False"
+      reason: NamespaceSupplierMissing
+      message: >-
+        spec.serializeNamespace is false, but no kustomization under apps/checkout sets a
+        namespace: for these documents; the namespace they omit is supplied by something the
+        operator cannot see, or by nothing at all

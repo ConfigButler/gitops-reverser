@@ -164,6 +164,17 @@ func layoutCorpus() []corpusScenario {
 				"metadata.namespace because no kustomization in the folder supplies it",
 		},
 		{
+			// The fence around "one namespace": an explicit serializeNamespace: false admits
+			// exactly one source namespace, and the second is refused because the two documents
+			// would be indistinguishable rather than merely colliding.
+			dir:    "shapes/2-flat-namespace-free",
+			config: "gittarget-second-namespace.yaml",
+			input:  "checkout-config.yaml",
+			status: "expected-second-namespace-status.yaml",
+			skip: "PR 2: the one-source-namespace refusal ships with spec.serializeNamespace " +
+				"(the write-plan precondition first, then the WatchRule admission check)",
+		},
+		{
 			dir:   "shapes/3-tree-serialized",
 			input: "checkout-config.yaml",
 			patch: "expected-checkout-config.patch",
@@ -174,6 +185,18 @@ func layoutCorpus() []corpusScenario {
 			patch: "expected-checkout-config.patch",
 			skip: "PR 2: needs spec.serializeNamespace: false. Today inference writes " +
 				"metadata.namespace because no kustomization in the folder supplies it",
+		},
+		{
+			// The post-scan supplier guard: serializeNamespace: false with nothing in the
+			// repository supplying the namespace. It REPORTS rather than refuses, so it is the
+			// one scenario asserting neither a patch nor a write refusal.
+			dir:    "shapes/4-tree-namespace-free",
+			config: "gittarget-no-supplier.yaml",
+			input:  "checkout-config.yaml",
+			status: "expected-no-supplier-status.yaml",
+			skip: "PR 2: the post-scan supplier rule ships with spec.serializeNamespace, and " +
+				"needs a third assertion mode here — this scenario asserts a REPORT " +
+				"(Validated=False) rather than a patch or a write refusal",
 		},
 		{
 			dir:   "shapes/5-kustomize-single-folder",

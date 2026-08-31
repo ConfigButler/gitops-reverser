@@ -1,0 +1,19 @@
+# No patch: the write is refused before a byte moves, because the document it would place cannot
+# be told apart from the one the other source namespace already owns.
+#
+# The refusal has two subjects, and both are deliberate: an admission check on the second
+# WatchRule is the feedback at the moment the mistake is made, and this write-plan precondition is
+# the correctness layer, because admission is one-shot and cannot see a serializeNamespace flipped
+# to false after the rules were created.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: MultipleSourceNamespaces
+      message: >-
+        spec.serializeNamespace is false, which admits exactly one source namespace, but
+        [billing shop] reach this target; set serializeNamespace to unset so each document takes
+        the namespace of the root governing it, or split the target
+    - type: Stalled
+      status: "True"
+      reason: MultipleSourceNamespaces

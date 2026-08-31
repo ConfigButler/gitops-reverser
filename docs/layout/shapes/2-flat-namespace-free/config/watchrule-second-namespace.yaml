@@ -1,0 +1,15 @@
+# The second rule, and the mistake. Its sourceNamespace names a namespace other than the target's
+# own, so a second namespace's ConfigMaps arrive in a folder whose documents carry no namespace.
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: checkout-content-billing
+  namespace: shop
+spec:
+  targetRef:
+    name: checkout-artifact
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]
+      sourceNamespace: billing
