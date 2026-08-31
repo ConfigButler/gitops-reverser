@@ -1,0 +1,23 @@
+# No patch, because no document is placed: the folder covers four render roots, so placement
+# has no single one to resolve to and the write is refused before a byte moves.
+#
+# LayoutResolved is the verdict and names what the folder actually contains; GitPathAccepted
+# carries the refusal, exactly as every other content refusal on this target does, so one
+# condition answers "may this folder be written to" whatever the cause.
+status:
+  conditions:
+    - type: LayoutResolved
+      status: "False"
+      reason: Ambiguous
+      message: >-
+        apps/checkout covers 4 kustomize render roots
+        (apps/checkout/base, apps/checkout/overlays/acceptance,
+        apps/checkout/overlays/prod, apps/checkout/overlays/test)
+    - type: GitPathAccepted
+      status: "False"
+      reason: AmbiguousLayout
+      message: >-
+        point the GitTarget at one of them instead
+  placement:
+    renderRoot: ""              # deliberately empty: no single root, and no arbitrary pick
+    byTypeEntries: 0

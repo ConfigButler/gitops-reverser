@@ -52,10 +52,26 @@ Those pages are the authority on *what*; this one only on *when*.
 
 **PR 1 is one feature with four parts, not four features.** `suspend` with no status shows you
 nothing; `status.placement` with no `suspend` arrives after the first write, which is too late to act
-on; and the corpus is what proves either of them behaves as written. Their real common property is
-what makes them one review: **nothing in PR 1 changes what the operator writes.** That is the
-reviewability the old four-way split was buying, and merging them keeps it at PR granularity rather
-than spending three PRs to get it.
+on; and the corpus is what proves either of them behaves as written. Their common property is what
+makes them one review: **PR 1 changes what the operator writes in exactly one case, and that case is
+the `Ambiguous` rule.** Everything else in it is a report. That is the reviewability the old
+four-way split was buying, and merging them keeps it at PR granularity rather than spending three
+PRs to get it.
+
+**The one case, stated plainly**, because an earlier draft of this page claimed PR 1 changed no
+write behavior at all and that is not true of a rule that gates: a GitTarget covering more than one
+kustomize render root — an app root rather than a leaf overlay — stops placing new documents. Before
+PR 1 it placed them at the canonical path inside whichever folder it covered. The refusal is raised
+at the placement site and surfaces as `GitPathAccepted=False`, reason `AmbiguousLayout`, with
+`LayoutResolved=False` naming the roots the folder covers. An existing document is unaffected: it is
+edited where it already lives, whatever the folder covers.
+
+**It gates at the write rather than on `Validated`, and the difference is recoverability.**
+`Validated` is evaluated before the data plane exists, so a target failing it never registers a
+worker, never scans, and could therefore never observe that the folder had been fixed — and a target
+that had never scanned could never trip the rule in the first place. Refusing at the placement site
+keeps the target declared and scanning, so narrowing it to a leaf clears the refusal the way fixing
+any other unsupported content does.
 
 **The post-scan pass splits by rule, and that is a new seam this cut introduces.** Its two rules do
 not have the same inputs: *a folder covering two render roots is `Ambiguous`* reads only the scan and
@@ -79,8 +95,9 @@ honest about what that does not buy:
 
 - **Bisect and revert granularity is the PR.** Merging the old PRs 1–3 means a regression in
   `suspend`, in `status.placement`, or in the corpus is one commit on `main`, and reverting any of
-  them reverts all three. The mitigation is that PR 1 changes no write behavior and nothing depends
-  on it yet, so a revert is cheap — not that the granularity survives.
+  them reverts all three. The mitigation is that PR 1's only write-behavior change is the
+  `Ambiguous` rule and nothing depends on the rest of it yet, so a revert is cheap — not that the
+  granularity survives.
 - **The changelog entry is the PR title.** release-please reads the squashed commit, so PR 1's title
   has to cover four things honestly rather than name the most interesting one.
 - **One property is untouched by the merge:** scenarios for unbuilt behavior are written in PR 1 and

@@ -530,8 +530,88 @@ The most useful status fields are:
 - `GitPathAccepted`: true when the target Git path is safe to materialize.
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 - `status.retention`: how many documents `spec.prune.mode` is keeping, and under which mode.
+- `LayoutResolved`: what the last scan resolved about the folder's shape, with
+  `status.placement` carrying the detail. See below.
 
 Use conditions for automation.
+
+### Dry run before the first write (`spec.suspend`)
+
+Placement only affects documents that do not exist yet, so a target pointed at a real repository
+gives you nothing to inspect until it has already written. `spec.suspend` closes that gap:
+
+```yaml
+spec:
+  path: apps/checkout
+  suspend: true
+```
+
+A suspended target keeps its watches, keeps scanning its folder, and keeps publishing what it
+resolved. It commits nothing and pushes nothing. `Ready` stays `True` with reason `Suspended`,
+because not writing is the configured outcome rather than a fault; every other gate still applies,
+so a suspended target with a broken `GitProvider` is still not ready.
+
+Clearing `suspend` resumes from the cluster's current state on the next resync. The writes
+suppressed while it was set are not replayed, so what lands is what the cluster holds then, not a
+backlog of the values it passed through.
+
+To re-read the folder now rather than on the periodic cadence, stamp the reconcile-request
+annotation with any value that changes:
+
+```bash
+kubectl annotate gittarget checkout \
+  reconcile.configbutler.ai/requestedAt="$(date -u +%FT%TZ)" --overwrite
+```
+
+The spelling is Flux's `reconcile.fluxcd.io/requestedAt` with our own group; the value carries no
+meaning, only its change does.
+
+### What the folder resolved to (`status.placement`)
+
+`status.placement` is what the last scan learned about the folder, and it is available before the
+target has ever written:
+
+```yaml
+status:
+  conditions:
+    - type: LayoutResolved
+      status: "True"
+      reason: SingleKustomization       # SingleKustomization | Ambiguous | None
+      message: render root "." governs new files
+  placement:
+    renderRoot: .
+    serializeNamespace: false
+    byTypeEntries: 1
+    observedRevision: 9f3c1ab
+    observedTime: "2026-07-30T09:14:22Z"
+    examples:
+      - type: v1/secrets
+        path: secrets/example.yaml
+        source: declared
+```
+
+- `renderRoot` is the kustomization directory that governs new documents, relative to `spec.path`;
+  `.` is the folder itself. It is empty when the folder has no kustomization, and when it has
+  several.
+- `serializeNamespace` is whether a new document carries its own `metadata.namespace`. It is absent
+  when the folder resolves no single answer, in which case the question is decided per document.
+- `examples` is capped at three and is illustrative, not a tally. It answers "where would a Secret
+  land" by asking the real placement ladder, so it can never claim a destination the writer would
+  not choose.
+- `observedRevision` and `observedTime` date the resolution. They advance when the resolution
+  changes, not on every scan of an unchanged folder.
+
+`LayoutResolved` reports the verdict. `None` (no kustomization governs the folder) is `True` and
+perfectly healthy; it is the ordinary case. Only `Ambiguous` is `False`:
+
+**A target must cover exactly one kustomize render root.** A `GitTarget` at `apps/checkout` in a
+base-plus-overlays repository covers the base and every overlay, so a new document has no single
+root to be placed into, and picking one would hand it to an environment nobody named. Such a target
+reports `LayoutResolved=False` with reason `Ambiguous`, naming the roots it covers, and refuses to
+place new documents (`GitPathAccepted=False`, reason `AmbiguousLayout`). Existing documents are
+unaffected: they are edited where they already live. The fix is to point the target at one leaf,
+`apps/checkout/overlays/prod`, and declare the other environments as their own `GitTarget` objects:
+one target is one environment is one write partition.
 
 ### Deletion policy (`spec.prune.mode`)
 
