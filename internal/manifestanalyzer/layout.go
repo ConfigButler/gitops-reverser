@@ -274,13 +274,16 @@ func AmbiguousLayoutRefusal(resolution LayoutResolution, specPath string) []Acce
 	if resolution.Reason != LayoutAmbiguous {
 		return nil
 	}
+	// Every path in a refusal is relative to the write jail, so the folder's own name is "." —
+	// which reads as nothing at all in a message. Say what "." IS instead; the roots below are
+	// relative to it and are what makes the message actionable.
 	return []AcceptanceIssue{{
 		Kind: IssueAmbiguousLayout,
 		Path: orDot(specPath),
 		Message: fmt.Sprintf(
-			"%s covers %d kustomize render roots (%s), so there is no single one to place new "+
-				"documents into; point the GitTarget at one of them instead",
-			orDot(specPath), len(resolution.RenderRoots), strings.Join(resolution.RenderRoots, ", ")),
+			"the GitTarget path covers %d kustomize render roots (%s), so there is no single one "+
+				"to place new documents into; point the GitTarget at one of them instead",
+			len(resolution.RenderRoots), strings.Join(resolution.RenderRoots, ", ")),
 		// The repository author fixes it, and one GitTarget edit does: it is a scoping mistake,
 		// not a support boundary. See docs/layout/shapes/README.md, "Why only a leaf can be a
 		// kustomize target".

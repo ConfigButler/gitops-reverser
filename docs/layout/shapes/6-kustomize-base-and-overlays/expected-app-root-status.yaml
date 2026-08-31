@@ -11,9 +11,9 @@ status:
       status: "False"
       reason: AmbiguousLayout
       message: >-
-        . covers 4 kustomize render roots (base, overlays/acceptance, overlays/prod,
-        overlays/test), so there is no single one to place new documents into; point the
-        GitTarget at one of them instead
+        the GitTarget path covers 4 kustomize render roots (base, overlays/acceptance,
+        overlays/prod, overlays/test), so there is no single one to place new documents into;
+        point the GitTarget at one of them instead
     - type: LayoutResolved
       status: "False"
       reason: Ambiguous
