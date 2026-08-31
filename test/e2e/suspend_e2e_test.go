@@ -101,13 +101,15 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 			"no kustomization governs this folder", "150s")
 
 		By("the stanza carries the scan's own facts, not a placement's")
+		// observedRevision is deliberately NOT asserted here. The repository's branch has no
+		// commit yet at this point — nothing has written to it — so the scan honestly read the
+		// folder at no revision, and reporting an empty one is the correct answer rather than a
+		// missing one. It is asserted below, once the active target has produced a commit.
 		Eventually(func(g Gomega) {
 			placement := placementStatusOf(g, suspendedTarget, testNs)
 			g.Expect(placement).NotTo(BeNil(), "status.placement must be published")
-			g.Expect(placement["observedRevision"]).NotTo(BeEmpty(),
-				"the scan names the revision it read")
-			g.Expect(placement["observedTime"]).NotTo(BeEmpty())
-			g.Expect(placement["serializeNamespace"]).To(BeTrue(),
+			g.Expect(placement).To(HaveKeyWithValue("observedTime", Not(BeEmpty())))
+			g.Expect(placement).To(HaveKeyWithValue("serializeNamespace", BeTrue()),
 				"nothing in this folder supplies a namespace, so documents carry their own")
 		}).Should(Succeed())
 	})
@@ -126,6 +128,15 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 
 		By("BARRIER: the active target commits it, so the pipeline has demonstrably run")
 		waitForPruneFile(suspendRepo, suspendConfigMapPath(activePath, testNs, configMapName), true)
+
+		By("the suspended target now dates its resolution to a real revision")
+		// The branch has a commit now, so the scan has a revision to name. Before the barrier it
+		// did not, which is why this assertion lives here rather than with the rest of the stanza.
+		Eventually(func(g Gomega) {
+			placement := placementStatusOf(g, suspendedTarget, testNs)
+			g.Expect(placement).To(HaveKeyWithValue("observedRevision", Not(BeEmpty())),
+				"the scan names the revision it read")
+		}).Should(Succeed())
 
 		By("and the suspended target's folder is still empty")
 		Consistently(func(g Gomega) {
