@@ -6,7 +6,8 @@ set that needs no `-R` and no deployer to be correct.
 
 ## Starting repository
 
-[`repository/`](repository/) **is** `mirror/prod`, holding two namespaces already:
+[`repository/`](repository/) is the repository root. The target's path, `mirror/prod`, already
+holds two namespaces:
 
 ```text
 mirror/prod/

@@ -18,7 +18,7 @@ Every shape receives the same input, [`checkout-config.yaml`](1-flat-serialized/
 a `ConfigMap` named `checkout-config` in namespace `shop`. Each folder holds `config/`,
 `repository/` (the starting state), `input/`, and `expected-*.patch` — the same conventions as
 [`../specific-examples/README.md`](../specific-examples/README.md), including patches without
-`index` lines.
+`index` lines and a `repository/` rooted at the repository root rather than at `spec.path`.
 
 | # | Shape | `useKustomize` | `serializeNamespace` | Placement template |
 |---|---|---|---|---|

@@ -20,8 +20,8 @@ alone.
 
 ## Repository folder
 
-[`repository/`](repository/) is rooted at the repository root rather than at one target's path,
-because this scenario has two targets on two layers:
+[`repository/`](repository/) is rooted at the repository root, as every scenario's is. Here that
+matters twice over, because this scenario has two targets on two layers:
 
 ```text
 clusters/home/flux-system/       # flux bootstrap owns this. GitOps Reverser never writes here.

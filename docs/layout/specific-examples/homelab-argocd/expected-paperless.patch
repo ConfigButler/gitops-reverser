@@ -1,7 +1,7 @@
 diff --git a/bootstrap/argocd-applications/kustomization.yaml b/bootstrap/argocd-applications/kustomization.yaml
 --- a/bootstrap/argocd-applications/kustomization.yaml
 +++ b/bootstrap/argocd-applications/kustomization.yaml
-@@ -4,3 +4,4 @@ kind: Kustomization
+@@ -4,3 +4,4 @@ namespace: argocd
  resources:
    - application-jellyfin.yaml
    - application-nextcloud.yaml
@@ -16,14 +16,14 @@ new file mode 100644
 +metadata:
 +  name: paperless
 +spec:
++  destination:
++    namespace: paperless
++    server: https://kubernetes.default.svc
 +  project: default
 +  source:
-+    repoURL: https://github.com/example/homelab.git
 +    path: apps/paperless
++    repoURL: https://github.com/example/homelab.git
 +    targetRevision: main
-+  destination:
-+    server: https://kubernetes.default.svc
-+    namespace: paperless
 +  syncPolicy:
 +    automated:
 +      prune: true
