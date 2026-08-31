@@ -88,11 +88,11 @@ func (w *BranchWorker) flushEventsToWorktree(
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
-	// Publish what this folder's shape resolved to before folding anything in. It is a fact
-	// about the scan, so it must not depend on the events applying — or on their being applied
-	// at all, which is what makes it available to a suspended target. A folder covering several
-	// render roots is refused here, after the report: nothing is written, and the report is what
-	// lets the refusal clear when the target is narrowed to a leaf.
+	// Publish what this folder's shape resolved to before folding anything in. It is a fact about
+	// the scan, so it must not depend on the events applying — or on their being applied at all,
+	// which is what makes it available to a suspended target. It runs AFTER the acceptance gate
+	// above on purpose: a folder the operator has refused to manage is one whose layout it should
+	// not be making claims about, and GitPathAccepted=False already says why.
 	w.scanLayout(ctx, batch, worktree)
 	for _, event := range events {
 		if err := batch.applyEvent(ctx, event); err != nil {

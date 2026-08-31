@@ -132,11 +132,18 @@ func (s corpusScenario) configFile() string {
 	return "gittarget.yaml"
 }
 
+// name is the subtest name: the folder plus what the scenario expects. It is keyed on the
+// expectation rather than on the config, because two scenarios in one folder can share a config
+// and differ only in their input — shape 8's image bump and env change do — and naming those by
+// config produces "gittarget-prod" twice.
 func (s corpusScenario) name() string {
-	if s.config == "" || s.config == "gittarget.yaml" {
-		return s.dir
+	expectation := s.patch
+	if expectation == "" {
+		expectation = s.status
 	}
-	return s.dir + "/" + strings.TrimSuffix(s.config, ".yaml")
+	expectation = strings.TrimPrefix(expectation, "expected-")
+	expectation = strings.TrimSuffix(strings.TrimSuffix(expectation, ".patch"), ".yaml")
+	return s.dir + "/" + expectation
 }
 
 // layoutCorpus is the whole corpus. The eight folder shapes are the cross-product of
