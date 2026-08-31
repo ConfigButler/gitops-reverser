@@ -144,6 +144,30 @@ type GitTargetSpec struct {
 	// ones are not — for a stored GitTarget as well as a new one.
 	// +optional
 	Prune *PrunePolicy `json:"prune,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// Suspend stops the WRITE, not the scan, and that asymmetry is the whole feature. Placement
+	// only ever affects documents that do not exist yet, so there is nothing to preview by
+	// inspecting the folder: a user declaring a target against a real repository has no way to see
+	// what the operator would do until it has already done it. A suspended target that still scans
+	// and still publishes status.placement turns adoption from declare-and-hope into a dry run.
+	//
+	// Deliberately MUTABLE and deliberately not a fault: a suspended target reports Ready=True with
+	// reason Suspended, because not writing is the configured outcome. The precedent is
+	// status.retention — a condition asserts health, and suppressing a write on request is not ill
+	// health.
+
+	// Suspend stops this target from writing to Git. It keeps scanning its folder and keeps
+	// publishing what it resolved — status.placement and the LayoutResolved condition are
+	// maintained exactly as they are for an active target — so it is a dry run of the layout
+	// rather than an off switch for the target. Watches keep running and events keep arriving;
+	// nothing is committed and nothing is pushed while it is set.
+	//
+	// Omitted, it is false. Clearing it resumes writing from the current cluster state on the next
+	// resync; the writes suppressed while suspended are not replayed.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
@@ -224,6 +248,88 @@ type GitTargetStatus struct {
 	// never a fault, and no condition changes state because of it.
 	// +optional
 	Retention *GitTargetRetentionStatus `json:"retention,omitempty"`
+
+	// Placement is what the last scan resolved about this folder's layout: which render root
+	// governs new documents, whether a namespace is written into them, and where a few
+	// representative types would land. It is an observation, like streams and retention, and the
+	// LayoutResolved condition carries the verdict.
+	// +optional
+	Placement *GitTargetPlacementStatus `json:"placement,omitempty"`
+}
+
+// Design rationale, kept out of the generated CRD description by the blank line below.
+//
+// Three decisions are frozen here because each is cheaper to take before the field exists.
+//
+// The resolution REASON is a condition reason (LayoutResolved), not a field. A renderRootReason
+// field would be a reason enum in a bespoke place, and every consumer in this ecosystem already
+// reads reasons from conditions.
+//
+// There are NO accumulating counters. placedResources, overriddenTypes and refusedResources are
+// metrics, and placements_total already carries them with better labels; a monotonic counter in
+// status is a status write per event, which re-creates the self-triggering reconcile edge the
+// status work already fixed once. Examples stays, capped and fixed-size, because "show me where a
+// Secret would land" is not a metric.
+//
+// Nothing here may depend on a placement having HAPPENED. Every field is a fact about the folder
+// from the last scan, so the whole stanza is available before the target has ever written a byte —
+// which is the only thing that makes it useful to a suspended target, and therefore useful at all.
+
+// GitTargetPlacementStatus is what the last scan resolved about a GitTarget folder's layout.
+type GitTargetPlacementStatus struct {
+	// RenderRoot is the kustomization directory that governs new documents in this folder,
+	// relative to spec.path; "." is the folder itself. Empty when the folder has no render root
+	// (the built-in canonical path applies) or when it has more than one, which is
+	// LayoutResolved=Ambiguous.
+	// +optional
+	RenderRoot string `json:"renderRoot,omitempty"`
+
+	// SerializeNamespace is whether a new document in this folder carries its own
+	// metadata.namespace. Absent when the folder resolves no single answer — no render root
+	// governs it, or more than one does — in which case the question is decided per document.
+	// +optional
+	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
+
+	// ByTypeEntries is how many spec.placement.byType templates this target declares. It is here
+	// so a reader can tell a folder whose layout is declared from one that is inferred without
+	// fetching the spec.
+	// +optional
+	ByTypeEntries int32 `json:"byTypeEntries,omitempty"`
+
+	// ObservedRevision is the Git revision the scan read, and ObservedTime is when it ran. A
+	// placement stanza older than the last commit to the folder describes a folder that has since
+	// changed.
+	// +optional
+	ObservedRevision string `json:"observedRevision,omitempty"`
+
+	// ObservedTime is when this resolution was computed.
+	// +optional
+	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
+
+	// Examples shows where a representative object of a few types would be written. It is capped
+	// at three, illustrative rather than a tally, and never grows with the folder: it answers
+	// "where would a Secret land", which is the question placement is actually asked.
+	// +optional
+	// +kubebuilder:validation:MaxItems=3
+	Examples []GitTargetPlacementExample `json:"examples,omitempty"`
+}
+
+// GitTargetPlacementExample is one illustrative destination: where a new object of a type would be
+// written under this folder's current layout.
+type GitTargetPlacementExample struct {
+	// Type is the placement type key the destination was resolved for
+	// ("{group}/{version}/{resource}", core resources omitting the group).
+	Type string `json:"type"`
+
+	// Path is where a new object of that type would be written, relative to spec.path, with the
+	// object's own name standing in as "example".
+	Path string `json:"path"`
+
+	// Source names which rung of the placement ladder produced Path: Declared, KustomizeRoot, or
+	// Canonical. It is the "why here" answer, and it is the same closed set the placements_total
+	// metric labels.
+	// +optional
+	Source string `json:"source,omitempty"`
 }
 
 // GitTargetStreamsStatus is a bounded roll-up of the stream readiness state for the
@@ -288,6 +394,9 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
+// +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=`.spec.suspend`,priority=1
+// +kubebuilder:printcolumn:name="RenderRoot",type=string,JSONPath=`.status.placement.renderRoot`,priority=1
+// +kubebuilder:printcolumn:name="LayoutResolved",type=string,JSONPath=`.status.conditions[?(@.type=="LayoutResolved")].reason`,priority=1
 // +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`,priority=1
 // +kubebuilder:printcolumn:name="RenderMatchesLive",type=string,JSONPath=`.status.conditions[?(@.type=="RenderMatchesLive")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
