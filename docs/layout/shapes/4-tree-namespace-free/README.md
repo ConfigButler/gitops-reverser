@@ -57,6 +57,13 @@ Two ways out, and this scenario takes the first:
 - Expected status: `Ready=True`, with the same unverifiable-supplier caveat as
   [shape 2](../2-flat-namespace-free/README.md).
 
+The caveat has its own fixture. [`config/gittarget-no-supplier.yaml`](config/gittarget-no-supplier.yaml)
+is this target with no consumer declaration beside it, and
+[`expected-no-supplier-status.yaml`](expected-no-supplier-status.yaml) is what the post-scan pass
+reports. The two configurations are indistinguishable to the operator, which is the finding rather
+than a flaw in the fixture: the guard can only report, never verify. The corpus runs it and skips
+it, naming PR 2.
+
 ## Empty folder
 
 **Same gap as shape 2, and the same answer.** Nothing to infer from, so `serializeNamespace: false`

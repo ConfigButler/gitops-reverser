@@ -74,6 +74,13 @@ with the field, in PR 2. Unlike the supplier question above, it is answerable en
 cluster: the set of source namespaces reaching a target comes from the rules that name it, not from
 the folder — so this shape gets a real fence even though its *supplier* stays unverifiable.
 
+It is a fixture rather than only an argument.
+[`config/gittarget-second-namespace.yaml`](config/gittarget-second-namespace.yaml) and
+[`config/watchrule-second-namespace.yaml`](config/watchrule-second-namespace.yaml) are this folder
+with the mistake made, and
+[`expected-second-namespace-status.yaml`](expected-second-namespace-status.yaml) is the refusal.
+The corpus runs it and skips it, naming PR 2.
+
 ## Empty folder
 
 **This is the case the refactor exists for.** An empty `apps/checkout` supplies nothing to infer
