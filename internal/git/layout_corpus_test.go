@@ -111,13 +111,15 @@ type corpusScenario struct {
 	config string
 	// input names the live object under input/.
 	input string
-	// patch names the expected diff under the fixture folder. Empty means the scenario
-	// asserts a refusal instead, through wantRefusal.
+	// patch names the expected diff under the fixture folder. Empty means the scenario asserts a
+	// refusal instead, through status.
 	patch string
-	// wantRefusal, when set, is a substring the flush error must contain. It is the
-	// executable half of an expected-status.yaml: the condition text is a projection of
-	// this refusal, and the projection is asserted in the controller's own tests.
-	wantRefusal string
+	// status names the expected-*-status.yaml a refusal scenario asserts, instead of a patch.
+	// The harness reads its GitPathAccepted condition and requires the flush to refuse with that
+	// message: that condition carries the writer's own text, so asserting it is what keeps the
+	// fixture a specification rather than prose. Every other condition in the file is the
+	// controller's projection of the same refusal and is asserted in the controller's own tests.
+	status string
 	// skip names the PR that unskips this scenario, and is the whole reason the row is
 	// written before the behavior exists. An empty skip is a scenario that runs today.
 	skip string
@@ -189,10 +191,10 @@ func layoutCorpus() []corpusScenario {
 			// The one refusal in the corpus that asserts a rule this PR ships: a target at the
 			// app root covers four render roots, so a new document has no single one to be
 			// placed into. expected-app-root-status.yaml is the pair of conditions a user reads.
-			dir:         "shapes/6-kustomize-base-and-overlays",
-			config:      "gittarget-app-root.yaml",
-			input:       "checkout-config.yaml",
-			wantRefusal: "covers 4 kustomize render roots",
+			dir:    "shapes/6-kustomize-base-and-overlays",
+			config: "gittarget-app-root.yaml",
+			input:  "checkout-config.yaml",
+			status: "expected-app-root-status.yaml",
 		},
 		{
 			dir:    "shapes/7-kustomize-layered",
@@ -213,10 +215,10 @@ func layoutCorpus() []corpusScenario {
 			// changed field (a container env var) is expressed only in the base, which this
 			// target reads and never writes. expected-env-change-status.yaml is the condition
 			// a user reads; the refusal below is what produces it.
-			dir:         "shapes/8-base-owned-field-edit",
-			config:      "gittarget-prod.yaml",
-			input:       "deployment-env-changed.yaml",
-			wantRefusal: "escapes the GitTarget write scope",
+			dir:    "shapes/8-base-owned-field-edit",
+			config: "gittarget-prod.yaml",
+			input:  "deployment-env-changed.yaml",
+			status: "expected-env-change-status.yaml",
 		},
 		{
 			dir:   "specific-examples/homelab-argocd",
@@ -259,7 +261,7 @@ func runCorpusScenario(t *testing.T, sc corpusScenario) {
 		[]Event{event}, target.policy(), v1alpha3.PruneOnEvent)
 
 	if sc.patch == "" {
-		requireCorpusRefusal(t, err, sc.wantRefusal, worktree, seeded)
+		requireCorpusRefusal(t, err, filepath.Join(folder, sc.status), worktree, seeded)
 		return
 	}
 	require.NoError(t, err, "%s: the scenario expects a commit, not a refusal", sc.name())
@@ -268,16 +270,47 @@ func runCorpusScenario(t *testing.T, sc corpusScenario) {
 	assertCorpusPatch(t, filepath.Join(folder, sc.patch), got)
 }
 
-// requireCorpusRefusal asserts a scenario that must not write. Refusing is only half of
-// it: a refusal that leaves bytes behind is a partial commit, so the worktree has to come
-// back exactly as it was seeded.
-func requireCorpusRefusal(t *testing.T, err error, want string, worktree *gogit.Worktree, seeded *object.Commit) {
+// requireCorpusRefusal asserts a scenario that must not write: the flush refuses with the message
+// the fixture's GitPathAccepted condition carries, and the worktree comes back exactly as it was
+// seeded. The second half is not a formality — a refusal that leaves bytes behind is a partial
+// commit, which is the failure mode the write-plan preconditions exist to prevent.
+func requireCorpusRefusal(
+	t *testing.T,
+	err error,
+	statusPath string,
+	worktree *gogit.Worktree,
+	seeded *object.Commit,
+) {
 	t.Helper()
 	require.Error(t, err, "the scenario expects a refusal")
-	if want != "" {
-		require.Contains(t, err.Error(), want)
-	}
+	require.Contains(t, err.Error(), corpusRefusalMessage(t, statusPath),
+		"the refusal and %s disagree", statusPath)
 	require.Empty(t, corpusDiff(t, worktree, seeded), "a refused flush must leave the folder untouched")
+}
+
+// corpusRefusalMessage reads the GitPathAccepted message out of an expected-*-status.yaml.
+func corpusRefusalMessage(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var fixture struct {
+		Status struct {
+			Conditions []struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &fixture), "parsing %s", path)
+	for _, condition := range fixture.Status.Conditions {
+		if condition.Type == "GitPathAccepted" {
+			require.NotEmpty(t, condition.Message, "%s: GitPathAccepted must carry the refusal message", path)
+			return condition.Message
+		}
+	}
+	t.Fatalf("%s has no GitPathAccepted condition, so nothing pins the refusal", path)
+	return ""
 }
 
 // assertCorpusPatch compares the observed diff with the fixture, rewriting the fixture

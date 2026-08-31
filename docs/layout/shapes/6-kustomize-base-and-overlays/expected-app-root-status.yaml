@@ -1,23 +1,30 @@
-# No patch, because no document is placed: the folder covers four render roots, so placement
-# has no single one to resolve to and the write is refused before a byte moves.
+# No patch, because no document is placed: the folder covers four render roots, so placement has
+# no single one to resolve to and the write is refused before a byte moves.
 #
-# LayoutResolved is the verdict and names what the folder actually contains; GitPathAccepted
-# carries the refusal, exactly as every other content refusal on this target does, so one
-# condition answers "may this folder be written to" whatever the cause.
+# GitPathAccepted carries the refusal verbatim — its message is the writer's own, asserted by the
+# corpus — and is the one condition to automate on: it answers "may this folder be written to"
+# whatever the cause. LayoutResolved carries the verdict and the roots; Stalled follows
+# GitPathAccepted, as it does for every other content refusal.
 status:
   conditions:
-    - type: LayoutResolved
-      status: "False"
-      reason: Ambiguous
-      message: >-
-        apps/checkout covers 4 kustomize render roots
-        (apps/checkout/base, apps/checkout/overlays/acceptance,
-        apps/checkout/overlays/prod, apps/checkout/overlays/test)
     - type: GitPathAccepted
       status: "False"
       reason: AmbiguousLayout
       message: >-
-        point the GitTarget at one of them instead
+        . covers 4 kustomize render roots (base, overlays/acceptance, overlays/prod,
+        overlays/test), so there is no single one to place new documents into; point the
+        GitTarget at one of them instead
+    - type: LayoutResolved
+      status: "False"
+      reason: Ambiguous
+      message: >-
+        the GitTarget path covers 4 kustomize render roots (base, overlays/acceptance,
+        overlays/prod, overlays/test); point it at one of them, so one target is one write
+        partition
+    - type: Stalled
+      status: "True"
+      reason: AmbiguousLayout
   placement:
     renderRoot: ""              # deliberately empty: no single root, and no arbitrary pick
     byTypeEntries: 0
+    # serializeNamespace is ABSENT, not false: with four roots the answer differs per document.

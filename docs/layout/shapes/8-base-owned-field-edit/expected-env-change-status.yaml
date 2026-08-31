@@ -1,13 +1,17 @@
-# The second half. No patch, because no file is written: the whole flush is refused
-# before a byte moves, and the result is recorded once on the GitTarget.
+# The second half. No patch, because no file is written: the whole flush is refused before a byte
+# moves, and the result is recorded once on the GitTarget.
+#
+# GitPathAccepted's message is the writer's own and is asserted by the corpus. Stalled is the
+# controller's summary of it.
 status:
   conditions:
     - type: GitPathAccepted
       status: "False"
       reason: WriteBoundaryRefused
       message: >-
-        planned write to "base/deployment.yaml" is outside this target's write scope
-        (apps/checkout/overlays/prod): Deployment/checkout
+        planned write path "base/deployment.yaml" escapes the GitTarget write scope: the operator
+        only ever writes inside spec.path (reads may reach shared context such as ../../base,
+        writes never leave it)
     - type: Stalled
       status: "True"
       reason: WriteBoundaryRefused
