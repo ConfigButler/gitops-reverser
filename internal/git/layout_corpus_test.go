@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/layoutfixture"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -35,9 +36,11 @@ import (
 // Three conventions here are load-bearing and are stated in
 // docs/layout/shapes/README.md as well:
 //
-//   - A scenario describing behavior that is not built yet is written NOW and skipped,
-//     naming the PR that unskips it. The corpus is the definition of done for that PR:
-//     it is finished when the last skip is gone.
+//   - A scenario describing behavior that is not built yet is written NOW and skipped, naming the
+//     track that unskips it. The corpus is the definition of done for that track: PR 2 is
+//     finished when every skip naming PR 2 is gone. Not every skip is PR 2's — shape 8's
+//     `images:` authoring belongs to track C and outlives it — so the rule is deliberately "its
+//     own skips" rather than "the last skip".
 //   - `config/gittarget.yaml` parses into corpusGitTarget below, a HARNESS-LOCAL struct,
 //     for exactly as long as it names fields the API does not have. Every field it holds
 //     that v1alpha3.GitTargetSpec also holds is asserted against the real type by
@@ -52,10 +55,10 @@ import (
 var updateLayoutCorpus = flag.Bool("update", false,
 	"rewrite docs/layout expected-*.patch fixtures from the observed diff")
 
-// layoutCorpusRoot is docs/layout/ as reached from this package's directory. The
-// fixtures are read in place rather than copied into testdata/: a copy would drift from
-// the documents it illustrates, and the drift would be invisible in review.
-const layoutCorpusRoot = "../../docs/layout"
+// layoutCorpusRoot is docs/layout/ as reached from this package's directory. The fixtures are read
+// in place rather than copied into testdata/: a copy would drift from the documents it
+// illustrates, and the drift would be invisible in review.
+const layoutCorpusRoot = layoutfixture.Root
 
 // corpusGitTarget is the harness-local reading of a scenario's config/gittarget.yaml.
 //
@@ -115,10 +118,17 @@ type corpusScenario struct {
 	// refusal instead, through status.
 	patch string
 	// status names the expected-*-status.yaml a refusal scenario asserts, instead of a patch.
-	// The harness reads its GitPathAccepted condition and requires the flush to refuse with that
-	// message: that condition carries the writer's own text, so asserting it is what keeps the
-	// fixture a specification rather than prose. Every other condition in the file is the
-	// controller's projection of the same refusal and is asserted in the controller's own tests.
+	// The harness reads its GitPathAccepted condition WHOLE — status, reason and message — and
+	// requires the flush to refuse with exactly that: the status is the refusal, the reason is
+	// what manifestanalyzer.GitPathRefusalReason maps the refusal's issue kinds to, and the
+	// message is the writer's own text. Asserting all three is what keeps the fixture a
+	// specification rather than prose; asserting only the message let the reason drift.
+	//
+	// LayoutResolved and Stalled in the same file are the CONTROLLER's projection of this
+	// refusal, which no write-path test can produce. They are asserted against the same fixture
+	// by internal/controller (TestPublishLayout_AmbiguousMatchesTheCorpusFixture and
+	// TestGitTargetReadiness_StalledFollowsGitPathAccepted), so the whole file is covered even
+	// though no single test covers all of it.
 	status string
 	// skip names the PR that unskips this scenario, and is the whole reason the row is
 	// written before the behavior exists. An empty skip is a scenario that runs today.
@@ -313,34 +323,20 @@ func requireCorpusRefusal(
 ) {
 	t.Helper()
 	require.Error(t, err, "the scenario expects a refusal")
-	require.Contains(t, err.Error(), corpusRefusalMessage(t, statusPath),
+
+	want, err2 := layoutfixture.ReadCondition(statusPath, "GitPathAccepted")
+	require.NoError(t, err2)
+	require.Equal(t, "False", want.Status, "%s: a refusal is GitPathAccepted=False", statusPath)
+
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused,
+		"the refusal must be an acceptance refusal, or it reaches status as an unexplained write fault")
+	require.Equal(t, want.Reason, manifestanalyzer.GitPathRefusalReason(refused),
+		"the reason this refusal publishes and the reason %s claims disagree", statusPath)
+	require.Contains(t, refused.Error(), want.Message,
 		"the refusal and %s disagree", statusPath)
+
 	require.Empty(t, corpusDiff(t, worktree, seeded), "a refused flush must leave the folder untouched")
-}
-
-// corpusRefusalMessage reads the GitPathAccepted message out of an expected-*-status.yaml.
-func corpusRefusalMessage(t *testing.T, path string) string {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	require.NoError(t, err)
-
-	var fixture struct {
-		Status struct {
-			Conditions []struct {
-				Type    string `json:"type"`
-				Message string `json:"message"`
-			} `json:"conditions"`
-		} `json:"status"`
-	}
-	require.NoError(t, yaml.Unmarshal(raw, &fixture), "parsing %s", path)
-	for _, condition := range fixture.Status.Conditions {
-		if condition.Type == "GitPathAccepted" {
-			require.NotEmpty(t, condition.Message, "%s: GitPathAccepted must carry the refusal message", path)
-			return condition.Message
-		}
-	}
-	t.Fatalf("%s has no GitPathAccepted condition, so nothing pins the refusal", path)
-	return ""
 }
 
 // assertCorpusPatch compares the observed diff with the fixture, rewriting the fixture

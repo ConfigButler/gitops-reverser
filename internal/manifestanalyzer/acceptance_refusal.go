@@ -54,6 +54,37 @@ func (e *AcceptanceRefusedError) AllIssuesOfKinds(kinds ...IssueKind) bool {
 	return true
 }
 
+// GitPathRefusalReason maps a refusal onto the GitPathAccepted condition reason it is published
+// under. A refusal made up PURELY of one recognised shape gets that shape's own reason; any mix
+// falls back to the umbrella UnsupportedContent, because a mixed refusal has no single answer and
+// naming one of its halves would send the reader to the wrong fix.
+//
+// It lives here, beside the IssueKind constants it reads, rather than in the watch package that
+// publishes it. Both the projection and the corpus that pins the fixtures need the same answer,
+// and the corpus cannot import watch (watch imports git). Before this the mapping was in watch
+// with three comments elsewhere asking callers to keep their strings in sync with it by hand.
+//
+// The strings mirror the controller's GitTargetReason* constants — neither package can import
+// controller without a cycle — and every one of them is a member of the controller's
+// stalled-reason set, so a refusal surfaces as Stalled=True / kstatus Failed whichever it is.
+func GitPathRefusalReason(refused *AcceptanceRefusedError) string {
+	switch {
+	case refused.AllIssuesOfKinds(IssueIgnoreShadowsManaged):
+		return "IgnoreShadowsManagedPath"
+	case refused.AllIssuesOfKinds(IssueAmbiguousLayout):
+		return "AmbiguousLayout"
+	case refused.AllIssuesOfKinds(
+		IssueWriteEscapesScope,
+		IssueWriteFanIn,
+		IssueRenderRefused,
+		IssueUnplaceableEdit,
+	):
+		return "WriteBoundaryRefused"
+	default:
+		return "UnsupportedContent"
+	}
+}
+
 // RefusalError returns an *AcceptanceRefusedError when the acceptance was not accepted, or
 // nil when the folder is clean. The writer calls this immediately after running the gate, so
 // a refusal aborts the commit before any file is touched.

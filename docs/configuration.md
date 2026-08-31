@@ -547,9 +547,15 @@ spec:
 ```
 
 A suspended target keeps its watches, keeps scanning its folder, and keeps publishing what it
-resolved. It commits nothing and pushes nothing. `Ready` stays `True` with reason `Suspended`,
-because not writing is the configured outcome rather than a fault; every other gate still applies,
-so a suspended target with a broken `GitProvider` is still not ready.
+resolved. It plans no new commit. `Ready` stays `True` with reason `Suspended`, because not writing
+is the configured outcome rather than a fault; every other gate still applies, so a suspended target
+with a broken `GitProvider` is still not ready.
+
+**It takes effect at the next planning boundary, not instantly.** Work already committed locally
+when you set it is still pushed, so a target suspended during a push cooldown can publish one more
+commit seconds later. That is deliberate: a local commit that is never pushed would sit in the
+operator's checkout and surface later, out of order, when you resume. Suspend is a valve on new
+work, not an undo.
 
 Clearing `suspend` resumes from the cluster's current state on the next resync. The writes
 suppressed while it was set are not replayed, so what lands is what the cluster holds then, not a

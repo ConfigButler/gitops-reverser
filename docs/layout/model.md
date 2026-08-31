@@ -392,10 +392,17 @@ authoring. Nothing below waits for either — see
 | 1 | The worked examples as an executable corpus, `spec.suspend` and the reconcile-request annotation, `status.placement`, and the post-scan pass's `Ambiguous` rule | no |
 | 2 | `useKustomize` and `serializeNamespace`, with the post-scan pass's supplier rule and the one-source-namespace refusal ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no |
 
-PR 1's four parts are one review, because none of them changes what the operator writes: a suspended
-target that publishes what it resolved is the whole feature, and the corpus is what proves it. The
-post-scan pass is the one thing that does **not** land whole — its `Ambiguous` rule reads only the
-scan, while its supplier rule reads a field PR 2 introduces.
+PR 1's four parts are one review because three of them are reports and the fourth is what proves
+them: a suspended target that publishes what it resolved is the whole feature, and the corpus is
+what pins it. The exception is the `Ambiguous` rule, which **gates**: a folder covering several
+render roots stops placing new documents, where before it placed them at the canonical path inside
+whichever folder it covered. Existing documents are untouched, and the refusal is raised at the
+write rather than on `Validated` so the target keeps scanning and can observe the folder being
+fixed. [`../design/build-order.md`](../design/build-order.md#the-plan-as-three-prs) carries the
+before-and-after.
+
+The post-scan pass is the one thing that does **not** land whole — its `Ambiguous` rule reads only
+the scan, while its supplier rule reads a field PR 2 introduces.
 
 Neither PR is breaking, so neither waits for a coordinated consumer bump. What is breaking on
 `GitTarget` is unrelated to placement and is sequenced in
@@ -411,7 +418,9 @@ scenario: seed a worktree from `repository/`, build the write event from `input/
 policy from `config/gittarget.yaml`, flush, and compare the normalized diff with `expected-*.patch`.
 Blob hashes and index lines are noise; a `-update` flag that rewrites the patches keeps the corpus
 cheap to extend. Scenarios describing behavior PR 2 introduces are written now and skipped with the
-PR that unskips them named in the skip message, so **PR 2 is finished when the last skip is gone.**
+PR that unskips them named in the skip message, so **PR 2 is finished when its own skips are
+gone.** Not every skip is PR 2's: shape 8's `images:` authoring belongs to track C and is skipped
+naming it, so it stays after PR 2 lands and is not a defect in that PR's completion.
 `config/gittarget.yaml` uses fields that do not exist yet, so it parses into a harness-local struct
 until PR 2 deletes that mapping — which is itself a check that the API the examples describe is the
 API that got built.

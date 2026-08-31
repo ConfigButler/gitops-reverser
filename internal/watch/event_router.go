@@ -346,21 +346,7 @@ func renderFidelityDivergence(refused *manifestanalyzer.AcceptanceRefusedError) 
 // controller without a cycle), and all three are members of the controller's stalled-reason
 // set, so every refusal surfaces as Stalled=True / kstatus Failed.
 func gitPathRefusalReason(refused *manifestanalyzer.AcceptanceRefusedError) string {
-	switch {
-	case refused.AllIssuesOfKinds(manifestanalyzer.IssueIgnoreShadowsManaged):
-		return "IgnoreShadowsManagedPath"
-	case refused.AllIssuesOfKinds(manifestanalyzer.IssueAmbiguousLayout):
-		return "AmbiguousLayout"
-	case refused.AllIssuesOfKinds(
-		manifestanalyzer.IssueWriteEscapesScope,
-		manifestanalyzer.IssueWriteFanIn,
-		manifestanalyzer.IssueRenderRefused,
-		manifestanalyzer.IssueUnplaceableEdit,
-	):
-		return "WriteBoundaryRefused"
-	default:
-		return "UnsupportedContent"
-	}
+	return manifestanalyzer.GitPathRefusalReason(refused)
 }
 
 // RegisterGitTargetEventStream registers a GitTargetEventStream with the router.

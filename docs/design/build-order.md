@@ -40,7 +40,7 @@ tracks are the *independence* argument — why the order is free — and the PR 
 | PR | Contains | Breaking | Done when |
 |---|---|---|---|
 | **1 — see it before it writes** | the corpus wired up, `spec.suspend` + the reconcile-request annotation, `status.placement` + `LayoutResolved`, and the post-scan pass's **`Ambiguous` rule** | no | a suspended target reports what it resolved, and every corpus scenario either passes or is skipped naming PR 2 |
-| **2 — the two booleans** | `spec.serializeNamespace`, `placement.useKustomize`, the post-scan pass's **supplier rule**, the one-source-namespace refusal, creating a `kustomization.yaml` | no | the last skip is gone |
+| **2 — the two booleans** | `spec.serializeNamespace`, `placement.useKustomize`, the post-scan pass's **supplier rule**, the one-source-namespace refusal, creating a `kustomization.yaml` | no | every corpus skip naming PR 2 is gone |
 | **3 — the breaking wave** | delete `allowedSourceNamespaces`, redefine `sourceNamespace: "*"`, the `commit.window` / `commit.message` moves and their riders | **yes**, one bump | the wave's own migration note is satisfied |
 
 PRs 1 and 2 are specified in
@@ -101,8 +101,10 @@ honest about what that does not buy:
 - **The changelog entry is the PR title.** release-please reads the squashed commit, so PR 1's title
   has to cover four things honestly rather than name the most interesting one.
 - **One property is untouched by the merge:** scenarios for unbuilt behavior are written in PR 1 and
-  skipped, naming PR 2 in the skip message, so PR 2 is still finished when the last skip is gone.
-  That is enforced by the test suite rather than by history, which is why squashing cannot erode it.
+  skipped, each naming the track that unskips it, so PR 2 is still finished when every skip naming
+  PR 2 is gone. Not all of them do: shape 8's `images:` authoring names track C and outlives PR 2,
+  which is why the rule is "PR 2's own skips" rather than "the last skip". Either way it is enforced
+  by the test suite rather than by history, which is why squashing cannot erode it.
 
 **Track C is not one of the three, on purpose.** It is one and a half to two weeks of engineering
 that blocks nothing; folding it into any of the three would make that PR unreviewable and would tie a
@@ -185,8 +187,9 @@ So PR 1 is assembly, not construction: seed a worktree from `repository/`, build
 
 **Three rules for the corpus, each of which has already been learned the hard way here:**
 
-- **Scenarios for unbuilt behavior are written now and skipped**, with the PR that unskips them named
-  in the skip message. PR 2 is finished when the last skip is gone.
+- **Scenarios for unbuilt behavior are written now and skipped**, with the track that unskips them
+  named in the skip message. PR 2 is finished when every skip naming PR 2 is gone — shape 8's
+  `images:` authoring names track C and outlives it.
 - **`config/gittarget.yaml` parses into a harness-local struct** until PR 2 deletes that mapping —
   which is itself a check that the API the examples describe is the API that got built.
 - **Refusals are fixtures too.** Every scenario that only ever succeeds is advertising rather than

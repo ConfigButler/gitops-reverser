@@ -147,7 +147,7 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
-	// Suspend stops the WRITE, not the scan, and that asymmetry is the whole feature. Placement
+	// Suspend stops the PLANNING of new writes, not the scan, and that asymmetry is the feature. Placement
 	// only ever affects documents that do not exist yet, so there is nothing to preview by
 	// inspecting the folder: a user declaring a target against a real repository has no way to see
 	// what the operator would do until it has already done it. A suspended target that still scans
@@ -162,7 +162,13 @@ type GitTargetSpec struct {
 	// publishing what it resolved — status.placement and the LayoutResolved condition are
 	// maintained exactly as they are for an active target — so it is a dry run of the layout
 	// rather than an off switch for the target. Watches keep running and events keep arriving;
-	// nothing is committed and nothing is pushed while it is set.
+	// no new commit is planned while it is set.
+	//
+	// It takes effect at the next planning boundary, not instantly. Work already committed
+	// locally when suspend is set is still pushed, so a target suspended during a push cooldown
+	// can publish one more commit seconds later. That is deliberate: a local commit that is never
+	// pushed would sit in the worker's checkout indefinitely and surface later, out of order, on
+	// resume. Suspend is a valve on new work, not an undo.
 	//
 	// Omitted, it is false. Clearing it resumes writing from the current cluster state on the next
 	// resync; the writes suppressed while suspended are not replayed.
@@ -285,8 +291,12 @@ type GitTargetPlacementStatus struct {
 	RenderRoot string `json:"renderRoot,omitempty"`
 
 	// SerializeNamespace is whether a new document in this folder carries its own
-	// metadata.namespace. Absent when the folder resolves no single answer — no render root
-	// governs it, or more than one does — in which case the question is decided per document.
+	// metadata.namespace. It is true when no render root governs the folder, because then nothing
+	// supplies the namespace and every namespaced document has to carry its own.
+	//
+	// It is absent only when MORE THAN ONE render root covers the folder, which is
+	// LayoutResolved=Ambiguous: the answer then differs per document, by whichever root governs
+	// it, and reporting a folder-wide one would be the guess that verdict exists to refuse.
 	//
 	// It describes documents the folder's render root governs, which is every document in a
 	// folder that receives one source namespace. An object arriving from a different namespace

@@ -7,6 +7,50 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A GitTarget must cover exactly one kustomize render root
+
+A `GitTarget` whose `spec.path` covers more than one kustomize render root — an app root above a
+`base/` and several `overlays/`, rather than one leaf overlay — no longer places new documents. It
+reports `LayoutResolved=False` with reason `Ambiguous`, naming the roots it covers, and refuses the
+write with `GitPathAccepted=False`, reason `AmbiguousLayout`.
+
+Before this, such a target wrote the new document to the built-in canonical path inside the folder
+it covered, where it belonged to no render root and no deployer would ever apply it.
+
+**Who is affected.** Only a target pointed at a folder with several kustomizations under it. A
+folder with one kustomization, or none at all, is untouched. **Existing documents are untouched
+either way**: a resource that already has a document in Git is edited where it lives, whatever the
+folder covers, so nothing stops being mirrored and nothing moves.
+
+**Find them before you upgrade.** For each `GitTarget`, count the `kustomization.yaml` files under
+its `spec.path` in the branch it writes to:
+
+```bash
+kubectl get gittargets -A \
+  -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,PATH:.spec.path
+# then, in a checkout of each target's branch:
+find <spec.path> -name kustomization.yaml
+```
+
+Two or more, and that target is affected — unless all but one of them are referenced by another
+(a `base/` that every overlay lists is not itself a root).
+
+**What to do about it.** Point the target at one leaf, and declare the other environments as their
+own `GitTarget` objects:
+
+```yaml
+spec:
+  path: apps/checkout/overlays/prod    # not apps/checkout
+```
+
+One target is one environment is one write partition, which is what makes authorization, audit and
+review line up with the environment boundary. The reasoning is in
+[`layout/shapes/README.md`](layout/shapes/README.md#why-only-a-leaf-can-be-a-kustomize-target).
+
+To see the verdict without waiting for a write, set `spec.suspend: true` and read
+`status.placement`: a suspended target scans and publishes what it resolved without writing
+anything.
+
 ## New resources land where you declare, not where the folder's other documents live
 
 Sibling inference is gone. A resource with no document in Git yet is placed by the first of three

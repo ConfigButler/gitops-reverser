@@ -78,6 +78,34 @@ func TestSuspend_UnsuspendedTargetStillWrites(t *testing.T) {
 	assert.NoError(t, statErr, "an active target writes the file the suspended one withheld")
 }
 
+// Suspend's cutover, pinned. The gate reads the value CAPTURED when the write was planned, not
+// the live GitTarget, so a suspension arriving after planning does not retract the write — and a
+// write already committed locally is still pushed by the retained-writes path, which never
+// consults suspend at all.
+//
+// That is the contract rather than a gap in it: a local commit that is never pushed would sit in
+// the worker's checkout indefinitely and surface later, out of order, on resume. Suspend is a
+// valve on new work. This test exists so that reading is a decision the suite defends rather than
+// an accident of where the flag happens to be read.
+func TestSuspend_IsTheValueCapturedWhenTheWriteWasPlanned(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+
+	// The metadata this write was planned under: not suspended. The GitTarget in the cluster may
+	// have been suspended since, and this write does not care.
+	planned := suspendedTarget(false)
+	targets := map[pendingTargetKey]ResolvedTargetMetadata{{}: planned}
+
+	changed, err := worker.applyPendingWriteEvents(
+		t.Context(), repoFor(t, worktree), worktree, []Event{newConfigMapEvent("cache", "app")}, targets)
+
+	require.NoError(t, err)
+	assert.True(t, changed, "a write planned before suspension still lands")
+	_, statErr := os.Stat(filepath.Join(root, "app", "configmaps", "cache.yaml"))
+	assert.NoError(t, statErr)
+}
+
 // The half that makes suspend a dry run rather than an off switch: the suspended target still
 // scans, so it still publishes what its folder resolved to.
 func TestSuspend_StillPublishesTheResolvedLayout(t *testing.T) {
