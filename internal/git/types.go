@@ -249,6 +249,13 @@ type ResolvedTargetMetadata struct {
 	// resolved with the rest of the metadata so a replayed write honours the policy it was planned
 	// under, exactly as PruneMode and Suspend are.
 	Namespaces namespacePolicy
+	// CommitMessage is the GitTarget's spec.commit.message, verbatim and possibly nil. It is
+	// overlaid onto the provider-resolved CommitConfig so a commit is phrased by the folder it
+	// writes to rather than by the connection it travels over. Resolved with the rest of the
+	// target's mutable state, so a write replayed after a rebase is phrased by the policy it was
+	// planned under.
+	CommitMessage *v1alpha3.CommitMessageSpec
+
 	// PruneMode is the GitTarget's EFFECTIVE spec.prune.mode — always a concrete value,
 	// because it is resolved through EffectivePruneMode and an omitted policy is onEvent.
 	// It gates both deletion paths: the resync mark-and-sweep (through the planner's
@@ -715,7 +722,12 @@ type GroupedCommitMessageData struct {
 	Resources []ResourceRef
 }
 
-// ResolveCommitConfig resolves API commit settings into runtime defaults.
+// ResolveCommitConfig resolves a GitProvider's commit settings into runtime defaults.
+//
+// It reads the COMMITTER only. Message templates are a GitTarget concern
+// (GitTarget.spec.commit.message) and are overlaid by WithTargetMessage, so a provider that still
+// carries a stored spec.commit.message has no effect here — that provider is refused outright by
+// its own reconciler rather than half-honoured.
 func ResolveCommitConfig(spec *v1alpha3.CommitSpec) CommitConfig {
 	config := CommitConfig{
 		Committer: CommitterConfig{
@@ -742,17 +754,24 @@ func ResolveCommitConfig(spec *v1alpha3.CommitSpec) CommitConfig {
 		}
 	}
 
-	if spec.Message != nil {
-		if eventTemplate := strings.TrimSpace(spec.Message.EventTemplate); eventTemplate != "" {
-			config.Message.EventTemplate = eventTemplate
-		}
-		if reconcileTemplate := strings.TrimSpace(spec.Message.ReconcileTemplate); reconcileTemplate != "" {
-			config.Message.ReconcileTemplate = reconcileTemplate
-		}
-		if groupTemplate := strings.TrimSpace(spec.Message.GroupTemplate); groupTemplate != "" {
-			config.Message.GroupTemplate = groupTemplate
-		}
-	}
-
 	return config
+}
+
+// WithTargetMessage overlays a GitTarget's spec.commit.message onto a resolved config, leaving any
+// template the target does not set at its built-in default. A nil spec changes nothing, so a
+// target that configures no messages commits under the same wording it always did.
+func (c CommitConfig) WithTargetMessage(spec *v1alpha3.CommitMessageSpec) CommitConfig {
+	if spec == nil {
+		return c
+	}
+	if eventTemplate := strings.TrimSpace(spec.EventTemplate); eventTemplate != "" {
+		c.Message.EventTemplate = eventTemplate
+	}
+	if reconcileTemplate := strings.TrimSpace(spec.ReconcileTemplate); reconcileTemplate != "" {
+		c.Message.ReconcileTemplate = reconcileTemplate
+	}
+	if groupTemplate := strings.TrimSpace(spec.GroupTemplate); groupTemplate != "" {
+		c.Message.GroupTemplate = groupTemplate
+	}
+	return c
 }

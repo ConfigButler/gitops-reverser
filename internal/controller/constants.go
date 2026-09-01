@@ -178,6 +178,10 @@ const (
 	ReasonConnectionFailed = "ConnectionFailed"
 	// ReasonCommitConfigInvalid indicates the commit configuration is invalid.
 	ReasonCommitConfigInvalid = "CommitConfigInvalid"
+
+	// ReasonCommitFieldsRelocated is the terminal reason for a STORED GitProvider that still
+	// carries spec.push or spec.commit.message, both of which moved to GitTarget.spec.commit.
+	ReasonCommitFieldsRelocated = "CommitFieldsRelocated"
 	// ReasonEncryptionConfigInvalid indicates encryption configuration is invalid.
 	ReasonEncryptionConfigInvalid = "EncryptionConfigInvalid"
 )

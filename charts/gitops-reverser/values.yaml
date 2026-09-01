@@ -394,11 +394,14 @@ quickstart:
     secretRef:
       # Required when quickstart.enabled=true.
       name: git-creds
-    push:
-      commitWindow: "5s"
   gitTarget:
     name: example-target
     branch: main
+    commit:
+      # Rolling silence window that coalesces this target's events into one commit
+      # per author. It is a GitTarget field: batching describes the folder being
+      # written, not the connection to the repository.
+      window: "5s"
     # Required relative repository path for the starter GitTarget. The chart
     # default avoids repo-root writes; set "." only to deliberately target root.
     path: live-cluster

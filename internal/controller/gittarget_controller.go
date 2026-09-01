@@ -399,6 +399,15 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
 	}
 
+	if commitOK, commitMsg := validateCommitConfig(target); !commitOK {
+		st.set(GitTargetConditionValidated,
+			metav1.ConditionFalse,
+			GitTargetReasonInvalidConfig,
+			commitMsg,
+		)
+		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
+	}
+
 	// The source cluster's connectivity inputs (kubeConfig) are validated on the referenced
 	// ClusterProvider now, not here — the GitTarget only NAMES its source cluster. The
 	// ClusterProvider's readiness is projected onto the GitTarget as a separate condition.
@@ -420,7 +429,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	st.set(GitTargetConditionValidated,
 		metav1.ConditionTrue,
 		GitTargetReasonOK,
-		"Provider, branch, and placement validation passed",
+		"Provider, branch, placement and commit validation passed",
 	)
 	return true, "", nil, nil
 }

@@ -193,6 +193,31 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
+	// These fields lived on GitProvider until this release, as spec.push.commitWindow and
+	// spec.commit.message. GitProvider is the CONNECTION — a URL, a credential, the branches it
+	// will accept — and how a folder's writes are batched and phrased is a property of the folder,
+	// not of the route to the repository. Two GitTargets sharing one GitProvider had no way to
+	// disagree about either, which is the concrete cost of the old placement.
+	//
+	// They are grouped under spec.commit rather than landing as two top-level fields. The move is
+	// breaking either way, so the grouping is free HERE and would cost a bump in any later
+	// release; and spec.commit is the shape these fields already had on GitProvider, so nothing
+	// about them has to be relearned. See docs/design/gittarget-api-wave.md § "Where the fields
+	// live".
+	//
+	// What did NOT move: commit.committer and commit.signing stay on GitProvider. Both are
+	// properties of the identity that talks to the remote — the signing key is a Secret in the
+	// provider's namespace, and the committer is the bot the platform sees — so they belong to the
+	// connection in a way the window and the message do not.
+
+	// Commit configures how this target's writes are batched into commits, and how those commits
+	// are phrased. Omitted, writes coalesce over a 5s rolling silence window and use the built-in
+	// message templates.
+	// +optional
+	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
 	// Suspend is a PANIC KNOB: one field that stops this target writing, reachable without
 	// deleting anything and without unpicking the watch configuration that would have to be
 	// rebuilt afterwards. That is the whole justification, and it is enough on its own.
@@ -234,6 +259,34 @@ type GitTargetSpec struct {
 	// resync; the writes suppressed while suspended are not replayed.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+}
+
+// Design rationale, kept out of the generated CRD description by the blank line below.
+//
+// Message reuses CommitMessageSpec verbatim rather than collapsing its three templates into one.
+// The three render three genuinely different things with three different variable sets — a single
+// event, a reconcile of one type, and a grouped commit-window batch — so one template could only
+// have been a fourth thing, and inventing it is a redesign this move deliberately is not.
+
+// GitTargetCommitSpec configures how a GitTarget's writes become commits.
+type GitTargetCommitSpec struct {
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// It stays a string rather than becoming metav1.Duration because that is what it was on
+	// GitProvider, and re-typing a field in the same release that relocates it would make a
+	// mechanical migration a rewrite. Parsing stays at the write path, where an unparseable value
+	// falls back to the default loudly rather than blocking admission of the whole target.
+
+	// Window is the rolling silence window used to coalesce this target's events into a single
+	// commit per author. The timer resets on every event arrival, and the commit is made after
+	// this much silence. "0s" opts into per-event commits. Omitted, it is "5s".
+	// +optional
+	Window *string `json:"window,omitempty"`
+
+	// Message configures how this target's commit messages are formatted. Omitted, or with any
+	// individual template left empty, the built-in templates are used.
+	// +optional
+	Message *CommitMessageSpec `json:"message,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document

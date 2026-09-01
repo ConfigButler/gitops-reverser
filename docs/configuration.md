@@ -73,8 +73,10 @@ The important fields are:
 - `spec.secretRef.name`: Secret with Git credentials such as SSH or HTTPS auth
 - `spec.knownHostsRef`: optional ConfigMap/Secret with SSH `known_hosts` shared across providers
 - `spec.allowedBranches`: branches this provider is allowed to write
-- `spec.push.commitWindow`: rolling silence window that coalesces events into one commit per author
-- `spec.commit`: committer identity, commit templates, and signing
+- `spec.commit`: committer identity and signing
+
+How writes are batched and phrased is **not** here: `spec.commit.window` and `spec.commit.message`
+belong to the [`GitTarget`](#gittargetspeccommit-how-writes-become-commits) that owns the folder.
 
 Example:
 
@@ -143,31 +145,18 @@ fingerprints out of band. The controller flag `--insecure-allow-missing-known-ho
 throwaway/dev clusters only: it permits SSH when **no** source provided any `known_hosts`; a
 `known_hosts` that is present but unparseable is always a hard error.
 
-### `GitProvider.spec.push`
-
-`spec.push.commitWindow` controls how arriving events are grouped into commits. The timer resets
-on every event; when it has been silent for the configured duration, the buffered events for a
-given (author, gitTarget) are written as one commit. The default is `5s`. Setting `0s` opts into
-per-event commits in the steady-state.
-
-```yaml
-spec:
-  push:
-    commitWindow: "5s"
-```
-
-A burst (e.g. `kubectl apply -k`, `helm upgrade`, an ArgoCD sync wave) becomes one commit per
-author with a summary subject; isolated edits still produce one commit each.
-
 ### `GitProvider.spec.commit`
 
-`spec.commit` configures how gitops-reverser writes commits:
+`spec.commit` configures the identity this connection commits under:
 
 - `committer`: the operator identity written as the Git committer
-- `message`: the subject format for per-event and batch commits
 - `signing`: the SSH signing key configuration
 
 If `spec.commit` is omitted, gitops-reverser uses its built-in defaults.
+
+`spec.commit.message` is not here. A commit's wording describes the folder being written, so it is
+[`GitTarget.spec.commit.message`](#commit-message-templates); setting it on a `GitProvider` is
+rejected.
 
 #### Author vs committer
 
@@ -213,91 +202,6 @@ Defaults:
 
 If signing is enabled, `spec.commit.committer.email` should be an email that the Git hosting
 platform recognizes for the account that owns the signing key.
-
-#### Commit message templates
-
-There are three templates, one per commit shape:
-
-- `spec.commit.message.eventTemplate`: per-event commits (only used when `commitWindow` is `0s`).
-- `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
-  common case).
-- `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
-  path; one commit per synced type).
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
-      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
-```
-
-`eventTemplate` can use:
-
-- `Operation`
-- `Group`
-- `Version`
-- `Resource`
-- `Namespace`
-- `Name`
-- `APIVersion`
-- `Username`
-- `GitTarget`
-
-`Username` is empty whenever no actor was named, both in configured-author mode and when
-attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
-**author header** and deliberately does not reach templates or message bodies, so a template
-rendering `{{.Username}}` never has to special-case it. Use `git log` (or
-`author_kind="unresolved"`) to tell the two apart.
-
-`groupTemplate` can use:
-
-- `Author`
-- `GitTarget`
-- `Count`
-- `Operations` (map of `CREATE`/`UPDATE`/`DELETE` counts)
-- `Resources` (slice of `{Group, Version, Resource, Namespace, Name}`)
-
-`reconcileTemplate` can use:
-
-- `Count`
-- `GitTarget`
-- `Group`
-- `Version`
-- `Resource`
-- `APIVersion`
-- `Revision`
-
-`Group`/`Version`/`Resource`/`APIVersion` name the synced type for a per-type reconcile and
-`Revision` is the cluster `resourceVersion` the reconcile was pinned to. The default,
-`reconciled {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}`,
-renders e.g. `reconciled 6 secrets (last resourceVersion: 1331)`. The type and revision fields are
-empty for a whole-target reconcile or a pure sweep, so guard a template that references them
-(the default uses `{{if .Resource}}` / `{{if .Revision}}`) to avoid an identity-less subject.
-
-Examples:
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-```
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "[{{.Operation}}] {{.Resource}}/{{.Name}} ({{.Username}})"
-```
-
-```yaml
-spec:
-  commit:
-    message:
-      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}@{{.Revision}}"
-```
 
 #### Commit signing
 
@@ -540,6 +444,123 @@ The most useful status fields are:
   `status.placement` carrying the detail. See below.
 
 Use conditions for automation.
+
+### `GitTarget.spec.commit`: how writes become commits
+
+`spec.commit` says how this target's writes are batched into commits and how those commits are
+phrased. Both halves used to live on the `GitProvider` (as `spec.push.commitWindow` and
+`spec.commit.message`) and moved here because they describe the folder being written rather than
+the route to the repository. Two `GitTarget`s sharing one `GitProvider` can now disagree about
+both: an RBAC folder that wants a commit per change and an app folder that wants a burst coalesced
+no longer have to be two connections.
+
+```yaml
+spec:
+  commit:
+    window: "5s"
+    message:
+      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+```
+
+#### The commit window (`spec.commit.window`)
+
+`spec.commit.window` controls how arriving events are grouped into commits. The timer resets on
+every event; when it has been silent for the configured duration, the buffered events for a given
+author are written as one commit. The default is `5s`. Setting `0s` opts into per-event commits in
+the steady-state.
+
+A burst (`kubectl apply -k`, `helm upgrade`, an ArgoCD sync wave) becomes one commit per author with
+a summary subject; isolated edits still produce one commit each.
+
+An unparseable or negative value is rejected on the object (`Validated=False`, reason
+`InvalidConfig`). A value already stored before that check falls back to the `5s` default at the
+write rather than stopping the mirror.
+
+#### Commit message templates
+
+There are three templates, one per commit shape:
+
+- `spec.commit.message.eventTemplate`: per-event commits (only used when `spec.commit.window` is
+  `0s`).
+- `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
+  common case).
+- `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
+  path; one commit per synced type).
+
+```yaml
+spec:
+  commit:
+    message:
+      eventTemplate: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
+```
+
+`eventTemplate` can use:
+
+- `Operation`
+- `Group`
+- `Version`
+- `Resource`
+- `Namespace`
+- `Name`
+- `APIVersion`
+- `Username`
+- `GitTarget`
+
+`Username` is empty whenever no actor was named, both in configured-author mode and when
+attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
+**author header** and deliberately does not reach templates or message bodies, so a template
+rendering `{{.Username}}` never has to special-case it. Use `git log` (or
+`author_kind="unresolved"`) to tell the two apart.
+
+`groupTemplate` can use:
+
+- `Author`
+- `GitTarget`
+- `Count`
+- `Operations` (map of `CREATE`/`UPDATE`/`DELETE` counts)
+- `Resources` (slice of `{Group, Version, Resource, Namespace, Name}`)
+
+`reconcileTemplate` can use:
+
+- `Count`
+- `GitTarget`
+- `Group`
+- `Version`
+- `Resource`
+- `APIVersion`
+- `Revision`
+
+`Group`/`Version`/`Resource`/`APIVersion` name the synced type for a per-type reconcile and
+`Revision` is the cluster `resourceVersion` the reconcile was pinned to. The default,
+`reconciled {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}`,
+renders e.g. `reconciled 6 secrets (last resourceVersion: 1331)`. The type and revision fields are
+empty for a whole-target reconcile or a pure sweep, so guard a template that references them
+(the default uses `{{if .Resource}}` / `{{if .Revision}}`) to avoid an identity-less subject.
+
+Examples:
+
+```yaml
+spec:
+  commit:
+    message:
+      eventTemplate: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+```
+
+```yaml
+spec:
+  commit:
+    message:
+      eventTemplate: "[{{.Operation}}] {{.Resource}}/{{.Name}} ({{.Username}})"
+```
+
+```yaml
+spec:
+  commit:
+    message:
+      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}@{{.Revision}}"
+```
 
 ### Seeing what a target will do, before it does it
 
@@ -1286,7 +1307,7 @@ to cluster-admin-managed setups.
 
 `CommitRequest` is a one-shot "save now" signal for a same-namespace `GitTarget`. It does not create
 or change watch rules. Instead, it asks the branch worker to finalize a matching open commit window
-for the request's author instead of waiting for `GitProvider.spec.push.commitWindow`.
+for the request's author instead of waiting for `GitTarget.spec.commit.window`.
 
 The important fields are:
 

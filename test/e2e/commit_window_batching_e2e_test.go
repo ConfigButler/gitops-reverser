@@ -57,16 +57,16 @@ var _ = Describe("Commit Window Batching",
 			gitTargetName = fmt.Sprintf("commit-window-gittarget-%d", seed)
 			watchRuleName = fmt.Sprintf("commit-window-watchrule-%d", seed)
 
-			By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
-			createReadyGitProviderWithCommitWindow(
-				gitProvName,
+			createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
+
+			By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
+			createValidatedGitTargetWithCommitWindow(
+				gitTargetName,
 				testNs,
-				repo.GitSecretHTTP,
-				repo.RepoURLHTTP,
+				gitProvName,
+				"e2e/commit-window-test",
 				commitWindow,
 			)
-
-			createValidatedGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-window-test")
 
 			watchRuleData := struct {
 				Name            string

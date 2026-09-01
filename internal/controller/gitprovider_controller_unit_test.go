@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -20,22 +21,62 @@ import (
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-func TestValidateCommitConfiguration_InvalidTemplate(t *testing.T) {
-	reconciler := &GitProviderReconciler{}
-	provider := &configbutleraiv1alpha3.GitProvider{
-		Spec: configbutleraiv1alpha3.GitProviderSpec{
-			Commit: &configbutleraiv1alpha3.CommitSpec{
-				Message: &configbutleraiv1alpha3.CommitMessageSpec{
-					EventTemplate: "{{.Operation",
+// A STORED GitProvider carrying either relocated field is refused rather than half-honoured.
+// Admission rejects both on write, so only an object written by an earlier release reaches this,
+// and neither of the alternatives is acceptable: honouring the values keeps the folder's cadence
+// and wording coming from the connection after the API says they come from the folder, and
+// ignoring them changes both without telling anyone.
+func TestRefuseRelocatedCommitFields(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		spec    configbutleraiv1alpha3.GitProviderSpec
+		refused bool
+	}{
+		{
+			name:    "clean provider",
+			spec:    configbutleraiv1alpha3.GitProviderSpec{URL: "git@example.com:o/r.git"},
+			refused: false,
+		},
+		{
+			name: "committer and signing are untouched by the move",
+			spec: configbutleraiv1alpha3.GitProviderSpec{
+				Commit: &configbutleraiv1alpha3.CommitSpec{
+					Committer: &configbutleraiv1alpha3.CommitterSpec{Name: "Bot"},
 				},
 			},
+			refused: false,
 		},
+		{
+			name: "stored spec.push",
+			spec: configbutleraiv1alpha3.GitProviderSpec{
+				//nolint:staticcheck // setting the removed field is the point.
+				Push: &configbutleraiv1alpha3.PushStrategy{CommitWindow: ptr.To("30s")},
+			},
+			refused: true,
+		},
+		{
+			name: "stored spec.commit.message",
+			spec: configbutleraiv1alpha3.GitProviderSpec{
+				Commit: &configbutleraiv1alpha3.CommitSpec{
+					//nolint:staticcheck // setting the removed field is the point.
+					Message: &configbutleraiv1alpha3.CommitMessageSpec{EventTemplate: "x"},
+				},
+			},
+			refused: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := refuseRelocatedCommitFields(&configbutleraiv1alpha3.GitProvider{Spec: tc.spec})
+			if !tc.refused {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrRelocatedCommitFields)
+			assert.Contains(t, err.Error(), "GitTarget.spec.commit.window",
+				"the refusal must name where the value went, not merely that it is gone")
+			assert.Contains(t, err.Error(), "GitTarget.spec.commit.message")
+		})
 	}
-
-	err := reconciler.validateCommitConfiguration(provider)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid commit configuration")
-	assert.Empty(t, provider.Status.SigningPublicKey)
 }
 
 func TestValidateCommitConfiguration_SigningEnabled(t *testing.T) {

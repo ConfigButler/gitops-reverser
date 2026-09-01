@@ -9,12 +9,10 @@ spec:
   allowedBranches: ["*"]
   secretRef:
     name: git-creds
-  push:
-    commitWindow: "5s"
+
+  # The connection's identity. How writes are batched and phrased belongs to the
+  # GitTarget instead: spec.commit.window and spec.commit.message.
   # commit:
   #   committer:
   #     name: "GitOps Reverser"
   #     email: "noreply@configbutler.ai"
-  #   message:
-  #     eventTemplate: "audit: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-  #     reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"

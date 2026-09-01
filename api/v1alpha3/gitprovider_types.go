@@ -42,11 +42,25 @@ type GitProviderSpec struct {
 	// +kubebuilder:validation:items:MinLength=1
 	AllowedBranches []string `json:"allowedBranches"`
 
-	// Push controls how events are coalesced into commits before pushing.
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// The field is retained in the schema purely so that re-applying a manifest that still sets it
+	// FAILS, with a message naming where it went. Deleting it outright would be silent: CRD pruning
+	// happens on write, so the value would be dropped without an error and the provider would
+	// quietly commit on a cadence nobody asked for. See docs/design/gittarget-api-wave.md
+	// § "Version strategy: stay v1alpha3".
+
+	// Push is REMOVED: commit batching is a property of the folder being written, not of the
+	// connection, so spec.push.commitWindow is now GitTarget.spec.commit.window. Setting this
+	// field is rejected.
+	//
+	// Deprecated: use GitTarget.spec.commit.window. Removed at v1alpha4.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="false",message="spec.push.commitWindow has moved to GitTarget.spec.commit.window; commit batching belongs to the folder being written, not to the connection. Remove spec.push here and set spec.commit.window on each GitTarget that needs a window other than 5s."
 	Push *PushStrategy `json:"push,omitempty"`
 
-	// Commit configures commit identity, message formatting, and signing behavior.
+	// Commit configures the commit identity and signing behavior this connection uses. Message
+	// formatting moved to GitTarget.spec.commit.message.
 	// +optional
 	Commit *CommitSpec `json:"commit,omitempty"`
 }
@@ -154,7 +168,9 @@ type GitProviderStatus struct {
 	SigningPublicKey string `json:"signingPublicKey,omitempty"`
 }
 
-// CommitSpec configures how gitops-reverser creates commits for a GitProvider.
+// CommitSpec configures the commit identity and signing a GitProvider uses. Message formatting
+// lives on the GitTarget (spec.commit.message), because it describes the folder rather than the
+// connection.
 type CommitSpec struct {
 	// Committer configures the operator identity written as the commit committer.
 	// When signing is enabled, Email must be a verified address on the account
@@ -162,8 +178,18 @@ type CommitSpec struct {
 	// +optional
 	Committer *CommitterSpec `json:"committer,omitempty"`
 
-	// Message configures commit message formatting.
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// Retained-and-refused rather than deleted, for the same reason as spec.push above: a pruned
+	// field is a silent behavior change, and a rejected one is an apply-time error naming the fix.
+
+	// Message is REMOVED: how a commit is phrased is a property of the folder being written, not of
+	// the connection, so it is now GitTarget.spec.commit.message with the same three templates.
+	// Setting this field is rejected.
+	//
+	// Deprecated: use GitTarget.spec.commit.message. Removed at v1alpha4.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="false",message="spec.commit.message has moved to GitTarget.spec.commit.message, with the same eventTemplate/reconcileTemplate/groupTemplate fields. Remove it here and set it on each GitTarget whose commits it should phrase."
 	Message *CommitMessageSpec `json:"message,omitempty"`
 
 	// Signing configures commit signing.
@@ -184,10 +210,12 @@ type CommitterSpec struct {
 	Email string `json:"email,omitempty"`
 }
 
-// CommitMessageSpec configures commit message formatting.
+// CommitMessageSpec configures commit message formatting. It is set on
+// GitTarget.spec.commit.message; the identically-shaped GitProvider.spec.commit.message is
+// retained only to reject a manifest that still sets it there.
 type CommitMessageSpec struct {
 	// EventTemplate is a Go text/template string for per-event commit messages
-	// (used when commitWindow is "0s"; one event per commit).
+	// (used when spec.commit.window is "0s"; one event per commit).
 	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
 	// APIVersion, Username, GitTarget.
 	// +optional

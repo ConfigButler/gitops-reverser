@@ -7,17 +7,12 @@ spec:
   url: {{.RepoURL}}
   allowedBranches:
     - "{{.Branch}}"
-  push:
-    commitWindow: "0s"
   secretRef:
     name: {{.SecretName}}
   commit:
     committer:
       name: {{.CommitterName}}
       email: {{.CommitterEmail}}
-    message:
-      eventTemplate: "{{.EventTemplate}}"
-      reconcileTemplate: "{{.ReconcileTemplate}}"
     signing:
       secretRef:
         name: {{.SigningSecretName}}

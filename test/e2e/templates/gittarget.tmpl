@@ -9,6 +9,17 @@ spec:
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
   path: {{ .Path }}
+  commit:
+    window: "{{ .CommitWindow }}"
+{{- if or .EventTemplate .ReconcileTemplate }}
+    message:
+{{- if .EventTemplate }}
+      eventTemplate: "{{ .EventTemplate }}"
+{{- end }}
+{{- if .ReconcileTemplate }}
+      reconcileTemplate: "{{ .ReconcileTemplate }}"
+{{- end }}
+{{- end }}
   encryption:
     provider: sops
     age:

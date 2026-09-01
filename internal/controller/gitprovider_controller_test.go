@@ -429,51 +429,32 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 		})
 
-		It("should fail when commit templates are invalid", func() {
+		It("should reject a GitProvider that still sets the relocated commit.message", func() {
+			// The field is retained in the schema so this apply FAILS rather than being pruned.
+			// A pruned field would leave the provider looking healthy while its message templates
+			// silently stopped applying.
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-provider-invalid-commit-template",
+					Name:      "test-provider-relocated-commit-message",
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
 					Commit: &configbutleraiv1alpha3.CommitSpec{
+						//nolint:staticcheck // setting the removed field is the point: it must be rejected.
 						Message: &configbutleraiv1alpha3.CommitMessageSpec{
-							EventTemplate: "{{.Operation",
+							EventTemplate: "{{.Operation}}",
 						},
 					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
 
-			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      gitProvider.Name,
-					Namespace: gitProvider.Namespace,
-				},
-			})
+			err := k8sClient.Create(ctx, gitProvider)
 
-			Expect(err).NotTo(HaveOccurred())
-			expectSteadyRequeue(result)
-
-			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
-			err = k8sClient.Get(
-				ctx,
-				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
-				updatedProvider,
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
-			condition := findCondition(updatedProvider.Status.Conditions, ConditionTypeReady)
-			Expect(condition).NotTo(BeNil())
-			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(ReasonCommitConfigInvalid))
-			Expect(condition.Message).To(ContainSubstring("invalid commit configuration"))
-			Expect(findCondition(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
-				To(Equal(metav1.ConditionTrue))
-			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("GitTarget.spec.commit.message"))
+			gitProvider = nil
 		})
 
 		It("should fail when commit signing is configured but the signing secret is missing", func() {

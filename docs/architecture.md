@@ -297,6 +297,12 @@ Key fields:
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
+- `spec.commit.window`: rolling silence window for this target's grouped commits, defaulting to `5s`.
+- `spec.commit.message`: `eventTemplate` / `reconcileTemplate` / `groupTemplate` Go templates.
+
+`spec.commit` describes the folder, not the connection, so two `GitTarget`s sharing one `GitProvider`
+may batch and phrase their commits differently. A branch worker serves a `(provider, branch)` pair and
+resolves the window per open window, since a window is bound to exactly one target.
 
 `providerRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
 orphan an old materialization or change its source cluster. The controller also rejects path overlaps
@@ -331,9 +337,7 @@ Represents a Git repository and the credentials/configuration used to write it. 
 - `spec.secretRef`: optional Secret in the same namespace for HTTP/SSH authentication.
 - `spec.knownHostsRef`: optional SSH known hosts source.
 - `spec.allowedBranches`: glob patterns that gate writable branches.
-- `spec.push.commitWindow`: rolling silence window for grouped commits, defaulting to `5s`.
 - `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).
-- `spec.commit.message`: `eventTemplate` / `reconcileTemplate` / `groupTemplate` Go templates.
 - `spec.commit.signing`: SSH signing key reference and optional key generation.
 - `status.signingPublicKey`: populated when signing is configured and key material is available.
 
@@ -1068,7 +1072,8 @@ pair at a time:
 - different author or GitTarget: finalize the current window first;
 - repeated writes to the same Git path inside a window use last write wins.
 
-The window finalizes when `spec.push.commitWindow` passes with no new matching event, the retained buffer
+The window finalizes when the open window's `GitTarget.spec.commit.window` passes with no new matching
+event, the retained buffer
 reaches `--branch-buffer-max-size` (default `8Mi`), a `CommitRequest` finalize deadline matches the open
 author and GitTarget, or a resync request that is not a heal or shutdown arrives. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during

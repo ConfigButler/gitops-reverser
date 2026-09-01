@@ -9,6 +9,13 @@ spec:
   branch: main
   # Required relative repository path. Use "." only to deliberately write at repo root.
   path: live-cluster
+  # How this folder's writes become commits. Omitted, events coalesce over a 5s
+  # rolling silence window and the built-in message templates are used.
+  commit:
+    window: "5s"
+    # message:
+    #   eventTemplate: "audit: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+    #   reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
   encryption:
     provider: sops
     age:

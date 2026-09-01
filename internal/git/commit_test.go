@@ -25,17 +25,19 @@ func TestResolveCommitConfig_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultGroupCommitMessageTemplate, config.Message.GroupTemplate)
 }
 
+// The committer comes from the GitProvider (the identity that talks to the remote) and the
+// message from the GitTarget (the folder being written). This asserts the seam: one call resolves
+// both halves and neither overwrites the other.
 func TestResolveCommitConfig_CustomValues(t *testing.T) {
 	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
 		Committer: &v1alpha3.CommitterSpec{
 			Name:  "Audit Bot",
 			Email: "audit@example.com",
 		},
-		Message: &v1alpha3.CommitMessageSpec{
-			EventTemplate:     "audit: {{.Operation}} {{.Name}}",
-			ReconcileTemplate: "reconcile: {{.Count}} {{.GitTarget}}",
-			GroupTemplate:     "grouped: {{.Author}} {{.Count}}",
-		},
+	}).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+		EventTemplate:     "audit: {{.Operation}} {{.Name}}",
+		ReconcileTemplate: "reconcile: {{.Count}} {{.GitTarget}}",
+		GroupTemplate:     "grouped: {{.Author}} {{.Count}}",
 	})
 
 	assert.Equal(t, "Audit Bot", config.Committer.Name)
@@ -45,11 +47,28 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 	assert.Equal(t, "grouped: {{.Author}} {{.Count}}", config.Message.GroupTemplate)
 }
 
+// A GitTarget that sets only ONE template leaves the other two at their built-in defaults, so
+// moving the field did not turn a partial override into a total one.
+func TestWithTargetMessage_PartialOverrideKeepsDefaults(t *testing.T) {
+	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+		GroupTemplate: "grouped: {{.Author}}",
+	})
+
+	assert.Equal(t, "grouped: {{.Author}}", config.Message.GroupTemplate)
+	assert.Equal(t, DefaultEventCommitMessageTemplate, config.Message.EventTemplate)
+	assert.Equal(t, DefaultReconcileCommitMessageTemplate, config.Message.ReconcileTemplate)
+}
+
+// A nil spec — a GitTarget that declares no spec.commit.message at all — changes nothing.
+func TestWithTargetMessage_NilKeepsEverything(t *testing.T) {
+	base := ResolveCommitConfig(nil)
+
+	assert.Equal(t, base, base.WithTargetMessage(nil))
+}
+
 func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
-		Message: &v1alpha3.CommitMessageSpec{
-			EventTemplate: "{{.Operation",
-		},
+	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+		EventTemplate: "{{.Operation",
 	})
 
 	err := ValidateCommitConfig(config)
@@ -58,10 +77,8 @@ func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
 }
 
 func TestValidateCommitConfig_InvalidGroupTemplate(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
-		Message: &v1alpha3.CommitMessageSpec{
-			GroupTemplate: "{{.Author",
-		},
+	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+		GroupTemplate: "{{.Author",
 	})
 
 	err := ValidateCommitConfig(config)
@@ -83,11 +100,12 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 		GitTargetName: "platform",
 	}
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(&v1alpha3.CommitSpec{
-		Message: &v1alpha3.CommitMessageSpec{
+	message, err := renderEventCommitMessage(
+		event,
+		ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
 			EventTemplate: "audit({{.GitTarget}}): {{.Username}} {{.Operation}} {{.Namespace}}/{{.Name}}",
-		},
-	}))
+		}),
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "audit(platform): alice UPDATE prod/api", message)
 }
@@ -165,11 +183,9 @@ func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t 
 		"signing-snapshot-dest",
 		&scope,
 		"1331",
-		ResolveCommitConfig(&v1alpha3.CommitSpec{
-			Message: &v1alpha3.CommitMessageSpec{
-				ReconcileTemplate: "e2e-snapshot: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
-					"@{{.Revision}} to {{.GitTarget}}",
-			},
+		ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+			ReconcileTemplate: "e2e-snapshot: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
+				"@{{.Revision}} to {{.GitTarget}}",
 		}),
 	)
 	require.NoError(t, err)
@@ -177,20 +193,16 @@ func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t 
 }
 
 func TestValidateCommitConfig_CustomReconcileTemplateReferencingTypeAndRevision(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
-		Message: &v1alpha3.CommitMessageSpec{
-			ReconcileTemplate: "reconcile: {{.Count}} {{.APIVersion}}/{{.Resource}}@{{.Revision}} on {{.GitTarget}}",
-		},
+	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+		ReconcileTemplate: "reconcile: {{.Count}} {{.APIVersion}}/{{.Resource}}@{{.Revision}} on {{.GitTarget}}",
 	})
 
 	require.NoError(t, ValidateCommitConfig(config))
 }
 
 func TestValidateCommitConfig_InvalidReconcileTemplate(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
-		Message: &v1alpha3.CommitMessageSpec{
-			ReconcileTemplate: "{{.Resource",
-		},
+	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+		ReconcileTemplate: "{{.Resource",
 	})
 
 	err := ValidateCommitConfig(config)
@@ -222,10 +234,8 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 				Namespace: "default",
 			},
 		},
-	}, ResolveCommitConfig(&v1alpha3.CommitSpec{
-		Message: &v1alpha3.CommitMessageSpec{
-			GroupTemplate: "grouped({{.GitTarget}}): {{.Author}} changed {{.Count}} resource(s)",
-		},
+	}, ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
+		GroupTemplate: "grouped({{.GitTarget}}): {{.Author}} changed {{.Count}} resource(s)",
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "grouped(platform): alice changed 1 resource(s)", message)

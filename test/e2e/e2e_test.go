@@ -391,18 +391,12 @@ func streamsRunningAtCurrentGeneration(obj unstructured.Unstructured) (bool, str
 	return false, "the rule publishes no StreamsRunning condition"
 }
 
-// createReadyGitProvider creates a GitProvider (branch "main", no commit window) and blocks until
-// it validates repo connectivity (Ready=True). It folds the create+verify pair most specs repeat.
+// createReadyGitProvider creates a GitProvider (branch "main") and blocks until it validates repo
+// connectivity (Ready=True). It folds the create+verify pair most specs repeat. Commit cadence is
+// not a GitProvider concern: see createValidatedGitTargetWithCommitWindow.
 func createReadyGitProvider(name, ns, secretName, repoURL string) {
 	GinkgoHelper()
 	createGitProviderWithURLInNamespace(name, ns, secretName, repoURL)
-	verifyResourceStatus("gitprovider", name, ns, "True", "Succeeded", "")
-}
-
-// createReadyGitProviderWithCommitWindow is createReadyGitProvider with an explicit commit window.
-func createReadyGitProviderWithCommitWindow(name, ns, secretName, repoURL, commitWindow string) {
-	GinkgoHelper()
-	createGitProviderWithCommitWindow(name, ns, secretName, repoURL, commitWindow)
 	verifyResourceStatus("gitprovider", name, ns, "True", "Succeeded", "")
 }
 
@@ -413,6 +407,26 @@ func createReadyGitProviderWithCommitWindow(name, ns, secretName, repoURL, commi
 func createValidatedGitTarget(name, ns, providerName, path string) {
 	GinkgoHelper()
 	createGitTarget(name, ns, providerName, path, "main")
+	verifyResourceCondition("gittarget", name, ns, "Validated", "True", "Succeeded", "")
+}
+
+// createValidatedGitTargetWithCommitWindow is createValidatedGitTarget with an explicit
+// spec.commit.window, for specs that need a window long enough that a silence timeout cannot be
+// what produced a commit.
+func createValidatedGitTargetWithCommitWindow(name, ns, providerName, path, commitWindow string) {
+	GinkgoHelper()
+	createGitTargetWithCommitWindow(name, ns, providerName, path, "main", commitWindow)
+	verifyResourceCondition("gittarget", name, ns, "Validated", "True", "Succeeded", "")
+}
+
+// createValidatedGitTargetWithCommitMessage is createValidatedGitTarget with custom commit-message
+// templates.
+func createValidatedGitTargetWithCommitMessage(
+	name, ns, providerName, path string,
+	commit gitTargetCommitOptions,
+) {
+	GinkgoHelper()
+	createGitTargetWithCommitMessage(name, ns, providerName, path, "main", commit)
 	verifyResourceCondition("gittarget", name, ns, "Validated", "True", "Succeeded", "")
 }
 

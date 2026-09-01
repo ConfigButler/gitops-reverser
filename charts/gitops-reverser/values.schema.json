@@ -497,11 +497,6 @@
               "type": "object",
               "additionalProperties": false,
               "properties": { "name": { "type": "string" } }
-            },
-            "push": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": { "commitWindow": { "$ref": "#/$defs/duration" } }
             }
           }
         },
@@ -512,6 +507,11 @@
             "name": { "type": "string" },
             "branch": { "type": "string" },
             "path": { "type": "string", "minLength": 1 },
+            "commit": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "window": { "$ref": "#/$defs/duration" } }
+            },
             "encryption": {
               "type": "object",
               "additionalProperties": false,

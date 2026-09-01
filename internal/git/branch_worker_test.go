@@ -693,7 +693,7 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 	assert.Contains(t, string(manifestContent), "name: example-feature")
 }
 
-func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *testing.T) {
+func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitterAndTargetMessage(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	remotePath := filepath.Join(tempDir, "remote.git")
@@ -714,6 +714,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *te
 	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
+	// The committer identity comes from the connection, the message wording from the folder.
 	provider := &configv1alpha3.GitProvider{
 		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
@@ -722,15 +723,25 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *te
 					Name:  "Audit Bot",
 					Email: "audit@example.com",
 				},
-				Message: &configv1alpha3.CommitMessageSpec{
-					EventTemplate: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-				},
 			},
 		},
 	}
 	provider.Name = "test-repo"
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	target := &configv1alpha3.GitTarget{}
+	target.Name = "audit-target"
+	target.Namespace = "default"
+	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{Name: "test-repo"}
+	target.Spec.Branch = "main"
+	target.Spec.Path = "clusters/dev"
+	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
+		Message: &configv1alpha3.CommitMessageSpec{
+			EventTemplate: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, target))
 
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, 0)
 	worker.ctx = ctx
@@ -756,8 +767,10 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *te
 						},
 					},
 				},
-				UserInfo: UserInfo{Username: "alice"},
-				Path:     "clusters/dev",
+				UserInfo:           UserInfo{Username: "alice"},
+				Path:               "clusters/dev",
+				GitTargetName:      "audit-target",
+				GitTargetNamespace: "default",
 			},
 		},
 	}
@@ -801,18 +814,24 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	provider := &configv1alpha3.GitProvider{
-		Spec: configv1alpha3.GitProviderSpec{
-			URL: remoteURL,
-			Commit: &configv1alpha3.CommitSpec{
-				Message: &configv1alpha3.CommitMessageSpec{
-					ReconcileTemplate: "reconcile({{.GitTarget}}): {{.Count}} resources",
-				},
-			},
-		},
+		Spec: configv1alpha3.GitProviderSpec{URL: remoteURL},
 	}
 	provider.Name = "test-repo"
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	target := &configv1alpha3.GitTarget{}
+	target.Name = "demo-target"
+	target.Namespace = "default"
+	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{Name: "test-repo"}
+	target.Spec.Branch = "main"
+	target.Spec.Path = "clusters/dev"
+	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
+		Message: &configv1alpha3.CommitMessageSpec{
+			ReconcileTemplate: "reconcile({{.GitTarget}}): {{.Count}} resources",
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, target))
 
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, 0)
 	worker.ctx = ctx
@@ -864,8 +883,9 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 				Path:     "clusters/dev",
 			},
 		},
-		CommitMode:    CommitModeAtomic,
-		GitTargetName: "demo-target",
+		CommitMode:         CommitModeAtomic,
+		GitTargetName:      "demo-target",
+		GitTargetNamespace: "default",
 	}
 
 	pendingWrite, err := worker.buildAtomicPendingWrite(worker.ctx, request)

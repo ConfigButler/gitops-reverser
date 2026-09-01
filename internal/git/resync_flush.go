@@ -184,7 +184,7 @@ func (w *BranchWorker) buildResyncPendingWrite(
 		Revision:           req.Revision,
 		Scope:              req.Scope,
 		ResyncStats:        stats,
-		CommitConfig:       ResolveCommitConfig(provider.Spec.Commit),
+		CommitConfig:       ResolveCommitConfig(provider.Spec.Commit).WithTargetMessage(targetMetadata.CommitMessage),
 		Signer:             signer,
 		GitTargetName:      targetMetadata.Name,
 		GitTargetNamespace: targetMetadata.Namespace,

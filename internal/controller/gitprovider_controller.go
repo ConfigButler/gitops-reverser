@@ -102,6 +102,11 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"GitProvider is not stalled",
 	)
 
+	if err := refuseRelocatedCommitFields(gitProvider); err != nil {
+		rd.stalled(ReasonCommitFieldsRelocated, err.Error())
+		return r.commitProvider(ctx, st, rd)
+	}
+
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
 		rd.stalled(ReasonCommitConfigInvalid, err.Error())
 		return r.commitProvider(ctx, st, rd)

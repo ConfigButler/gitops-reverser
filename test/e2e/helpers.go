@@ -185,17 +185,36 @@ func getBaseFolder() string {
 	return "e2e"
 }
 
+// e2eCommitWindow is the commit window every spec gets unless it asks for another: zero, so each
+// event becomes its own commit and an assertion never has to wait out a silence timer.
+//
+// It is set on the GitTarget because that is where the field lives — it moved off GitProvider,
+// where the whole suite used to set it once per provider.
+const e2eCommitWindow = "0s"
+
 // createGitTarget creates a GitTarget that binds a GitProvider, branch and path.
 func createGitTarget(name, namespace, providerName, path, branch string) {
-	createGitTargetWithEncryptionOptions(
-		name,
-		namespace,
-		providerName,
-		path,
-		branch,
-		e2eEncryptionRefName,
-		false,
-	)
+	createGitTargetWithCommitWindow(name, namespace, providerName, path, branch, e2eCommitWindow)
+}
+
+// createGitTargetWithCommitWindow is createGitTarget with an explicit spec.commit.window, for the
+// specs that need a window long enough that a silence timeout cannot be what produced a commit.
+func createGitTargetWithCommitWindow(name, namespace, providerName, path, branch, commitWindow string) {
+	createGitTargetWithOptions(name, namespace, providerName, path, branch,
+		e2eEncryptionRefName, false, gitTargetCommitOptions{Window: commitWindow})
+}
+
+// createGitTargetWithCommitMessage is createGitTarget with custom message templates, which are a
+// GitTarget field: a commit's wording describes the folder it writes to.
+func createGitTargetWithCommitMessage(
+	name, namespace, providerName, path, branch string,
+	commit gitTargetCommitOptions,
+) {
+	if commit.Window == "" {
+		commit.Window = e2eCommitWindow
+	}
+	createGitTargetWithOptions(name, namespace, providerName, path, branch,
+		e2eEncryptionRefName, false, commit)
 }
 
 func createGitTargetWithEncryptionOptions(
@@ -206,6 +225,28 @@ func createGitTargetWithEncryptionOptions(
 	branch,
 	encryptionSecretName string,
 	generateWhenMissing bool,
+) {
+	createGitTargetWithOptions(name, namespace, providerName, path, branch,
+		encryptionSecretName, generateWhenMissing, gitTargetCommitOptions{Window: e2eCommitWindow})
+}
+
+// gitTargetCommitOptions is the GitTarget's spec.commit, as the e2e templates need it. Every field
+// here used to be set on the GitProvider.
+type gitTargetCommitOptions struct {
+	Window            string
+	EventTemplate     string
+	ReconcileTemplate string
+}
+
+func createGitTargetWithOptions(
+	name,
+	namespace,
+	providerName,
+	path,
+	branch,
+	encryptionSecretName string,
+	generateWhenMissing bool,
+	commit gitTargetCommitOptions,
 ) {
 	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' for GitProvider '%s' with path '%s'",
 		name, namespace, providerName, path))
@@ -218,6 +259,9 @@ func createGitTargetWithEncryptionOptions(
 		Path                 string
 		EncryptionSecretName string
 		GenerateWhenMissing  bool
+		CommitWindow         string
+		EventTemplate        string
+		ReconcileTemplate    string
 	}{
 		Name:                 name,
 		Namespace:            namespace,
@@ -226,6 +270,9 @@ func createGitTargetWithEncryptionOptions(
 		Path:                 path,
 		EncryptionSecretName: encryptionSecretName,
 		GenerateWhenMissing:  generateWhenMissing,
+		CommitWindow:         commit.Window,
+		EventTemplate:        commit.EventTemplate,
+		ReconcileTemplate:    commit.ReconcileTemplate,
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)
