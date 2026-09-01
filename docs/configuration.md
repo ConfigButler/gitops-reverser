@@ -480,6 +480,9 @@ The important fields are:
 - `spec.placement`: optional policy for where **new** resources are written (see
   [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it and a new
   resource takes the folder's one kustomization root, or the built-in canonical path
+- `spec.placement.useKustomize`: whether the operator maintains a `kustomization.yaml` for this
+  folder, creating one when the folder has none (see
+  [Keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize))
 - `spec.serializeNamespace`: whether written documents carry their own `metadata.namespace` (see
   [Whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace));
   omit it and each document's namespace is inferred from the folder
@@ -929,6 +932,45 @@ write here rather than what the folder means.
 
 Inference is never fenced this way. A folder that is truly multi-namespace and namespace-free is
 what leaving the field **unset** is for.
+
+### Keeping the folder a kustomize folder (`spec.placement.useKustomize`)
+
+```yaml
+spec:
+  path: apps/checkout
+  serializeNamespace: false
+  placement:
+    useKustomize: true
+```
+
+It controls exactly one thing: **what happens when no `kustomization.yaml` governs the path a new
+document lands at.**
+
+| | A kustomization governs the path | Nothing governs the path |
+|---|---|---|
+| omitted / `false` (default) | the new file joins its `resources:` list | the file is written and nothing else is touched |
+| `true` | the new file joins its `resources:` list | a `kustomization.yaml` is **created** at `spec.path`, and the file joins it in the same commit |
+
+**Registering a new file with the kustomization that already governs it is not what this flag
+controls.** It happens in both rows, because a file no kustomization lists is a file kustomize never
+builds. The flag is only about the empty case, which is what makes an empty repository
+bootstrappable.
+
+The created root is the smallest thing kustomize will build: an `apiVersion`, a `kind`, the
+`resources:` entry for the document, and `namespace:` when exactly one source namespace reaches the
+target. That last line is the point of the pairing with
+[`serializeNamespace: false`](#whether-documents-carry-their-namespace-specserializenamespace): on
+an empty folder there is nothing to infer from, and the operator owns the file the omission depends
+on, so the omission is provable rather than trusted.
+
+The new document is placed **beside the root**, exactly as it would be beside a root that was
+already there, unless a `byType` or `default` template says otherwise. A declared template still
+decides the path; the created root lists the document wherever the template put it.
+
+The name says less than the field does, so one reading is worth ruling out: `useKustomize: false`
+does not mean "leave kustomize alone". If a folder's `kustomization.yaml` must never be touched, do
+not point a `GitTarget` at that folder. A kustomization **above** `spec.path` is never edited (the
+ancestor walk stops at the write jail), so rooting the target lower is the way to say it.
 
 ### Additional sensitive resources
 

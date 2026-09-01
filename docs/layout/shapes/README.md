@@ -1,8 +1,9 @@
 # The folder shapes, and the configuration each one needs
 
-> **design**: a specification by example for the layout model proposed in
-> [`../model.md`](../model.md). The two booleans shown here — `spec.serializeNamespace` and
-> `spec.placement.useKustomize` — do not exist in the current release.
+> **design**: a specification by example for the layout model in
+> [`../model.md`](../model.md). Both booleans shown here, `spec.serializeNamespace` and
+> `spec.placement.useKustomize`, are shipped fields, and every folder below is executed against
+> the write path by the layout corpus.
 > Date: 2026-08-31.
 > Index: [`../../INDEX.md`](../../INDEX.md)
 
@@ -241,7 +242,7 @@ namespace-less document. [Shape 2](2-flat-namespace-free/README.md#what-if-two-n
 works both through on its own fixtures.
 
 **The answer is a rule, not a field: an explicit `serializeNamespace: false` admits exactly one
-source namespace, and the second is refused.** It ships with the field in PR 2. The argument — why
+source namespace, and the second is refused.** The argument — why
 no third boolean, why explicit `false` only, why `useKustomize: true` makes it mandatory rather than
 optional, and where the refusal lives — is in
 [`model.md`](../model.md#the-second-guard-one-source-namespace-and-this-one-refuses) and is not
