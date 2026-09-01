@@ -41,7 +41,7 @@ tracks are the *independence* argument — why the order is free — and the PR 
 |---|---|---|---|
 | **1 — explain what it did** | the corpus wired up, `spec.suspend` + the reconcile-request annotation, `status.placement` + `LayoutResolved`, and the post-scan pass (one rule: **`Ambiguous`**) | no | a refused or surprising write is explainable from status, and every corpus scenario either passes or is skipped naming PR 2 |
 | **2 — the two booleans** | `spec.serializeNamespace`, `placement.useKustomize`, the one-source-namespace refusal, creating a `kustomization.yaml` | no | every corpus skip naming PR 2 is gone |
-| **3 — the breaking wave** | delete `allowedSourceNamespaces`, redefine `sourceNamespace: "*"`, the `commit.window` / `commit.message` moves and their riders | **yes**, one bump | the wave's own migration note is satisfied |
+| **3 — the breaking wave** — **SHIPPED** | delete `allowedSourceNamespaces`, redefine `sourceNamespace: "*"`, the `commit.window` / `commit.message` moves. The riders were trimmed, as this row allowed: nothing depends on them | **yes**, one bump | the wave's own migration note is satisfied |
 
 PRs 1 and 2 are specified in
 [`../layout/model.md` § How it gets built](../layout/model.md#how-it-gets-built); PR 3 in
@@ -156,9 +156,10 @@ inference is what `namespaceIsInheritedFromContext` already does. What is genuin
 `kustomization.yaml` that does not exist — build that last and on its own, since it is the only
 thing that writes a file nobody asked for by name.
 
-**Track B.** Unbuilt, and it is mostly a deletion: 4,569 lines in files that exist for nothing else.
-The one thing to *build* is the `SelfSubjectAccessReview` pass, which is additive — so it is
-explicitly **not** in PR 3, and follows whenever, rather than widening the one PR that costs a bump.
+**Track B.** **Shipped**, and it was mostly a deletion, as expected. The one thing left to *build* is
+the `SelfSubjectAccessReview` pass, which is additive — so it was explicitly **not** in PR 3, and
+follows whenever, rather than widening the one PR that costs a bump. The riders were trimmed from
+PR 3 under this page's own rule, and are unbuilt.
 
 **Track C.** Steps 2 and 3 of its delivery sequence already shipped for another reason — the
 `$patch: delete` work built the patch-file author, and the render oracle built the verification. What

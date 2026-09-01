@@ -1,8 +1,15 @@
 # The wave after placement left it
 
-> **design**: a sequencing proposal, not a plan of record. Nothing here binds until scheduled.
+> **design**: a sequencing proposal. Steps 6 and 7 (B4 and the source-scope deletion) **shipped**
+> on 2026-09-01; step 8, the riders, was trimmed under this page's own rule and is unbuilt.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-08-28 (originally 2026-07-30).
+>
+> **The step-1 envtest has run.** A status update onto a stored object whose spec no longer
+> validates is ACCEPTED — measured on 1.31 with `CRDValidationRatcheting` on and off, and on the
+> version this module builds against. The status subresource does not re-validate spec, so the
+> fallback below was not needed and the loud-rejection pattern is safe here. Pinned by
+> `internal/controller/stored_superseded_value_status_test.go`.
 >
 > This document was written to sequence one breaking wave whose centrepiece was `spec.layout`.
 > [`model.md`](../layout/model.md) has since reversed: the path template stays and gains two additive fields,
