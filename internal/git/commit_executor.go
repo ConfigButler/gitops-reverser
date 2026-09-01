@@ -206,6 +206,7 @@ func (w *BranchWorker) applyPendingWriteEvents(
 			base,
 			byBase[base],
 			placementPolicyForBase(targets, base),
+			namespacePolicyForBase(targets, base),
 			pruneModeForBase(targets, base),
 		)
 		if err != nil {

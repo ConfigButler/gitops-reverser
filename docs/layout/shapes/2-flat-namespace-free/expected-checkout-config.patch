@@ -8,4 +8,4 @@ new file mode 100644
 +metadata:
 +  name: checkout-config
 +data:
-+  timeout: "15m"
++  timeout: 15m

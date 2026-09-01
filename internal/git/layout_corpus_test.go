@@ -86,6 +86,16 @@ type corpusGitTarget struct {
 	} `json:"spec"`
 }
 
+// namespaces projects the scenario onto the namespace policy the write path takes: the target's
+// own spec.serializeNamespace, and the source namespaces the fixture's WatchRules bring to it.
+func (c corpusGitTarget) namespaces(sources []string, wildcard bool) namespacePolicy {
+	return namespacePolicy{
+		Serialize:               c.Spec.SerializeNamespace,
+		SourceNamespaces:        sources,
+		SourceNamespaceWildcard: wildcard,
+	}
+}
+
 // policy projects the parsed config onto the flush policy the write path actually takes
 // today. Only the two shipped rungs — byType and default — cross over; the two booleans
 // have no consumer until PR 2, which is precisely why the scenarios that depend on them
@@ -169,8 +179,6 @@ func layoutCorpus() []corpusScenario {
 			dir:   "shapes/2-flat-namespace-free",
 			input: "checkout-config.yaml",
 			patch: "expected-checkout-config.patch",
-			skip: "PR 2: needs spec.serializeNamespace: false. Today inference writes " +
-				"metadata.namespace because no kustomization in the folder supplies it",
 		},
 		{
 			// The fence around "one namespace": an explicit serializeNamespace: false admits
@@ -192,8 +200,6 @@ func layoutCorpus() []corpusScenario {
 			dir:   "shapes/4-tree-namespace-free",
 			input: "checkout-config.yaml",
 			patch: "expected-checkout-config.patch",
-			skip: "PR 2: needs spec.serializeNamespace: false. Today inference writes " +
-				"metadata.namespace because no kustomization in the folder supplies it",
 		},
 		{
 			dir:   "shapes/5-kustomize-single-folder",
@@ -282,10 +288,12 @@ func runCorpusScenario(t *testing.T, sc corpusScenario) {
 	worktree, seeded := seedCorpusWorktree(t, filepath.Join(folder, "repository"))
 	event := corpusEvent(t, obj, target)
 
+	sources, wildcard := readCorpusSourceNamespaces(t, folder, sc.configFile(), target)
+
 	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: corpusMapper()}
 	_, err := worker.flushEventsToWorktree(
 		t.Context(), worktree, sanitizePath(target.Spec.Path),
-		[]Event{event}, target.policy(), v1alpha3.PruneOnEvent)
+		[]Event{event}, target.policy(), target.namespaces(sources, wildcard), v1alpha3.PruneOnEvent)
 
 	if sc.patch == "" {
 		requireCorpusRefusal(t, err, filepath.Join(folder, sc.status), worktree, seeded)
@@ -349,6 +357,56 @@ func readCorpusGitTarget(t *testing.T, path string) corpusGitTarget {
 	require.NoError(t, yaml.Unmarshal(raw, &target), "parsing %s", path)
 	require.NotEmpty(t, target.Spec.Path, "%s: spec.path is what the corpus writes into", path)
 	return target
+}
+
+// readCorpusSourceNamespaces derives the source namespaces a scenario's target is reached by, from
+// the WatchRules the fixture folder holds — the same set resolveSourceNamespaces computes from the
+// cluster: the target's own namespace plus every explicit rules[].sourceNamespace.
+//
+// Which rules belong to a scenario is decided by the config's own name, because a folder can hold
+// two configs that differ only in the rules pointing at them: shape 2's gittarget.yaml and
+// gittarget-second-namespace.yaml are the same target with the same flag, and the ONLY difference
+// between the write and the refusal is that a second WatchRule exists. So a config
+// `gittarget[-<variant>].yaml` is served by `watchrule.yaml` plus `watchrule-<variant>.yaml`,
+// whichever of the two the folder has, and every rule that matches must name the target — a
+// fixture whose rules point somewhere else is a fixture that is not saying what it looks like it
+// says.
+func readCorpusSourceNamespaces(
+	t *testing.T,
+	folder, configFile string,
+	target corpusGitTarget,
+) ([]string, bool) {
+	t.Helper()
+	variant := strings.TrimSuffix(strings.TrimPrefix(configFile, "gittarget"), ".yaml")
+
+	seen := map[string]struct{}{target.Metadata.Namespace: {}}
+	wildcard := false
+	for _, name := range []string{"watchrule.yaml", "watchrule" + variant + ".yaml"} {
+		path := filepath.Join(folder, "config", name)
+		raw, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		require.NoError(t, err)
+		var rule v1alpha3.WatchRule
+		require.NoError(t, yaml.Unmarshal(raw, &rule), "parsing %s", path)
+		require.Equal(t, target.Metadata.Name, rule.Spec.TargetRef.Name,
+			"%s points at a different GitTarget than the scenario's config", path)
+		for _, item := range rule.Spec.Rules {
+			if item.IsSourceNamespaceWildcard() {
+				wildcard = true
+				continue
+			}
+			seen[item.EffectiveSourceNamespace(rule.Namespace)] = struct{}{}
+		}
+	}
+
+	namespaces := make([]string, 0, len(seen))
+	for ns := range seen {
+		namespaces = append(namespaces, ns)
+	}
+	sort.Strings(namespaces)
+	return namespaces, wildcard
 }
 
 // readCorpusInput decodes the live object a scenario receives. It is deliberately the

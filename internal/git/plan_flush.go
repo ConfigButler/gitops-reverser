@@ -71,6 +71,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	base string,
 	events []Event,
 	policy *manifestanalyzer.PlacementPolicy,
+	namespaces namespacePolicy,
 	pruneMode v1alpha3.PruneMode,
 ) (bool, error) {
 	root := worktree.Filesystem().Root()
@@ -82,7 +83,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	// Every event in a base shares one GitTarget (events are grouped by base), so they share
 	// one source cluster; resolve this subtree's GVK->GVR against that cluster's registry.
 	mapper := w.mapperForCluster(clusterIDForEvents(events))
-	batch := newWriteBatch(ctx, w.contentWriter, mapper, scoped.scan, policy, scoped.writeSubdir)
+	batch := newWriteBatch(ctx, w.contentWriter, mapper, scoped.scan, policy, namespaces, scoped.writeSubdir)
 	batch.pruneMode = pruneMode
 	batch.target = placementTargetForEvents(events)
 	if err := batch.refusal(); err != nil {
@@ -136,6 +137,11 @@ type writeBatch struct {
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to the folder's one kustomize root and then the canonical path.
 	policy *manifestanalyzer.PlacementPolicy
+	// namespaces is the GitTarget's declared namespace behavior — spec.serializeNamespace — which
+	// decides whether the bytes this batch writes carry metadata.namespace at all. The zero value
+	// is "declare nothing", i.e. infer per document, which is what every caller with no GitTarget
+	// to read (the CLI, most tests) gets.
+	namespaces namespacePolicy
 	// pruneMode is the GitTarget's effective spec.prune.mode, gating the EXPLICIT delete
 	// path only (applyDelete). The inferred mark-and-sweep is gated a layer up, in the
 	// planner, so a suppressed drop never becomes an action in the first place.
@@ -191,6 +197,7 @@ func newWriteBatch(
 	mapper typeset.Lookup,
 	scan manifestanalyzer.FolderScan,
 	policy *manifestanalyzer.PlacementPolicy,
+	namespaces namespacePolicy,
 	writeSubdir string,
 ) *writeBatch {
 	// The writer allowlist retains build directives (kustomization.yaml) and the operator's
@@ -200,7 +207,8 @@ func newWriteBatch(
 	// placement. The scan also carries the foreign-content view and the active
 	// .gittargetignore, so the structure-only acceptance gate (run by writeBatch.refusal) and
 	// the write-plan precondition (run by writeBatch.flush) read both from the store.
-	store := manifestanalyzer.BuildStoreFromScan(ctx, scan, mapper, manifestanalyzer.WriterAllowlist())
+	store := manifestanalyzer.BuildStoreFromScan(ctx, scan, mapper, manifestanalyzer.WriterAllowlist(),
+		manifestanalyzer.WithDeclaredNamespace(namespaces.declaredNamespace()))
 	// Surface the store's build-time warnings (ambiguous namespace or override
 	// context, scope mismatches) once per batch: these drive silent fallbacks —
 	// e.g. an ambiguous override chain falls back to write-through — and without
@@ -219,6 +227,7 @@ func newWriteBatch(
 		contentByPath: contentByPath,
 		buffers:       map[string]*fileBuffer{},
 		policy:        policy,
+		namespaces:    namespaces,
 		writeSubdir:   writeSubdir,
 	}
 	// Resolved with the store rather than by each caller, so no write path can reach createNew
@@ -402,8 +411,9 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// namespace: transformer) must keep metadata.namespace out of the written bytes,
 	// exactly as patchExisting already does for an in-place edit of an existing
 	// document in the same context — otherwise the new document would silently break
-	// the convention every sibling in that directory follows.
-	if placement.NamespaceInherited && event.Object != nil {
+	// the convention every sibling in that directory follows. An explicit
+	// spec.serializeNamespace overrides that inference in both directions.
+	if wb.namespaces.omitNamespace(placement.NamespaceInherited) && event.Object != nil {
 		event.Object = event.Object.DeepCopy()
 		event.Object.SetNamespace("")
 	}
@@ -798,7 +808,7 @@ func (wb *writeBatch) patchExisting(
 	}
 	gitDoc, _ := manifestedit.NewDocumentAt(filePath, buf.current, idx)
 	desired := event.Object
-	if dm.NamespaceInheritedFromContext() && desired != nil {
+	if wb.namespaces.omitNamespace(dm.NamespaceAbsentFromFile()) && desired != nil {
 		desired = desired.DeepCopy()
 		desired.SetNamespace("")
 	}
@@ -1458,14 +1468,19 @@ func (wb *writeBatch) resolveDelete(event Event) (deleteTarget, bool) {
 }
 
 // rawManifestIDForCurrentBytes maps an effective manifest identity back to the raw
-// identity as written in the file: when the namespace was inherited from kustomization
-// context, the file bytes carry no metadata.namespace, so the document is located by a
+// identity as written in the file: when the namespace came from anywhere but the file — a
+// kustomization's namespace: transformer, or the GitTarget's declaration that this folder's
+// documents carry none — the bytes hold no metadata.namespace, so the document is located by a
 // namespace-less identity.
+//
+// It reads the DOCUMENT, never spec.serializeNamespace. The setting says what the next write will
+// contain; this asks what the file already contains, and a folder written before the setting
+// changed still has to be found.
 func rawManifestIDForCurrentBytes(
 	id manifestedit.Identity,
 	dm *manifestanalyzer.DocumentModel,
 ) manifestedit.Identity {
-	if dm != nil && dm.NamespaceInheritedFromContext() {
+	if dm != nil && dm.NamespaceAbsentFromFile() {
 		id.Namespace = ""
 	}
 	return id

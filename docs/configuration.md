@@ -480,6 +480,9 @@ The important fields are:
 - `spec.placement`: optional policy for where **new** resources are written (see
   [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it and a new
   resource takes the folder's one kustomization root, or the built-in canonical path
+- `spec.serializeNamespace`: whether written documents carry their own `metadata.namespace` (see
+  [Whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace));
+  omit it and each document's namespace is inferred from the folder
 - `spec.prune`: which deletion paths may remove documents from this target's folder (see
   [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
 
@@ -866,6 +869,66 @@ co-mingled with a plaintext document. Two consequences for your templates:
   shared file. If an operator-configured sensitive type still reaches such a path at write time, that
   resource is **skipped fail-safe** (logged and counted in the resync summary as `placementSkipped`)
   rather than written unsafely. It is not surfaced as a dedicated status condition today.
+
+### Whether documents carry their namespace (`spec.serializeNamespace`)
+
+A path decides where a file sits; it cannot decide what is inside it. `spec.serializeNamespace`
+does: whether the committed document carries its own `metadata.namespace`.
+
+```yaml
+spec:
+  path: apps/checkout
+  serializeNamespace: false
+```
+
+| Value | What is written |
+|---|---|
+| omitted (default) | inferred per document, which is today's behavior |
+| `true` | every namespaced document carries `metadata.namespace` |
+| `false` | no document carries it; something outside the folder supplies it |
+
+It governs **every** write the target makes, not only the first one. That is why it sits at the top
+level of the spec rather than inside `spec.placement`, which decides where *new* documents go and
+never moves one already written. It applies to **namespaced resources only**: a `ClusterRole` has no
+namespace, so the field is ignored for it rather than being an error.
+
+**Omitted is not the same as `false`, and it is the right answer more often than either.** Inference
+omits `metadata.namespace` only when the kustomization governing that document's path sets
+`namespace:` to *this* resource's own namespace, and writes it explicitly otherwise, because
+omitting it anywhere else would hand the document to a different namespace than the object it
+mirrors. Leave the field unset for a folder that is legitimately non-uniform, such as a tree of
+nested kustomize roots each supplying its own namespace: inference resolves every document against
+the root governing its own path, which no single folder-wide value can do.
+
+The two explicit values are for the two shapes people declare:
+
+- **`true` for a flat folder applied directly.** Nothing downstream supplies a namespace, so a
+  document without one is ambiguous. It also keeps the document portable: it means the same thing
+  pasted anywhere.
+- **`false` for a folder whose namespace comes from outside it**: a Flux `Kustomization`'s
+  `spec.targetNamespace`, an Argo CD `Application`'s `spec.destination.namespace`, or a
+  `kustomization.yaml` in the folder that sets `namespace:`.
+
+**Nothing checks that the supplier exists, and nothing can.** For a raw namespace-free folder the
+supplier lives in the cluster that *consumes* the repository, and there may be more than one of
+them: two deployers may land the same folder in two different namespaces, both correctly. That
+portability is the point of the shape, so a rule demanding proof inside the folder would report a
+fault against a folder doing exactly what it was built for.
+
+**One thing is checked, and it refuses.** An explicit `serializeNamespace: false` admits exactly
+**one source namespace**. A namespace-free document takes its namespace from a single supplier, so
+two source namespaces reaching the folder contradict the setting itself, and the failure is silent:
+`shop/config` and `billing/config` both resolve to one `config.yaml` whose bytes name no namespace,
+so they are not two documents that collide but one document two live objects take turns
+overwriting. A second `WatchRule` bringing another source namespace to such a target is refused with
+`GitPathAccepted=False`, reason `MultipleSourceNamespaces`. A rule naming `sourceNamespace: "*"` is
+refused too, without enumerating anything, because a wildcard cannot be shown to be one namespace.
+The set counted is the target's own namespace plus the explicit `rules[].sourceNamespace` of every
+`WatchRule` pointing at it. It is unrelated to `spec.allowedSourceNamespaces`, which answers who may
+write here rather than what the folder means.
+
+Inference is never fenced this way. A folder that is truly multi-namespace and namespace-free is
+what leaving the field **unset** is for.
 
 ### Additional sensitive resources
 

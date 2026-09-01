@@ -74,7 +74,15 @@ func flushWithPolicy(
 ) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	_, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, policy, v1alpha3.PruneOnEvent)
+	_, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		events,
+		policy,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
+	)
 	require.NoError(t, err)
 }
 
@@ -259,6 +267,7 @@ func TestPlacementMetrics_MixedSensitivityNewFileCountsARefusal(t *testing.T) {
 		"",
 		[]Event{targetedConfigMapEvent(), targetedSecretEvent("api-token", "app")},
 		policy,
+		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err, "a co-mingling refusal is skipped, not returned as a batch error")

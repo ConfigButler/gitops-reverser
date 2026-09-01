@@ -89,6 +89,52 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
+	// It sits at the TOP LEVEL rather than inside placement, and the line between the two is
+	// retroactivity. spec.placement decides where a NEW document goes and never moves one already
+	// written; this governs the bytes of EVERY write, and it also decides how a managed document
+	// is FOUND — a document whose namespace is inherited is located in the file bytes by a
+	// namespace-less identity. A field with that blast radius nested inside a struct documented as
+	// "new files only" would be a trap.
+	//
+	// It is a *bool because no plain default preserves today's behavior: false breaks a flat
+	// folder, whose documents must carry their own namespace or they are ambiguous, and true
+	// writes a redundant line into every kustomize folder that already supplies one. nil means
+	// infer, which is what the operator has always done.
+	//
+	// The name deliberately avoids writeNamespace. "Write" is the most loaded word in this API —
+	// the write boundary, the write jail, WriteBoundaryRefused — so writeNamespace: false invites
+	// the reading "never write to this namespace", a permission, which is precisely what the
+	// neighbouring sourceNamespace fields are.
+	//
+	// See docs/layout/model.md § "serializeNamespace".
+
+	// SerializeNamespace declares whether a committed document carries its own
+	// metadata.namespace. It governs every write this target makes, not just the first one, and it
+	// applies to NAMESPACED resources only — a cluster-scoped document has no namespace, so the
+	// field is ignored for it rather than being an error.
+	//
+	// Omitted, the namespace is INFERRED per document, which is the behavior a target that says
+	// nothing has always had: metadata.namespace is omitted only when the kustomization governing
+	// the document's path sets namespace: to that resource's own namespace, and written explicitly
+	// in every other case. Leave it unset for a folder that is legitimately non-uniform — a tree of
+	// nested kustomize roots, each supplying its own namespace — because inference resolves each
+	// document against the root governing its own path.
+	//
+	// true always writes it: the setting for a flat folder applied directly, where nothing
+	// downstream supplies a namespace and a document without one is ambiguous.
+	//
+	// false never writes it, and is a claim about the whole folder: something outside this
+	// repository — a Flux Kustomization's targetNamespace, an Argo Application's
+	// destination.namespace, or a kustomization this target maintains itself — supplies the
+	// namespace instead. Because a namespace-less document takes its namespace from a single
+	// supplier, an explicit false admits exactly ONE source namespace: a second WatchRule bringing
+	// another namespace to this target is refused, with GitPathAccepted=False and reason
+	// MultipleSourceNamespaces.
+	// +optional
+	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
 	// It defaults to a concrete {name: "default"} rather than an implicit nil so a target that omits
 	// it persists with a ref a reader can jump to. The operator never creates that provider: a
 	// GitTarget naming one that does not exist is held unready rather than silently defaulting to

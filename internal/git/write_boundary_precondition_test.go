@@ -146,8 +146,17 @@ func TestFanInPrecondition_RefusesAmbiguousOverrideWriteThrough(t *testing.T) {
 	seedDiamond(t, root)
 
 	w := &BranchWorker{contentWriter: writer, mapper: deploymentMapper()}
-	_, err := w.flushEventsToWorktree(context.Background(), worktree, "",
-		[]Event{overridesDeploymentEvent("ghcr.io/example/podinfo:9.9.9", 3)}, nil, configv1alpha3.PruneOnEvent)
+	_, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		[]Event{
+			overridesDeploymentEvent("ghcr.io/example/podinfo:9.9.9", 3),
+		},
+		nil,
+		namespacePolicy{},
+		configv1alpha3.PruneOnEvent,
+	)
 	issues := refusalIssues(t, err)
 	assert.Contains(t, issueKinds(issues), manifestanalyzer.IssueWriteFanIn,
 		"an ambiguous-override write-through must be refused, not written through")

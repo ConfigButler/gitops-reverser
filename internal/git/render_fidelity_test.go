@@ -60,7 +60,7 @@ func TestRenderFidelityRefusal_BlocksLiveAndResyncWrites(t *testing.T) {
 			name: "live event",
 			run: func(worker *BranchWorker, worktree *gogit.Worktree) error {
 				_, err := worker.flushEventsToWorktree(
-					context.Background(), worktree, "", []Event{postBuildTokenEvent()}, nil, v1alpha3.PruneOnEvent)
+					context.Background(), worktree, "", []Event{postBuildTokenEvent()}, nil, namespacePolicy{}, v1alpha3.PruneOnEvent)
 				return err
 			},
 		},

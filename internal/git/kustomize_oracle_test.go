@@ -33,7 +33,15 @@ func flushEventsForTest(
 ) (bool, error) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	return w.flushEventsToWorktree(context.Background(), worktree, "", events, nil, v1alpha3.PruneOnEvent)
+	return w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		events,
+		nil,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
+	)
 }
 
 // Before a kustomize-governed write is committed, the repository is re-rendered WITH it

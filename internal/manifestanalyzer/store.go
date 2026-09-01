@@ -281,11 +281,24 @@ const (
 	// than guessed; an ambiguous case also emits a reasonAmbiguousNamespace diagnostic
 	// for the repository-validity layer.
 	NamespaceNone NamespaceSourceKind = "None"
+	// NamespaceDeclared means metadata.namespace is absent from the file and no kustomization
+	// supplies one, but the GitTarget DECLARED the folder namespace-free
+	// (spec.serializeNamespace: false) and exactly one source namespace reaches it, so that
+	// namespace is the document's. Like Kustomize, the namespace must stay out of the file and
+	// the document is located in the bytes by a namespace-less identity.
+	//
+	// It is what keeps a namespace-free folder mirrorable at all. Without it the operator writes
+	// shop/config as a namespace-less document, reads it back as belonging to no namespace, and
+	// the NEXT write of the same object matches nothing and appends a second copy of it. The
+	// one-source-namespace refusal is what makes the attribution safe: with two namespaces
+	// reaching the folder there is no single answer, and the write is refused rather than guessed.
+	NamespaceDeclared NamespaceSourceKind = "Declared"
 )
 
 // NamespaceSource records where a document's effective namespace came from. Kind
 // drives the one write-time decision the live writer makes (keep metadata.namespace
-// out of the file and locate by raw identity only when Kind is Kustomize); Path is the
+// out of the file and locate by raw identity only when the namespace came from
+// somewhere other than the file — see DocumentModel.NamespaceAbsentFromFile); Path is the
 // kustomization file that supplied the namespace, set only for NamespaceKustomize.
 type NamespaceSource struct {
 	Kind NamespaceSourceKind
@@ -298,6 +311,15 @@ type NamespaceSource struct {
 // locate the document by its raw (namespace-less) identity in the file bytes.
 func (dm *DocumentModel) NamespaceInheritedFromContext() bool {
 	return dm.NamespaceSource.Kind == NamespaceKustomize
+}
+
+// NamespaceAbsentFromFile reports whether the document's namespace is NOT in its own bytes — it
+// came from a kustomization's namespace: transformer, or from the GitTarget's declaration that
+// this folder's documents carry none. The writer uses it for the two decisions that follow from
+// the bytes rather than from any setting: keep metadata.namespace out of the file on an update,
+// and locate the document by its raw (namespace-less) identity.
+func (dm *DocumentModel) NamespaceAbsentFromFile() bool {
+	return dm.NamespaceSource.Kind == NamespaceKustomize || dm.NamespaceSource.Kind == NamespaceDeclared
 }
 
 // MappingOutcome records why a document's ResourceIdentity is or is not set, derived
@@ -410,7 +432,12 @@ func buildStore(
 	scan FolderScan,
 	lookup typeset.Lookup,
 	allowlist Allowlist,
+	opts ...StoreOption,
 ) *ManifestStore {
+	var settings storeSettings
+	for _, opt := range opts {
+		opt(&settings)
+	}
 	if lookup == nil {
 		// A nil lookup is the structure-only mode: an unpublished registry is never
 		// ready, so it judges nothing.
@@ -449,11 +476,12 @@ func buildStore(
 	}
 
 	hasNamedRecord := store.materializeRecords(ctx, inv.Records, materializeInputs{
-		lookup:        lookup,
-		allowlist:     allowlist,
-		patchFiles:    patchFilesOf(kusts, reachedResourceFiles(kusts)),
-		nsAssignments: nsAssignments,
-		ovAssignments: ovAssignments,
+		lookup:            lookup,
+		allowlist:         allowlist,
+		patchFiles:        patchFilesOf(kusts, reachedResourceFiles(kusts)),
+		nsAssignments:     nsAssignments,
+		ovAssignments:     ovAssignments,
+		declaredNamespace: settings.declaredNamespace,
 	})
 
 	// Record every allowlisted file with no named record as a whole-file retention,
@@ -522,8 +550,27 @@ func BuildStoreFromScan(
 	scan FolderScan,
 	lookup typeset.Lookup,
 	allowlist Allowlist,
+	opts ...StoreOption,
 ) *ManifestStore {
-	return buildStore(ctx, scan, lookup, allowlist)
+	return buildStore(ctx, scan, lookup, allowlist, opts...)
+}
+
+// StoreOption is a scan-wide fact the store cannot read out of the repository, supplied by the
+// caller that knows it. There is one today, and it exists because the GitTarget's declaration is
+// not in the folder: see WithDeclaredNamespace.
+type StoreOption func(*storeSettings)
+
+type storeSettings struct {
+	declaredNamespace string
+}
+
+// WithDeclaredNamespace attributes every namespace-less document that no kustomization governs to
+// ns. Pass it only when the GitTarget declares spec.serializeNamespace: false AND exactly one
+// source namespace reaches it — the two conditions together are what make the attribution a fact
+// rather than a guess, and the write path refuses the second namespace precisely so this stays
+// true. An empty ns is the default: attribute nothing.
+func WithDeclaredNamespace(ns string) StoreOption {
+	return func(st *storeSettings) { st.declaredNamespace = ns }
 }
 
 // DocumentLocations returns the (file path, document index) of every managed
@@ -557,6 +604,9 @@ type materializeInputs struct {
 	patchFiles    map[string]struct{}
 	nsAssignments map[string]namespaceAssignment
 	ovAssignments map[chainKey]*overrideAssignment
+	// declaredNamespace is the GitTarget's declared single source namespace, set only for a
+	// target that declared the folder namespace-free. See WithDeclaredNamespace.
+	declaredNamespace string
 }
 
 // materializeRecords sorts every KRM document into one of three fates — retained as a build
@@ -600,7 +650,7 @@ func (s *ManifestStore) materializeRecords(
 			}
 			retained[r.Location.Path] = true
 		default:
-			s.materialize(ctx, r, in.lookup, in.nsAssignments, in.ovAssignments)
+			s.materialize(ctx, r, in.lookup, in.nsAssignments, in.ovAssignments, in.declaredNamespace)
 		}
 	}
 	return retained
@@ -614,9 +664,11 @@ func (s *ManifestStore) materialize(
 	lookup typeset.Lookup,
 	nsAssignments map[string]namespaceAssignment,
 	ovAssignments map[chainKey]*overrideAssignment,
+	declaredNamespace string,
 ) {
 	gvk := gvkOf(r.Identity)
-	identity, nsSource, diag := resolveNamespaceContext(ctx, r.Identity, gvk, lookup, r.Location, nsAssignments)
+	identity, nsSource, diag := resolveNamespaceContext(
+		ctx, r.Identity, gvk, lookup, r.Location, nsAssignments, declaredNamespace)
 	if diag != nil {
 		s.Diagnostics = append(s.Diagnostics, *diag)
 	}
@@ -695,7 +747,9 @@ func sortRetained(retained []RetainedDocument) {
 // resources graph: exactly one assigning namespace is inherited (Kustomize); zero or
 // conflicting assignments leave the document namespace-less (None), with an ambiguity
 // diagnostic in the conflict case. It never guesses by filesystem proximity, so a file
-// is only given a namespace by a kustomization that actually references it.
+// is only given a namespace by a kustomization that actually references it. declaredNamespace is
+// the one exception, and it comes from the GitTarget rather than the folder: see
+// WithDeclaredNamespace.
 func resolveNamespaceContext(
 	ctx context.Context,
 	id manifestedit.Identity,
@@ -703,6 +757,7 @@ func resolveNamespaceContext(
 	lookup typeset.Lookup,
 	loc manifestedit.Location,
 	assignments map[string]namespaceAssignment,
+	declaredNamespace string,
 ) (manifestedit.Identity, NamespaceSource, *manifestedit.Diagnostic) {
 	if id.Namespace != "" {
 		return id, NamespaceSource{Kind: NamespaceExplicit}, nil
@@ -719,6 +774,13 @@ func resolveNamespaceContext(
 	a := assignments[filepathToSlash(loc.Path)]
 	switch len(a.namespaces) {
 	case 0:
+		// Nothing in the folder supplies a namespace. A GitTarget that declared the folder
+		// namespace-free supplies one from outside it; without that declaration the document is
+		// left namespace-less rather than guessed.
+		if declaredNamespace != "" {
+			id.Namespace = declaredNamespace
+			return id, NamespaceSource{Kind: NamespaceDeclared}, nil
+		}
 		return id, NamespaceSource{Kind: NamespaceNone}, nil
 	case 1:
 		ns := a.namespaces[0]

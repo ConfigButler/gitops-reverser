@@ -43,7 +43,15 @@ func TestPlanFlush_RefusesUnsupportedKustomizeFolder(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer}
 	event := cmEvent("CREATE", "fresh", "green")
-	_, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{event}, nil, v1alpha3.PruneOnEvent)
+	_, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		[]Event{event},
+		nil,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
+	)
 
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	require.ErrorAs(t, err, &refused, "flush must refuse with *AcceptanceRefusedError")
@@ -68,7 +76,15 @@ func TestPlanFlush_AcceptsPlainKustomizeFolder(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer}
 	create := []Event{cmEvent("CREATE", "fresh", "green")}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", create, nil, v1alpha3.PruneOnEvent)
+	changed, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		create,
+		nil,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
+	)
 	require.NoError(t, err, "a plain kustomization must not be refused")
 	assert.True(t, changed, "the ConfigMap must be written beside the retained kustomization")
 }
@@ -83,7 +99,15 @@ func TestPlanFlush_DoesNotRefuseOwnSopsConfig(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer}
 	create := []Event{cmEvent("CREATE", "fresh", "green")}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", create, nil, v1alpha3.PruneOnEvent)
+	changed, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		create,
+		nil,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
+	)
 	require.NoError(t, err, ".sops.yaml is the operator's own config and must not be refused")
 	assert.True(t, changed, "the ConfigMap must still be written beside .sops.yaml")
 }

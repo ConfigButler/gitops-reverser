@@ -377,6 +377,31 @@ spec:
                     - Always
                     type: string
                 type: object
+              serializeNamespace:
+                description: |-
+                  SerializeNamespace declares whether a committed document carries its own
+                  metadata.namespace. It governs every write this target makes, not just the first one, and it
+                  applies to NAMESPACED resources only — a cluster-scoped document has no namespace, so the
+                  field is ignored for it rather than being an error.
+
+                  Omitted, the namespace is INFERRED per document, which is the behavior a target that says
+                  nothing has always had: metadata.namespace is omitted only when the kustomization governing
+                  the document's path sets namespace: to that resource's own namespace, and written explicitly
+                  in every other case. Leave it unset for a folder that is legitimately non-uniform — a tree of
+                  nested kustomize roots, each supplying its own namespace — because inference resolves each
+                  document against the root governing its own path.
+
+                  true always writes it: the setting for a flat folder applied directly, where nothing
+                  downstream supplies a namespace and a document without one is ambiguous.
+
+                  false never writes it, and is a claim about the whole folder: something outside this
+                  repository — a Flux Kustomization's targetNamespace, an Argo Application's
+                  destination.namespace, or a kustomization this target maintains itself — supplies the
+                  namespace instead. Because a namespace-less document takes its namespace from a single
+                  supplier, an explicit false admits exactly ONE source namespace: a second WatchRule bringing
+                  another namespace to this target is refused, with GitPathAccepted=False and reason
+                  MultipleSourceNamespaces.
+                type: boolean
               suspend:
                 description: |-
                   Suspend stops this target from writing to Git, without deleting it. It is the knob to turn

@@ -314,7 +314,7 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 	// scan does, so the target's declared policy is carried in rather than passed as nil.
 	batch := newWriteBatch(
 		ctx, w.contentWriter, w.mapperForCluster(target.SourceCluster),
-		scoped.scan, target.Placement, scoped.writeSubdir)
+		scoped.scan, target.Placement, target.Namespaces, scoped.writeSubdir)
 	batch.target = placementTarget{namespace: target.Namespace, name: target.Name}
 	if err := batch.refusal(); err != nil {
 		return err
@@ -378,6 +378,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 		w.mapperForCluster(target.SourceCluster),
 		scoped.scan,
 		target.Placement,
+		target.Namespaces,
 		scoped.writeSubdir,
 	)
 	// The resync's events are synthesised from the desired snapshot and carry no GitTarget

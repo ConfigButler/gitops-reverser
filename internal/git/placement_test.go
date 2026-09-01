@@ -42,7 +42,15 @@ func applyEventsWithPolicy(
 ) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, policy, v1alpha3.PruneOnEvent)
+	changed, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		events,
+		policy,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
+	)
 	require.NoError(t, err)
 	return changed
 }
@@ -167,6 +175,7 @@ func TestPlacement_SensitiveCollision_SkipsWithoutCrashing(t *testing.T) {
 		"",
 		[]Event{event},
 		policy,
+		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
 
@@ -261,7 +270,13 @@ func TestPlacement_UndecodableKustomization_RefusesTheFlush(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	_, err := w.flushEventsToWorktree(
-		context.Background(), worktree, "", []Event{newConfigMapEvent("cache", "app")}, nil, v1alpha3.PruneOnEvent,
+		context.Background(),
+		worktree,
+		"",
+		[]Event{newConfigMapEvent("cache", "app")},
+		nil,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
 	)
 	require.Error(t, err, "a kustomization kustomize cannot build must refuse the folder, not be written into")
 }
@@ -290,7 +305,7 @@ func TestPlacement_ExternalBaseOverlay_NewObject(t *testing.T) {
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	changed, err := w.flushEventsToWorktree(
 		context.Background(), worktree, "overlays/test",
-		[]Event{newConfigMapEvent("cache", "podinfo-test")}, nil, v1alpha3.PruneOnEvent,
+		[]Event{newConfigMapEvent("cache", "podinfo-test")}, nil, namespacePolicy{}, v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err, "the overlay new-object flush must pass the render oracle")
 	require.True(t, changed)
@@ -360,6 +375,7 @@ func flushOverlayDeployment(t *testing.T, worktree *gogit.Worktree, event Event)
 		"overlays/test",
 		[]Event{event},
 		nil,
+		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
 	return err
@@ -449,6 +465,7 @@ func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
 		"overlays/test",
 		[]Event{del},
 		nil,
+		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err, "deleting an inherited object must author a $patch: delete, not refuse")
@@ -497,6 +514,7 @@ func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
 		"overlays/test",
 		[]Event{del},
 		nil,
+		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err, "a patch-path collision must be skipped, not error")
@@ -509,7 +527,7 @@ func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
 func newTestWriteBatch(t *testing.T) *writeBatch {
 	t.Helper()
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
-	return newWriteBatch(context.Background(), writer, nil, manifestanalyzer.FolderScan{}, nil, "")
+	return newWriteBatch(context.Background(), writer, nil, manifestanalyzer.FolderScan{}, nil, namespacePolicy{}, "")
 }
 
 func TestAppendYAMLDocument(t *testing.T) {
@@ -638,6 +656,7 @@ func TestPlacement_ColdBundleCollision_SensitiveNeverMerged(t *testing.T) {
 
 	changed, err := w.flushEventsToWorktree(
 		context.Background(), worktree, "", []Event{newSecretEvent("first"), newSecretEvent("second")}, policy,
+		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
 
@@ -682,7 +701,13 @@ func TestPlacement_ColdBundleCollision_SensitiveAndPlaintextNeverMix(t *testing.
 	secretFirst := newWorktreeForTest(t)
 	wsf := &BranchWorker{contentWriter: newWriter()}
 	_, err := wsf.flushEventsToWorktree(
-		context.Background(), secretFirst, "", []Event{secretEvent, configMapEvent}, policy, v1alpha3.PruneOnEvent,
+		context.Background(),
+		secretFirst,
+		"",
+		[]Event{secretEvent, configMapEvent},
+		policy,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err)
 	secretFirstBody, readErr := os.ReadFile(filepath.Join(secretFirst.Filesystem().Root(), "all.yaml"))
@@ -695,7 +720,13 @@ func TestPlacement_ColdBundleCollision_SensitiveAndPlaintextNeverMix(t *testing.
 	configMapFirst := newWorktreeForTest(t)
 	wcf := &BranchWorker{contentWriter: newWriter()}
 	_, err = wcf.flushEventsToWorktree(
-		context.Background(), configMapFirst, "", []Event{configMapEvent, secretEvent}, policy, v1alpha3.PruneOnEvent,
+		context.Background(),
+		configMapFirst,
+		"",
+		[]Event{configMapEvent, secretEvent},
+		policy,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err)
 	configMapFirstBody, readErr := os.ReadFile(filepath.Join(configMapFirst.Filesystem().Root(), "all.yaml"))

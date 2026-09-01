@@ -83,7 +83,7 @@ func TestPlanFlush_RefusesWhenTransformerOverridesExplicitNamespace(t *testing.T
 	worker := &BranchWorker{contentWriter: writer, mapper: namespaceProbeMapper()}
 	changed, err := worker.flushEventsToWorktree(
 		t.Context(), worktree, "",
-		[]Event{namespaceProbeEvent("beta", "cm", "green")}, nil, v1alpha3.PruneOnEvent)
+		[]Event{namespaceProbeEvent("beta", "cm", "green")}, nil, namespacePolicy{}, v1alpha3.PruneOnEvent)
 
 	require.Error(t, err, "the folder renders alpha/cm while the mirror holds beta/cm; the write must refuse")
 	assert.Contains(t, err.Error(), "does not render to the live object")
@@ -117,7 +117,7 @@ func TestPlanFlush_RefusesWhenNestedRootsBothSetNamespace(t *testing.T) {
 	worker := &BranchWorker{contentWriter: writer, mapper: namespaceProbeMapper()}
 	changed, err := worker.flushEventsToWorktree(
 		t.Context(), worktree, "",
-		[]Event{namespaceProbeEvent("outer", "m", "green")}, nil, v1alpha3.PruneOnEvent)
+		[]Event{namespaceProbeEvent("outer", "m", "green")}, nil, namespacePolicy{}, v1alpha3.PruneOnEvent)
 
 	require.Error(t, err, "a second document for the same rendered object must not be committed")
 	assert.False(t, changed)

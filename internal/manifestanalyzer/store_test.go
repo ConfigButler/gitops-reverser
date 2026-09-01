@@ -584,3 +584,48 @@ func keysOf(m map[string]*FileModel) []string {
 	}
 	return out
 }
+
+// TestBuildStore_DeclaredNamespaceAttributesNamespaceLessDocuments pins WithDeclaredNamespace: the
+// GitTarget declared its folder namespace-free, so a namespace-less document that no kustomization
+// governs belongs to the one source namespace reaching the target rather than to no namespace at
+// all. Without it the operator cannot find the documents it wrote itself.
+//
+// A kustomization's namespace: still wins where there is one — the declaration says where the
+// namespace comes from when the folder supplies none, not that the folder is ignored.
+func TestBuildStore_DeclaredNamespaceAttributesNamespaceLessDocuments(t *testing.T) {
+	mapper := typeset.NewSnapshotRegistry(sampleClusterSnapshot())
+	files := []manifestedit.FileContent{
+		{Path: "app.yaml", Content: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n")},
+		{Path: "own.yaml", Content: []byte(
+			"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: own\n  namespace: other\n")},
+	}
+	scan := FolderScan{YAMLFiles: files}
+
+	plain := BuildStoreFromScan(context.Background(), scan, mapper, Allowlist{})
+	if plain.ByManifestIdentity[manifestedit.Identity{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: "shop", Name: "app"}] != nil {
+		t.Fatalf("without a declaration a namespace-less document belongs to no namespace")
+	}
+
+	declared := BuildStoreFromScan(context.Background(), scan, mapper, Allowlist{}, WithDeclaredNamespace("shop"))
+	app := declared.ByManifestIdentity[manifestedit.Identity{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: "shop", Name: "app"}]
+	if app == nil {
+		t.Fatalf("a declared namespace-free folder attributes its namespace-less documents to shop")
+	}
+	if app.NamespaceSource.Kind != NamespaceDeclared {
+		t.Errorf("app NamespaceSource = %+v, want Declared", app.NamespaceSource)
+	}
+	if !app.NamespaceAbsentFromFile() {
+		t.Errorf("a declared namespace is not in the file, so the writer must keep it out")
+	}
+	if app.NamespaceInheritedFromContext() {
+		t.Errorf("a declared namespace does not come from build context")
+	}
+
+	own := declared.ByManifestIdentity[manifestedit.Identity{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: "other", Name: "own"}]
+	if own == nil || own.NamespaceSource.Kind != NamespaceExplicit {
+		t.Errorf("a document that names its own namespace keeps it: %+v", own)
+	}
+}
