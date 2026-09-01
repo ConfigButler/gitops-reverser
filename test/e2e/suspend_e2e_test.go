@@ -101,16 +101,28 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 			"no kustomization governs this folder", "150s")
 
 		By("the stanza carries the scan's own facts, not a placement's")
-		// observedRevision is deliberately NOT asserted here. The repository's branch has no
+		// resolvedAtRevision is deliberately NOT asserted here. The repository's branch has no
 		// commit yet at this point — nothing has written to it — so the scan honestly read the
 		// folder at no revision, and reporting an empty one is the correct answer rather than a
 		// missing one. It is asserted below, once the active target has produced a commit.
 		Eventually(func(g Gomega) {
 			placement := placementStatusOf(g, suspendedTarget, testNs)
 			g.Expect(placement).NotTo(BeNil(), "status.placement must be published")
-			g.Expect(placement).To(HaveKeyWithValue("observedTime", Not(BeEmpty())))
-			g.Expect(placement).To(HaveKeyWithValue("serializeNamespace", BeTrue()),
-				"nothing in this folder supplies a namespace, so documents carry their own")
+			g.Expect(placement).To(HaveKeyWithValue("resolvedAt", Not(BeEmpty())))
+			g.Expect(placement).To(HaveKeyWithValue("mode", "Plain"),
+				"no kustomization governs this folder, so it is written as plain files")
+		}).Should(Succeed())
+
+		By("and restates nothing the spec already carries")
+		// The rule the stanza is held to: a status field earns its place only if a reader cannot
+		// get it from the spec in the same GET. This asserts the removals stay removed, which
+		// prose in the API doc cannot.
+		Eventually(func(g Gomega) {
+			placement := placementStatusOf(g, suspendedTarget, testNs)
+			for _, key := range []string{"serializeNamespace", "byTypeEntries", "examples"} {
+				g.Expect(placement).NotTo(HaveKey(key),
+					"status.placement must not restate the spec")
+			}
 		}).Should(Succeed())
 	})
 
@@ -133,13 +145,22 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 		// The branch has a commit now, so the scan has a revision to name. Before the barrier it
 		// did not, which is why this assertion lives here rather than with the rest of the stanza.
 		// The reconcile request is what makes this prompt rather than a wait on the periodic pass,
-		// and asserting through it is the point: it is the loop a user iterating on a dry run runs.
+		// and asserting through it is the point: it is how an operator re-reads a folder someone
+		// else changed without waiting for the periodic cadence.
 		requestReconcile(suspendedTarget, testNs)
 		Eventually(func(g Gomega) {
 			placement := placementStatusOf(g, suspendedTarget, testNs)
-			g.Expect(placement).To(HaveKeyWithValue("observedRevision", Not(BeEmpty())),
+			g.Expect(placement).To(HaveKeyWithValue("resolvedAtRevision", Not(BeEmpty())),
 				"the scan names the revision it read")
 		}).Should(Succeed())
+
+		By("and publishes no retention while suspended")
+		// Nothing sweeps while writes are off, so nothing is measured. A published zero would
+		// read as "converged" when it means "not counted", so the stanza is absent instead.
+		Consistently(func(g Gomega) {
+			g.Expect(statusStanzaOf(g, suspendedTarget, testNs, "retention")).To(BeNil(),
+				"a suspended target measures no retention, so it reports none")
+		}, "20s", "4s").Should(Succeed())
 
 		By("and the suspended target's folder is still empty")
 		Consistently(func(g Gomega) {
@@ -235,20 +256,28 @@ func suspendConfigMapPath(basePath, ns, name string) string {
 	return path.Join(basePath, fmt.Sprintf("%s/configmaps/%s.yaml", ns, name))
 }
 
-// placementStatusOf reads a GitTarget's status.placement stanza, nil when it has none.
-func placementStatusOf(g Gomega, name, namespace string) map[string]interface{} {
+// statusStanzaOf reads one named stanza under a GitTarget's status, nil when it has none —
+// which is a meaningful answer for both callers: an unpublished stanza and a zeroed one say
+// different things.
+func statusStanzaOf(g Gomega, name, namespace, stanza string) map[string]interface{} {
 	GinkgoHelper()
 	out, err := kubectlRunInNamespace(namespace, "get", "gittarget", name, "-o", "json")
 	g.Expect(err).NotTo(HaveOccurred(), "failed to read GitTarget %q", name)
 
 	var obj unstructured.Unstructured
 	g.Expect(json.Unmarshal([]byte(out), &obj.Object)).To(Succeed())
-	placement, found, err := unstructured.NestedMap(obj.Object, "status", "placement")
+	value, found, err := unstructured.NestedMap(obj.Object, "status", stanza)
 	g.Expect(err).NotTo(HaveOccurred())
 	if !found {
 		return nil
 	}
-	return placement
+	return value
+}
+
+// placementStatusOf reads a GitTarget's status.placement stanza, nil when it has none.
+func placementStatusOf(g Gomega, name, namespace string) map[string]interface{} {
+	GinkgoHelper()
+	return statusStanzaOf(g, name, namespace, "placement")
 }
 
 // readyReasonOf reads the reason on a GitTarget's Ready condition.

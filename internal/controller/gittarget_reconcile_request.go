@@ -20,8 +20,8 @@ import (
 // already types, and `flux reconcile` is the muscle memory a user brings. Nothing else in this
 // repository had a reconcile-request convention to be consistent with instead.
 //
-// It matters most for a suspended target. A suspended target is a dry run of the layout, and a
-// dry run whose answer only refreshes on the periodic cadence is a dry run you cannot iterate
+// It matters most for a folder someone else edits. The resolution only refreshes when this
+// target scans, and a resolution that only refreshes on the periodic cadence is one you cannot iterate
 // with: edit the folder, request a reconcile, read status.placement.
 const ReconcileRequestAnnotation = "reconcile.configbutler.ai/requestedAt"
 

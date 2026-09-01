@@ -154,10 +154,10 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	target.Status.ObservedGeneration = target.Generation
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 
-	// Ahead of every gate, so a target held unready still shows what its folder resolved to.
-	// status.placement exists to be readable BEFORE the target is doing anything — that is what
-	// makes it a dry run — and a projection that ran only on the happy path would be missing
-	// exactly when it is wanted.
+	// Ahead of every gate, so a target held unready still shows what its folder resolved to. That
+	// ordering is the point rather than a convenience: the stanza's job is to explain a refused or
+	// surprising write, and a projection that ran only on the happy path would be missing exactly
+	// when it is wanted.
 	layout, scanned := r.observeLayout(&target)
 	publishLayout(st, &target, layout, scanned)
 
@@ -577,7 +577,16 @@ func (r *GitTargetReconciler) observeDataPlane(
 	target.Status.Streams = gitTargetStreamsStatus(observation.streams)
 	// Retention is read beside the others and projected the same way, but it feeds NO condition: a
 	// document kept by policy is the configured outcome, not a degraded target.
-	target.Status.Retention = gitTargetRetentionStatus(manager.RetentionForGitTarget(gitDest))
+	//
+	// A SUSPENDED target publishes none of it. The resync stops before the mark-and-sweep, so
+	// nothing is swept and nothing is counted — and a published zero would read as "converged"
+	// when it means "not measured". Absent already means "no resync has reported", which is
+	// exactly the truth here.
+	if target.Spec.Suspend {
+		target.Status.Retention = nil
+	} else {
+		target.Status.Retention = gitTargetRetentionStatus(manager.RetentionForGitTarget(gitDest))
+	}
 	return observation
 }
 

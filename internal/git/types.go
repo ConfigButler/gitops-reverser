@@ -267,7 +267,7 @@ type ResolvedTargetMetadata struct {
 	// Suspend is the GitTarget's spec.suspend, captured with the rest of its metadata so a write
 	// replayed after a rebase honours the policy it was planned under. It suppresses the write
 	// only: the scan that precedes it still runs, and the layout that scan resolves is still
-	// published, which is what makes a suspended target a dry run rather than an off switch.
+	// published, which is what keeps a suspended target's status fresh while it is stopped.
 	//
 	// Being CAPTURED is what defines suspend's cutover: it is the value as of planning, so a
 	// suspension that arrives after this write was planned does not retract it, and a write

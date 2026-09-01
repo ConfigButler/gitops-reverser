@@ -228,9 +228,8 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	}
 
 	// Suspend stops the write and nothing before it: the scan above ran, and the layout it
-	// resolved has already been published. A suspended target therefore reports what it would do
-	// and does none of it, which is the dry run spec.suspend exists to be. Returning zero
-	// commits leaves the pending write unretained and unpushed.
+	// resolved has already been published, so a stopped target still says what it is looking at.
+	// Returning zero commits leaves the pending write unretained and unpushed.
 	//
 	// It returns SUCCESS, so the drain marks this scope render-fidelity clean and reports zero
 	// retained documents without either having been measured. Both are accurate enough to leave
