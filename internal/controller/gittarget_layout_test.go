@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -46,37 +47,76 @@ func layoutConditionOf(t *testing.T, target *configbutleraiv1alpha3.GitTarget) m
 // The stanza is a fact about the folder, so a target that has never written still carries it.
 // This is the property status.placement rests on: renderRoot must not wait for a placement.
 func TestPublishLayout_SingleKustomization(t *testing.T) {
-	observed := time.Date(2026, 7, 30, 9, 14, 22, 0, time.UTC)
+	resolved := time.Date(2026, 7, 30, 9, 14, 22, 0, time.UTC)
 	target := publishForTest(t, git.LayoutReport{
 		LayoutResolution: manifestanalyzer.LayoutResolution{
-			Reason:             manifestanalyzer.LayoutSingleKustomization,
-			RenderRoot:         ".",
-			SerializeNamespace: new(bool),
-			Examples: []manifestanalyzer.LayoutExample{
-				{Type: "v1/secrets", Path: "secrets/example.yaml", Source: manifestanalyzer.PlacementSourceDeclared},
-			},
+			Reason:     manifestanalyzer.LayoutSingleKustomization,
+			Mode:       manifestanalyzer.LayoutModeKustomizeRoot,
+			RenderRoot: ".",
 		},
-		ByTypeEntries: 1,
-		Revision:      "9f3c1ab",
-		ObservedTime:  observed,
+		Revision:   "9f3c1ab",
+		ResolvedAt: resolved,
 	}, true)
 
 	require.NotNil(t, target.Status.Placement)
+	assert.Equal(t, configbutleraiv1alpha3.PlacementModeKustomizeRoot, target.Status.Placement.Mode)
 	assert.Equal(t, ".", target.Status.Placement.RenderRoot)
-	require.NotNil(t, target.Status.Placement.SerializeNamespace)
-	assert.False(t, *target.Status.Placement.SerializeNamespace)
-	assert.Equal(t, int32(1), target.Status.Placement.ByTypeEntries)
-	assert.Equal(t, "9f3c1ab", target.Status.Placement.ObservedRevision)
-	require.NotNil(t, target.Status.Placement.ObservedTime)
-	assert.Equal(t, observed, target.Status.Placement.ObservedTime.Time.UTC())
-	require.Len(t, target.Status.Placement.Examples, 1)
-	assert.Equal(t, "secrets/example.yaml", target.Status.Placement.Examples[0].Path)
-	assert.Equal(t, "declared", target.Status.Placement.Examples[0].Source)
+	assert.Empty(t, target.Status.Placement.ReadOnlyBases)
+	assert.Equal(t, "9f3c1ab", target.Status.Placement.ResolvedAtRevision)
+	require.NotNil(t, target.Status.Placement.ResolvedAt)
+	assert.Equal(t, resolved, target.Status.Placement.ResolvedAt.Time.UTC())
 
 	condition := layoutConditionOf(t, target)
 	assert.Equal(t, metav1.ConditionTrue, condition.Status)
 	assert.Equal(t, "SingleKustomization", condition.Reason)
 	assert.Equal(t, int64(4), condition.ObservedGeneration)
+}
+
+// An overlay is the shape whose write behaviour surprises people — an inherited object is
+// deleted by an authored $patch: delete, and an edit to a base-owned field is refused — so the
+// mode says which shape it is, and the bases it may not write to are named in the condition
+// message as well as in the stanza.
+func TestPublishLayout_OverlayNamesTheBasesItMayNotWrite(t *testing.T) {
+	target := publishForTest(t, git.LayoutReport{
+		LayoutResolution: manifestanalyzer.LayoutResolution{
+			Reason:        manifestanalyzer.LayoutSingleKustomization,
+			Mode:          manifestanalyzer.LayoutModeKustomizeOverlay,
+			RenderRoot:    ".",
+			ReadOnlyBases: []string{"../../base"},
+		},
+	}, true)
+
+	require.NotNil(t, target.Status.Placement)
+	assert.Equal(t, configbutleraiv1alpha3.PlacementModeKustomizeOverlay, target.Status.Placement.Mode)
+	assert.Equal(t, []string{"../../base"}, target.Status.Placement.ReadOnlyBases)
+
+	condition := layoutConditionOf(t, target)
+	assert.Equal(t, metav1.ConditionTrue, condition.Status)
+	assert.Contains(t, condition.Message, "../../base")
+	assert.Contains(t, condition.Message, "read-only")
+}
+
+// The stanza restates nothing the spec already carries. This is the rule that kept
+// serializeNamespace, byTypeEntries and examples out of it, and it is worth a test because the
+// pressure to add "just one convenient copy" is what the rule exists to resist.
+func TestPublishLayout_StanzaRestatesNothingFromTheSpec(t *testing.T) {
+	target := publishForTest(t, git.LayoutReport{
+		LayoutResolution: manifestanalyzer.LayoutResolution{
+			Reason: manifestanalyzer.LayoutNone,
+			Mode:   manifestanalyzer.LayoutModePlain,
+		},
+	}, true)
+
+	require.NotNil(t, target.Status.Placement)
+	published, err := json.Marshal(target.Status.Placement)
+	require.NoError(t, err)
+
+	var keys map[string]any
+	require.NoError(t, json.Unmarshal(published, &keys))
+	for key := range keys {
+		assert.Contains(t, []string{"mode", "renderRoot", "readOnlyBases", "resolvedAtRevision", "resolvedAt"},
+			key, "an unexpected key reached the stanza; hold it against the rule on GitTargetPlacementStatus")
+	}
 }
 
 // None is True, not False. A folder with no kustomization is the ordinary case, and reporting the
@@ -107,7 +147,8 @@ func TestPublishLayout_AmbiguousNamesTheRoots(t *testing.T) {
 	assert.Contains(t, condition.Message, "overlays/prod, overlays/test")
 	require.NotNil(t, target.Status.Placement)
 	assert.Empty(t, target.Status.Placement.RenderRoot, "no arbitrary pick reaches status")
-	assert.Nil(t, target.Status.Placement.SerializeNamespace)
+	assert.Empty(t, target.Status.Placement.Mode,
+		"with several roots there is no single way the folder is written")
 }
 
 // The controller's half of docs/layout/shapes/6-kustomize-base-and-overlays. The corpus asserts

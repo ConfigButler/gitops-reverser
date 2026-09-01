@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -17,7 +16,7 @@ func layoutReportFor(reason manifestanalyzer.LayoutReason, root, revision string
 	return git.LayoutReport{
 		LayoutResolution: manifestanalyzer.LayoutResolution{Reason: reason, RenderRoot: root},
 		Revision:         revision,
-		ObservedTime:     time.Now(),
+		ResolvedAt:       time.Now(),
 	}
 }
 
@@ -27,7 +26,7 @@ func layoutReportFor(reason manifestanalyzer.LayoutReason, root, revision string
 func TestSameLayout_UnchangedResolutionIsNotRepublished(t *testing.T) {
 	prior := layoutReportFor(manifestanalyzer.LayoutSingleKustomization, ".", "9f3c1ab")
 	next := layoutReportFor(manifestanalyzer.LayoutSingleKustomization, ".", "9f3c1ab")
-	next.ObservedTime = prior.ObservedTime.Add(time.Hour)
+	next.ResolvedAt = prior.ResolvedAt.Add(time.Hour)
 
 	assert.True(t, sameLayout(prior, next), "a later scan of an unchanged folder must not republish")
 }
@@ -60,25 +59,28 @@ func TestSameLayout_ChangedVerdictIsAChange(t *testing.T) {
 	assert.False(t, sameLayout(prior, next))
 }
 
-// The examples are part of what a reader sees, so a moved destination republishes even when the
-// verdict has not moved.
-func TestSameLayout_ChangedExamplesAreAChange(t *testing.T) {
-	prior := layoutReportFor(manifestanalyzer.LayoutNone, "", "9f3c1ab")
-	next := layoutReportFor(manifestanalyzer.LayoutNone, "", "9f3c1ab")
-	next.Examples = []manifestanalyzer.LayoutExample{{Type: "v1/secrets", Path: "secrets/example.yaml"}}
+// Mode is what a reader learns the folder's write behaviour from, and it can move without the
+// verdict moving: an overlay whose base is removed becomes a self-contained root, still
+// SingleKustomization, and the difference is exactly the one a reader needs.
+func TestSameLayout_ChangedModeIsAChange(t *testing.T) {
+	prior := layoutReportFor(manifestanalyzer.LayoutSingleKustomization, ".", "9f3c1ab")
+	prior.Mode = manifestanalyzer.LayoutModeKustomizeOverlay
+	prior.ReadOnlyBases = []string{"../../base"}
+	next := layoutReportFor(manifestanalyzer.LayoutSingleKustomization, ".", "9f3c1ab")
+	next.Mode = manifestanalyzer.LayoutModeKustomizeRoot
 
 	assert.False(t, sameLayout(prior, next))
 }
 
-// serializeNamespace is a pointer, so "absent" and "false" are different answers and comparing
-// them by value alone would silently collapse the ambiguous case onto the resolved one.
-func TestSameLayout_AbsentAndFalseSerializeNamespaceDiffer(t *testing.T) {
-	absent := layoutReportFor(manifestanalyzer.LayoutAmbiguous, "", "9f3c1ab")
-	resolved := layoutReportFor(manifestanalyzer.LayoutAmbiguous, "", "9f3c1ab")
-	no := false
-	resolved.SerializeNamespace = &no
+// The bases are published, so a base appearing or moving republishes even when the verdict and
+// the mode do not.
+func TestSameLayout_ChangedReadOnlyBasesAreAChange(t *testing.T) {
+	prior := layoutReportFor(manifestanalyzer.LayoutSingleKustomization, ".", "9f3c1ab")
+	prior.Mode = manifestanalyzer.LayoutModeKustomizeOverlay
+	prior.ReadOnlyBases = []string{"../../base"}
+	next := layoutReportFor(manifestanalyzer.LayoutSingleKustomization, ".", "9f3c1ab")
+	next.Mode = manifestanalyzer.LayoutModeKustomizeOverlay
+	next.ReadOnlyBases = []string{"../../base", "../../common"}
 
-	require.Nil(t, absent.SerializeNamespace)
-	assert.False(t, sameLayout(absent, resolved))
-	assert.True(t, sameLayout(resolved, resolved))
+	assert.False(t, sameLayout(prior, next))
 }

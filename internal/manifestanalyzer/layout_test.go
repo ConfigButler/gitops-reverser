@@ -8,7 +8,6 @@ import (
 	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -29,55 +28,38 @@ const layoutRootWithNamespace = "apiVersion: kustomize.config.k8s.io/v1beta1\n" 
 
 const layoutWebDoc = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\ndata:\n  k: v\n"
 
-// A folder with one supported kustomization resolves to that root, and the root's own
-// namespace: transformer is what makes the folder namespace-free: a document placed there
-// omits metadata.namespace because something in the repository supplies it.
+// A self-contained folder with one supported kustomization resolves to that root, and to
+// KustomizeRoot rather than KustomizeOverlay: it renders nothing it may not write to.
 func TestResolveLayout_SingleKustomizationRoot(t *testing.T) {
 	store := layoutStore(t, map[string]string{
 		"kustomization.yaml": layoutRootWithNamespace,
 		"web.yaml":           layoutWebDoc,
 	})
 
-	got := ResolveLayout(store, nil, "", nil)
+	got := ResolveLayout(store, "")
 
 	assert.Equal(t, LayoutSingleKustomization, got.Reason)
+	assert.Equal(t, LayoutModeKustomizeRoot, got.Mode)
 	assert.Equal(t, ".", got.RenderRoot)
-	require.NotNil(t, got.SerializeNamespace)
-	assert.False(t, *got.SerializeNamespace, "the root supplies namespace: shop, so documents omit it")
+	assert.Empty(t, got.ReadOnlyBases, "nothing outside the write scope was scanned")
 }
 
-// The same folder with a root that assigns no namespace resolves the other way: nothing
-// supplies the namespace, so every namespaced document carries its own.
-func TestResolveLayout_RootWithoutNamespaceSerializesIt(t *testing.T) {
-	store := layoutStore(t, map[string]string{
-		"kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\n" +
-			"kind: Kustomization\nresources:\n  - web.yaml\n",
-		"web.yaml": layoutWebDoc,
-	})
-
-	got := ResolveLayout(store, nil, "", nil)
-
-	assert.Equal(t, LayoutSingleKustomization, got.Reason)
-	require.NotNil(t, got.SerializeNamespace)
-	assert.True(t, *got.SerializeNamespace)
-}
-
-// A folder with no kustomization at all resolves to None: the ladder falls through to a
-// declared template or the canonical path, and the document carries its namespace.
+// A folder with no kustomization at all resolves to None and to Plain: the ladder falls
+// through to a declared template or the canonical path, and no file is registered anywhere.
 func TestResolveLayout_NoKustomization(t *testing.T) {
 	store := layoutStore(t, map[string]string{"web.yaml": layoutWebDoc})
 
-	got := ResolveLayout(store, nil, "", nil)
+	got := ResolveLayout(store, "")
 
 	assert.Equal(t, LayoutNone, got.Reason)
+	assert.Equal(t, LayoutModePlain, got.Mode)
 	assert.Empty(t, got.RenderRoot)
-	require.NotNil(t, got.SerializeNamespace)
-	assert.True(t, *got.SerializeNamespace)
+	assert.Empty(t, got.ReadOnlyBases)
 }
 
-// The rule this PR ships. A target covering two overlays covers two render roots, and the
-// folder-wide questions have no single answer: renderRoot is empty rather than an arbitrary
-// pick, and serializeNamespace is absent rather than one of the two roots' answers.
+// The rule this PR ships. A target covering two overlays covers two render roots, so there is
+// no single answer: renderRoot is empty rather than an arbitrary pick, and mode is empty
+// rather than one of the two roots' answers.
 func TestResolveLayout_TwoRenderRootsIsAmbiguous(t *testing.T) {
 	store := layoutStore(t, map[string]string{
 		"overlays/prod/kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\n" +
@@ -88,11 +70,11 @@ func TestResolveLayout_TwoRenderRootsIsAmbiguous(t *testing.T) {
 		"overlays/test/cm.yaml": layoutWebDoc,
 	})
 
-	got := ResolveLayout(store, nil, "", nil)
+	got := ResolveLayout(store, "")
 
 	assert.Equal(t, LayoutAmbiguous, got.Reason)
 	assert.Empty(t, got.RenderRoot, "an ambiguous folder must not report one of its roots as THE root")
-	assert.Nil(t, got.SerializeNamespace, "with two roots the answer is per document, not per folder")
+	assert.Empty(t, got.Mode, "with two roots there is no single way the folder is written")
 	assert.Equal(t, []string{"overlays/prod", "overlays/test"}, got.RenderRoots,
 		"the roots are named so the message can say what the folder actually covers")
 }
@@ -100,8 +82,11 @@ func TestResolveLayout_TwoRenderRootsIsAmbiguous(t *testing.T) {
 // Render-root scoping: a leaf overlay that reads a base outside spec.path is scanned from the
 // common ancestor, so the store holds both kustomizations. Only the one inside the write jail
 // is a candidate — read scope is wider than write scope — so the leaf resolves to its own
-// single root instead of reporting the base as a second one.
-func TestResolveLayout_BaseOutsideTheWriteJailIsNotARoot(t *testing.T) {
+// single root, and the base it renders is reported as read-only rather than as a second root.
+//
+// The base is spelled the way the overlay's own resources: spells it, which is also how the
+// write-boundary refusal names it.
+func TestResolveLayout_BaseOutsideTheWriteJailIsReadOnly(t *testing.T) {
 	store := layoutStore(t, map[string]string{
 		"base/kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\n" +
 			"kind: Kustomization\nresources:\n  - deployment.yaml\n",
@@ -110,66 +95,26 @@ func TestResolveLayout_BaseOutsideTheWriteJailIsNotARoot(t *testing.T) {
 			"kind: Kustomization\nnamespace: shop-prod\nresources:\n  - ../../base\n",
 	})
 
-	got := ResolveLayout(store, nil, "overlays/prod", nil)
+	got := ResolveLayout(store, "overlays/prod")
 
 	assert.Equal(t, LayoutSingleKustomization, got.Reason)
+	assert.Equal(t, LayoutModeKustomizeOverlay, got.Mode)
 	assert.Equal(t, ".", got.RenderRoot, "the leaf's own root, expressed relative to spec.path")
+	assert.Equal(t, []string{"../../base"}, got.ReadOnlyBases)
 }
 
-// The reported layout and the layout placement takes are one predicate, so an example can
-// never claim a destination the writer would not choose. This asserts the pairing directly:
-// the example's path is what LocateNew resolves for the same request.
-func TestResolveLayout_ExamplesComeFromTheRealLadder(t *testing.T) {
-	store := layoutStore(t, map[string]string{"web.yaml": layoutWebDoc})
-	policy := &PlacementPolicy{
-		ByType:  map[string]string{"v1/secrets": "secrets/{name}.yaml"},
-		Default: "{namespace}/{resource}/{name}.yaml",
+// Mode separates the two kustomize shapes on exactly the condition every write-boundary
+// refusal turns on, so the two cannot disagree about which folder is which: an overlay is a
+// root that renders something outside its write scope, and nothing else.
+func TestResolveLayout_ModeSeparatesOverlayFromSelfContainedRoot(t *testing.T) {
+	files := map[string]string{
+		"apps/checkout/kustomization.yaml": layoutRootWithNamespace,
+		"apps/checkout/web.yaml":           layoutWebDoc,
 	}
 
-	got := ResolveLayout(store, policy, "", []string{"v1/secrets", "apps/v1/deployments"})
+	scoped := ResolveLayout(layoutStore(t, files), "apps/checkout")
 
-	require.Len(t, got.Examples, 2)
-	assert.Equal(t, "v1/secrets", got.Examples[0].Type)
-	assert.Equal(t, "secrets/example.yaml", got.Examples[0].Path)
-	assert.Equal(t, PlacementSourceDeclared, got.Examples[0].Source)
-	assert.Equal(t, "example/deployments/example.yaml", got.Examples[1].Path,
-		"a type with no byType entry falls to the declared default")
-}
-
-// The cap is fixed rather than proportional: the stanza must stay bounded however many types
-// a target watches, which is the same reason status.streams is counts and not a list.
-func TestResolveLayout_ExamplesAreCappedAtThree(t *testing.T) {
-	store := layoutStore(t, map[string]string{"web.yaml": layoutWebDoc})
-
-	got := ResolveLayout(store, nil, "", []string{
-		"v1/configmaps", "v1/secrets", "apps/v1/deployments", "apps/v1/statefulsets",
-	})
-
-	assert.Len(t, got.Examples, layoutExampleCap)
-}
-
-func TestParsePlacementTypeKey(t *testing.T) {
-	cases := []struct {
-		key            string
-		ok             bool
-		group, version string
-		resource       string
-	}{
-		{key: "v1/configmaps", ok: true, version: "v1", resource: "configmaps"},
-		{key: "apps/v1/deployments", ok: true, group: "apps", version: "v1", resource: "deployments"},
-		{key: "configmaps", ok: false},
-		{key: "a/b/c/d", ok: false},
-		{key: "/v1/configmaps", ok: false},
-		{key: "", ok: false},
-	}
-	for _, c := range cases {
-		got, ok := ParsePlacementTypeKey(c.key)
-		assert.Equal(t, c.ok, ok, "key %q", c.key)
-		if !c.ok {
-			continue
-		}
-		assert.Equal(t, c.group, got.Group, "key %q", c.key)
-		assert.Equal(t, c.version, got.Version, "key %q", c.key)
-		assert.Equal(t, c.resource, got.Resource, "key %q", c.key)
-	}
+	assert.Equal(t, LayoutModeKustomizeRoot, scoped.Mode,
+		"a scan anchored at the folder itself holds nothing above it, so nothing is read-only")
+	assert.Empty(t, scoped.ReadOnlyBases)
 }

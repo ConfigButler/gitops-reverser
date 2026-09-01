@@ -106,8 +106,10 @@ func TestSuspend_IsTheValueCapturedWhenTheWriteWasPlanned(t *testing.T) {
 	assert.NoError(t, statErr)
 }
 
-// The half that makes suspend a dry run rather than an off switch: the suspended target still
-// scans, so it still publishes what its folder resolved to.
+// The half that keeps a stopped target's status fresh rather than frozen: the suspended target still
+// scans, so it still publishes what its folder resolved to: a valve that stopped looking as well
+// as writing would freeze status.placement at whatever the folder looked like when someone
+// panicked, which is exactly when a stale answer costs the most.
 func TestSuspend_StillPublishesTheResolvedLayout(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem().Root()
@@ -131,8 +133,7 @@ func TestSuspend_StillPublishesTheResolvedLayout(t *testing.T) {
 	report := (*reports)[0]
 	assert.Equal(t, manifestanalyzer.LayoutSingleKustomization, report.Reason)
 	assert.Equal(t, ".", report.RenderRoot)
-	require.NotNil(t, report.SerializeNamespace)
-	assert.False(t, *report.SerializeNamespace, "the folder's root supplies the namespace")
+	assert.Equal(t, manifestanalyzer.LayoutModeKustomizeRoot, report.Mode)
 }
 
 // The report is a fact about the folder, so it does not wait for a placement to happen: it is
@@ -165,9 +166,11 @@ func TestLayoutReport_UnattributableBatchPublishesNothing(t *testing.T) {
 	assert.Empty(t, *reports, "a batch that names no GitTarget must publish no report")
 }
 
-// The examples illustrate the types the target DECLARED, and the count reports how many were
-// declared, so a reader can tell a declared layout from an inferred one without the spec.
-func TestLayoutReport_ExamplesFollowTheDeclaredTypes(t *testing.T) {
+// The report is a fact about the FOLDER and about nothing else. The target's declared placement
+// policy does not reach it: a reader who wants to know what was declared reads the spec in the
+// same GET, and a status field that copied it would be a second place to look that can disagree
+// with the first.
+func TestLayoutReport_DoesNotRestateTheDeclaredPolicy(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	reports := captureLayout(worker)
@@ -180,10 +183,11 @@ func TestLayoutReport_ExamplesFollowTheDeclaredTypes(t *testing.T) {
 
 	require.Len(t, *reports, 1)
 	report := (*reports)[0]
-	assert.Equal(t, 1, report.ByTypeEntries)
-	require.Len(t, report.Examples, 1)
-	assert.Equal(t, "v1/secrets", report.Examples[0].Type)
-	assert.Equal(t, "secrets/example.yaml", report.Examples[0].Path)
+	assert.Equal(t, manifestanalyzer.LayoutNone, report.Reason)
+	assert.Equal(t, manifestanalyzer.LayoutModePlain, report.Mode,
+		"an empty folder is written as plain files whatever the target declares")
+	assert.Empty(t, report.RenderRoot)
+	assert.Empty(t, report.ReadOnlyBases)
 }
 
 func repoFor(t *testing.T, worktree *gogit.Worktree) *gogit.Repository {

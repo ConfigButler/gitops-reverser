@@ -4,7 +4,6 @@ package git
 
 import (
 	"context"
-	"sort"
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -20,12 +19,9 @@ import (
 type LayoutReport struct {
 	manifestanalyzer.LayoutResolution
 
-	// ByTypeEntries is how many placement.byType templates the target declares. It comes from
-	// the spec rather than the scan, and is carried here so status.placement has one source.
-	ByTypeEntries int
-	// Revision is the Git revision the scan read; ObservedTime is when it ran.
-	Revision     string
-	ObservedTime time.Time
+	// Revision is the Git revision the scan read; ResolvedAt is when it ran.
+	Revision   string
+	ResolvedAt time.Time
 }
 
 // LayoutReporter publishes a folder's resolved layout to the layer that owns GitTarget status.
@@ -35,9 +31,10 @@ type LayoutReport struct {
 // without a hook the resolution would be computed and dropped. The watch Manager supplies it
 // (WorkerManager.SetLayoutReporter), which is where the projection onto status lives.
 //
-// Every scan reports, including one that changes nothing and one on a SUSPENDED target — a
-// suspended target that publishes what it resolved is the whole point of suspend, and it can
-// only do that if the report is independent of anything being written. The consumer is
+// Every scan reports, including one that changes nothing and one on a SUSPENDED target: a
+// stopped valve that also stopped looking would freeze status.placement at whatever the folder
+// looked like when someone panicked, which is exactly when a stale answer costs the most. That
+// is only possible because the report is independent of anything being written. The consumer is
 // responsible for republishing only on a transition.
 type LayoutReporter func(target itypes.ResourceReference, report LayoutReport)
 
@@ -52,20 +49,17 @@ func (w *BranchWorker) reportLayout(ctx context.Context, batch *writeBatch, revi
 	if w.layoutReporter == nil || batch.target.name == "" || batch.target.namespace == "" {
 		return
 	}
-	// Re-resolved with the target's declared types so the EXAMPLES illustrate them; the verdict
-	// is identical to batch.layout's, which is resolved without them at construction.
-	resolution := manifestanalyzer.ResolveLayout(
-		batch.store, batch.policy, batch.writeSubdir, declaredTypeKeys(batch.policy))
+	resolution := manifestanalyzer.ResolveLayout(batch.store, batch.writeSubdir)
 	log.FromContext(ctx).V(1).Info("GitTarget layout resolved",
 		"gitTarget", batch.target.namespace+"/"+batch.target.name,
-		"reason", resolution.Reason, "renderRoot", resolution.RenderRoot, "revision", revision)
+		"reason", resolution.Reason, "mode", resolution.Mode,
+		"renderRoot", resolution.RenderRoot, "revision", revision)
 	w.layoutReporter(
 		itypes.NewResourceReference(batch.target.name, batch.target.namespace),
 		LayoutReport{
 			LayoutResolution: resolution,
-			ByTypeEntries:    byTypeEntryCount(batch.policy),
 			Revision:         revision,
-			ObservedTime:     time.Now(),
+			ResolvedAt:       time.Now(),
 		})
 }
 
@@ -79,32 +73,6 @@ func (w *BranchWorker) reportLayout(ctx context.Context, batch *writeBatch, revi
 // where the problem actually is.
 func (w *BranchWorker) scanLayout(ctx context.Context, batch *writeBatch, worktree *gogit.Worktree) {
 	w.reportLayout(ctx, batch, worktreeRevision(worktree))
-}
-
-// declaredTypeKeys is which types the placement examples illustrate: the ones the target
-// actually declared a template for, in a stable order.
-//
-// A declared type is the interesting one — it is the answer a user asked for and the one they
-// can get wrong — and ordering by key rather than by map iteration keeps the published stanza
-// from churning between reconciles for no reason. With no declared types ResolveLayout falls
-// back to illustrating the fallback rung, which is the whole answer for that folder anyway.
-func declaredTypeKeys(policy *manifestanalyzer.PlacementPolicy) []string {
-	if policy == nil {
-		return nil
-	}
-	keys := make([]string, 0, len(policy.ByType))
-	for key := range policy.ByType {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func byTypeEntryCount(policy *manifestanalyzer.PlacementPolicy) int {
-	if policy == nil {
-		return 0
-	}
-	return len(policy.ByType)
 }
 
 // worktreeRevision is the commit the scan read, or "" when the branch has no commit yet (a

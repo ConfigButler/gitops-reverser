@@ -28,6 +28,10 @@ spec:
       name: Suspended
       priority: 1
       type: boolean
+    - jsonPath: .status.placement.mode
+      name: Layout
+      priority: 1
+      type: string
     - jsonPath: .status.placement.renderRoot
       name: RenderRoot
       priority: 1
@@ -375,17 +379,21 @@ spec:
                 type: object
               suspend:
                 description: |-
-                  Suspend stops this target from writing to Git. It keeps scanning its folder and keeps
-                  publishing what it resolved — status.placement and the LayoutResolved condition are
-                  maintained exactly as they are for an active target — so it is a dry run of the layout
-                  rather than an off switch for the target. Watches keep running and events keep arriving;
-                  no new commit is planned while it is set.
+                  Suspend stops this target from writing to Git, without deleting it. It is the knob to turn
+                  when something is wrong and the writes have to stop now: watches keep running, events keep
+                  arriving, the folder keeps being scanned and status.placement keeps being maintained, and no
+                  new commit is planned while it is set.
 
                   It takes effect at the next planning boundary, not instantly. Work already committed
                   locally when suspend is set is still pushed, so a target suspended during a push cooldown
                   can publish one more commit seconds later. That is deliberate: a local commit that is never
                   pushed would sit in the worker's checkout indefinitely and surface later, out of order, on
-                  resume. Suspend is a valve on new work, not an undo.
+                  resume. Suspend is a valve on new work, not an undo — it stops the next write, it does not
+                  revert the last one.
+
+                  While it is set, status.retention is not published at all: nothing is swept, so nothing is
+                  measured, and reporting zero retained documents would read as "converged" when nothing was
+                  counted.
 
                   Omitted, it is false. Clearing it resumes writing from the current cluster state on the next
                   resync; the writes suppressed while suspended are not replayed.
@@ -484,53 +492,63 @@ spec:
                 type: integer
               placement:
                 description: |-
-                  Placement is what the last scan resolved about this folder's layout: which render root
-                  governs new documents, whether a namespace is written into them, and where a few
-                  representative types would land. It is an observation, like streams and retention, and the
-                  LayoutResolved condition carries the verdict.
+                  Placement is what the last scan resolved about this folder's layout: whether a kustomize
+                  render root governs new documents, which one, and whether the folder renders a base it may
+                  not write to. It is an observation, like streams and retention, and the LayoutResolved
+                  condition carries the verdict.
                 properties:
-                  byTypeEntries:
+                  mode:
                     description: |-
-                      ByTypeEntries is how many spec.placement.byType templates this target declares. It is here
-                      so a reader can tell a folder whose layout is declared from one that is inferred without
-                      fetching the spec.
-                    format: int32
-                    type: integer
-                  examples:
+                      Mode is how this folder is written, and it is the field that predicts the surprises.
+
+                      `Plain` — no kustomization governs the folder. A new document is written and nothing else
+                      is touched; a delete removes it and nothing else is touched.
+
+                      `KustomizeRoot` — exactly one kustomization governs the folder and the folder is
+                      self-contained. A new document is also registered in that root's `resources:`; a delete
+                      also drops its entry; and every write is proved by re-rendering, so kustomize itself can
+                      refuse one.
+
+                      `KustomizeOverlay` — as KustomizeRoot, and the folder additionally renders a base outside
+                      it (ReadOnlyBases). The base is read-only input: an edit to a field the base owns is
+                      authored into the overlay when it is expressible there (`images:`, `replicas:`) and refused
+                      with WriteBoundaryRefused otherwise, and DELETING an object the overlay inherits authors a
+                      `$patch: delete` into the overlay rather than removing anything.
+
+                      Empty when the folder covers more than one render root, which is LayoutResolved=Ambiguous:
+                      there is no single answer, and no new document is placed until the target is pointed at one
+                      of them.
+                    enum:
+                    - Plain
+                    - KustomizeRoot
+                    - KustomizeOverlay
+                    type: string
+                  readOnlyBases:
                     description: |-
-                      Examples shows where a representative object of a few types would be written. It is capped
-                      at three, illustrative rather than a tally, and never grows with the folder: it answers
-                      "where would a Secret land", which is the question placement is actually asked.
+                      ReadOnlyBases are the kustomization directories this folder renders but may never write to,
+                      relative to spec.path — so they lead with "../". Non-empty exactly when Mode is
+                      KustomizeOverlay, and it is what makes a WriteBoundaryRefused message predictable instead of
+                      surprising: an edit that lands on a document under one of these paths cannot be written
+                      where it lives.
                     items:
-                      description: |-
-                        GitTargetPlacementExample is one illustrative destination: where a new object of a type would be
-                        written under this folder's current layout.
-                      properties:
-                        path:
-                          description: |-
-                            Path is where a new object of that type would be written, relative to spec.path, with the
-                            object's own name standing in as "example".
-                          type: string
-                        source:
-                          description: |-
-                            Source names which rung of the placement ladder produced Path: Declared, KustomizeRoot, or
-                            Canonical. It is the "why here" answer, and it is the same closed set the placements_total
-                            metric labels.
-                          type: string
-                        type:
-                          description: |-
-                            Type is the placement type key the destination was resolved for
-                            ("{group}/{version}/{resource}", core resources omitting the group).
-                          type: string
-                      required:
-                      - path
-                      - type
-                      type: object
-                    maxItems: 3
+                      type: string
                     type: array
-                  observedRevision:
+                  renderRoot:
                     description: |-
-                      ObservedRevision is the Git revision this resolution was first observed at. It is not
+                      RenderRoot is the kustomization directory that governs new documents in this folder,
+                      relative to spec.path; "." is the folder itself. Empty for Plain (there is no root) and
+                      under LayoutResolved=Ambiguous (there is no single one).
+                    type: string
+                  resolvedAt:
+                    description: |-
+                      ResolvedAt is when this resolution was computed. Like ResolvedAtRevision it dates the
+                      resolution rather than the last scan, so a timestamp well in the past means the folder's
+                      shape has been stable, not that scanning stopped.
+                    format: date-time
+                    type: string
+                  resolvedAtRevision:
+                    description: |-
+                      ResolvedAtRevision is the Git revision this resolution was first observed at. It is not
                       re-stamped on every scan: a resolution that has not changed is not republished, because
                       doing so would write status once per commit to the branch, whichever target caused the
                       commit. So it dates the RESOLUTION, not the last scan — a revision older than the branch
@@ -539,31 +557,6 @@ spec:
                       It is empty when the branch had no commit at the time (a folder nothing has written to yet)
                       and is filled in by the first scan that finds one.
                     type: string
-                  observedTime:
-                    description: ObservedTime is when this resolution was computed.
-                    format: date-time
-                    type: string
-                  renderRoot:
-                    description: |-
-                      RenderRoot is the kustomization directory that governs new documents in this folder,
-                      relative to spec.path; "." is the folder itself. Empty when the folder has no render root
-                      (the built-in canonical path applies) or when it has more than one, which is
-                      LayoutResolved=Ambiguous.
-                    type: string
-                  serializeNamespace:
-                    description: |-
-                      SerializeNamespace is whether a new document in this folder carries its own
-                      metadata.namespace. It is true when no render root governs the folder, because then nothing
-                      supplies the namespace and every namespaced document has to carry its own.
-
-                      It is absent only when MORE THAN ONE render root covers the folder, which is
-                      LayoutResolved=Ambiguous: the answer then differs per document, by whichever root governs
-                      it, and reporting a folder-wide one would be the guess that verdict exists to refuse.
-
-                      It describes documents the folder's render root governs, which is every document in a
-                      folder that receives one source namespace. An object arriving from a different namespace
-                      than the root supplies carries its namespace regardless of what this reports.
-                    type: boolean
                 type: object
               retention:
                 description: |-

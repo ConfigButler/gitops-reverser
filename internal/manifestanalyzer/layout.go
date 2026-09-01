@@ -4,24 +4,18 @@ package manifestanalyzer
 
 import (
 	"fmt"
-	"path"
 	"sort"
 	"strings"
-
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // This file is the post-scan layout resolution: what the folder's shape implies about where
 // new documents go and whether they carry their own namespace, computed from a scan and from
 // nothing else.
 //
-// It reports the ladder rung placement WILL take rather than the one it took, which is the
-// whole point: placement only ever affects documents that do not exist yet, so nothing is
-// observable by looking at the folder, and a user declaring a target against a real repository
-// otherwise has no way to see what the operator would do until it has already done it. A
-// suspended target plus this resolution is the dry run.
+// It reports the ladder rung placement WILL take rather than the one it took, so a refusal or a
+// surprising destination can be explained from status instead of from the logs. It is not a
+// preview of the target's output: to see that, point a target at a scratch branch and read the
+// commits (docs/layout/model.md § "Previewing a target: point it at a scratch branch").
 //
 // Nothing here depends on a placement having happened. See
 // docs/layout/model.md § "status.placement, and the post-scan pass".
@@ -49,6 +43,10 @@ const (
 type LayoutResolution struct {
 	// Reason is the verdict, projected onto the LayoutResolved condition.
 	Reason LayoutReason
+	// Mode is how the folder is written — plain files, a self-contained kustomize root, or an
+	// overlay over a base outside the write scope. Empty under Ambiguous, which has no single
+	// answer.
+	Mode LayoutMode
 	// RenderRoot is the governing kustomization's directory relative to the write scope, "."
 	// for the scope itself. Empty for every reason but LayoutSingleKustomization.
 	RenderRoot string
@@ -56,34 +54,26 @@ type LayoutResolution struct {
 	// Ambiguous message able to name the folders it actually covers instead of only counting
 	// them.
 	RenderRoots []string
-	// SerializeNamespace is whether a new document in this folder carries its own
-	// metadata.namespace. Nil when the folder resolves no single answer — under Ambiguous the
-	// question is decided per document, by whichever root governs it.
-	SerializeNamespace *bool
-	// Examples is where a representative object of a few types would land, capped by
-	// layoutExampleCap. Illustrative, never a tally.
-	Examples []LayoutExample
+	// ReadOnlyBases is every kustomization the scan holds that lies OUTSIDE the write scope,
+	// relative to it, sorted. Non-empty exactly when Mode is LayoutModeKustomizeOverlay, and it
+	// is what a WriteBoundaryRefused message is predictable from.
+	ReadOnlyBases []string
 }
 
-// LayoutExample is one illustrative destination.
-type LayoutExample struct {
-	// Type is the placement type key ("{group}/{version}/{resource}").
-	Type string
-	// Path is where a new object of that type would be written, relative to the write scope.
-	Path string
-	// Source is the ladder rung that produced Path.
-	Source PlacementSource
-}
+// LayoutMode is how a folder is written. It mirrors v1alpha3.PlacementMode, which is the
+// published form; the duplication is the usual one-way dependency rule — the analyzer does not
+// import the API types.
+type LayoutMode string
 
-// layoutExampleCap is the fixed size of the examples list. Three is enough to show a declared
-// type, a sensitive type and the fallback, and a fixed cap is what keeps the stanza bounded
-// however many types a target watches — the same reason status.streams is counts.
-const layoutExampleCap = 3
-
-// layoutExampleNamespace is the namespace the illustrative requests are resolved for. It has to
-// be a real namespace rather than empty, because the namespace is what a "{namespace}" template
-// renders and what the inherited-namespace rule compares against.
-const layoutExampleNamespace = "example"
+const (
+	// LayoutModePlain is a folder no kustomization governs.
+	LayoutModePlain LayoutMode = "Plain"
+	// LayoutModeKustomizeRoot is a self-contained folder governed by exactly one kustomization.
+	LayoutModeKustomizeRoot LayoutMode = "KustomizeRoot"
+	// LayoutModeKustomizeOverlay is a folder governed by one kustomization that renders a base
+	// outside the write scope.
+	LayoutModeKustomizeOverlay LayoutMode = "KustomizeOverlay"
+)
 
 // ResolveLayout resolves a folder's layout from a scan.
 //
@@ -91,48 +81,54 @@ const layoutExampleNamespace = "example"
 // subtree, non-empty only when render-root scoping anchored the scan past spec.path into a base
 // the folder renders. Read scope is wider than write scope, always, so a base above the jail is
 // read to render the folder and is never a candidate root for it.
-//
-// exampleTypes are placement type keys to illustrate, in priority order; the first
-// layoutExampleCap that resolve are kept. Passing none still produces one example for the
-// fallback rung, because "where would an object with no byType entry go" is the question the
-// ladder is mostly asked.
-func ResolveLayout(
-	store *ManifestStore,
-	policy *PlacementPolicy,
-	writeScope string,
-	exampleTypes []string,
-) LayoutResolution {
+func ResolveLayout(store *ManifestStore, writeScope string) LayoutResolution {
 	roots := writableRenderRoots(store, writeScope)
-	resolution := LayoutResolution{RenderRoots: roots}
+	bases := readOnlyBases(store, writeScope)
+	resolution := LayoutResolution{RenderRoots: roots, ReadOnlyBases: bases}
 
 	switch {
 	case len(roots) == 0:
 		resolution.Reason = LayoutNone
-		// No kustomization governs anything here, so nothing downstream supplies a namespace
-		// and every namespaced document has to carry its own.
-		resolution.SerializeNamespace = boolPtr(true)
+		resolution.Mode = LayoutModePlain
 	case len(roots) == 1:
 		resolution.Reason = LayoutSingleKustomization
 		resolution.RenderRoot = relativeToScope(roots[0], writeScope)
-		// The root's namespace: transformer is the supplier: a root that sets one supplies it, and
-		// a root that sets none leaves the document to carry its own.
-		//
-		// This is a folder-wide answer to a question decided per document, and the gap is worth
-		// naming: namespaceIsInheritedFromContext omits the namespace only when the root's value
-		// equals THIS object's own namespace, so an object arriving from some other namespace has
-		// its namespace written even here. The folder-wide reading is the right one to publish
-		// because a namespace-free folder that receives two source namespaces is a contradiction
-		// rather than a nuance — it is the shape PR 2's one-source-namespace rule refuses — and
-		// reporting per-object would mean reporting a list that grows with the cluster.
-		resolution.SerializeNamespace = boolPtr(store.Kustomizations[roots[0]].Namespace == "")
+		// The presence of a base OUTSIDE the write scope is what separates an overlay from a
+		// self-contained root, and it is the same condition every write-boundary refusal turns
+		// on — so the two cannot disagree about which folder is which.
+		if len(bases) > 0 {
+			resolution.Mode = LayoutModeKustomizeOverlay
+		} else {
+			resolution.Mode = LayoutModeKustomizeRoot
+		}
 	default:
 		resolution.Reason = LayoutAmbiguous
-		// Deliberately nil: with several roots the answer differs per document, and asserting a
-		// folder-wide one would be the same guess the Ambiguous verdict exists to refuse.
+		// Mode is deliberately empty: with several roots there is no single answer, and asserting
+		// a folder-wide one would be the guess the Ambiguous verdict exists to refuse.
 	}
 
-	resolution.Examples = layoutExamples(store, policy, writeScope, exampleTypes)
 	return resolution
+}
+
+// readOnlyBases is every supported kustomization the scan holds that lies outside the write
+// jail, relative to it and sorted.
+//
+// It is the complement of writableRenderRoots over the same store, which is what makes
+// "non-empty exactly when the folder is an overlay" true by construction rather than by
+// agreement between two rules.
+func readOnlyBases(store *ManifestStore, writeScope string) []string {
+	if writeScope == "" {
+		return nil // nothing was scanned above the jail, so nothing can be outside it
+	}
+	var bases []string
+	for dir, k := range store.Kustomizations {
+		if k.Unsupported || pathWithin(slashDir(k.Path), writeScope) {
+			continue
+		}
+		bases = append(bases, relativeFromScope(dir, writeScope))
+	}
+	sort.Strings(bases)
+	return bases
 }
 
 // writableRenderRoots is the predicate resolveKustomizeRoot resolves against, lifted out so the
@@ -177,79 +173,27 @@ func trimScopePrefix(dir, writeScope string) string {
 	return dir
 }
 
+// relativeFromScope expresses a directory OUTSIDE the write jail relative to it, so a base the
+// folder renders reads as "../../base" — the same way it is spelled in the overlay's own
+// resources:, and the same way the write-boundary refusal names it. A base is always above the
+// jail, never beside it, because the jail is what the scan was anchored past to reach it.
+func relativeFromScope(dir, writeScope string) string {
+	scopeParts := strings.Split(writeScope, "/")
+	dirParts := strings.Split(dir, "/")
+	common := 0
+	for common < len(scopeParts) && common < len(dirParts) && scopeParts[common] == dirParts[common] {
+		common++
+	}
+	up := strings.Repeat("../", len(scopeParts)-common)
+	return orDot(up + strings.Join(dirParts[common:], "/"))
+}
+
 func orDot(dir string) string {
 	if dir == "" {
 		return "."
 	}
 	return dir
 }
-
-// layoutExamples resolves the illustrative destinations through the real ladder — LocateNew,
-// the same call the writer makes — so an example can never claim a destination the writer would
-// not choose. A type whose placement is refused (a sensitive type onto an occupied path, say)
-// contributes no example rather than a wrong one.
-func layoutExamples(
-	store *ManifestStore,
-	policy *PlacementPolicy,
-	writeScope string,
-	exampleTypes []string,
-) []LayoutExample {
-	requested := exampleTypes
-	if len(requested) == 0 {
-		requested = []string{PlacementTypeKey("", "v1", "configmaps")}
-	}
-
-	examples := make([]LayoutExample, 0, layoutExampleCap)
-	for _, key := range requested {
-		if len(examples) == layoutExampleCap {
-			break
-		}
-		id, ok := ParsePlacementTypeKey(key)
-		if !ok {
-			continue
-		}
-		req := PlacementRequest{
-			Identifier: types.NewResourceIdentifier(
-				id.Group, id.Version, id.Resource, layoutExampleNamespace, "example"),
-			WriteScope: writeScope,
-		}
-		result, err := LocateNew(store, policy, req)
-		if err != nil {
-			continue
-		}
-		examples = append(examples, LayoutExample{
-			Type:   key,
-			Path:   relativeToScope(path.Clean(result.Path), writeScope),
-			Source: result.Source,
-		})
-	}
-	return examples
-}
-
-// ParsePlacementTypeKey is the inverse of PlacementTypeKey: it reads a
-// "{group}/{version}/{resource}" key, or a core "{version}/{resource}" one, back into its
-// parts. The second return is false for anything else, so a malformed byType key illustrates
-// nothing rather than illustrating a type nobody named.
-func ParsePlacementTypeKey(key string) (schema.GroupVersionResource, bool) {
-	// A core key is "{version}/{resource}"; a grouped one is "{group}/{version}/{resource}".
-	const coreParts, groupedParts = 2, 3
-	switch parts := strings.Split(strings.TrimSpace(key), "/"); len(parts) {
-	case coreParts:
-		if parts[0] == "" || parts[1] == "" {
-			return schema.GroupVersionResource{}, false
-		}
-		return schema.GroupVersionResource{Version: parts[0], Resource: parts[1]}, true
-	case groupedParts:
-		if parts[0] == "" || parts[1] == "" || parts[2] == "" {
-			return schema.GroupVersionResource{}, false
-		}
-		return schema.GroupVersionResource{Group: parts[0], Version: parts[1], Resource: parts[2]}, true
-	default:
-		return schema.GroupVersionResource{}, false
-	}
-}
-
-func boolPtr(v bool) *bool { return &v }
 
 // IssueAmbiguousLayout marks a GitTarget folder covering more than one render root. It is a
 // property of the OBSERVED folder rather than of the spec, so no CEL rule and no admission

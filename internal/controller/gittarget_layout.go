@@ -49,9 +49,9 @@ func (r *GitTargetReconciler) observeLayout(
 // publishLayout writes status.placement and the LayoutResolved condition.
 //
 // It runs before every gate, so a target held unready still shows what its folder resolved to.
-// That ordering is the point rather than a convenience: the stanza's whole reason for existing is
-// to be readable BEFORE the target is doing anything, and a projection that only ran on the happy
-// path would be missing exactly when it is wanted.
+// That ordering is the point rather than a convenience: the stanza exists to explain a refused or
+// surprising write, and a projection that only ran on the happy path would be missing exactly when
+// it is wanted.
 func publishLayout(
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
@@ -79,6 +79,11 @@ func publishLayout(
 func layoutCondition(report git.LayoutReport) (metav1.ConditionStatus, string) {
 	switch report.Reason {
 	case manifestanalyzer.LayoutSingleKustomization:
+		if len(report.ReadOnlyBases) > 0 {
+			return metav1.ConditionTrue, fmt.Sprintf(
+				"render root %q governs new files; it renders %s, which is read-only input",
+				report.RenderRoot, strings.Join(report.ReadOnlyBases, ", "))
+		}
 		return metav1.ConditionTrue,
 			fmt.Sprintf("render root %q governs new files", report.RenderRoot)
 	case manifestanalyzer.LayoutNone:
@@ -95,26 +100,20 @@ func layoutCondition(report git.LayoutReport) (metav1.ConditionStatus, string) {
 }
 
 // placementStatus projects a report onto the status stanza.
+//
+// The stanza is deliberately small: everything a reader could get from the spec in the same GET
+// was left out, and so was anything that tried to preview what the target would do. See the
+// rationale block on GitTargetPlacementStatus.
 func placementStatus(report git.LayoutReport) *configbutleraiv1alpha3.GitTargetPlacementStatus {
 	status := &configbutleraiv1alpha3.GitTargetPlacementStatus{
-		RenderRoot:       report.RenderRoot,
-		ByTypeEntries:    int32(report.ByTypeEntries), //nolint:gosec // a byType map has no unbounded size
-		ObservedRevision: report.Revision,
+		Mode:               configbutleraiv1alpha3.PlacementMode(report.Mode),
+		RenderRoot:         report.RenderRoot,
+		ReadOnlyBases:      report.ReadOnlyBases,
+		ResolvedAtRevision: report.Revision,
 	}
-	if report.SerializeNamespace != nil {
-		resolved := *report.SerializeNamespace
-		status.SerializeNamespace = &resolved
-	}
-	if !report.ObservedTime.IsZero() {
-		observed := metav1.NewTime(report.ObservedTime)
-		status.ObservedTime = &observed
-	}
-	for _, example := range report.Examples {
-		status.Examples = append(status.Examples, configbutleraiv1alpha3.GitTargetPlacementExample{
-			Type:   example.Type,
-			Path:   example.Path,
-			Source: string(example.Source),
-		})
+	if !report.ResolvedAt.IsZero() {
+		resolved := metav1.NewTime(report.ResolvedAt)
+		status.ResolvedAt = &resolved
 	}
 	return status
 }

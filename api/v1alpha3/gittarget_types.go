@@ -147,28 +147,42 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
-	// Suspend stops the PLANNING of new writes, not the scan, and that asymmetry is the feature. Placement
-	// only ever affects documents that do not exist yet, so there is nothing to preview by
-	// inspecting the folder: a user declaring a target against a real repository has no way to see
-	// what the operator would do until it has already done it. A suspended target that still scans
-	// and still publishes status.placement turns adoption from declare-and-hope into a dry run.
+	// Suspend is a PANIC KNOB: one field that stops this target writing, reachable without
+	// deleting anything and without unpicking the watch configuration that would have to be
+	// rebuilt afterwards. That is the whole justification, and it is enough on its own.
+	//
+	// It is deliberately NOT a preview mechanism. A target that writes nothing has nothing to
+	// show, and the honest way to see what a target would do is to point one at a scratch branch
+	// and read the commits — real bytes, real registrations, real deletes, diffable. The
+	// manifest-analyzer CLI is the other half of that answer. Neither is something status should
+	// grow a second, worse copy of; see docs/layout/model.md § "Previewing a target: point it at a
+	// scratch branch".
+	//
+	// The scan is deliberately NOT suspended with the write, and the reason is incident response
+	// rather than preview: a stopped valve that also stopped looking would freeze status.placement
+	// at whatever the folder looked like the moment someone panicked, which is exactly when a
+	// stale answer costs the most.
 	//
 	// Deliberately MUTABLE and deliberately not a fault: a suspended target reports Ready=True with
 	// reason Suspended, because not writing is the configured outcome. The precedent is
 	// status.retention — a condition asserts health, and suppressing a write on request is not ill
 	// health.
 
-	// Suspend stops this target from writing to Git. It keeps scanning its folder and keeps
-	// publishing what it resolved — status.placement and the LayoutResolved condition are
-	// maintained exactly as they are for an active target — so it is a dry run of the layout
-	// rather than an off switch for the target. Watches keep running and events keep arriving;
-	// no new commit is planned while it is set.
+	// Suspend stops this target from writing to Git, without deleting it. It is the knob to turn
+	// when something is wrong and the writes have to stop now: watches keep running, events keep
+	// arriving, the folder keeps being scanned and status.placement keeps being maintained, and no
+	// new commit is planned while it is set.
 	//
 	// It takes effect at the next planning boundary, not instantly. Work already committed
 	// locally when suspend is set is still pushed, so a target suspended during a push cooldown
 	// can publish one more commit seconds later. That is deliberate: a local commit that is never
 	// pushed would sit in the worker's checkout indefinitely and surface later, out of order, on
-	// resume. Suspend is a valve on new work, not an undo.
+	// resume. Suspend is a valve on new work, not an undo — it stops the next write, it does not
+	// revert the last one.
+	//
+	// While it is set, status.retention is not published at all: nothing is swept, so nothing is
+	// measured, and reporting zero retained documents would read as "converged" when nothing was
+	// counted.
 	//
 	// Omitted, it is false. Clearing it resumes writing from the current cluster state on the next
 	// resync; the writes suppressed while suspended are not replayed.
@@ -255,62 +269,82 @@ type GitTargetStatus struct {
 	// +optional
 	Retention *GitTargetRetentionStatus `json:"retention,omitempty"`
 
-	// Placement is what the last scan resolved about this folder's layout: which render root
-	// governs new documents, whether a namespace is written into them, and where a few
-	// representative types would land. It is an observation, like streams and retention, and the
-	// LayoutResolved condition carries the verdict.
+	// Placement is what the last scan resolved about this folder's layout: whether a kustomize
+	// render root governs new documents, which one, and whether the folder renders a base it may
+	// not write to. It is an observation, like streams and retention, and the LayoutResolved
+	// condition carries the verdict.
 	// +optional
 	Placement *GitTargetPlacementStatus `json:"placement,omitempty"`
 }
 
 // Design rationale, kept out of the generated CRD description by the blank line below.
 //
-// Three decisions are frozen here because each is cheaper to take before the field exists.
+// This stanza answers ONE question: why did a write take the shape it did, or why was it refused.
+// It is deliberately not a preview of what the target would do, and three fields were removed for
+// trying to be one — examples (a fabricated object at a fabricated path), byTypeEntries (a count
+// of a spec map the same GET already returns), and serializeNamespace (a copy of a spec field).
 //
-// The resolution REASON is a condition reason (LayoutResolved), not a field. A renderRootReason
-// field would be a reason enum in a bespoke place, and every consumer in this ecosystem already
-// reads reasons from conditions.
+// The rule that kept them out is worth stating, because it is what to hold new fields against: a
+// field earns its place only if a reader cannot get it from the spec, AND it varies with this
+// folder. The write behaviours that follow from Mode — registration into resources:, the
+// deregistration a delete performs, the $patch: delete an inherited object needs — are constants
+// of the mode rather than facts about the folder, so they are documented on Mode and not
+// enumerated here.
 //
-// There are NO accumulating counters. placedResources, overriddenTypes and refusedResources are
-// metrics, and placements_total already carries them with better labels; a monotonic counter in
-// status is a status write per event, which re-creates the self-triggering reconcile edge the
-// status work already fixed once. Examples stays, capped and fixed-size, because "show me where a
-// Secret would land" is not a metric.
+// To PREVIEW what a target would do, point one at a scratch branch and read the commits it makes.
+// That is complete, reviewable, and real, where any status stanza is a summary; see
+// docs/layout/model.md § "Previewing a target: point it at a scratch branch".
+//
+// The resolution REASON is a condition reason (LayoutResolved), not a field, because every
+// consumer in this ecosystem already reads reasons from conditions.
+//
+// There are NO counters. placedResources, overriddenTypes and refusedResources are metrics, and
+// placements_total carries them with better labels; a counter in status is a status write per
+// event, which re-creates the self-triggering reconcile edge the status work already fixed once.
 //
 // Nothing here may depend on a placement having HAPPENED. Every field is a fact about the folder
-// from the last scan, so the whole stanza is available before the target has ever written a byte —
-// which is the only thing that makes it useful to a suspended target, and therefore useful at all.
+// from the last scan, so the whole stanza is available before the target has ever written a byte.
 
 // GitTargetPlacementStatus is what the last scan resolved about a GitTarget folder's layout.
 type GitTargetPlacementStatus struct {
+	// Mode is how this folder is written, and it is the field that predicts the surprises.
+	//
+	// `Plain` — no kustomization governs the folder. A new document is written and nothing else
+	// is touched; a delete removes it and nothing else is touched.
+	//
+	// `KustomizeRoot` — exactly one kustomization governs the folder and the folder is
+	// self-contained. A new document is also registered in that root's `resources:`; a delete
+	// also drops its entry; and every write is proved by re-rendering, so kustomize itself can
+	// refuse one.
+	//
+	// `KustomizeOverlay` — as KustomizeRoot, and the folder additionally renders a base outside
+	// it (ReadOnlyBases). The base is read-only input: an edit to a field the base owns is
+	// authored into the overlay when it is expressible there (`images:`, `replicas:`) and refused
+	// with WriteBoundaryRefused otherwise, and DELETING an object the overlay inherits authors a
+	// `$patch: delete` into the overlay rather than removing anything.
+	//
+	// Empty when the folder covers more than one render root, which is LayoutResolved=Ambiguous:
+	// there is no single answer, and no new document is placed until the target is pointed at one
+	// of them.
+	// +optional
+	// +kubebuilder:validation:Enum=Plain;KustomizeRoot;KustomizeOverlay
+	Mode PlacementMode `json:"mode,omitempty"`
+
 	// RenderRoot is the kustomization directory that governs new documents in this folder,
-	// relative to spec.path; "." is the folder itself. Empty when the folder has no render root
-	// (the built-in canonical path applies) or when it has more than one, which is
-	// LayoutResolved=Ambiguous.
+	// relative to spec.path; "." is the folder itself. Empty for Plain (there is no root) and
+	// under LayoutResolved=Ambiguous (there is no single one).
 	// +optional
 	RenderRoot string `json:"renderRoot,omitempty"`
 
-	// SerializeNamespace is whether a new document in this folder carries its own
-	// metadata.namespace. It is true when no render root governs the folder, because then nothing
-	// supplies the namespace and every namespaced document has to carry its own.
-	//
-	// It is absent only when MORE THAN ONE render root covers the folder, which is
-	// LayoutResolved=Ambiguous: the answer then differs per document, by whichever root governs
-	// it, and reporting a folder-wide one would be the guess that verdict exists to refuse.
-	//
-	// It describes documents the folder's render root governs, which is every document in a
-	// folder that receives one source namespace. An object arriving from a different namespace
-	// than the root supplies carries its namespace regardless of what this reports.
+	// ReadOnlyBases are the kustomization directories this folder renders but may never write to,
+	// relative to spec.path — so they lead with "../". Non-empty exactly when Mode is
+	// KustomizeOverlay, and it is what makes a WriteBoundaryRefused message predictable instead of
+	// surprising: an edit that lands on a document under one of these paths cannot be written
+	// where it lives.
 	// +optional
-	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
+	ReadOnlyBases []string `json:"readOnlyBases,omitempty"`
 
-	// ByTypeEntries is how many spec.placement.byType templates this target declares. It is here
-	// so a reader can tell a folder whose layout is declared from one that is inferred without
-	// fetching the spec.
-	// +optional
-	ByTypeEntries int32 `json:"byTypeEntries,omitempty"`
-
-	// ObservedRevision is the Git revision this resolution was first observed at. It is not
+	// ResolvedAtRevision is the Git revision this resolution was first observed at. It is not
 	// re-stamped on every scan: a resolution that has not changed is not republished, because
 	// doing so would write status once per commit to the branch, whichever target caused the
 	// commit. So it dates the RESOLUTION, not the last scan — a revision older than the branch
@@ -319,37 +353,28 @@ type GitTargetPlacementStatus struct {
 	// It is empty when the branch had no commit at the time (a folder nothing has written to yet)
 	// and is filled in by the first scan that finds one.
 	// +optional
-	ObservedRevision string `json:"observedRevision,omitempty"`
+	ResolvedAtRevision string `json:"resolvedAtRevision,omitempty"`
 
-	// ObservedTime is when this resolution was computed.
+	// ResolvedAt is when this resolution was computed. Like ResolvedAtRevision it dates the
+	// resolution rather than the last scan, so a timestamp well in the past means the folder's
+	// shape has been stable, not that scanning stopped.
 	// +optional
-	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
-
-	// Examples shows where a representative object of a few types would be written. It is capped
-	// at three, illustrative rather than a tally, and never grows with the folder: it answers
-	// "where would a Secret land", which is the question placement is actually asked.
-	// +optional
-	// +kubebuilder:validation:MaxItems=3
-	Examples []GitTargetPlacementExample `json:"examples,omitempty"`
+	ResolvedAt *metav1.Time `json:"resolvedAt,omitempty"`
 }
 
-// GitTargetPlacementExample is one illustrative destination: where a new object of a type would be
-// written under this folder's current layout.
-type GitTargetPlacementExample struct {
-	// Type is the placement type key the destination was resolved for
-	// ("{group}/{version}/{resource}", core resources omitting the group).
-	Type string `json:"type"`
+// PlacementMode is how a GitTarget folder is written: as plain files, as a kustomize root, or as
+// an overlay over a base it may not write to.
+type PlacementMode string
 
-	// Path is where a new object of that type would be written, relative to spec.path, with the
-	// object's own name standing in as "example".
-	Path string `json:"path"`
-
-	// Source names which rung of the placement ladder produced Path: Declared, KustomizeRoot, or
-	// Canonical. It is the "why here" answer, and it is the same closed set the placements_total
-	// metric labels.
-	// +optional
-	Source string `json:"source,omitempty"`
-}
+const (
+	// PlacementModePlain is a folder no kustomization governs.
+	PlacementModePlain PlacementMode = "Plain"
+	// PlacementModeKustomizeRoot is a self-contained folder governed by exactly one kustomization.
+	PlacementModeKustomizeRoot PlacementMode = "KustomizeRoot"
+	// PlacementModeKustomizeOverlay is a folder governed by one kustomization that renders a base
+	// outside the write scope.
+	PlacementModeKustomizeOverlay PlacementMode = "KustomizeOverlay"
+)
 
 // GitTargetStreamsStatus is a bounded roll-up of the stream readiness state for the
 // types this GitTarget tracks.
@@ -414,6 +439,7 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=`.spec.suspend`,priority=1
+// +kubebuilder:printcolumn:name="Layout",type=string,JSONPath=`.status.placement.mode`,priority=1
 // +kubebuilder:printcolumn:name="RenderRoot",type=string,JSONPath=`.status.placement.renderRoot`,priority=1
 // +kubebuilder:printcolumn:name="LayoutResolved",type=string,JSONPath=`.status.conditions[?(@.type=="LayoutResolved")].reason`,priority=1
 // +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`,priority=1

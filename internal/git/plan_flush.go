@@ -225,7 +225,7 @@ func newWriteBatch(
 	// with an unresolved layout and place a new document into a folder that has no single root
 	// to place it in. Publishing it is a separate step (scanLayout), because only the paths that
 	// know which GitTarget they serve can publish.
-	batch.layout = manifestanalyzer.ResolveLayout(store, policy, writeSubdir, nil)
+	batch.layout = manifestanalyzer.ResolveLayout(store, writeSubdir)
 	return batch
 }
 

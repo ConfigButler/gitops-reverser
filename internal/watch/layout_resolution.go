@@ -39,12 +39,12 @@ func (m *Manager) LayoutForGitTarget(gitDest types.ResourceReference) (git.Layou
 
 // sameLayout compares two reports by what a reader would see in status.
 //
-// The observed time is deliberately not compared: it advances on every scan of an unchanged
+// The resolution time is deliberately not compared: it advances on every scan of an unchanged
 // folder, so comparing it would republish the whole immutable snapshot and enqueue a reconcile
 // once per resync per target, forever, to advance a clock nobody reads a decision from. It is the
 // same trap targetPassStatus avoided by dropping its timestamps.
 //
-// The observed REVISION is not compared either, for the same reason — every commit to the branch
+// The REVISION is not compared either, for the same reason — every commit to the branch
 // moves it, whichever target caused the commit — with one exception, below: a report that has one
 // where the last had none is always a change. Without that exception the field would be written
 // once, at the first scan of a branch that usually has no commit yet, and then never advance,
@@ -54,34 +54,20 @@ func sameLayout(a, b git.LayoutReport) bool {
 	if a.Revision == "" && b.Revision != "" {
 		return false
 	}
-	if a.Reason != b.Reason || a.RenderRoot != b.RenderRoot || a.ByTypeEntries != b.ByTypeEntries {
+	if a.Reason != b.Reason || a.Mode != b.Mode || a.RenderRoot != b.RenderRoot {
 		return false
 	}
-	if !sameOptionalBool(a.SerializeNamespace, b.SerializeNamespace) {
+	return sameStrings(a.RenderRoots, b.RenderRoots) && sameStrings(a.ReadOnlyBases, b.ReadOnlyBases)
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	if len(a.RenderRoots) != len(b.RenderRoots) {
-		return false
-	}
-	for i := range a.RenderRoots {
-		if a.RenderRoots[i] != b.RenderRoots[i] {
-			return false
-		}
-	}
-	if len(a.Examples) != len(b.Examples) {
-		return false
-	}
-	for i := range a.Examples {
-		if a.Examples[i] != b.Examples[i] {
+	for i := range a {
+		if a[i] != b[i] {
 			return false
 		}
 	}
 	return true
-}
-
-func sameOptionalBool(a, b *bool) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
