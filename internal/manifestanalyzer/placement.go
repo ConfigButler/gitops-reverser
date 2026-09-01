@@ -31,6 +31,10 @@ import (
 type PlacementPolicy struct {
 	ByType  map[string]string
 	Default string
+	// UseKustomize is spec.placement.useKustomize: create a kustomization.yaml at the write jail's
+	// root when nothing governs a new document's path, and register the document in it. It is read
+	// by the writer rather than by LocateNew, because creating a file is not a path decision.
+	UseKustomize bool
 }
 
 // PlacementRequest describes a resource with no existing document in Git — the
@@ -195,6 +199,10 @@ func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementReque
 		return finishPlacement(store, req, path, PlacementSourceKustomizeRoot)
 	}
 
+	if path, ok := resolveDeclaredKustomizeFolder(store, policy, req); ok {
+		return finishPlacement(store, req, path, PlacementSourceKustomizeRoot)
+	}
+
 	return finishPlacement(store, req, canonicalPath(req), PlacementSourceCanonical)
 }
 
@@ -227,6 +235,40 @@ func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, b
 		name = req.Identifier.Name + ".sops.yaml"
 	}
 	return cleanJoin(slashDir(only.Path), name), true
+}
+
+// resolveDeclaredKustomizeFolder is the rung above for a folder that has no root YET. A target
+// declaring spec.placement.useKustomize keeps this folder as a kustomize folder, and the writer
+// creates the missing root at the jail's own directory in the same commit, so a new document
+// belongs beside it exactly as it would beside a root that was already there.
+//
+// Without this the first document of a bootstrapped folder would land at the canonical
+// {namespaceOrCluster}/{group}/{resource}/{name}.yaml path, which is a tree no resources: graph
+// reaches: the operator would create a root and then place the document outside it.
+//
+// It reports the same PlacementSource as the rung it stands in for, because it IS that rung: the
+// source label names the mechanism a reader can act on, and "beside the folder's one kustomize
+// root" is what happened. The label set is a public observability contract and this adds no member
+// to it.
+//
+// It runs only when the folder has NO writable root: exactly one is the rung above, and several is
+// refused before placement is asked (an ambiguous folder has no single root to create beside).
+func resolveDeclaredKustomizeFolder(
+	store *ManifestStore,
+	policy *PlacementPolicy,
+	req PlacementRequest,
+) (string, bool) {
+	if policy == nil || !policy.UseKustomize {
+		return "", false
+	}
+	if len(writableRenderRoots(store, req.WriteScope)) != 0 {
+		return "", false
+	}
+	name := req.Identifier.Name + ".yaml"
+	if req.Sensitive {
+		name = req.Identifier.Name + ".sops.yaml"
+	}
+	return cleanJoin(req.WriteScope, name), true
 }
 
 // finishPlacement fills in the parts of a PlacementResult that depend only on the
@@ -388,6 +430,14 @@ func governingKustomization(store *ManifestStore, writeScope, resolvedPath strin
 		}
 		dir = parent
 	}
+}
+
+// GoverningKustomization is governingKustomization for the writer, which has to ask a question
+// LocateNew's result cannot answer: PlacementResult.Kustomization is set only when a governing root
+// exists AND does not already list the path, so a nil there means either "no root" or "already
+// listed". Creating a root is only correct for the first of those.
+func GoverningKustomization(store *ManifestStore, writeScope, resolvedPath string) *KustomizationInfo {
+	return governingKustomization(store, writeScope, resolvedPath)
 }
 
 func kustomizationListsResource(k *KustomizationInfo, resolvedPath string) bool {

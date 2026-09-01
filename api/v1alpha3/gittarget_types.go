@@ -274,6 +274,41 @@ type GitTargetPlacementSpec struct {
 	// — give every sensitive type an explicit identity-complete ByType entry.
 	// +optional
 	Default string `json:"default,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// It has exactly ONE job, and the name says less than the field does. Registering a new file
+	// with the kustomization that already governs its directory is an INVARIANT rather than a
+	// setting (#295, fixed by #319): a file no kustomization lists is a file nothing renders, so
+	// that happens in both columns. What this flag decides is only what to do when there is no
+	// root at all.
+	//
+	// So useKustomize: false does not mean "leave kustomize alone". If a folder's root must not be
+	// touched, do not point a GitTarget at that folder: the ancestor walk is bounded by the write
+	// jail, so a kustomization ABOVE spec.path is never edited, and rooting the target lower is
+	// the existing, better-tested way to say it.
+	//
+	// It belongs inside placement, unlike spec.serializeNamespace, because it is retroactive in
+	// the same way the rest of this struct is: it decides whether a NEW file's directory has a
+	// root to join, and creates one if not. Nothing already written moves or changes.
+	//
+	// See docs/layout/model.md § "useKustomize".
+
+	// UseKustomize declares that this folder is a kustomize folder whose root the operator
+	// maintains. It controls one thing: what happens when NO kustomization governs the path a new
+	// document lands at.
+	//
+	// Omitted or false, the document is written and nothing else is touched. True, a
+	// kustomization.yaml is created at spec.path and the new document is registered in it as part
+	// of the same commit. The created root carries namespace: when exactly one source namespace
+	// reaches this target, which is what makes it a meaningful kustomization rather than an empty
+	// file, and what makes an accompanying serializeNamespace: false provable rather than trusted.
+	//
+	// It has NO bearing on a folder that already has a root. A new file is always registered with
+	// the nearest kustomization governing it, whatever chose its path, because a file no
+	// kustomization lists is a file kustomize never builds.
+	// +optional
+	UseKustomize bool `json:"useKustomize,omitempty"`
 }
 
 // GitTargetStatus defines the observed state of GitTarget.

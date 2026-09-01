@@ -165,6 +165,12 @@ type writeBatch struct {
 	// stay within it. The store and every path in it are keyed relative to renderBase, so a
 	// writable path is one under writeSubdir. See internal/git/render_scope.go.
 	writeSubdir string
+	// createdRoot is the kustomization.yaml this batch WROTE, for a folder that had none and a
+	// target that declared spec.placement.useKustomize. It is nil in every other case, including
+	// the ordinary one where a root was already there. It exists so the second new document in a
+	// batch joins the root the first one created: the store was built before the batch, so nothing
+	// in it knows the file exists.
+	createdRoot *manifestanalyzer.KustomizationInfo
 	// layout is what the scan resolved about this folder's shape. It is published as
 	// status.placement, and createNew reads it: a folder covering several render roots has no
 	// single one to place a new document into, so placing one is refused rather than guessed.
@@ -469,6 +475,12 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// foreign content we declined to own, added to resources: on our say-so; and either way it
 	// counted as outcome="added", the value that is supposed to mean "the file we just wrote will
 	// build". Pinned by TestPlacementMetrics_RefusedPlacementLeavesTheKustomizationAlone.
+	// A folder the target asked to keep as a kustomize folder, and that has no root, gets one
+	// here — with this document already registered in it. A LATER document in the same batch
+	// joins that root through the ordinary append below, which is why this returns it.
+	if created := wb.bootstrapKustomization(ctx, placement); created != nil {
+		placement.Kustomization = created
+	}
 	if placement.Kustomization != nil {
 		wb.appendKustomizationResource(ctx, event, placement)
 	}
@@ -483,7 +495,7 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// non-converging commit into a reported refusal naming the file and the object. It does not
 	// make the write work — that needs attribution for a document that does not exist yet — but
 	// "we cannot express this here" is an answer, and quietly writing a lie is not.
-	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil
+	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil || wb.createdRoot != nil
 	wb.intend(markUnchecked(intentFor(live, placement.Path, false), sensitive))
 	return outcome, nil
 }

@@ -210,8 +210,9 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 		return nil
 	}
 	return &manifestanalyzer.PlacementPolicy{
-		ByType:  spec.ByType,
-		Default: spec.Default,
+		ByType:       spec.ByType,
+		Default:      spec.Default,
+		UseKustomize: spec.UseKustomize,
 	}
 }
 

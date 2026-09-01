@@ -110,15 +110,26 @@ func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []Writ
 	}
 	seen := map[chainKey]struct{}{}
 
+	// A root the flush CREATED has no before-state to build, and that is not the same fault as a
+	// root that was there and did not build. spec.placement.useKustomize writes a kustomization
+	// into a folder that had none, so its baseline render is empty rather than unbuildable —
+	// which is exactly what "this folder rendered nothing before" means.
+	rootsBefore := parseKustomizations(before)
+
 	var reasons []string
 	for _, root := range renderTargets(parseKustomizations(after)) {
-		was, err := renderRoot(before, root)
-		if err != nil {
-			// The tree did not build BEFORE we touched it. The acceptance gate refuses
-			// such a folder, so we should never be writing into one — but an unverifiable
-			// root is not a verified root, so say so rather than skip it.
-			reasons = append(reasons, fmt.Sprintf("render root %s did not build before the write: %v", root, err))
-			continue
+		var was []renderedObject
+		if _, existed := rootsBefore[root]; existed {
+			built, err := renderRoot(before, root)
+			if err != nil {
+				// The tree did not build BEFORE we touched it. The acceptance gate refuses
+				// such a folder, so we should never be writing into one — but an unverifiable
+				// root is not a verified root, so say so rather than skip it.
+				reasons = append(reasons,
+					fmt.Sprintf("render root %s did not build before the write: %v", root, err))
+				continue
+			}
+			was = built
 		}
 		now, err := renderRoot(after, root)
 		if err != nil {

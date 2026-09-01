@@ -1,13 +1,3 @@
-diff --git a/apps/checkout/kustomization.yaml b/apps/checkout/kustomization.yaml
-new file mode 100644
---- /dev/null
-+++ b/apps/checkout/kustomization.yaml
-@@ -0,0 +1,5 @@
-+apiVersion: kustomize.config.k8s.io/v1beta1
-+kind: Kustomization
-+namespace: shop
-+resources:
-+  - checkout-config.yaml
 diff --git a/apps/checkout/checkout-config.yaml b/apps/checkout/checkout-config.yaml
 new file mode 100644
 --- /dev/null
@@ -18,4 +8,14 @@ new file mode 100644
 +metadata:
 +  name: checkout-config
 +data:
-+  timeout: "15m"
++  timeout: 15m
+diff --git a/apps/checkout/kustomization.yaml b/apps/checkout/kustomization.yaml
+new file mode 100644
+--- /dev/null
++++ b/apps/checkout/kustomization.yaml
+@@ -0,0 +1,5 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++namespace: shop
++resources:
++  - checkout-config.yaml
