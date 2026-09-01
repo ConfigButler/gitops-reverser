@@ -14,7 +14,7 @@ import (
 )
 
 // GitTargetReasonNamespaceNotAuthorized is the Validated=False reason when a GitTarget's namespace
-// is not admitted by its referenced ClusterProvider's spec.allowedNamespaces. It runs on every
+// is not admitted by its referenced ClusterProvider's spec.accessFrom. It runs on every
 // reconcile, so a policy tightened AFTER a GitTarget was created stops that target's watches too.
 const GitTargetReasonNamespaceNotAuthorized = authz.ReasonNamespaceNotAuthorized
 

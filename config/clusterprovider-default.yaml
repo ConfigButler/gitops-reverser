@@ -9,5 +9,5 @@ metadata:
   name: default
 spec:
   # no kubeConfig => the operator's own in-cluster config (optional for any provider name)
-  allowedNamespaces:
+  accessFrom:
     selector: {}

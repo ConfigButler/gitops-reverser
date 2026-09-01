@@ -51,7 +51,7 @@ func bootGitProvider() *configv1alpha3.GitProvider {
 func bootClusterProvider(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: bootProviderName},
-		Spec:       configv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
+		Spec:       configv1alpha3.ClusterProviderSpec{AccessFrom: policy},
 	}
 }
 

@@ -114,18 +114,12 @@ spec:
             properties:
               allowedSourceNamespaces:
                 description: |-
-                  AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
-                  target. It belongs to the DESTINATION, not to any requesting rule: once declared it is
-                  exhaustive for every WatchRule that writes here, with no exception for a rule's own namespace.
+                  AllowedSourceNamespaces is REMOVED. Which source namespaces a target may mirror is bounded by
+                  the source credential's own Kubernetes RBAC, and which control-plane namespace may wield that
+                  credential is bounded by ClusterProvider.spec.accessFrom. Setting this field is rejected.
 
-                  Omitted and empty differ. Omitted declares no policy, and a WatchRule keeps its own namespace;
-                  a declared-but-empty policy admits nothing; `selector: {}` admits every source namespace.
-                  Selector labels are read in the SOURCE cluster, so evaluating one needs Namespace
-                  get/list/watch for that cluster's credential, while exact names need no such access. This is
-                  also what a rules[].sourceNamespace of "*" resolves through. Naming any namespace other than
-                  the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
-                  spec.allowSourceNamespaceOverride. It does NOT bound ClusterWatchRule, whose cluster-scoped
-                  objects have no namespace. Full resolution table: docs/configuration.md.
+                  Deprecated: bound reads with source-cluster RBAC and use ClusterProvider.spec.accessFrom.
+                  Removed at v1alpha4.
                 properties:
                   names:
                     description: |-
@@ -187,6 +181,15 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 type: object
+                x-kubernetes-validations:
+                - message: 'spec.allowedSourceNamespaces is removed. The source credential''s
+                    own RBAC bounds what may be read, and ClusterProvider.spec.accessFrom
+                    bounds which namespaces may wield it. A rules[].sourceNamespace
+                    other than the WatchRule''s own namespace now needs only ClusterProvider.spec.allowAnySourceNamespace:
+                    true. Source-side label selectors have no replacement; enumerate
+                    namespaces in rules[].sourceNamespace, or use "*" for every namespace
+                    the credential can read.'
+                  rule: "false"
               branch:
                 description: |-
                   Branch to use for this target.

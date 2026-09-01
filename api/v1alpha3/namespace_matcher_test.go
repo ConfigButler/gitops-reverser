@@ -10,7 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TestNamespaceMatcher_DenyByDefault pins the semantics both policies depend on. The fail-open
+// TestNamespaceMatcher_DenyByDefault pins the semantics accessFrom depends on. The fail-open
 // reading is the catastrophic one, so the nil and empty cases get their own assertions rather than
 // riding along with a general case.
 func TestNamespaceMatcher_DenyByDefault(t *testing.T) {
@@ -19,56 +19,15 @@ func TestNamespaceMatcher_DenyByDefault(t *testing.T) {
 	allowed, err := nilMatcher.Matches("anything", nil)
 	require.NoError(t, err)
 	assert.False(t, allowed, "a nil matcher admits nothing")
-	assert.False(t, nilMatcher.Declared(), "a nil matcher declares no policy")
 
 	empty := &NamespaceMatcher{}
 	allowed, err = empty.Matches("anything", map[string]string{"a": "b"})
 	require.NoError(t, err)
-	assert.False(t, allowed, "an EMPTY declared policy admits nothing — empty is not unrestricted")
-	assert.True(t, empty.Declared(), "but it IS declared, which is what makes it exhaustive")
+	assert.False(t, allowed, "an EMPTY declared policy admits nothing: empty is not unrestricted")
 }
 
-// TestNamespaceMatcher_ValidateNamesRejectsPatterns pins the half of the policy that cannot be
-// expressed as a pattern.
-//
-// `*` is the case that matters and the reason is counter-intuitive: it is NOT interpreted as "every
-// namespace" anywhere in the stack. Kubernetes treats `namespaces/*` as a literal name, so a policy
-// carrying it resolves a wildcard item to a namespace that can never exist — and the rule then
-// reports itself authorized while mirroring nothing. Refusing the name is what turns that silent
-// no-op into something an operator can see.
-func TestNamespaceMatcher_ValidateNamesRejectsPatterns(t *testing.T) {
-	var nilMatcher *NamespaceMatcher
-	assert.NoError(t, nilMatcher.ValidateNames(), "a nil matcher has no names to reject")
-	assert.NoError(t, (&NamespaceMatcher{}).ValidateNames(), "nor does a declared-but-empty one")
-
-	valid := &NamespaceMatcher{Names: []string{"repo-config", "tenant-acme", "a"}}
-	assert.NoError(t, valid.ValidateNames(), "real namespace names stay valid")
-
-	tests := map[string]string{
-		"the wildcard":         "*",
-		"a prefix pattern":     "tenant-*",
-		"an empty name":        "",
-		"an uppercase name":    "Repo-Config",
-		"a path-ish name":      "team/repo-config",
-		"a trailing separator": "repo-config-",
-		"a name over 63 chars": "n0123456789012345678901234567890123456789012345678901234567890123",
-	}
-	for name, value := range tests {
-		t.Run(name, func(t *testing.T) {
-			err := (&NamespaceMatcher{Names: []string{value}}).ValidateNames()
-			require.Error(t, err, "%q could never be a namespace name", value)
-			assert.Contains(t, err.Error(), "is not a namespace name")
-		})
-	}
-
-	// One bad entry condemns the whole policy: honouring the valid remainder is silent narrowing.
-	mixed := &NamespaceMatcher{Names: []string{"repo-config", "*"}}
-	assert.Error(t, mixed.ValidateNames(), "a policy is not partially evaluatable")
-}
-
-// TestNamespaceMatcher_NamesAndSelectorAreOred covers the OR contract and, more importantly, that
-// the NAME half never consults labels — the property that keeps exact-name policies working
-// against a cluster whose Namespace reads are denied.
+// TestNamespaceMatcher_NamesAndSelectorAreOred covers the OR contract and that the NAME half never
+// consults labels, so a listed namespace is admitted whatever it is labelled.
 func TestNamespaceMatcher_NamesAndSelectorAreOred(t *testing.T) {
 	matcher := &NamespaceMatcher{
 		Names:    []string{"repo-config"},
@@ -98,7 +57,6 @@ func TestNamespaceMatcher_NamesAndSelectorAreOred(t *testing.T) {
 
 	assert.True(t, matcher.MatchesName("repo-config"))
 	assert.False(t, matcher.MatchesName("other"))
-	assert.True(t, matcher.HasSelector())
 }
 
 // TestNamespaceMatcher_InvalidSelectorIsAnError: a malformed selector must surface, not silently
@@ -117,30 +75,24 @@ func TestNamespaceMatcher_InvalidSelectorIsAnError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestNamespaceMatcher_EmptySelectorMatchesEverything pins the asymmetry the whole "*" design rests
-// on: LabelSelectorAsSelector returns labels.Nothing() for a NIL selector and labels.Everything()
-// for a present-but-EMPTY one, which is exactly the absent-versus-declared distinction this type is
-// built around. `selector: {}` is the deliberate "every source namespace" declaration, so if this
-// ever flipped a target would silently stop admitting anything.
+// A present-but-EMPTY selector admits EVERY namespace, while a nil one admits none.
+// LabelSelectorAsSelector returns labels.Everything() for the first and labels.Nothing() for the
+// second, and the chart's own default `default` ClusterProvider ships `accessFrom: {selector: {}}`,
+// so if this ever flipped every install would stop admitting anything.
 func TestNamespaceMatcher_EmptySelectorMatchesEverything(t *testing.T) {
 	declared := &NamespaceMatcher{Selector: &metav1.LabelSelector{}}
-	admits, err := declared.SelectorAdmits(nil)
+	admits, err := declared.Matches("any", nil)
 	require.NoError(t, err)
 	assert.True(t, admits, "a present-but-empty selector admits EVERY namespace, labels or not")
 
-	admits, err = declared.SelectorAdmits(map[string]string{"anything": "at-all"})
+	admits, err = declared.Matches("any", map[string]string{"anything": "at-all"})
 	require.NoError(t, err)
 	assert.True(t, admits)
 
 	absent := &NamespaceMatcher{Names: []string{"repo-config"}}
-	admits, err = absent.SelectorAdmits(map[string]string{"anything": "at-all"})
+	admits, err = absent.Matches("other", map[string]string{"anything": "at-all"})
 	require.NoError(t, err)
-	assert.False(t, admits, "a nil selector admits nothing — names are the caller's to union")
-
-	var nilMatcher *NamespaceMatcher
-	admits, err = nilMatcher.SelectorAdmits(nil)
-	require.NoError(t, err)
-	assert.False(t, admits)
+	assert.False(t, admits, "a nil selector admits nothing beyond the listed names")
 }
 
 // TestResourceRule_EffectiveSourceNamespace pins the per-item defaulting every consumer keys on.
@@ -164,9 +116,8 @@ func TestResourceRule_EffectiveSourceNamespace(t *testing.T) {
 	assert.False(t, item.OverridesSourceNamespace(own),
 		"naming your own namespace explicitly must behave exactly like omitting it")
 
-	// "*" is ALWAYS an override, even against a policy that lists only the rule's own namespace: it
-	// asks to follow the policy's set, and a later policy edit must not widen the watch without the
-	// platform-admin opt-in.
+	// "*" is ALWAYS an override: it reaches every namespace the source credential can read, which
+	// is the widest request in the API and the last one that should slip past the delegation flag.
 	item.SourceNamespace = SourceNamespaceWildcard
 	assert.True(t, item.IsSourceNamespaceWildcard())
 	assert.True(t, item.OverridesSourceNamespace(own))
@@ -189,28 +140,11 @@ func TestClusterWatchRuleSpec_DeclaresNamespacedScope(t *testing.T) {
 	assert.True(t, stored.DeclaresNamespacedScope(), "one namespaced item refuses the whole rule")
 }
 
-// TestGitTarget_SourceNamespacePolicy checks the two thin wrappers stay thin: a declared policy is
-// distinguishable from an absent one, and the source-side predicate matches the shared shape.
-func TestGitTarget_SourceNamespacePolicy(t *testing.T) {
-	target := &GitTarget{}
-	assert.False(t, target.DeclaresSourceNamespacePolicy())
-
-	allowed, err := target.AllowsSourceNamespace("repo-config", nil)
-	require.NoError(t, err)
-	assert.False(t, allowed, "an undeclared policy admits nothing; the legacy rule is the caller's")
-
-	target.Spec.AllowedSourceNamespaces = &NamespaceMatcher{Names: []string{"repo-config"}}
-	assert.True(t, target.DeclaresSourceNamespacePolicy())
-
-	allowed, err = target.AllowsSourceNamespace("repo-config", nil)
-	require.NoError(t, err)
-	assert.True(t, allowed)
-}
-
-// TestClusterProvider_DelegationFlagDefaultsClosed is the security default in one line: the flag
-// must be false on a provider that never mentions it.
+// The security default in one line: the delegation flag must be false on a provider that never
+// mentions it, so a WatchRule may watch only its own namespace until a platform admin says
+// otherwise.
 func TestClusterProvider_DelegationFlagDefaultsClosed(t *testing.T) {
 	provider := &ClusterProvider{}
-	assert.False(t, provider.AllowsSourceNamespaceOverride(),
-		"source-namespace override must never be on by default")
+	assert.False(t, provider.AllowsAnySourceNamespace(),
+		"source-namespace delegation must never be on by default")
 }

@@ -19,14 +19,16 @@ import (
 //
 // Three things it deliberately is not:
 //
-//   - It is not spec.allowedSourceNamespaces. That field is an authorization fence — who MAY write
-//     here — and this is a question about what the folder means. They are computed from different
-//     inputs and the wave that deletes the field leaves this untouched.
+//   - It is not an authorization fence. GitTarget.spec.allowedSourceNamespaces used to be one —
+//     who MAY write here — and this has always been a question about what the folder MEANS. They
+//     were computed from different inputs, which is why deleting that field left this untouched.
 //   - It does not read ClusterWatchRules. Those watch cluster-scoped resources, which have no
 //     namespace to contribute.
 //   - It does not enumerate a wildcard. A rules[] item naming "*" makes the set unknowable from the
-//     spec, so it is reported as such (wildcard=true) and the caller refuses rather than expands:
-//     that holds under both readings of "*", which is all any caller of this needs.
+//     spec, so it is reported as such (wildcard=true) and the caller refuses rather than expands.
+//     That held under the old reading of "*" (every namespace the target's policy admitted) and it
+//     holds under the current one (every namespace the credential can read): neither is provably a
+//     single namespace from the spec, which is all any caller of this needs.
 //
 // A rule that cannot be listed is an error, never an empty set: silently reading "one namespace"
 // off a failed List is how a fence becomes a no-op.

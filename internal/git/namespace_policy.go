@@ -25,8 +25,10 @@ type namespacePolicy struct {
 	// is the only setting whose meaning depends on how many namespaces there are.
 	SourceNamespaces []string
 	// SourceNamespaceWildcard records that some rule names "*", so the set above is not the whole
-	// answer. It is never expanded: a wildcard cannot be proven to be one namespace from the spec,
-	// which is all the one-source-namespace rule needs to refuse it.
+	// answer. It is never expanded: "*" is one cluster-wide watch, so it cannot be proven to be a
+	// single namespace from the spec, which is all the one-source-namespace rule needs to refuse
+	// it. That was equally true when "*" enumerated a policy's admitted set, which is why the
+	// redefinition changed nothing here.
 	SourceNamespaceWildcard bool
 }
 

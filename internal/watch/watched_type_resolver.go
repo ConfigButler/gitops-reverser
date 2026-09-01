@@ -305,9 +305,12 @@ func (m *Manager) collectWatchRuleSelections(
 				// because every event's identity is rebuilt from the object's own
 				// metadata.namespace. So changing it never moves anything in Git.
 				//
-				// Neither an omitted item nor a wildcard ever emits a raw "" key: both resolved to
-				// concrete names at compile time, so only ClusterWatchRule emits "" and PR 2's
-				// stream-scope collapse rules are unaffected.
+				// A WILDCARD item emits the empty key deliberately: "*" is one cluster-wide list
+				// and watch, which for a namespaced GVR is the all-namespaces collection. That
+				// cell is a PEER of any named-namespace cell on the same type, never a
+				// replacement, because each rule carries its own operations filter — collapsing
+				// the two once widened a named rule's stream and discarded that filter (CellKey in
+				// internal/types/cell.go). An omitted item still resolves to a concrete name.
 				for _, namespace := range rr.SourceNamespaces {
 					ts.selections = append(ts.selections, watchSelection{
 						record: rec, namespace: namespace, ops: rr.Operations,
@@ -502,13 +505,12 @@ func (m *Manager) rulesFingerprint() uint64 {
 // watches. Each item's src= component MUST be that item's RESOLVED source-namespace SET, not the
 // WatchRule object's own namespace and not the requested value.
 //
-// This is the silent one. A wildcard item's inputs — the GitTarget's allowedSourceNamespaces and
-// the source cluster's Namespace labels — are NOT rule state, so a mapper that merely requeues the
-// WatchRule is not sufficient: reconciliation runs, a spec-derived fingerprint is unchanged, the
-// table rebuild is skipped, and the resident table keeps the old namespace set. Streams carry on at
-// their old width and every diff looks correct, because the rule object genuinely did not change.
-// Hashing the resolved set closes that, and costs nothing: compilation is what resolves the set, so
-// the fingerprint sees it for free — provided compilation always precedes the rebuild.
+// It is now derivable from the rule spec alone: a wildcard resolves to the one cluster-wide cell
+// rather than to a set that depended on a GitTarget policy and another cluster's Namespace labels.
+// It stays keyed on the RESOLVED set anyway, because the two still differ for a wildcard — "*"
+// resolves to the empty namespace — and because a fingerprint that describes what is actually
+// watched cannot drift from it. Compilation resolves the set, so this sees it for free, provided
+// compilation always precedes the rebuild.
 func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "wr|gt=%s/%s|dest=%s",

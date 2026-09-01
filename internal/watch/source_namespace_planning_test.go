@@ -43,12 +43,17 @@ func makeStoreWithScope(rule configv1alpha3.WatchRule, scope [][]string) *rulest
 	return store
 }
 
-// TestWatchRuleFingerprint_ChangesWithResolvedSourceScope is THE §4.3 guard. The watched-type table
-// is only re-projected when the rules fingerprint changes, and a wildcard item's inputs — the
-// GitTarget policy and the source cluster's Namespace labels — are not rule state at all. So two
-// BYTE-IDENTICAL WatchRules whose targets admit different sets must fingerprint differently, or a
-// policy edit re-reconciles the rule, finds the fingerprint unchanged, skips the rebuild, and leaves
-// every stream running at its old width with nothing anywhere reporting a problem.
+// The watched-type table is only re-projected when the rules fingerprint changes, so the
+// fingerprint must describe what is actually WATCHED rather than what was requested. Two
+// byte-identical WatchRules compiled to different resolved sets must fingerprint differently, or a
+// re-reconcile finds the fingerprint unchanged, skips the rebuild, and leaves every stream running
+// at its old width with nothing anywhere reporting a problem.
+//
+// Resolution no longer reads another cluster, so this can no longer diverge behind the operator's
+// back the way it could when a wildcard resolved through a GitTarget policy and a Namespace label
+// snapshot. It is still asserted here, because the store compiles from the resolved set and the
+// planner reads the store: a fingerprint keyed on anything else would be describing a different
+// object than the one the plan is built from.
 func TestWatchRuleFingerprint_ChangesWithResolvedSourceScope(t *testing.T) {
 	wildcard := watchRuleWithSource("rule", "target", configv1alpha3.SourceNamespaceWildcard)
 
@@ -101,38 +106,46 @@ func TestCollectWatchRuleSelections_UsesResolvedSourceNamespace(t *testing.T) {
 		"the stream must watch the SOURCE namespace, not the WatchRule's own namespace")
 }
 
-// TestCollectWatchRuleSelections_WildcardExpandsToOneScopePerNamespace is §4.2: expansion happens at
-// the selection site, so the scope rides through the plan hash, the informers, and the resync path
-// for free. A read-site filter would have to be repeated at each of them.
-func TestCollectWatchRuleSelections_WildcardExpandsToOneScopePerNamespace(t *testing.T) {
+// A wildcard is ONE cluster-wide scope, not one scope per namespace. That is the whole efficiency
+// case for the redefinition: a "*" rule over a type in a hundred-namespace cluster used to be a
+// hundred watch connections and a hundred list calls at warm-up, each with its own cursor and its
+// own share of the apiserver watch cache.
+func TestCollectWatchRuleSelections_WildcardIsOneClusterWideScope(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	addRule(store,
 		watchRuleWithSource("wild", "wild-target", configv1alpha3.SourceNamespaceWildcard),
-		itemScope("repo-config", "team-payments"))
+		itemScope(""))
 
 	manager.refreshWatchedTypeTables()
 
 	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("wild-target"))
 	require.True(t, ok)
 	require.Len(t, table.Types, 1)
-	assert.Equal(t, []string{"repo-config", "team-payments"}, table.Types[0].WatchScopes())
-	assert.False(t, table.Types[0].ClusterWide(),
-		"a wildcard must never collapse into a cluster-wide stream: that would widen the resync sweep")
+	assert.Equal(t, []string{""}, table.Types[0].WatchScopes())
+	assert.True(t, table.Types[0].ClusterWide(),
+		"a wildcard compiles to the all-namespaces collection, read once")
 }
 
-// TestCollectWatchRuleSelections_EmptyWildcardWatchesNothing: an admitted-but-empty set is a real
-// resolved answer, and it must produce no stream rather than a cluster-wide one.
-func TestCollectWatchRuleSelections_EmptyWildcardWatchesNothing(t *testing.T) {
+// A cluster-wide cell is a PEER of a named-namespace cell on the same type, never a replacement.
+// Each rule carries its own operations filter, and collapsing the two once widened the named rule's
+// stream to every namespace its credential could read while discarding that filter (CellKey's own
+// doc comment records the bug). Two streams over overlapping objects is the correct outcome here.
+func TestCollectWatchRuleSelections_WildcardIsAPeerOfANamedNamespace(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	addRule(store,
-		watchRuleWithSource("empty", "empty-target", configv1alpha3.SourceNamespaceWildcard),
-		itemScope())
+		watchRuleWithSource("wild", "shared-target", configv1alpha3.SourceNamespaceWildcard),
+		itemScope(""))
+	addRule(store,
+		watchRuleWithSource("named", "shared-target", "repo-config"),
+		itemScope("repo-config"))
 
 	manager.refreshWatchedTypeTables()
 
-	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("empty-target"))
+	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("shared-target"))
 	require.True(t, ok)
-	assert.Empty(t, table.Types, "no resolved namespace means no watched type, never a wider watch")
+	require.Len(t, table.Types, 1)
+	assert.Equal(t, []string{"", "repo-config"}, table.Types[0].WatchScopes(),
+		"the named scope survives beside the cluster-wide one; collapsing them loses its filter")
 }
 
 // TestCollectWatchRuleSelections_LegacyRuleStillWatchesItsOwnNamespace is the upgrade guarantee at
@@ -150,10 +163,11 @@ func TestCollectWatchRuleSelections_LegacyRuleStillWatchesItsOwnNamespace(t *tes
 	assert.Equal(t, []string{"tenant-acme"}, table.Types[0].WatchScopes())
 }
 
-// TestWatchedTypeTable_RebuildsWhenOnlyThePolicyChanged is the invalidation twin one level up from
-// the fingerprint: the resident table must actually RE-PROJECT when only the resolved scope moved,
-// not merely have its reconcile re-run. The rule object is byte-identical across both compiles.
-func TestWatchedTypeTable_RebuildsWhenOnlyThePolicyChanged(t *testing.T) {
+// The invalidation twin one level up from the fingerprint: the resident table must actually
+// RE-PROJECT when the resolved scope moved, not merely have its reconcile re-run. Here the rule
+// object is byte-identical across both compiles and only what it compiled to changed — which is
+// what a rule going from a named namespace to the cluster-wide wildcard looks like to the planner.
+func TestWatchedTypeTable_RebuildsWhenOnlyTheResolvedScopeChanged(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	rule := watchRuleWithSource("rule", "policy-target", configv1alpha3.SourceNamespaceWildcard)
 
@@ -163,15 +177,14 @@ func TestWatchedTypeTable_RebuildsWhenOnlyThePolicyChanged(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, []string{"repo-config"}, table.Types[0].WatchScopes())
 
-	// The GitTarget policy widened. The WatchRule itself did not change one byte.
-	addRule(store, rule, itemScope("repo-config", "team-payments"))
+	addRule(store, rule, itemScope(""))
 	manager.refreshWatchedTypeTables()
 
 	table, ok = manager.watchedTypeTableForGitDest(gitDestRef("policy-target"))
 	require.True(t, ok)
 	require.Len(t, table.Types, 1)
-	assert.Equal(t, []string{"repo-config", "team-payments"}, table.Types[0].WatchScopes(),
-		"a policy edit must re-project the resident table, not just re-run the reconcile")
+	assert.Equal(t, []string{""}, table.Types[0].WatchScopes(),
+		"a changed resolution must re-project the resident table, not just re-run the reconcile")
 }
 
 // TestRefreshWatchedTypeTables_SourceNamespaceChangeReProjects is the end of the same chain for an

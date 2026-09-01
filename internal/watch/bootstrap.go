@@ -63,7 +63,7 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 	// override and watch a namespace the policy refuses. A denial is not fatal to startup: the
 	// rule is simply left out of the store (bootstrap has no controllers yet and cannot publish
 	// status), and the first reconcile re-decides and writes the terminal condition.
-	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, target, provider)
+	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)
 	if err != nil {
 		return fmt.Errorf("evaluating source-namespace authorization for WatchRule %s/%s: %w",
 			rule.Namespace, rule.Name, err)

@@ -259,16 +259,17 @@ This is the one place refusing is not merely permissible but the only defensible
 **It needs no scan and no repository state.** The set of source namespaces reaching a target is
 `{the target's own namespace} ∪ {the explicit rules[].sourceNamespace names of every WatchRule
 pointing at it}`, all of it in the config cluster.
-A `sourceNamespace: "*"` item is refused outright and statically, with no enumeration, and that
-holds under **either** reading of `*` — the shipped one or the one the wave replaces it with
-([definition of record](../design/source-scope-simplification.md#sourcenamespace--needs-its-own-decision)).
-Neither can be proven to be one namespace from the spec alone, which is all this rule needs.
+A `sourceNamespace: "*"` item is refused outright and statically, with no enumeration. `*` is one
+cluster-wide watch
+([definition of record](../design/source-scope-simplification.md#sourcenamespace--needs-its-own-decision)),
+so it cannot be proven to be one namespace from the spec alone — and it could not under the previous
+reading either, which is why the redefinition changed nothing here.
 
-This is deliberately **not** the job `GitTarget.spec.allowedSourceNamespaces` does, and it does not
-depend on that field, which the same document deletes. That field is an authorization fence, deleted
-because the chain from a folder back to the object that fills it never leaves one namespace, so RBAC
-on `watchrules` already answers who may write. This rule asks whether the folder still means what it
-claims — a correctness question about the bytes, untouched by that argument and homeless after it.
+This is deliberately **not** the job the deleted `GitTarget.spec.allowedSourceNamespaces` did, and it
+never depended on that field. That was an authorization fence, deleted because the chain from a
+folder back to the object that fills it never leaves one namespace, so RBAC on `watchrules` already
+answers who may write. This rule asks whether the folder still means what it claims — a correctness
+question about the bytes, untouched by that argument and homeless after it.
 
 **`fails` needs a subject, and it is both.** Refusing only the write leaves a target that refuses
 forever with no obvious fix; refusing the second `WatchRule` at admission is atomic feedback at the
@@ -306,7 +307,7 @@ said, and then required an admission rule to keep the two in agreement.
 ## What this deletes
 
 `spec.layout` and its discriminator, `kind`, `type`, the `Auto`/`Kustomize`/`Tree`/`Flat`/`Template`
-values, `layout.scope` and the admission rule keeping it in agreement with `allowedSourceNamespaces`,
+values, `layout.scope` and the admission rule keeping it in agreement with the source-namespace policy,
 `kustomize.create`, and with them four findings of the maintainer review (L3, L4, L5, L8) — not
 renamed, gone. The `LayoutProfile` question goes too: without a `layout` block the only thing left to
 share is the `byType` map, and whatever generates thirty GitTargets repeats two booleans for free.

@@ -37,7 +37,7 @@ Three things, in order of how often they get argued backwards:
   property, and it is worth less than the install cost of a webhook: cert wiring in the chart,
   a failure mode that can block tenant writes, and an extra moving part in every install path.
 
-The worked example is `ClusterProvider.spec.allowedNamespaces`. An earlier design proposed
+The worked example is `ClusterProvider.spec.accessFrom`. An earlier design proposed
 enforcing it "in two places", one of them a webhook. What shipped enforces it in **one**, on
 every reconcile, before `DeclareForGitTarget`
 ([`gittarget_controller.go:311`](../../internal/controller/gittarget_controller.go#L311),

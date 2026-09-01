@@ -9,6 +9,8 @@ spec:
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
   path: {{ .Path }}
+  commit:
+    window: "0s"
 {{- if .PruneMode }}
   prune:
     mode: {{ .PruneMode }}

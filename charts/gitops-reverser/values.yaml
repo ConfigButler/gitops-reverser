@@ -276,7 +276,7 @@ clusterProvider:
     # in the CONTROL cluster (names OR selector), not a filter on the source cluster. The chart
     # default is an empty selector, which matches EVERY namespace, so a single-cluster install works
     # out of the box; tighten it to a names list or a label selector in a real install.
-    allowedNamespaces:
+    accessFrom:
       selector: {}
 
 # RBAC configuration

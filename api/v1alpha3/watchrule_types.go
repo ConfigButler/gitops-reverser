@@ -125,23 +125,31 @@ type ResourceRule struct {
 	// Every item's outcome is aggregated into the ONE SourceNamespaceAuthorized condition, so
 	// automation has a single condition to inspect. A denied explicit name refuses the whole
 	// WatchRule rather than silently trimming that item: mirroring two of the three namespaces a
-	// rule asked for is worse than a loud failure. A "*" that currently admits nothing is not a
-	// refusal — it is valid, starts no stream, and says so as NoAdmittedSourceNamespaces, because a
-	// rule that mirrors nothing while reporting Ready with no explanation is a silent no-op.
+	// rule asked for is worse than a loud failure.
 	//
-	// Cost: a "*" item opens one watch stream per (matched type × admitted namespace) and one
-	// resync scope each, rather than one cluster-wide stream. That is deliberate — it keeps every
-	// replay scoped to a single namespace — but it is a real fan-out on a broad policy.
+	// "*" used to mean "every namespace the GitTarget's allowedSourceNamespaces admits", resolved
+	// live into a concrete set and planned as one stream PER NAMESPACE. It was therefore defined in
+	// terms of a field that no longer exists, and RBAC cannot supply the missing definition: it
+	// answers "may I watch X in namespace Y", never "which namespaces may I watch". Any set-valued
+	// reading needs a Namespace LIST in the source cluster, which is exactly the read the deletion
+	// removed. So "*" is now one cluster-wide list and one cluster-wide watch, all or nothing,
+	// which is what a Kubernetes reader expects it to mean and whose failure is a clean 403 rather
+	// than a silent empty set.
+	//
+	// A cluster-wide cell is a PEER of a named-namespace cell on the same type, never a
+	// replacement: each rule carries its own operations filter, and collapsing the two once widened
+	// a named rule's stream to every namespace its credential could read while discarding that
+	// filter (see CellKey in internal/types/cell.go). A target carrying both "*" and a named rule
+	// for one type therefore runs two streams over overlapping objects, and that is correct.
 
 	// SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
 	// mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
-	// "*" for every namespace the GitTarget's spec.allowedSourceNamespaces currently admits.
+	// "*" for every namespace the source credential can read.
 	//
-	// "*" never means "every namespace that exists" — it expands to exactly what that policy
-	// admits, so a target declaring no policy denies it. Naming any namespace other than this
-	// rule's own, "*" included, additionally requires the GitTarget's ClusterProvider to admit the
-	// target's namespace AND to set spec.allowSourceNamespaceOverride. Once the GitTarget declares
-	// a policy it is exhaustive, so even an omitted sourceNamespace is checked against it.
+	// "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
+	// is the credential's own RBAC and nothing else. Naming any namespace other than this rule's
+	// own, "*" included, requires the GitTarget's ClusterProvider to admit the target's namespace
+	// AND to set spec.allowAnySourceNamespace; while that flag is false, "*" is refused outright.
 	//
 	// This changes only which namespace is WATCHED, never where objects are written: Git placement
 	// follows each mirrored object's own namespace.
@@ -152,14 +160,19 @@ type ResourceRule struct {
 }
 
 // SourceNamespaceWildcard is the literal rules[].sourceNamespace token meaning "every source
-// namespace this rule's GitTarget admits" — resolved live through
-// GitTarget.spec.allowedSourceNamespaces, never "every namespace that exists".
+// namespace the GitTarget's credential can read", compiled to ONE cluster-wide list and watch.
+//
+// It kept its spelling and changed its meaning: it used to resolve live through
+// GitTarget.spec.allowedSourceNamespaces into a concrete set. That field is gone, so the token is
+// bounded by source-cluster RBAC alone and is refused while the ClusterProvider does not set
+// spec.allowAnySourceNamespace. See docs/design/source-scope-simplification.md, which is the
+// definition of record.
 const SourceNamespaceWildcard = "*"
 
 // EffectiveSourceNamespace is the source-cluster namespace this ITEM names, given the namespace of
 // the WatchRule that carries it: spec.rules[].sourceNamespace when set, and the rule's OWN
-// namespace otherwise. For a wildcard item it returns "*" — the caller must expand that through
-// the GitTarget's policy rather than treat it as a namespace name.
+// namespace otherwise. For a wildcard item it returns "*", which is not a namespace name: the
+// caller compiles it to the cluster-wide cell (the empty namespace) rather than watching it.
 //
 // It is controller logic rather than an API-server default because an apiserver default cannot
 // refer to metadata.namespace.
@@ -170,7 +183,8 @@ func (r *ResourceRule) EffectiveSourceNamespace(ruleNamespace string) string {
 	return ruleNamespace
 }
 
-// IsSourceNamespaceWildcard reports whether this item asks to follow its GitTarget's admitted set.
+// IsSourceNamespaceWildcard reports whether this item asks for every namespace its credential can
+// read, as one cluster-wide stream.
 func (r *ResourceRule) IsSourceNamespaceWildcard() bool {
 	return r.SourceNamespace == SourceNamespaceWildcard
 }
@@ -178,8 +192,7 @@ func (r *ResourceRule) IsSourceNamespaceWildcard() bool {
 // OverridesSourceNamespace reports whether this item asks for a source namespace OTHER than the
 // WatchRule's own — the case that needs the ClusterProvider's delegation flag. A sourceNamespace
 // that merely restates the rule's own namespace is not an override and stays the legacy case; "*"
-// always is one, even against a policy that happens to list only that namespace, because a later
-// policy edit would otherwise widen the watch with no platform-admin opt-in.
+// always is one, since it reaches every namespace the credential can read.
 func (r *ResourceRule) OverridesSourceNamespace(ruleNamespace string) bool {
 	return r.IsSourceNamespaceWildcard() || r.EffectiveSourceNamespace(ruleNamespace) != ruleNamespace
 }

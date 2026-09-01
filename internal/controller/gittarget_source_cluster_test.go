@@ -118,7 +118,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 	provider := func(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.ClusterProvider {
 		return &configbutleraiv1alpha3.ClusterProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1"},
-			Spec:       configbutleraiv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
+			Spec:       configbutleraiv1alpha3.ClusterProviderSpec{AccessFrom: policy},
 		}
 	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{"tier": "trusted"}}}
@@ -171,7 +171,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		{
 			// A selector the API accepted but that cannot compile must FAIL CLOSED. Treating an
 			// unevaluatable policy as "allow" would hand a namespace access it was never granted.
-			name: "invalid allowedNamespaces selector -> refused, not allowed",
+			name: "invalid accessFrom selector -> refused, not allowed",
 			objects: []client.Object{
 				provider(&configbutleraiv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{
@@ -231,7 +231,7 @@ func TestCheckSourceAuthorization_ReadErrorsRequeue(t *testing.T) {
 	provider := &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1"},
 		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}},
+			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}},
 		},
 	}
 
@@ -324,7 +324,7 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	provider := &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: providerName},
 		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}},
+			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}},
 		},
 	}
 	gitProvider := &configbutleraiv1alpha3.GitProvider{

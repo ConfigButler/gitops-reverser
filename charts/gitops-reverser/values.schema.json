@@ -341,7 +341,7 @@
                 }
               }
             },
-            "allowedNamespaces": {
+            "accessFrom": {
               "type": "object",
               "description": "Deny-by-default control-cluster namespace policy (names and/or selector) for which namespaces may reference this provider from a GitTarget.",
               "additionalProperties": true

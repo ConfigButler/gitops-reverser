@@ -44,7 +44,7 @@ func targetIn(providerName string) *configv1alpha3.GitTarget {
 func providerNamed(name string, policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       configv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
+		Spec:       configv1alpha3.ClusterProviderSpec{AccessFrom: policy},
 	}
 }
 
@@ -90,7 +90,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			wantAllowed: true,
 		},
 		{
-			name: "nil allowedNamespaces denies by default",
+			name: "nil accessFrom denies by default",
 			objects: []client.Object{
 				providerNamed("prod-eu-1", nil),
 				namespaceLabeled(nil),
@@ -192,7 +192,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: false,
 			wantReason:  ReasonNamespaceNotAuthorized,
-			wantMessage: "allowedNamespaces selector is invalid",
+			wantMessage: "accessFrom selector is invalid",
 		},
 		{
 			// A missing Namespace object is not an error: `names` is evaluated against the NAME,

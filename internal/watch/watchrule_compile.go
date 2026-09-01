@@ -14,27 +14,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
-// SourceScopeService is the source-scope service as its consumers need it: the policy resolution
-// and enumeration authz calls, plus the per-rule resolved-scope memory that separates ESTABLISHING
-// a grant from MAINTAINING one. *Manager implements it; a nil value is legitimate and means "not
-// wired yet" (a zero-value manager in tests, or a controller running before the data plane is up),
-// which degrades to name-only policy evaluation rather than to a denial.
-type SourceScopeService interface {
-	authz.SourceNamespaceResolver
-
-	// RetainedSourceScope reports the resolved scope last granted to a rule FOR A GIVEN SPEC, and
-	// whether any grant was ever established for that spec.
-	//
-	// It is keyed by the rule's spec hash rather than by item index on purpose: retention applies
-	// only while the spec is unchanged, so an edit discards the memory and re-establishes from
-	// scratch, and a reorder can never let one item inherit another item's grant.
-	RetainedSourceScope(rule k8stypes.NamespacedName, specHash string) ([][]string, bool)
-	// RecordSourceScopeGrant remembers a successful whole-rule resolution.
-	RecordSourceScopeGrant(rule k8stypes.NamespacedName, specHash string, namespaces [][]string)
-	// ForgetSourceScopeGrant drops a rule's resolved scope on a refusal or a deletion.
-	ForgetSourceScopeGrant(rule k8stypes.NamespacedName)
-}
-
 // CompileWatchRule is THE ONLY PATH from a WatchRule to a compiled rule. It resolves the whole
 // per-item source-namespace scope first and compiles only on an admitted verdict.
 //
@@ -46,19 +25,21 @@ type SourceScopeService interface {
 // watching. Routing compilation through here closes that by construction rather than by
 // discipline: there is no second place that can call AddOrUpdateWatchRule for a WatchRule.
 //
-// Its three outcomes map onto the three things the caller must do:
+// Its two outcomes map onto the two things the caller must do:
 //
-//   - ADMITTED — the rule is compiled with every item expanded to concrete namespaces, and the
-//     resolved scope is recorded. The caller publishes SourceNamespaceAuthorized=True.
-//   - TERMINAL (any item denied, or a permanently unevaluatable policy with no scope ever resolved
-//     for this spec) — any previously compiled rule is REMOVED here, before the caller publishes
-//     anything. A gate that only writes a condition is not a gate; the caller must still replan the
-//     watch manager and then publish the Failed trio, in that order.
-//   - CANNOT SAY YET (retryable), or a rule MAINTAINING an already-resolved scope through an
-//     unevaluatable policy — nothing is compiled and nothing is removed. The caller leaves status
-//     InProgress and retries. Never narrow to the empty set here: a narrowed set is the input to a
-//     sweep, so failing closed while maintaining would delete a tenant's Git content over a
-//     transient outage.
+//   - ADMITTED — the rule is compiled with every item resolved to its source-namespace set. The
+//     caller publishes SourceNamespaceAuthorized=True.
+//   - DENIED — any previously compiled rule is REMOVED here, before the caller publishes anything.
+//     A gate that only writes a condition is not a gate; the caller must still replan the watch
+//     manager and then publish the Failed trio, in that order.
+//
+// There is no third "cannot say yet" outcome, and there used to be. It existed because the gate's
+// selector half read Namespace labels in ANOTHER cluster, which could be syncing, unreachable or
+// Forbidden, and a rule with an already-resolved scope had to RETAIN it through such a gap rather
+// than narrow to the empty set (a narrowed set is the input to a sweep, so failing closed there
+// would have deleted a tenant's Git content over an outage). Every input is now a control-plane
+// object this reconcile already read, so there is nothing left to retain a scope through, and the
+// per-rule grant memory that existed only to serve that retention is gone with it.
 //
 // Bootstrap cannot publish status (it runs before controllers start), so a rule denied there is
 // simply not compiled and the first reconcile writes the terminal condition. That ordering — fail
@@ -67,15 +48,13 @@ func CompileWatchRule(
 	ctx context.Context,
 	reader client.Reader,
 	store *rulestore.RuleStore,
-	scope SourceScopeService,
 	rule configv1alpha3.WatchRule,
 	target configv1alpha3.GitTarget,
 	provider configv1alpha3.GitProvider,
 ) (authz.ResolvedSourceScope, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace}
-	specHash := SourceScopeSpecHash(&rule)
 
-	resolved, err := authz.ResolveWatchRuleSourceScope(ctx, reader, &rule, &target, resolverOf(scope))
+	resolved, err := authz.ResolveWatchRuleSourceScope(ctx, reader, &rule, &target)
 	if err != nil {
 		// Transient: leave whatever is compiled alone and let the caller requeue. Tearing down a
 		// running stream because the apiserver blipped is the failure this avoids.
@@ -83,36 +62,19 @@ func CompileWatchRule(
 	}
 
 	if resolved.Admitted() {
-		namespaces := itemNamespaces(resolved)
 		store.AddOrUpdateWatchRule(
 			rule,
-			namespaces,
+			itemNamespaces(resolved),
 			target.Name, target.Namespace,
 			provider.Name, provider.Namespace,
 			target.Spec.Branch,
 			target.Spec.Path,
 		)
-		if scope != nil {
-			scope.RecordSourceScopeGrant(key, specHash, namespaces)
-		}
 		return resolved, nil
 	}
 
-	// An unevaluatable policy on a rule that ALREADY has a resolved scope FOR THIS SPEC is the
-	// maintaining case: retain it. The rule keeps running on its last known-good grant and the
-	// caller reports Unknown, not Failed — "cannot re-read the policy" is not "the policy says no".
-	if resolved.Verdict == authz.SourceScopeUnavailable && retainsScope(scope, key, specHash) {
-		resolved.Verdict = authz.SourceScopeUnknown
-		return resolved, nil
-	}
-
-	if resolved.Terminal() {
-		// Stop the data plane before the caller says anything about it.
-		store.Delete(key)
-		if scope != nil {
-			scope.ForgetSourceScopeGrant(key)
-		}
-	}
+	// Stop the data plane before the caller says anything about it.
+	store.Delete(key)
 	return resolved, nil
 }
 
@@ -123,26 +85,6 @@ func itemNamespaces(resolved authz.ResolvedSourceScope) [][]string {
 		out = append(out, item.Namespaces)
 	}
 	return out
-}
-
-// retainsScope reports whether a rule already holds a resolved grant for THIS spec. It is
-// deliberately spec-specific: a rule whose items changed is establishing a new scope, not
-// maintaining its old one, so a stale grant must not let an unevaluatable policy through.
-func retainsScope(scope SourceScopeService, rule k8stypes.NamespacedName, specHash string) bool {
-	if scope == nil {
-		return false
-	}
-	_, ok := scope.RetainedSourceScope(rule, specHash)
-	return ok
-}
-
-// resolverOf adapts a possibly-nil service to the resolver authz takes, preserving the nil so
-// authz's own "no source-scope service is wired" path (which answers Unknown, never Denied) runs.
-func resolverOf(scope SourceScopeService) authz.SourceNamespaceResolver {
-	if scope == nil {
-		return nil
-	}
-	return scope
 }
 
 // CompileClusterWatchRule is THE ONLY PATH from a ClusterWatchRule to a compiled cluster rule, and
@@ -207,7 +149,7 @@ func CompileClusterWatchRule(
 const (
 	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
 	// referenced GitTarget's namespace is not admitted by that target's ClusterProvider — either
-	// because spec.allowedNamespaces excludes it or because the provider does not exist at all.
+	// because spec.accessFrom excludes it or because the provider does not exist at all.
 	//
 	// One rule-side reason covers both provider-side causes on purpose: from the ClusterWatchRule's
 	// point of view the single fact that matters is that this rule may not compile against this

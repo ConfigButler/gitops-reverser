@@ -260,7 +260,7 @@ kubectl describe gitprovider,gittarget,watchrule -n gitops-reverser-quickstart-d
 ```
 
 Two `GitTarget` conditions stop the data plane and are worth recognizing: `ClusterProviderNotFound`
-(the `default` `ClusterProvider` is missing) and `NamespaceNotAuthorized` (its `allowedNamespaces`
+(the `default` `ClusterProvider` is missing) and `NamespaceNotAuthorized` (its `accessFrom`
 selector does not cover the demo namespace).
 
 To tear the demo down: `helm uninstall gitops-reverser -n gitops-reverser` and

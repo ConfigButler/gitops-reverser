@@ -359,6 +359,8 @@ spec:
     name: %s
   branch: main
   path: %s
+  commit:
+    window: "0s"
 %s
 `, name, namespace, providerName, targetPath, pruneBlock)
 	out, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")

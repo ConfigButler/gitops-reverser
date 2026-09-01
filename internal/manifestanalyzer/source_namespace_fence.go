@@ -34,8 +34,10 @@ const IssueMultipleSourceNamespaces IssueKind = "multiple-source-namespaces"
 // unset exists for, so the refusal costs that user nothing beyond the setting that was already
 // correct for them.
 //
-// wildcard says a rule names "*". It is refused without enumerating anything, because neither
-// reading of "*" can be proven to be one namespace from the spec alone.
+// wildcard says a rule names "*". It is refused without enumerating anything: "*" is one
+// cluster-wide watch, which cannot be shown to be one namespace from the spec alone. It was equally
+// unprovable when "*" enumerated a GitTarget policy's admitted set, which is the property that let
+// this survive that redefinition unchanged.
 //
 // It returns no issue for a target that is not fenced, so a caller can raise it unconditionally.
 func MultipleSourceNamespacesRefusal(
@@ -71,6 +73,11 @@ func MultipleSourceNamespacesRefusal(
 // duplicated from api/v1alpha3 rather than imported, because this package is deliberately free of
 // any Kubernetes API type dependency; the value is part of the CRD's user-facing contract and
 // changing it would be a breaking API change either way.
+//
+// The SPELLING is what is duplicated, and only the spelling. Its meaning has changed once already
+// (from "every namespace the GitTarget admits" to "every namespace the credential can read") with
+// no edit here, because everything this package does with it is refuse to guess how many namespaces
+// it stands for.
 const SourceNamespaceWildcard = "*"
 
 // IssueUnrenderedPlacement marks a new document a kustomize folder would hold but never render:

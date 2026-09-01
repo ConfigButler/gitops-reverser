@@ -66,25 +66,12 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Fetch the WatchRule instance
 	var watchRule configbutleraiv1alpha3.WatchRule
-	//nolint:nestif // Deletion handling requires nested error checks
 	if err := r.Get(ctx, req.NamespacedName, &watchRule); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("WatchRule not found, was likely deleted", "namespacedName", req.NamespacedName)
 			// Resource was deleted. Remove it from the store.
 			r.RuleStore.Delete(req.NamespacedName)
 			log.Info("WatchRule deleted, removed from store", "name", req.Name, "namespace", req.Namespace)
-
-			// Drop the retained source-scope grant with it. The grant is what tells the gate a rule
-			// is MAINTAINING an already-resolved scope rather than ESTABLISHING one, and a rule that
-			// no longer exists is neither. Left behind, it is inherited by the next rule created
-			// under the same name and spec — a name a different tenant may now own — and an
-			// unevaluatable policy then reads as "retaining a known-good scope" instead of "no
-			// scope was ever established". The rule sits Unknown and Reconciling indefinitely
-			// rather than publishing the terminal, actionable refusal that tells its owner the
-			// policy cannot be evaluated. A recreated rule must establish from scratch.
-			if scope := r.sourceScope(); scope != nil {
-				scope.ForgetSourceScopeGrant(req.NamespacedName)
-			}
 
 			// The rule is gone, so the GitTarget it named cannot be read off it. Mark them all;
 			// each one's pass is a cheap diff against a plan that has not moved.
@@ -125,7 +112,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st.set(
 		ConditionTypeSourceNamespaceAuthorized,
 		metav1.ConditionUnknown,
-		WatchRuleReasonCheckingSourceNamespacePolicy,
+		ReasonProgressing,
 		"Blocked by validation; source namespace not evaluated",
 	)
 
@@ -308,7 +295,7 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		// React to a ClusterProvider's allowWatchRuleSourceNamespaceOverride (or allowedNamespaces)
+		// React to a ClusterProvider's allowAnySourceNamespace (or accessFrom)
 		// changing. The GitTarget->WatchRules edge above CANNOT carry this: a ClusterProvider change
 		// reaches the GitTarget as a STATUS update, which GenerationChangedPredicate deliberately
 		// drops. Without this mapper, flipping the delegation flag would leave every affected
@@ -320,18 +307,7 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Named("watchrule")
 
-	// React to a SOURCE-cluster Namespace label change, which grants or revokes any rule whose
-	// GitTarget admits by selector. Those labels live in a cluster this controller has no client
-	// for, so the watch manager observes them and pushes the affected GitTargets here; the
-	// gitTargetToWatchRules mapper fans them out to the rules. See
-	// internal/watch/source_namespace_scope.go.
 	if r.WatchManager != nil {
-		if events := r.WatchManager.SourceNamespaceEvents(); events != nil {
-			b = b.WatchesRawSource(source.Channel(
-				events,
-				handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
-			))
-		}
 		// React to a stream of this rule's GitTarget reaching or leaving Streaming. Without it a
 		// rule whose streams came up two seconds ago keeps publishing StreamsRunning=False until
 		// its 10s settle requeue, because nothing tells it otherwise.

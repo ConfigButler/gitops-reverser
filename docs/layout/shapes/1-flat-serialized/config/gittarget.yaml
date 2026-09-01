@@ -10,13 +10,9 @@ spec:
     name: prod
   branch: main
   path: mirror/prod
-  # The WatchRule beside this file names source namespaces other than its own, so
-  # the folder owner must say which ones may arrive here. Without it the rule is
-  # refused (SourceNamespaceAuthorized=False) — the deny-by-default posture.
-  # NOTE: the wave in docs/design/source-scope-simplification.md DELETES this field;
-  # afterwards the ClusterProvider's allowAnySourceNamespace is the only grant needed.
-  allowedSourceNamespaces:
-    names: [shop, billing]
+  # The WatchRule beside this file names source namespaces other than its own. The
+  # ClusterProvider's allowAnySourceNamespace is the only grant that needs, and the
+  # source credential's RBAC bounds what it can actually read.
   # Flat is a DECLARED shape. Without a template the built-in ladder ends at the
   # canonical identity path, which is a tree. One file per object, directly in the
   # folder, is what this template says.

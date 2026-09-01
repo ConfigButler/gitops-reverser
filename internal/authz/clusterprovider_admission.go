@@ -3,7 +3,7 @@
 // Package authz holds the ClusterProvider namespace-admission decision.
 //
 // A ClusterProvider is cluster-scoped and holds a credential that can read a lot of a source
-// cluster; its spec.allowedNamespaces is that provider's explicit, deny-by-default admission of
+// cluster; its spec.accessFrom is that provider's explicit, deny-by-default admission of
 // the GitTarget NAMESPACES permitted to mirror through it.
 //
 // The decision lives in its own package — outside both internal/controller and internal/watch —
@@ -34,7 +34,7 @@ const (
 	ReasonClusterProviderNotFound = "ClusterProviderNotFound"
 
 	// ReasonNamespaceNotAuthorized is the denial reason when the GitTarget's namespace is not
-	// admitted by its ClusterProvider's spec.allowedNamespaces — including the case where that
+	// admitted by its ClusterProvider's spec.accessFrom — including the case where that
 	// policy carries a selector the apiserver accepted but that does not convert to a selector.
 	ReasonNamespaceNotAuthorized = "NamespaceNotAuthorized"
 )
@@ -99,14 +99,14 @@ func GitTargetAdmitted(
 		return Decision{
 			Reason: ReasonNamespaceNotAuthorized,
 			Message: fmt.Sprintf(
-				"ClusterProvider %q allowedNamespaces selector is invalid: %v", providerName, selErr),
+				"ClusterProvider %q accessFrom selector is invalid: %v", providerName, selErr),
 		}, nil
 	}
 	if !allowed {
 		return Decision{
 			Reason: ReasonNamespaceNotAuthorized,
 			Message: fmt.Sprintf(
-				"namespace %q is not permitted to reference ClusterProvider %q (spec.allowedNamespaces)",
+				"namespace %q is not permitted to reference ClusterProvider %q (spec.accessFrom)",
 				target.Namespace, providerName),
 		}, nil
 	}

@@ -171,10 +171,10 @@ type ClusterWatchRuleStatus struct {
 
 // Design rationale, kept out of the generated CRD description by the blank line below.
 //
-// Cluster-scoped objects have no namespace, so GitTarget.spec.allowedSourceNamespaces is neither
-// consulted nor a bound for them: a ClusterWatchRule is intentionally cluster-global and is limited
-// only by its source credential's Kubernetes RBAC. Isolating cluster-scoped objects between tenants
-// therefore takes separate credentials/ClusterProviders, not a namespace allow-list.
+// Cluster-scoped objects have no namespace, so no namespace policy is a bound for them: a
+// ClusterWatchRule is intentionally cluster-global and is limited only by its source credential's
+// Kubernetes RBAC. Isolating cluster-scoped objects between tenants therefore takes separate
+// credentials/ClusterProviders.
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -194,7 +194,7 @@ type ClusterWatchRuleStatus struct {
 // It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
 // (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
 // mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
-// spec.rules[].sourceNamespace, whose "*" reaches every namespace the GitTarget admits.
+// spec.rules[].sourceNamespace, whose "*" reaches every namespace the source credential can read.
 type ClusterWatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 

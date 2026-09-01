@@ -215,20 +215,6 @@ type Manager struct {
 	// streamStateSubscribers are the channels StreamStateEvents has handed out, one per consumer.
 	// Guarded by gitPathEventsMu, which already guards the sibling channel above.
 	streamStateSubscribers []chan event.GenericEvent
-
-	// sourceNamespaceScope is the source-scope service: the per-source-cluster Namespace label
-	// snapshot that GitTarget.allowedSourceNamespaces selectors are evaluated against, plus the
-	// per-rule resolved scopes the establishing/maintaining contract turns on. See
-	// source_namespace_scope.go. Lazily built so a zero-value Manager works in tests.
-	sourceScopeInit      sync.Once
-	sourceNamespaceScope *sourceNamespaceScope
-
-	// sourceNamespaceEventsCh carries a GenericEvent for every GitTarget on a source cluster whose
-	// Namespace labels changed, so a selector-driven grant or revocation reaches the WatchRule
-	// controller on the change instead of waiting up to RequeueSteadyInterval (5m). Lazily created
-	// by SourceNamespaceEvents() and guarded by sourceNamespaceEventsMu.
-	sourceNamespaceEventsMu sync.Mutex
-	sourceNamespaceEventsCh chan event.GenericEvent
 }
 
 // GitPathAcceptanceStatus is the whole-target write-safety status for a GitTarget path.

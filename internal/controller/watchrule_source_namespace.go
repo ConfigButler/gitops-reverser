@@ -16,41 +16,35 @@ import (
 
 // SourceNamespaceAuthorized condition reasons, re-exported from internal/authz so the decision and
 // the status surface can never drift apart.
+//
+// Three of the six went with the source-side selector: the condition can no longer be Unknown,
+// because the gate reads only control-plane objects this reconcile already has, and it can no
+// longer report an empty resolved scope, because "*" is one cluster-wide stream rather than a set
+// that could come back empty.
 const (
 	// WatchRuleReasonLegacySourceNamespace is the True reason when every item watches the rule's
-	// own namespace against a GitTarget that declares no allowedSourceNamespaces policy.
+	// own namespace.
 	WatchRuleReasonLegacySourceNamespace = authz.ReasonLegacySourceNamespace
 	// WatchRuleReasonSourceNamespaceAllowed is the True reason when every item is admitted and at
-	// least one names a namespace other than the rule's own — an authorized override or wildcard,
-	// or an own-namespace item a declared policy explicitly lists.
+	// least one names a namespace other than the rule's own — an authorized override or the
+	// cluster-wide wildcard.
 	WatchRuleReasonSourceNamespaceAllowed = authz.ReasonSourceNamespaceAllowed
-	// WatchRuleReasonNoAdmittedSourceNamespaces is the True reason when every item is admitted but
-	// the resolved scope is EMPTY. Not stalled — but not silently healthy either.
-	WatchRuleReasonNoAdmittedSourceNamespaces = authz.ReasonNoAdmittedSourceNamespaces
 	// WatchRuleReasonSourceNamespaceNotAllowed is the TERMINAL False reason for a refusal.
 	WatchRuleReasonSourceNamespaceNotAllowed = authz.ReasonSourceNamespaceNotAllowed
-	// WatchRuleReasonSourceNamespacePolicyUnavailable is the reason for a selector policy that
-	// cannot be evaluated as written. It is False/Stalled while ESTABLISHING and Unknown while
-	// MAINTAINING an already-resolved scope — same reason, different claim about the rule.
-	WatchRuleReasonSourceNamespacePolicyUnavailable = authz.ReasonSourceNamespacePolicyUnavailable
-	// WatchRuleReasonCheckingSourceNamespacePolicy is the Unknown reason while the answer is still
-	// being established or a retryable source-cluster error is being retried.
-	WatchRuleReasonCheckingSourceNamespacePolicy = authz.ReasonCheckingSourceNamespacePolicy
 )
 
 // gateSourceNamespace is the WatchRule source-namespace gate and the ONE place this controller
 // compiles a rule. It runs after the GitTarget and GitProvider are resolved and instead of a bare
 // AddOrUpdateWatchRule, so there is no ungated path from a WatchRule to a compiled rule.
 //
-// The gate is cross-object (WatchRule → GitTarget → ClusterProvider) and its selector half needs
-// source-cluster state, so it is not expressible in CEL and is a reconciler check rather than a
-// webhook, per docs/spec/where-validation-lives.md — the same shape and ordering as
-// checkSourceAuthorization. Running it on every reconcile is what makes a policy TIGHTENED after a
-// rule was accepted revoke that rule.
+// The gate is cross-object (WatchRule → GitTarget → ClusterProvider), so it is not expressible in
+// CEL and is a reconciler check rather than a webhook, per docs/spec/where-validation-lives.md —
+// the same shape and ordering as checkSourceAuthorization. Running it on every reconcile is what
+// makes a delegation WITHDRAWN after a rule was accepted revoke that rule.
 //
-// Every item is resolved, and the aggregate is published as one condition per the status contract's
-// reason precedence. A DENIED explicit item refuses the whole rule rather than being trimmed away:
-// mirroring two of the three namespaces a rule asked for is worse than a loud failure.
+// Every item is resolved, and the aggregate is published as one condition. A DENIED item refuses
+// the whole rule rather than being trimmed away: mirroring two of the three namespaces a rule asked
+// for is worse than a loud failure.
 //
 // It returns handled=false when the rule compiled and the reconcile should continue; handled=true
 // means the reconcile is over and the caller must return the accompanying result and error
@@ -63,8 +57,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 	provider configbutleraiv1alpha3.GitProvider,
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
-	resolved, err := watch.CompileWatchRule(
-		ctx, r.Client, r.RuleStore, r.sourceScope(), *watchRule, target, provider)
+	resolved, err := watch.CompileWatchRule(ctx, r.Client, r.RuleStore, *watchRule, target, provider)
 	if err != nil {
 		// A transient apiserver failure must NOT tear down a running stream: CompileWatchRule left
 		// the compiled rule in place, so requeue with the error and re-run the gate on real data.
@@ -73,8 +66,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 		return true, ctrl.Result{}, err
 	}
 
-	switch {
-	case resolved.Admitted():
+	if resolved.Admitted() {
 		st.set(
 			ConditionTypeSourceNamespaceAuthorized,
 			metav1.ConditionTrue,
@@ -82,19 +74,10 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 			resolved.Message,
 		)
 		return false, ctrl.Result{}, nil
-
-	case resolved.Terminal():
-		result, refuseErr := r.refuseSourceNamespace(ctx, st, watchRule, resolved, log)
-		return true, result, refuseErr
-
-	default:
-		// Cannot say yet — the cache is syncing, a retryable source error is being retried, or a
-		// rule with an already-resolved scope is retaining it through an unevaluatable policy. In
-		// every case this is PROGRESSING, not failed: turning a temporary connection problem into
-		// a terminal Stalled=True would stop a stream over an outage nobody chose.
-		result, updateErr := r.holdSourceNamespaceUnknown(ctx, st, watchRule, resolved)
-		return true, result, updateErr
 	}
+
+	result, refuseErr := r.refuseSourceNamespace(ctx, st, watchRule, resolved, log)
+	return true, result, refuseErr
 }
 
 // refuseSourceNamespace is the denial half of the gate.
@@ -105,9 +88,8 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 // asserts the terminal condition must also be able to assert the rule is already gone.
 //
 // The refusal is terminal (Stalled=True, Reconciling=False) rather than a retry: nothing this
-// controller does will change the verdict. Recovery arrives as an EVENT — a ClusterProvider flag
-// or policy change, a GitTarget policy edit, or a source-cluster Namespace label change — through
-// the mappers and channel registered in SetupWithManager.
+// controller does will change the verdict. Recovery arrives as an EVENT — a ClusterProvider flag or
+// accessFrom change — through the mappers registered in SetupWithManager.
 func (r *WatchRuleReconciler) refuseSourceNamespace(
 	ctx context.Context,
 	st *reconcileStatus,
@@ -141,50 +123,4 @@ func (r *WatchRuleReconciler) refuseSourceNamespace(
 	)
 
 	return r.stallRule(ctx, st, resolved.Reason, resolved.Message)
-}
-
-// holdSourceNamespaceUnknown publishes the "cannot say yet" state: SourceNamespaceAuthorized is
-// Unknown and the rule is Reconciling, never Stalled.
-//
-// Nothing is compiled and nothing is removed. A rule still ESTABLISHING a grant runs nothing; a
-// rule MAINTAINING an already-resolved scope keeps both its compiled rule and its streams and only
-// moves this condition. Neither may narrow to the empty set — a narrowed set is the input to a
-// resync sweep, so failing closed here would delete a tenant's Git content over a transient
-// outage.
-func (r *WatchRuleReconciler) holdSourceNamespaceUnknown(
-	ctx context.Context,
-	st *reconcileStatus,
-	watchRule *configbutleraiv1alpha3.WatchRule,
-	resolved authz.ResolvedSourceScope,
-) (ctrl.Result, error) {
-	st.set(
-		ConditionTypeSourceNamespaceAuthorized,
-		metav1.ConditionUnknown,
-		resolved.Reason,
-		resolved.Message,
-	)
-	st.set(
-		ConditionTypeStreamsRunning,
-		metav1.ConditionUnknown,
-		resolved.Reason,
-		"Streams not re-evaluated while source-namespace authorization is unsettled",
-	)
-
-	// Progressing, never stalled — and on the fast settle cadence, because the answer usually
-	// arrives with the next source-cluster refresh and the enqueue edge may not fire when nothing
-	// observably changed. requeueFor gives that cadence to any non-converged verdict.
-	rd := ruleReadiness(watchRule.Status.Conditions, "WatchRule",
-		"WatchRule source-namespace authorization is unsettled")
-	return r.commitRule(ctx, st, rd)
-}
-
-// sourceScope returns the source-scope service, or nil when the data plane is not wired. A nil
-// service degrades selector policies to "cannot say yet" and leaves exact-NAME policies fully
-// working — never a denial, which would refuse rules for a reason that has nothing to do with
-// their configuration.
-func (r *WatchRuleReconciler) sourceScope() watch.SourceScopeService {
-	if r.WatchManager == nil {
-		return nil
-	}
-	return r.WatchManager.SourceScope()
 }

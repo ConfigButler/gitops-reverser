@@ -62,8 +62,8 @@ func TestClusterProvider_AuditRoute_SharedBySeveralProviders(t *testing.T) {
 	delegating := ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "srcns-delegating"},
 		Spec: ClusterProviderSpec{
-			AllowSourceNamespaceOverride: true,
-			Attribution:                  &ClusterProviderAttribution{AuditRoute: "default"},
+			AllowAnySourceNamespace: true,
+			Attribution:             &ClusterProviderAttribution{AuditRoute: "default"},
 		},
 	}
 

@@ -19,7 +19,7 @@ Source and destination connections deliberately have different scopes. A namespa
 team's Git write boundary: its credential, branch policy, and targets usually belong together.
 `ClusterProvider` is cluster-scoped because it represents one shared **logical source identity** whose
 client, discovery surface, watch state, and attribution partition must remain consistent across
-namespaces. `allowedNamespaces` then explicitly controls which control-cluster namespaces may reference
+namespaces. `accessFrom` then explicitly controls which control-cluster namespaces may reference
 that shared source; it does not grant source-cluster RBAC or select source namespaces. The source identity
 is the `ClusterProvider` name alone, with no API-server identity probe: two providers configured for the same
 server deliberately remain separate source partitions.
@@ -236,25 +236,26 @@ namespace selection of its own. Both share the rule model:
 - `rules[].apiVersions`: omitted means the preferred served version.
 - `rules[].resources`: plural resource names or `*`.
 - `WatchRule` adds `rules[].sourceNamespace`: omitted for the rule's own namespace, an exact name, or
-  `*` for every namespace `GitTarget.spec.allowedSourceNamespaces` admits. Anything but the rule's own
-  namespace passes the source-namespace gate (`SourceNamespaceAuthorized`); the resolved set is
-  expanded to concrete names at compile time, so no wildcard reaches the data plane. A wildcard opens one
-  stream for each admitted namespace.
+  `*` for every namespace the source credential can read. Anything but the rule's own namespace passes
+  the source-namespace gate (`SourceNamespaceAuthorized`). A `*` compiles to ONE cluster-wide cell
+  (the empty namespace, which for a namespaced GVR is the all-namespaces collection), so it opens one
+  stream and one list per matched type however large the cluster is. That cell is a peer of any
+  named-namespace cell on the same type, never a replacement: each rule keeps its own operations
+  filter.
 - `ClusterWatchRule` has no scope or namespace choice. `rules[].scope` is deprecated, accepts only
   `Cluster`, and a stored `Namespaced` value is refused at compile time.
 
 Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
 `/scale` subresource effect is translated separately into a parent `spec.replicas` field patch.
 
-The two namespace policies intentionally live in different planes:
+The two namespace controls intentionally live in different planes:
 
-- `ClusterProvider.spec.allowedNamespaces` authorizes **control-cluster** namespaces to reference the
+- `ClusterProvider.spec.accessFrom` authorizes **control-cluster** namespaces to reference the
   provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
-- `GitTarget.spec.allowedSourceNamespaces` bounds what a target may mirror **from its source cluster**.
-  Exact names need no Namespace read; selector and `sourceNamespace: "*"` policies are evaluated from a
-  per-source-cluster Namespace-label snapshot. The source credential needs permission to list Namespaces
-  for that selector path; otherwise exact-name policies still work but selector policies are held
-  unevaluatable rather than widened or treated as empty.
+- `ClusterProvider.spec.allowAnySourceNamespace` delegates the CHOICE of source namespace to the
+  `GitTarget`s that provider admits. It grants nothing: what may actually be read from the source
+  cluster is bounded by that credential's own Kubernetes RBAC, which is the only bound there is. The
+  operator reads no `Namespace` objects in a source cluster for authorization.
 
 ### CommitRequest
 
@@ -358,7 +359,7 @@ Its cluster scope is intentional. Several namespaces may mirror through one prov
 source identity must not vary by target because it keys source clients, discovery, watches, and
 attribution. The identity is the provider name rather than a deduplicated physical-cluster identity, so
 two providers pointing at the same API server still have separate contexts and authorization boundaries.
-`spec.allowedNamespaces` is therefore a deny-by-default control-cluster policy, enforced on every
+`spec.accessFrom` is therefore a deny-by-default control-cluster policy, enforced on every
 reconcile before watches start, so tightening it also stops an already-existing `GitTarget`, which an
 admission-time check could not do. It guards which tenant may cause the operator to export a shared source;
 it does not expand that source credential's Kubernetes permissions. The `ClusterProvider` validates its
@@ -395,7 +396,6 @@ flowchart LR
     subgraph SOURCE["Source cluster selected by ClusterProvider\n(the control cluster when kubeConfig is omitted)"]
         WATCH["WATCH + sendInitialEvents replay<br/>(per claimed GVR + scope)"]
         DISC["Discovery: CRDs / APIServices"]
-        NS["Namespace labels\nfor allowedSourceNamespaces selectors"]
         AUDIT["/audit-webhook/&lt;provider&gt; (optional)"]
     end
 
@@ -581,9 +581,8 @@ that replay:
 3. then the watch streams live events.
 
 **This mark-and-sweep is load-bearing and fires only on watch re-establishment, never on a timer**:
-there is no periodic **object** LIST or hourly object-drift sweep. (A target using a
-selector-based `allowedSourceNamespaces` policy periodically lists only Namespace labels to maintain that
-authorization scope; it never uses that list to infer object state or sweep Git.) The sweep is the only
+there is no periodic **object** LIST or hourly object-drift sweep, and no periodic `Namespace` LIST
+in a source cluster either. The sweep is the only
 thing that reconciles a delete that happened while no watch was running, so it is what makes the watch safe
 to lose and restart. It is applied through the same per-type reconcile/writer machinery as live writes (see
 [Mark and Sweep Resync](#mark-and-sweep-resync)).

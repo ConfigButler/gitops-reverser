@@ -1,12 +1,13 @@
 # Required, because the WatchRule beside this file names source namespaces other
-# than its own. Two separate grants are needed and they are owned by different
-# people: the ClusterProvider (platform admin) delegates the ABILITY to choose a
-# source namespace, and the GitTarget (folder owner) says WHICH ones may arrive.
+# than its own. This is the ONE grant that permits that: the platform admin who
+# owns the ClusterProvider delegates the choice of source namespace to the
+# GitTargets it admits. What those targets can actually read is bounded by the
+# source credential's own RBAC.
 apiVersion: configbutler.ai/v1alpha3
 kind: ClusterProvider
 metadata:
   name: prod
 spec:
-  allowedNamespaces:
+  accessFrom:
     names: [homelab-config]
-  allowSourceNamespaceOverride: true
+  allowAnySourceNamespace: true

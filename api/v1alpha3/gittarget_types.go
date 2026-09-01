@@ -151,30 +151,34 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
-	// There is deliberately NO self-namespace exception. An implicit carve-out would mean the field
-	// does not actually bound what arrives here, so a reader auditing it would be wrong about the
-	// target's contents — which is the whole reason the field exists. The resulting authoring
-	// footgun (adding a policy for one override silently denies co-resident legacy rules) is
-	// mitigated by being LOUD: SourceNamespaceAuthorized=False, Stalled=True, and a message naming
-	// the exact fix. `selector: {}` is the replacement for the removed cluster-wide namespaced
-	// ClusterWatchRule — declared by the destination owner rather than the rule author, and
-	// self-updating as namespaces come and go. The exact-names half stays answerable without any
-	// source-cluster Namespace access; that degradation path is deliberate, and it is the half most
-	// likely to regress unnoticed.
-
-	// AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
-	// target. It belongs to the DESTINATION, not to any requesting rule: once declared it is
-	// exhaustive for every WatchRule that writes here, with no exception for a rule's own namespace.
+	// The field presented itself as a DESTINATION policy, and it could not be one. A WatchRule's
+	// targetRef is namespace-local, a GitTarget's providerRef is namespace-local, and spec.path is
+	// immutable, so the chain from a Git folder back to the object that fills it never leaves one
+	// namespace: whoever can create a WatchRule there could already write into that folder. What it
+	// actually bounded was which source namespaces the folder's own tenant may READ, which for a
+	// credential-scoped provider restates what the credential already carries, in the one place
+	// that cannot revoke it.
 	//
-	// Omitted and empty differ. Omitted declares no policy, and a WatchRule keeps its own namespace;
-	// a declared-but-empty policy admits nothing; `selector: {}` admits every source namespace.
-	// Selector labels are read in the SOURCE cluster, so evaluating one needs Namespace
-	// get/list/watch for that cluster's credential, while exact names need no such access. This is
-	// also what a rules[].sourceNamespace of "*" resolves through. Naming any namespace other than
-	// the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
-	// spec.allowSourceNamespaceOverride. It does NOT bound ClusterWatchRule, whose cluster-scoped
-	// objects have no namespace. Full resolution table: docs/configuration.md.
+	// Its selector half was evaluated against Namespace labels in ANOTHER cluster, and that single
+	// choice produced the three-valued verdict, the SourceScopeUnavailable degradation path, five
+	// condition reasons, and the operator's need for source-cluster Namespace get/list/watch. All
+	// of it went with the field. What replaces it is the source credential's own RBAC (which bounds
+	// what may be read) plus ClusterProvider.accessFrom (which bounds who may wield it).
+	//
+	// It is retained-and-refused rather than deleted because CRD pruning happens on WRITE: a
+	// deleted field would be dropped from a re-applied manifest with no error, and the target would
+	// silently start admitting a scope its author never asked for.
+	//
+	// See docs/design/source-scope-simplification.md.
+
+	// AllowedSourceNamespaces is REMOVED. Which source namespaces a target may mirror is bounded by
+	// the source credential's own Kubernetes RBAC, and which control-plane namespace may wield that
+	// credential is bounded by ClusterProvider.spec.accessFrom. Setting this field is rejected.
+	//
+	// Deprecated: bound reads with source-cluster RBAC and use ClusterProvider.spec.accessFrom.
+	// Removed at v1alpha4.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="false",message="spec.allowedSourceNamespaces is removed. The source credential's own RBAC bounds what may be read, and ClusterProvider.spec.accessFrom bounds which namespaces may wield it. A rules[].sourceNamespace other than the WatchRule's own namespace now needs only ClusterProvider.spec.allowAnySourceNamespace: true. Source-side label selectors have no replacement; enumerate namespaces in rules[].sourceNamespace, or use \"*\" for every namespace the credential can read."
 	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
@@ -637,26 +641,6 @@ func (g *GitTarget) SourceCluster() string {
 // default for SourceClusterReachable, which the watch manager overwrites as soon as it is wired.
 func (g *GitTarget) IsLocalSource() bool {
 	return g.SourceCluster() == DefaultClusterProviderName
-}
-
-// DeclaresSourceNamespacePolicy reports whether this target declares spec.allowedSourceNamespaces
-// at all. A declared policy is EXHAUSTIVE — it bounds every WatchRule item writing here, with no
-// self-namespace exception — while an absent one leaves a WatchRule its own namespace. Callers
-// must branch on this rather than on emptiness: a declared-but-empty policy admits nothing.
-func (g *GitTarget) DeclaresSourceNamespacePolicy() bool {
-	return g.Spec.AllowedSourceNamespaces.Declared()
-}
-
-// AllowsSourceNamespace reports whether a SOURCE-cluster namespace (by name and by the labels it
-// carries IN THE SOURCE CLUSTER) may be mirrored into this target, per spec.allowedSourceNamespaces.
-//
-// It is the source-side twin of ClusterProvider.AllowsNamespace, and both are thin wrappers over
-// NamespaceMatcher.Matches so the two policies cannot drift. It answers only the POLICY question:
-// the delegation flag, the provider's own admission of this target's namespace, and the
-// three-valued "can the labels be read at all" question are the caller's (see internal/authz).
-// An undeclared policy admits nothing here — callers apply the legacy rule themselves.
-func (g *GitTarget) AllowsSourceNamespace(nsName string, nsLabels map[string]string) (bool, error) {
-	return g.Spec.AllowedSourceNamespaces.Matches(nsName, nsLabels)
 }
 
 // +kubebuilder:object:root=true

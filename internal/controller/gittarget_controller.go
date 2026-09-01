@@ -413,7 +413,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	// ClusterProvider's readiness is projected onto the GitTarget as a separate condition.
 
 	// Namespace authorization: a GitTarget may reference a ClusterProvider only from a namespace
-	// its spec.allowedNamespaces admits. Enforced HERE and only here, on every reconcile — which
+	// its spec.accessFrom admits. Enforced HERE and only here, on every reconcile — which
 	// also covers a policy tightened after the GitTarget was created. Failing this gate returns
 	// before DeclareForGitTarget below, so an unauthorized target starts no watch and writes no Git.
 	authorized, authReason, authMsg, authErr := r.checkSourceAuthorization(ctx, target)
@@ -1186,7 +1186,7 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToGitTargets),
 			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
 		).
-		// React to a Namespace's LABELS changing: a ClusterProvider's allowedNamespaces selector is
+		// React to a Namespace's LABELS changing: a ClusterProvider's accessFrom selector is
 		// evaluated against namespace labels, so a label change can grant or revoke a GitTarget's
 		// authorization. Re-enqueue the GitTargets in that namespace so the reconcile-time refusal
 		// converges instead of waiting for the periodic reconcile. LabelChangedPredicate ignores the
@@ -1292,7 +1292,7 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 
 // clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it,
 // across ALL namespaces (the provider is cluster-scoped). It re-enqueues dependents when the
-// provider's Ready flips or its allowedNamespaces policy changes, so the projected
+// provider's Ready flips or its accessFrom policy changes, so the projected
 // ClusterProviderReady and the namespace-authorization refusal converge without waiting for the
 // periodic reconcile.
 func (r *GitTargetReconciler) clusterProviderToGitTargets(

@@ -145,10 +145,20 @@ func (in *ClusterProviderSpec) DeepCopyInto(out *ClusterProviderSpec) {
 		*out = new(meta.KubeConfigReference)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.AccessFrom != nil {
+		in, out := &in.AccessFrom, &out.AccessFrom
+		*out = new(NamespaceMatcher)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.AllowedNamespaces != nil {
 		in, out := &in.AllowedNamespaces, &out.AllowedNamespaces
 		*out = new(NamespaceMatcher)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.AllowSourceNamespaceOverride != nil {
+		in, out := &in.AllowSourceNamespaceOverride, &out.AllowSourceNamespaceOverride
+		*out = new(bool)
+		**out = **in
 	}
 	if in.QPS != nil {
 		in, out := &in.QPS, &out.QPS

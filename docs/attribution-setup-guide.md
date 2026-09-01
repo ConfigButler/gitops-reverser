@@ -65,7 +65,7 @@ to the provider's name, so a fact from one cluster can never name the author of 
 another. Set it explicitly when several providers name one cluster: an API server has a single audit
 webhook backend and posts under one route, so the others must declare that route to see its facts.
 A provider also carries a deny-by-default
-`spec.allowedNamespaces` policy: a `GitTarget` may reference it only from an admitted namespace
+`spec.accessFrom` policy: a `GitTarget` may reference it only from an admitted namespace
 (enforced on every reconcile, before that target's watches start — so tightening the policy also
 stops a `GitTarget` that already exists).
 

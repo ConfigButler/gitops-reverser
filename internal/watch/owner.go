@@ -568,10 +568,6 @@ func (m *Manager) refreshSharedSnapshots(ctx context.Context, log logr.Logger, s
 		log.Error(err, "API resource catalog refresh failed; it will be retried")
 		gathered = false
 	}
-	// Re-list the source-cluster Namespace labels any selector policy has asked about BEFORE the
-	// tables are re-resolved: this is where a source-namespace grant or revocation is observed.
-	m.refreshSourceNamespaceScopes(refreshCtx)
-
 	// Which targets did that actually invalidate? Comparing each target's rendered watch plan
 	// across the re-projection answers it without a type-to-target index and without the
 	// staleness one would bring: a CRD that appeared in a cluster no target's rules select
