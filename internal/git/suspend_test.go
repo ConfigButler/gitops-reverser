@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -195,4 +198,90 @@ func repoFor(t *testing.T, worktree *gogit.Worktree) *gogit.Repository {
 	repo, err := gogit.PlainOpen(worktree.Filesystem().Root())
 	require.NoError(t, err)
 	return repo
+}
+
+// bootstrapEnabledTarget is a target at base that stages its path's bootstrap files —
+// .gittargetignore always, .sops.yaml because the recipient makes the SOPS half renderable.
+func bootstrapEnabledTarget(name, base string, suspend bool) ResolvedTargetMetadata {
+	return ResolvedTargetMetadata{
+		Name:      name,
+		Namespace: "shop",
+		Path:      base,
+		Suspend:   suspend,
+		BootstrapOptions: pathBootstrapOptions{
+			Enabled:           true,
+			IncludeSOPSConfig: true,
+			TemplateData:      bootstrapTemplateData{AgeRecipients: []string{"age1exampleexampleexample"}},
+		},
+	}
+}
+
+func bootstrapEventFor(md ResolvedTargetMetadata, name string) Event {
+	event := newConfigMapEvent(name, "app")
+	event.Path = md.Path
+	event.BootstrapOptions = md.BootstrapOptions
+	return event
+}
+
+// A suspended target leaves NOTHING behind, including files it did not author as content.
+//
+// Bootstrap staging writes .gittargetignore and .sops.yaml into the target's path and adds
+// them to the index — and the index belongs to the branch, not to one target. Staging it for a
+// suspended path therefore used to smuggle those files into the next ACTIVE target's commit,
+// so a target that was supposed to be writing nothing appeared in history with two files in
+// its folder. This asserts both halves: nothing on disk, and nothing in the commit.
+func TestSuspend_StagesNoBootstrapFilesIntoTheNextCommit(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+	repo := repoFor(t, worktree)
+	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+
+	suspended := bootstrapEnabledTarget("suspended", "suspended", true)
+	active := bootstrapEnabledTarget("active", "active", false)
+	targets := map[pendingTargetKey]ResolvedTargetMetadata{
+		{Name: suspended.Name, Namespace: suspended.Namespace}: suspended,
+		{Name: active.Name, Namespace: active.Namespace}:       active,
+	}
+
+	changed, err := worker.applyPendingWriteEvents(t.Context(), repo, worktree, []Event{
+		bootstrapEventFor(suspended, "cache"),
+		bootstrapEventFor(active, "cache"),
+	}, targets)
+	require.NoError(t, err)
+	require.True(t, changed, "the active target wrote, so this window commits")
+
+	// The active target commits. Anything the suspended path left in the index rides along.
+	hash, err := worktree.Commit("active target write", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "t", Email: "t@example.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+
+	for _, name := range []string{gitTargetIgnoreFileName, sopsConfigFileName} {
+		_, statErr := os.Stat(filepath.Join(root, "suspended", name))
+		assert.True(t, os.IsNotExist(statErr),
+			"a suspended target must not have %s written into its folder", name)
+		assert.False(t, commitHoldsPath(t, repo, hash, "suspended/"+name),
+			"a suspended target's %s must not reach a commit", name)
+	}
+
+	// The control: the active target got both, so the assertions above are about suspend
+	// rather than about bootstrap staging having quietly stopped working.
+	for _, name := range []string{gitTargetIgnoreFileName, sopsConfigFileName} {
+		assert.True(t, commitHoldsPath(t, repo, hash, "active/"+name),
+			"the active target's %s must still be committed", name)
+	}
+}
+
+// commitHoldsPath reports whether a commit's tree holds a path.
+func commitHoldsPath(t *testing.T, repo *gogit.Repository, hash plumbing.Hash, path string) bool {
+	t.Helper()
+	commit, err := repo.CommitObject(hash)
+	require.NoError(t, err)
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+	if _, err := tree.File(path); err != nil {
+		require.ErrorIs(t, err, object.ErrFileNotFound)
+		return false
+	}
+	return true
 }
