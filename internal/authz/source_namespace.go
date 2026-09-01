@@ -60,9 +60,6 @@ type SourceNamespaceDecision struct {
 	Message string
 }
 
-// Admitted reports whether this item may contribute selections.
-func (d SourceNamespaceDecision) Admitted() bool { return d.Allowed }
-
 // ResolvedSourceScope is a WHOLE WatchRule's source-namespace verdict: one decision per spec.rules
 // item, index-aligned, plus the aggregate the SourceNamespaceAuthorized condition publishes.
 //

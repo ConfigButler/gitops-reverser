@@ -5,6 +5,7 @@ package authz_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -322,4 +323,36 @@ func TestResolveWatchRuleSourceScope_NoItems(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, resolved.Admitted())
 	assert.Equal(t, authz.ReasonLegacySourceNamespace, resolved.Reason)
+}
+
+// NamespacesFor is indexed by the item's position in spec.rules, and the store compiles from it
+// position by position. An out-of-range index returns nil rather than panicking: the resolved scope
+// and the spec are two objects, and a caller reading them apart must not take the process down.
+func TestResolvedSourceScope_NamespacesForIsBoundsChecked(t *testing.T) {
+	reader := snReader(t, snTarget(), snClusterProvider(true))
+
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), reader, snRule("", snSourceNS), snTarget())
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{snTenantNS}, resolved.NamespacesFor(0))
+	assert.Nil(t, resolved.NamespacesFor(2), "past the last item")
+	assert.Nil(t, resolved.NamespacesFor(-1), "before the first")
+}
+
+// The aggregate message deduplicates and sorts, so a rule whose items overlap does not report the
+// same namespace twice, and the cluster-wide cell is spelled out rather than shown as the empty
+// string an operator would read as a missing value.
+func TestResolveWatchRuleSourceScope_AggregateMessageIsDeduplicatedAndLegible(t *testing.T) {
+	reader := snReader(t, snTarget(), snClusterProvider(true))
+
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), reader, snRule(snSourceNS, snSourceNS, snWildcard), snTarget())
+
+	require.NoError(t, err)
+	require.True(t, resolved.Admitted())
+	assert.Equal(t, 1, strings.Count(resolved.Message, snSourceNS),
+		"a namespace two items both name is reported once")
+	assert.Contains(t, resolved.Message, "every namespace (cluster-wide)",
+		`the cluster-wide cell must be named, not rendered as an empty string`)
 }
