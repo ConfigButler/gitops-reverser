@@ -1,0 +1,12 @@
+diff --git a/mirror/prod/shop-checkout-config.yaml b/mirror/prod/shop-checkout-config.yaml
+new file mode 100644
+--- /dev/null
++++ b/mirror/prod/shop-checkout-config.yaml
+@@ -0,0 +1,7 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: checkout-config
++  namespace: shop
++data:
++  timeout: "15m"

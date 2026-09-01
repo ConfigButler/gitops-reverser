@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: argocd-applications
+  namespace: argocd
+spec:
+  targetRef:
+    name: argocd-applications
+  rules:
+    - apiGroups: ["argoproj.io"]
+      apiVersions: ["v1alpha1"]
+      resources: ["applications"]

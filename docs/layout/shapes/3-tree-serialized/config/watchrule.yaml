@@ -1,0 +1,17 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: home-workloads
+  namespace: homelab-config
+spec:
+  targetRef:
+    name: home-cluster-state
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]
+      sourceNamespace: shop
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]
+      sourceNamespace: billing

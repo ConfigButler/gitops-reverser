@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout-prod
+  namespace: shop-prod
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  # The leaf overlay. The base one directory up is READ to render this folder and is
+  # never written: read scope is wider than write scope, always.
+  path: apps/checkout/overlays/prod

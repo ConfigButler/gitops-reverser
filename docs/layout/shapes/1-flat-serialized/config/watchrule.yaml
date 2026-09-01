@@ -1,0 +1,17 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: prod-mirror-content
+  namespace: homelab-config
+spec:
+  targetRef:
+    name: prod-mirror
+  rules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]
+      sourceNamespace: shop
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]
+      sourceNamespace: billing

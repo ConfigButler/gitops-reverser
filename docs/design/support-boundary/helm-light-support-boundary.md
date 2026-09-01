@@ -130,7 +130,7 @@ and refused **by name**, the way `patchesJson6902` refuses under its own name to
    `patternProperties` and an unresolved reference mean for closure before any of this is
    built. The schema is the chart author *declaring* the input surface, a closed leaf set,
    which is the same declared-over-inferred principle the layout model rests on
-   ([gittarget-layout-model.md](../gittarget-layout-model.md)). A values key the schema
+   ([../../layout/model.md](../../layout/model.md)). A values key the schema
    does not declare refuses the folder.
 3. No `dependencies:` in `Chart.yaml`, no `charts/` directory, no `Chart.lock`. The chart
    is one program, not a graph of them. (Vendored dependencies are a conceivable later
@@ -302,7 +302,7 @@ locally, no plugins, no network, in-memory filesystem as the jail.
 
 How helm-light surfaces on the API (`layout.kind`, or a renderer property of the
 structural kind) belongs to the GitTarget API wave
-([gittarget-api-wave.md](../gittarget-api-wave.md)), not to this boundary.
+([`gittarget-api-wave.md`](../gittarget-api-wave.md)), not to this boundary.
 
 ## Where the arguments live
 

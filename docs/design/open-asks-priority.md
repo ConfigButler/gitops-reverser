@@ -7,12 +7,13 @@
 > **Where this stands as of the sweep.** `0.41.0` is the attribution release: the fact stream, the
 > sticky removal pointer, the metric relabel, the name tier, and the analyzer/encoder corrections,
 > plus PR #291's sibling-inference deletion and placement counters. That is a large breaking release
-> on its own, and **the GitTarget work is deliberately not in it**. The layout model and the API wave
-> ([`gittarget-layout-model.md`](gittarget-layout-model.md),
-> [`gittarget-api-wave.md`](gittarget-api-wave.md)) are postponed to a later deployment and tracked as
-> GitHub issues, so the queue below is read with one standing caveat: **every Tier 2 entry that
-> changes a `GitTarget` field is now part of that postponed wave, not independently schedulable.**
-> The Tier 1 entries are not, and should not wait for it.
+> on its own, and **the GitTarget work is deliberately not in it**. The standing caveat has since
+> narrowed, because [`../layout/model.md`](../layout/model.md) reversed and the placement work is no
+> longer breaking: **a Tier 2 entry belongs to the postponed wave only if it changes a `GitTarget`
+> field in a breaking way**, and [`gittarget-api-wave.md`](gittarget-api-wave.md) is the one place
+> that lists which those are. Everything else here — the placement fields, `suspend`,
+> `status.placement`, and every Tier 1 entry — is additive and independently schedulable, and should
+> not wait for a bump.
 >
 > **The queue was built bottom-up rather than top-down.** Tier 0 and Tier 1 are still unbuilt, and
 > the Tier 2 item nobody scheduled — the attribution fact stream — shipped anyway, together with a
@@ -22,9 +23,9 @@
 > a fact about the last week, not a revision of the rule.
 >
 > Three backlogs are open at once and they overlap: the gitops-api consumer asks (revision 11,
-> 2026-07-28, which is the revision that filed #23), the maintainer review's unbuilt block in
-> [`flux-maintainer-review-status-and-config-model.md`](../future/flux-maintainer-review-status-and-config-model.md)
-> (F6, F9, F10), and the config-surface proposal in
+> 2026-07-28, which is the revision that filed #23), the API-surface block left unbuilt by the
+> status and configuration-model review — now sequenced in
+> [`gittarget-api-wave.md`](gittarget-api-wave.md) — and the config-surface proposal in
 > [`config-surface-for-a-structured-repository.md`](../future/config-surface-for-a-structured-repository.md)
 > (B1–B6). This page merges them into one queue and says where we deliberately do **not** do
 > what was asked.
@@ -68,7 +69,7 @@ do not own.
 > **Built.** `resolveInferred` through `allSameDir` are gone, the kustomize-root fallback stayed, and no
 > enum was added. What building it added to the argument below is recorded in
 > [what the deletion taught](#what-the-deletion-taught). The spec's Option C sections are retained as
-> history in [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md),
+> history in [`../layout/new-file-placement-rules.md`](../layout/new-file-placement-rules.md),
 > and the behaviour change has a [`docs/UPGRADING.md`](../UPGRADING.md) entry.
 
 The config-surface proposal's **B3** offers `spec.placement.mode: Infer|Declared|Strict`: an
@@ -77,7 +78,7 @@ cohort ladder entirely**, keep the kustomize-root fallback, and ship no enum at 
 
 ### What inference is, precisely
 
-[`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md) Option C.
+[`../layout/new-file-placement-rules.md`](../layout/new-file-placement-rules.md) Option C.
 It fires **only** for a resource that has no document in Git yet; everything already written is
 match-first and never moves. For that narrow case it finds the largest cohort of similar existing
 documents (step 1: same type + namespace; step 2: same type, any namespace) and puts the new
@@ -236,25 +237,28 @@ and is not independently schedulable.
 |---|---|---|---|---|
 | 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** | — |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
-| n/a | A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | **1** | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) |
-| n/a | `spec.layout`: declare what the folder is | [`gittarget-layout-model.md`](gittarget-layout-model.md) | **2** | [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), wave |
-| F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** | wave |
+| F9 | The `scope: Namespaced` status-write envtest | maintainer review | **1** | outside the wave, and **gates its planning**: the answer decides whether the narrowed enum can be kept ([`gittarget-api-wave.md`](gittarget-api-wave.md)) |
+| ~~n/a~~ | ~~A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path~~ **SHIPPED** in 0.42.1 | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | — | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), [#319](https://github.com/ConfigButler/gitops-reverser/pull/319) |
+| n/a | `useKustomize` and `serializeNamespace`: the two things a path template cannot say (`spec.layout` was reversed) | [`../layout/model.md`](../layout/model.md) | **2** | [#322](https://github.com/ConfigButler/gitops-reverser/issues/322), **not** breaking, so not the wave |
+| F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see [`gittarget-api-wave.md`](gittarget-api-wave.md)) | maintainer review | **2** | wave |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
-| B1 | `GitTarget.spec.mode: Observe\|Write` | config surface | **2** | wave |
+| ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` on a still-scanning target is the same dry run with one field | config surface | — | [`gittarget-api-wave.md`](gittarget-api-wave.md) |
 | 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** | wave |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
-| B2 | `GitTarget.status.layout` | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
+| B2 | `GitTarget.status.placement` (was `status.layout`) | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
 | n/a | The ambiguous render root, the `declared` metric split, `{kindLower}`, canonical-as-template | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
-| F9 | The `scope: Namespaced` status-write envtest | maintainer review | **3** | outside the wave, deliberately |
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** | — |
 | n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`../spec/attribution.md`](../spec/attribution.md#what-the-shape-driven-rules-reach-and-what-they-do-not) | **3** | — |
 | n/a | Entry-size ceiling and per-type stream count under a few hundred watched types | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **3** | — |
 | 10 | Namespace-aware sibling inference *as asked* | gitops-api | **declined — answered by the deletion, SHIPPED** | — |
 | B3 | `spec.placement.mode` enum | config surface | **declined** | — |
 
-**One entry moved up in this sweep.** The declared-path-in-a-subdirectory bug is Tier 1, not Tier 3,
+**Two entries moved up in this sweep.** F9 is Tier 1 because it is not merely one envtest: until it
+is run, nobody can plan the enum work, and the answer can force a design change in an object that is
+already shipped. An unmeasured fact that gates other people's planning outranks a legibility item.
+The declared-path-in-a-subdirectory bug is Tier 1, not Tier 3,
 under this page's own first test: one line of ordinary user configuration silently produces a file that
 is in Git and rendered by nothing, and nothing in status or in the counters says so. That is the
 product being silently wrong, which is what Tier 1 is for. It was written down as a finding rather than
@@ -428,6 +432,14 @@ resolves nothing. What replaced it is a declaration plus
 `placements_total{source="canonical"}` per (GitTarget, type), so the same class of defect now has a
 query. `#10` and `B3` are answered by it and stay declined.
 
+**F9: the `scope: Namespaced` status-write envtest.** In this tier because it is the only item on
+the page whose *answer is unknown* rather than whose work is unscheduled, and because everything
+downstream assumes an answer. If the apiserver validates the whole object on a status-subresource
+write, the narrowed `ClusterWatchRule` enum leaves the one object that most needs to explain itself
+unable to write its own `Stalled` condition. The test, the version it has to name and the fallback
+are in [`gittarget-api-wave.md`](gittarget-api-wave.md). Run it before planning anything that
+depends on it.
+
 ### Tier 2: the breaking wave, all at once, while `v1alpha3`
 
 These all add or change a spec field. Doing them as one `feat(api)!` sequence costs the consumer
@@ -495,7 +507,10 @@ carry, and an aggregated-API create is logged with no name and no response body 
 `#220` shape — honored only against an admission record carrying an authorized verdict, fail-closed
 independent of the webhook's `failurePolicy` — remains the right one, on the first argument alone.
 
-**B4, B1, #6, F10** as written in their source documents. #6 is explicitly a lower priority than
+**B4, #6, F10** as written in their source documents. **B1 has left the wave**: a suspended
+`GitTarget` that keeps scanning is the same dry run with one field instead of two, so `mode` buys
+only the difference between a pause and a declared posture. The re-open trigger is in the wave
+document. #6 is explicitly a lower priority than
 when it was filed: the consumer downgraded it themselves, because branch and folder are now
 chosen once per repository on an object that exists because the user picked that repository.
 It rides the wave because it is in the wave, not because it is urgent.
@@ -540,8 +555,8 @@ not alternatives, and B2 should carry the per-target record of which types resol
 which fell back — which is why this is worth doing in the same change as the deletion rather than
 after it.
 
-**F9, B6** as filed. F9 is one envtest; B6 is one error message that will otherwise be the most
-likely first-run support ticket.
+**B6** as filed: one error message that will otherwise be the most likely first-run support ticket.
+F9 has moved to Tier 1.
 
 **The aggregated create: decide, and the decision is small either way.** The name tier reaches an
 aggregated update, patch and single delete. It cannot reach a create: the `objectRef` carries no name
@@ -581,7 +596,7 @@ defects.
    fall-back-to-canonical Event.~~ **Done for the removal and the entry**; the Event is still
    undecided, and the metric now carries the actionable part in the meantime.
 3. ~~Rewriting Option C's sections in
-   [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md).~~
+   [`../layout/new-file-placement-rules.md`](../layout/new-file-placement-rules.md).~~
    **Done**: the ladder is documented as three steps, the kustomize-root fallback keeps its section
    and gained the namespace-match rule, and P1–P10 are annotated one by one with which are retired by
    the deletion and which (P7, P9, P10) are facts about the code that remains.

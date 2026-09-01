@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nextcloud
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example/homelab-apps.git
+    targetRevision: main
+    path: storage/nextcloud
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: storage
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false

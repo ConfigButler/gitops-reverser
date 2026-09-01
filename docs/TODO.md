@@ -64,28 +64,30 @@ This file is meant to track the smaller current backlog, not historical notes.
   Secrets and CozyStack `tenantsecrets`; resources with sensitive fields under shapes such as
   `spec.credentials` need an explicit field policy or full-file encryption decision.
 
-- [ ] Revisit output layout. **Now designed and postponed, not open-ended.** The answer is to declare
-  what the folder *is* rather than a path template: `GitTarget.spec.layout`, designed in
-  [gittarget-layout-model.md](design/gittarget-layout-model.md) and filed as
-  [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), sequenced with the rest of the
-  breaking `GitTarget` work as [#294](https://github.com/ConfigButler/gitops-reverser/issues/294).
+- [ ] Revisit output layout. **Now designed and postponed, not open-ended, and the answer has
+  reversed since [#293](https://github.com/ConfigButler/gitops-reverser/issues/293) was filed.** The
+  path template **stays**; what it could not express becomes two optional booleans,
+  `spec.placement.useKustomize` and `spec.serializeNamespace`. [layout/model.md](layout/model.md)
+  carries the reversal, the fields and the order. The placement work
+  is no longer breaking, so it no longer needs
+  [#294](https://github.com/ConfigButler/gitops-reverser/issues/294); the issues still describe the
+  discriminated union and want updating.
   Deliberately **not** in 0.41.0, which already carries the new attribution model and the
   sibling-inference removal. Multiple resources per file is bundle support, which exists for
   match-first today and is a separate question from where a *new* file goes.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
-- [ ] Collapse wildcard source-namespace stream fan-out.
-  `WatchRule.spec.rules[].sourceNamespace: "*"` expands to one selection per admitted namespace, and
-  `targetWatchSpecs` opens one stream per cell (one type in one named namespace, or one type
-  cluster-wide) while `git.ResyncScope` names a single namespace, so a wildcard over N admitted
-  namespaces and M matched types costs N×M informers and N×M resync scopes, where a cluster-wide
-  ClusterWatchRule costs M. Expansion is deliberate — one
-  stream per namespace is what keeps each mark-and-sweep bounded by exactly the slice it gathered —
-  but the cost grows with tenant count. The direction is a cluster-wide stream whose resync scope
-  carries a namespace **set** rather than one name, so the gather stays exactly as narrow while the
-  stream count drops to M. Also revisit `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap
-  stops being representative at N×M.
+- [ ] Collapse wildcard source-namespace stream fan-out. **Superseded as a standalone item** —
+  [`source-scope-simplification.md`](design/source-scope-simplification.md#sourcenamespace--needs-its-own-decision)
+  is the definition of record for `sourceNamespace: "*"`, and the redefinition it decides deletes
+  this fan-out rather than optimizing it. The direction recorded here (a cluster-wide stream whose
+  resync scope carries a namespace **set**) is *not* what was decided, and building it would be
+  building the thing the wave removes.
+
+  What survives the redefinition and still needs doing: revisit
+  `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap stops being representative once a
+  wildcard produces one cluster-wide cell instead of N named ones.
 
 - [ ] Subscribe the watch plane to `typeset.Registry` lifecycle events.
   `Registry.Subscribe` has **no production observer**: the events are computed on every `Update`

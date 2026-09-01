@@ -1,0 +1,10 @@
+diff --git a/apps/checkout/overlays/prod/kustomization.yaml b/apps/checkout/overlays/prod/kustomization.yaml
+--- a/apps/checkout/overlays/prod/kustomization.yaml
++++ b/apps/checkout/overlays/prod/kustomization.yaml
+@@ -3,3 +3,6 @@ kind: Kustomization
+ namespace: shop-prod
+ resources:
+   - ../../base
++images:
++  - name: ghcr.io/example/checkout
++    newTag: 1.5.0

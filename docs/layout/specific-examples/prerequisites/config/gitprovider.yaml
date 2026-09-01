@@ -1,0 +1,16 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitProvider
+metadata:
+  name: app-repository
+  namespace: demo
+spec:
+  url: ssh://git@example.com/organization/application-config.git
+  secretRef:
+    name: app-repository-credentials
+  knownHostsRef:
+    name: example-com-known-hosts
+  allowedBranches:
+    - main
+  commit:
+    author:
+      name: GitOps Reverser

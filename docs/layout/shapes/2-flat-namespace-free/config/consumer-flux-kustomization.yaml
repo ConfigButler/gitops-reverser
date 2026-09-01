@@ -1,0 +1,16 @@
+# NOT written by GitOps Reverser. This is the deployer that supplies the namespace
+# the committed documents deliberately omit, and it lives in the cluster that
+# consumes the folder.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: checkout
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: artifacts
+  path: ./apps/checkout
+  prune: true
+  targetNamespace: shop

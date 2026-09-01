@@ -1,0 +1,15 @@
+# The second half. No patch, because no file is written: the whole flush is refused
+# before a byte moves, and the result is recorded once on the GitTarget.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        planned write to "base/deployment.yaml" is outside this target's write scope
+        (apps/checkout/overlays/prod): Deployment/checkout
+    - type: Stalled
+      status: "True"
+      reason: WriteBoundaryRefused
+      message: >-
+        the edit had nowhere safe to land; the folder itself is accepted

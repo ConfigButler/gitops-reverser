@@ -1,0 +1,13 @@
+# The second and third targets are the same object with the environment swapped.
+# Nothing is shared between them except the byType map, if one were declared.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout-test
+  namespace: shop-test
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  path: apps/checkout/overlays/test
+  suspend: true

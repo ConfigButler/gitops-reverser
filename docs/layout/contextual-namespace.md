@@ -8,11 +8,9 @@
 > Captured: 2026-06-08
 > Updated: 2026-06-08
 > Related:
-> [file-agnostic-placement.md](gittarget-new-file-placement-rules.md),
-> [manifest-inventory-file-agnostic-placement.md](manifest-system.md),
-> [current-manifest-support-review.md](current-manifest-support-review.md),
-> [version2/gittarget-repository-validity-and-placement.md](gittarget-new-file-placement-rules.md),
-> [version2/gittarget-new-file-placement-rules.md](gittarget-new-file-placement-rules.md)
+> [new-file-placement-rules.md](new-file-placement-rules.md),
+> [manifest-system.md](../spec/manifest-system.md),
+> [current-manifest-support-review.md](../spec/current-manifest-support-review.md)
 
 ## Summary
 
@@ -445,9 +443,12 @@ folder.
 |---|---|---|
 | `supported/flat-namespace` | one kustomization, `namespace:`, flat `resources` | namespace inherited (`Kustomize`) |
 | `supported/nested-base` | parent `namespace:` + child dir base with no namespace | namespace propagates through the graph |
+| `supported/nested-roots-per-namespace` | parent assigns nothing; each child root carries its own `namespace:` | each document inherits from the root that governs **it**, so one folder holds two namespaces |
 | `supported/multi-doc` | a multi-document file in `resources` | every document inherits |
 | `supported/explicit-namespace` | `metadata.namespace` written in the file | kept as-is (`Explicit`) |
 | `unsupported/ambiguous-two-roots` | two roots assign different namespaces to one file | refused (`ambiguous-namespace`) |
+| `unsupported/nested-both-namespaces` | a parent root and its child root both assign | refused (`ambiguous-namespace`), deliberately: kustomize resolves this (the parent transformer runs last and wins) and we decline to, because guessing hands the document to a namespace nobody wrote down |
+| `unsupported/conflicting-explicit-namespace` | the document names a namespace the governing transformer overrides | **no diagnostic**: an explicit namespace is authoritative as written, so the store indexes `beta` while the folder renders `alpha`. The refusal lives entirely at the write path |
 | `unsupported/patches` | `patches:` present | not a namespace source (`None`) |
 | `unsupported/generators` | `configMapGenerator:` present | not a namespace source |
 | `unsupported/components` | `components:` present | not a namespace source |
@@ -459,6 +460,25 @@ folder.
 Today the store records the per-document outcome (`NamespaceSource` and the
 diagnostics); the `unsupported/*` folders that currently resolve to `None` are the
 inputs the pending `RepositoryValid` refusal will turn into a failed GitTarget.
+
+**The last two rows are the ones where reading the folder is not enough**, and what
+catches them is the render check at the write path rather than anything here. Both were
+measured rather than assumed, and both are pinned by a write-side test
+(`TestPlanFlush_RefusesWhenTransformerOverridesExplicitNamespace` and
+`TestPlanFlush_RefusesWhenNestedRootsBothSetNamespace` in
+[`internal/git`](../../internal/git/namespace_context_refusal_test.go)):
+
+- the conflicting-explicit folder refuses with *"does not render to the live object
+  after the write"*, and nothing is committed;
+- the nested-both folder gets as far as **proposing a second file** for an object it
+  could not match by identity, and the build then fails with kustomize's own
+  `namespace transformation produces ID conflict`. Nothing reaches the worktree —
+  not the file, not the `resources:` entry it would have needed.
+
+So neither shape can produce a wrong commit. Both, however, surface as an opaque render
+error rather than as the specific fixable thing that is wrong, which is a legibility gap
+worth closing when the post-scan validation pass is built: this class is exactly what it
+is for.
 
 ## E2E test shape
 

@@ -115,7 +115,28 @@ overlay rather than writing the read-only base, and the re-render adjudicates th
 verification. What remains is a strategic-merge patch for a base-owned field that is *not* an
 image, replica, or whole-object delete.
 
-## 5. Remaining work
+## 5. The repository-level peer: paths another controller writes
+
+Render-root scoping keeps one GitTarget out of another target's partition. The same argument
+applies one level up, to folders no GitTarget should claim at all:
+
+> A `GitTarget` must not point at a path another controller writes. Flux's bootstrap directory
+> (`clusters/<name>/flux-system`) is the common case, and the `Kustomization` that reconciles a
+> folder is not a licence to co-write it.
+
+`flux bootstrap` and flux-operator own `clusters/<name>/flux-system`, including the
+`kustomization.yaml` that lists `gotk-components.yaml` and `gotk-sync.yaml`. An operator adding
+`resources:` entries there is a second writer in a folder Flux's own sync loop reconciles, which is
+the two-writers-one-folder failure this boundary exists to prevent — and the fact that Flux
+*renders* the folder is what makes it look eligible, not what makes it safe. Being reconciled by a
+controller is the tell, not the licence.
+
+This is a rule for the person choosing `spec.path`, not something the operator can enforce: nothing
+in the repository marks a folder as bootstrap-owned. It is stated here so the answer exists in the
+support boundary rather than only in an example, and
+[`homelab-flux`](../../layout/specific-examples/homelab-flux/README.md) is the worked case.
+
+## 6. Remaining work
 
 1. Add a dedicated cluster end-to-end overlay case (discovery classification is already flipped —
    an external-base overlay reports accepted).

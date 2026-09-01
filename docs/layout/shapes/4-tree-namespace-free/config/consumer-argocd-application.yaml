@@ -1,0 +1,19 @@
+# NOT written by GitOps Reverser. Two fields carry this shape, and both are
+# opt-in: directory.recurse, because Argo CD does not descend into subdirectories
+# by default, and destination.namespace, which supplies what the documents omit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: checkout
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://example.com/artifacts.git
+    targetRevision: main
+    path: apps/checkout
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shop

@@ -16,6 +16,6 @@ The `images-overlay`, `replicas-overlay`, and `ambiguous-images` folders pin the
 override-chain attribution the same way (`overrides_test.go`); see
 `docs/design/support-boundary/finished/images-and-replicas-edit-through.md`.
 
-See `docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md`
+See `docs/layout/contextual-namespace.md`
 (the "Supported and unsupported example folders" matrix). Add a new folder here
 whenever a new "can we support X?" question comes up.
