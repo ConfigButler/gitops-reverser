@@ -685,12 +685,19 @@ jobs:
       - name: Gate on critical fixable vulnerabilities
         # Fails the job only for CRITICAL vulnerabilities that have a fix
         # available — actionable signal, not noise from unfixed CVEs.
+        #
+        # trivyignores is set only on the GATE, never on the report above: a
+        # suppressed finding stays visible to a human reading the scan output,
+        # it just does not block. Trivy does NOT pick .trivyignore.yaml up from
+        # the working directory on its own, so this input is what makes the file
+        # take effect at all.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.PROJECT_IMAGE }}
           format: table
           severity: CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
 
   image-scan-release:
@@ -715,6 +722,13 @@ jobs:
           - arch: arm64
             digest: ${{ needs.build-release-arm64.outputs.digest }}
     steps:
+      - name: Checkout code
+        # This job scans a REMOTE image by digest and needs nothing from the
+        # repository except .trivyignore.yaml, which the gate below reads. Without
+        # the checkout that file is absent and the gate silently stops honouring
+        # it — silently, because a missing ignore file is not an error.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Log in to registry
         # Each build-release-* job pushes by digest, and buildx wraps the
         # single-platform image in an OCI *index* (it attaches a provenance
@@ -749,7 +763,9 @@ jobs:
 
       - name: Gate on critical fixable vulnerabilities
         # Fails the job only for CRITICAL vulnerabilities that have a fix
-        # available — actionable signal, not noise from unfixed CVEs.
+        # available — actionable signal, not noise from unfixed CVEs. The
+        # checkout above is what puts .trivyignore.yaml in the workspace; see
+        # the project-image gate for why the ignore file is on the gate only.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           # The pushed digest is an OCI index; pin the child to scan (see login step).
@@ -759,6 +775,7 @@ jobs:
           format: table
           severity: CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
 
   e2e:
