@@ -1,11 +1,16 @@
 {{- if .Values.servers.admission.enabled }}
 ---
-# Captures the authenticated submitter of our own command kinds (a CommitRequest today)
-# at admission, into the command-author Redis corner the controller reads back with no
-# wait. Narrow by construction: one rule per command kind. failurePolicy is Ignore and
-# the handler always allows, so a user's CommitRequest never depends on this webhook —
-# a miss leaves the request without a claimed actor (AuthorAttributed=False).
-# See docs/spec/commitrequest-admission-authorship.md.
+# Two unrelated jobs on one endpoint, both narrow by construction.
+#
+# It captures the authenticated submitter of our own command kinds (a CommitRequest today)
+# into the command-author Redis corner the controller reads back with no wait; a miss
+# leaves the request without a claimed actor (AuthorAttributed=False). See
+# docs/spec/commitrequest-admission-authorship.md.
+#
+# It also rejects a WatchRule that would bring a second source namespace to a GitTarget
+# declaring spec.serializeNamespace: false. That rejection is FEEDBACK, not enforcement:
+# the writer refuses the same configuration at the write whether or not this webhook ran,
+# which is why failurePolicy stays Ignore. See docs/layout/model.md.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -27,7 +32,8 @@ webhooks:
         path: /validate-operator-types
         port: {{ .Values.servers.admission.port }}
     # Ignore, not Fail: a missed author capture must leave the request unnamed, never
-    # reject a user's CommitRequest.
+    # reject a user's CommitRequest, and the WatchRule check is feedback the write path
+    # already enforces on its own.
     failurePolicy: Ignore
     matchPolicy: Equivalent
     rules:
@@ -39,6 +45,18 @@ webhooks:
           - CREATE
         resources:
           - commitrequests
+        scope: Namespaced
+      # UPDATE as well as CREATE: a rule can grow a second sourceNamespace long after it
+      # was created, and that edit is the same mistake.
+      - apiGroups:
+          - configbutler.ai
+        apiVersions:
+          - v1alpha3
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - watchrules
         scope: Namespaced
     # Redis write on real requests; nothing on dry-run (the handler honors this).
     sideEffects: NoneOnDryRun

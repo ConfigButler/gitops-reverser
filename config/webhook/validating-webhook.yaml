@@ -81,12 +81,18 @@ webhooks:
   # reject a user's CommitRequest. The handler also returns Allowed even when the Redis
   # write errors, so the command's success never depends on this webhook at all —
   # Ignore only covers the webhook being entirely unreachable.
+  #
+  # It stays Ignore now that the endpoint can also REJECT a WatchRule, because that
+  # rejection is feedback rather than enforcement: the writer's own precondition refuses
+  # the same configuration whether or not this webhook ran. Fail here would make every
+  # WatchRule write depend on the operator being up, to gate something already gated.
   failurePolicy: Ignore
   matchPolicy: Equivalent
   name: validate-operator-types.configbutler.ai
-  # Narrow: only our own command kinds (one rule per command kind). The submitter is
-  # captured into the command-author Redis corner and read back by the CommitRequest
-  # controller with no wait.
+  # Narrow: our own command kinds (one rule per command kind), plus the one config kind
+  # this endpoint validates. The submitter of a command is captured into the command-author
+  # Redis corner and read back by the CommitRequest controller with no wait; a WatchRule is
+  # checked against the GitTarget it names and may be rejected.
   rules:
   - apiGroups:
     - configbutler.ai
@@ -96,6 +102,18 @@ webhooks:
     - CREATE
     resources:
     - commitrequests
+    scope: Namespaced
+  # UPDATE as well as CREATE: a rule can grow a second sourceNamespace long after it was
+  # created, and that edit is the same mistake.
+  - apiGroups:
+    - configbutler.ai
+    apiVersions:
+    - v1alpha3
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - watchrules
     scope: Namespaced
   # Redis write on real requests; nothing on dry-run (the handler honors NoneOnDryRun).
   sideEffects: NoneOnDryRun
