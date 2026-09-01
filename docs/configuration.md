@@ -873,6 +873,43 @@ co-mingled with a plaintext document. Two consequences for your templates:
   resource is **skipped fail-safe** (logged and counted in the resync summary as `placementSkipped`)
   rather than written unsafely. It is not surfaced as a dedicated status condition today.
 
+### Choosing between the two layout fields
+
+`spec.serializeNamespace` and `spec.placement.useKustomize` answer two independent questions, and a
+target that sets neither behaves exactly as it did before they existed. Start here, then read the
+section for whichever you set.
+
+**Question 1: where does the namespace of a mirrored object live?**
+
+| You want | Set | What the folder looks like |
+|---|---|---|
+| Each document to say which namespace it is in. Someone can `kubectl apply -f` the folder and land everything where it came from | `serializeNamespace: true` | every namespaced document carries `metadata.namespace` |
+| The folder to be installable into a namespace chosen at install time, by a Flux `targetNamespace`, an Argo `destination.namespace`, or a `kustomization.yaml` you wrote | `serializeNamespace: false` | no document carries `metadata.namespace`, and nothing in the folder pins one |
+| Neither claim, because the folder is a tree of nested kustomize roots that each supply their own namespace | leave it **unset** | each document is resolved against the root governing its own path |
+
+**Question 2: does the operator maintain this folder's `kustomization.yaml`?**
+
+| You want | Set | What the operator does |
+|---|---|---|
+| The folder to become a kustomize folder, including from empty | `placement.useKustomize: true` | creates `kustomization.yaml` at `spec.path` if there is none, adopting the files already there, and registers every new document in it |
+| Plain files, or a `kustomization.yaml` only you create | leave it **unset** | writes the document; registers it in a root that already governs it, and creates nothing |
+
+Registering a new file with a kustomization that **already** governs it happens either way. That is
+not a setting: a file no `resources:` list names is a file kustomize never builds.
+
+**The three combinations in practice:**
+
+| Shape | Spec | Who supplies the namespace |
+|---|---|---|
+| A mirror you can apply back | `serializeNamespace: true`, no `useKustomize` | the documents |
+| A portable artifact | `serializeNamespace: false` **+** `useKustomize: true` | whatever installs the folder |
+| An existing kustomize repository | leave both unset | the `kustomization.yaml` files already there |
+
+One combination to avoid: `serializeNamespace: false` on a folder nothing installs. The documents
+carry no namespace and nothing supplies one, so `kubectl apply -f` lands them all in `default`.
+Nothing can detect that for you, because the installer lives outside the repository. See
+[why nothing checks the supplier](#whether-documents-carry-their-namespace-specserializenamespace).
+
 ### Whether documents carry their namespace (`spec.serializeNamespace`)
 
 A path decides where a file sits; it cannot decide what is inside it. `spec.serializeNamespace`
@@ -964,11 +1001,11 @@ controls.** It happens in both rows, because a file no kustomization lists is a 
 builds. The flag is only about the empty case, which is what makes an empty repository
 bootstrappable.
 
-**A created root adopts the folder, not just the document that triggered it.** Its `resources:`
-lists every managed document already in the folder alongside the new one, at the paths those files
-already have. Nothing is moved, rewritten or re-encoded. A root naming only the new file would
-leave every other file sitting in Git and out of every render: the moment a consumer ran `kustomize
-build` against the folder, they would stop being applied, with nothing to show what happened.
+**A created root adopts the whole folder.** Its `resources:` lists every managed document
+already in the folder alongside the new one, at the paths those files already have. Nothing is
+moved, rewritten or re-encoded. A root naming only the new file would leave every other file
+sitting in Git and out of every render: the moment a consumer ran `kustomize build` against the
+folder, they would stop being applied, with nothing to show what happened.
 
 **A folder that already has a render root never gains a second one, and a document it would not
 render is refused.** If a `byType` or `default` template puts the new document somewhere the
