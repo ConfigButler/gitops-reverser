@@ -345,6 +345,45 @@ tasks:
     cmds:
       - actionlint
 
+  scan-image:
+    desc: Scan a container image for vulnerabilities — full report, then the CI gate
+    # This task IS the gate CI runs. Both live here rather than in the workflow so the
+    # severities, the ignore file and the exit codes have one definition: they were
+    # duplicated across four workflow steps in two jobs, which is four places to keep in
+    # agreement and no way to run any of them before pushing.
+    #
+    # It scans in two passes on purpose. The first reports everything a human should see
+    # and never fails. The second is the gate, and it fails ONLY on CRITICAL findings that
+    # have a fix — actionable signal, not noise from unfixed CVEs. Only the gate reads
+    # .trivyignore.yaml, so a suppressed finding still appears in the report above it: it
+    # stops blocking without disappearing. Trivy does not read that file from the working
+    # directory on its own, which is why --ignorefile is passed explicitly.
+    #
+    # A missing .trivyignore.yaml is a FATAL error rather than a silent no-op, which is
+    # the behaviour to want from a security control: the gate cannot quietly stop
+    # honouring its own suppressions. It is a relative path, so run this from the
+    # repository root (CI mounts the workspace and sets -w).
+    #
+    # Point it at either a docker-archive tarball or an image reference:
+    #   task scan-image SCAN_ARCHIVE=project-image.tar
+    #   task scan-image SCAN_IMAGE=ghcr.io/configbutler/gitops-reverser@sha256:...
+    # A tarball needs no docker daemon and no registry pull, so CI prefers it for the
+    # image it just built. SCAN_SARIF=<path> makes the report pass write SARIF for GitHub
+    # code scanning instead of a table; the gate is unaffected either way.
+    vars:
+      SCAN_ARCHIVE: '{{.SCAN_ARCHIVE | default ""}}'
+      SCAN_IMAGE: '{{.SCAN_IMAGE | default ""}}'
+      SCAN_SARIF: '{{.SCAN_SARIF | default ""}}'
+      SCAN_TARGET: '{{if .SCAN_ARCHIVE}}--input {{.SCAN_ARCHIVE}}{{else}}{{.SCAN_IMAGE}}{{end}}'
+      SCAN_REPORT_FORMAT: '{{if .SCAN_SARIF}}--format sarif --output {{.SCAN_SARIF}}{{else}}--format table{{end}}'
+    preconditions:
+      - sh: '[ -n "{{.SCAN_ARCHIVE}}{{.SCAN_IMAGE}}" ]'
+        msg: "set SCAN_ARCHIVE=<tarball> or SCAN_IMAGE=<ref> — there is nothing to scan otherwise"
+    cmds:
+      - trivy image {{.SCAN_TARGET}} {{.SCAN_REPORT_FORMAT}} --severity CRITICAL,HIGH,MEDIUM --exit-code 0
+      - trivy image {{.SCAN_TARGET}} --format table --severity CRITICAL --ignore-unfixed
+        --ignorefile .trivyignore.yaml --exit-code 1
+
   lint-dockerfiles:
     desc: Lint the project Dockerfiles with hadolint
     # Only re-lint when a Dockerfile or the hadolint config changes; Task

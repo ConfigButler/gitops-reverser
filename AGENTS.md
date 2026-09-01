@@ -36,6 +36,18 @@ workflow or Dockerfile change is covered by the normal lint gate; you can also r
 `task lint-actions` or `task lint-dockerfiles` directly. `actionlint`, `hadolint`, and
 `golangci-lint` all ship in the devcontainer image.
 
+`trivy` ships there too, behind `task scan-image` — the same command CI runs to gate the
+built image, so a scan failure can be reproduced locally instead of by pushing:
+
+```bash
+task scan-image SCAN_ARCHIVE=project-image.tar     # a docker-archive tarball
+task scan-image SCAN_IMAGE=ghcr.io/example/img:tag # or an image reference
+```
+
+It is not part of `task lint`: it needs an image to scan, which a lint run has no reason
+to build. Suppressions live in [`.trivyignore.yaml`](./.trivyignore.yaml), each with a
+justification and an expiry date.
+
 It also runs the documentation checks via `task lint-docs`, which is three tasks:
 `lint-doc-links` (`hack/doccheck`, every tracked file), `lint-markdown` (markdownlint-cli2,
 every tracked file), and `lint-prose` (Vale, against

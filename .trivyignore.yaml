@@ -1,8 +1,9 @@
 # Vulnerabilities the image scan may skip, each with the reason it is not reachable here and a
 # date it must be reconsidered. An entry without both is a suppression nobody can audit.
 #
-# The gate this feeds fails on CRITICAL vulnerabilities that HAVE a fix, so everything listed here
-# is by definition something a reader would expect to be fixed by upgrading. Say why we have not.
+# The gate this feeds is `task scan-image`, which fails on CRITICAL vulnerabilities that HAVE a
+# fix — so everything listed here is by definition something a reader would expect to be fixed by
+# upgrading. Say why we have not. Reproduce the gate locally with that task before editing this.
 vulnerabilities:
   - id: CVE-2026-56854
     # golang.org/x/crypto/ssh: authentication bypass because a server does not enforce the
