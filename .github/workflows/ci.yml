@@ -773,10 +773,21 @@ jobs:
         # held to one definition of what blocks. It writes SARIF for code scanning and
         # then gates; the upload below runs even when the gate fails, so a blocking
         # finding is still reported rather than only logged.
+        #
+        # Trivy pulls the image with its OWN registry client rather than through the
+        # docker daemon, so the runner's `docker login` above does not reach it: the
+        # credentials live in the runner's home, and this container sees only the
+        # workspace. Mounting that config read-only and pointing DOCKER_CONFIG at it is
+        # what keeps this working if the package ever stops being public. Read-only, and
+        # outside the workspace, so the credential is never somewhere an artifact upload
+        # could pick it up. DOCKER_CONFIG rather than a mount onto ~/.docker because it
+        # does not care which user the image runs as.
         run: |
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v "${HOME}/.docker:/tmp/docker-config:ro" \
             -w "${{ env.CI_WORKDIR }}" \
+            -e DOCKER_CONFIG=/tmp/docker-config \
             -e TRIVY_CACHE_DIR="${{ env.CI_WORKDIR }}/.stamps/trivy-cache" \
             -e TRIVY_PLATFORM="linux/${{ matrix.arch }}" \
             "${CI_CONTAINER}" \

@@ -46,7 +46,8 @@ task scan-image SCAN_IMAGE=ghcr.io/example/img:tag # or an image reference
 
 It is not part of `task lint`: it needs an image to scan, which a lint run has no reason
 to build. Suppressions live in [`.trivyignore.yaml`](./.trivyignore.yaml), each with a
-justification and an expiry date.
+justification and an expiry date. A devcontainer built before `trivy` was added to the
+image does not have it — rebuild the container if the task reports it missing.
 
 It also runs the documentation checks via `task lint-docs`, which is three tasks:
 `lint-doc-links` (`hack/doccheck`, every tracked file), `lint-markdown` (markdownlint-cli2,
