@@ -1,8 +1,8 @@
 # Specific examples: two ecosystems, and the shared prerequisites
 
 > **design**: worked scenarios for the layout model in [`../model.md`](../model.md). The
-> `GitTarget` files use `spec.serializeNamespace`, `spec.placement.useKustomize` and `spec.suspend`,
-> none of which exist in the current release.
+> `GitTarget` files use `spec.serializeNamespace` and `spec.placement.useKustomize`, neither of
+> which exists in the current release.
 > Date: 2026-08-31.
 > Index: [`../../INDEX.md`](../../INDEX.md)
 

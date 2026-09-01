@@ -78,5 +78,6 @@ mistake, and the deeper one reaches more environments.
 
 **Not bootstrappable, for the same reason as shape 6 and one more.** `useKustomize: true` cannot
 invent `resources: [../../layers/observability]`, and it certainly cannot invent the layer. A layered
-repository is scaffolded by a template or by hand, and GitOps Reverser adopts it afterwards — which
-[`spec.suspend`](../../model.md) exists to make a dry run rather than a leap.
+repository is scaffolded by a template or by hand, and GitOps Reverser adopts it afterwards. To see
+what that adoption would write before committing to it, point a `GitTarget` at a scratch branch and
+read the commits ([`model.md`](../../model.md#previewing-a-target-point-it-at-a-scratch-branch)).

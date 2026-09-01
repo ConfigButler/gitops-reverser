@@ -18,7 +18,7 @@ couplings that are real.
 flowchart TB
   subgraph A["Track A — additive placement (no consumer bump)"]
     direction LR
-    A1["PR 1<br/>corpus + suspend<br/>+ status.placement<br/>+ the Ambiguous rule"] --> A2["PR 2<br/>useKustomize + serializeNamespace<br/>+ the supplier rule<br/>+ one-source-namespace refusal"]
+    A1["PR 1<br/>corpus + suspend<br/>+ status.placement<br/>+ the Ambiguous rule"] --> A2["PR 2<br/>useKustomize + serializeNamespace<br/>+ one-source-namespace refusal"]
   end
   subgraph B["Track B — the breaking wave (one coordinated bump)"]
     direction LR
@@ -39,8 +39,8 @@ tracks are the *independence* argument — why the order is free — and the PR 
 
 | PR | Contains | Breaking | Done when |
 |---|---|---|---|
-| **1 — see it before it writes** | the corpus wired up, `spec.suspend` + the reconcile-request annotation, `status.placement` + `LayoutResolved`, and the post-scan pass's **`Ambiguous` rule** | no | a suspended target reports what it resolved, and every corpus scenario either passes or is skipped naming PR 2 |
-| **2 — the two booleans** | `spec.serializeNamespace`, `placement.useKustomize`, the post-scan pass's **supplier rule**, the one-source-namespace refusal, creating a `kustomization.yaml` | no | every corpus skip naming PR 2 is gone |
+| **1 — explain what it did** | the corpus wired up, `spec.suspend` + the reconcile-request annotation, `status.placement` + `LayoutResolved`, and the post-scan pass (one rule: **`Ambiguous`**) | no | a refused or surprising write is explainable from status, and every corpus scenario either passes or is skipped naming PR 2 |
+| **2 — the two booleans** | `spec.serializeNamespace`, `placement.useKustomize`, the one-source-namespace refusal, creating a `kustomization.yaml` | no | every corpus skip naming PR 2 is gone |
 | **3 — the breaking wave** | delete `allowedSourceNamespaces`, redefine `sourceNamespace: "*"`, the `commit.window` / `commit.message` moves and their riders | **yes**, one bump | the wave's own migration note is satisfied |
 
 PRs 1 and 2 are specified in
@@ -50,17 +50,22 @@ with its co-members in [`gittarget-api-wave.md`](gittarget-api-wave.md); track C
 [`support-boundary/patch-authoring.md` § Delivery sequence](support-boundary/patch-authoring.md#delivery-sequence).
 Those pages are the authority on *what*; this one only on *when*.
 
-**PR 1 is one feature with four parts, not four features.** `suspend` with no status shows you
-nothing; `status.placement` with no `suspend` arrives after the first write, which is too late to act
-on; and the corpus is what proves either of them behaves as written. Their common property is what
-makes them one review: **PR 1 changes what the operator writes in exactly one case, and that case is
-the `Ambiguous` rule.** Everything else in it is a report. That is the reviewability the old
-four-way split was buying, and merging them keeps it at PR granularity rather than spending three
-PRs to get it.
+**PR 1 is one feature with four parts, not four features.** The parts are each small, and the corpus
+is what proves any of them behaves as written. Their common property is what makes them one review:
+**PR 1 changes what the operator writes in exactly one case, and that case is the `Ambiguous`
+rule.** Everything else in it is a report.
 
-**The one case, stated plainly**, because an earlier draft of this page claimed PR 1 changed no
-write behavior at all and that is not true of a rule that gates: a GitTarget covering more than one
-kustomize render root — an app root rather than a leaf overlay — stops placing new documents. Before
+They are independent of each other, and that is worth stating because the grouping invites the
+opposite reading. `suspend` is a panic knob — a way to stop the writes that is not deleting the
+object — and needs no status to be useful. `status.placement` answers "why did that write take that
+shape" and needs no `suspend` to be useful. Neither is a preview: previewing a target means pointing
+one at a scratch branch and reading the commits
+([`../layout/model.md`](../layout/model.md#previewing-a-target-point-it-at-a-scratch-branch)). They
+ship together because they are small and adjacent.
+
+**The one case, stated plainly**, because a rule that gates is a write-behavior change however
+additive the rest of the PR is: a GitTarget covering more than one kustomize render root — an app
+root rather than a leaf overlay — stops placing new documents. Before
 PR 1 it placed them at the canonical path inside whichever folder it covered. The refusal is raised
 at the placement site and surfaces as `GitPathAccepted=False`, reason `AmbiguousLayout`, with
 `LayoutResolved=False` naming the roots the folder covers. An existing document is unaffected: it is
@@ -73,11 +78,10 @@ that had never scanned could never trip the rule in the first place. Refusing at
 keeps the target declared and scanning, so narrowing it to a leaf clears the refusal the way fixing
 any other unsupported content does.
 
-**The post-scan pass splits by rule, and that is a new seam this cut introduces.** Its two rules do
-not have the same inputs: *a folder covering two render roots is `Ambiguous`* reads only the scan and
-ships in PR 1, while *`serializeNamespace: false` needs a supplier* reads a field that does not exist
-until PR 2. So the pass is not "done" in PR 1 — it exists, with one rule in it. Worth stating,
-because the old plan had the pass landing whole.
+**The post-scan pass lands whole in PR 1**, and it is one rule: *a folder covering two render roots
+is `Ambiguous`*, which reads only the scan. It has no second rule — `serializeNamespace: false` is
+not checked against the folder, because the namespace supplier lives outside the repository
+([`../layout/model.md`](../layout/model.md#why-false-needs-no-guard)).
 
 **Order between them is free, and the numbering is a recommendation.** PR 3 does not block PR 1 or 2
 and neither blocks it — see [the couplings that do not
@@ -93,11 +97,10 @@ a file nobody asked for by name, and keep **the write-plan precondition ahead of
 check**, because the precondition is the correctness layer and admission is only feedback. But be
 honest about what that does not buy:
 
-- **Bisect and revert granularity is the PR.** Merging the old PRs 1–3 means a regression in
-  `suspend`, in `status.placement`, or in the corpus is one commit on `main`, and reverting any of
-  them reverts all three. The mitigation is that PR 1's only write-behavior change is the
-  `Ambiguous` rule and nothing depends on the rest of it yet, so a revert is cheap — not that the
-  granularity survives.
+- **Bisect and revert granularity is the PR.** A regression in `suspend`, in `status.placement`, or
+  in the corpus is one commit on `main`, and reverting any of them reverts all three. The mitigation
+  is that PR 1's only write-behavior change is the `Ambiguous` rule and nothing depends on the rest
+  of it yet, so a revert is cheap — not that the granularity survives.
 - **The changelog entry is the PR title.** release-please reads the squashed commit, so PR 1's title
   has to cover four things honestly rather than name the most interesting one.
 - **One property is untouched by the merge:** scenarios for unbuilt behavior are written in PR 1 and
@@ -192,11 +195,11 @@ So PR 1 is assembly, not construction: seed a worktree from `repository/`, build
   `images:` authoring names track C and outlives it.
 - **`config/gittarget.yaml` parses into a harness-local struct** until PR 2 deletes that mapping —
   which is itself a check that the API the examples describe is the API that got built.
-- **Refusals are fixtures too.** Every scenario that only ever succeeds is advertising rather than
-  specification. The set needs at least: `serializeNamespace: false` with no supplier, a second
-  source namespace against an explicit `false`, a folder covering two render roots, and a
-  base-owned field edit — each asserting an `expected-status.yaml` rather than a patch. Only the
-  two-roots one asserts a rule PR 1 ships; the rest are written in PR 1 and skipped until PR 2.
+- **Refusals are fixtures too.** A set in which every scenario succeeds is advertising rather than
+  specification. Three: a second source namespace against an explicit `serializeNamespace: false`, a
+  folder covering two render roots, and a base-owned field edit — each asserting an
+  `expected-status.yaml` rather than a patch. Only the two-roots one asserts a rule PR 1 ships; the
+  second-namespace one is written in PR 1 and skipped until PR 2.
 
 ### The behavior reference this leaves missing
 

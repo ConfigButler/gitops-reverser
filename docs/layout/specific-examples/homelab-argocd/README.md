@@ -74,13 +74,11 @@ because the rest of that prefix is user data. See
         reason: SingleKustomization
         message: "render root '.' governs new files"
     placement:
+      mode: KustomizeRoot
       renderRoot: .
-      serializeNamespace: false
   ```
 
-- Expected Git change:
-  [`expected-paperless.patch`](expected-paperless.patch), after a reviewer
-  clears `suspend`.
+- Expected Git change: [`expected-paperless.patch`](expected-paperless.patch).
 - Expected status: `Ready=True` after the root renders the added Application.
 - Boundary: only `Application` declarations in `argocd` are eligible. An Argo-created workload has
   no writable home in this target.

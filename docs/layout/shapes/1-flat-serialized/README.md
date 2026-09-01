@@ -36,8 +36,7 @@ being self-describing. The flag makes that a folder property rather than a conse
 
 - Starting repository: [`repository/`](repository/).
 - Live input: [`input/checkout-config.yaml`](input/checkout-config.yaml).
-- Expected Git change: [`expected-checkout-config.patch`](expected-checkout-config.patch), after a
-  reviewer clears `suspend`.
+- Expected Git change: [`expected-checkout-config.patch`](expected-checkout-config.patch).
 - Expected status: `Ready=True`, `LayoutResolved` reason `None` — there is no render root, and the
   message says so rather than leaving the field unexplained.
 

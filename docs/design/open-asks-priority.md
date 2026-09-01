@@ -243,7 +243,7 @@ and is not independently schedulable.
 | F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see [`gittarget-api-wave.md`](gittarget-api-wave.md)) | maintainer review | **2** | wave |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
-| ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` on a still-scanning target is the same dry run with one field | config surface | — | [`gittarget-api-wave.md`](gittarget-api-wave.md) |
+| ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` already stops the writes, and `mode` buys only a declared posture over a pause | config surface | — | [`gittarget-api-wave.md`](gittarget-api-wave.md) |
 | 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** | wave |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
@@ -507,9 +507,9 @@ carry, and an aggregated-API create is logged with no name and no response body 
 `#220` shape — honored only against an admission record carrying an authorized verdict, fail-closed
 independent of the webhook's `failurePolicy` — remains the right one, on the first argument alone.
 
-**B4, #6, F10** as written in their source documents. **B1 has left the wave**: a suspended
-`GitTarget` that keeps scanning is the same dry run with one field instead of two, so `mode` buys
-only the difference between a pause and a declared posture. The re-open trigger is in the wave
+**B4, #6, F10** as written in their source documents. **B1 has left the wave**: `suspend` already
+stops a target writing without deleting it, so `mode` buys only the difference between a pause and a
+declared permanent posture — a distinction in intent, not in behavior. The re-open trigger is in the wave
 document. #6 is explicitly a lower priority than
 when it was filed: the consumer downgraded it themselves, because branch and folder are now
 chosen once per repository on an object that exists because the user picked that repository.

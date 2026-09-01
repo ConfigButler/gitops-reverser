@@ -47,9 +47,9 @@ One target is one environment is one write partition, which is what makes author
 review line up with the environment boundary. The reasoning is in
 [`layout/shapes/README.md`](layout/shapes/README.md#why-only-a-leaf-can-be-a-kustomize-target).
 
-To see the verdict without waiting for a write, set `spec.suspend: true` and read
-`status.placement`: a suspended target scans and publishes what it resolved without writing
-anything.
+`status.placement.mode` and `status.placement.renderRoot` report what the scan resolved, and both
+are published before a target has written anything — so a target you have just declared already
+says whether it found one root, none, or several.
 
 ## New resources land where you declare, not where the folder's other documents live
 
