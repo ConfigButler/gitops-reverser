@@ -228,10 +228,14 @@ func AmbiguousLayoutRefusal(resolution LayoutResolution, specPath string) []Acce
 			"the GitTarget path covers %d kustomize render roots (%s), so there is no single one "+
 				"to place new documents into; point the GitTarget at one of them instead",
 			len(resolution.RenderRoots), strings.Join(resolution.RenderRoots, ", ")),
-		// The repository author fixes it, and one GitTarget edit does: it is a scoping mistake,
-		// not a support boundary. See docs/layout/shapes/README.md, "Why only a leaf can be a
-		// kustomize target".
+		// The PLATFORM OPERATOR fixes it, because the remedy is a GitTarget edit rather than a
+		// repository one: the folder is a perfectly good base-plus-overlays tree, and what is
+		// wrong is the scope pointed at it. That is this actor's definition — the GitTarget's
+		// scope and path — and misfiling it would send the one actionable instruction we have
+		// ("point the GitTarget at one of them") to someone who does not own the object it
+		// names. It is solvable and it is not a support boundary. See
+		// docs/layout/shapes/README.md, "Why only a leaf can be a kustomize target".
 		Solvable: true,
-		Actor:    ActorRepositoryAuthor,
+		Actor:    ActorPlatformOperator,
 	}}
 }
