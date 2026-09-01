@@ -910,7 +910,8 @@ The two explicit values are for the two shapes people declare:
   pasted anywhere.
 - **`false` for a folder whose namespace comes from outside it**: a Flux `Kustomization`'s
   `spec.targetNamespace`, an Argo CD `Application`'s `spec.destination.namespace`, or a
-  `kustomization.yaml` in the folder that sets `namespace:`.
+  hand-written `kustomization.yaml` in the folder that sets `namespace:`. A root the operator
+  creates never sets one.
 
 **Nothing checks that the supplier exists, and nothing can.** For a raw namespace-free folder the
 supplier lives in the cluster that *consumes* the repository, and there may be more than one of
@@ -932,6 +933,13 @@ write here rather than what the folder means.
 
 Inference is never fenced this way. A folder that is truly multi-namespace and namespace-free is
 what leaving the field **unset** is for.
+
+**What the render check does with the namespace.** Every write is compared against the live object
+it mirrors, and `metadata.namespace` is the one field allowed not to match. It is ignored only when
+the folder renders the document with no namespace at all, which is `serializeNamespace: false` with
+nothing in the folder supplying one. A `kustomization.yaml` that declares `namespace:` makes a
+concrete claim, so it is still compared: a root declaring `namespace: shop` rendering an object that
+lives in `billing` is a relocation, and it is refused whatever `serializeNamespace` says.
 
 ### Keeping the folder a kustomize folder (`spec.placement.useKustomize`)
 
@@ -962,16 +970,22 @@ already have. Nothing is moved, rewritten or re-encoded. A root naming only the 
 leave every other file sitting in Git and out of every render: the moment a consumer ran `kustomize
 build` against the folder, they would stop being applied, with nothing to show what happened.
 
-**A folder that already has a render root never gains a second one.** If a `byType` or `default`
-template puts the new document somewhere the existing root does not govern, the document is written
-and left unregistered rather than given a root of its own. Two render roots in one target's folder
-is the ambiguous case, and an ambiguous folder stops accepting new documents entirely, which is a
-much larger fault than one unregistered file. Point a target at a single root, and use a template
-that keeps its documents inside it.
+**A folder that already has a render root never gains a second one, and a document it would not
+render is refused.** If a `byType` or `default` template puts the new document somewhere the
+existing root does not govern, the placement is refused with `GitPathAccepted=False`, reason
+`UnrenderedPlacement`. Two render roots in one target's folder is the ambiguous case, and an
+ambiguous folder stops accepting new documents entirely; committing the file unregistered instead
+would leave a document sitting in Git looking mirrored while nothing applies it. The fix is a
+template that keeps its documents inside the root, or a target pointed at the folder that root
+governs. Without `useKustomize` nothing changes: a target that made no claim about kustomize keeps
+its current behavior.
 
-The created root is the smallest thing kustomize will build: an `apiVersion`, a `kind`, the
-`resources:` list, and `namespace:` when exactly one source namespace reaches the
-target. That last line is the point of the pairing with
+**The created root carries no `namespace:`.** It is an `apiVersion`, a `kind` and the `resources:`
+list, and nothing else. `serializeNamespace: false` says the artifact does not encode its deployment
+namespace, and creating a root must not re-encode it one file up where an installer cannot override
+it, so the namespace still comes from the documents (`serializeNamespace` unset or `true`) or from
+whatever installs the folder. The reasoning, and the four other answers that were considered, is in
+[`design/created-root-namespace.md`](design/created-root-namespace.md). That last line is the point of the pairing with
 [`serializeNamespace: false`](#whether-documents-carry-their-namespace-specserializenamespace): on
 an empty folder there is nothing to infer from, and the operator owns the file the omission depends
 on, so the omission is provable rather than trusted.

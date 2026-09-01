@@ -46,9 +46,10 @@ func TestUseKustomize_CreatesTheRootAndRegistersTheDocument(t *testing.T) {
 
 	root := readWorktreeFile(t, worktree, "kustomization.yaml")
 	assert.Equal(t, "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
-		"namespace: shop\nresources:\n  - checkout-config.yaml\n", root)
+		"resources:\n  - checkout-config.yaml\n", root,
+		"an apiVersion, a kind and the resources: list — and no namespace:, ever")
 	assert.NotContains(t, readWorktreeFile(t, worktree, "checkout-config.yaml"), "namespace:",
-		"the operator owns the root that supplies the namespace, which is what makes the omission provable")
+		"serializeNamespace: false, so the installer supplies the namespace and the folder encodes none")
 }
 
 // The second document in the same flush joins the root the first one created. The store was built
@@ -106,7 +107,7 @@ func TestUseKustomize_CreatedRootAdoptsTheFilesAlreadyInTheFolder(t *testing.T) 
 		namespaceProbeEvent("shop", "checkout-config", "green")))
 
 	assert.Equal(t, "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
-		"namespace: shop\nresources:\n"+
+		"resources:\n"+
 		"  - checkout-config.yaml\n  - configmaps/cache.yaml\n  - web.yaml\n",
 		readWorktreeFile(t, worktree, "kustomization.yaml"),
 		"every managed document in the folder is listed, at the path it already lives at")
@@ -115,10 +116,14 @@ func TestUseKustomize_CreatedRootAdoptsTheFilesAlreadyInTheFolder(t *testing.T) 
 }
 
 // A folder that already has a render root never gains a SECOND one, even when a declared template
-// puts the new document outside it. Two render roots is an Ambiguous folder, and an ambiguous
-// folder stops accepting new documents altogether — a far larger fault than the one unregistered
-// file this leaves behind.
-func TestUseKustomize_WritesNoSecondRootBesideAnExistingOne(t *testing.T) {
+// puts the new document outside it: two render roots is an Ambiguous folder, and an ambiguous
+// folder stops accepting new documents altogether.
+//
+// What is left is to write the document unrendered or to refuse, and under useKustomize the target
+// has declared this folder is a kustomize folder it maintains. A file no resources: list names is
+// one that sits in Git looking mirrored while nothing applies it, so the placement is REFUSED and
+// the user is told which root does not reach it.
+func TestUseKustomize_RefusesAPlacementNoRootWouldRender(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem().Root()
 	seedFile(t, root, "media/kustomization.yaml",
@@ -128,14 +133,17 @@ func TestUseKustomize_WritesNoSecondRootBesideAnExistingOne(t *testing.T) {
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\n")
 	policy := &manifestanalyzer.PlacementPolicy{Default: "flags/{name}.yaml", UseKustomize: true}
 
-	require.NoError(t, flushWithPlacement(t, worktree, policy, namespacePolicy{},
-		namespaceProbeEvent("shop", "checkout-config", "green")))
+	err := flushWithPlacement(t, worktree, policy, namespacePolicy{},
+		namespaceProbeEvent("shop", "checkout-config", "green"))
 
+	require.Error(t, err, "a document nothing renders is refused, not committed")
+	assert.Contains(t, err.Error(), "governed by no kustomization")
 	assert.NoFileExists(t, root+"/kustomization.yaml",
 		"a second render root would make the folder ambiguous and stop every later placement")
-	assert.FileExists(t, root+"/flags/checkout-config.yaml", "the document is still written")
+	assert.NoFileExists(t, root+"/flags/checkout-config.yaml",
+		"and nothing is written: a file in Git that no resources: list names looks mirrored and is not")
 	assert.Contains(t, readWorktreeFile(t, worktree, "media/kustomization.yaml"), "- web.yaml",
-		"and the root that was already there is untouched")
+		"the root that was already there is untouched")
 }
 
 // Without the flag nothing is created, and the document lands at the canonical path. That is the
@@ -148,20 +156,6 @@ func TestUseKustomize_UnsetWritesNoRoot(t *testing.T) {
 
 	assert.NoFileExists(t, worktree.Filesystem().Root()+"/kustomization.yaml")
 	assert.FileExists(t, worktree.Filesystem().Root()+"/shop/configmaps/checkout-config.yaml")
-}
-
-// The created root carries namespace: only when the folder has ONE. With two source namespaces
-// there is nothing truthful to write there — and such a target is refused before it reaches here
-// when it declared serializeNamespace: false, which is the pairing the model relies on.
-func TestUseKustomize_CreatedRootCarriesNamespaceOnlyWhenTheFolderHasOne(t *testing.T) {
-	worktree := newWorktreeForTest(t)
-
-	require.NoError(t, flushWithPlacement(t, worktree, useKustomizePolicy(),
-		namespacePolicy{SourceNamespaces: []string{"billing", "shop"}},
-		namespaceProbeEvent("shop", "checkout-config", "green")))
-
-	assert.NotContains(t, readWorktreeFile(t, worktree, "kustomization.yaml"), "namespace:",
-		"a root that named one of two namespaces would mislabel every document under it")
 }
 
 // A declared template still decides the path; useKustomize only decides whether the folder gets a

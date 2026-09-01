@@ -89,6 +89,16 @@ func (e *RenderRefusedError) Error() string {
 	return "kustomize render refused the write: " + strings.Join(e.Reasons, "; ")
 }
 
+// VerifyOptions is what the write path knows about the GitTarget that the render comparison cannot
+// see in the files.
+type VerifyOptions struct {
+	// NamespaceSuppliedDownstream is spec.serializeNamespace: false — the target declared that its
+	// documents do not encode a deployment namespace, so something outside this repository supplies
+	// one. It relaxes the comparison for a rendered object that HAS no namespace, and only for
+	// that object: see compareRoot.
+	NamespaceSuppliedDownstream bool
+}
+
 // VerifyBatchRenders re-renders every root of the subtree twice — as the flush found it,
 // and as the flush would leave it — and proves both halves of the oracle:
 //
@@ -103,7 +113,11 @@ func (e *RenderRefusedError) Error() string {
 //
 // before and after are complete file trees. The cost is two builds per render root, once per
 // flush, and it is only paid when the flush routed something through a kustomization.
-func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []WriteIntent) error {
+func VerifyBatchRenders(
+	before, after []manifestedit.FileContent,
+	intents []WriteIntent,
+	opts VerifyOptions,
+) error {
 	byKey := make(map[chainKey]WriteIntent, len(intents))
 	for _, in := range intents {
 		byKey[in.key()] = in
@@ -141,7 +155,7 @@ func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []Writ
 			continue
 		}
 		reasons = append(reasons, compareRoot(
-			rootComparison{root: root, existedBefore: existed},
+			rootComparison{root: root, existedBefore: existed, opts: opts},
 			byKey, seen, renderedByKey(was), renderedByKey(now))...)
 	}
 
@@ -165,6 +179,7 @@ func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []Writ
 type rootComparison struct {
 	root          string
 	existedBefore bool
+	opts          VerifyOptions
 }
 
 // compareRoot checks one render root's before/after pair against the flush's intents.
@@ -222,13 +237,45 @@ func compareRoot(
 		case !exists:
 			reasons = append(reasons, fmt.Sprintf(
 				"%s/%s was written, but render root %s no longer renders it", key.kind, key.name, root))
-		case !sameObject(after.Object, intent.Desired):
+		case !rc.rendersAsIntended(after.Object, intent.Desired):
 			reasons = append(reasons, fmt.Sprintf(
 				"in render root %s, %s/%s (from %s) does not render to the live object after the write",
 				root, key.kind, key.name, key.originPath))
 		}
 	}
 	return reasons
+}
+
+// rendersAsIntended compares what the folder renders with the live object the write meant to
+// mirror, and holds the one place the namespace is allowed not to match.
+//
+// The relaxation is scoped by the RENDER, not by the setting alone. spec.serializeNamespace: false
+// says the artifact does not encode its deployment namespace, so when the render agrees — the
+// object comes out with no namespace, because no kustomization in its chain supplies one — the
+// difference against a live object in some namespace is the shape working as declared, and every
+// other field is still compared.
+//
+// When the render DOES produce a namespace, some kustomization set one, and that is a concrete
+// claim the folder makes: a root declaring `namespace: shop` rendering a live `billing` object is a
+// relocation, which is exactly the failure this gate exists to catch. So the namespace is compared
+// there whatever the target declared.
+//
+// Asking the render rather than re-reading the kustomization files is deliberate: the chain can
+// have several roots and kustomize decides which transformer wins, so the built output is the only
+// answer that cannot disagree with what will actually be applied.
+func (rc rootComparison) rendersAsIntended(rendered, desired *unstructured.Unstructured) bool {
+	if sameObject(rendered, desired) {
+		return true
+	}
+	if !rc.opts.NamespaceSuppliedDownstream || rendered == nil || desired == nil {
+		return false
+	}
+	if rendered.GetNamespace() != "" {
+		return false
+	}
+	withoutNamespace := desired.DeepCopy()
+	withoutNamespace.SetNamespace("")
+	return sameObject(rendered, withoutNamespace)
 }
 
 func unionKeys(a, b map[chainKey]renderedObject) map[chainKey]struct{} {

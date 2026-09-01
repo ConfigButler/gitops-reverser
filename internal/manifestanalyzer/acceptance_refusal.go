@@ -75,6 +75,8 @@ func GitPathRefusalReason(refused *AcceptanceRefusedError) string {
 		return "AmbiguousLayout"
 	case refused.AllIssuesOfKinds(IssueMultipleSourceNamespaces):
 		return "MultipleSourceNamespaces"
+	case refused.AllIssuesOfKinds(IssueUnrenderedPlacement):
+		return "UnrenderedPlacement"
 	case refused.AllIssuesOfKinds(
 		IssueWriteEscapesScope,
 		IssueWriteFanIn,

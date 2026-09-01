@@ -13,9 +13,8 @@ diff --git a/apps/checkout/kustomization.yaml b/apps/checkout/kustomization.yaml
 new file mode 100644
 --- /dev/null
 +++ b/apps/checkout/kustomization.yaml
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,4 @@
 +apiVersion: kustomize.config.k8s.io/v1beta1
 +kind: Kustomization
-+namespace: shop
 +resources:
 +  - checkout-config.yaml

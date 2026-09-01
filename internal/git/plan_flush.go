@@ -475,11 +475,8 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// foreign content we declined to own, added to resources: on our say-so; and either way it
 	// counted as outcome="added", the value that is supposed to mean "the file we just wrote will
 	// build". Pinned by TestPlacementMetrics_RefusedPlacementLeavesTheKustomizationAlone.
-	// A folder the target asked to keep as a kustomize folder, and that has no root, gets one
-	// here — with this document already registered in it. A LATER document in the same batch
-	// joins that root through the ordinary append below, which is why this returns it.
-	if created := wb.bootstrapKustomization(ctx, placement); created != nil {
-		placement.Kustomization = created
+	if err := wb.resolveKustomizeRootForNew(ctx, &placement); err != nil {
+		return upsertNoChange, err
 	}
 	if placement.Kustomization != nil {
 		wb.appendKustomizationResource(ctx, event, placement)
@@ -498,6 +495,44 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil || wb.createdRoot != nil
 	wb.intend(markUnchecked(intentFor(live, placement.Path, false), sensitive))
 	return outcome, nil
+}
+
+// resolveKustomizeRootForNew settles what renders a new document, for a target that declared
+// spec.placement.useKustomize. It creates the folder's root when there is none — with this document
+// already registered in the bytes it writes, so a LATER document in the same batch joins it through
+// the ordinary resources: append — and otherwise refuses a placement no kustomization would render.
+//
+// Both halves are here rather than in createNew because they answer one question between them: is
+// this document going to be rendered at all?
+func (wb *writeBatch) resolveKustomizeRootForNew(
+	ctx context.Context,
+	placement *manifestanalyzer.PlacementResult,
+) error {
+	if created := wb.bootstrapKustomization(ctx, *placement); created != nil {
+		placement.Kustomization = created
+	}
+	issues := wb.unrenderedPlacementRefusal(*placement)
+	if len(issues) == 0 {
+		return nil
+	}
+	return manifestanalyzer.RefusalError(manifestanalyzer.Acceptance{Accepted: false, Issues: issues})
+}
+
+// unrenderedPlacementRefusal reports the refusal for a placement under spec.placement.useKustomize
+// that no kustomization would render. A document is rendered when a kustomization governs its path,
+// and there are three ways for that to be true: one already governed it and needs the entry
+// (LocateNew set Kustomization), one already governed it and already lists the path, or this batch
+// created the root — which registers the first document in the bytes it writes, so it reports no
+// Kustomization to append to.
+func (wb *writeBatch) unrenderedPlacementRefusal(
+	placement manifestanalyzer.PlacementResult,
+) []manifestanalyzer.AcceptanceIssue {
+	governed := placement.Kustomization != nil ||
+		wb.createdRoot != nil ||
+		manifestanalyzer.GoverningKustomization(wb.store, wb.writeSubdir, placement.Path) != nil
+	useKustomize := wb.policy != nil && wb.policy.UseKustomize
+	return manifestanalyzer.UnrenderedPlacementRefusal(
+		useKustomize, governed, placement.Path, wb.layout.RenderRoot)
 }
 
 // placeNewDocument writes the new document at its resolved placement: appended to an existing
@@ -1040,7 +1075,10 @@ func (wb *writeBatch) renderPrecondition() error {
 	}
 
 	var refused *manifestanalyzer.RenderRefusedError
-	if err := manifestanalyzer.VerifyBatchRenders(before, wb.files(), wb.intents); err != nil {
+	verifyOptions := manifestanalyzer.VerifyOptions{
+		NamespaceSuppliedDownstream: wb.namespaces.declaresNamespaceFree(),
+	}
+	if err := manifestanalyzer.VerifyBatchRenders(before, wb.files(), wb.intents, verifyOptions); err != nil {
 		if errors.As(err, &refused) {
 			issues := make([]manifestanalyzer.AcceptanceIssue, 0, len(refused.Reasons))
 			for _, reason := range refused.Reasons {

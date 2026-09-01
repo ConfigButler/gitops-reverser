@@ -61,10 +61,13 @@ var classificationByKind = map[IssueKind][]Classification{
 	// configuration pointed at it is not, so the actor is the one who owns both objects the fix
 	// touches (the GitTarget and the WatchRule).
 	IssueMultipleSourceNamespaces: {{Solvable: true, Actor: ActorPlatformOperator}},
-	IssueRenderDoesNotMatchLive:   {{Solvable: true, Actor: ActorPlatformOperator}},
-	IssueWriteFanIn:               {{Solvable: false}},
-	IssueUnplaceableEdit:          {{Solvable: false}},
-	IssueRenderRefused:            {{Solvable: false}},
+	// Same shape: the folder is fine, the template aimed at it is not, and the platform operator
+	// owns the template.
+	IssueUnrenderedPlacement:    {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueRenderDoesNotMatchLive: {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueWriteFanIn:             {{Solvable: false}},
+	IssueUnplaceableEdit:        {{Solvable: false}},
+	IssueRenderRefused:          {{Solvable: false}},
 	// One code, two answers — the case that proves the whole ask. A build file the author
 	// broke is one commit from working; a generator is not solvable at all.
 	IssueUnsupportedKustomize: {

@@ -72,3 +72,42 @@ func MultipleSourceNamespacesRefusal(
 // any Kubernetes API type dependency; the value is part of the CRD's user-facing contract and
 // changing it would be a breaking API change either way.
 const SourceNamespaceWildcard = "*"
+
+// IssueUnrenderedPlacement marks a new document a kustomize folder would hold but never render:
+// spec.placement.useKustomize declares the operator maintains this folder's root, and the path the
+// document resolved to is governed by no resources: list.
+//
+// Like IssueMultipleSourceNamespaces it is not a property of the folder's CONTENT — the folder is
+// perfectly good kustomize — but of the configuration aimed at it, and it is raised at the write
+// because only the write knows where the document was about to land.
+const IssueUnrenderedPlacement IssueKind = "unrendered-placement"
+
+// UnrenderedPlacementRefusal refuses a placement that would commit a document nothing renders.
+//
+// It arises in one shape. The folder already has a render root, a byType or default template puts
+// the new document outside it, and creating a second root is not available: two render roots is
+// Ambiguous, and an ambiguous folder stops placing new documents at all. What is left is to write
+// the file unrendered or to refuse, and under useKustomize the target has declared this folder is a
+// kustomize folder — a file no resources: list names is one that looks mirrored in Git and is
+// applied by nothing, which is the failure #295 was and #319 made an invariant.
+//
+// It is raised ONLY under useKustomize. A target that made no claim about kustomize keeps today's
+// behavior, so this is not a new refusal for folders that never asked for one.
+func UnrenderedPlacementRefusal(useKustomize, governed bool, resolvedPath, renderRoot string) []AcceptanceIssue {
+	if !useKustomize || governed {
+		return nil
+	}
+	return []AcceptanceIssue{{
+		Kind: IssueUnrenderedPlacement,
+		Path: resolvedPath,
+		Message: fmt.Sprintf(
+			"placement.useKustomize is set, but %q is governed by no kustomization: render root %q is "+
+				"already there and does not reach it, and a second root would make the folder cover two "+
+				"render roots. Place the document inside that root, or point the GitTarget at the folder "+
+				"the root governs",
+			resolvedPath, renderRoot),
+		// The PLATFORM OPERATOR fixes it: the remedy is the target's own template or path.
+		Solvable: true,
+		Actor:    ActorPlatformOperator,
+	}}
+}

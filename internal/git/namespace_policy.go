@@ -81,15 +81,3 @@ func (p namespacePolicy) declaredNamespace() string {
 	}
 	return p.SourceNamespaces[0]
 }
-
-// declaredFolderNamespace is the namespace a created kustomization.yaml carries, or "" when the
-// folder has no single one to write. It is the same question declaredNamespace asks and a wider
-// answer: a root's namespace: is meaningful whenever exactly one source namespace reaches the
-// target, whereas ATTRIBUTING a namespace-less document to that namespace additionally requires
-// the target to have declared the folder namespace-free.
-func (p namespacePolicy) declaredFolderNamespace() string {
-	if p.SourceNamespaceWildcard || len(p.SourceNamespaces) != 1 {
-		return ""
-	}
-	return p.SourceNamespaces[0]
-}

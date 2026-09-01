@@ -126,10 +126,13 @@ so every shape that relied on inference has to be *declared* instead.
 
 Three findings come out of that column, and they are the substance of this document.
 
-**Shape 5 is the case `useKustomize` was designed for, and it closes its own loop.** An empty folder
-plus `useKustomize: true` plus `serializeNamespace: false` is the one combination where the omission
-is *provable*: the operator writes the `kustomization.yaml`, puts `namespace: shop` in it, and then
-legitimately leaves `metadata.namespace` out of every document it places. Nothing is trusted.
+**Shape 5 is the case `useKustomize` was designed for.** An empty folder plus `useKustomize: true`
+plus `serializeNamespace: false` produces a kustomize folder from the first commit: the operator
+writes the `kustomization.yaml`, adopts whatever is already there into its `resources:`, and leaves
+`metadata.namespace` out of every document it places. The created root carries no `namespace:`
+either — the artifact does not encode its deployment namespace, and the installer supplies it, the
+same way it does for shapes 2 and 4 (see
+[`../../design/created-root-namespace.md`](../../design/created-root-namespace.md)).
 [`5-kustomize-single-folder`](5-kustomize-single-folder/README.md) shows both halves — the same
 folder adopted and created — and they differ by two lines of spec.
 

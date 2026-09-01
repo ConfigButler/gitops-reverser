@@ -92,9 +92,15 @@ const (
 	// refuses the flush before any byte is written. The remedy is a GitTarget or WatchRule edit.
 	// The string must stay in sync with manifestanalyzer.GitPathRefusalReason.
 	GitTargetReasonMultipleSourceNamespaces = "MultipleSourceNamespaces"
-	GitTargetReasonRenderMatchesLive        = "RenderMatchesLive"
-	GitTargetReasonRenderDoesNotMatchLive   = "RenderDoesNotMatchLive"
-	GitTargetReasonRenderRechecking         = "Rechecking"
+	// GitTargetReasonUnrenderedPlacement is the terminal reason for a placement under
+	// spec.placement.useKustomize that no kustomization would render: the folder already has a
+	// render root and the resolved path is outside it. Nothing is written, because a document in
+	// Git that nothing applies looks mirrored and is not. The remedy is the target's own template
+	// or path. The string must stay in sync with manifestanalyzer.GitPathRefusalReason.
+	GitTargetReasonUnrenderedPlacement    = "UnrenderedPlacement"
+	GitTargetReasonRenderMatchesLive      = "RenderMatchesLive"
+	GitTargetReasonRenderDoesNotMatchLive = "RenderDoesNotMatchLive"
+	GitTargetReasonRenderRechecking       = "Rechecking"
 
 	GitTargetReadyReasonValidationFailed        = "ValidationFailed"
 	GitTargetReadyReasonEncryptionNotConfigured = "EncryptionNotConfigured"

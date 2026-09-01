@@ -36,7 +36,8 @@ const (
 //     licence to write a competing root inside the jail.
 //   - Only when the folder has no render root AT ALL (LayoutNone). A folder that already has one,
 //     with this document landing outside it, must not gain a second: two render roots is
-//     Ambiguous, and the target would stop placing new documents entirely.
+//     Ambiguous, and the target would stop placing new documents entirely. That placement is
+//     REFUSED instead of written unrendered — see unrenderedPlacementRefusal.
 //   - Only once per batch. The second new document in the same flush joins the root the first one
 //     created, through the ordinary resources: append.
 //
@@ -45,11 +46,12 @@ const (
 // one file would make every other file stop rendering the moment a consumer ran kustomize build:
 // the files would still be in Git, and nothing would apply them. See adoptableEntries.
 //
-// The created root carries namespace: only when exactly one source namespace reaches the target.
-// That is what makes it MEANINGFUL rather than an empty file, and it is the half that makes an
-// accompanying serializeNamespace: false provable: the operator owns the file the omission depends
-// on. With two namespaces there is no namespace to write, and such a target is refused before it
-// reaches here anyway.
+// The created root carries NO namespace:, ever. spec.serializeNamespace: false means the artifact
+// does not encode its deployment namespace, and creating a root must not quietly change that
+// contract by pinning the namespace one file up, where it is harder to see and impossible to
+// override. The namespace comes from the documents when serializeNamespace is unset or true, and
+// from the installer — a Flux Kustomization's targetNamespace, an Argo Application's
+// destination.namespace — when it is false. See docs/design/created-root-namespace.md.
 func (wb *writeBatch) bootstrapKustomization(
 	ctx context.Context,
 	placement manifestanalyzer.PlacementResult,
@@ -83,7 +85,7 @@ func (wb *writeBatch) bootstrapKustomization(
 		return nil
 	}
 	entries := wb.adoptableEntries(rootPath, placement.Path)
-	buf.current = []byte(renderCreatedKustomization(wb.namespaces.declaredFolderNamespace(), entries))
+	buf.current = []byte(renderCreatedKustomization(entries))
 
 	created := &manifestanalyzer.KustomizationInfo{Path: rootPath, Resources: entries}
 	wb.createdRoot = created
@@ -91,8 +93,7 @@ func (wb *writeBatch) bootstrapKustomization(
 		recordKustomizationEntry(ctx, wb.target, kustomizationEntryAdded)
 	}
 	log.FromContext(ctx).Info("Created kustomization.yaml for a folder that had none",
-		"kustomization", rootPath, "entries", entries, "adopted", len(entries)-1,
-		"namespace", wb.namespaces.declaredFolderNamespace())
+		"kustomization", rootPath, "entries", entries, "adopted", len(entries)-1)
 	// The document is registered in the bytes just written, so the caller must not append it
 	// again; returning nil says "no further registration needed" for this first document.
 	return nil
@@ -138,15 +139,13 @@ func pathWithinWriteScope(writeSubdir, filePath string) bool {
 	return strings.HasPrefix(filePath, writeSubdir+"/")
 }
 
-// renderCreatedKustomization is the created root's bytes. They are assembled as text rather than
-// marshalled from a struct so the file reads the way a person would have written it: block
-// sequence, two-space indent, no empty stanzas for the fields we do not set.
-func renderCreatedKustomization(namespace string, entries []string) string {
+// renderCreatedKustomization is the created root's bytes: an apiVersion, a kind, and the resources:
+// list. Nothing else — no namespace:, and no stanza for a field the operator does not set. They are
+// assembled as text rather than marshalled from a struct so the file reads the way a person would
+// have written it: block sequence, two-space indent.
+func renderCreatedKustomization(entries []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "apiVersion: %s\nkind: %s\n", createdKustomizationAPIVersion, createdKustomizationKind)
-	if namespace != "" {
-		fmt.Fprintf(&b, "namespace: %s\n", namespace)
-	}
 	b.WriteString("resources:\n")
 	for _, entry := range entries {
 		fmt.Fprintf(&b, "  - %s\n", entry)

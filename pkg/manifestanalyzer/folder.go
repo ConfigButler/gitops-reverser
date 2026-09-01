@@ -65,6 +65,11 @@ const (
 	// document, so the write is refused. It is the one kind here that is a property of the
 	// CONFIGURATION rather than of the folder: no repository content can cause it or clear it.
 	IssueMultipleSourceNamespaces IssueKind = "multiple-source-namespaces"
+	// IssueUnrenderedPlacement marks a new document a kustomize folder would hold but never
+	// render: spec.placement.useKustomize declares the operator maintains the folder's root, and
+	// the path the document resolved to is governed by no resources: list. Like the kind above it
+	// is a property of the configuration rather than of the folder's content.
+	IssueUnrenderedPlacement IssueKind = "unrendered-placement"
 	// IssueWriteFanIn marks an in-place edit of a source file that more than one kustomize
 	// render root reaches.
 	IssueWriteFanIn IssueKind = "write-fan-in"

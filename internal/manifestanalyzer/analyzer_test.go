@@ -118,6 +118,7 @@ func TestAnalyze_Issues(t *testing.T) {
 		// A configuration fact rather than a folder one: nothing about a tree on disk can make
 		// two source namespaces reach it, so Analyze never raises it.
 		IssueMultipleSourceNamespaces: 0,
+		IssueUnrenderedPlacement:      0,
 		// Foreign-content, ignore-shadow, and the write-boundary refusals are
 		// acceptance-gate / write-plan facts, not part of the structure-only Analyze report,
 		// so they never surface here. IssueRenderRefused is the strongest case of that: it is

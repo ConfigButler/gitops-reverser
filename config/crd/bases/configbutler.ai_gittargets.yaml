@@ -338,17 +338,20 @@ spec:
 
                       Omitted or false, the document is written and nothing else is touched. True, a
                       kustomization.yaml is created at spec.path and the new document is registered in it as part
-                      of the same commit. The created root carries namespace: when exactly one source namespace
-                      reaches this target, which is what makes it a meaningful kustomization rather than an empty
-                      file, and what makes an accompanying serializeNamespace: false provable rather than trusted.
+                      of the same commit.
 
                       A created root ADOPTS the folder: its resources: lists every managed document already there
                       as well as the new one. Turning a folder into a kustomize folder means the folder, and a
                       root naming one file would leave every other file in Git but out of every render.
 
-                      A folder that already has a kustomize render root never gains a second one, even when a
-                      byType or default template puts the new document outside that root. Two render roots is an
-                      ambiguous folder, which stops accepting new documents altogether.
+                      A created root carries NO namespace:. It holds an apiVersion, a kind and the resources: list
+                      and nothing else, so the namespace still comes from the documents (serializeNamespace unset
+                      or true) or from whatever installs the folder (serializeNamespace false).
+
+                      A folder that already has a kustomize render root never gains a second one, because two
+                      render roots is an ambiguous folder that stops accepting new documents altogether. If a
+                      byType or default template places a document outside the existing root, that placement is
+                      REFUSED rather than committed as a file no kustomization would render.
 
                       It has NO bearing on a folder that already has a root. A new file is always registered with
                       the nearest kustomization governing it, whatever chose its path, because a file no
