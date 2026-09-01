@@ -395,6 +395,12 @@ func (w *BranchWorker) applyResyncToWorktree(
 	if err := batch.refusal(); err != nil {
 		return ResyncStats{}, false, err
 	}
+	// The same precondition the live path applies: a folder declared namespace-free that two
+	// source namespaces reach cannot tell its own documents apart, and a resync writes exactly
+	// what the live path writes.
+	if err := batch.sourceNamespaceRefusal(); err != nil {
+		return ResyncStats{}, false, err
+	}
 	// The store is built from the same files the planner reads, so the plan and the apply
 	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync

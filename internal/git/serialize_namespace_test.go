@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -135,4 +136,79 @@ func TestSerializeNamespace_FalseAttributesNothingWhenTwoNamespacesReachTheTarge
 		"a folder whose documents carry their own namespace needs no attribution")
 	assert.Empty(t, namespacePolicy{SourceNamespaces: []string{"shop"}}.declaredNamespace(),
 		"inference is never a folder-wide claim, so unset attributes nothing")
+}
+
+// TestSerializeNamespace_SecondSourceNamespaceIsRefused is the fence around "one namespace", and
+// the reason it refuses where the rest of the model reports: two namespaces reaching a
+// namespace-free folder do not collide, they MATCH. shop/checkout-config and
+// billing/checkout-config both resolve to bytes carrying no namespace, so one document ends up
+// flipping between two live objects and Git holds no record that it happened.
+//
+// docs/layout/shapes/2-flat-namespace-free asserts the same refusal end to end, against the
+// condition a user reads. This asserts the halves that fixture cannot: that the refusal is a
+// precondition (nothing is written, whatever the events were), and that a wildcard is refused
+// without enumerating anything.
+func TestSerializeNamespace_SecondSourceNamespaceIsRefused(t *testing.T) {
+	t.Run("a second namespace refuses before a byte moves", func(t *testing.T) {
+		worktree := newWorktreeForTest(t)
+
+		err := flushWithNamespacePolicy(t, worktree,
+			serializeNamespacePolicy(false, "billing", "shop"),
+			namespaceProbeEvent("shop", "checkout-config", "green"))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "admits exactly one source namespace")
+		assert.NoFileExists(t, filepath.Join(worktree.Filesystem().Root(), "shop/configmaps/checkout-config.yaml"),
+			"a refused flush writes nothing")
+	})
+
+	t.Run("a wildcard is refused without enumerating anything", func(t *testing.T) {
+		worktree := newWorktreeForTest(t)
+		policy := serializeNamespacePolicy(false, "shop")
+		policy.SourceNamespaceWildcard = true
+
+		err := flushWithNamespacePolicy(t, worktree, policy,
+			namespaceProbeEvent("shop", "checkout-config", "green"))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `sourceNamespace "*"`)
+	})
+
+	t.Run("one namespace writes", func(t *testing.T) {
+		worktree := newWorktreeForTest(t)
+		require.NoError(t, flushWithNamespacePolicy(t, worktree,
+			serializeNamespacePolicy(false, "shop"),
+			namespaceProbeEvent("shop", "checkout-config", "green")))
+	})
+
+	t.Run("inference is never fenced", func(t *testing.T) {
+		worktree := newWorktreeForTest(t)
+		require.NoError(t, flushWithNamespacePolicy(t, worktree,
+			namespacePolicy{SourceNamespaces: []string{"billing", "shop"}},
+			namespaceProbeEvent("shop", "checkout-config", "green")),
+			"a folder that declared nothing resolves each document against the root governing it")
+	})
+
+	t.Run("serializeNamespace: true is not fenced either", func(t *testing.T) {
+		worktree := newWorktreeForTest(t)
+		require.NoError(t, flushWithNamespacePolicy(t, worktree,
+			serializeNamespacePolicy(true, "billing", "shop"),
+			namespaceProbeEvent("shop", "checkout-config", "green")),
+			"every document carries its own namespace, so two of them are still two documents")
+	})
+}
+
+// TestSerializeNamespace_RefusalPublishesItsOwnReason pins the reason the refusal reaches status
+// under. The message is asserted by the corpus fixture; this is the mapping, which is what a
+// consumer alerts on and what Stalled carries.
+func TestSerializeNamespace_RefusalPublishesItsOwnReason(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+
+	err := flushWithNamespacePolicy(t, worktree,
+		serializeNamespacePolicy(false, "billing", "shop"),
+		namespaceProbeEvent("shop", "checkout-config", "green"))
+
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "MultipleSourceNamespaces", manifestanalyzer.GitPathRefusalReason(refused))
 }

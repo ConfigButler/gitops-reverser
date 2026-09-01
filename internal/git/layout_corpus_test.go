@@ -188,8 +188,6 @@ func layoutCorpus() []corpusScenario {
 			config: "gittarget-second-namespace.yaml",
 			input:  "checkout-config.yaml",
 			status: "expected-second-namespace-status.yaml",
-			skip: "PR 2: the one-source-namespace refusal ships with spec.serializeNamespace " +
-				"(the write-plan precondition first, then the WatchRule admission check)",
 		},
 		{
 			dir:   "shapes/3-tree-serialized",

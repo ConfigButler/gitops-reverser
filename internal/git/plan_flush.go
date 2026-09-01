@@ -95,6 +95,12 @@ func (w *BranchWorker) flushEventsToWorktree(
 	// above on purpose: a folder the operator has refused to manage is one whose layout it should
 	// not be making claims about, and GitPathAccepted=False already says why.
 	w.scanLayout(ctx, batch, worktree)
+	// The one write-plan precondition that is not about the folder at all, which is why it is
+	// raised AFTER the layout is published: the folder is fine and its shape is still worth
+	// reporting; what is wrong is the configuration pointed at it.
+	if err := batch.sourceNamespaceRefusal(); err != nil {
+		return false, err
+	}
 	for _, event := range events {
 		if err := batch.applyEvent(ctx, event); err != nil {
 			return false, err
@@ -250,6 +256,28 @@ func newWriteBatch(
 // would otherwise turn a transient into a stuck, unwritable GitTarget.
 func (wb *writeBatch) refusal() error {
 	return manifestanalyzer.RefusalError(manifestanalyzer.AcceptStructureOnly(wb.store))
+}
+
+// sourceNamespaceRefusal is the write-plan precondition for the one-source-namespace rule: a target
+// that declared its folder namespace-free admits exactly one source namespace, and the second is
+// refused before a byte moves.
+//
+// It is the CORRECTNESS layer, and it holds whatever admission did. The WatchRule admission check
+// is atomic feedback at the moment the mistake is made, but it is one-shot: it cannot see a
+// serializeNamespace flipped to false after the rules were created, and it is a fail-open webhook
+// that a cluster need not be running at all. Everything that must be true of the bytes is decided
+// here. See docs/spec/where-validation-lives.md.
+func (wb *writeBatch) sourceNamespaceRefusal() error {
+	issues := manifestanalyzer.MultipleSourceNamespacesRefusal(
+		wb.namespaces.declaresNamespaceFree(),
+		wb.namespaces.SourceNamespaces,
+		wb.namespaces.SourceNamespaceWildcard,
+		wb.writeSubdir,
+	)
+	if len(issues) == 0 {
+		return nil
+	}
+	return manifestanalyzer.RefusalError(manifestanalyzer.Acceptance{Accepted: false, Issues: issues})
 }
 
 // fileBuffer is the commit-scoped, hydrated working copy of one file under the
