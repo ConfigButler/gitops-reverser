@@ -11,6 +11,5 @@ spec:
   # one write partition. apps/checkout would cover four roots at once, which is
   # LayoutResolved=Ambiguous, and would make the shared base writable from prod.
   path: apps/checkout/overlays/prod
-  suspend: true               # adoption dry run: scans and publishes, writes nothing
   # Nothing declared: the overlay's own kustomization.yaml is the folder's one root,
   # it supplies namespace: shop-prod, and inference omits metadata.namespace.

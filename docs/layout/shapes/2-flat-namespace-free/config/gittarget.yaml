@@ -8,7 +8,6 @@ spec:
     name: artifacts-repository
   branch: main
   path: apps/checkout
-  suspend: true               # adoption dry run: scans and publishes, writes nothing
   # One file per object, flat, and no {namespace} in the template: the folder is
   # single-namespace by construction.
   placement:

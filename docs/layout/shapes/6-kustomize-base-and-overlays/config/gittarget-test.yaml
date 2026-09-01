@@ -10,4 +10,3 @@ spec:
     name: app-repository
   branch: main
   path: apps/checkout/overlays/test
-  suspend: true

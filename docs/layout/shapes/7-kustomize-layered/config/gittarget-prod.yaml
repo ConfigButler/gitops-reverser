@@ -12,4 +12,3 @@ spec:
   # refused as a write target (L2). The leaf is the only folder in this tree with a
   # fan-in of one, which is what makes it the write partition.
   path: apps/checkout/envs/prod
-  suspend: true               # adoption dry run: scans and publishes, writes nothing

@@ -10,5 +10,4 @@ spec:
   # Not clusters/home/flux-system. That directory belongs to `flux bootstrap`, and a
   # GitTarget must not point at a path another controller writes.
   path: infrastructure/home/sources
-  suspend: true          # adoption dry run: scans and publishes, writes nothing
   serializeNamespace: false   # the folder's own kustomization.yaml supplies it

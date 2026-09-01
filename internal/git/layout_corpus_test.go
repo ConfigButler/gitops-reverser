@@ -73,9 +73,8 @@ type corpusGitTarget struct {
 		Namespace string `json:"namespace"`
 	} `json:"metadata"`
 	Spec struct {
-		Path    string `json:"path"`
-		Branch  string `json:"branch"`
-		Suspend bool   `json:"suspend"`
+		Path   string `json:"path"`
+		Branch string `json:"branch"`
 		// SerializeNamespace is PR 2's spec.serializeNamespace: unset means infer.
 		SerializeNamespace *bool `json:"serializeNamespace"`
 		Placement          *struct {
@@ -195,18 +194,6 @@ func layoutCorpus() []corpusScenario {
 			patch: "expected-checkout-config.patch",
 			skip: "PR 2: needs spec.serializeNamespace: false. Today inference writes " +
 				"metadata.namespace because no kustomization in the folder supplies it",
-		},
-		{
-			// The post-scan supplier guard: serializeNamespace: false with nothing in the
-			// repository supplying the namespace. It REPORTS rather than refuses, so it is the
-			// one scenario asserting neither a patch nor a write refusal.
-			dir:    "shapes/4-tree-namespace-free",
-			config: "gittarget-no-supplier.yaml",
-			input:  "checkout-config.yaml",
-			status: "expected-no-supplier-status.yaml",
-			skip: "PR 2: the post-scan supplier rule ships with spec.serializeNamespace, and " +
-				"needs a third assertion mode here — this scenario asserts a REPORT " +
-				"(Validated=False) rather than a patch or a write refusal",
 		},
 		{
 			dir:   "shapes/5-kustomize-single-folder",
@@ -549,11 +536,13 @@ func TestLayoutCorpus_ConfigParsesAgainstTheRealAPI(t *testing.T) {
 }
 
 // withoutUnbuiltFields removes the fields PR 2 introduces from a scenario config, so what
-// is left is the API as it stands today. It is a line filter rather than a re-marshal
+// is left is the API as it stands today. `suspend:` was on this list and is not any more: it
+// ships in PR 1, and no worked example sets it — an example exists to show what gets WRITTEN,
+// and previewing that is a scratch branch rather than a suspended target. It is a line filter rather than a re-marshal
 // because the configs are commented documents and the comments are half of what they say.
 func withoutUnbuiltFields(t *testing.T, raw []byte) []byte {
 	t.Helper()
-	unbuilt := []string{"serializeNamespace:", "useKustomize:", "suspend:"}
+	unbuilt := []string{"serializeNamespace:", "useKustomize:"}
 	var kept []string
 	for _, line := range strings.Split(string(raw), "\n") {
 		trimmed := strings.TrimSpace(line)

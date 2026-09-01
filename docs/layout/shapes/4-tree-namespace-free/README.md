@@ -54,18 +54,24 @@ Two ways out, and this scenario takes the first:
 - Live input: [`input/checkout-config.yaml`](input/checkout-config.yaml).
 - Expected Git change: [`expected-checkout-config.patch`](expected-checkout-config.patch) — a new
   file at `configmaps/checkout-config.yaml` with no namespace in it.
-- Expected status: `Ready=True`, with the same unverifiable-supplier caveat as
-  [shape 2](../2-flat-namespace-free/README.md).
+- Expected status: `Ready=True`. Nothing complains about the missing supplier, and that is the
+  decided behaviour rather than a gap — see below.
 
-The caveat has its own fixture. [`config/gittarget-no-supplier.yaml`](config/gittarget-no-supplier.yaml)
-is this target with no consumer declaration beside it, and
-[`expected-no-supplier-status.yaml`](expected-no-supplier-status.yaml) is what the post-scan pass
-reports. The two configurations are indistinguishable to the operator, which is the finding rather
-than a flaw in the fixture: the guard can only report, never verify. The corpus runs it and skips
-it, naming PR 2.
+**The supplier is unknowable, and the operator says nothing about it.** This folder is *correct*,
+and the configuration that supplies its namespace is a Flux `targetNamespace` or an Argo
+`destination.namespace` in another cluster. Two deployers may point at this folder and land it in
+two different namespaces, both correctly — being unbound is what the shape is for, so nothing here
+reports on it. See
+[`model.md`](../../model.md#why-false-needs-no-guard).
+
+The rule that *is* enforced is on the inside of the folder:
+[one source namespace](../../model.md#the-second-guard-one-source-namespace-and-this-one-refuses),
+where two namespaces would collapse onto one namespace-free document. That loss is visible in the
+folder the operator owns, so it is refused.
 
 ## Empty folder
 
 **Same gap as shape 2, and the same answer.** Nothing to infer from, so `serializeNamespace: false`
 has to be declared, and no scan of the folder can confirm it was right. The supplier is in another
-cluster.
+cluster — and since no scan could confirm it in a *populated* folder either, the empty folder is not
+a special case here. It is the general one.

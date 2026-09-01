@@ -10,7 +10,6 @@ spec:
     name: prod
   branch: main
   path: mirror/prod
-  suspend: true               # adoption dry run: scans and publishes, writes nothing
   # The WatchRule beside this file names source namespaces other than its own, so
   # the folder owner must say which ones may arrive here. Without it the rule is
   # refused (SourceNamespaceAuthorized=False) — the deny-by-default posture.

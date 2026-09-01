@@ -26,5 +26,5 @@ status:
       reason: AmbiguousLayout
   placement:
     renderRoot: ""              # deliberately empty: no single root, and no arbitrary pick
-    byTypeEntries: 0
-    # serializeNamespace is ABSENT, not false: with four roots the answer differs per document.
+    # mode is ABSENT too: with four roots there is no single way this folder is written, and
+    # naming one of them would be the guess the Ambiguous verdict exists to refuse.

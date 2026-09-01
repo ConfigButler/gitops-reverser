@@ -8,7 +8,6 @@ spec:
     name: app-repository
   branch: main
   path: apps/checkout
-  suspend: true               # adoption dry run: scans and publishes, writes nothing
   # Nothing else is declared, and that is the shape: the folder already has one
   # kustomization.yaml, so a new file is placed beside it, registered in its
   # resources:, and the root's namespace: shop is what lets the document omit its
