@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -33,8 +34,16 @@ const (
 //   - Only when NO kustomization governs the resolved path. The walk is bounded by the write jail,
 //     so a root above spec.path is a read-only ancestor and its absence from the answer is not a
 //     licence to write a competing root inside the jail.
+//   - Only when the folder has no render root AT ALL (LayoutNone). A folder that already has one,
+//     with this document landing outside it, must not gain a second: two render roots is
+//     Ambiguous, and the target would stop placing new documents entirely.
 //   - Only once per batch. The second new document in the same flush joins the root the first one
 //     created, through the ordinary resources: append.
+//
+// The root it writes ADOPTS the folder, rather than listing only the document that triggered it.
+// Enabling kustomize on a folder that already holds manifests and then writing a root that names
+// one file would make every other file stop rendering the moment a consumer ran kustomize build:
+// the files would still be in Git, and nothing would apply them. See adoptableEntries.
 //
 // The created root carries namespace: only when exactly one source namespace reaches the target.
 // That is what makes it MEANINGFUL rather than an empty file, and it is the half that makes an
@@ -56,37 +65,92 @@ func (wb *writeBatch) bootstrapKustomization(
 		// PlacementResult.Kustomization cannot be told apart from "no root at all".
 		return nil
 	}
+	if wb.layout.Reason != manifestanalyzer.LayoutNone {
+		// The folder HAS a render root; this document just landed somewhere that root does not
+		// govern, which a declared template can do. Writing a second root beside the first would
+		// make the folder cover two render roots — Ambiguous — and the target would stop placing
+		// new documents at all. One unregistered file is a smaller fault than a folder that has
+		// stopped accepting writes, and the ancestor walk (#319) already registers everything the
+		// existing root does govern.
+		return nil
+	}
 
 	rootPath := path.Join(orRootDir(wb.writeSubdir), "kustomization.yaml")
-	entry := kustomizationEntryFor(rootPath, placement.Path)
 	buf := wb.buffer(rootPath)
 	if buf.current != nil {
 		// Something is already at the path we would write. Leave it alone: overwriting a file the
 		// scan did not model as a kustomization would destroy content on a guess.
 		return nil
 	}
-	buf.current = []byte(renderCreatedKustomization(wb.namespaces.declaredFolderNamespace(), entry))
+	entries := wb.adoptableEntries(rootPath, placement.Path)
+	buf.current = []byte(renderCreatedKustomization(wb.namespaces.declaredFolderNamespace(), entries))
 
-	created := &manifestanalyzer.KustomizationInfo{Path: rootPath, Resources: []string{entry}}
+	created := &manifestanalyzer.KustomizationInfo{Path: rootPath, Resources: entries}
 	wb.createdRoot = created
-	recordKustomizationEntry(ctx, wb.target, kustomizationEntryAdded)
+	for range entries {
+		recordKustomizationEntry(ctx, wb.target, kustomizationEntryAdded)
+	}
 	log.FromContext(ctx).Info("Created kustomization.yaml for a folder that had none",
-		"kustomization", rootPath, "entry", entry, "namespace", wb.namespaces.declaredFolderNamespace())
+		"kustomization", rootPath, "entries", entries, "adopted", len(entries)-1,
+		"namespace", wb.namespaces.declaredFolderNamespace())
 	// The document is registered in the bytes just written, so the caller must not append it
 	// again; returning nil says "no further registration needed" for this first document.
 	return nil
 }
 
+// adoptableEntries is the created root's resources: list — the document being placed, plus every
+// managed document already in the folder that no kustomization governs.
+//
+// The adoption is the point. A root that listed only the new document would silently unrender every
+// file already in the folder: they stay in Git, they look mirrored, and the moment a consumer runs
+// kustomize build against the folder they are gone from the output. Turning a folder into a
+// kustomize folder means the folder, not the one document that happened to arrive first.
+//
+// A file some OTHER kustomization already governs is left out. Listing it here would render it
+// twice, once through each root, which kustomize reports as a duplicate resource and refuses to
+// build. The caller only creates a root for a folder with no render root at all, so this is
+// defensive rather than routine — a kustomization inside the jail that is not a render root of it
+// (a base something above spec.path reads) is the shape that reaches it.
+//
+// Paths are relative to the created root and sorted, so the file reads in a stable order and two
+// runs of the same flush produce the same bytes.
+func (wb *writeBatch) adoptableEntries(rootPath, documentPath string) []string {
+	entries := []string{kustomizationEntryFor(rootPath, documentPath)}
+	for filePath := range wb.store.FilesByPath {
+		if filePath == documentPath || !pathWithinWriteScope(wb.writeSubdir, filePath) {
+			continue
+		}
+		if manifestanalyzer.GoverningKustomization(wb.store, wb.writeSubdir, filePath) != nil {
+			continue
+		}
+		entries = append(entries, kustomizationEntryFor(rootPath, filePath))
+	}
+	sort.Strings(entries)
+	return entries
+}
+
+// pathWithinWriteScope reports whether a scanned path is inside the write jail. With no jail the
+// whole scanned subtree is the target's own.
+func pathWithinWriteScope(writeSubdir, filePath string) bool {
+	if writeSubdir == "" {
+		return true
+	}
+	return strings.HasPrefix(filePath, writeSubdir+"/")
+}
+
 // renderCreatedKustomization is the created root's bytes. They are assembled as text rather than
 // marshalled from a struct so the file reads the way a person would have written it: block
 // sequence, two-space indent, no empty stanzas for the fields we do not set.
-func renderCreatedKustomization(namespace, entry string) string {
+func renderCreatedKustomization(namespace string, entries []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "apiVersion: %s\nkind: %s\n", createdKustomizationAPIVersion, createdKustomizationKind)
 	if namespace != "" {
 		fmt.Fprintf(&b, "namespace: %s\n", namespace)
 	}
-	fmt.Fprintf(&b, "resources:\n  - %s\n", entry)
+	b.WriteString("resources:\n")
+	for _, entry := range entries {
+		fmt.Fprintf(&b, "  - %s\n", entry)
+	}
 	return b.String()
 }
 

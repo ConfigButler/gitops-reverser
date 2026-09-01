@@ -119,7 +119,8 @@ func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []Writ
 	var reasons []string
 	for _, root := range renderTargets(parseKustomizations(after)) {
 		var was []renderedObject
-		if _, existed := rootsBefore[root]; existed {
+		_, existed := rootsBefore[root]
+		if existed {
 			built, err := renderRoot(before, root)
 			if err != nil {
 				// The tree did not build BEFORE we touched it. The acceptance gate refuses
@@ -139,7 +140,9 @@ func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []Writ
 			)
 			continue
 		}
-		reasons = append(reasons, compareRoot(root, byKey, seen, renderedByKey(was), renderedByKey(now))...)
+		reasons = append(reasons, compareRoot(
+			rootComparison{root: root, existedBefore: existed},
+			byKey, seen, renderedByKey(was), renderedByKey(now))...)
 	}
 
 	for _, in := range intents {
@@ -157,13 +160,21 @@ func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []Writ
 	return &RenderRefusedError{Reasons: reasons}
 }
 
+// rootComparison is which root is being checked and whether it is one this flush CREATED. The
+// second half changes what the blast-radius rule can honestly claim; see compareRoot.
+type rootComparison struct {
+	root          string
+	existedBefore bool
+}
+
 // compareRoot checks one render root's before/after pair against the flush's intents.
 func compareRoot(
-	root string,
+	rc rootComparison,
 	intents map[chainKey]WriteIntent,
 	seen map[chainKey]struct{},
 	was, now map[chainKey]renderedObject,
 ) []string {
+	root := rc.root
 	var reasons []string
 	for key := range unionKeys(was, now) {
 		before, existed := was[key]
@@ -177,6 +188,16 @@ func compareRoot(
 		case !intended:
 			// The blast radius. This object is nobody's target, so the flush has no
 			// business changing it — in this root or any other.
+			//
+			// "Appears" means something different under a root this flush CREATED, and reading it
+			// as a blast radius would be wrong. spec.placement.useKustomize adopts the folder's
+			// existing documents into the root it writes, so every one of them renders for the
+			// first time — not because the flush touched the object (it did not touch a byte of
+			// those files) but because nothing rendered them before. The check that matters there
+			// is that the root builds at all, and it is enforced above.
+			if !rc.existedBefore {
+				continue
+			}
 			if !existed || !exists {
 				reasons = append(reasons, fmt.Sprintf(
 					"the write adds or removes %s/%s in render root %s, which it never set out to write",

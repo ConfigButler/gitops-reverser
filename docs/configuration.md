@@ -956,8 +956,21 @@ controls.** It happens in both rows, because a file no kustomization lists is a 
 builds. The flag is only about the empty case, which is what makes an empty repository
 bootstrappable.
 
+**A created root adopts the folder, not just the document that triggered it.** Its `resources:`
+lists every managed document already in the folder alongside the new one, at the paths those files
+already have. Nothing is moved, rewritten or re-encoded. A root naming only the new file would
+leave every other file sitting in Git and out of every render: the moment a consumer ran `kustomize
+build` against the folder, they would stop being applied, with nothing to show what happened.
+
+**A folder that already has a render root never gains a second one.** If a `byType` or `default`
+template puts the new document somewhere the existing root does not govern, the document is written
+and left unregistered rather than given a root of its own. Two render roots in one target's folder
+is the ambiguous case, and an ambiguous folder stops accepting new documents entirely, which is a
+much larger fault than one unregistered file. Point a target at a single root, and use a template
+that keeps its documents inside it.
+
 The created root is the smallest thing kustomize will build: an `apiVersion`, a `kind`, the
-`resources:` entry for the document, and `namespace:` when exactly one source namespace reaches the
+`resources:` list, and `namespace:` when exactly one source namespace reaches the
 target. That last line is the point of the pairing with
 [`serializeNamespace: false`](#whether-documents-carry-their-namespace-specserializenamespace): on
 an empty folder there is nothing to infer from, and the operator owns the file the omission depends

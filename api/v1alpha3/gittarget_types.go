@@ -304,6 +304,14 @@ type GitTargetPlacementSpec struct {
 	// reaches this target, which is what makes it a meaningful kustomization rather than an empty
 	// file, and what makes an accompanying serializeNamespace: false provable rather than trusted.
 	//
+	// A created root ADOPTS the folder: its resources: lists every managed document already there
+	// as well as the new one. Turning a folder into a kustomize folder means the folder, and a
+	// root naming one file would leave every other file in Git but out of every render.
+	//
+	// A folder that already has a kustomize render root never gains a second one, even when a
+	// byType or default template puts the new document outside that root. Two render roots is an
+	// ambiguous folder, which stops accepting new documents altogether.
+	//
 	// It has NO bearing on a folder that already has a root. A new file is always registered with
 	// the nearest kustomization governing it, whatever chose its path, because a file no
 	// kustomization lists is a file kustomize never builds.

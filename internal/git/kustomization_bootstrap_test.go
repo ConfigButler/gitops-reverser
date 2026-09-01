@@ -87,6 +87,57 @@ func TestUseKustomize_LeavesAnExistingRootAlone(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(root, "kind: Kustomization"))
 }
 
+// The finding this test exists for: enabling kustomize on a folder that ALREADY holds manifests
+// and then writing a root that lists only the new document would unrender every other file. They
+// stay in Git, they look mirrored, and the first `kustomize build` drops them from the output.
+//
+// So the created root adopts the folder. Nothing is rewritten, moved or re-encoded: the existing
+// files are named in resources: exactly where they already are.
+func TestUseKustomize_CreatedRootAdoptsTheFilesAlreadyInTheFolder(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+	seedFile(t, root, "web.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\n  namespace: shop\n")
+	seedFile(t, root, "configmaps/cache.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cache\n  namespace: shop\n")
+
+	require.NoError(t, flushWithPlacement(t, worktree, useKustomizePolicy(),
+		serializeNamespacePolicy(false, "shop"),
+		namespaceProbeEvent("shop", "checkout-config", "green")))
+
+	assert.Equal(t, "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+		"namespace: shop\nresources:\n"+
+		"  - checkout-config.yaml\n  - configmaps/cache.yaml\n  - web.yaml\n",
+		readWorktreeFile(t, worktree, "kustomization.yaml"),
+		"every managed document in the folder is listed, at the path it already lives at")
+	assert.Contains(t, readWorktreeFile(t, worktree, "web.yaml"), "namespace: shop",
+		"adopting a file names it in resources:; it does not rewrite its bytes")
+}
+
+// A folder that already has a render root never gains a SECOND one, even when a declared template
+// puts the new document outside it. Two render roots is an Ambiguous folder, and an ambiguous
+// folder stops accepting new documents altogether — a far larger fault than the one unregistered
+// file this leaves behind.
+func TestUseKustomize_WritesNoSecondRootBesideAnExistingOne(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+	seedFile(t, root, "media/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: shop\nresources:\n  - web.yaml\n")
+	seedFile(t, root, "media/web.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\n")
+	policy := &manifestanalyzer.PlacementPolicy{Default: "flags/{name}.yaml", UseKustomize: true}
+
+	require.NoError(t, flushWithPlacement(t, worktree, policy, namespacePolicy{},
+		namespaceProbeEvent("shop", "checkout-config", "green")))
+
+	assert.NoFileExists(t, root+"/kustomization.yaml",
+		"a second render root would make the folder ambiguous and stop every later placement")
+	assert.FileExists(t, root+"/flags/checkout-config.yaml", "the document is still written")
+	assert.Contains(t, readWorktreeFile(t, worktree, "media/kustomization.yaml"), "- web.yaml",
+		"and the root that was already there is untouched")
+}
+
 // Without the flag nothing is created, and the document lands at the canonical path. That is the
 // default and it is the whole difference between adopting a kustomize folder and creating one.
 func TestUseKustomize_UnsetWritesNoRoot(t *testing.T) {
