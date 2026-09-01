@@ -45,18 +45,25 @@ import (
 // whose answer depends on the branch that raised it lists every branch it can produce, so
 // this file never claims a single answer where the code has two.
 var classificationByKind = map[IssueKind][]Classification{
-	IssueInvalidYAML:            {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueDuplicate:              {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueImpureManagedFile:      {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueMixedFile:              {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueIgnoreShadowsManaged:   {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueNonKRM:                 {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueForeignFile:            {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueForeignSymlink:         {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueForeignSubmodule:       {{Solvable: true, Actor: ActorRepositoryAuthor}},
-	IssueOutOfScope:             {{Solvable: true, Actor: ActorPlatformOperator}},
-	IssueWriteEscapesScope:      {{Solvable: true, Actor: ActorPlatformOperator}},
-	IssueAmbiguousLayout:        {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueInvalidYAML:          {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueDuplicate:            {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueImpureManagedFile:    {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueMixedFile:            {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueIgnoreShadowsManaged: {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueNonKRM:               {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueForeignFile:          {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueForeignSymlink:       {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueForeignSubmodule:     {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueOutOfScope:           {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueWriteEscapesScope:    {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueAmbiguousLayout:      {{Solvable: true, Actor: ActorPlatformOperator}},
+	// The only kind here that is not about the repository at all: the folder is fine and the
+	// configuration pointed at it is not, so the actor is the one who owns both objects the fix
+	// touches (the GitTarget and the WatchRule).
+	IssueMultipleSourceNamespaces: {{Solvable: true, Actor: ActorPlatformOperator}},
+	// Same shape: the folder is fine, the template aimed at it is not, and the platform operator
+	// owns the template.
+	IssueUnrenderedPlacement:    {{Solvable: true, Actor: ActorPlatformOperator}},
 	IssueRenderDoesNotMatchLive: {{Solvable: true, Actor: ActorPlatformOperator}},
 	IssueWriteFanIn:             {{Solvable: false}},
 	IssueUnplaceableEdit:        {{Solvable: false}},

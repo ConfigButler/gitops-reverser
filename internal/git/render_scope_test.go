@@ -131,7 +131,15 @@ func flushAtBase(
 ) (bool, error) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	return w.flushEventsToWorktree(context.Background(), worktree, base, events, nil, v1alpha3.PruneOnEvent)
+	return w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		base,
+		events,
+		nil,
+		namespacePolicy{},
+		v1alpha3.PruneOnEvent,
+	)
 }
 
 // The read scope of a pure overlay re-roots at the base's parent, keeps every scanned path

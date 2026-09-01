@@ -314,7 +314,7 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 	// scan does, so the target's declared policy is carried in rather than passed as nil.
 	batch := newWriteBatch(
 		ctx, w.contentWriter, w.mapperForCluster(target.SourceCluster),
-		scoped.scan, target.Placement, scoped.writeSubdir)
+		scoped.scan, target.Placement, target.Namespaces, scoped.writeSubdir)
 	batch.target = placementTarget{namespace: target.Namespace, name: target.Name}
 	if err := batch.refusal(); err != nil {
 		return err
@@ -378,6 +378,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 		w.mapperForCluster(target.SourceCluster),
 		scoped.scan,
 		target.Placement,
+		target.Namespaces,
 		scoped.writeSubdir,
 	)
 	// The resync's events are synthesised from the desired snapshot and carry no GitTarget
@@ -392,6 +393,12 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// so the watch layer surfaces it as a blocked stream instead of writing into a folder it
 	// does not understand.
 	if err := batch.refusal(); err != nil {
+		return ResyncStats{}, false, err
+	}
+	// The same precondition the live path applies: a folder declared namespace-free that two
+	// source namespaces reach cannot tell its own documents apart, and a resync writes exactly
+	// what the live path writes.
+	if err := batch.sourceNamespaceRefusal(); err != nil {
 		return ResyncStats{}, false, err
 	}
 	// The store is built from the same files the planner reads, so the plan and the apply

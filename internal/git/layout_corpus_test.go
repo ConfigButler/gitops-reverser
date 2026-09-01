@@ -41,11 +41,10 @@ import (
 //     finished when every skip naming PR 2 is gone. Not every skip is PR 2's — shape 8's
 //     `images:` authoring belongs to track C and outlives it — so the rule is deliberately "its
 //     own skips" rather than "the last skip".
-//   - `config/gittarget.yaml` parses into corpusGitTarget below, a HARNESS-LOCAL struct,
-//     for exactly as long as it names fields the API does not have. Every field it holds
-//     that v1alpha3.GitTargetSpec also holds is asserted against the real type by
-//     TestLayoutCorpus_ConfigParsesAgainstTheRealAPI, so the examples cannot quietly
-//     describe an API nobody built.
+//   - `config/gittarget.yaml` decodes into v1alpha3.GitTarget, the REAL type. It parsed into a
+//     harness-local struct for as long as the examples named fields the API did not have, and
+//     deleting that struct was PR 2's own definition of done: the worked examples and the shipped
+//     API are now the same API, and a field either exists or the corpus stops decoding.
 //   - Refusals are fixtures too. A scenario set where every write succeeds is
 //     advertising rather than specification, so the refusal halves assert an
 //     `expected-status.yaml` instead of a patch.
@@ -60,47 +59,11 @@ var updateLayoutCorpus = flag.Bool("update", false,
 // illustrates, and the drift would be invisible in review.
 const layoutCorpusRoot = layoutfixture.Root
 
-// corpusGitTarget is the harness-local reading of a scenario's config/gittarget.yaml.
-//
-// It is deliberately NOT v1alpha3.GitTarget. The examples use spec.serializeNamespace
-// and spec.placement.useKustomize, which PR 2 introduces, so decoding into the real type
-// would either fail or silently drop them. The mapping is temporary by design and PR 2
-// deletes it — the pointer-typed booleans below are the fields that keep it alive, and
-// when they move to the real spec this struct has nothing left to hold.
-type corpusGitTarget struct {
-	Metadata struct {
-		Name      string `json:"name"`
-		Namespace string `json:"namespace"`
-	} `json:"metadata"`
-	Spec struct {
-		Path   string `json:"path"`
-		Branch string `json:"branch"`
-		// SerializeNamespace is PR 2's spec.serializeNamespace: unset means infer.
-		SerializeNamespace *bool `json:"serializeNamespace"`
-		Placement          *struct {
-			ByType  map[string]string `json:"byType"`
-			Default string            `json:"default"`
-			// UseKustomize is PR 2's placement.useKustomize.
-			UseKustomize *bool `json:"useKustomize"`
-		} `json:"placement"`
-	} `json:"spec"`
-}
-
-// policy projects the parsed config onto the flush policy the write path actually takes
-// today. Only the two shipped rungs — byType and default — cross over; the two booleans
-// have no consumer until PR 2, which is precisely why the scenarios that depend on them
-// are skipped rather than asserted.
-func (c corpusGitTarget) policy() *manifestanalyzer.PlacementPolicy {
-	if c.Spec.Placement == nil {
-		return nil
-	}
-	if len(c.Spec.Placement.ByType) == 0 && c.Spec.Placement.Default == "" {
-		return nil
-	}
-	return &manifestanalyzer.PlacementPolicy{
-		ByType:  c.Spec.Placement.ByType,
-		Default: c.Spec.Placement.Default,
-	}
+// corpusNamespaces projects a scenario onto the namespace policy the write path takes: the
+// target's own spec.serializeNamespace, and the source namespaces the fixture's WatchRules bring
+// to it.
+func corpusNamespaces(target v1alpha3.GitTarget, sources []string, wildcard bool) namespacePolicy {
+	return namespacePolicyFor(target.Spec, sources, wildcard)
 }
 
 // corpusScenario is one executable row of the corpus: a fixture folder, which config in
@@ -129,6 +92,11 @@ type corpusScenario struct {
 	// TestGitTargetReadiness_StalledFollowsGitPathAccepted), so the whole file is covered even
 	// though no single test covers all of it.
 	status string
+	// emptyRepository seeds NOTHING, for a scenario whose whole subject is a folder that does not
+	// exist yet. It is a flag rather than an empty `repository-empty/` fixture directory because
+	// Git cannot hold an empty directory, and a .gitkeep inside one would show up in the diff the
+	// scenario asserts.
+	emptyRepository bool
 	// skip names the PR that unskips this scenario, and is the whole reason the row is
 	// written before the behavior exists. An empty skip is a scenario that runs today.
 	skip string
@@ -169,8 +137,6 @@ func layoutCorpus() []corpusScenario {
 			dir:   "shapes/2-flat-namespace-free",
 			input: "checkout-config.yaml",
 			patch: "expected-checkout-config.patch",
-			skip: "PR 2: needs spec.serializeNamespace: false. Today inference writes " +
-				"metadata.namespace because no kustomization in the folder supplies it",
 		},
 		{
 			// The fence around "one namespace": an explicit serializeNamespace: false admits
@@ -180,8 +146,6 @@ func layoutCorpus() []corpusScenario {
 			config: "gittarget-second-namespace.yaml",
 			input:  "checkout-config.yaml",
 			status: "expected-second-namespace-status.yaml",
-			skip: "PR 2: the one-source-namespace refusal ships with spec.serializeNamespace " +
-				"(the write-plan precondition first, then the WatchRule admission check)",
 		},
 		{
 			dir:   "shapes/3-tree-serialized",
@@ -192,8 +156,6 @@ func layoutCorpus() []corpusScenario {
 			dir:   "shapes/4-tree-namespace-free",
 			input: "checkout-config.yaml",
 			patch: "expected-checkout-config.patch",
-			skip: "PR 2: needs spec.serializeNamespace: false. Today inference writes " +
-				"metadata.namespace because no kustomization in the folder supplies it",
 		},
 		{
 			dir:   "shapes/5-kustomize-single-folder",
@@ -201,12 +163,14 @@ func layoutCorpus() []corpusScenario {
 			patch: "expected-checkout-config.patch",
 		},
 		{
-			dir:    "shapes/5-kustomize-single-folder",
-			config: "gittarget-empty-folder.yaml",
-			input:  "checkout-config.yaml",
-			patch:  "expected-empty-folder-first-write.patch",
-			skip: "PR 2: needs placement.useKustomize to create the kustomization.yaml this " +
-				"empty folder has none of",
+			dir: "shapes/5-kustomize-single-folder",
+			// The same folder before it exists. `repository/` is shape 5 ALREADY adopted, which is
+			// the other scenario in this folder; this one seeds nothing, because "there is nothing
+			// to infer from" is the whole subject.
+			config:          "gittarget-empty-folder.yaml",
+			input:           "checkout-config.yaml",
+			patch:           "expected-empty-folder-first-write.patch",
+			emptyRepository: true,
 		},
 		{
 			dir:    "shapes/6-kustomize-base-and-overlays",
@@ -279,13 +243,16 @@ func runCorpusScenario(t *testing.T, sc corpusScenario) {
 	target := readCorpusGitTarget(t, filepath.Join(folder, "config", sc.configFile()))
 	obj := readCorpusInput(t, filepath.Join(folder, "input", sc.input))
 
-	worktree, seeded := seedCorpusWorktree(t, filepath.Join(folder, "repository"))
+	worktree, seeded := seedCorpusWorktree(t, folder, sc)
 	event := corpusEvent(t, obj, target)
+
+	sources, wildcard := readCorpusSourceNamespaces(t, folder, sc.configFile(), target)
 
 	worker := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: corpusMapper()}
 	_, err := worker.flushEventsToWorktree(
 		t.Context(), worktree, sanitizePath(target.Spec.Path),
-		[]Event{event}, target.policy(), v1alpha3.PruneOnEvent)
+		[]Event{event}, resolvePlacementPolicy(target.Spec.Placement),
+		corpusNamespaces(target, sources, wildcard), v1alpha3.PruneOnEvent)
 
 	if sc.patch == "" {
 		requireCorpusRefusal(t, err, filepath.Join(folder, sc.status), worktree, seeded)
@@ -340,15 +307,67 @@ func assertCorpusPatch(t *testing.T, path, got string) {
 		"the write path and %s disagree; re-run with -update if the new diff is the intended one", path)
 }
 
-// readCorpusGitTarget decodes one scenario's GitTarget through the harness-local struct.
-func readCorpusGitTarget(t *testing.T, path string) corpusGitTarget {
+// readCorpusGitTarget decodes one scenario's GitTarget. It is the SHIPPED type: a config naming a
+// field the API does not have fails here, which is the check the harness-local struct used to buy
+// with a whole second parser and an assertion test beside it.
+func readCorpusGitTarget(t *testing.T, path string) v1alpha3.GitTarget {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
-	var target corpusGitTarget
-	require.NoError(t, yaml.Unmarshal(raw, &target), "parsing %s", path)
+	var target v1alpha3.GitTarget
+	require.NoError(t, yaml.UnmarshalStrict(raw, &target), "parsing %s", path)
 	require.NotEmpty(t, target.Spec.Path, "%s: spec.path is what the corpus writes into", path)
 	return target
+}
+
+// readCorpusSourceNamespaces derives the source namespaces a scenario's target is reached by, from
+// the WatchRules the fixture folder holds — the same set resolveSourceNamespaces computes from the
+// cluster: the target's own namespace plus every explicit rules[].sourceNamespace.
+//
+// Which rules belong to a scenario is decided by the config's own name, because a folder can hold
+// two configs that differ only in the rules pointing at them: shape 2's gittarget.yaml and
+// gittarget-second-namespace.yaml are the same target with the same flag, and the ONLY difference
+// between the write and the refusal is that a second WatchRule exists. So a config
+// `gittarget[-<variant>].yaml` is served by `watchrule.yaml` plus `watchrule-<variant>.yaml`,
+// whichever of the two the folder has, and every rule that matches must name the target — a
+// fixture whose rules point somewhere else is a fixture that is not saying what it looks like it
+// says.
+func readCorpusSourceNamespaces(
+	t *testing.T,
+	folder, configFile string,
+	target v1alpha3.GitTarget,
+) ([]string, bool) {
+	t.Helper()
+	variant := strings.TrimSuffix(strings.TrimPrefix(configFile, "gittarget"), ".yaml")
+
+	seen := map[string]struct{}{target.Namespace: {}}
+	wildcard := false
+	for _, name := range []string{"watchrule.yaml", "watchrule" + variant + ".yaml"} {
+		path := filepath.Join(folder, "config", name)
+		raw, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		require.NoError(t, err)
+		var rule v1alpha3.WatchRule
+		require.NoError(t, yaml.Unmarshal(raw, &rule), "parsing %s", path)
+		require.Equal(t, target.Name, rule.Spec.TargetRef.Name,
+			"%s points at a different GitTarget than the scenario's config", path)
+		for _, item := range rule.Spec.Rules {
+			if item.IsSourceNamespaceWildcard() {
+				wildcard = true
+				continue
+			}
+			seen[item.EffectiveSourceNamespace(rule.Namespace)] = struct{}{}
+		}
+	}
+
+	namespaces := make([]string, 0, len(seen))
+	for ns := range seen {
+		namespaces = append(namespaces, ns)
+	}
+	sort.Strings(namespaces)
+	return namespaces, wildcard
 }
 
 // readCorpusInput decodes the live object a scenario receives. It is deliberately the
@@ -364,7 +383,7 @@ func readCorpusInput(t *testing.T, path string) *unstructured.Unstructured {
 }
 
 // corpusEvent builds the write event for a scenario's live object.
-func corpusEvent(t *testing.T, obj *unstructured.Unstructured, target corpusGitTarget) Event {
+func corpusEvent(t *testing.T, obj *unstructured.Unstructured, target v1alpha3.GitTarget) Event {
 	t.Helper()
 	gvk := obj.GroupVersionKind()
 	entry, ok := corpusTypes[gvk]
@@ -375,8 +394,8 @@ func corpusEvent(t *testing.T, obj *unstructured.Unstructured, target corpusGitT
 			gvk.Group, gvk.Version, entry.Resource, obj.GetNamespace(), obj.GetName()),
 		Operation:          "CREATE",
 		Path:               target.Spec.Path,
-		GitTargetName:      target.Metadata.Name,
-		GitTargetNamespace: target.Metadata.Namespace,
+		GitTargetName:      target.Name,
+		GitTargetNamespace: target.Namespace,
 	}
 }
 
@@ -386,10 +405,14 @@ func corpusEvent(t *testing.T, obj *unstructured.Unstructured, target corpusGitT
 // `repository/` is always rooted at the REPOSITORY root, never at spec.path, so a fixture
 // shows where the target sits as well as what it holds. Shapes 6 to 8 depend on that: their
 // target is a leaf overlay whose base lives outside spec.path but inside the render scope.
-func seedCorpusWorktree(t *testing.T, repositoryDir string) (*gogit.Worktree, *object.Commit) {
+func seedCorpusWorktree(t *testing.T, folder string, sc corpusScenario) (*gogit.Worktree, *object.Commit) {
 	t.Helper()
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem().Root()
+	if sc.emptyRepository {
+		return worktree, commitCorpusWorktree(t, worktree, "seed an empty repository")
+	}
+	repositoryDir := filepath.Join(folder, "repository")
 
 	require.NoError(t, filepath.WalkDir(repositoryDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
@@ -497,73 +520,6 @@ func corpusMapper() typeset.Lookup {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].GVK.String() < entries[j].GVK.String() })
 	return typeset.NewSnapshotRegistry(typeset.Snapshot{Entries: entries})
-}
-
-// TestLayoutCorpus_ConfigParsesAgainstTheRealAPI is the check the harness-local struct
-// buys. corpusGitTarget exists because the examples name fields the API does not have
-// yet; the risk that creates is the opposite one — a field the examples and the API BOTH
-// have, spelled differently — so every shipped field a scenario config sets is decoded
-// into the real v1alpha3.GitTarget too, and must survive the round trip.
-//
-// PR 2 deletes corpusGitTarget and this test with it: once serializeNamespace and
-// useKustomize are real fields, the scenarios decode into v1alpha3.GitTarget directly and
-// there is nothing left to keep honest.
-func TestLayoutCorpus_ConfigParsesAgainstTheRealAPI(t *testing.T) {
-	for _, sc := range layoutCorpus() {
-		t.Run(sc.name(), func(t *testing.T) {
-			path := filepath.Join(layoutCorpusRoot, sc.dir, "config", sc.configFile())
-			harness := readCorpusGitTarget(t, path)
-
-			raw, err := os.ReadFile(path)
-			require.NoError(t, err)
-			// The unbuilt fields are stripped, not tolerated: decoding them into the real
-			// type is exactly the thing that must start working in PR 2, and letting the
-			// decoder ignore them here would hide the day it does.
-			var shipped v1alpha3.GitTarget
-			require.NoError(t, yaml.Unmarshal(withoutUnbuiltFields(t, raw), &shipped), "parsing %s", path)
-
-			require.Equal(t, harness.Spec.Path, shipped.Spec.Path, "spec.path")
-			require.Equal(t, harness.Metadata.Name, shipped.Name, "metadata.name")
-			require.Equal(t, harness.Metadata.Namespace, shipped.Namespace, "metadata.namespace")
-			require.Equal(t, harness.Spec.Branch, shipped.Spec.Branch, "spec.branch")
-			if policy := harness.policy(); policy != nil {
-				require.NotNil(t, shipped.Spec.Placement, "spec.placement")
-				require.Equal(t, policy.ByType, shipped.Spec.Placement.ByType, "spec.placement.byType")
-				require.Equal(t, policy.Default, shipped.Spec.Placement.Default, "spec.placement.default")
-			}
-		})
-	}
-}
-
-// withoutUnbuiltFields removes the fields PR 2 introduces from a scenario config, so what
-// is left is the API as it stands today. `suspend:` was on this list and is not any more: it
-// ships in PR 1, and no worked example sets it — an example exists to show what gets WRITTEN,
-// and previewing that is a scratch branch rather than a suspended target. It is a line filter rather than a re-marshal
-// because the configs are commented documents and the comments are half of what they say.
-func withoutUnbuiltFields(t *testing.T, raw []byte) []byte {
-	t.Helper()
-	unbuilt := []string{"serializeNamespace:", "useKustomize:"}
-	var kept []string
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if slicesContainsPrefix(trimmed, unbuilt) {
-			continue
-		}
-		kept = append(kept, line)
-	}
-	return []byte(strings.Join(kept, "\n"))
-}
-
-func slicesContainsPrefix(s string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // TestLayoutCorpus_EveryFixtureFolderIsExecuted closes the corpus over the filesystem: a

@@ -114,6 +114,8 @@ func gitTargetReadyReasonIsStalled(reason string) bool {
 		GitTargetReasonUnsupportedContent,
 		GitTargetReasonIgnoreShadowsManagedPath,
 		GitTargetReasonWriteBoundaryRefused,
+		GitTargetReasonMultipleSourceNamespaces,
+		GitTargetReasonUnrenderedPlacement,
 		GitTargetReasonRenderDoesNotMatchLive,
 		GitTargetReadyReasonValidationFailed,
 		GitTargetReadyReasonEncryptionNotConfigured,

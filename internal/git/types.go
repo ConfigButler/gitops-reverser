@@ -243,6 +243,12 @@ type ResolvedTargetMetadata struct {
 	// resources are placed beside the folder's one kustomize root, if it has exactly one,
 	// and otherwise at the canonical path.
 	Placement *manifestanalyzer.PlacementPolicy
+	// Namespaces is the GitTarget's declared namespace behavior — spec.serializeNamespace and the
+	// source namespaces reaching the target — which decides whether the documents this target
+	// writes carry metadata.namespace, and which namespace a namespace-free one belongs to. It is
+	// resolved with the rest of the metadata so a replayed write honours the policy it was planned
+	// under, exactly as PruneMode and Suspend are.
+	Namespaces namespacePolicy
 	// PruneMode is the GitTarget's EFFECTIVE spec.prune.mode — always a concrete value,
 	// because it is resolved through EffectivePruneMode and an omitted policy is onEvent.
 	// It gates both deletion paths: the resync mark-and-sweep (through the planner's

@@ -52,16 +52,21 @@ and the document together:
 
 ```text
 apps/checkout/
-  kustomization.yaml     # namespace: shop, resources: [checkout-config.yaml]
+  kustomization.yaml     # resources: [checkout-config.yaml], and no namespace:
   checkout-config.yaml   # no metadata.namespace
 ```
 
-**This is the one pairing in the model that closes its own loop.** `serializeNamespace: false` is
-honest only when something guarantees the namespace, and on an empty folder there is nothing to
-inspect — inference structurally cannot answer. `useKustomize: true` supplies the missing half: the
-operator writes the supplier, so the omission is provable rather than trusted, and the post-scan
-guard is satisfied by construction. It is also what makes the created root **meaningful** rather
-than an empty file.
+**The created root carries no `namespace:`, and that is the decision rather than an omission.**
+`serializeNamespace: false` says this artifact does not encode its deployment namespace, and
+creating a root must not quietly change that contract by pinning the namespace one file up, where it
+is harder to see and impossible for an installer to override. The folder is a portable artifact: a
+Flux `targetNamespace` or an Argo `destination.namespace` places it, exactly as it places
+[shape 2](../2-flat-namespace-free/README.md). The full argument, and the four other answers that
+were considered, is in
+[`../../../design/created-root-namespace.md`](../../../design/created-root-namespace.md).
+
+What the flag buys here is *structure*: an empty folder becomes a kustomize folder with the first
+commit, and every later document joins the same root instead of scattering.
 
 Contrast [shape 2](../2-flat-namespace-free/README.md), which is the same omission with the
 guarantee in another cluster, and [shape 6](../6-kustomize-base-and-overlays/README.md), where

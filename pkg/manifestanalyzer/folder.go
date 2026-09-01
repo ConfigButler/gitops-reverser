@@ -59,6 +59,17 @@ const (
 	// folder rather than of the spec, so nothing can reject it before the folder is read; the
 	// fix is to point the GitTarget at one of the roots it covers.
 	IssueAmbiguousLayout IssueKind = "ambiguous-layout"
+	// IssueMultipleSourceNamespaces marks a GitTarget that declared its folder namespace-free
+	// (spec.serializeNamespace: false) and that more than one source namespace reaches. With the
+	// namespace stripped, two live objects of the same name produce one indistinguishable
+	// document, so the write is refused. It is the one kind here that is a property of the
+	// CONFIGURATION rather than of the folder: no repository content can cause it or clear it.
+	IssueMultipleSourceNamespaces IssueKind = "multiple-source-namespaces"
+	// IssueUnrenderedPlacement marks a new document a kustomize folder would hold but never
+	// render: spec.placement.useKustomize declares the operator maintains the folder's root, and
+	// the path the document resolved to is governed by no resources: list. Like the kind above it
+	// is a property of the configuration rather than of the folder's content.
+	IssueUnrenderedPlacement IssueKind = "unrendered-placement"
 	// IssueWriteFanIn marks an in-place edit of a source file that more than one kustomize
 	// render root reaches.
 	IssueWriteFanIn IssueKind = "write-fan-in"

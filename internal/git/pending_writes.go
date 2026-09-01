@@ -161,6 +161,14 @@ func (w *BranchWorker) resolveTargetMetadata(
 		return ResolvedTargetMetadata{}, fmt.Errorf("failed to resolve target encryption configuration: %w", err)
 	}
 
+	// Resolved here rather than at the write, with the rest of the target's mutable state: the set
+	// is a fact about the config cluster at planning time, and a write replayed after a rebase must
+	// be judged against the policy it was planned under.
+	sourceNamespaces, wildcard, err := resolveSourceNamespaces(ctx, w.Client, target)
+	if err != nil {
+		return ResolvedTargetMetadata{}, err
+	}
+
 	return ResolvedTargetMetadata{
 		Name:             target.Name,
 		Namespace:        target.Namespace,
@@ -168,6 +176,7 @@ func (w *BranchWorker) resolveTargetMetadata(
 		BootstrapOptions: buildBootstrapOptions(encryptionConfig),
 		EncryptionConfig: encryptionConfig,
 		Placement:        resolvePlacementPolicy(target.Spec.Placement),
+		Namespaces:       namespacePolicyFor(target.Spec, sourceNamespaces, wildcard),
 		PruneMode:        target.EffectivePruneMode(),
 		SourceCluster:    target.SourceCluster(),
 		Suspend:          target.Spec.Suspend,
@@ -201,8 +210,9 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 		return nil
 	}
 	return &manifestanalyzer.PlacementPolicy{
-		ByType:  spec.ByType,
-		Default: spec.Default,
+		ByType:       spec.ByType,
+		Default:      spec.Default,
+		UseKustomize: spec.UseKustomize,
 	}
 }
 
@@ -216,6 +226,23 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 // base with no matching target (e.g. an event whose target metadata could not be
 // resolved) gets no declared policy, falling through to the kustomize root and then the
 // canonical path.
+// namespacePolicyForBase finds the namespace policy for the GitTarget that owns base among
+// targets, matching exactly as placementPolicyForBase does. A base with no matching target gets
+// the zero policy, which is "declares nothing" — the same fallback an unresolvable target gets for
+// placement, and the only safe one: reading a missing target as having declared its folder
+// namespace-free would strip namespaces nobody asked to have stripped.
+func namespacePolicyForBase(
+	targets map[pendingTargetKey]ResolvedTargetMetadata,
+	base string,
+) namespacePolicy {
+	for _, md := range targets {
+		if sanitizePath(md.Path) == base {
+			return md.Namespaces
+		}
+	}
+	return namespacePolicy{}
+}
+
 func placementPolicyForBase(
 	targets map[pendingTargetKey]ResolvedTargetMetadata,
 	base string,

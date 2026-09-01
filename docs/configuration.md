@@ -480,6 +480,12 @@ The important fields are:
 - `spec.placement`: optional policy for where **new** resources are written (see
   [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it and a new
   resource takes the folder's one kustomization root, or the built-in canonical path
+- `spec.placement.useKustomize`: whether the operator maintains a `kustomization.yaml` for this
+  folder, creating one when the folder has none (see
+  [Keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize))
+- `spec.serializeNamespace`: whether written documents carry their own `metadata.namespace` (see
+  [Whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace));
+  omit it and each document's namespace is inferred from the folder
 - `spec.prune`: which deletion paths may remove documents from this target's folder (see
   [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
 
@@ -866,6 +872,169 @@ co-mingled with a plaintext document. Two consequences for your templates:
   shared file. If an operator-configured sensitive type still reaches such a path at write time, that
   resource is **skipped fail-safe** (logged and counted in the resync summary as `placementSkipped`)
   rather than written unsafely. It is not surfaced as a dedicated status condition today.
+
+### Choosing between the two layout fields
+
+`spec.serializeNamespace` and `spec.placement.useKustomize` answer two independent questions, and a
+target that sets neither behaves exactly as it did before they existed. Start here, then read the
+section for whichever you set.
+
+**Question 1: where does the namespace of a mirrored object live?**
+
+| You want | Set | What the folder looks like |
+|---|---|---|
+| Each document to say which namespace it is in. Someone can `kubectl apply -f` the folder and land everything where it came from | `serializeNamespace: true` | every namespaced document carries `metadata.namespace` |
+| The folder to be installable into a namespace chosen at install time, by a Flux `targetNamespace`, an Argo `destination.namespace`, or a `kustomization.yaml` you wrote | `serializeNamespace: false` | no document carries `metadata.namespace`, and nothing in the folder pins one |
+| Neither claim, because the folder is a tree of nested kustomize roots that each supply their own namespace | leave it **unset** | each document is resolved against the root governing its own path |
+
+**Question 2: does the operator maintain this folder's `kustomization.yaml`?**
+
+| You want | Set | What the operator does |
+|---|---|---|
+| The folder to become a kustomize folder, including from empty | `placement.useKustomize: true` | creates `kustomization.yaml` at `spec.path` if there is none, adopting the files already there, and registers every new document in it |
+| Plain files, or a `kustomization.yaml` only you create | leave it **unset** | writes the document; registers it in a root that already governs it, and creates nothing |
+
+Registering a new file with a kustomization that **already** governs it happens either way. That is
+not a setting: a file no `resources:` list names is a file kustomize never builds.
+
+**The three combinations in practice:**
+
+| Shape | Spec | Who supplies the namespace |
+|---|---|---|
+| A mirror you can apply back | `serializeNamespace: true`, no `useKustomize` | the documents |
+| A portable artifact | `serializeNamespace: false` **+** `useKustomize: true` | whatever installs the folder |
+| An existing kustomize repository | leave both unset | the `kustomization.yaml` files already there |
+
+One combination to avoid: `serializeNamespace: false` on a folder nothing installs. The documents
+carry no namespace and nothing supplies one, so `kubectl apply -f` lands them all in `default`.
+Nothing can detect that for you, because the installer lives outside the repository. See
+[why nothing checks the supplier](#whether-documents-carry-their-namespace-specserializenamespace).
+
+### Whether documents carry their namespace (`spec.serializeNamespace`)
+
+A path decides where a file sits; it cannot decide what is inside it. `spec.serializeNamespace`
+does: whether the committed document carries its own `metadata.namespace`.
+
+```yaml
+spec:
+  path: apps/checkout
+  serializeNamespace: false
+```
+
+| Value | What is written |
+|---|---|
+| omitted (default) | inferred per document, which is today's behavior |
+| `true` | every namespaced document carries `metadata.namespace` |
+| `false` | no document carries it; something outside the folder supplies it |
+
+It governs **every** write the target makes, not only the first one. That is why it sits at the top
+level of the spec rather than inside `spec.placement`, which decides where *new* documents go and
+never moves one already written. It applies to **namespaced resources only**: a `ClusterRole` has no
+namespace, so the field is ignored for it rather than being an error.
+
+**Omitted is not the same as `false`, and it is the right answer more often than either.** Inference
+omits `metadata.namespace` only when the kustomization governing that document's path sets
+`namespace:` to *this* resource's own namespace, and writes it explicitly otherwise, because
+omitting it anywhere else would hand the document to a different namespace than the object it
+mirrors. Leave the field unset for a folder that is legitimately non-uniform, such as a tree of
+nested kustomize roots each supplying its own namespace: inference resolves every document against
+the root governing its own path, which no single folder-wide value can do.
+
+The two explicit values are for the two shapes people declare:
+
+- **`true` for a flat folder applied directly.** Nothing downstream supplies a namespace, so a
+  document without one is ambiguous. It also keeps the document portable: it means the same thing
+  pasted anywhere.
+- **`false` for a folder whose namespace comes from outside it**: a Flux `Kustomization`'s
+  `spec.targetNamespace`, an Argo CD `Application`'s `spec.destination.namespace`, or a
+  hand-written `kustomization.yaml` in the folder that sets `namespace:`. A root the operator
+  creates never sets one.
+
+**Nothing checks that the supplier exists, and nothing can.** For a raw namespace-free folder the
+supplier lives in the cluster that *consumes* the repository, and there may be more than one of
+them: two deployers may land the same folder in two different namespaces, both correctly. That
+portability is the point of the shape, so a rule demanding proof inside the folder would report a
+fault against a folder doing exactly what it was built for.
+
+**One thing is checked, and it refuses.** An explicit `serializeNamespace: false` admits exactly
+**one source namespace**. A namespace-free document takes its namespace from a single supplier, so
+two source namespaces reaching the folder contradict the setting itself, and the failure is silent:
+`shop/config` and `billing/config` both resolve to one `config.yaml` whose bytes name no namespace,
+so they are not two documents that collide but one document two live objects take turns
+overwriting. A second `WatchRule` bringing another source namespace to such a target is refused with
+`GitPathAccepted=False`, reason `MultipleSourceNamespaces`. A rule naming `sourceNamespace: "*"` is
+refused too, without enumerating anything, because a wildcard cannot be shown to be one namespace.
+The set counted is the target's own namespace plus the explicit `rules[].sourceNamespace` of every
+`WatchRule` pointing at it. It is unrelated to `spec.allowedSourceNamespaces`, which answers who may
+write here rather than what the folder means.
+
+Inference is never fenced this way. A folder that is truly multi-namespace and namespace-free is
+what leaving the field **unset** is for.
+
+**What the render check does with the namespace.** Every write is compared against the live object
+it mirrors, and `metadata.namespace` is the one field allowed not to match. It is ignored only when
+the folder renders the document with no namespace at all, which is `serializeNamespace: false` with
+nothing in the folder supplying one. A `kustomization.yaml` that declares `namespace:` makes a
+concrete claim, so it is still compared: a root declaring `namespace: shop` rendering an object that
+lives in `billing` is a relocation, and it is refused whatever `serializeNamespace` says.
+
+### Keeping the folder a kustomize folder (`spec.placement.useKustomize`)
+
+```yaml
+spec:
+  path: apps/checkout
+  serializeNamespace: false
+  placement:
+    useKustomize: true
+```
+
+It controls exactly one thing: **what happens when no `kustomization.yaml` governs the path a new
+document lands at.**
+
+| | A kustomization governs the path | Nothing governs the path |
+|---|---|---|
+| omitted / `false` (default) | the new file joins its `resources:` list | the file is written and nothing else is touched |
+| `true` | the new file joins its `resources:` list | a `kustomization.yaml` is **created** at `spec.path`, and the file joins it in the same commit |
+
+**Registering a new file with the kustomization that already governs it is not what this flag
+controls.** It happens in both rows, because a file no kustomization lists is a file kustomize never
+builds. The flag is only about the empty case, which is what makes an empty repository
+bootstrappable.
+
+**A created root adopts the whole folder.** Its `resources:` lists every managed document
+already in the folder alongside the new one, at the paths those files already have. Nothing is
+moved, rewritten or re-encoded. A root naming only the new file would leave every other file
+sitting in Git and out of every render: the moment a consumer ran `kustomize build` against the
+folder, they would stop being applied, with nothing to show what happened.
+
+**A folder that already has a render root never gains a second one, and a document it would not
+render is refused.** If a `byType` or `default` template puts the new document somewhere the
+existing root does not govern, the placement is refused with `GitPathAccepted=False`, reason
+`UnrenderedPlacement`. Two render roots in one target's folder is the ambiguous case, and an
+ambiguous folder stops accepting new documents entirely; committing the file unregistered instead
+would leave a document sitting in Git looking mirrored while nothing applies it. The fix is a
+template that keeps its documents inside the root, or a target pointed at the folder that root
+governs. Without `useKustomize` nothing changes: a target that made no claim about kustomize keeps
+its current behavior.
+
+**The created root carries no `namespace:`.** It is an `apiVersion`, a `kind` and the `resources:`
+list, and nothing else. `serializeNamespace: false` says the artifact does not encode its deployment
+namespace, and creating a root must not re-encode it one file up where an installer cannot override
+it, so the namespace still comes from the documents (`serializeNamespace` unset or `true`) or from
+whatever installs the folder. The reasoning, and the four other answers that were considered, is in
+[`design/created-root-namespace.md`](design/created-root-namespace.md). That last line is the point of the pairing with
+[`serializeNamespace: false`](#whether-documents-carry-their-namespace-specserializenamespace): on
+an empty folder there is nothing to infer from, and the operator owns the file the omission depends
+on, so the omission is provable rather than trusted.
+
+The new document is placed **beside the root**, exactly as it would be beside a root that was
+already there, unless a `byType` or `default` template says otherwise. A declared template still
+decides the path; the created root lists the document wherever the template put it.
+
+The name says less than the field does, so one reading is worth ruling out: `useKustomize: false`
+does not mean "leave kustomize alone". If a folder's `kustomization.yaml` must never be touched, do
+not point a `GitTarget` at that folder. A kustomization **above** `spec.path` is never edited (the
+ancestor walk stops at the write jail), so rooting the target lower is the way to say it.
 
 ### Additional sensitive resources
 

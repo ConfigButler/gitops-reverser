@@ -126,6 +126,7 @@ func TestPlanFlush_DeleteByGVROnlyFollowsMovedManifestViaMapper(t *testing.T) {
 		"",
 		[]Event{del},
 		nil,
+		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err)

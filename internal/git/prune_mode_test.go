@@ -56,7 +56,7 @@ func deleteUnder(t *testing.T, worktree *gogit.Worktree, mode v1alpha3.PruneMode
 	t.Helper()
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	changed, err := w.flushEventsToWorktree(
-		context.Background(), worktree, "", []Event{deleteEventFor(name)}, nil, mode)
+		context.Background(), worktree, "", []Event{deleteEventFor(name)}, nil, namespacePolicy{}, mode)
 	require.NoError(t, err)
 	return changed
 }

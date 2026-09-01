@@ -89,6 +89,52 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
+	// It sits at the TOP LEVEL rather than inside placement, and the line between the two is
+	// retroactivity. spec.placement decides where a NEW document goes and never moves one already
+	// written; this governs the bytes of EVERY write, and it also decides how a managed document
+	// is FOUND — a document whose namespace is inherited is located in the file bytes by a
+	// namespace-less identity. A field with that blast radius nested inside a struct documented as
+	// "new files only" would be a trap.
+	//
+	// It is a *bool because no plain default preserves today's behavior: false breaks a flat
+	// folder, whose documents must carry their own namespace or they are ambiguous, and true
+	// writes a redundant line into every kustomize folder that already supplies one. nil means
+	// infer, which is what the operator has always done.
+	//
+	// The name deliberately avoids writeNamespace. "Write" is the most loaded word in this API —
+	// the write boundary, the write jail, WriteBoundaryRefused — so writeNamespace: false invites
+	// the reading "never write to this namespace", a permission, which is precisely what the
+	// neighbouring sourceNamespace fields are.
+	//
+	// See docs/layout/model.md § "serializeNamespace".
+
+	// SerializeNamespace declares whether a committed document carries its own
+	// metadata.namespace. It governs every write this target makes, not just the first one, and it
+	// applies to NAMESPACED resources only — a cluster-scoped document has no namespace, so the
+	// field is ignored for it rather than being an error.
+	//
+	// Omitted, the namespace is INFERRED per document, which is the behavior a target that says
+	// nothing has always had: metadata.namespace is omitted only when the kustomization governing
+	// the document's path sets namespace: to that resource's own namespace, and written explicitly
+	// in every other case. Leave it unset for a folder that is legitimately non-uniform — a tree of
+	// nested kustomize roots, each supplying its own namespace — because inference resolves each
+	// document against the root governing its own path.
+	//
+	// true always writes it: the setting for a flat folder applied directly, where nothing
+	// downstream supplies a namespace and a document without one is ambiguous.
+	//
+	// false never writes it, and is a claim about the whole folder: something outside this
+	// repository — a Flux Kustomization's targetNamespace, an Argo Application's
+	// destination.namespace, or a kustomization this target maintains itself — supplies the
+	// namespace instead. Because a namespace-less document takes its namespace from a single
+	// supplier, an explicit false admits exactly ONE source namespace: a second WatchRule bringing
+	// another namespace to this target is refused, with GitPathAccepted=False and reason
+	// MultipleSourceNamespaces.
+	// +optional
+	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
 	// It defaults to a concrete {name: "default"} rather than an implicit nil so a target that omits
 	// it persists with a ref a reader can jump to. The operator never creates that provider: a
 	// GitTarget naming one that does not exist is held unready rather than silently defaulting to
@@ -228,6 +274,52 @@ type GitTargetPlacementSpec struct {
 	// — give every sensitive type an explicit identity-complete ByType entry.
 	// +optional
 	Default string `json:"default,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// It has exactly ONE job, and the name says less than the field does. Registering a new file
+	// with the kustomization that already governs its directory is an INVARIANT rather than a
+	// setting (#295, fixed by #319): a file no kustomization lists is a file nothing renders, so
+	// that happens in both columns. What this flag decides is only what to do when there is no
+	// root at all.
+	//
+	// So useKustomize: false does not mean "leave kustomize alone". If a folder's root must not be
+	// touched, do not point a GitTarget at that folder: the ancestor walk is bounded by the write
+	// jail, so a kustomization ABOVE spec.path is never edited, and rooting the target lower is
+	// the existing, better-tested way to say it.
+	//
+	// It belongs inside placement, unlike spec.serializeNamespace, because it is retroactive in
+	// the same way the rest of this struct is: it decides whether a NEW file's directory has a
+	// root to join, and creates one if not. Nothing already written moves or changes.
+	//
+	// See docs/layout/model.md § "useKustomize".
+
+	// UseKustomize declares that this folder is a kustomize folder whose root the operator
+	// maintains. It controls one thing: what happens when NO kustomization governs the path a new
+	// document lands at.
+	//
+	// Omitted or false, the document is written and nothing else is touched. True, a
+	// kustomization.yaml is created at spec.path and the new document is registered in it as part
+	// of the same commit.
+	//
+	// A created root ADOPTS the folder: its resources: lists every managed document already there
+	// as well as the new one. Turning a folder into a kustomize folder means the folder, and a
+	// root naming one file would leave every other file in Git but out of every render.
+	//
+	// A created root carries NO namespace:. It holds an apiVersion, a kind and the resources: list
+	// and nothing else, so the namespace still comes from the documents (serializeNamespace unset
+	// or true) or from whatever installs the folder (serializeNamespace false).
+	//
+	// A folder that already has a kustomize render root never gains a second one, because two
+	// render roots is an ambiguous folder that stops accepting new documents altogether. If a
+	// byType or default template places a document outside the existing root, that placement is
+	// REFUSED rather than committed as a file no kustomization would render.
+	//
+	// It has NO bearing on a folder that already has a root. A new file is always registered with
+	// the nearest kustomization governing it, whatever chose its path, because a file no
+	// kustomization lists is a file kustomize never builds.
+	// +optional
+	UseKustomize bool `json:"useKustomize,omitempty"`
 }
 
 // GitTargetStatus defines the observed state of GitTarget.

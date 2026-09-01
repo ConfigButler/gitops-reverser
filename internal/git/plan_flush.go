@@ -71,6 +71,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	base string,
 	events []Event,
 	policy *manifestanalyzer.PlacementPolicy,
+	namespaces namespacePolicy,
 	pruneMode v1alpha3.PruneMode,
 ) (bool, error) {
 	root := worktree.Filesystem().Root()
@@ -82,7 +83,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	// Every event in a base shares one GitTarget (events are grouped by base), so they share
 	// one source cluster; resolve this subtree's GVK->GVR against that cluster's registry.
 	mapper := w.mapperForCluster(clusterIDForEvents(events))
-	batch := newWriteBatch(ctx, w.contentWriter, mapper, scoped.scan, policy, scoped.writeSubdir)
+	batch := newWriteBatch(ctx, w.contentWriter, mapper, scoped.scan, policy, namespaces, scoped.writeSubdir)
 	batch.pruneMode = pruneMode
 	batch.target = placementTargetForEvents(events)
 	if err := batch.refusal(); err != nil {
@@ -94,6 +95,12 @@ func (w *BranchWorker) flushEventsToWorktree(
 	// above on purpose: a folder the operator has refused to manage is one whose layout it should
 	// not be making claims about, and GitPathAccepted=False already says why.
 	w.scanLayout(ctx, batch, worktree)
+	// The one write-plan precondition that is not about the folder at all, which is why it is
+	// raised AFTER the layout is published: the folder is fine and its shape is still worth
+	// reporting; what is wrong is the configuration pointed at it.
+	if err := batch.sourceNamespaceRefusal(); err != nil {
+		return false, err
+	}
 	for _, event := range events {
 		if err := batch.applyEvent(ctx, event); err != nil {
 			return false, err
@@ -136,6 +143,11 @@ type writeBatch struct {
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to the folder's one kustomize root and then the canonical path.
 	policy *manifestanalyzer.PlacementPolicy
+	// namespaces is the GitTarget's declared namespace behavior — spec.serializeNamespace — which
+	// decides whether the bytes this batch writes carry metadata.namespace at all. The zero value
+	// is "declare nothing", i.e. infer per document, which is what every caller with no GitTarget
+	// to read (the CLI, most tests) gets.
+	namespaces namespacePolicy
 	// pruneMode is the GitTarget's effective spec.prune.mode, gating the EXPLICIT delete
 	// path only (applyDelete). The inferred mark-and-sweep is gated a layer up, in the
 	// planner, so a suppressed drop never becomes an action in the first place.
@@ -153,6 +165,12 @@ type writeBatch struct {
 	// stay within it. The store and every path in it are keyed relative to renderBase, so a
 	// writable path is one under writeSubdir. See internal/git/render_scope.go.
 	writeSubdir string
+	// createdRoot is the kustomization.yaml this batch WROTE, for a folder that had none and a
+	// target that declared spec.placement.useKustomize. It is nil in every other case, including
+	// the ordinary one where a root was already there. It exists so the second new document in a
+	// batch joins the root the first one created: the store was built before the batch, so nothing
+	// in it knows the file exists.
+	createdRoot *manifestanalyzer.KustomizationInfo
 	// layout is what the scan resolved about this folder's shape. It is published as
 	// status.placement, and createNew reads it: a folder covering several render roots has no
 	// single one to place a new document into, so placing one is refused rather than guessed.
@@ -191,6 +209,7 @@ func newWriteBatch(
 	mapper typeset.Lookup,
 	scan manifestanalyzer.FolderScan,
 	policy *manifestanalyzer.PlacementPolicy,
+	namespaces namespacePolicy,
 	writeSubdir string,
 ) *writeBatch {
 	// The writer allowlist retains build directives (kustomization.yaml) and the operator's
@@ -200,7 +219,8 @@ func newWriteBatch(
 	// placement. The scan also carries the foreign-content view and the active
 	// .gittargetignore, so the structure-only acceptance gate (run by writeBatch.refusal) and
 	// the write-plan precondition (run by writeBatch.flush) read both from the store.
-	store := manifestanalyzer.BuildStoreFromScan(ctx, scan, mapper, manifestanalyzer.WriterAllowlist())
+	store := manifestanalyzer.BuildStoreFromScan(ctx, scan, mapper, manifestanalyzer.WriterAllowlist(),
+		manifestanalyzer.WithDeclaredNamespace(namespaces.declaredNamespace()))
 	// Surface the store's build-time warnings (ambiguous namespace or override
 	// context, scope mismatches) once per batch: these drive silent fallbacks —
 	// e.g. an ambiguous override chain falls back to write-through — and without
@@ -219,6 +239,7 @@ func newWriteBatch(
 		contentByPath: contentByPath,
 		buffers:       map[string]*fileBuffer{},
 		policy:        policy,
+		namespaces:    namespaces,
 		writeSubdir:   writeSubdir,
 	}
 	// Resolved with the store rather than by each caller, so no write path can reach createNew
@@ -241,6 +262,28 @@ func newWriteBatch(
 // would otherwise turn a transient into a stuck, unwritable GitTarget.
 func (wb *writeBatch) refusal() error {
 	return manifestanalyzer.RefusalError(manifestanalyzer.AcceptStructureOnly(wb.store))
+}
+
+// sourceNamespaceRefusal is the write-plan precondition for the one-source-namespace rule: a target
+// that declared its folder namespace-free admits exactly one source namespace, and the second is
+// refused before a byte moves.
+//
+// It is the CORRECTNESS layer, and it holds whatever admission did. The WatchRule admission check
+// is atomic feedback at the moment the mistake is made, but it is one-shot: it cannot see a
+// serializeNamespace flipped to false after the rules were created, and it is a fail-open webhook
+// that a cluster need not be running at all. Everything that must be true of the bytes is decided
+// here. See docs/spec/where-validation-lives.md.
+func (wb *writeBatch) sourceNamespaceRefusal() error {
+	issues := manifestanalyzer.MultipleSourceNamespacesRefusal(
+		wb.namespaces.declaresNamespaceFree(),
+		wb.namespaces.SourceNamespaces,
+		wb.namespaces.SourceNamespaceWildcard,
+		wb.writeSubdir,
+	)
+	if len(issues) == 0 {
+		return nil
+	}
+	return manifestanalyzer.RefusalError(manifestanalyzer.Acceptance{Accepted: false, Issues: issues})
 }
 
 // fileBuffer is the commit-scoped, hydrated working copy of one file under the
@@ -402,8 +445,9 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// namespace: transformer) must keep metadata.namespace out of the written bytes,
 	// exactly as patchExisting already does for an in-place edit of an existing
 	// document in the same context — otherwise the new document would silently break
-	// the convention every sibling in that directory follows.
-	if placement.NamespaceInherited && event.Object != nil {
+	// the convention every sibling in that directory follows. An explicit
+	// spec.serializeNamespace overrides that inference in both directions.
+	if wb.namespaces.omitNamespace(placement.NamespaceInherited) && event.Object != nil {
 		event.Object = event.Object.DeepCopy()
 		event.Object.SetNamespace("")
 	}
@@ -431,6 +475,9 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// foreign content we declined to own, added to resources: on our say-so; and either way it
 	// counted as outcome="added", the value that is supposed to mean "the file we just wrote will
 	// build". Pinned by TestPlacementMetrics_RefusedPlacementLeavesTheKustomizationAlone.
+	if err := wb.resolveKustomizeRootForNew(ctx, &placement); err != nil {
+		return upsertNoChange, err
+	}
 	if placement.Kustomization != nil {
 		wb.appendKustomizationResource(ctx, event, placement)
 	}
@@ -445,9 +492,47 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// non-converging commit into a reported refusal naming the file and the object. It does not
 	// make the write work — that needs attribution for a document that does not exist yet — but
 	// "we cannot express this here" is an answer, and quietly writing a lie is not.
-	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil
+	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil || wb.createdRoot != nil
 	wb.intend(markUnchecked(intentFor(live, placement.Path, false), sensitive))
 	return outcome, nil
+}
+
+// resolveKustomizeRootForNew settles what renders a new document, for a target that declared
+// spec.placement.useKustomize. It creates the folder's root when there is none — with this document
+// already registered in the bytes it writes, so a LATER document in the same batch joins it through
+// the ordinary resources: append — and otherwise refuses a placement no kustomization would render.
+//
+// Both halves are here rather than in createNew because they answer one question between them: is
+// this document going to be rendered at all?
+func (wb *writeBatch) resolveKustomizeRootForNew(
+	ctx context.Context,
+	placement *manifestanalyzer.PlacementResult,
+) error {
+	if created := wb.bootstrapKustomization(ctx, *placement); created != nil {
+		placement.Kustomization = created
+	}
+	issues := wb.unrenderedPlacementRefusal(*placement)
+	if len(issues) == 0 {
+		return nil
+	}
+	return manifestanalyzer.RefusalError(manifestanalyzer.Acceptance{Accepted: false, Issues: issues})
+}
+
+// unrenderedPlacementRefusal reports the refusal for a placement under spec.placement.useKustomize
+// that no kustomization would render. A document is rendered when a kustomization governs its path,
+// and there are three ways for that to be true: one already governed it and needs the entry
+// (LocateNew set Kustomization), one already governed it and already lists the path, or this batch
+// created the root — which registers the first document in the bytes it writes, so it reports no
+// Kustomization to append to.
+func (wb *writeBatch) unrenderedPlacementRefusal(
+	placement manifestanalyzer.PlacementResult,
+) []manifestanalyzer.AcceptanceIssue {
+	governed := placement.Kustomization != nil ||
+		wb.createdRoot != nil ||
+		manifestanalyzer.GoverningKustomization(wb.store, wb.writeSubdir, placement.Path) != nil
+	useKustomize := wb.policy != nil && wb.policy.UseKustomize
+	return manifestanalyzer.UnrenderedPlacementRefusal(
+		useKustomize, governed, placement.Path, wb.layout.RenderRoot)
 }
 
 // placeNewDocument writes the new document at its resolved placement: appended to an existing
@@ -798,7 +883,7 @@ func (wb *writeBatch) patchExisting(
 	}
 	gitDoc, _ := manifestedit.NewDocumentAt(filePath, buf.current, idx)
 	desired := event.Object
-	if dm.NamespaceInheritedFromContext() && desired != nil {
+	if wb.namespaces.omitNamespace(dm.NamespaceAbsentFromFile()) && desired != nil {
 		desired = desired.DeepCopy()
 		desired.SetNamespace("")
 	}
@@ -990,7 +1075,10 @@ func (wb *writeBatch) renderPrecondition() error {
 	}
 
 	var refused *manifestanalyzer.RenderRefusedError
-	if err := manifestanalyzer.VerifyBatchRenders(before, wb.files(), wb.intents); err != nil {
+	verifyOptions := manifestanalyzer.VerifyOptions{
+		NamespaceSuppliedDownstream: wb.namespaces.declaresNamespaceFree(),
+	}
+	if err := manifestanalyzer.VerifyBatchRenders(before, wb.files(), wb.intents, verifyOptions); err != nil {
 		if errors.As(err, &refused) {
 			issues := make([]manifestanalyzer.AcceptanceIssue, 0, len(refused.Reasons))
 			for _, reason := range refused.Reasons {
@@ -1458,14 +1546,19 @@ func (wb *writeBatch) resolveDelete(event Event) (deleteTarget, bool) {
 }
 
 // rawManifestIDForCurrentBytes maps an effective manifest identity back to the raw
-// identity as written in the file: when the namespace was inherited from kustomization
-// context, the file bytes carry no metadata.namespace, so the document is located by a
+// identity as written in the file: when the namespace came from anywhere but the file — a
+// kustomization's namespace: transformer, or the GitTarget's declaration that this folder's
+// documents carry none — the bytes hold no metadata.namespace, so the document is located by a
 // namespace-less identity.
+//
+// It reads the DOCUMENT, never spec.serializeNamespace. The setting says what the next write will
+// contain; this asks what the file already contains, and a folder written before the setting
+// changed still has to be found.
 func rawManifestIDForCurrentBytes(
 	id manifestedit.Identity,
 	dm *manifestanalyzer.DocumentModel,
 ) manifestedit.Identity {
-	if dm != nil && dm.NamespaceInheritedFromContext() {
+	if dm != nil && dm.NamespaceAbsentFromFile() {
 		id.Namespace = ""
 	}
 	return id

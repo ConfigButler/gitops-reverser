@@ -10,6 +10,7 @@ import (
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -55,29 +56,44 @@ type CommandAuthorRecorder interface {
 	RecordCommandAuthor(ctx context.Context, uid types.UID, author queue.CommandAuthor) error
 }
 
-// ValidateOperatorTypesHandler is the admission handler for our operator CRDs. Today it
-// does one thing: for a command kind (a CommitRequest) it captures the authenticated
-// submitter into the CommandAuthorStore and always allows — pure observation with a
-// single side effect (a Redis upsert), never a rejection, so a user's command never
-// depends on it succeeding (a missed capture leaves the request without a claimed actor;
-// see docs/spec/commitrequest-admission-authorship.md). It dispatches on the
-// resource (isCommandKind today), so a future config-validation branch for non-command
-// kinds slots in alongside without disturbing this one.
+// ValidateOperatorTypesHandler is the admission handler for our operator CRDs. It dispatches on the
+// resource under review and does two unrelated things:
+//
+//   - For a COMMAND kind (a CommitRequest) it captures the authenticated submitter into the
+//     CommandAuthorStore and always allows — pure observation with a single side effect (a Redis
+//     upsert), never a rejection, so a user's command never depends on it succeeding (a missed
+//     capture leaves the request without a claimed actor; see
+//     docs/spec/commitrequest-admission-authorship.md).
+//   - For a WatchRule it validates the one cross-object rule admission can usefully give feedback
+//     on: a second source namespace against a GitTarget that declared its folder namespace-free.
+//     That one CAN reject, and it is the only thing here that does.
+//
+// The two branches share an endpoint and nothing else. Validation runs on dry-run (it has no side
+// effects, and a server-side dry-run must report the rejection it would get), while the capture
+// branch honours NoneOnDryRun.
 type ValidateOperatorTypesHandler struct {
 	Store CommandAuthorRecorder
+	// Client reads the GitTarget a WatchRule names, and that target's other rules. Nil leaves the
+	// WatchRule branch evaluating nothing and allowing, which is the same degradation the
+	// fail-open failurePolicy already provides.
+	Client client.Client
 }
 
-// Handle records {uid → author} for an admitted command CREATE before the object
-// persists (the authorship invariant, §2), then allows. Every early return still
-// allows: a non-command kind, a dry-run, a missing uid, or an unauthenticated request
-// simply records nothing and leaves the request without a claimed actor downstream.
+// Handle dispatches on the resource under review: a WatchRule is validated (and may be rejected),
+// and a command CREATE has its {uid → author} recorded before the object persists (the authorship
+// invariant, §2) and is then allowed. Every early return on the command path still allows: an
+// unrecognised kind, a dry-run, a missing uid, or an unauthenticated request simply records nothing
+// and leaves the request without a claimed actor downstream.
 func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := logf.FromContext(ctx).WithName("validate-operator-types")
 
 	gr := metav1.GroupResource{Group: req.Resource.Group, Resource: req.Resource.Resource}
+	if isWatchRuleKind(gr) {
+		return h.validateWatchRuleSourceNamespaces(ctx, req)
+	}
 	if !isCommandKind(gr) {
-		// Belt-and-suspenders; the webhook rules already scope us to command kinds.
-		return admission.Allowed("not a command kind")
+		// Belt-and-suspenders; the webhook rules already scope us to the kinds above.
+		return admission.Allowed("not a kind this endpoint judges")
 	}
 	// Dry-run never persists, so the controller will never read this record — and we
 	// declare sideEffects: NoneOnDryRun, so we must honor it.

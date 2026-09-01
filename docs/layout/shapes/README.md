@@ -1,8 +1,9 @@
 # The folder shapes, and the configuration each one needs
 
-> **design**: a specification by example for the layout model proposed in
-> [`../model.md`](../model.md). The two booleans shown here — `spec.serializeNamespace` and
-> `spec.placement.useKustomize` — do not exist in the current release.
+> **design**: a specification by example for the layout model in
+> [`../model.md`](../model.md). Both booleans shown here, `spec.serializeNamespace` and
+> `spec.placement.useKustomize`, are shipped fields, and every folder below is executed against
+> the write path by the layout corpus.
 > Date: 2026-08-31.
 > Index: [`../../INDEX.md`](../../INDEX.md)
 
@@ -125,10 +126,13 @@ so every shape that relied on inference has to be *declared* instead.
 
 Three findings come out of that column, and they are the substance of this document.
 
-**Shape 5 is the case `useKustomize` was designed for, and it closes its own loop.** An empty folder
-plus `useKustomize: true` plus `serializeNamespace: false` is the one combination where the omission
-is *provable*: the operator writes the `kustomization.yaml`, puts `namespace: shop` in it, and then
-legitimately leaves `metadata.namespace` out of every document it places. Nothing is trusted.
+**Shape 5 is the case `useKustomize` was designed for.** An empty folder plus `useKustomize: true`
+plus `serializeNamespace: false` produces a kustomize folder from the first commit: the operator
+writes the `kustomization.yaml`, adopts whatever is already there into its `resources:`, and leaves
+`metadata.namespace` out of every document it places. The created root carries no `namespace:`
+either — the artifact does not encode its deployment namespace, and the installer supplies it, the
+same way it does for shapes 2 and 4 (see
+[`../../design/created-root-namespace.md`](../../design/created-root-namespace.md)).
 [`5-kustomize-single-folder`](5-kustomize-single-folder/README.md) shows both halves — the same
 folder adopted and created — and they differ by two lines of spec.
 
@@ -241,7 +245,7 @@ namespace-less document. [Shape 2](2-flat-namespace-free/README.md#what-if-two-n
 works both through on its own fixtures.
 
 **The answer is a rule, not a field: an explicit `serializeNamespace: false` admits exactly one
-source namespace, and the second is refused.** It ships with the field in PR 2. The argument — why
+source namespace, and the second is refused.** The argument — why
 no third boolean, why explicit `false` only, why `useKustomize: true` makes it mandatory rather than
 optional, and where the refusal lives — is in
 [`model.md`](../model.md#the-second-guard-one-source-namespace-and-this-one-refuses) and is not

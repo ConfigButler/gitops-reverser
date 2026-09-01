@@ -149,10 +149,13 @@ The two settings exist for the two shapes a user actually declares:
 
 - **`true` for a flat folder.** Nothing downstream supplies a namespace, so every namespaced document
   has to carry one. It also keeps a document portable: it means the same thing pasted anywhere.
-- **`false` beside a root that supplies it.** With `useKustomize: true` the operator owns that root
-  and writes `namespace:` into it, so the omission is **provable** rather than trusted. That is the
-  difference between establishing a convention and guessing one, and it is what inference
-  structurally cannot do on an empty folder — there is nothing there to infer from.
+- **`false` for a folder whose namespace is chosen where it is installed.** The supplier is a Flux
+  `Kustomization.spec.targetNamespace`, an Argo `Application.spec.destination.namespace`, or a
+  `kustomization.yaml` in the folder that a person wrote. `useKustomize: true` does not change that:
+  a root the OPERATOR creates carries no `namespace:`, because the setting says this artifact does
+  not encode its deployment namespace and creating a root must not silently re-encode it one file
+  up. See [`../design/created-root-namespace.md`](../design/created-root-namespace.md), which
+  reverses an earlier revision of this bullet.
 
 The name deliberately avoids `writeNamespace`. "Write" is the most loaded word in this API — the
 write boundary, the write jail, `WriteBoundaryRefused` — so `writeNamespace: false` invites the

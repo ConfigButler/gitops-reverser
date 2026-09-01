@@ -811,6 +811,11 @@ func (in *GitTargetSpec) DeepCopyInto(out *GitTargetSpec) {
 		*out = new(GitTargetPlacementSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.SerializeNamespace != nil {
+		in, out := &in.SerializeNamespace, &out.SerializeNamespace
+		*out = new(bool)
+		**out = **in
+	}
 	if in.ClusterProviderRef != nil {
 		in, out := &in.ClusterProviderRef, &out.ClusterProviderRef
 		*out = new(ClusterProviderReference)

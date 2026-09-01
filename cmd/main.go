@@ -1155,7 +1155,8 @@ func newManager(
 
 // setupAdmissionWebhooks registers both handlers on the one admission server: the
 // always-allow observer (a future-policy extension point) and the validate-operator-types
-// handler that captures the submitter of our own command kinds into commandAuthorStore.
+// handler, which captures the submitter of our own command kinds into commandAuthorStore and
+// validates a WatchRule's source namespaces against the GitTarget it names.
 func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandAuthorStore) {
 	mgr.GetWebhookServer().Register(
 		webhookhandler.ValidateAllPath,
@@ -1163,7 +1164,7 @@ func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandA
 	)
 	// Leave Store as a nil interface when there is no Redis-backed store, so the handler
 	// no-ops rather than dereferencing a typed-nil *CommandAuthorStore.
-	operatorTypesHandler := &webhookhandler.ValidateOperatorTypesHandler{}
+	operatorTypesHandler := &webhookhandler.ValidateOperatorTypesHandler{Client: mgr.GetClient()}
 	if commandAuthorStore != nil {
 		operatorTypesHandler.Store = commandAuthorStore
 	}
