@@ -154,6 +154,9 @@ RUN asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
 # Install trivy (container image vulnerability scanner). It backs `task scan-image`,
 # which is the same command CI runs to gate the built image — so a maintainer can
 # reproduce a scan failure locally instead of pushing to find out what it said.
+#
+# The vulnerability DB is deliberately NOT pre-seeded here: it unpacks to 1.3GB, goes
+# stale in 24h, and ten CI jobs pull this image while only two scan. CI caches it instead.
 RUN asset="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
     && base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}" \
     && tmpdir="$(mktemp -d)" \
