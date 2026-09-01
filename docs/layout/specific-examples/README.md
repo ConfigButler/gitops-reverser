@@ -1,8 +1,8 @@
 # Specific examples: two ecosystems, and the shared prerequisites
 
 > **design**: worked scenarios for the layout model in [`../model.md`](../model.md). The
-> `GitTarget` files use `spec.serializeNamespace`, `spec.placement.useKustomize` and `spec.suspend`,
-> none of which exist in the current release.
+> `GitTarget` files use `spec.serializeNamespace` and `spec.placement.useKustomize`, neither of
+> which exists in the current release.
 > Date: 2026-08-31.
 > Index: [`../../INDEX.md`](../../INDEX.md)
 
@@ -45,8 +45,8 @@ the refusal halves included:
 
 The same as `shapes/`, so one harness reads both:
 
-- `repository/` — the relevant repository subtree, with each scenario stating whether it is the
-  starting state or the state after the illustrated change.
+- `repository/` — the starting state, always rooted at the **repository root** rather than at a
+  target's `spec.path`, so the folder shows where the target sits as well as what it holds.
 - `config/` — the `GitTarget` and watcher objects that describe the target.
 - `input/` — one live object **as the operator receives it from the API server**, not as it is
   written to Git.

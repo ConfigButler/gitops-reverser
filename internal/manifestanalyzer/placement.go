@@ -211,27 +211,17 @@ func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementReque
 // than one supported kustomization under the scanned root is ambiguous and declines
 // rather than guessing. That is why this survived the Option C deletion — deleting it
 // would reintroduce the unreachable-file bug it was added to fix.
+//
+// The "exactly one writable supported kustomization" predicate lives in writableRenderRoots
+// (layout.go), because status.placement reports the rung this function will take and the two
+// must not be able to drift: a LayoutResolved that says SingleKustomization while placement
+// declines here would be worse than no report at all.
 func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, bool) {
-	var only *KustomizationInfo
-	for _, k := range store.Kustomizations {
-		if k.Unsupported {
-			continue
-		}
-		// Under render-root scoping the scan also holds the read-only base kustomizations, so
-		// "one supported kustomization" must mean one WRITABLE one. Skipping the out-of-jail
-		// bases lets an overlay resolve to its own single root (and a new object land beside it,
-		// governed) instead of declining as ambiguous because the base counts as a second root.
-		if req.WriteScope != "" && !pathWithin(slashDir(k.Path), req.WriteScope) {
-			continue
-		}
-		if only != nil {
-			return "", false
-		}
-		only = k
-	}
-	if only == nil {
+	roots := writableRenderRoots(store, req.WriteScope)
+	if len(roots) != 1 {
 		return "", false
 	}
+	only := store.Kustomizations[roots[0]]
 	name := req.Identifier.Name + ".yaml"
 	if req.Sensitive {
 		name = req.Identifier.Name + ".sops.yaml"

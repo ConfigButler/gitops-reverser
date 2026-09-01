@@ -1,0 +1,31 @@
+# Vulnerabilities the image scan may skip, each with the reason it is not reachable here and a
+# date it must be reconsidered. An entry without both is a suppression nobody can audit.
+#
+# The gate this feeds is `task scan-image`, which fails on CRITICAL vulnerabilities that HAVE a
+# fix — so everything listed here is by definition something a reader would expect to be fixed by
+# upgrading. Say why we have not. Reproduce the gate locally with that task before editing this.
+vulnerabilities:
+  - id: CVE-2026-56854
+    # golang.org/x/crypto/ssh: authentication bypass because a server does not enforce the
+    # source-address restrictions in an authorized_keys `from=` criterion.
+    #
+    # It reaches the image through the SOPS release binary, which getsops builds against
+    # x/crypto v0.54.0. Our own manager is unaffected and Trivy reports it clean: this repository
+    # requires x/crypto v0.55.0, which carries the fix.
+    #
+    # The vulnerable code is an SSH SERVER path (ssh.ServerConfig). SOPS is a CLI we exec to
+    # encrypt and decrypt files with age; it listens on nothing and accepts no SSH connection, so
+    # the affected path cannot be entered in this image. Suppressed rather than fixed because
+    # v3.13.3 is the latest SOPS release: there is no rebuilt binary to bump to, and building SOPS
+    # ourselves would trade an upstream signed release for one of ours, which is a bigger change
+    # to the supply chain than the finding warrants.
+    #
+    # Revisit when getsops ships a release built against x/crypto >= 0.55.0, and delete this entry
+    # then. The expiry is what forces that check to happen even if nobody is watching upstream.
+    paths:
+      - "usr/local/bin/sops"
+    statement: >-
+      Not reachable: the vulnerable path is x/crypto/ssh's SERVER-side authorized_keys handling,
+      and the SOPS CLI in this image runs no SSH server. Our own binary already uses the fixed
+      x/crypto v0.55.0. No rebuilt SOPS release exists yet (v3.13.3 is latest).
+    expired_at: 2026-12-01

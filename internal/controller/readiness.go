@@ -64,6 +64,14 @@ func newReadiness(message, notStalledMessage string) *readiness {
 	}
 }
 
+// convergesAs replaces what Ready reports when no gate objects. It is for a configured state
+// that changes the MEANING of converged without being a fault — a suspended object is fully
+// reconciled and deliberately idle — and it is deliberately not a contribution: a gate that
+// objects still wins, so this can never mask one.
+func (r *readiness) convergesAs(value conditionValue) {
+	r.whenConverged = value
+}
+
 // stalled contributes a terminal gate: this object is not converging and will not, until someone
 // changes something.
 func (r *readiness) stalled(reason, message string) {

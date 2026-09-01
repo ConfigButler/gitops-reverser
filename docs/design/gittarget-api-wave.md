@@ -79,21 +79,26 @@ can do none of the three it is probably not a `GitTarget` field.
 
 These are the reasons to combine, as opposed to merely batch. Each one changes what gets built.
 
-### 1. Adoption is a dry run, and `spec.suspend` is enough to give it
+### 1. `spec.suspend` is a panic knob, and adoption is a scratch branch
 
-Placement only ever affects *new* documents, so there is nothing to preview by inspection: you find
-out where files go by letting one be written.
+The review's central complaint is that *this controller writes to a Git repository and there is no
+way to make it stop that is not deleting the object.* One field that stops the writes without
+deleting the target or unpicking its `WatchRule` objects answers that, and that is the whole
+justification — which is why **`spec.mode: Observe|Write` (B1) was dropped**: mode bought only the
+difference between a temporary pause and a declared permanent read-only posture, a distinction in
+intent rather than in behavior.
 
-A suspended target plus `status.placement` is that preview. The operator scans, resolves the render
-root, publishes what it *would* do, and writes nothing; clear `suspend` when the status says what you
-expected. That needs no second field, which is why **`spec.mode: Observe|Write` (B1) was dropped**:
-it bought only the difference between a temporary pause and a declared permanent read-only posture,
-which is a distinction in intent, not in behavior.
+`suspend` is not how a user previews a target. That is done by pointing a `GitTarget` at a scratch
+branch and reading the commits it makes — real bytes, real registrations, real deletes, in a
+reviewable diff
+([`../layout/model.md`](../layout/model.md#previewing-a-target-point-it-at-a-scratch-branch)).
 
-The cost is stated rather than hidden: **`suspend` must keep observing.** Flux's `suspend` stops
-reconciliation altogether; ours stops *writes* and keeps scanning, so the status a user is waiting on
-stays fresh while they wait. That deviation belongs in the field's documentation, in one sentence,
-because it is the only place we differ from a convention a Flux user brings with them.
+The one deviation is stated rather than hidden: **`suspend` keeps observing.** Flux's `suspend` stops
+reconciliation altogether; ours stops *writes* and keeps scanning, because a valve that stopped
+looking as well as writing would freeze `status.placement` at whatever the folder looked like the
+moment someone panicked — exactly when a stale answer costs the most. That belongs in the field's
+documentation, in one sentence, because it is the only place we differ from a convention a Flux user
+brings with them.
 
 **Re-open trigger for `mode`**: someone who needs a target that can never write, as a property of the
 object rather than a switch a colleague can flip.
@@ -113,7 +118,7 @@ deletion; [`event_router.go`](../../internal/watch/event_router.go),
 
 What is left uncovered is one case: a repository whose folder was changed **by someone else** while
 our target wrote nothing. The reconcile-request annotation refreshes that on demand. A stale
-`observedRevision` on an idle target is a legible cost; a periodic scan on every target is not.
+`resolvedAtRevision` on an idle target is a legible cost; a periodic scan on every target is not.
 
 **Re-open trigger**: a user who needs an idle target's `status.placement` to track a repository other
 people edit, for whom the annotation is not enough. Then it is a scan cadence, named for scanning.
@@ -211,9 +216,9 @@ status:
       message: "render root '.' governs new files"
       observedGeneration: 4
   placement:
+    mode: KustomizeRoot
     renderRoot: .
-    serializeNamespace: false
-    observedRevision: 9f3c1ab
+    resolvedAtRevision: 9f3c1ab
   lastHandledReconcileAt: "2026-07-30T09:14:22Z"
 ```
 
@@ -275,9 +280,9 @@ Dependencies first, then the things that only need the object to be breaking.
 1. **The `scope: Namespaced` envtest**, above. Not an API change; its answer constrains the enum
    work. Do it before planning.
 2. **`spec.suspend`.** Precondition for anything that creates files, and independently the review's
-   highest-value gap.
-3. **`status.placement`** plus the post-scan validation pass. A dry run with nothing to read previews
-   nothing.
+   highest-value gap: a way to stop the writes that is not deleting the object.
+3. **`status.placement`** plus the post-scan validation pass. Independent of step 2 — it explains a
+   write that already happened, rather than previewing one that has not.
 4. **`requestedAt` + `lastHandledReconcileAt`.** On-demand refresh of step 3.
 5. **Events on a changed resolution**, over the existing recorder.
 6. **B4**, as `spec.commit`. Last of the principle items, and the one that makes the object coherent.

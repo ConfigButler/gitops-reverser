@@ -164,14 +164,6 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	events []Event,
 	targets map[pendingTargetKey]ResolvedTargetMetadata,
 ) (bool, error) {
-	// Stage path-scoped bootstrap files first, before any resource write, exactly as
-	// the per-event path did.
-	for _, event := range events {
-		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
-			return false, err
-		}
-	}
-
 	// Plan-then-flush each GitTarget subtree once: build the structure model, resolve
 	// every event to a single-identity action, apply to hydrated file buffers, and
 	// flush dirty/deleted files. A grouped window is single-target, so this is usually
@@ -179,6 +171,35 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	byBase := groupEventsByBase(events)
 	anyChanges := false
 	for _, base := range sortedBaseKeys(byBase) {
+		// A suspended target scans and publishes what it resolved, and writes nothing. The scan
+		// is not skipped with the write: dropping it would leave status.placement frozen at
+		// whatever the folder looked like when suspension began, which is exactly when a stale
+		// answer costs the most. Its events are dropped rather than deferred — resuming replays
+		// the cluster's current state on the next resync, not a backlog of stale intermediate
+		// ones.
+		if md, ok := targetForBase(targets, base); ok && md.Suspend {
+			if err := w.refuseUnsafeWorktree(ctx, worktree, base, md); err != nil {
+				return false, err
+			}
+			log.FromContext(ctx).V(1).Info("live write suppressed: GitTarget is suspended",
+				"gitTarget", md.Namespace+"/"+md.Name, "path", base, "events", len(byBase[base]))
+			continue
+		}
+
+		// Stage this path's bootstrap files before any resource write into it.
+		//
+		// It is INSIDE the loop, and after the suspend gate, because both matter. Bootstrap
+		// staging writes .gittargetignore (and .sops.yaml) into the path and adds them to the
+		// index, and the index is shared by every target on this branch — so staging for a
+		// suspended path meant the next active target's commit carried those files into the
+		// suspended target's folder. A suspended target must leave no trace in a commit,
+		// including one it did not author. The resync path already had this ordering.
+		for _, event := range byBase[base] {
+			if err := ensureBootstrapTemplateInPath(repo, base, event.BootstrapOptions); err != nil {
+				return false, err
+			}
+		}
+
 		changed, err := w.flushEventsToWorktree(
 			ctx,
 			worktree,

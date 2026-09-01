@@ -56,6 +56,7 @@ var classificationByKind = map[IssueKind][]Classification{
 	IssueForeignSubmodule:       {{Solvable: true, Actor: ActorRepositoryAuthor}},
 	IssueOutOfScope:             {{Solvable: true, Actor: ActorPlatformOperator}},
 	IssueWriteEscapesScope:      {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueAmbiguousLayout:        {{Solvable: true, Actor: ActorPlatformOperator}},
 	IssueRenderDoesNotMatchLive: {{Solvable: true, Actor: ActorPlatformOperator}},
 	IssueWriteFanIn:             {{Solvable: false}},
 	IssueUnplaceableEdit:        {{Solvable: false}},

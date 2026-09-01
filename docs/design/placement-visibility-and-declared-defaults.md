@@ -256,9 +256,16 @@ nothing built now is wasted.
 
 ## `status.layout`, renamed `status.placement`
 
-> **The field is `status.placement` now.** [`model.md`](../layout/model.md) renamed it when
-> `spec.layout` stopped existing, and specifies it under that name. The shape below is unchanged
-> and this page is still where it is argued; read every `status.layout` here as `status.placement`.
+> **The field is `status.placement` now, and it is much smaller than the shape below.**
+> [`model.md`](../layout/model.md) renamed it when `spec.layout` stopped existing, and is the
+> specification of record. What it kept from this page is the *principle* — an observation, not a
+> condition, bounded rather than per-type. What it dropped is most of the shape: the historical half
+> (`placedResources`, `canonicalTypes`, `refusedResources`) went to metrics, `examples` went because
+> a fabricated object at a fabricated path is not an answer, `declaredTypes` went because it counts a
+> spec map the same GET returns, and `renderRootReason` became the `LayoutResolved` condition's
+> reason. `status.placement` now publishes `mode`, `renderRoot`, `readOnlyBases`,
+> `resolvedAtRevision` and `resolvedAt`, and nothing else. Read the shape below as the argument that
+> produced it, not as the field.
 
 An **observation, not a condition**, in the sense
 [`GitTargetStatus.Retention`](../../api/v1alpha3/gittarget_types.go) already establishes: nothing

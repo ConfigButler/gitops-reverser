@@ -20,6 +20,12 @@ apps/checkout/
 ## One target per leaf overlay
 
 Three environments are **three `GitTarget` objects**, each rooted at a leaf:
+[`config/gittarget-app-root.yaml`](config/gittarget-app-root.yaml) is the same repository pointed at
+`apps/checkout` instead of a leaf, which covers four render roots at once:
+[`expected-app-root-status.yaml`](expected-app-root-status.yaml) is the `LayoutResolved=Ambiguous`
+it earns and the refusal that comes with it. It is the one refusal in this set the operator enforces
+today.
+
 [`config/gittarget-prod.yaml`](config/gittarget-prod.yaml) and
 [`config/gittarget-test.yaml`](config/gittarget-test.yaml) are the same object with the environment
 swapped, and neither declares any layout configuration at all.

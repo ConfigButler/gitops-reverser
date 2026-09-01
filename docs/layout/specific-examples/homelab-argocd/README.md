@@ -10,7 +10,8 @@ Application created in the Argo CD UI receives a sibling file such as `paperless
 and an entry in the root's `resources:` list.
 
 The tree below shows the target's path in the real repository;
-[`repository/`](repository/) in this folder **is** `bootstrap/argocd-applications/`.
+[`repository/`](repository/) in this folder is the repository root, and the target's path is
+`bootstrap/argocd-applications/`.
 
 ```text
 bootstrap/argocd-applications/
@@ -31,7 +32,7 @@ objects. The folder's kustomize root supplies the namespace, so the Application 
 `metadata.namespace`.
 
 **This is the scenario the post-scan guard exists for.** The root that makes the omission safe is
-[`repository/kustomization.yaml`](repository/kustomization.yaml) — a file the *repository owner*
+[`kustomization.yaml`](repository/bootstrap/argocd-applications/kustomization.yaml) — a file the *repository owner*
 controls, not the operator. Delete it, or delete its `namespace: argocd` line, and every subsequent
 document would land in whatever namespace the applier happens to be pointed at, which is a different
 object with the same name. Because `serializeNamespace: false` is an explicit override of a
@@ -73,13 +74,11 @@ because the rest of that prefix is user data. See
         reason: SingleKustomization
         message: "render root '.' governs new files"
     placement:
+      mode: KustomizeRoot
       renderRoot: .
-      serializeNamespace: false
   ```
 
-- Expected Git change:
-  [`expected-paperless.patch`](expected-paperless.patch), after a reviewer
-  clears `suspend`.
+- Expected Git change: [`expected-paperless.patch`](expected-paperless.patch).
 - Expected status: `Ready=True` after the root renders the added Application.
 - Boundary: only `Application` declarations in `argocd` are eligible. An Argo-created workload has
   no writable home in this target.

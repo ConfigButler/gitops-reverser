@@ -530,8 +530,131 @@ The most useful status fields are:
 - `GitPathAccepted`: true when the target Git path is safe to materialize.
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 - `status.retention`: how many documents `spec.prune.mode` is keeping, and under which mode.
+- `LayoutResolved`: what the last scan resolved about the folder's shape, with
+  `status.placement` carrying the detail. See below.
 
 Use conditions for automation.
+
+### Seeing what a target will do, before it does it
+
+**Point one at a scratch branch.**
+
+```yaml
+spec:
+  providerRef: {name: homelab}
+  branch: gitops-preview          # not main
+  path: apps/checkout
+```
+
+It commits, and you read the commits: the real files, the real `resources:` registrations, the real
+deletes, in a diff you can review. Nothing is simulated, so nothing can be wrong about it. When you
+are happy, delete the preview target and declare the real one. `spec.branch` is immutable, so the
+two are always separate objects, and deleting the preview cannot disturb the real folder.
+
+For inspecting a repository without a cluster at all, use the `manifest-analyzer` CLI.
+
+`spec.suspend` is **not** this. It is the next section.
+
+### Stopping a target from writing (`spec.suspend`)
+
+The panic knob. One field that stops a target writing, without deleting it and without unpicking
+the `WatchRule` objects you would have to rebuild afterwards:
+
+```yaml
+spec:
+  path: apps/checkout
+  suspend: true
+```
+
+A suspended target keeps its watches, keeps receiving events, and keeps scanning its folder. A valve
+that also stopped looking would leave `status.placement` frozen at whatever the folder looked like
+the moment you turned it, which is exactly when a stale answer costs the most. It plans no new
+commit. `Ready` stays `True` with reason `Suspended`, because not writing is the configured outcome
+rather than a fault; every other gate still applies, so a suspended target with a broken
+`GitProvider` is still not ready.
+
+`status.retention` is not published while a target is suspended: no resync sweeps, so nothing is
+counted, and a published zero would read as "converged" when it means "not measured".
+
+**It takes effect at the next planning boundary, not instantly.** Work already committed locally
+when you set it is still pushed, so a target suspended during a push cooldown can publish one more
+commit seconds later. That is deliberate: a local commit that is never pushed would sit in the
+operator's checkout and surface later, out of order, when you resume. Suspend is a valve on new
+work, not an undo.
+
+Clearing `suspend` resumes from the cluster's current state on the next resync. The writes
+suppressed while it was set are not replayed, so what lands is what the cluster holds then, not a
+backlog of the values it passed through.
+
+To re-read the folder now rather than on the periodic cadence, stamp the reconcile-request
+annotation with any value that changes:
+
+```bash
+kubectl annotate gittarget checkout \
+  reconcile.configbutler.ai/requestedAt="$(date -u +%FT%TZ)" --overwrite
+```
+
+The spelling is Flux's `reconcile.fluxcd.io/requestedAt` with our own group; the value carries no
+meaning, only its change does.
+
+### What the folder resolved to (`status.placement`)
+
+`status.placement` is what the last scan learned about the **folder**, and it is available before
+the target has ever written. It answers one question: *why did a write take the shape it did, or why
+was it refused?* It deliberately restates nothing the spec already carries:
+
+```yaml
+status:
+  conditions:
+    - type: LayoutResolved
+      status: "True"
+      reason: SingleKustomization       # SingleKustomization | Ambiguous | None
+      message: 'render root "." governs new files; it renders ../../base, which is read-only input'
+  placement:
+    mode: KustomizeOverlay              # Plain | KustomizeRoot | KustomizeOverlay
+    renderRoot: .
+    readOnlyBases: ["../../base"]
+    resolvedAtRevision: 9f3c1ab
+    resolvedAt: "2026-07-30T09:14:22Z"
+```
+
+- `mode` is **how this folder is written**, and it is the field that predicts the surprises:
+
+  | | `Plain` | `KustomizeRoot` | `KustomizeOverlay` |
+  |---|---|---|---|
+  | a new document | written | written **and registered** in `resources:` | same |
+  | a delete | file removed | file removed **and its `resources:` entry dropped** | same, unless the object is inherited |
+  | deleting an object the folder inherits from its base | n/a | n/a | a **`$patch: delete` is authored into the overlay**; nothing is removed |
+  | editing a field the base owns | n/a | n/a | authored into the overlay for `images:`/`replicas:`, **refused** otherwise |
+  | can kustomize refuse the write | no | yes, by re-rendering | yes |
+
+  It is absent when the folder covers several render roots, along with `renderRoot`: there is no
+  single answer.
+- `renderRoot` is the kustomization directory that governs new documents, relative to `spec.path`;
+  `.` is the folder itself. Empty for `Plain`, and when the folder has several roots.
+- `readOnlyBases` are directories the folder renders but may never write to, spelled the way the
+  overlay's own `resources:` spells them. Non-empty exactly when `mode` is `KustomizeOverlay`, and
+  an edit landing on a document under one of them is what a `WriteBoundaryRefused` refusal is about.
+- `resolvedAtRevision` and `resolvedAt` date **the resolution**, not the last scan. They advance
+  when the resolution changes, not on every scan of an unchanged folder, so a timestamp well in the
+  past means the folder's shape has been stable, rather than that scanning stopped.
+
+The stanza carries no counters, no `examples`, and no copy of `spec.serializeNamespace` or of the
+`byType` map. The rule is that a status field earns its place only if a reader cannot get it from
+the spec in the same GET, **and** it varies with this folder. To preview what a target would write,
+use a scratch branch (above) rather than a status field.
+
+`LayoutResolved` reports the verdict. `None` (no kustomization governs the folder) is `True` and
+perfectly healthy; it is the ordinary case. Only `Ambiguous` is `False`:
+
+**A target must cover exactly one kustomize render root.** A `GitTarget` at `apps/checkout` in a
+base-plus-overlays repository covers the base and every overlay, so a new document has no single
+root to be placed into, and picking one would hand it to an environment nobody named. Such a target
+reports `LayoutResolved=False` with reason `Ambiguous`, naming the roots it covers, and refuses to
+place new documents (`GitPathAccepted=False`, reason `AmbiguousLayout`). Existing documents are
+unaffected: they are edited where they already live. The fix is to point the target at one leaf,
+`apps/checkout/overlays/prod`, and declare the other environments as their own `GitTarget` objects:
+one target is one environment is one write partition.
 
 ### Deletion policy (`spec.prune.mode`)
 

@@ -31,20 +31,26 @@ supplies what the documents omit.
 - Live input: [`input/checkout-config.yaml`](input/checkout-config.yaml) — a `ConfigMap` in `shop`.
 - Expected Git change: [`expected-checkout-config.patch`](expected-checkout-config.patch). The
   input's `namespace: shop` does not appear in it. That subtraction is the assertion.
-- Expected status: `Ready=True`, and see the guard below.
+- Expected status: `Ready=True`, and nothing is reported about the missing supplier. Why not is the
+  next section.
 
-## The guard has nothing to check
+## There is no guard, because there is nothing to check
 
-`serializeNamespace: false` is honest only when something guarantees the namespace, and the post-scan
-pass re-checks that on every scan by looking at the folder. Here the guarantee is a `Kustomization`
-in the deploying cluster, which the operator cannot see, so a guard that only accepts a
-`kustomization.yaml` reports `Validated=False` against a perfectly correct folder.
+`serializeNamespace: false` is not checked against this folder, and it cannot be. The guarantee is a
+`Kustomization` in the deploying cluster, which the operator cannot see — so a rule requiring
+*something in the folder* to supply the namespace would report a fault against a perfectly correct
+folder.
 
-That is the strongest argument for
-[naming the supplier](../../model.md#open-questions): a `false` that says *"external, asserted"*
-moves the responsibility to the user explicitly, instead of leaving the operator to choose between a
-false alarm and no check at all. Until that exists, this shape is the one where the guard has to
-stay a report rather than a refusal.
+Naming the supplier instead (a `false` that also declares *"external, asserted"*) does not help
+either, and for a stronger reason: **there is often no single supplier to name.** A raw
+namespace-free folder can be consumed by two deployers into two different namespaces, both
+correctly. That portability is what the shape is *for*. An assertion field would ask the user to
+promise something that is not theirs to promise, and buy nothing, since nothing could check it
+either way.
+
+What is left is a division the rest of the model runs along: **guard what is inside the folder, say
+nothing about what happens after it leaves.** The next section is a rule on the inside of that line,
+and it is enforced.
 
 ## What if two namespaces reach this target?
 
@@ -73,6 +79,13 @@ admits exactly one source namespace, and the second is refused.** The argument i
 with the field, in PR 2. Unlike the supplier question above, it is answerable entirely inside the
 cluster: the set of source namespaces reaching a target comes from the rules that name it, not from
 the folder — so this shape gets a real fence even though its *supplier* stays unverifiable.
+
+It is a fixture rather than only an argument.
+[`config/gittarget-second-namespace.yaml`](config/gittarget-second-namespace.yaml) and
+[`config/watchrule-second-namespace.yaml`](config/watchrule-second-namespace.yaml) are this folder
+with the mistake made, and
+[`expected-second-namespace-status.yaml`](expected-second-namespace-status.yaml) is the refusal.
+The corpus runs it and skips it, naming PR 2.
 
 ## Empty folder
 

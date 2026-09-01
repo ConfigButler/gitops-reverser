@@ -1,0 +1,19 @@
+# The MISTAKE this shape exists to name, kept as a fixture because a set where every write
+# succeeds is advertising rather than specification. Same repository as gittarget-prod.yaml,
+# one field different: the path is the app root rather than a leaf overlay.
+#
+# apps/checkout covers four kustomize render roots — base and three overlays — so there is no
+# single one for a new document to go into, and picking one would hand it to an environment
+# nobody named. The target resolves LayoutResolved=Ambiguous and refuses to place, rather than
+# guessing. The fix is one edit: point it at apps/checkout/overlays/prod, as gittarget-prod.yaml
+# does, and declare the other environments as their own GitTargets.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: checkout-app
+  namespace: shop-prod
+spec:
+  providerRef:
+    name: app-repository
+  branch: main
+  path: apps/checkout

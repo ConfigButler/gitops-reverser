@@ -64,6 +64,7 @@ Run `task` (or `task help`) to list everything.
 | `task clean` | Removes `bin/`, `cover.out`, `dist/`, and **all** of `.stamps/` (including the image and envtest caches). | A full local reset. |
 | `task manifests` / `task generate` | Regenerate CRDs/RBAC and deepcopy code. | Usually automatic; other tasks depend on them. |
 | `task build` | Compile `bin/manager`. | When you want the local binary. |
+| `task scan-image` | Scans a container image with Trivy: a full report, then the gate that fails on CRITICAL findings that have a fix. Takes `SCAN_ARCHIVE=<tarball>` or `SCAN_IMAGE=<ref>`. | When the CI image scan fails, to reproduce it locally. |
 
 `task clean-cluster` is the one to reach for when the e2e cluster is wedged. It only wipes
 `.stamps/cluster/<ctx>/`, so the **controller image cache (`.stamps/image/`) survives**. The
@@ -150,6 +151,22 @@ what makes the skip precise: `lint-golang` fingerprints the module's Go files (`
 plus `.hadolint.yaml`; `lint-actions` the `.github/workflows/*` glob (it runs `actionlint` with no
 path argument, so new workflows are auto-discovered); `lint-helm` the chart's YAML and templates.
 Each fingerprint includes that tool's config, so changing a lint rule re-triggers just that linter.
+
+`task scan-image` is deliberately **not** one of them, and is not in the DAG above. It scans a
+container image, so it needs an image — which a lint run has no reason to build, and which CI
+already has in hand by the time it scans. It is the same command both CI scan jobs run, inside the
+same container, so the gate can be reproduced locally instead of by pushing:
+
+```bash
+task scan-image SCAN_ARCHIVE=project-image.tar          # the artifact CI builds
+task scan-image SCAN_IMAGE=ghcr.io/example/img@sha256:… # or any reference
+```
+
+Suppressions live in [`.trivyignore.yaml`](../.trivyignore.yaml), each with a justification and an
+expiry date, and only the gate reads them — a suppressed finding still appears in the report above
+it. Trivy treats a missing ignore file as a fatal error rather than carrying on without it. The
+binary ships in the CI/dev container, so a devcontainer built before it was added needs rebuilding
+before this task runs.
 
 `lint-helm` is the one that is not a pure skip: it depends on `helm-sync` so the chart's generated
 CRDs/role are present and current before `helm lint` runs — a complete check that also works on a

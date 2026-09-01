@@ -53,6 +53,11 @@ type WorkerManager struct {
 	// CLI and in tests that do not assert on the status transition.
 	pathRefusal PathRefusalReporter
 
+	// layoutReporter publishes each scan's resolved folder layout to the GitTarget status
+	// surface. Set once at startup (SetLayoutReporter) before any worker is created; nil in the
+	// CLI and in tests that do not assert on status.placement.
+	layoutReporter LayoutReporter
+
 	// renderFidelityGate is shared by every worker and the watch manager. It is created with the
 	// manager so a target's state survives workers being recreated for the same branch.
 	renderFidelityGate *RenderFidelityGate
@@ -123,6 +128,16 @@ func (m *WorkerManager) SetPathRefusalReporter(reporter PathRefusalReporter) {
 	m.pathRefusal = reporter
 }
 
+// SetLayoutReporter injects the hook every worker calls after a scan resolves a target's
+// folder layout, so status.placement and LayoutResolved reflect the folder rather than being
+// computed and dropped. Like SetPathRefusalReporter, it is called once at startup before any
+// worker is created.
+func (m *WorkerManager) SetLayoutReporter(reporter LayoutReporter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.layoutReporter = reporter
+}
+
 // RegisterTarget ensures a worker exists for the target's (provider, branch)
 // and registers the target with that worker.
 // This is called by GitTarget controller when a target becomes Ready.
@@ -182,6 +197,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.clusterMapper = m.clusterMapper
 		worker.sshHostKeys = m.sshHostKeys
 		worker.pathRefusal = m.pathRefusal
+		worker.layoutReporter = m.layoutReporter
 		worker.renderFidelityGate = m.renderFidelityGate
 
 		if err := worker.Start(m.ctx); err != nil {

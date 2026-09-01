@@ -24,6 +24,22 @@ spec:
     - jsonPath: .status.streams.summary
       name: Streams
       type: string
+    - jsonPath: .spec.suspend
+      name: Suspended
+      priority: 1
+      type: boolean
+    - jsonPath: .status.placement.mode
+      name: Layout
+      priority: 1
+      type: string
+    - jsonPath: .status.placement.renderRoot
+      name: RenderRoot
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="LayoutResolved")].reason
+      name: LayoutResolved
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="GitPathAccepted")].status
       name: GitPathAccepted
       priority: 1
@@ -361,6 +377,27 @@ spec:
                     - Always
                     type: string
                 type: object
+              suspend:
+                description: |-
+                  Suspend stops this target from writing to Git, without deleting it. It is the knob to turn
+                  when something is wrong and the writes have to stop now: watches keep running, events keep
+                  arriving, the folder keeps being scanned and status.placement keeps being maintained, and no
+                  new commit is planned while it is set.
+
+                  It takes effect at the next planning boundary, not instantly. Work already committed
+                  locally when suspend is set is still pushed, so a target suspended during a push cooldown
+                  can publish one more commit seconds later. That is deliberate: a local commit that is never
+                  pushed would sit in the worker's checkout indefinitely and surface later, out of order, on
+                  resume. Suspend is a valve on new work, not an undo — it stops the next write, it does not
+                  revert the last one.
+
+                  While it is set, status.retention is not published at all: nothing is swept, so nothing is
+                  measured, and reporting zero retained documents would read as "converged" when nothing was
+                  counted.
+
+                  Omitted, it is false. Clearing it resumes writing from the current cluster state on the next
+                  resync; the writes suppressed while suspended are not replayed.
+                type: boolean
             required:
             - branch
             - path
@@ -453,6 +490,74 @@ spec:
                   by the controller.
                 format: int64
                 type: integer
+              placement:
+                description: |-
+                  Placement is what the last scan resolved about this folder's layout: whether a kustomize
+                  render root governs new documents, which one, and whether the folder renders a base it may
+                  not write to. It is an observation, like streams and retention, and the LayoutResolved
+                  condition carries the verdict.
+                properties:
+                  mode:
+                    description: |-
+                      Mode is how this folder is written, and it is the field that predicts the surprises.
+
+                      `Plain` — no kustomization governs the folder. A new document is written and nothing else
+                      is touched; a delete removes it and nothing else is touched.
+
+                      `KustomizeRoot` — exactly one kustomization governs the folder and the folder is
+                      self-contained. A new document is also registered in that root's `resources:`; a delete
+                      also drops its entry; and every write is proved by re-rendering, so kustomize itself can
+                      refuse one.
+
+                      `KustomizeOverlay` — as KustomizeRoot, and the folder additionally renders a base outside
+                      it (ReadOnlyBases). The base is read-only input: an edit to a field the base owns is
+                      authored into the overlay when it is expressible there (`images:`, `replicas:`) and refused
+                      with WriteBoundaryRefused otherwise, and DELETING an object the overlay inherits authors a
+                      `$patch: delete` into the overlay rather than removing anything.
+
+                      Empty when the folder covers more than one render root, which is LayoutResolved=Ambiguous:
+                      there is no single answer, and no new document is placed until the target is pointed at one
+                      of them.
+                    enum:
+                    - Plain
+                    - KustomizeRoot
+                    - KustomizeOverlay
+                    type: string
+                  readOnlyBases:
+                    description: |-
+                      ReadOnlyBases are the kustomization directories this folder renders but may never write to,
+                      relative to spec.path — so they lead with "../". Non-empty exactly when Mode is
+                      KustomizeOverlay, and it is what makes a WriteBoundaryRefused message predictable instead of
+                      surprising: an edit that lands on a document under one of these paths cannot be written
+                      where it lives.
+                    items:
+                      type: string
+                    type: array
+                  renderRoot:
+                    description: |-
+                      RenderRoot is the kustomization directory that governs new documents in this folder,
+                      relative to spec.path; "." is the folder itself. Empty for Plain (there is no root) and
+                      under LayoutResolved=Ambiguous (there is no single one).
+                    type: string
+                  resolvedAt:
+                    description: |-
+                      ResolvedAt is when this resolution was computed. Like ResolvedAtRevision it dates the
+                      resolution rather than the last scan, so a timestamp well in the past means the folder's
+                      shape has been stable, not that scanning stopped.
+                    format: date-time
+                    type: string
+                  resolvedAtRevision:
+                    description: |-
+                      ResolvedAtRevision is the Git revision this resolution was first observed at. It is not
+                      re-stamped on every scan: a resolution that has not changed is not republished, because
+                      doing so would write status once per commit to the branch, whichever target caused the
+                      commit. So it dates the RESOLUTION, not the last scan — a revision older than the branch
+                      head means the folder's layout has not changed since, not that nothing has looked.
+
+                      It is empty when the branch had no commit at the time (a folder nothing has written to yet)
+                      and is filled in by the first scan that finds one.
+                    type: string
+                type: object
               retention:
                 description: |-
                   Retention reports documents a resync kept because this target's spec.prune.mode suppressed

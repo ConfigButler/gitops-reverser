@@ -10,7 +10,7 @@ what is in a cluster.
 
 ## Starting repository
 
-[`repository/`](repository/) **is** `clusters/home`:
+[`repository/`](repository/) is the repository root, and the target's path is `clusters/home`:
 
 ```text
 clusters/home/

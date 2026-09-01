@@ -125,6 +125,7 @@ const (
     TypeStreamsRunning       = "StreamsRunning"
     TypeGitPathAccepted       = "GitPathAccepted"
     TypeGitTargetReady       = "GitTargetReady"
+    TypeLayoutResolved       = "LayoutResolved"
 
     // WatchRule only: whether every rule item's RESOLVED source-namespace scope is authorized.
     TypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
@@ -143,6 +144,19 @@ Canonical reads:
 - refused Git path, invalid provider, RBAC denial, or broken encryption: `Ready=False`, `Reconciling=False`,
   `Stalled=True`
 - Git path refusal details live on `GitPathAccepted=False` and `Stalled=True`, reason `UnsupportedContent`
+- **suspended**: `Ready=True` with reason `Suspended`. Not writing on request is a configured
+  outcome, so nothing goes False for it. `status.placement` keeps updating, because a suspended
+  target still scans — a valve that also stopped looking would freeze it at whatever the folder
+  looked like when someone panicked. `status.retention` goes ABSENT instead of zero: no resync
+  sweeps while suspended, so nothing is counted, and a zero would read as converged
+- `LayoutResolved` reports what the last scan resolved about the folder's shape, with
+  `status.placement` carrying the detail — `mode` (`Plain`, `KustomizeRoot`, `KustomizeOverlay`),
+  the governing `renderRoot`, and the `readOnlyBases` the folder renders but may not write to. It
+  is an OBSERVATION and writes no part of the trio.
+  `SingleKustomization` and `None` are both `True`: a folder with no kustomization is the ordinary
+  case, and reporting the ordinary case as `False` is how a condition gets trained out of a
+  reader's attention. Only `Ambiguous` is `False`, and the write refusal it implies is carried by
+  `GitPathAccepted=False` with reason `AmbiguousLayout` rather than by a second gate
 - WatchRule and ClusterWatchRule carry target dependency health in `GitTargetReady`
 - WatchRule carries source-namespace authorization in `SourceNamespaceAuthorized`, a positive
   state-style condition set even for legacy own-namespace rules (reason `LegacySourceNamespace`), so

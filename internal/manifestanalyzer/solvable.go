@@ -20,10 +20,13 @@ import (
 // CLUSTER-AWARENESS is the gate, and it is structural rather than incidental. A
 // STRUCTURE-ONLY scan — one whose [typeset.Lookup] is not ready, which is every
 // ScanFolder and ScanRepo — reports only [ActorUnknown] or [ActorRepositoryAuthor]. It
-// cannot reach [ActorPlatformOperator] through either of that value's two acceptance
-// sites: [IssueOutOfScope] needs a declared AcceptancePolicy.InScope, and
+// cannot reach [ActorPlatformOperator] through any of that value's three acceptance
+// sites: [IssueOutOfScope] needs a declared AcceptancePolicy.InScope,
 // [IssueUnresolvedKRM] needs MappingNotFollowable, which a not-ready registry never
-// produces because it resolves every document to MappingNoSource instead.
+// produces because it resolves every document to MappingNoSource instead, and
+// [IssueAmbiguousLayout] is raised only by the live write path ([AmbiguousLayoutRefusal]
+// has one caller, in the flush planner) — a scan resolves the layout but never refuses on
+// it.
 //
 // So a consumer of a structure-only report has a platform-operator branch that never
 // fires, and that is by design: a scan that cannot see the cluster cannot know a CRD is

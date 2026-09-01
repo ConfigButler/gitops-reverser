@@ -8,7 +8,6 @@ spec:
     name: homelab-repository
   branch: main
   path: bootstrap/argocd-applications
-  suspend: true          # adoption dry run: scans and publishes, writes nothing
   # Safe here only because the folder's kustomization.yaml supplies
   # namespace: argocd — and that file belongs to the repository owner, not to us.
   # The post-scan pass checks that supplier on every scan, so deleting it turns

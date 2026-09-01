@@ -12,5 +12,4 @@ spec:
     name: homelab-repository
   branch: main
   path: apps/home/media
-  suspend: true          # adoption dry run: scans and publishes, writes nothing
   serializeNamespace: false   # the folder's own kustomization.yaml supplies it

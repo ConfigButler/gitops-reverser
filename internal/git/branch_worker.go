@@ -104,6 +104,11 @@ type BranchWorker struct {
 	// Set by WorkerManager before Start, alongside pathRefusal.
 	renderFidelityGate *RenderFidelityGate
 
+	// layoutReporter publishes what each scan resolved about a target's folder, projected as
+	// status.placement and the LayoutResolved condition. Set by the WorkerManager before Start,
+	// alongside pathRefusal; a nil reporter only drops the projection.
+	layoutReporter LayoutReporter
+
 	// Event processing
 	eventQueue chan WorkItem
 	ctx        context.Context

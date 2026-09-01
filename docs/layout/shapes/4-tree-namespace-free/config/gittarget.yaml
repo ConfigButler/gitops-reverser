@@ -8,7 +8,6 @@ spec:
     name: artifacts-repository
   branch: main
   path: apps/checkout
-  suspend: true               # adoption dry run: scans and publishes, writes nothing
   # A tree WITHOUT {namespace}: the subfolders group by type, not by namespace,
   # so the folder stays single-namespace. That is the precondition for the flag
   # below; see the README for what a MULTI-namespace tree does to it.

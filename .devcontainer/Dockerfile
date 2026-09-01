@@ -63,6 +63,7 @@ RUN apt-get update \
 # NODE_MAJOR -> https://github.com/nodejs/node/releases (track a current LTS line)
 # MARKDOWNLINT_CLI2_VERSION -> https://www.npmjs.com/package/markdownlint-cli2?activeTab=versions
 # VALE_VERSION -> https://github.com/vale-cli/vale/releases
+# TRIVY_VERSION -> https://github.com/aquasecurity/trivy/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.36.4 \
@@ -81,7 +82,8 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     ORAS_VERSION=1.3.3 \
     NODE_MAJOR=24 \
     MARKDOWNLINT_CLI2_VERSION=0.23.2 \
-    VALE_VERSION=3.18.0
+    VALE_VERSION=3.18.0 \
+    TRIVY_VERSION=0.70.0
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -147,6 +149,23 @@ RUN asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
     && grep "  ${asset}$" checksums.txt | sha256sum -c - \
     && tar -xzf "${asset}" actionlint \
     && install -m 0755 actionlint /usr/local/bin/actionlint \
+    && rm -rf "${tmpdir}"
+
+# Install trivy (container image vulnerability scanner). It backs `task scan-image`,
+# which is the same command CI runs to gate the built image — so a maintainer can
+# reproduce a scan failure locally instead of pushing to find out what it said.
+#
+# The vulnerability DB is deliberately NOT pre-seeded here: it unpacks to 1.3GB, goes
+# stale in 24h, and ten CI jobs pull this image while only two scan. CI caches it instead.
+RUN asset="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+    && base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}" \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
+    && curl -fsSL "${base}/trivy_${TRIVY_VERSION}_checksums.txt" -o "${tmpdir}/checksums.txt" \
+    && cd "${tmpdir}" \
+    && grep "  ${asset}$" checksums.txt | sha256sum -c - \
+    && tar -xzf "${asset}" trivy \
+    && install -m 0755 trivy /usr/local/bin/trivy \
     && rm -rf "${tmpdir}"
 
 # Install hadolint (static linter for Dockerfiles). Since 2.15.0 the release no

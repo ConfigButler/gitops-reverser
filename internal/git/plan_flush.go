@@ -88,6 +88,12 @@ func (w *BranchWorker) flushEventsToWorktree(
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
+	// Publish what this folder's shape resolved to before folding anything in. It is a fact about
+	// the scan, so it must not depend on the events applying — or on their being applied at all,
+	// which is what makes it available to a suspended target. It runs AFTER the acceptance gate
+	// above on purpose: a folder the operator has refused to manage is one whose layout it should
+	// not be making claims about, and GitPathAccepted=False already says why.
+	w.scanLayout(ctx, batch, worktree)
 	for _, event := range events {
 		if err := batch.applyEvent(ctx, event); err != nil {
 			return false, err
@@ -147,6 +153,10 @@ type writeBatch struct {
 	// stay within it. The store and every path in it are keyed relative to renderBase, so a
 	// writable path is one under writeSubdir. See internal/git/render_scope.go.
 	writeSubdir string
+	// layout is what the scan resolved about this folder's shape. It is published as
+	// status.placement, and createNew reads it: a folder covering several render roots has no
+	// single one to place a new document into, so placing one is refused rather than guessed.
+	layout manifestanalyzer.LayoutResolution
 	// coldBundles tracks, per path, the new resources this batch has placed at a
 	// path that held no document before the batch started (keyed the same as
 	// buffers). It exists so several new resources that render to the same
@@ -201,7 +211,7 @@ func newWriteBatch(
 	for _, f := range scan.YAMLFiles {
 		contentByPath[f.Path] = f.Content
 	}
-	return &writeBatch{
+	batch := &writeBatch{
 		writer:        writer,
 		mapper:        mapper,
 		store:         store,
@@ -211,6 +221,12 @@ func newWriteBatch(
 		policy:        policy,
 		writeSubdir:   writeSubdir,
 	}
+	// Resolved with the store rather than by each caller, so no write path can reach createNew
+	// with an unresolved layout and place a new document into a folder that has no single root
+	// to place it in. Publishing it is a separate step (scanLayout), because only the paths that
+	// know which GitTarget they serve can publish.
+	batch.layout = manifestanalyzer.ResolveLayout(store, writeSubdir)
+	return batch
 }
 
 // refusal runs the structure-only acceptance gate over the batch's store and returns a
@@ -350,6 +366,13 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	kind := ""
 	if event.Object != nil {
 		kind = event.Object.GetKind()
+	}
+	// A folder covering several render roots has no single one for a NEW document, and picking
+	// one would hand it to an environment nobody named. An existing document is unaffected: it
+	// is edited where it lives, and this branch is not reached for it.
+	if issues := manifestanalyzer.AmbiguousLayoutRefusal(wb.layout, wb.writeSubdir); len(issues) > 0 {
+		return upsertNoChange, manifestanalyzer.RefusalError(
+			manifestanalyzer.Acceptance{Accepted: false, Issues: issues})
 	}
 	sensitive := wb.writer.isSensitiveIdentifier(event.Identifier)
 	// WriteScope tells placement the write jail: when render-root scoping re-rooted the scan

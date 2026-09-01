@@ -180,6 +180,7 @@ func main() {
 	// write-boundary precondition) would abort the commit and leave the GitTarget looking
 	// healthy; the resync path already reports its own refusals through the router.
 	workerManager.SetPathRefusalReporter(watchMgr.ReportGitPathRefusal)
+	workerManager.SetLayoutReporter(watchMgr.ReportLayoutResolved)
 
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{

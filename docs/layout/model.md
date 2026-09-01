@@ -190,36 +190,42 @@ resolves each subtree correctly without anyone declaring anything.
 So the uniform claim is what an explicit setting is *for*, and the non-uniform folder is what unset
 is for. That is also why unset cannot be spelled `false`.
 
-### The guard on `false`, and why it is a post-scan check
+### Why `false` needs no guard
 
-`false` where nothing supplies the namespace hands the object to whatever namespace the applier
-happens to be pointed at, which is a different object with the same name. It is honest only when
-something guarantees the namespace, and where the guarantee is a `kustomization.yaml` **the user
-owns**, they can delete one line from their own file and every subsequent document silently
-relocates.
+`serializeNamespace: false` is not checked against the folder, and it cannot be: **the supplier of
+the namespace lives outside the repository, and there may not be a single one.**
 
-That precondition is a property of the observed folder, not of the spec, so no CEL rule can check it.
-It is one post-scan rule, on the scan that already runs, setting `Validated=False` with a message
-naming the field and what the folder actually contains. With `useKustomize: true` the rule is
-satisfied by construction, because the operator wrote the supplier.
+For a raw namespace-free folder — [shape 2](shapes/2-flat-namespace-free/README.md) and
+[shape 4](shapes/4-tree-namespace-free/README.md) — the supplier is a Flux
+`Kustomization.spec.targetNamespace` or an Argo `Application.spec.destination.namespace`, in a
+different cluster from the repository. Being unbound that way **is the point of the shape**: anyone
+may point a deployer at that folder and land it wherever they choose, and two deployers may
+correctly land the same folder in two different namespaces. A rule demanding that something in the
+folder supply the namespace would therefore report a fault on a folder doing exactly what it was
+built to do, and a field naming the supplier would ask the user to promise something that is not
+theirs to promise. Neither exists.
 
-**Nothing here is the last line of defence, which is why the guard can be a report rather than a
-refusal.** The render check at the write path already refuses a write whose document does not render
-to the live object, and it holds for both shapes where the store's view and kustomize's disagree: a
-document naming a namespace the governing transformer overrides, and a folder whose nested roots both
-assign one. Both are measured, not assumed, and both are pinned by
+Nothing is lost by that, because none of it was ever the last line of defence. The render check at
+the write path already refuses a write whose document does not render to the live object, and it
+holds for both shapes where the store's view and kustomize's disagree: a document naming a namespace
+the governing transformer overrides, and a folder whose nested roots both assign one. Both are
+measured, not assumed, and both are pinned by
 [`namespace_context_refusal_test.go`](../../internal/git/namespace_context_refusal_test.go) with the
-read-side halves in the contextual-namespace corpus. What the post-scan rule adds is not safety but
-legibility: today those failures surface as an opaque render error rather than as the one fixable
-thing that is wrong.
+read-side halves in the contextual-namespace corpus.
+
+The division this draws runs through the whole model: **guard what is inside the folder, say nothing
+about what happens after it leaves.** The one-source-namespace rule below is on the inside of that
+line — two namespaces collapsing onto one namespace-free document is a loss the operator can see, in
+the folder it owns — and it refuses. It also reaches status, which publishes no supplier and no
+`serializeNamespace`: see [`status.placement`](#statusplacement-and-the-post-scan-pass).
 
 ### The second guard: one source namespace, and this one refuses
 
 **A `GitTarget` with an explicit `serializeNamespace: false` admits exactly one source namespace.
 The second is refused.**
 
-The guard above asks whether a supplier exists. This one asks how many namespaces that supplier is
-being asked to speak for, and the answer can only ever be one: a document with no
+The question is not whether a supplier exists — that is unanswerable, above — but how many namespaces
+one supplier can be asked to speak for, and the answer can only ever be one: a document with no
 `metadata.namespace` takes its namespace from a single supplier, so two source namespaces reaching
 the folder is a contradiction in the setting itself. What follows is not a collision but a **match** —
 `shop/config` and `billing/config` both resolve to a `config.yaml` whose bytes carry no namespace, so
@@ -227,12 +233,10 @@ their manifest identities are equal, the bundling rule never fires, and each wri
 between two live objects. Everywhere else in this model, losing a distinction produces a refusal or a
 bundle; only here does it produce a match, which is why this guard refuses where the other reports.
 
-It is **derived from one setting, not inferred from two.** An earlier draft proposed a separate
-`enforceSingleNamespace` boolean, on the objection that a refusal derived from other fields is the
-kind of inference that got deleted from placement. That objection applied to a rule keyed on
-`serializeNamespace: false` *plus* a template with no `{namespace}`. Drop the template half — the
-path is irrelevant, because a deployer applies bytes rather than filenames — and what is left is the
-field's own meaning rather than a correlation between two fields. So there is no new field.
+It is **derived from one setting, not inferred from two**, which is why it needs no
+`enforceSingleNamespace` boolean of its own. The path plays no part: a deployer applies bytes rather
+than filenames, so the rule keys on the field's own meaning rather than on a correlation between
+`serializeNamespace` and a template that happens to omit `{namespace}`.
 
 **Explicit `false` only. Inference is never constrained by it.** That asymmetry is what makes the
 refusal safe next to kustomize, and it is the same line [`Is a folder-wide claim
@@ -249,9 +253,9 @@ operator can write no `namespace:` at all, so it creates a root that supplies no
 namespace-less documents beneath it — the operator actively constructing the silent-mislabel folder.
 This is the one place refusing is not merely permissible but the only defensible behavior.
 
-**It needs no scan and no repository state**, which is what separates it from the guard above. The
-set of source namespaces reaching a target is `{the target's own namespace} ∪ {the explicit
-rules[].sourceNamespace names of every WatchRule pointing at it}`, all of it in the config cluster.
+**It needs no scan and no repository state.** The set of source namespaces reaching a target is
+`{the target's own namespace} ∪ {the explicit rules[].sourceNamespace names of every WatchRule
+pointing at it}`, all of it in the config cluster.
 A `sourceNamespace: "*"` item is refused outright and statically, with no enumeration, and that
 holds under **either** reading of `*` — the shipped one or the one the wave replaces it with
 ([definition of record](../design/source-scope-simplification.md#sourcenamespace--needs-its-own-decision)).
@@ -320,12 +324,41 @@ change at all.
   that answered rather than a resolved layout kind, so nothing here breaks a label.
 - **`{kindLower}` and the versionless identity fix** are template features and stay queued.
 
+## Previewing a target: point it at a scratch branch
+
+Placement only ever affects *new* documents, so there is nothing to preview by inspecting the
+folder. The way to see what a target would do is to let one do it, somewhere harmless:
+
+```yaml
+spec:
+  providerRef: {name: homelab}
+  branch: gitops-preview          # not main
+  path: apps/checkout
+```
+
+It commits. You read the commits. That is the actual bytes, the actual `resources:` registrations,
+the actual `$patch: delete` files, in a diff you can review and hand to someone else. It costs one
+field value, needs nothing built, and the branch is disposable.
+
+`spec.branch` is immutable ([the destination fields are](#what-it-leaves-standing)), so the shape of
+this is *declare a preview target, look, delete it, declare the real one* — not flip a branch on a
+live target. That is a feature: the preview target and the real one are different objects, and
+deleting the preview cannot disturb the real folder. For inspecting a repository with no cluster at
+all, the manifest-analyzer CLI is the other half of the answer.
+
+Two things follow, and they are what keeps the rest of this proposal small:
+
+- **`spec.suspend` is a panic knob.** One field that stops a target writing without deleting it or
+  unpicking the watch configuration that would have to be rebuilt afterwards. It is not a preview
+  mechanism: a target that writes nothing has nothing to show. It still **scans** while suspended,
+  for a different reason — a valve that stopped looking as well as writing would freeze
+  `status.placement` at whatever the folder looked like the moment someone panicked, which is
+  exactly when a stale answer costs the most.
+- **`status.placement` explains rather than predicts.** See below.
+
 ## `status.placement`, and the post-scan pass
 
-The legibility gap is the one surviving argument from the earlier thesis that no field answers, and
-it is worth building **before** either flag: placement only ever affects *new* documents, so there is
-nothing to preview by inspection, and a suspended target plus this stanza is what turns adoption from
-declare-and-hope into a dry run.
+The stanza has one job: **explain why a write took the shape it did, or why it was refused.**
 
 ```yaml
 status:
@@ -334,44 +367,67 @@ status:
     - type: LayoutResolved
       status: "True"
       reason: SingleKustomization        # SingleKustomization | Ambiguous | None
-      message: "render root '.' governs new files"
+      message: 'render root "." governs new files; it renders ../../base, which is read-only input'
       observedGeneration: 4
   placement:
+    mode: KustomizeOverlay               # Plain | KustomizeRoot | KustomizeOverlay
     renderRoot: .
-    serializeNamespace: false            # what it resolved to for this folder
-    byTypeEntries: 1
-    observedRevision: 9f3c1ab
-    observedTime: "2026-07-30T09:14:22Z"
-    examples: []                         # capped at three, illustrative, not a tally
+    readOnlyBases: ["../../base"]        # non-empty exactly when mode is KustomizeOverlay
+    resolvedAtRevision: 9f3c1ab
+    resolvedAt: "2026-07-30T09:14:22Z"
 ```
 
-Three decisions are taken here rather than deferred, because each is cheaper to take before the field
-exists than after:
+**The rule that decides what belongs here**, and the one to hold a proposed field against: a status
+field earns its place only if a reader **cannot get it from the spec** in the same GET, **and** it
+**varies with this folder**. A copy of `spec.serializeNamespace`, a count of the `byType` map, and a
+list of illustrative destinations for a fabricated object all fail it, and none of them is here.
+
+**`mode` is the field a reader cannot work out for themselves.** Whether a folder is written as
+plain files, as a self-contained kustomize root, or as an overlay over a base it may not write to is
+a fact about the *repository*, and it predicts every behaviour that surprises people:
+
+| | `Plain` | `KustomizeRoot` | `KustomizeOverlay` |
+|---|---|---|---|
+| a new document | written | written **and registered** in `resources:` | same |
+| a delete | file removed | file removed **and its `resources:` entry dropped** | same, unless the object is inherited |
+| deleting an object the folder inherits | n/a | n/a | a **`$patch: delete` is authored into the overlay**; nothing is removed |
+| editing a field the base owns | n/a | n/a | authored into the overlay for `images:`/`replicas:`, **refused** otherwise |
+| can kustomize itself refuse the write | no | yes, via the re-render oracle | yes |
+
+Those behaviours are **constants of the mode**, so they are documented on the field and not
+enumerated per folder in status. `readOnlyBases` is the exception that is genuinely per-folder: it
+names the directories a `WriteBoundaryRefused` will fire on, which turns that refusal from a
+surprise into something a reader could have predicted. `mode` is absent under `Ambiguous`, along
+with `renderRoot`: there is no single answer, and naming one of several roots would be the guess
+that verdict exists to refuse.
+
+Three decisions are taken here rather than deferred, because each is cheaper to take before the
+field ships:
 
 - **The resolution reason is a condition reason, not a field.** `renderRootReason` would have been a
   reason enum in a bespoke field, and every consumer in this ecosystem already reads reasons from
   `conditions`.
-- **No accumulating counters.** `placedResources`, `overriddenTypes` and `refusedResources` are
-  metrics; `placements_total` carries them with better labels. A monotonic counter in status is a
-  status write per event, which re-creates the self-triggering reconcile edge the status work already
-  fixed once. `examples` stays, capped and fixed-size, because "show me where a Secret would land" is
-  not a metric.
-- **`conditions` and `observedGeneration` are in the stanza**, because every scenario README already
-  asserts `Ready=True`.
+- **No counters.** `placedResources`, `overriddenTypes` and `refusedResources` are metrics;
+  `placements_total` carries them with better labels. A counter in status is a status write per
+  event, which re-creates the self-triggering reconcile edge the status work already fixed once.
+- **`resolvedAtRevision`/`resolvedAt` date the RESOLUTION, not the last scan.** An unchanged
+  resolution is not republished, so a timestamp well in the past means the folder's shape has been
+  stable rather than that scanning stopped. The names say so, because `observed*` would read as
+  "last looked".
 
-The current half must never depend on a placement having happened: `renderRoot` is a fact about the
-folder from the last scan, available before anything is ever written.
-
-**The post-scan validation pass ships with it**, because it is the same scan. Two rules today, whose
-precondition is a property of the observed folder rather than of the spec, so no CEL rule can reach
-them: `serializeNamespace: false` requires a namespace supplier, and a folder covering two roots is
-`Ambiguous` rather than silently picking one. One pass, one condition shape, `Validated=False` naming
-the offending field and what the folder actually contains.
+**The post-scan validation pass ships with the stanza**, because it is the same scan, and it is one
+rule: a folder covering two render roots is `Ambiguous` rather than silently picking one. There is
+no supplier rule — [`false` needs no guard](#why-false-needs-no-guard).
 
 The [one-source-namespace rule](#the-second-guard-one-source-namespace-and-this-one-refuses) is
 **not** part of this pass, though it guards the same field. Its input is the set of `WatchRule`
 objects naming the target, which is in the config cluster and needs no scan, and its outcome is a
 refusal rather than a report. It ships with the field, in PR 2.
+
+While a target is suspended, `status.retention` is **not published at all**. The resync stops before
+the mark-and-sweep, so nothing is swept and nothing is counted, and a published zero would read as
+"converged" when it means "not measured". Absent already means "no resync has reported", which is
+exactly the truth.
 
 ## How it gets built
 
@@ -390,12 +446,20 @@ authoring. Nothing below waits for either — see
 | PR | Content | Breaking |
 |---|---|---|
 | 1 | The worked examples as an executable corpus, `spec.suspend` and the reconcile-request annotation, `status.placement`, and the post-scan pass's `Ambiguous` rule | no |
-| 2 | `useKustomize` and `serializeNamespace`, with the post-scan pass's supplier rule and the one-source-namespace refusal ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no |
+| 2 | `useKustomize` and `serializeNamespace`, with the one-source-namespace refusal ([#322](https://github.com/ConfigButler/gitops-reverser/issues/322)) | no |
 
-PR 1's four parts are one review, because none of them changes what the operator writes: a suspended
-target that publishes what it resolved is the whole feature, and the corpus is what proves it. The
-post-scan pass is the one thing that does **not** land whole — its `Ambiguous` rule reads only the
-scan, while its supplier rule reads a field PR 2 introduces.
+PR 1's four parts are one review because the corpus is what proves the other three: `spec.suspend`,
+`status.placement` and the reconcile-request annotation are each small, and each is only credible
+against a worked example that pins what the folder actually does. The exception is the `Ambiguous`
+rule, which **gates**: a folder covering several render roots stops placing new documents, where
+before it placed them at the canonical path inside whichever folder it covered. Existing documents
+are untouched, and the refusal is raised at the
+write rather than on `Validated` so the target keeps scanning and can observe the folder being
+fixed. [`../design/build-order.md`](../design/build-order.md#the-plan-as-three-prs) carries the
+before-and-after.
+
+The post-scan pass lands whole in PR 1: it is the `Ambiguous` rule and nothing else, and that rule
+reads only the scan.
 
 Neither PR is breaking, so neither waits for a coordinated consumer bump. What is breaking on
 `GitTarget` is unrelated to placement and is sequenced in
@@ -411,7 +475,9 @@ scenario: seed a worktree from `repository/`, build the write event from `input/
 policy from `config/gittarget.yaml`, flush, and compare the normalized diff with `expected-*.patch`.
 Blob hashes and index lines are noise; a `-update` flag that rewrites the patches keeps the corpus
 cheap to extend. Scenarios describing behavior PR 2 introduces are written now and skipped with the
-PR that unskips them named in the skip message, so **PR 2 is finished when the last skip is gone.**
+PR that unskips them named in the skip message, so **PR 2 is finished when its own skips are
+gone.** Not every skip is PR 2's: shape 8's `images:` authoring belongs to track C and is skipped
+naming it, so it stays after PR 2 lands and is not a defect in that PR's completion.
 `config/gittarget.yaml` uses fields that do not exist yet, so it parses into a harness-local struct
 until PR 2 deletes that mapping — which is itself a check that the API the examples describe is the
 API that got built.
@@ -430,18 +496,14 @@ feedback half and can follow in the same PR. It also decides the `useKustomize` 
 created root's `namespace:` is written when the folder is single-namespace, and under this rule an
 explicit `serializeNamespace: false` guarantees it is.
 
-Two gaps the corpus should fill in PR 1: **a refusal scenario** (every example is a happy path, and
-the post-scan pass has the least coverage — a `serializeNamespace: false` with no supplier, a
-`serializeNamespace: false` target that a second source namespace reaches, and a
-folder covering two roots, each asserting `expected-status.yaml` instead of a patch), and **the
-missing `ClusterProvider`** that `empty-repo-bootstrap` references as `clusterProviderRef: app-intent`
-without a specimen existing anywhere.
+**Refusals are fixtures too**, and they are part of PR 1 even where the rule is not: a set of worked
+examples in which every write succeeds is advertising rather than specification. Three assert an
+`expected-*-status.yaml` instead of a patch — a `serializeNamespace: false` target a second source
+namespace reaches, a folder covering two roots, and the base-owned field edit. Only the two-roots
+one asserts a rule PR 1 ships; the second-namespace one is written and skipped naming PR 2.
 
 ## Open questions
 
-- Does `serializeNamespace: false` need to **name** its supplier (`KustomizeRoot`,
-  `FluxTargetNamespace`, `Asserted`) so the post-scan pass can check the guarantee rather than infer
-  which one was meant?
 - Should a `useKustomize: true` folder create a **nested** root per directory the template writes
   into, each carrying its own `namespace:`? Fact 2 proves it works. Deferred, and now more firmly:
   it was the thing that would have made `serializeNamespace: false` safe in a multi-namespace tree,
@@ -451,7 +513,8 @@ without a specimen existing anywhere.
   whose documents omit their namespaces, and for whom leaving the field unset is not enough.
 - Should the operator ever **refuse** a write when a root that used to govern the path is gone,
   rather than reporting `LayoutResolved: None` and carrying on? Report first; escalate if someone
-  says the status was not enough.
+  says the status was not enough. Such a folder is also a `mode` transition (`KustomizeRoot` to
+  `Plain`), which republishes, so the change is already visible without a refusal.
 - Should `placement.default` gain a CRD default now that a defaulted template no longer produces
   unrendered files? The remaining objection is legibility, not correctness.
 - Namespace-local `GitProvider`: the homelab examples put a `GitTarget` in `argocd`, `flux-system`

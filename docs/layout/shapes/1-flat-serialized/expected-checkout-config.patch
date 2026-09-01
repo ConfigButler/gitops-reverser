@@ -9,4 +9,4 @@ new file mode 100644
 +  name: checkout-config
 +  namespace: shop
 +data:
-+  timeout: "15m"
++  timeout: 15m

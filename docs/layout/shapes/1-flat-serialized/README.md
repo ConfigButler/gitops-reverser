@@ -6,7 +6,8 @@ set that needs no `-R` and no deployer to be correct.
 
 ## Starting repository
 
-[`repository/`](repository/) **is** `mirror/prod`, holding two namespaces already:
+[`repository/`](repository/) is the repository root. The target's path, `mirror/prod`, already
+holds two namespaces:
 
 ```text
 mirror/prod/
@@ -35,8 +36,7 @@ being self-describing. The flag makes that a folder property rather than a conse
 
 - Starting repository: [`repository/`](repository/).
 - Live input: [`input/checkout-config.yaml`](input/checkout-config.yaml).
-- Expected Git change: [`expected-checkout-config.patch`](expected-checkout-config.patch), after a
-  reviewer clears `suspend`.
+- Expected Git change: [`expected-checkout-config.patch`](expected-checkout-config.patch).
 - Expected status: `Ready=True`, `LayoutResolved` reason `None` — there is no render root, and the
   message says so rather than leaving the field unexplained.
 

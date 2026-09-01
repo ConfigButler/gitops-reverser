@@ -6,7 +6,8 @@ creation differ by two lines of spec.
 
 ## Adopting an existing folder
 
-[`repository/`](repository/) is `apps/checkout` with a root that already supplies `namespace: shop`:
+[`repository/`](repository/) is the repository root. The target's path, `apps/checkout`, already has
+a root that supplies `namespace: shop`:
 
 ```text
 apps/checkout/

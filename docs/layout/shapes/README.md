@@ -2,8 +2,7 @@
 
 > **design**: a specification by example for the layout model proposed in
 > [`../model.md`](../model.md). The two booleans shown here — `spec.serializeNamespace` and
-> `spec.placement.useKustomize` — do not exist in the current release, and neither does
-> `spec.suspend`.
+> `spec.placement.useKustomize` — do not exist in the current release.
 > Date: 2026-08-31.
 > Index: [`../../INDEX.md`](../../INDEX.md)
 
@@ -18,7 +17,7 @@ Every shape receives the same input, [`checkout-config.yaml`](1-flat-serialized/
 a `ConfigMap` named `checkout-config` in namespace `shop`. Each folder holds `config/`,
 `repository/` (the starting state), `input/`, and `expected-*.patch` — the same conventions as
 [`../specific-examples/README.md`](../specific-examples/README.md), including patches without
-`index` lines.
+`index` lines and a `repository/` rooted at the repository root rather than at `spec.path`.
 
 | # | Shape | `useKustomize` | `serializeNamespace` | Placement template |
 |---|---|---|---|---|
@@ -117,7 +116,7 @@ so every shape that relied on inference has to be *declared* instead.
 | Shape | Empty folder, today | What makes it work |
 |---|---|---|
 | 1 — flat, serialized | **Works.** No root is needed; inference writes the namespace anyway | nothing — but declare `serializeNamespace: true` to pin it |
-| 2 — flat, namespace-free | **Broken.** Nothing supplies the namespace and nothing proves it will | `serializeNamespace: false` plus an out-of-band supplier the operator cannot verify. See below |
+| 2 — flat, namespace-free | **Works, unverifiably.** Nothing in the repository supplies the namespace, and nothing ever will | `serializeNamespace: false` plus an out-of-band supplier the operator cannot see. Not a fault. See below |
 | 3 — tree, serialized | **Works.** The canonical path needs no context | nothing |
 | 4 — tree, namespace-free | **Broken**, same reason as 2 | same as 2 |
 | 5 — one kustomize folder | **Broken today**: no root exists, so nothing is registered and nothing renders | `placement.useKustomize: true` — the operator writes the root, `namespace:` included |
@@ -133,15 +132,19 @@ legitimately leaves `metadata.namespace` out of every document it places. Nothin
 [`5-kustomize-single-folder`](5-kustomize-single-folder/README.md) shows both halves — the same
 folder adopted and created — and they differ by two lines of spec.
 
-**Shapes 2 and 4 have no such proof, and that is a real gap.** Their supplier is a Flux
-`Kustomization.spec.targetNamespace` or an Argo `Application.spec.destination.namespace` living in a
-different cluster from the repository. It is a perfectly ordinary way to run GitOps — it is what
-makes a folder portable — but the operator cannot see it, so the post-scan guard has nothing to
-check. It can only report `Validated=False` on a folder whose documents omit a namespace no
-kustomization supplies, which is a **false alarm** for exactly this shape. That is the case for
-answering [`model.md`'s first open question](../model.md#open-questions) with a named supplier —
-something like `serializeNamespace: false` plus an assertion that the guarantee is external, so the
-user takes the responsibility explicitly rather than the operator guessing whether to complain.
+**Shapes 2 and 4 have no such proof, and that is not a gap — it is the shape.** Their supplier is a
+Flux `Kustomization.spec.targetNamespace` or an Argo `Application.spec.destination.namespace` living
+in a different cluster from the repository. It is a perfectly ordinary way to run GitOps — it is
+what makes a folder portable, and two deployers may point at the same folder and land it in two
+different namespaces, both correctly.
+
+So there is **no post-scan supplier guard**, and no field naming the supplier either: a rule keyed on
+the folder's own contents would fire on the intended use, and an assertion field would ask the user
+to promise something that is not theirs to promise and that nothing could check. The line the model
+draws instead is **guard what is inside the folder, say nothing about what happens after it
+leaves** — which is why the one-source-namespace rule below is enforced and this one does not exist.
+See
+[`model.md`](../model.md#why-false-needs-no-guard).
 
 **Shapes 6 and 7 cannot be bootstrapped from empty, and the reason is not a missing flag.** An
 overlay is not a root plus a namespace; it is a root whose `resources:` names a *relative path to a
@@ -259,12 +262,56 @@ limitation.
 
 ### Two more, carried in the sections above
 
-- **Should `serializeNamespace: false` name its supplier?** Shapes 2 and 4 have a guarantee the
-  operator cannot see, so the post-scan guard can only produce a false alarm. See
+- **`serializeNamespace: false` does not name its supplier, and nothing checks one.** Shapes 2 and 4
+  have a guarantee the operator cannot see and that may not even be single, so any such check could
+  only produce a false alarm on the intended use. See
   [Pointing each shape at an empty folder](#pointing-each-shape-at-an-empty-folder).
 - **Creating an overlay is scaffolding, not placement.** `useKustomize` cannot invent a base
   reference, and the folder it would create renders green while being the wrong folder. See
   [shape 6](6-kustomize-base-and-overlays/README.md).
+
+## What each shape reports, and what a delete does to it
+
+`status.placement.mode` is the one field that separates the raw shapes from the kustomize ones, and
+it is worth reading as the deletion table it really is. **Every shape above answers "where does a
+new file go"; this answers "and what happens when it goes away".**
+
+| Shape | `mode` | `renderRoot` | `readOnlyBases` | A delete removes… |
+|---|---|---|---|---|
+| [1](1-flat-serialized/README.md), [2](2-flat-namespace-free/README.md) | `Plain` | — | — | the file. Nothing else is touched |
+| [3](3-tree-serialized/README.md), [4](4-tree-namespace-free/README.md) | `Plain` | — | — | the file. Empty directories are left behind |
+| [5](5-kustomize-single-folder/README.md) | `KustomizeRoot` | `.` | — | the file **and** its `resources:` entry, in one commit |
+| [6](6-kustomize-base-and-overlays/README.md), [7](7-kustomize-layered/README.md) at the leaf | `KustomizeOverlay` | `.` | `../../base` | the file and its entry — **unless the object is inherited**, see below |
+| [6](6-kustomize-base-and-overlays/README.md), [7](7-kustomize-layered/README.md) at the wide path | *absent* | *absent* | — | nothing: the folder is `Ambiguous` and places nothing |
+| [8](8-base-owned-field-edit/README.md) | `KustomizeOverlay` | `.` | `../../base` | as 6/7 — the scenario is an edit, not a delete |
+
+Three things follow, and only the first is obvious:
+
+- **In a `Plain` folder a delete is a file removal and nothing more.** No index to maintain, no
+  render to re-prove. This is the shape where what you see in Git is all there is.
+- **In a `KustomizeRoot` folder deleting the manifest is only half the delete.** An entry still
+  naming a file that does not exist makes `kustomize build` fail, so the `resources:` entry goes in
+  the same commit
+  ([`dropKustomizationResource`](../../../internal/git/plan_flush.go)). If the entry cannot be removed,
+  nothing is committed: the re-render precondition rebuilds the tree and refuses rather than
+  pushing a folder that does not build.
+- **In a `KustomizeOverlay`, deleting an object the overlay INHERITS deletes nothing.** The document
+  lives in the base, which is outside the write scope and shared with the other environments, so
+  removing it would delete the object from every environment at once. Instead the operator authors
+  a `$patch: delete` file into the overlay and names it in the overlay's `patches:`, and the
+  re-render oracle proves the object leaves *this* overlay's render. The base is never touched.
+  This is the single most surprising behaviour in the model, which is why `mode` is published: it
+  is the field that tells you to expect it.
+
+`spec.prune.mode` sits on top of all of this and decides whether a delete is attempted at all —
+`Never` removes nothing, `OnEvent` (the default) mirrors an observed DELETE, `Always` additionally
+lets a resync infer one. The table describes what happens once a delete is allowed through.
+
+**To watch any of this happen before you commit to it, point a `GitTarget` at a scratch branch** and
+read the commits it makes: the file removals, the `resources:` edits and the `$patch: delete` files
+are all right there in a diff. That is the preview, and it is why neither `status.placement` nor
+`spec.suspend` tries to be one — see
+[`model.md`](../model.md#previewing-a-target-point-it-at-a-scratch-branch).
 
 ## What this set does not cover
 

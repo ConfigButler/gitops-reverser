@@ -648,7 +648,7 @@ jobs:
     name: Scan project image
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: build
+    needs: [build, ci-container]
     # PRs only: scans the instrumented image the PR built (delivered as an
     # artifact). On main the shipped bytes are the release-grade digests, which
     # image-scan-release scans instead — so this scan reports to the job log
@@ -659,6 +659,11 @@ jobs:
       packages: read
     env:
       PROJECT_IMAGE: ${{ needs.build.outputs.image }}
+      CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
+      # Inside the container this is a workspace path, so the runner-side cache step
+      # below can persist it between runs. Without a cache Trivy re-downloads its whole
+      # vulnerability DB on every job, which is slow and rate-limited at the source.
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.stamps/trivy-cache
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -671,27 +676,46 @@ jobs:
           name: project-image
           path: .
 
-      - name: Load project image
-        run: docker load -i project-image.tar && rm -f project-image.tar
-
-      - name: Scan image with Trivy (report)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      - name: Download CI container image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          image-ref: ${{ env.PROJECT_IMAGE }}
-          format: table
-          severity: CRITICAL,HIGH,MEDIUM
-          exit-code: "0"
+          name: ci-container-image
+          path: .
 
-      - name: Gate on critical fixable vulnerabilities
-        # Fails the job only for CRITICAL vulnerabilities that have a fix
-        # available — actionable signal, not noise from unfixed CVEs.
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      - name: Load CI container image
+        # rm after load: the tarball is multi-GB and otherwise occupies the runner
+        # for the rest of the job.
+        run: docker load -i ci-container-image.tar && rm -f ci-container-image.tar
+
+      - name: Restore Trivy vulnerability DB
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          image-ref: ${{ env.PROJECT_IMAGE }}
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+          path: .stamps/trivy-cache
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
+
+      - name: Scan project image
+        # The project image is scanned straight from its artifact tarball, so this
+        # needs neither a `docker load` of it nor a registry pull. What the task does
+        # — report everything, then gate on CRITICAL-with-a-fix — is documented where
+        # it is defined; keeping it there is what lets a maintainer reproduce this
+        # exact gate with `task scan-image SCAN_ARCHIVE=project-image.tar`.
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -w "${{ env.CI_WORKDIR }}" \
+            -e TRIVY_CACHE_DIR="${{ env.CI_WORKDIR }}/.stamps/trivy-cache" \
+            "${CI_CONTAINER}" \
+            bash -lc '
+              set -e
+              git config --global --add safe.directory "$PWD"
+              task scan-image SCAN_ARCHIVE=project-image.tar
+            '
+
+      - name: Make the Trivy cache readable by the runner
+        # The container writes it as root; actions/cache runs as the runner user.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" .stamps/trivy-cache || true
 
   image-scan-release:
     name: Scan release image (${{ matrix.arch }})
@@ -701,11 +725,14 @@ jobs:
     # dispatch) this skips transitively — no skip-tolerant `if:` needed. The
     # release ships amd64 *and* arm64, so both digests are scanned; Trivy pulls
     # each by digest and analyzes the filesystem cross-arch.
-    needs: [build-release-amd64, build-release-arm64]
+    needs: [ci-container, build-release-amd64, build-release-arm64]
     permissions:
       contents: read
       packages: read
       security-events: write
+    env:
+      CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.stamps/trivy-cache
     strategy:
       fail-fast: false
       matrix:
@@ -715,6 +742,13 @@ jobs:
           - arch: arm64
             digest: ${{ needs.build-release-arm64.outputs.digest }}
     steps:
+      - name: Checkout code
+        # This job scans a REMOTE image by digest and needs nothing from the repository
+        # except the Taskfile and .trivyignore.yaml the scan below reads. Trivy treats a
+        # missing --ignorefile as a fatal error, so a lost checkout fails loudly here
+        # rather than quietly scanning without the suppressions.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Log in to registry
         # Each build-release-* job pushes by digest, and buildx wraps the
         # single-platform image in an OCI *index* (it attaches a provenance
@@ -727,39 +761,60 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-      - name: Scan release image with Trivy (report)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        env:
-          # The pushed digest is an OCI index; pin the child to scan (see login step).
-          TRIVY_PLATFORM: linux/${{ matrix.arch }}
+      - name: Restore Trivy vulnerability DB
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ matrix.digest }}
-          format: sarif
-          output: trivy-image.sarif
-          severity: CRITICAL,HIGH,MEDIUM
-          exit-code: "0"
+          path: .stamps/trivy-cache
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
+
+      - name: Scan release image
+        # The same `task scan-image` the PR gate runs, so the release and the PR are
+        # held to one definition of what blocks. It writes SARIF for code scanning and
+        # then gates; the upload below runs even when the gate fails, so a blocking
+        # finding is still reported rather than only logged.
+        #
+        # Trivy pulls the image with its OWN registry client rather than through the
+        # docker daemon, so the runner's `docker login` above does not reach it: the
+        # credentials live in the runner's home, and this container sees only the
+        # workspace. Mounting that config read-only and pointing DOCKER_CONFIG at it is
+        # what keeps this working if the package ever stops being public. Read-only, and
+        # outside the workspace, so the credential is never somewhere an artifact upload
+        # could pick it up. DOCKER_CONFIG rather than a mount onto ~/.docker because it
+        # does not care which user the image runs as.
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v "${HOME}/.docker:/tmp/docker-config:ro" \
+            -w "${{ env.CI_WORKDIR }}" \
+            -e DOCKER_CONFIG=/tmp/docker-config \
+            -e TRIVY_CACHE_DIR="${{ env.CI_WORKDIR }}/.stamps/trivy-cache" \
+            -e TRIVY_PLATFORM="linux/${{ matrix.arch }}" \
+            "${CI_CONTAINER}" \
+            bash -lc '
+              set -e
+              git config --global --add safe.directory "$PWD"
+              task scan-image \
+                SCAN_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ matrix.digest }} \
+                SCAN_SARIF=trivy-image.sarif
+            '
+
+      - name: Make scan output readable by the runner
+        # The container writes both as root; the upload action and actions/cache run
+        # as the runner user.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" .stamps/trivy-cache trivy-image.sarif || true
 
       - name: Upload scan results to GitHub code scanning
+        # always(): the SARIF is written by the report pass BEFORE the gate runs, so a
+        # gate failure must not swallow the report that explains it.
+        if: always()
         uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           sarif_file: trivy-image.sarif
           # Distinct category so the amd64 and arm64 legs don't overwrite each
           # other's code-scanning results.
           category: trivy-release-${{ matrix.arch }}
-
-      - name: Gate on critical fixable vulnerabilities
-        # Fails the job only for CRITICAL vulnerabilities that have a fix
-        # available — actionable signal, not noise from unfixed CVEs.
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        env:
-          # The pushed digest is an OCI index; pin the child to scan (see login step).
-          TRIVY_PLATFORM: linux/${{ matrix.arch }}
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ matrix.digest }}
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
 
   e2e:
     name: E2E (${{ matrix.name }})
