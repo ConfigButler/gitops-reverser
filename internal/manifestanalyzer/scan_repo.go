@@ -15,21 +15,13 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
-// This file implements the first cut of repo discovery (the onboarding scan),
-// designed in docs/design/support-boundary/repo-discovery-and-onboarding-scan.md. It
-// walks a WHOLE repository once (today's Scan/ScanDir is subtree-only), enumerates
-// candidate GitTarget subtrees, classifies each one's layout, runs the same
-// acceptance gate the operator runs, and emits a machine-readable report.
+// Repo discovery (the onboarding scan): walks a WHOLE repository once, enumerates candidate
+// GitTarget subtrees, classifies each layout, runs the same acceptance gate the operator runs, and
+// emits a machine-readable report. Deliberately reuse-heavy — only the whole-repo pass, candidate
+// enumeration, layout classification and the report contract are new here.
 //
-// It is deliberately reuse-heavy: the repo walk is collectFiles, the kustomization
-// graph and render roots are parseKustomizations/renderRoots, the adoption decision
-// is Scan/Accept, and overlap detection mirrors the controller's
-// gittarget_path_overlap. What is new here is the whole-repo pass, candidate
-// enumeration, layout classification, and the report contract.
-//
-// Scope of this cut: it REPORTS, it does not PROPOSE. There is no GitTarget/WatchRule
-// generation yet, no rename of the existing --mode discovery, and no repo-level
-// --policy refuse exit semantics — see the design doc's "explicitly defer" list.
+// It REPORTS, it does not PROPOSE: no GitTarget/WatchRule generation, no repo-level refuse exit.
+// See docs/design/support-boundary/repo-discovery-and-onboarding-scan.md.
 
 // Layout is the structural shape of a candidate subtree. Layout and acceptedByOperator are
 // two distinct truths: a kustomize-overlay has a well-understood layout and is now adopted
@@ -82,18 +74,13 @@ type RefusalReason struct {
 	Actor    Actor `json:"actor,omitempty"`
 }
 
-// RenderedTypes is what a folder renders, expressed so that the pairing between a type and
-// the namespace it lands in survives. A set of types beside a set of namespaces loses it:
-// a folder rendering a Deployment into frontend and a Service into backend would read as
-// four combinations, and a tool generating one watch rule per pair would authorize two
-// that match nothing in the repository.
+// RenderedTypes is what a folder renders, keeping the PAIRING between a type and the namespace it
+// lands in. A set of types beside a set of namespaces loses it: a Deployment into frontend and a
+// Service into backend would read as four combinations, and a tool generating one rule per pair
+// would authorize two that match nothing.
 //
-// Every type is a canonical GVK string — "group/version/kind", or "version/kind" for the
-// core group, which is [GVK.String] and the same spelling Summary.ByGVK already uses.
-//
-// For a render root the sets come off a real kustomize build, so a base outside the subtree
-// is included and a `namespace:` transformer is already applied. For a plain folder the
-// documents are the render. A root that failed to build reports nothing at all: what it
+// For a render root the sets come off a real kustomize build, so an outside base is included and a
+// `namespace:` transformer is applied. A root that failed to build reports nothing: what it
 // renders is not knowable.
 type RenderedTypes struct {
 	// ByNamespace lists the types that land in each namespace, sorted, keyed by namespace.
@@ -101,13 +88,9 @@ type RenderedTypes struct {
 
 	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted.
 	//
-	// It is NOT a list of cluster-scoped types. It holds two facts this scan cannot tell
-	// apart: a genuinely cluster-scoped type, and a namespaced type relying on whatever
-	// namespace the applier defaults to. Separating them needs API discovery, which a
-	// structure-only scan does not have.
-	//
-	// A type can appear here AND under ByNamespace. Two ConfigMaps, one carrying a
-	// namespace and one not, is an ordinary folder, not a contradiction.
+	// NOT a list of cluster-scoped types: it cannot tell a genuinely cluster-scoped type from a
+	// namespaced one relying on the applier's default, which needs API discovery. A type can
+	// appear here AND under ByNamespace, which is an ordinary folder, not a contradiction.
 	NamespaceUndeclared []string `json:"namespaceUndeclared,omitempty"`
 }
 
@@ -200,16 +183,12 @@ type RepoSummary struct {
 	Refused  int `json:"refused"`
 	// OverlapConflicts lists every nesting conflict between candidates.
 	OverlapConflicts []OverlapConflict `json:"overlapConflicts,omitempty"`
-	// ReadEdges is the repo's folder dependency graph: one edge per (candidate, directory
-	// it renders from outside its own subtree), sorted. It is the same relation each
-	// candidate's readScope/readBy report, collected in one place so a consumer can draw
-	// the graph without walking the candidates.
+	// ReadEdges is the repo's folder dependency graph, collected in one place so a consumer can
+	// draw it without walking the candidates.
 	//
-	// Most edges end at a directory that is NOT a candidate — a folder a kustomization
-	// references is never a render root, so it is offered to nobody. Those nodes are the
-	// edge targets absent from Candidates, and nothing else identifies them: they are not
-	// all kustomize bases, since a referenced resource file or an out-of-subtree patch
-	// makes its folder one too.
+	// Most edges end at a directory that is NOT a candidate, and nothing else identifies those
+	// nodes: they are not all kustomize bases, since a referenced resource file or an
+	// out-of-subtree patch makes its folder one too.
 	ReadEdges []ReadEdge `json:"readEdges,omitempty"`
 	// UnsupportedConstructs is the sorted, de-duplicated set of unsupported kustomize
 	// features seen across refused-structural candidates, so a product can say "this repo
@@ -423,18 +402,13 @@ func plainCandidates(
 	return out
 }
 
-// overlayCandidateAcceptance runs the operator's own adoption gate over an external-base
-// overlay's RENDER SCOPE — the overlay subtree PLUS the exact base files its resources/patches
-// graph reaches — so the discovery report matches what the live writer's render-root scoping
-// (internal/git/render_scope.go) decides. Only the files the graph actually reaches enter the
-// scope, never a whole base directory, so parked YAML a base does not reference can never
-// refuse the overlay (mirroring the runtime's "read scope is the exact reachable file set").
+// overlayCandidateAcceptance runs the adoption gate over an overlay's RENDER SCOPE: the subtree
+// plus the exact base files its graph reaches, matching the live writer's render-root scoping.
+// Only reached files enter the scope, never a whole base directory, so parked YAML a base does not
+// reference can never refuse the overlay.
 //
-// The scoped store keeps repo-relative paths, so a `../../base` reference resolves within it
-// exactly as kustomize resolves it. Acceptance here is folder adoption (GitPathAccepted); the
-// write half — editable overlay-local documents and declared images/replicas, but never a
-// base-owned field or a new overlay object — is out of scope for a read-only report, and the
-// candidate's editable count already reflects how much of the render the overlay owns.
+// The scoped store keeps repo-relative paths, so `../../base` resolves exactly as kustomize
+// resolves it. This is folder adoption only; the write half is out of scope for a read-only report.
 func overlayCandidateAcceptance(
 	ctx context.Context,
 	rootDir string,
@@ -512,15 +486,10 @@ func candidateAcceptance(ctx context.Context, fsys fs.FS, dir string) Acceptance
 	return Scan(ctx, sub, nil, nil, policy).Acceptance
 }
 
-// issuesToReasons is the projection for the solvability pair as well as the code: it is
-// already the single choke point through which every acceptance issue becomes a refusal
-// reason, so a check that classifies itself reaches a consumer without any second table.
-//
-// issuesToReasons projects acceptance-gate issues into refusal reasons so a refused plain
-// or self-contained kustomize candidate reports WHY — duplicate identity, non-KRM YAML, a
-// foreign file, a mixed build-directive file, an unsupported nested kustomization — not
-// just acceptedByOperator: false. The issue Kind is the machine code; the path-qualified
-// message is the detail.
+// issuesToReasons projects acceptance-gate issues into refusal reasons, so a refused candidate
+// reports WHY rather than just acceptedByOperator: false. It is the single choke point for that
+// mapping, so a check that classifies itself reaches a consumer without a second table. The issue
+// Kind is the machine code; the path-qualified message is the detail.
 func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
 	out := make([]RefusalReason, 0, len(issues))
 	for _, iss := range issues {
@@ -542,19 +511,13 @@ func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
 // lie outside its own subtree — every folder whose content the root renders yet does not
 // own.
 //
-// It is the directory projection of [renderScopePaths], deliberately and not incidentally:
-// that function already answers "which files does this build load", it is what the scoped
-// acceptance gate renders from, and any second enumeration here would drift from it. A
-// base directory, a `resources: ../shared/deployment.yaml`, and a
-// `patches: [{path: ../../shared/patch.yaml}]` are all the same fact — content this folder
-// renders and does not own — and only one of the three is a kustomize base.
+// The directory projection of [renderScopePaths], deliberately: that function already answers
+// which files a build loads, and a second enumeration here would drift from it. A base directory,
+// a `resources: ../shared/x.yaml` and a `patches: [{path: ../../shared/p.yaml}]` are the same
+// fact, and only one of the three is a kustomize base.
 //
-// Minimal in the same sense as [outOfSubtreeBases]: a directory nested under another in the
-// set is dropped, since reading the parent already reaches it.
-//
-// This is the only relation the read graph is built from — [RepoCandidate.ReadScope],
-// [RepoCandidate.ReadBy] and [RepoSummary.ReadEdges] are three projections of it, so they
-// cannot disagree about which folder reads which.
+// Minimal: a directory nested under another in the set is dropped. This is the ONLY relation the
+// read graph is built from, so its three projections cannot disagree.
 func readDirsOutside(rootDir string, kusts map[string]*kustomizationDoc) []string {
 	dirs := map[string]struct{}{}
 	for file := range renderScopePaths(rootDir, kusts) {
@@ -714,15 +677,11 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 // refusedStructuralReason builds the render-root refusal, classified by the constructs
 // that caused it rather than by the code.
 //
-// The code itself MEANS "the writer cannot map this render root back to editable source",
-// so "no" is the answer whenever the constructs are unknown. But the same folder is judged
-// construct by construct when the gate refuses a NESTED kustomization
-// (IssueUnsupportedKustomize), and the two surfaces must not hand a consumer two different
-// answers about one directory: a root refused only because its kustomization does not
-// parse is one commit from being adoptable, and saying "no" there would send its author
-// away for nothing. Classifying both from the same feature set is what keeps them
-// agreeing, and it follows the rule the whole table follows — describe the folder, not the
-// rule.
+// The code MEANS "the writer cannot map this root back to editable source", so "no" is the answer
+// when the constructs are unknown. But the gate judges the same folder construct by construct when
+// refusing a NESTED kustomization, and the two surfaces must not give a consumer two answers about
+// one directory: a root refused only because its kustomization does not parse is one commit from
+// adoptable. Classifying both from the same feature set keeps them agreeing.
 func refusedStructuralReason(doc *kustomizationDoc, content []byte) RefusalReason {
 	var features []string
 	if doc != nil {

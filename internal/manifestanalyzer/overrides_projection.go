@@ -43,39 +43,27 @@ type OverrideEdit struct {
 // FORM of the live state, so the file keeps every byte the build supplied — plus the entry edits
 // for the values an override entry supplies.
 //
-// It is two rules, and neither models a transformer:
+// Two rules, and neither models a transformer:
 //
-//  1. WHERE THE LIVE OBJECT AND THE RENDER AGREE, THE SOURCE KEEPS ITS BYTES (sourceForm). The
-//     build already produces what the cluster runs, so the source is by construction what
-//     produced it. This is what stops the writer mirroring the build's own output back into the
-//     build's input — an injected label, a patched CPU request — and it needs to know nothing
-//     about labels or patches to do it.
-//  2. WHERE THEY DISAGREE, THE USER CHANGED SOMETHING. If an images:/replicas: entry supplies
-//     that field — which the dye says, read off a counterfactual render — the change is routed
-//     to the ENTRY and the source keeps its bytes there too. Otherwise it is written through to
-//     the source document.
+//  1. WHERE LIVE AND THE RENDER AGREE, THE SOURCE KEEPS ITS BYTES. The build produces what the
+//     cluster runs, so the source is by construction what produced it. This stops the writer
+//     mirroring the build's own output back into its input, knowing nothing about labels or
+//     patches to do it.
+//  2. WHERE THEY DISAGREE, THE USER CHANGED SOMETHING. If an entry supplies that field (the dye
+//     says which) the change is routed to the ENTRY; otherwise it is written to the source.
 //
-// Anything it cannot route safely — a component removal an entry supplies, a component a
-// sibling entry clears, or two containers demanding different values for one entry field —
-// routes NOTHING and leaves the live value in place. That is not a guess and not a fallback to
-// another heuristic: the proposal then has to survive the verification re-render, which for a
-// field an entry governs it will not, so it becomes a reported refusal rather than a commit
-// that quietly never converges.
+// Anything it cannot route safely routes NOTHING and leaves the live value in place. Not a guess:
+// the proposal must survive the verification re-render, which for a field an entry governs it will
+// not, so it becomes a reported refusal rather than a commit that never converges.
 //
-// The one thing it refuses outright is a list the build and the user BOTH changed whose elements
-// cannot be paired by name (*SourceFormRefusedError): there is no honest way to say which of the
-// source's bytes the user meant to keep, and aligning by position is measurably wrong.
+// It refuses outright only a list the build and the user BOTH changed whose elements cannot be
+// paired by name: there is no honest way to say which bytes the user meant to keep, and aligning
+// by position is measurably wrong.
 //
-// gitRaw is the source document parsed as JSON-typed maps (sigs.k8s.io/yaml); desired is the
-// sanitized projection the writer would otherwise compare. The returned object is always a
-// copy; desired is never mutated.
-// authorInto is the kustomization the writer may AUTHOR a new images:/replicas: entry into when
-// a value the SOURCE document supplies diverges in live and the source is out of the write jail
-// (a base an overlay reads read-only). It is "" for a self-contained subtree and for an in-jail
-// document, where a source-supplied change is written into the file directly. When set, a
-// diverging source-supplied image component or replica count becomes a proposed new entry rather
-// than a refused base write — the "edit a specific environment, get the override authored"
-// capability of docs/design/support-boundary/render-root-scoping.md §4.
+// authorInto is the kustomization the writer may AUTHOR a new entry into when a SOURCE-supplied
+// value diverges and the source is out of the write jail. "" for a self-contained subtree or an
+// in-jail document, where the file is written directly.
+// See docs/design/support-boundary/render-root-scoping.md §4.
 func SplitDesiredForOverrides(
 	gitRaw map[string]interface{},
 	desired *unstructured.Unstructured,
@@ -150,17 +138,13 @@ func isContainerListKey(k string) bool {
 
 // collectImageSlots walks the object for every field that can hold an image.
 //
-// Which fields those are was MEASURED against kustomize, not derived from its fieldspecs,
-// and the two surprises are both in here:
+// Which fields those are was MEASURED against kustomize, not derived from its fieldspecs, and both
+// surprises are here:
 //
-//   - volumes[].image.reference — an OCI volume source. kustomize REWRITES it (measured), and
-//     the old collector did not look at it, so the rendered value was written back into the
-//     source document as if the user had typed it.
-//   - ephemeralContainers — kustomize does NOT rewrite them (measured), so no dye ever lands
-//     here and no entry is ever credited with the value. They are still collected, because the
-//     SOURCE document owns them and an edit to one belongs in the file. That is the dye doing
-//     the fieldspec's job: we no longer have to know which fields kustomize touches, only to
-//     look at where its dyes came out.
+//   - volumes[].image.reference: kustomize REWRITES it, and the old collector did not look, so
+//     the rendered value was written back into the source as if the user had typed it.
+//   - ephemeralContainers: kustomize does NOT rewrite them, so no dye lands and no entry is
+//     credited. Still collected, because the SOURCE owns them and an edit belongs in the file.
 //
 // Slots are sorted by key so edit output is deterministic.
 func collectImageSlots(obj map[string]interface{}) []imageSlot {
@@ -253,15 +237,10 @@ type slotPlan struct {
 // document share. It rewrites out's images to their SOURCE-FILE form and returns the entry
 // edits — or routes nothing when the inversion is unsafe.
 //
-// Nothing here re-derives what kustomize does any more. The rendered value comes from the
-// renderer and the supplier comes from the dye, so the two questions that used to be answered
-// by a hand-written transformer — "what does this folder render to" and "who supplied it" —
-// are now both answered by kustomize.
-//
-// And nothing here is trusted. The proposal is put to kustomize before it can become a commit
-// (VerifyBatchRenders), so this only has to be a candidate that is usually right. Routing
-// nothing is always a legal answer: the proposal then falls back to whatever the source
-// document alone can carry, and the re-render adjudicates it.
+// Nothing here re-derives what kustomize does: the rendered value comes from the renderer and the
+// supplier from the dye. Nothing here is trusted either — the proposal is put to kustomize before
+// it can become a commit, so this only has to be a candidate that is usually right, and routing
+// nothing is always a legal answer.
 func projectImages(
 	gitRaw map[string]interface{},
 	live, out *unstructured.Unstructured,
@@ -394,29 +373,16 @@ func authorFor(enabled bool, author func(field, value string), field string) fun
 // routeComponent decides where one changed image component (tag or digest) goes: onto the
 // entry that supplies it, into the source file when no entry does, or nowhere at all.
 //
-// TAG AND DIGEST ARE MUTUALLY EXCLUSIVE IN KUSTOMIZE, and that is what `sibling` is for. From
-// its own image transformer (filters/imagetag/updater.go, SetImageValue):
+// TAG AND DIGEST ARE MUTUALLY EXCLUSIVE IN KUSTOMIZE, which is what `sibling` is for: a tag entry
+// clears the digest and a digest entry clears the tag (filters/imagetag/updater.go, SetImageValue).
+// So an entry can GOVERN a component it does not declare — when a digest entry cleared the tag no
+// dye lands there, yet writing a tag into the source would be wiped by the next render. The
+// sibling's supplier is what reveals that, and missing it corrupted real source files.
 //
-//	case NewTag != "" && Digest != "": tag = NewTag; digest = Digest
-//	case NewTag != "":                 tag = NewTag; digest = ""     // a tag entry CLEARS the digest
-//	case Digest != "":                 tag = "";     digest = Digest // a digest entry CLEARS the tag
+// Two unroutable cases: a REMOVAL of a component an entry supplies (no way to say "no tag" on an
+// entry that sets one), and a change to a component the SIBLING clears (nowhere to land).
 //
-// So an entry can GOVERN a component it does not declare. When a digest entry has cleared the
-// tag, no dye lands in the tag — nothing supplies it — but writing a tag into the source file
-// would be wiped by the very next render. The dye cannot see that on its own; the sibling
-// component's supplier is what reveals it, and it is the bug (#231) that corrupted real source
-// files by rewriting a tag out of them.
-//
-// The two unroutable cases:
-//
-//   - a REMOVAL of a component an entry supplies — there is no way to say "no tag" on an
-//     entry that sets one;
-//   - a change to a component the SIBLING entry clears — nowhere to land, and the file would
-//     be overridden straight back.
-//
-// author is the overlay hook: when the source document supplies the component and an overlay is
-// available to author into, the change becomes a new images: entry instead of a source write.
-// It is nil for a self-contained subtree and for an in-jail source, where the file is writable.
+// author is the overlay hook, nil for a self-contained subtree and for an in-jail source.
 func routeComponent(
 	supplier *ImageOverride,
 	sibling *ImageOverride,
@@ -485,13 +451,10 @@ func collectConsistentEdits(plans []slotPlan) ([]OverrideEdit, bool) {
 // transformer creates the field) and a count edit is emitted only when live diverges from the
 // pinned count.
 //
-// There is no list of kinds here any more, and that is a bug fix rather than a tidy-up. We
-// used to gate this on isReplicaKind — Deployment, ReplicaSet, StatefulSet — while kustomize's
-// fieldspec is Deployment, ReplicaSet, StatefulSet AND ReplicationController. A scale on an RC
-// governed by a replicas: entry was written into the source document, where the transformer
-// overrode it right back: non-converging drift, silently, forever. The dye ends the argument:
-// if a dyed count came out of this object, an entry governs the field, whatever the kind is.
-// kustomize's fieldspec is the authority, and we no longer keep a second opinion about it.
+// There is no list of kinds here, and that is a bug fix. Gating on Deployment/ReplicaSet/
+// StatefulSet missed ReplicationController, which kustomize's fieldspec includes, so a scale on an
+// RC was written into the source and overridden right back: silent non-converging drift. The dye
+// ends the argument — if a dyed count came out, an entry governs the field, whatever the kind.
 func projectReplicas(
 	gitRaw map[string]interface{},
 	live, out *unstructured.Unstructured,

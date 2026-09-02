@@ -12,15 +12,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// Plan is the first-class, cross-layer contract described in
-// docs/spec/current-manifest-support-review.md ("Writer Model: Plan,
-// Apply, Dirty Flush"). It is a pure function of (ManifestStore, desired set,
-// policy): the same value the live writer applies, scan mode renders, the CLI
-// prints, and GitTarget status summarizes. M3 builds the model and its
-// computation; applying it to a worktree is M7.
-//
-// It carries enough detail to render text/JSON/status without recomputing any
-// decision: each action names its kind, the document it concerns, and a reason.
+// Plan is a pure function of (ManifestStore, desired set, policy): the same value the live writer
+// applies, scan mode renders, the CLI prints and status summarizes. It carries enough detail to
+// render text/JSON/status without recomputing any decision.
+// See docs/spec/current-manifest-support-review.md.
 type Plan struct {
 	// Actions are the decided changes, in a deterministic order (by file path, then
 	// document index, then identity), so output is stable regardless of map
@@ -123,24 +118,14 @@ func (p Plan) Counts() map[PlanActionKind]int {
 // its new file (ResourceIdentifier.ToGitPath) at apply time (M7) without re-resolving
 // the mapping.
 //
-// This is a full-snapshot input — the "Resync" path of the design's "Two Paths, One
-// Plan Type" (docs/spec/reconcile-via-watchlist-mark-and-sweep.md). It is
-// NOT a per-event PendingChange: BuildPlan mark-and-sweeps every watched document
-// absent from this set as a managed drop, so the set must be the whole desired state
-// (scan mode / resync), never a partial batch. Steady-state, per-event planning that
-// targets a single identity and emits an explicit delete-document — without sweeping
-// — is the separate pending-change path (M7, on M6's delete-identity resolution).
+// A FULL-SNAPSHOT input, never a partial batch: BuildPlan mark-and-sweeps every watched document
+// absent from this set as a managed drop.
 //
-// Object must be non-nil: every entry in a desired snapshot is a resource that
-// exists. A nil Object is a malformed entry — deliberately NOT a delete tombstone,
-// because in a sweeping planner a lone tombstone is indistinguishable from "every
-// other document is now an orphan". It cannot simply be skipped either: because the
-// planner mark-and-sweeps, skipping a nil entry would leave the matching managed
-// document unmatched and let the Git-only sweep DROP it. So BuildPlan instead
-// protects the matching document from the sweep (by resolved resource identity) and
-// emits a diagnostic, so a malformed entry never causes a destructive drop. A genuine
-// per-event delete (a DELETED watch event) is resolved separately by PlanDelete, which
-// targets one identity and never sweeps.
+// Object must be non-nil. A nil entry is malformed, deliberately NOT a delete tombstone: in a
+// sweeping planner a lone tombstone is indistinguishable from "every other document is an orphan".
+// It cannot be skipped either, since skipping would leave the matching document unmatched and let
+// the sweep DROP it. BuildPlan instead protects that document and emits a diagnostic. A genuine
+// per-event delete is PlanDelete, which targets one identity and never sweeps.
 type DesiredResource struct {
 	Resource types.ResourceIdentifier
 	Object   *unstructured.Unstructured
@@ -151,10 +136,9 @@ type DesiredResource struct {
 // spec.prune.mode, kept as its own type (like PlacementPolicy) so manifestanalyzer stays
 // free of any Kubernetes API type dependency.
 //
-// Only the INFERRED deletion path is modelled here. An explicit source DELETE event
-// never reaches this planner — it is resolved by PlanDelete and gated at the writer — so
-// PruneNever and PruneOnEvent both map to SweepRetainOrphans. The two differ only on the
-// path this type knows nothing about.
+// Only the INFERRED deletion path is modelled here: an explicit DELETE never reaches this planner,
+// so PruneNever and PruneOnEvent both map to SweepRetainOrphans. They differ only on the path this
+// type knows nothing about.
 type SweepMode string
 
 const (
@@ -195,23 +179,15 @@ type Policy struct {
 	Sweep SweepMode
 }
 
-// BuildPlan computes the Plan from the byte-free ManifestStore, the file bytes
-// that back it (hydration source for the patch/no-op decision), the COMPLETE desired
-// snapshot, and the policy. It graduates manifestreport.BuildReport's read-only
-// create/update/delete/skip comparison into the materialized model's plan.
+// BuildPlan computes the Plan from the store, the bytes backing it, the COMPLETE desired snapshot
+// and the policy.
 //
-// This is the full-snapshot "Resync" planner (scan mode, CLI, initial reconcile /
-// resync): it mark-and-sweeps — every watched document with no entry in desired is a
-// managed drop — so desired MUST be the whole desired state, never a partial batch.
-// The steady-state path (one plan action per live event, where a DELETED event is an
-// explicit delete-document and nothing re-sweeps) is PlanDelete for removals (M6); the
-// per-event create/patch twin and the writer that folds both arrive with M7.
+// The full-snapshot planner: it mark-and-sweeps, so desired MUST be the whole desired state, never
+// a partial batch. The per-event removal path is PlanDelete.
 //
-// The store is expected to have been built with the same mapper whose watched set
-// produced desired; under a structure-only store (no resolved mappings) no managed
-// drop is ever emitted, preserving the no-cluster promise even if a desired set is
-// passed by mistake. policy.Sweep is the second, independent gate on the same
-// deletions — the caller's declared prune policy — and its zero value retains.
+// Under a structure-only store (no resolved mappings) no managed drop is emitted, preserving the
+// no-cluster promise even if a desired set is passed by mistake. policy.Sweep is a second,
+// independent gate on the same deletions, and its zero value retains.
 func BuildPlan(
 	store *ManifestStore,
 	files []manifestedit.FileContent,
@@ -226,18 +202,14 @@ func BuildPlan(
 // BuildScopedPlan with byte-identical behaviour.
 func allInScope(types.ResourceIdentifier) bool { return true }
 
-// BuildScopedPlan is BuildPlan restricted to the documents inScope reports: the desired set
-// is upserted as usual, but the Git-only mark-and-sweep only drops/skips a managed document
-// whose RESOLVED resource identity is in scope — every out-of-scope document is left
-// untouched, never swept. It is the per-type (M12) primitive: a reconcile passes that type's
-// desired objects with a predicate matching that type's (group, resource); a sweep passes an
-// EMPTY desired set with the same predicate, so a removed type's documents drop and no
-// sibling type is ever collaterally deleted. The caller MUST keep desired in scope, since
-// the desired set is the scope on the upsert side.
+// BuildScopedPlan is BuildPlan restricted to the documents inScope reports: the sweep only touches
+// a managed document whose RESOLVED identity is in scope, so no sibling type is collaterally
+// deleted. The per-type primitive: a reconcile passes that type's objects with a matching
+// predicate, a sweep passes an EMPTY desired set with the same one. The caller MUST keep desired
+// in scope, since it is the scope on the upsert side.
 //
-// With allInScope this is exactly BuildPlan — the full-snapshot mark-and-sweep — so the two
-// share one implementation and one set of safety guarantees. See
-// docs/spec/type-lifecycle-events-and-wobble-settling.md (Proposal 3 / M12).
+// With allInScope this is exactly BuildPlan, so the two share one implementation and one set of
+// safety guarantees. See docs/spec/type-lifecycle-events-and-wobble-settling.md.
 func BuildScopedPlan(
 	store *ManifestStore,
 	files []manifestedit.FileContent,
@@ -476,15 +448,10 @@ func actionFromDecision(a manifestedit.DecisionAction) (PlanActionKind, bool) {
 	}
 }
 
-// documentLocations indexes every managed document to its (file path, document
-// index) reference. DocumentModel stores neither: the file path is the map key, and
-// the document's TRUE file position is reconstructed from the record-less diagnostic
-// gaps (every empty/non-KRM/invalid document leaves a diagnostic at its position, so
-// the managed documents fill the remaining positions in order). This is exact for
-// every file, contiguous or not — so a plan's reference targets the right document
-// even for an impure managed file the acceptance gate is refusing, and scan mode
-// renders an accurate (not merely advisory) target. manifestedit is handed this
-// position at hydration time.
+// documentLocations indexes every managed document to its (file path, document index).
+// DocumentModel stores neither: the path is the map key, and the position is reconstructed from
+// record-less diagnostic gaps. Exact for every file, contiguous or not, so a plan's reference
+// targets the right document even in an impure managed file the gate is refusing.
 func documentLocations(store *ManifestStore) map[*DocumentModel]RecordRef {
 	diagsByPath := diagnosticsByPath(store.Diagnostics)
 	out := map[*DocumentModel]RecordRef{}

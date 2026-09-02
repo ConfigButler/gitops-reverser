@@ -17,15 +17,11 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// ManifestStore is the byte-free, in-memory structure model of a GitTarget folder
-// described in docs/spec/current-manifest-support-review.md ("Concrete
-// Data Structures"). It is the backbone the live writer, scan mode, the CLI, and
-// status all consume; the analyzer Report is rendered as a projection over it.
+// ManifestStore is the byte-free structure model of a GitTarget folder, consumed by the live
+// writer, scan mode, the CLI and status alike. See docs/spec/current-manifest-support-review.md.
 //
-// Only MANAGED files live in FilesByPath: YAML files carrying at least one KRM
-// document. Non-YAML auxiliary files and YAML files with no KRM document are known
-// to the analyzer but never become FileModels, so they have no document set to
-// empty and can never be swept or deleted.
+// Only MANAGED files live in FilesByPath: YAML carrying at least one KRM document. Everything else
+// is known to the analyzer but never becomes a FileModel, so it can never be swept or deleted.
 type ManifestStore struct {
 	// Root is the scanned root, mirroring Report.Root. It is informational and
 	// empty for an in-memory fs.FS.
@@ -39,14 +35,9 @@ type ManifestStore struct {
 	// Indexes hold pointers into FilesByPath, not (path, index) pairs, so a
 	// document delete that shifts a file's slice never invalidates them.
 	//
-	// ByManifestIdentity is single-valued: it is collected first-occurrence-wins
-	// over the documents that CLAIM their identity (the collapse), so a later
-	// document that duplicates an earlier identity is not the winner and is
-	// detectable as such. Claiming mirrors manifestedit's duplicate rule exactly —
-	// cleanly-editable and encrypted documents claim, documents with disallowed
-	// constructs do not — so the collapse and manifestedit's duplicate diagnostic
-	// agree. The diagnostic is emitted by the manifestedit index pass that feeds the
-	// collapse.
+	// ByManifestIdentity is single-valued, first-occurrence-wins over documents that CLAIM their
+	// identity, so a later duplicate is detectable as such. Claiming mirrors manifestedit's
+	// duplicate rule exactly, so the collapse and its diagnostic agree.
 	ByManifestIdentity map[manifestedit.Identity]*DocumentModel
 	// ByResourceIdentity is populated once the GVK->GVR mapper resolves resource
 	// identities (Track B / B3). It is empty under structure-only analysis.
@@ -93,14 +84,11 @@ type ManifestStore struct {
 	// same surface as any other refusal.
 	IgnoreIssues []AcceptanceIssue
 
-	// ValueFileRefs is the set of scanned non-KRM files (slash paths) a release document — an Argo
-	// CD Application's helm.valueFiles or a Flux HelmRelease's spec.chart.spec.valuesFiles — names
-	// by a path that matches locally: NAMED read-only context, not junk, and not proof the deployer
-	// consumes this file. The acceptance gate consults it so a values file the repository points at
-	// no longer refuses its folder as non-krm-yaml, and the discovery scan does not count it as
-	// noise. It is never materialised, so the operator retains the file yet never writes it. See
-	// docs/design/support-boundary/values-file-projection.md §2 (Move 1) and
-	// values-content-architecture.md.
+	// ValueFileRefs is the set of scanned non-KRM files a release document names by a locally
+	// matching path: NAMED read-only context, not junk, and not proof the deployer consumes it.
+	// The acceptance gate consults it so such a file no longer refuses its folder as non-krm-yaml.
+	// Never materialised: retained, never written.
+	// See docs/design/support-boundary/values-file-projection.md §2 (Move 1).
 	ValueFileRefs map[string]struct{}
 
 	// RenderedInventory records what each render root RENDERS TO, keyed by the root's
@@ -131,19 +119,11 @@ type RetainedDocument struct {
 	Location manifestedit.Location
 	Identity manifestedit.Identity
 	GVK      schema.GroupVersionKind
-	// Unsupported is true for a whole-file kustomization retention that the operator
-	// cannot map back to editable source documents, for either of two reasons:
-	//
-	//   - it uses a feature outside the supported contextual-namespace subset
-	//     (generators / patches / components / helm / replacements / transformers /
-	//     name(pre|suf)fix / remote bases), or declares malformed images/replicas; or
-	//   - it is a render root KUSTOMIZE CANNOT BUILD (reasonRenderFailed). If the build
-	//     fails, Flux cannot deploy the folder either, and we cannot know what it renders
-	//     to — and a silent pass would be worse than useless, because a root that yields
-	//     no chain also yields no ambiguity, which disarms the write-fan-in guard.
-	//
-	// The acceptance gate refuses either (IssueUnsupportedKustomize) rather than writing
-	// into content it cannot safely manage. Only ever set on a whole-file retention.
+	// Unsupported marks a kustomization retention the operator cannot map back to editable source:
+	// it uses a feature outside the supported subset, or it is a root KUSTOMIZE CANNOT BUILD. The
+	// second matters because a root yielding no chain also yields no ambiguity, which would disarm
+	// the write-fan-in guard. The acceptance gate refuses either. Only set on a whole-file
+	// retention.
 	Unsupported bool
 	// UnsupportedFeatures names the constructs that made this retention unsupported, as
 	// the user wrote them ("configMapGenerator", "remote-base", "render-failed"). It
@@ -180,20 +160,11 @@ func (f *FileModel) Dirty() bool { return f.Current != nil && !bytes.Equal(f.Cur
 // was dropped). It is derived, never stored.
 func (f *FileModel) Deleted() bool { return f.Current == nil && f.Original != nil }
 
-// DocumentModel is one managed KRM document. It is byte-free: the full
-// manifestedit node tree is built only when a plan action touches the document
-// (Snapshot is the lazy handle), and it deliberately stores neither its file path
-// nor its position. The file path is the containing FileModel's; the document's TRUE
-// file index is reconstructed when needed (by reconstructManagedIndices) from the
-// record-less diagnostic gaps — every empty/non-KRM/invalid document leaves a
-// diagnostic at its position, so the managed documents fill the remaining positions
-// in document order. That recovers the right index for any file, contiguous or not,
-// so the report, the planner (documentLocations), and the acceptance gate all agree
-// without storing a fragile mutable field. The M4 acceptance gate additionally
-// refuses any managed file that is not entirely valid KRM (Decision #2), so an
-// accepted file is contiguous anyway. manifestedit is given the position only at
-// apply time. See docs/spec/current-manifest-support-review.md ("Concrete
-// Data Structures") and the M4 acceptance gate (acceptance.go).
+// DocumentModel is one managed KRM document, byte-free: the node tree is built only when a plan
+// action touches it. It stores neither file path nor position. The path is the containing
+// FileModel's; the index is reconstructed from record-less diagnostic gaps, since every
+// non-managed document leaves a diagnostic at its position. That keeps the report, the planner and
+// the acceptance gate agreeing without a fragile mutable field.
 type DocumentModel struct {
 	// ManifestIdentity is the EFFECTIVE content identity (apiVersion + kind +
 	// namespace + name). For a namespace-less namespaced resource it may carry a
@@ -215,17 +186,12 @@ type DocumentModel struct {
 	// docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 	Overrides *KustomizeOverrides
 
-	// Rendered is what kustomize ACTUALLY renders this document to, plus which override
-	// entry supplied each override-produced value — the values read off the real render, the
-	// suppliers read off a dyed counterfactual one. It is what the write-side projection
-	// inverts against, and it replaced ~400 lines that re-implemented kustomize's
-	// transformers in order to guess the same thing.
+	// Rendered is what kustomize ACTUALLY renders this document to, plus which override entry
+	// supplied each value: values off the real render, suppliers off a dyed counterfactual one.
 	//
-	// Nil when no render root supplies a chain, when distinct roots disagree, or when the
-	// dyed build could not be trusted (see attributeRoot). Nil means NO ATTRIBUTION: the
-	// writer routes nothing to an entry, and the verification re-render adjudicates whatever
-	// the source document alone can carry. See
-	// docs/design/support-boundary/render-attribution.md.
+	// Nil when no root supplies a chain, roots disagree, or the dyed build could not be trusted.
+	// Nil means NO ATTRIBUTION: the writer routes nothing to an entry.
+	// See docs/design/support-boundary/render-attribution.md.
 	Rendered *RenderedOverrides
 
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
@@ -287,11 +253,9 @@ const (
 	// namespace is the document's. Like Kustomize, the namespace must stay out of the file and
 	// the document is located in the bytes by a namespace-less identity.
 	//
-	// It is what keeps a namespace-free folder mirrorable at all. Without it the operator writes
-	// shop/config as a namespace-less document, reads it back as belonging to no namespace, and
-	// the NEXT write of the same object matches nothing and appends a second copy of it. The
-	// one-source-namespace refusal is what makes the attribution safe: with two namespaces
-	// reaching the folder there is no single answer, and the write is refused rather than guessed.
+	// Without it the operator writes a namespace-less document, reads it back as belonging to no
+	// namespace, and the NEXT write matches nothing and appends a second copy. The
+	// one-source-namespace refusal is what makes it safe: two namespaces have no single answer.
 	NamespaceDeclared NamespaceSourceKind = "Declared"
 )
 
@@ -407,26 +371,16 @@ type RecordRef struct {
 	DocumentIndex int
 }
 
-// buildStore indexes the YAML files into the byte-free structure model. It runs
-// the same manifestedit.IndexFiles scan the analyzer already used, groups the
-// resulting KRM records into managed FileModels, and builds the manifest-identity,
-// resource-identity, and GVK indexes. scanDiags (walk/read/symlink problems)
-// precede the index diagnostics in store.Diagnostics.
+// buildStore indexes the YAML files into the structure model and builds the manifest-identity,
+// resource-identity and GVK indexes.
 //
-// mapper resolves each document's GVK to a served resource identity. A nil mapper
-// is treated as structure-only, so the analyzer's no-cluster promise holds: no
-// resource identities are resolved and the resource index stays empty.
+// A nil mapper is structure-only, so the analyzer's no-cluster promise holds.
 //
-// allowlist names the build-directive files (kustomization.yaml and friends) that
-// are retained rather than materialised. The allowlist is filename-based, because a
-// real kustomization.yaml has no metadata.name and so is not a KRM record at all —
-// a GVK-based match would never see it. An allowlisted file never becomes a
-// FileModel, its per-document index diagnostics are suppressed (its nameless build
-// directives must not look like non-KRM refusals), and it is recorded in
-// store.Retained instead. A named KRM record found inside an allowlisted file is
-// retained WITH its identity so the acceptance gate can refuse the mixed file rather
-// than silently un-manage a resource. The empty allowlist (BuildStore / Analyze)
-// materialises every KRM record, the legacy structure-only behaviour.
+// allowlist names build-directive files retained rather than materialised. It is FILENAME-based
+// because a real kustomization.yaml has no metadata.name and is not a KRM record at all, so a
+// GVK match would never see it. An allowlisted file never becomes a FileModel and its per-document
+// diagnostics are suppressed; a named KRM record inside one is retained WITH its identity so the
+// acceptance gate can refuse the mixed file rather than un-manage a resource.
 func buildStore(
 	ctx context.Context,
 	scan FolderScan,
@@ -520,16 +474,10 @@ func buildStore(
 	return store
 }
 
-// BuildStoreFromFiles builds the byte-free structure model from already-collected
-// file bytes, rather than walking an fs.FS (BuildStore). It is the live writer's
-// entry point: the writer reads the worktree subtree once at a commit boundary —
-// it needs the bytes anyway, to hydrate and apply — and hands the same FileContent
-// slice here, so the store and the bytes the plan is applied to are one snapshot.
-//
-// lookup resolves each document's GVK to a served resource identity; a nil lookup
-// keeps it structure-only (no resource index), exactly as BuildStore. allowlist
-// names the build-directive files retained outside the model; pass the zero value
-// to materialise every KRM document.
+// BuildStoreFromFiles builds the store from already-collected bytes rather than walking an fs.FS.
+// It is the live writer's entry point: the writer reads the subtree once at a commit boundary and
+// hands the same slice here, so the store and the bytes the plan is applied to are one snapshot.
+// A nil lookup keeps it structure-only, exactly as BuildStore.
 func BuildStoreFromFiles(
 	ctx context.Context,
 	files []manifestedit.FileContent,
@@ -609,18 +557,13 @@ type materializeInputs struct {
 	declaredNamespace string
 }
 
-// materializeRecords sorts every KRM document into one of three fates — retained as a build
-// directive, retained as a patch, or materialised as a managed manifest — and returns the files
-// that were retained rather than managed.
+// materializeRecords sorts every KRM document into one of three fates: retained as a build
+// directive, retained as a patch, or materialised as a managed manifest. Records arrive in stable
+// scan order, so first-occurrence-wins is deterministic.
 //
-// records arrive in stable scan order (path, then document index), so each managed file's
-// Documents slice is built in document order and first-occurrence-wins is deterministic.
-//
-// A PATCH FILE IS A BUILD INPUT, NOT A MANIFEST, and nothing else in the store would know that:
-// a strategic-merge patch IS a KRM document. Materialised, it would be indexed as a manifest,
-// matched to a live object, mirrored over (a whole Deployment written where a sparse patch used to
-// be), or swept as an orphan when nothing in the cluster answers to it. It is retained exactly as
-// kustomization.yaml is: known, never managed.
+// A PATCH FILE IS A BUILD INPUT, NOT A MANIFEST, and nothing else in the store would know it: a
+// strategic-merge patch IS a KRM document. Materialised, it would be mirrored over (a whole
+// Deployment written where a sparse patch was) or swept as an orphan.
 func (s *ManifestStore) materializeRecords(
 	ctx context.Context,
 	records []manifestedit.DocumentRecord,
@@ -741,15 +684,11 @@ func sortRetained(retained []RetainedDocument) {
 	})
 }
 
-// resolveNamespaceContext determines a document's effective namespace and records
-// where it came from. A namespace written in the file is authoritative (Explicit). For
-// a namespace-less, followable, namespaced document it consults the kustomization
-// resources graph: exactly one assigning namespace is inherited (Kustomize); zero or
-// conflicting assignments leave the document namespace-less (None), with an ambiguity
-// diagnostic in the conflict case. It never guesses by filesystem proximity, so a file
-// is only given a namespace by a kustomization that actually references it. declaredNamespace is
-// the one exception, and it comes from the GitTarget rather than the folder: see
-// WithDeclaredNamespace.
+// resolveNamespaceContext determines a document's effective namespace and where it came from. A
+// namespace in the file is authoritative; otherwise the kustomization resources graph decides, and
+// zero or conflicting assignments leave it namespace-less. It never guesses by filesystem
+// proximity, so only a kustomization that actually references a file can give it a namespace.
+// declaredNamespace is the one exception and comes from the GitTarget: see WithDeclaredNamespace.
 func resolveNamespaceContext(
 	ctx context.Context,
 	id manifestedit.Identity,
@@ -975,16 +914,13 @@ func collapseAssignments(nsByFile map[string]map[string]string) map[string]names
 	return out
 }
 
-// hasRemoteResource reports whether any resources/bases entry points outside this
-// repository. It is the one piece of kustomize semantics the operator must keep
-// owning rather than delegate to the library.
+// hasRemoteResource reports whether any resources/bases entry points outside this repository: the
+// one piece of kustomize semantics the operator must own rather than delegate.
 //
-// kustomize resolves a remote base by shelling out to `git fetch`, and it does so
-// under LoadRestrictionsRootOnly and under an in-memory filesystem alike (both
-// measured). No build option turns that off. Detecting a remote entry ourselves,
-// and refusing before any build is invoked, is therefore what keeps "the operator
-// never fetches a remote base" true — see
-// docs/design/support-boundary/kustomize-support-boundary.md §7.
+// kustomize resolves a remote base by shelling out to `git fetch`, under LoadRestrictionsRootOnly
+// and an in-memory filesystem alike (both measured), and no build option turns it off. Refusing
+// before any build is invoked is what keeps "the operator never fetches a remote base" true.
+// See docs/design/support-boundary/kustomize-support-boundary.md §7.
 func hasRemoteResource(entries []string) bool {
 	for _, e := range entries {
 		if isRemoteResource(e) {

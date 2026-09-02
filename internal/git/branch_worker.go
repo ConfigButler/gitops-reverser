@@ -178,14 +178,10 @@ type BranchWorker struct {
 	// rate, so a storm of resyncs for one target can no longer fill the queue
 	// and starve every other GitTarget on this branch.
 	//
-	// Coalescing reuses the marker's FIFO POSITION, so it is only sound while
-	// nothing for that scope was queued behind the marker. Once a write inside
-	// the scope has been enqueued, running the newer snapshot at the older
-	// position would apply it before writes it already contains, and those
-	// older writes would then overwrite it (target-watch-plan.md, "Queue ordering
-	// and coalescing"). The
-	// entry's tail flag records that boundary, and an arriving resync past it
-	// takes its own position at the tail instead of coalescing.
+	// Coalescing reuses the marker's FIFO POSITION, so it is sound only while nothing for that
+	// scope was queued behind it: running a newer snapshot at the older position would apply it
+	// before writes it already contains, which would then overwrite it. The entry's tail flag
+	// records that boundary.
 	pendingResyncsMu sync.Mutex
 	pendingResyncs   map[resyncKey]*pendingResync
 
@@ -379,10 +375,9 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 // live events that follow it. If the queue is full the request is dropped and its
 // caller is notified immediately via the result channel.
 //
-// It reports whether the request actually entered the FIFO. A dropped request never reached
-// the queue, so a caller that gates downstream state on the resync's ordering (the per-type
-// coverage watermark, signing-snapshot-tail-replay-failure-investigation.md §7.4) must not treat
-// a drop as success — it would mark the target reconciled-through-Hc with no reconcile ever queued.
+// It reports whether the request actually entered the FIFO. A caller gating downstream state on
+// the resync's ordering must not treat a drop as success: it would mark the target
+// reconciled-through-Hc with no reconcile ever queued.
 func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	if request == nil {
 		return false
@@ -455,16 +450,13 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 // behind its marker. A pending resync with a nil scope covers the whole GitTarget, so
 // any write for that target marks it. The caller must hold pendingResyncsMu.
 //
-// The target is read from the EVENT, not from the request. The live path
-// (BranchWorker.Enqueue, one event per request) leaves the request-level fields empty
-// and carries the target on the event, which GitTargetEventStream.OnWatchEvent sets;
-// only the atomic/reconcile paths populate the request. Reading the request alone would
-// silently never match the live path, which is the only path this fence exists for.
+// The target is read from the EVENT, not the request: the live path leaves the request-level
+// fields empty, so reading the request alone would silently never match the only path this fence
+// exists for.
 //
-// The scope match is by object identity rather than by producing stream: a cluster-wide
-// and a namespaced stream both deliver one object, so the cell that produced an event
-// cannot be recovered from it today. Over-matching is deliberate — it can only forgo a
-// coalesce, never wrongly permit one.
+// The scope match is by object identity, not producing stream, because the cell that produced an
+// event cannot be recovered from it. Over-matching is deliberate: it can forgo a coalesce, never
+// wrongly permit one.
 func (w *BranchWorker) markResyncTailForWriteLocked(request *WriteRequest) {
 	for key, pending := range w.pendingResyncs {
 		if pending.tailPassed {
@@ -573,16 +565,10 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	}
 }
 
-// recordQueueDepth publishes the current pending-work depth for this worker:
-// the number of accepted-but-not-yet-handled items (queued or actively being
-// processed) plus one when the event loop is holding retained unpushed work (a
-// live open window or pending writes). It reads 0 only when the worker has
-// fully drained — every accepted item handled and nothing retained — so a
-// drain gate cannot be satisfied while a commit/push is still in flight. Called
-// only from the loop goroutine (via syncQueueDepthMetric) so the OTel gauge —
-// last-writer-wins — can never latch a stale depth from an enqueue goroutine
-// that raced the loop's drain. No-op until the gauge is registered (e.g. in
-// unit tests that never init the exporter).
+// recordQueueDepth publishes this worker's pending-work depth: accepted-but-unhandled items plus
+// one when the loop holds retained unpushed work. It reads 0 only on a full drain, so a drain gate
+// cannot be satisfied mid-push. Called only from the loop goroutine, so the last-writer-wins gauge
+// can never latch a stale depth from an enqueue goroutine racing the drain.
 func (w *BranchWorker) recordQueueDepth() {
 	if telemetry.BranchWorkerQueueDepth == nil {
 		return
@@ -1021,15 +1007,10 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 	l.drainUnhandledQueueItems()
 }
 
-// drainUnhandledQueueItems clears items still buffered on eventQueue that the
-// exiting loop will never handle. Each was counted into inflightItems at enqueue
-// and is decremented only by the loop after handling, so without this drain the
-// final syncQueueDepthMetric would publish a non-zero depth for the exiting
-// worker that never clears — the loop has stopped, so nothing republishes a
-// corrected value. A buffered CommitRequest attach is simply dropped (it is
-// fire-and-forget; the controller re-sends on its next poll). The depth gauge
-// then settles to 0 once the open window is finalized and pending writes are
-// pushed (any genuinely-unpushed work keeps it non-zero, which is correct).
+// drainUnhandledQueueItems clears items the exiting loop will never handle. Each was counted into
+// inflightItems at enqueue and decremented only after handling, so without this the final depth
+// would stay non-zero forever: the loop has stopped, so nothing republishes a corrected value. A
+// buffered CommitRequest attach is dropped; the controller re-sends on its next poll.
 func (l *branchWorkerEventLoop) drainUnhandledQueueItems() {
 	for {
 		select {
@@ -1066,16 +1047,13 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	return l.finalizeOpenWindowWithMessage(reason, "")
 }
 
-// finalizeOpenWindowWithMessage closes the live event window into one retained
-// commit-shaped pending write and creates the corresponding local commit. The
-// commit message precedence is: an explicit override, else the window's attached
-// CommitRequest message (pendingMessage, §6.4.2), else the generated grouped
-// message. On success the events move from openWindow to pendingWrites (retained
-// until a push succeeds) and the method returns true; any CommitRequest claiming
-// the window is resolved Committed. On failure the window is dropped — either the
-// repo is unreachable or the events are otherwise unrecoverable, and we don't want
-// to keep retrying with the same broken state on every commit cycle — and a
-// claiming CommitRequest is resolved Failed.
+// finalizeOpenWindowWithMessage closes the live event window into one retained pending write and
+// creates the local commit. Message precedence: explicit override, then the attached
+// CommitRequest's, then the generated grouped message.
+//
+// On failure the window is DROPPED rather than retried: the repo is unreachable or the events are
+// unrecoverable, and retrying the same broken state every cycle helps nobody. A claiming
+// CommitRequest is then resolved Failed.
 func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinalizeReason, message string) bool {
 	if l.openWindow == nil {
 		return false
@@ -1455,22 +1433,16 @@ func (w *BranchWorker) rebuildPendingWrites(
 	return baseBranch, baseHash, nil
 }
 
-// tightenPendingPruneModes lowers every retained write's captured prune mode to the more
-// restrictive of (captured, current) before the write is replayed. Tightening only: see
-// PruneMode.MoreRestrictiveOf for why the loosening direction must NOT propagate here.
+// tightenPendingPruneModes lowers every retained write's captured prune mode before replay.
+// Tightening only: see PruneMode.MoreRestrictiveOf for why loosening must NOT propagate.
 //
-// It mutates the Targets map in place, which is the point — the map is shared with the retained
-// PendingWrite, so one pass covers both deletion paths (the resync sweep reads it through
-// PendingWrite.Target, the steady-state DELETE writer through pruneModeForBase) and the tightening
-// survives every subsequent push attempt.
+// It mutates the Targets map in place, which is the point: the map is shared with the retained
+// PendingWrite, so one pass covers both deletion paths and survives every push attempt.
 //
-// The two failure modes are answered differently on purpose:
-//
-//   - the GitTarget is GONE — a definite answer, and no policy exists to authorize anything, so
-//     the write replays under the most restrictive mode. Retrying could not produce a better one.
-//   - the read FAILED — no answer. Returning the error leaves the pending writes retained and the
-//     push cycle retries them, so neither a legitimate delete is dropped nor an unauthorized one
-//     applied. Guessing either way here would do one or the other.
+// The two failure modes differ on purpose. GONE is a definite answer, so the write replays under
+// the most restrictive mode. A FAILED read is no answer, so the error leaves the writes retained
+// for the next cycle — guessing either way would drop a legitimate delete or apply an
+// unauthorized one.
 func (w *BranchWorker) tightenPendingPruneModes(ctx context.Context, pendingWrites []PendingWrite) error {
 	current := map[pendingTargetKey]configv1alpha3.PruneMode{}
 	// Ranged by value on purpose: Targets is a map, so writing through this copy still updates the
@@ -1631,19 +1603,14 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha3.GitP
 
 // commitWindowFor returns the commit-window duration for ONE GitTarget.
 //
-// The window is a GitTarget field (spec.commit.window), not a GitProvider one, and this worker
-// serves every target sharing a (provider, branch). Resolving per target rather than once per
-// worker is what makes that field mean what it says: two targets on one branch can disagree about
-// their cadence. It is affordable because an open window is bound to exactly one target already —
-// windows finalize on a target change — so this is read once per window, not once per event, on
-// the same goroutine that already reads the target's encryption and prune policy at finalize.
+// The window is a GitTarget field but this worker serves every target sharing a (provider,
+// branch), so resolving per target is what makes the field mean what it says. Affordable because a
+// window is bound to one target already, so this is read once per window, not per event.
 //
-// The string is parsed here rather than at admission so an unparseable stored value degrades
-// loudly to the fallback instead of blocking the whole target — the GitTarget reconciler is where
-// a NEW mistake is reported (Validated=False). Per design: parse errors → fallback (loud signal);
-// negative → 0 (the caller asked for near-zero coalescing and we honor that). An unreadable
-// GitTarget also takes the fallback: a missing target is not a reason to change how the events
-// already in hand are batched.
+// Parsed here rather than at admission so an unparseable stored value degrades loudly to the
+// fallback instead of blocking the target. Negative parses to 0: the caller asked for near-zero
+// coalescing. An unreadable GitTarget also takes the fallback, since a missing target is no reason
+// to change how the events in hand are batched.
 func (w *BranchWorker) commitWindowFor(
 	ctx context.Context,
 	targetName, targetNamespace string,
