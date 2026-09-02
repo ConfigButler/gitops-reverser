@@ -185,6 +185,7 @@ func TestGitTargetReadiness_StalledFollowsGitPathAccepted(t *testing.T) {
 	for _, fixture := range []struct{ dir, file string }{
 		{"2-flat-namespace-free", "expected-second-namespace-status.yaml"},
 		{"6-kustomize-base-and-overlays", "expected-app-root-status.yaml"},
+		{"7-kustomize-layered", "expected-shared-layer-status.yaml"},
 		{"8-base-owned-field-edit", "expected-env-change-status.yaml"},
 	} {
 		t.Run(fixture.dir, func(t *testing.T) {

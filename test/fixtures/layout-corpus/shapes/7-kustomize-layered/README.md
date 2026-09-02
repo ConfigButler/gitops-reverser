@@ -48,14 +48,27 @@ the trade the shape buys its reuse with.
 
 ## Scenario contract, part two: a refusal
 
-The half worth reviewing. Someone changes `prometheus.io/scrape` on the live Deployment. The only
-expression of that field in the repository is the patch in `layers/observability`, which is outside
-this target's write scope and consumed by two roots besides.
+The half worth reviewing, and the half that was wrong here for as long as nothing ran it.
 
-[`expected-shared-layer-status.yaml`](expected-shared-layer-status.yaml) is the whole result: no file
-is written, and `WriteBoundaryRefused` names the boundary rather than searching for another document
-carrying the same identity. A set of examples in which every write succeeds would be advertising
-rather than specifying, which is why this one is here.
+- Live input: [`input/deployment-scrape-changed.yaml`](input/deployment-scrape-changed.yaml), the
+  rendered Deployment with `prometheus.io/scrape` flipped to `"false"`. The only expression of that
+  field in the repository is the patch in `layers/observability`, which is outside this target's
+  write scope and consumed by two roots besides.
+- Expected result: [`expected-shared-layer-status.yaml`](expected-shared-layer-status.yaml). No file
+  is written and the flush is refused with `WriteBoundaryRefused`.
+
+**The refusal names `base/deployment.yaml`, not the layer.** That is the surprising part and it is
+worth following. The layer's patch document and the base's Deployment carry the same identity, so
+the manifest store keeps one of them (the base) and drops the other as a duplicate. The edit is then
+planned against the base document and refused for escaping the write scope, which is exactly the
+refusal [shape 8](../8-base-owned-field-edit/README.md) produces from a repository with no layer in
+it at all.
+
+So the honest conclusion is a negative one: **adding a shared layer above a base does not add a new
+refusal, and does not change the answer.** This page previously claimed the opposite, in a message
+naming `layers/observability` that the writer never emits. Nothing caught it because the fixture was
+committed but unasserted. It is asserted now, which is the whole argument for keeping refusals as
+fixtures rather than as prose.
 
 Changing that annotation for every environment at once is a **Git-level operation above the
 operator** — the

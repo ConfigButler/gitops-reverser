@@ -1,0 +1,27 @@
+# Abridged live object, as envs/prod renders it: the base Deployment, carrying the pod-template
+# annotation that layers/observability patches in, under the namespace the leaf root supplies.
+# ONE field differs from the rendered state: prometheus.io/scrape is now "false".
+#
+# The only expression of that field in the repository is the patch in layers/observability, which
+# envs/prod and envs/test both consume. It is outside this target's write scope AND has fan-in 2,
+# so there is nowhere for the edit to land.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: shop-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: checkout
+  template:
+    metadata:
+      labels:
+        app: checkout
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      containers:
+        - name: checkout
+          image: ghcr.io/example/checkout:1.4.0
