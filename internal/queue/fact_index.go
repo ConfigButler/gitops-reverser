@@ -170,14 +170,10 @@ func NewFactIndex(cfg FactIndexConfig) *FactIndex {
 // Apply stores one delivered entry's facts and wakes whoever was waiting for them. Facts are
 // applied in the order they were delivered, which is what makes the latest tier last-writer-wins
 // mean the last fact APPENDED rather than whichever goroutine reached the map first.
-// A fact ages from when it was APPENDED, not from when this process happened to read it. The two
-// differ by more than a hair in the case that matters most: the follower replays the whole retention
-// window on start, so stamping those entries with the read time would hand every one of them a
-// second full TTL and let a restart resurrect facts the horizon had already retired. A follower that
-// falls behind, or a transport that hands back an entry its own retention should have dropped, lands
-// in the same place. Reading the append time off the entry's position makes the TTL mean the same
-// thing on both transports and on every delivery path, which is what SweepInterval bounding memory
-// rather than correctness depends on.
+// A fact ages from when it was APPENDED, not when this process read it. The follower replays the
+// whole retention window on start, so stamping those with the read time would give each a second
+// full TTL and let a restart resurrect facts the horizon had retired. Reading the append time off
+// the entry's position is what makes SweepInterval bound memory rather than correctness.
 func (i *FactIndex) Apply(ctx context.Context, entry FactEntry) {
 	scope := factScope{route: entry.Key.AuditRoute, groupResource: entry.Key.groupResource()}
 	at := entryAppendTime(entry.ID, time.Now())
@@ -210,19 +206,14 @@ func entryAppendTime(id string, now time.Time) time.Time {
 // returns an AttributionAbsent resolution when nothing matched in time; it never blocks longer than
 // the grace and never returns an error path.
 //
-// The order of the first two statements is the design, not a detail. The waiter is registered
-// BEFORE the index is read, so a fact applied in the gap between the two signals a waiter that is
-// already listening. Checking first and registering after loses exactly that fact — the race the
-// poll loop used to paper over by looking again.
+// The order of the first two statements is the design: the waiter is registered BEFORE the index
+// is read, so a fact applied in the gap signals a waiter that is already listening.
 //
-// A match does not always end the wait. For a REMOVAL, the strongest fact present early is often
-// the object's last WRITE, which says who edited it and nothing about who deleted it — and the
-// watch event reliably beats the audit batch that carries the delete, which is the entire reason
-// the grace window exists. Returning on that first match answered "who deleted this" with "who last
-// edited it", every time an object was touched by someone else before being removed. Such a match
-// is held as a FALLBACK instead: the wait continues for evidence about the deletion itself, and the
-// fallback is returned only when the grace expires without any arriving. Attribution is never lost
-// by waiting — the worst case returns exactly what returning early would have.
+// A match does not always end the wait. For a REMOVAL the strongest early fact is often the
+// object's last WRITE, which says who edited it and nothing about who deleted it. Returning on
+// that answered "who deleted this" with "who last edited it" whenever someone else touched the
+// object first. Such a match is held as a FALLBACK and returned only if the grace expires, so
+// waiting never loses attribution: the worst case is what returning early would have given.
 func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Duration) AuthorResolution {
 	waiter := i.waiters.register(query.waiterKeys())
 	defer i.waiters.unregister(waiter)
@@ -273,14 +264,10 @@ func (i *FactIndex) settle(ctx context.Context, fallback AuthorResolution) Autho
 
 // awaitsBetterEvidence reports whether a match should be held as a fallback rather than returned.
 //
-// It is true for exactly one shape: a REMOVAL matched to a fact that is not about a removal. The
-// sticky removal pointer is about the deletion by construction — only a removal fact is ever filed
-// there — so a match on it ends the wait at once. The
-// per-object tiers are last-writer-wins, so for a collection member — whose delete files one fact
-// about the collection rather than one per object — they hold whoever edited it last. Both
-// collection tiers are about the deletion itself and end the wait, as does a per-object fact whose
-// own verb is a delete: that is the object's own removal fact, which is the strongest thing a
-// removal can hope for.
+// True for exactly one shape: a REMOVAL matched to a fact that is not about a removal. The sticky
+// pointer holds only removal facts, so a match there ends the wait at once. The per-object tiers
+// are last-writer-wins, so for a collection member they hold whoever edited it last. Both
+// collection tiers, and a per-object fact whose own verb is a delete, end the wait.
 func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
 	if q.ExactCapable || resolution.Result == AttributionAbsent {
 		return false
@@ -309,26 +296,18 @@ func isRemovalVerb(verb string) bool {
 //  6. the rv-only escape hatch;
 //  7. the (namespace, name) floor.
 //
-// The name tier is last because it is the weakest per-object evidence here: a name is reused after a
-// delete and recreate, so it can name the author of a previous object that held it, where a uid
-// cannot and an rv identifies one specific write. Nothing that carries a uid or an rv ever reaches
-// it, so ranking it last costs the stronger tiers nothing and only picks up what they cannot express.
+// The name tier is last because a name is reused after a delete and recreate, so it can name the
+// author of a previous object that held it, where a uid cannot. Nothing carrying a uid or rv
+// reaches it, so ranking it last costs the stronger tiers nothing.
 //
-// Precedence is the correctness argument for the collection tiers, and the two of them sit on
-// OPPOSITE sides of the latest tier on purpose.
+// The two collection tiers sit on OPPOSITE sides of the latest tier on purpose. Uid membership
+// outranks it because the two answer different questions: the latest tier says who last WROTE an
+// object, a removal asks who DELETED it, and a collection delete files one fact about the
+// collection, leaving the uid's latest entry holding whoever wrote the object last. Uid membership
+// is the API server stating THIS request deleted THIS object, so nothing weaker may answer first.
 //
-// Uid membership outranks it because the two tiers answer different questions. The latest tier says
-// who last WROTE an object; a removal asks who DELETED it. For a single-object delete those coincide,
-// because the delete files its own fact under that uid — but a collection delete files one fact about
-// the collection, so the uid's latest entry is left holding whoever happened to write the object last.
-// Ranking it above the collection's uid set credited a removal to the previous editor and never
-// reached the actor who actually ran the delete, which is the one thing the deleted expander did get
-// right: it overwrote that entry per object. Uid membership is the API server stating that THIS
-// request deleted THIS object, so nothing weaker may answer ahead of it.
-//
-// Scope matching stays below, because it is the weakest evidence here and can name the wrong human:
-// an unrelated delete by another actor during the same window is claimed by its own fact at tier 3
-// and never reaches tier 4.
+// Scope matching stays below because it can name the wrong human: an unrelated delete by another
+// actor in the same window is claimed by its own fact at tier 3 and never reaches tier 4.
 func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	now := time.Now()
 	cutoff := now.Add(-i.ttl)
@@ -419,16 +398,13 @@ func (i *FactIndex) lookupRemoval(
 			writeFallback, haveWriteFallback = resolution, true
 		}
 	}
-	// The object's own delete fact again, this time keyed by NAME, which is the only key it has when
-	// the API server answered the delete with a Status rather than the object: there is then no uid
-	// to recover from the body (measured in corpus configmap/owner-ref-cascade, where the parent's
-	// delete returns Status, against configmap/finalizer-delete, where it returns the ConfigMap).
+	// The object's own delete fact keyed by NAME, the only key it has when the API server answered
+	// the delete with a Status rather than the object (measured: an owner-ref cascade returns
+	// Status, a finalizer delete returns the ConfigMap).
 	//
-	// It has to be reachable HERE, above the write fallback, or it is not reachable at all for a
-	// removal: returning the uid tier's write fact ends the lookup, and the caller then holds that
-	// fact and waits out the whole grace for delete evidence that was sitting in this tier the entire
-	// time. That wait is not free — it blocks the watch shard's serial goroutine, so every later
-	// event for the type waits behind it.
+	// It must be reachable HERE, above the write fallback, or not at all for a removal: returning
+	// the uid tier's write fact ends the lookup, and the caller then waits out the whole grace for
+	// evidence sitting in this tier. That wait blocks the watch shard's serial goroutine.
 	if query.Name != "" {
 		if fact, found := facts.lookupName(query.Namespace, query.Name, cutoff); found && isRemovalVerb(fact.Verb) {
 			return AuthorResolution{Fact: fact, Result: AttributionName}
