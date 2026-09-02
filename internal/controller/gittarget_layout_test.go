@@ -151,7 +151,7 @@ func TestPublishLayout_AmbiguousNamesTheRoots(t *testing.T) {
 		"with several roots there is no single way the folder is written")
 }
 
-// The controller's half of test/fixtures/layout-corpus/shapes/6-kustomize-base-and-overlays. The corpus asserts
+// The controller's half of the corpus's shapes/6-kustomize-base-and-overlays. The corpus asserts
 // that fixture's GitPathAccepted condition, which is the writer's own; LayoutResolved is projected
 // here, from data no write-path test can produce, so without this the fixture could claim anything
 // about it and stay green.

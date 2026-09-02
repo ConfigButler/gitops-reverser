@@ -25,8 +25,8 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// The layout corpus executes the worked examples under test/fixtures/layout-corpus/. Until this file
-// existed those folders were read by nothing but a human, so every claim in them was
+// The layout corpus executes the worked examples under test/fixtures/layout-corpus/. Until this
+// file existed those folders were read by nothing but a human, so every claim in them was
 // prose: the READMEs said where a document lands and what the commit looks like, and
 // nothing failed when the writer disagreed. Each scenario now seeds a worktree from
 // `repository/`, folds `input/` through the real plan-then-flush path with the flush
@@ -55,9 +55,8 @@ var updateLayoutCorpus = flag.Bool("update", false,
 	"rewrite test/fixtures/layout-corpus expected-*.patch fixtures from the observed diff")
 
 // layoutCorpusRoot is test/fixtures/layout-corpus/ as reached from this package's directory. The
-// fixtures are read
-// in place rather than copied into testdata/: a copy would drift from the documents it
-// illustrates, and the drift would be invisible in review.
+// fixtures are read in place rather than copied into testdata/: a copy would drift from the
+// documents it illustrates, and the drift would be invisible in review.
 const layoutCorpusRoot = layoutfixture.Root
 
 // corpusNamespaces projects a scenario onto the namespace policy the write path takes: the
