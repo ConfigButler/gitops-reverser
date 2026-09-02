@@ -12,5 +12,5 @@ spec:
   allowedBranches:
     - main
   commit:
-    author:
+    committer:
       name: GitOps Reverser
