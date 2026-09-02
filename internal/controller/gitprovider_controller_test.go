@@ -28,8 +28,7 @@ import (
 // two status patches can collide on the optimistic lock. reconcileStatus.requeueAfter then shortens
 // the cadence deliberately: an object whose published status is the WINNER's older answer must be
 // revisited sooner than its converged interval, because the winning write is status-only and every
-// For() filters those out, so nothing else re-enqueues it
-// (docs/design/watch-plane-status-convergence-failures.md, §2).
+// For() filters those out, so nothing else re-enqueues it.
 //
 // Pinning the exact interval made these specs depend on winning that race — they passed locally and
 // failed under CI contention. The flag itself is covered deterministically by

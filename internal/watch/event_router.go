@@ -310,8 +310,7 @@ func (r *EventRouter) handleScopedResyncError(
 		// exactly the load it protects against, and it was lowered once on the assumption that the
 		// render-fidelity condition had made every lost report visible. It has not: this path
 		// skips the RETENTION report too, and lowering it re-blinded that path in the very local
-		// reproduction of Failure B that followed. Lower it again only when B is closed
-		// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+		// reproduction of Failure B that followed. Lower it again only when B is closed.
 		r.Log.Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
 			"gitDest", gitDest.String(), "cell", cell.String())
 		return

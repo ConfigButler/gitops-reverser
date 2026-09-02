@@ -49,7 +49,7 @@ var (
 	// mechanism chose the path (declared / kustomize_root / canonical) and disposition is what
 	// it did with it (new_file / appended).
 	//
-	// It exists because sibling inference was deleted (docs/design/open-asks-priority.md): a
+	// It exists because sibling inference was deleted: a
 	// repository with a hand-authored layout now needs a placement.byType line, and
 	// `source="canonical"` is how its operator learns which type in which target is missing
 	// one, WITHOUT reading the folder. The (GitTarget, type) labels are the whole point — a

@@ -225,7 +225,7 @@ func TestResync_ClusterWideScopeStillSweepsEveryNamespace(t *testing.T) {
 // a full GVR while Matches compared group, resource and namespace only, so two served versions
 // of one resource were two coalescing keys, two deferred-heal keys and two render-fidelity
 // scopes — over one sweep boundary. The version is now data on the scope, and the cell is the
-// identity (docs/design/target-watch-plan.md, "Diff the plan").
+// identity.
 func TestResyncScope_ServedVersionIsDataNotIdentity(t *testing.T) {
 	v1 := ResyncScopeFor(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "team-a")
 	v1beta1 := ResyncScopeFor(

@@ -563,7 +563,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.inflightItems.Add(-1)
 		// Name the producing cell on a drop. A saturated queue is diagnosed from what was
 		// dropped and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
-		// one may be one CELL of one GitTarget (docs/design/data-plane-triggering.md §1).
+		// one may be one CELL of one GitTarget.
 		w.Log.Error(nil, "Event queue full, request dropped",
 			"events", len(request.Events),
 			"mode", request.CommitMode,

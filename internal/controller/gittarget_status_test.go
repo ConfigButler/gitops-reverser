@@ -248,7 +248,7 @@ func TestGitTargetRetentionStatus_ReportsTheEffectiveMode(t *testing.T) {
 //
 // A 61-scope GitTarget produced ~66 reconciles in four seconds; the one that computed
 // RenderMatchesLive=True lost the race, vanished, and left every WatchRule on that target reading
-// "Rechecking" for five minutes (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+// "Rechecking" for five minutes.
 func TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))

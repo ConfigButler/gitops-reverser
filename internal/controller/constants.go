@@ -25,7 +25,6 @@ type WatchManagerInterface interface {
 	// It replaces a ReconcileForRuleChange that did the work inline, on the controller worker
 	// that observed the rule: a discovery call, a namespace list, a full re-projection, and then a
 	// replan of every running GitTarget. A rule edit now replans the ONE target the rule names.
-	// See docs/design/watch-manager-ownership.md.
 	TriggerRuleChange(gitDest types.ResourceReference)
 
 	// TriggerAllRuleChange marks every declared GitTarget. It is the rule-DELETION path only: the

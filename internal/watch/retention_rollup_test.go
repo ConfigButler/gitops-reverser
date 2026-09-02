@@ -264,8 +264,7 @@ func TestRetentionRollup_AnAcceptedReportLogsNothing(t *testing.T) {
 // TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing closes the roll-up's remaining
 // silence. mutateWatchPlane discards the WHOLE mutation when nothing an operator would see moved,
 // so an accepted-and-unchanged report and a report that never arrived are the same silence from
-// outside — which is exactly how far Failure B could be narrowed and no further
-// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+// outside — which is exactly how far Failure B could be narrowed and no further.
 func TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing(t *testing.T) {
 	log, lines := recordingLogger()
 	m := &Manager{Log: log}

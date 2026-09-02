@@ -272,14 +272,14 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	// requeueAfter shortens the cadence when the status write lost a race: the object then holds
 	// the WINNER's older answer and nothing re-enqueues it, because the For() predicate filters
-	// status-only updates by design (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+	// status-only updates by design.
 	requeue := st.requeueAfter(gitTargetRequeue(rd))
 	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
 	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
 	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
 	// request to explain it. This is the only place that publishes the axis, so it is the only
 	// place that can say what it published and how long it intends to wait before saying anything
-	// again (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+	// again.
 	log.Info("GitTarget status published",
 		"writeLost", st.writeLost(),
 		"gitTarget", target.Namespace+"/"+target.Name,
@@ -574,7 +574,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 	// target has been quiet for its settle window, so this reconcile has no result to wait for —
 	// it reads back the LAST pass's outcome, which is the honest thing to project: the reconcile
 	// has never observed its own effect, it previously observed an intermediate state that merely
-	// looked more immediate. See docs/design/watch-manager-ownership.md.
+	// looked more immediate.
 	manager.DeclareForGitTarget(
 		gitDest,
 		target.SourceCluster(),

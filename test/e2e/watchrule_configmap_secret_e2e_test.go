@@ -600,7 +600,6 @@ spec:
 	// in internal/watch/rule_change_snapshot_test.go; this spec locks the
 	// observable in at the user-visible layer so a future revamp of the
 	// reconcile trigger logic can't silently regress it.
-	//
 	It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", func() {
 		gitProviderName := "gitprovider-normal"
 		watchRuleName := "watchrule-backfill-test"

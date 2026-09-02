@@ -13,9 +13,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This file is the source-cluster corner for multi-cluster author attribution
-// (docs/finished/multi-cluster-author-attribution.md): a GitTarget names the cluster it mirrors
-// FROM by referencing a cluster-scoped ClusterProvider (spec.clusterProviderRef). The
+// This file is the source-cluster corner for multi-cluster author attribution: a GitTarget names
+// the cluster it mirrors FROM by referencing a cluster-scoped ClusterProvider
+// (spec.clusterProviderRef). The
 // ClusterProvider is the home for that cluster's kubeconfig credential (spec.kubeConfig, a Flux
 // meta.KubeConfigReference resolved from the operator namespace), namespace-access authorization,
 // and connectivity status.

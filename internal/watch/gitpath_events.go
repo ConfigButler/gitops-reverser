@@ -48,7 +48,7 @@ func (m *Manager) enqueueGitTargetReconcile(gitDest types.ResourceReference) {
 		// stream transitions off it, so a full buffer is not routine -- and the consequence is
 		// that a GitTarget whose data plane just converged is never told to republish, leaving a
 		// stale condition standing until its periodic requeue, which for a CONVERGED target is
-		// five minutes (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+		// five minutes.
 		//
 		// The comment above says a dropped event is harmless because a reconcile is already
 		// pending. That is true only when the buffer is full BECAUSE this target is already

@@ -86,8 +86,7 @@ type reconcileStatus struct {
 
 // writeLost reports whether the last commit() had its status write beaten by a concurrent one.
 // A reconcile whose status never landed must come back soon whatever it computed, or the object
-// keeps the loser's answer until its periodic requeue
-// (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+// keeps the loser's answer until its periodic requeue.
 func (s *reconcileStatus) writeLost() bool { return s.writeLostToRace }
 
 // requeueAfter is the cadence a reconcile should come back on, shortened to the settle interval
@@ -178,7 +177,7 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 	// That is Failure A: a 61-scope target produced ~66 reconciles in four seconds, one per scope
 	// report; the last of them computed RenderMatchesLive=True, lost the race, was silently
 	// dropped, and left every WatchRule on that target reading "Rechecking" until the five-minute
-	// requeue (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+	// requeue.
 	//
 	// So the loss is RECORDED and the caller asks writeLost() before choosing its requeue: a
 	// reconcile whose status never landed must come back soon, whatever it computed.

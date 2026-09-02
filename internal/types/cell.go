@@ -17,8 +17,7 @@ import (
 // actually compared them — the sweep's Matches — ignored the version, so two cells differing
 // only in served version were distinct keys but one sweep boundary. A key that does not
 // round-trip to the scope it sweeps under is the one class of error that deletes user data,
-// so the version was removed from the identity rather than added to the comparison
-// (docs/design/target-watch-plan.md, "Diff the plan").
+// so the version was removed from the identity rather than added to the comparison.
 //
 // This matches the identity Git already uses: [ResourceIdentifier.ToGitPath] is versionless,
 // so a storage-version bump moves no file. A cell whose identity changed with the served
