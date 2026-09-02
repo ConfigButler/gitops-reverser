@@ -25,7 +25,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// The layout corpus executes the worked examples under docs/layout/. Until this file
+// The layout corpus executes the worked examples under test/fixtures/layout-corpus/. Until this file
 // existed those folders were read by nothing but a human, so every claim in them was
 // prose: the READMEs said where a document lands and what the commit looks like, and
 // nothing failed when the writer disagreed. Each scenario now seeds a worktree from
@@ -34,7 +34,7 @@ import (
 // `expected-*.patch`.
 //
 // Three conventions here are load-bearing and are stated in
-// docs/layout/shapes/README.md as well:
+// test/fixtures/layout-corpus/shapes/README.md as well:
 //
 //   - A scenario describing behavior that is not built yet is written NOW and skipped, naming the
 //     track that unskips it. The corpus is the definition of done for that track: PR 2 is
@@ -52,9 +52,10 @@ import (
 // Run with -update to rewrite the expected patches from the observed diff.
 
 var updateLayoutCorpus = flag.Bool("update", false,
-	"rewrite docs/layout expected-*.patch fixtures from the observed diff")
+	"rewrite test/fixtures/layout-corpus expected-*.patch fixtures from the observed diff")
 
-// layoutCorpusRoot is docs/layout/ as reached from this package's directory. The fixtures are read
+// layoutCorpusRoot is test/fixtures/layout-corpus/ as reached from this package's directory. The
+// fixtures are read
 // in place rather than copied into testdata/: a copy would drift from the documents it
 // illustrates, and the drift would be invisible in review.
 const layoutCorpusRoot = layoutfixture.Root
@@ -70,7 +71,7 @@ func corpusNamespaces(target v1alpha3.GitTarget, sources []string, wildcard bool
 // it drives the write, which input object arrives, and what Git is expected to look like
 // afterwards.
 type corpusScenario struct {
-	// dir is the fixture folder, relative to docs/layout.
+	// dir is the fixture folder, relative to test/fixtures/layout-corpus.
 	dir string
 	// config names the GitTarget under config/; folders with one target may omit it.
 	config string
@@ -124,8 +125,8 @@ func (s corpusScenario) name() string {
 }
 
 // layoutCorpus is the whole corpus. The eight folder shapes are the cross-product of
-// docs/layout/shapes/README.md; the two specific examples are the Argo CD and Flux
-// repositories of docs/layout/specific-examples/README.md.
+// test/fixtures/layout-corpus/shapes/README.md; the two specific examples are the Argo CD and Flux
+// repositories of test/fixtures/layout-corpus/specific-examples/README.md.
 func layoutCorpus() []corpusScenario {
 	return []corpusScenario{
 		{
@@ -224,7 +225,7 @@ func layoutCorpus() []corpusScenario {
 	}
 }
 
-// TestLayoutCorpus runs every scenario in docs/layout/ against the real write path.
+// TestLayoutCorpus runs every scenario in test/fixtures/layout-corpus/ against the real write path.
 func TestLayoutCorpus(t *testing.T) {
 	for _, sc := range layoutCorpus() {
 		t.Run(sc.name(), func(t *testing.T) {

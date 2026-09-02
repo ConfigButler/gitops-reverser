@@ -37,16 +37,16 @@ Two ways out, and this scenario takes the first:
 
 - **Keep the folder single-namespace**, which a template without `{namespace}` guarantees by
   construction — and which the
-  [one-source-namespace rule](../../model.md#the-second-guard-one-source-namespace-and-this-one-refuses)
+  [one-source-namespace rule](../../../../../docs/layout/model.md#the-second-guard-one-source-namespace-and-this-one-refuses)
   turns from construction into enforcement: an explicit `serializeNamespace: false` refuses the
   second source namespace rather than writing the merged folder described above.
 - **Nested roots, one per namespace subfolder**, each with its own `kustomization.yaml` carrying its
-  own `namespace:`. Fact 2 in [`../../model.md`](../../model.md) measured that this renders
+  own `namespace:`. Fact 2 in [`../../model.md`](../../../../../docs/layout/model.md) measured that this renders
   correctly, and inference already resolves it per document. That route requires leaving
   `serializeNamespace` **unset** rather than `false`: the folder is genuinely non-uniform, which is
   what unset is for, and the rule above refuses the explicit claim precisely because it would be a
   false one. Nothing creates those roots today, and whether `useKustomize` should is
-  [an open question](../../model.md#open-questions), deliberately deferred.
+  [an open question](../../../../../docs/layout/model.md#open-questions), deliberately deferred.
 
 ## Scenario contract
 
@@ -62,10 +62,10 @@ and the configuration that supplies its namespace is a Flux `targetNamespace` or
 `destination.namespace` in another cluster. Two deployers may point at this folder and land it in
 two different namespaces, both correctly — being unbound is what the shape is for, so nothing here
 reports on it. See
-[`model.md`](../../model.md#why-false-needs-no-guard).
+[`model.md`](../../../../../docs/layout/model.md#why-false-needs-no-guard).
 
 The rule that *is* enforced is on the inside of the folder:
-[one source namespace](../../model.md#the-second-guard-one-source-namespace-and-this-one-refuses),
+[one source namespace](../../../../../docs/layout/model.md#the-second-guard-one-source-namespace-and-this-one-refuses),
 where two namespaces would collapse onto one namespace-free document. That loss is visible in the
 folder the operator owns, so it is refused.
 

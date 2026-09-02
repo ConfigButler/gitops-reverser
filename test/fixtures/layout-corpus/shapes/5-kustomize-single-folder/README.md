@@ -63,7 +63,7 @@ is harder to see and impossible for an installer to override. The folder is a po
 Flux `targetNamespace` or an Argo `destination.namespace` places it, exactly as it places
 [shape 2](../2-flat-namespace-free/README.md). The full argument, and the four other answers that
 were considered, is in
-[`../../../design/created-root-namespace.md`](../../../design/created-root-namespace.md).
+[`../../../design/created-root-namespace.md`](../../../../../docs/design/created-root-namespace.md).
 
 What the flag buys here is *structure*: an empty folder becomes a kustomize folder with the first
 commit, and every later document joins the same root instead of scattering.

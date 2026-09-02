@@ -171,8 +171,8 @@ half to two weeks.
 
 The corpus is the one item every other item benefits from, and it is why PR 1 leads rather than
 merely happening to be first. The eighteen fixture folders under
-[`../layout/shapes/`](../layout/shapes/README.md) and
-[`../layout/specific-examples/`](../layout/specific-examples/README.md)
+[`../layout/shapes/`](../../test/fixtures/layout-corpus/shapes/README.md) and
+[`../layout/specific-examples/`](../../test/fixtures/layout-corpus/specific-examples/README.md)
 are read today by **nothing but a human**: no Go file references either directory. Wiring them up
 converts every later review from *"does this prose hold together"* into *"does the diff match the
 patch"*.

@@ -45,13 +45,13 @@ Two details make this more than a convenience, and both are visible in the code 
 
 - **`overlayAuthorKustomization` fires only in this exact situation** — the matched document is out
   of the write jail *and* the overlay has a supported render root of its own
-  ([`plan_flush.go`](../../../../internal/git/plan_flush.go)). For a self-contained folder or an
+  ([`plan_flush.go`](../../../../../internal/git/plan_flush.go)). For a self-contained folder or an
   in-jail document it returns `""`, and the source file is edited directly, because there is nothing
   to route around.
 - **The authored entry is put to the re-render oracle before it can commit.** The proposal is not
   trusted because it looks reasonable: the folder is rebuilt with the entry applied, and the result
   must render to the live object. A proposal that over-reaches is refused there rather than written
-  ([`OverrideEdit.Create`](../../../../internal/manifestanalyzer/overrides_projection.go)).
+  ([`OverrideEdit.Create`](../../../../../internal/manifestanalyzer/overrides_projection.go)).
 
 So the change lands as an **environment-specific declaration**. `test` and `acceptance` still render
 `1.4.0`, which is the property the base/overlay split exists for, and which a write into the base
@@ -93,11 +93,11 @@ reason code.
   better than committing half of it — but one base-owned field change stalls everything the target
   was about to write.
 - **It is reported once, on the GitTarget, and not per edit.**
-  [`gitPathRefusalReason`](../../../../internal/watch/event_router.go) maps a refusal made purely of
+  [`gitPathRefusalReason`](../../../../../internal/watch/event_router.go) maps a refusal made purely of
   write-boundary kinds to `WriteBoundaryRefused` — distinct from the umbrella `UnsupportedContent`,
   because the folder is not malformed; the edit had nowhere honest to land. There is **no per-edit
   record**: `FullyReflected` and the unreflected set are designed and unbuilt in
-  [`unreflectable-edits-and-write-gating.md`](../../../design/support-boundary/unreflectable-edits-and-write-gating.md).
+  [`unreflectable-edits-and-write-gating.md`](../../../../../docs/design/support-boundary/unreflectable-edits-and-write-gating.md).
 - **Telling anyone is its own mechanism.** The resync path returns the refusal on its result channel;
   the live-event path has none, because a commit window is finalized on a timer, so the branch worker
   reports it through a `GitPathRefusalReporter` hook the watch manager installs. Without that hook
@@ -118,7 +118,7 @@ declaration that was not there before, and it proves the result by re-rendering.
 
 The route that would extend part two — authoring a narrow strategic-merge patch into the overlay and
 proving the rebuild changes that field and nothing else — is designed and unshipped in
-[`patch-authoring.md`](../../../design/support-boundary/patch-authoring.md). Until it lands, this
+[`patch-authoring.md`](../../../../../docs/design/support-boundary/patch-authoring.md). Until it lands, this
 scenario is the line: **`images:` and `replicas:` become overlay declarations, everything else
 inherited is refused.**
 

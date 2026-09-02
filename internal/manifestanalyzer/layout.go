@@ -31,7 +31,7 @@ const (
 	LayoutSingleKustomization LayoutReason = "SingleKustomization"
 	// LayoutAmbiguous is a folder covering more than one render root. Placement declines to
 	// pick one rather than guessing, so the folder is not a write partition: point the target
-	// at a leaf instead. See docs/layout/shapes/README.md § "Why only a leaf can be a
+	// at a leaf instead. See test/fixtures/layout-corpus/shapes/README.md § "Why only a leaf can be a
 	// kustomize target".
 	LayoutAmbiguous LayoutReason = "Ambiguous"
 	// LayoutNone is a folder with no supported kustomization at all. New documents land at a
@@ -234,7 +234,7 @@ func AmbiguousLayoutRefusal(resolution LayoutResolution, specPath string) []Acce
 		// scope and path — and misfiling it would send the one actionable instruction we have
 		// ("point the GitTarget at one of them") to someone who does not own the object it
 		// names. It is solvable and it is not a support boundary. See
-		// docs/layout/shapes/README.md, "Why only a leaf can be a kustomize target".
+		// test/fixtures/layout-corpus/shapes/README.md, "Why only a leaf can be a kustomize target".
 		Solvable: true,
 		Actor:    ActorPlatformOperator,
 	}}

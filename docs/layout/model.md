@@ -7,10 +7,12 @@
 > no longer holds; why it stopped holding is the first section, because a reversal is worth more than
 > a quiet edit.
 >
-> Concrete repository folders and matching configurations live in
-> [`specific-examples/README.md`](specific-examples/README.md), for the Argo CD and Flux cases, and in
-> [`shapes/README.md`](shapes/README.md), which is the cross-product of folder shapes with the
-> decision flow drawn out and an empty-folder column for every one of them.
+> Concrete repository folders and matching configurations live in the executable layout corpus at
+> [`test/fixtures/layout-corpus/`](../../test/fixtures/layout-corpus/README.md): its
+> [`specific-examples/`](../../test/fixtures/layout-corpus/specific-examples/README.md) hold the Argo
+> CD and Flux cases, and its
+> [`shapes/`](../../test/fixtures/layout-corpus/shapes/README.md) are the cross-product of folder
+> shapes, with the decision flow drawn out and an empty-folder column for every one of them.
 
 Placement today is a ladder of four rungs, three of which are path templates and one of which is not:
 
@@ -198,8 +200,8 @@ is for. That is also why unset cannot be spelled `false`.
 `serializeNamespace: false` is not checked against the folder, and it cannot be: **the supplier of
 the namespace lives outside the repository, and there may not be a single one.**
 
-For a raw namespace-free folder — [shape 2](shapes/2-flat-namespace-free/README.md) and
-[shape 4](shapes/4-tree-namespace-free/README.md) — the supplier is a Flux
+For a raw namespace-free folder — [shape 2](../../test/fixtures/layout-corpus/shapes/2-flat-namespace-free/README.md) and
+[shape 4](../../test/fixtures/layout-corpus/shapes/4-tree-namespace-free/README.md) — the supplier is a Flux
 `Kustomization.spec.targetNamespace` or an Argo `Application.spec.destination.namespace`, in a
 different cluster from the repository. Being unbound that way **is the point of the shape**: anyone
 may point a deployer at that folder and land it wherever they choose, and two deployers may
@@ -470,7 +472,7 @@ Neither PR is breaking, so neither waits for a coordinated consumer bump. What i
 [`gittarget-api-wave.md`](../design/gittarget-api-wave.md).
 
 **PR 1 is the corpus, and it is the reason the rest is reviewable.**
-[`shapes/README.md`](shapes/README.md) already has the shape of a golden-file suite —
+[`shapes/README.md`](../../test/fixtures/layout-corpus/shapes/README.md) already has the shape of a golden-file suite —
 `repository/`, `config/`, `input/`, `expected-*.patch` — and is read by nobody but a human. Wiring it
 up converts the PR 2 review from "does this prose hold together" into "does the diff match the
 patch". The seam exists: `newWorktreeForTest` and `flushEventsToWorktree` in

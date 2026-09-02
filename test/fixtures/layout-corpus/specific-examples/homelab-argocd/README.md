@@ -58,7 +58,7 @@ worth naming: it identifies the Argo CD Application that owns the live object, s
 makes the document claim ownership on behalf of another Application and hard-fails that
 Application's sync. It is denied by exact key rather than by an `argocd.argoproj.io/` prefix strip,
 because the rest of that prefix is user data. See
-[the tracking-id landmine](../../../spec/e2e-bi-directional-corner.md#the-tracking-id-landmine).
+[the tracking-id landmine](../../../../../docs/spec/e2e-bi-directional-corner.md#the-tracking-id-landmine).
 
 ## Scenario contract
 
@@ -89,7 +89,7 @@ For a field that both the Argo CD UI and Git can change, the Application's autom
 `selfHeal: false`. The Git host also sends a push webhook to Argo CD so a commit is reconciled back
 to the cluster. These are the two settings that let one declaration have a live editing path and a
 Git reconciliation path; see
-[Argo CD and bi-directional GitOps](../../../design/support-boundary/argocd-bi-directional.md).
+[Argo CD and bi-directional GitOps](../../../../../docs/design/support-boundary/argocd-bi-directional.md).
 
 This is a declaration-editing scenario. It does not reverse Argo-generated application resources,
 nor does it reverse a Helm chart rendered by an Application.

@@ -14,7 +14,7 @@ resulting Git change without asking GitOps Reverser to reverse a chart.
 `gotk-components.yaml`, `gotk-sync.yaml`, and a `kustomization.yaml` listing both. An operator that
 adds `resources:` entries there is a second writer in a folder Flux's own sync loop reconciles,
 which is the two-writers-one-folder failure the
-[support contract](../../../design/support-boundary/support-contract.md) exists to prevent. The
+[support contract](../../../../../docs/design/support-boundary/support-contract.md) exists to prevent. The
 targets below point somewhere else, and the bootstrap directory appears in the tree only to be left
 alone.
 
@@ -122,7 +122,7 @@ The configuration captures the layer a person would edit in Git:
 
 This is Flux declaration editing, not Helm inversion. A chart folder is skipped as a unit, and the
 operator never turns a rendered Deployment edit into a speculative values change. The current
-[support contract](../../../design/support-boundary/support-contract.md) owns that boundary.
+[support contract](../../../../../docs/design/support-boundary/support-contract.md) owns that boundary.
 
 A free-standing values file is a separate planned projection, so it is absent from this first
 scenario. Inline `HelmRelease.spec.values` are KRM and stay inside the declaration surface.

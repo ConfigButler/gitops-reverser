@@ -1,10 +1,10 @@
 # Specific examples: two ecosystems, and the shared prerequisites
 
-> **design**: worked scenarios for the layout model in [`../model.md`](../model.md). The
+> **design**: worked scenarios for the layout model in [`../model.md`](../../../../docs/layout/model.md). The
 > `GitTarget` files use `spec.serializeNamespace` and `spec.placement.useKustomize`, and both are
 > shipped fields.
 > Date: 2026-08-31.
-> Index: [`../../INDEX.md`](../../INDEX.md)
+> Index: [`../../INDEX.md`](../../../../docs/INDEX.md)
 
 [`../shapes/`](../shapes/README.md) is the cross-product: every folder shape a repository can have,
 with the same live object written into all of them, so the only difference between two folders is
@@ -52,6 +52,6 @@ The same as `shapes/`, so one harness reads both:
   written to Git.
 - `expected-*.patch` — the exact change proposed for Git, without `index` lines.
 
-[`../model.md`](../model.md#how-it-gets-built) turns both folders into an executable corpus in its
-first PR; [`../../design/build-order.md`](../../design/build-order.md) says when, and what the
+[`../model.md`](../../../../docs/layout/model.md#how-it-gets-built) turns both folders into an executable corpus in its
+first PR; [`../../design/build-order.md`](../../../../docs/design/build-order.md) says when, and what the
 harness seam already is.

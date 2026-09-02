@@ -20,7 +20,7 @@ clusters/home/
 ```
 
 Two conventions in those paths come from the
-[canonical grammar](../../new-file-placement-rules.md#template-variables): **the core group collapses
+[canonical grammar](../../../../../docs/layout/new-file-placement-rules.md#template-variables): **the core group collapses
 to nothing**, so `configmaps` sits directly under the namespace segment where
 `rbac.authorization.k8s.io` appears in the ClusterRole path; and **`_cluster` stands in for the
 namespace segment** of a cluster-scoped resource. An underscore is invalid in a namespace name, so

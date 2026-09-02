@@ -24,7 +24,7 @@ Three facts, because the first draft of this argument got them wrong:
 
 - **A `kustomization.yaml` with no `namespace:` is ordinary.** It is what a kustomize *base* is.
   Three already ship in our own corpus, and
-  [shape 6's](../layout/shapes/6-kustomize-base-and-overlays/repository/apps/checkout/base/kustomization.yaml)
+  [shape 6's](../../test/fixtures/layout-corpus/shapes/6-kustomize-base-and-overlays/repository/apps/checkout/base/kustomization.yaml)
   carries the comment "No namespace: the base is written to be deployable into any of them".
 - **Both installers supply one downstream.** Flux's `Kustomization.spec.targetNamespace` and Argo
   CD's `Application.spec.destination.namespace` each apply over the built output, so a
@@ -73,7 +73,7 @@ it really is being relocated: relaxing that would hide the exact failure the gat
 | `false` | sets none, or there is no root | **ignored**, and every other field still compared |
 
 The third row is not a weakening; it is the removal of an inconsistency. A namespace-free flat
-folder ([shape 2](../layout/shapes/2-flat-namespace-free/README.md)) is never namespace-checked
+folder ([shape 2](../../test/fixtures/layout-corpus/shapes/2-flat-namespace-free/README.md)) is never namespace-checked
 today, because the gate only arms when a flush touched a kustomization. The same declaration got a
 different answer in a kustomize folder purely because a root file existed. Now both answer the same
 way.
@@ -105,5 +105,5 @@ behavior, and this is not a new refusal for folders that never asked for one.
 [`../layout/model.md`](../layout/model.md) is the layout model and stays the specification; this
 page is only the argument behind one of its sentences. The behavior a user reads is in
 [`../configuration.md`](../configuration.md), and
-[shape 5](../layout/shapes/5-kustomize-single-folder/README.md) is the worked example the corpus
+[shape 5](../../test/fixtures/layout-corpus/shapes/5-kustomize-single-folder/README.md) is the worked example the corpus
 executes.

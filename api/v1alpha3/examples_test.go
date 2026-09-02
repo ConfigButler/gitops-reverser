@@ -13,11 +13,11 @@ import (
 )
 
 // exampleRoots are the folders whose manifests a reader is invited to copy: the samples, the
-// worked examples under docs/layout, the playground, and the e2e setup fixtures that are checked
+// worked examples in the layout corpus, the playground, and the e2e setup fixtures that are checked
 // in as YAML rather than rendered from a template.
 var exampleRoots = []string{
 	"../../config/samples",
-	"../../docs/layout",
+	"../../test/fixtures/layout-corpus",
 	"../../test/playground",
 	"../../test/e2e/setup",
 }

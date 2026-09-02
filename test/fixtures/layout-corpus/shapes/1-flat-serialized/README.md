@@ -23,7 +23,7 @@ mirror/prod/
 identity path, which is a tree. `"{namespace}-{name}.yaml"` is what asks for one directory. The
 `{namespace}` prefix is what keeps two namespaces from colliding on a common name like `config`;
 without it, `shop/config` and `billing/config` resolve to one path and
-[append into a multi-document file](../../new-file-placement-rules.md) rather than overwrite — legal,
+[append into a multi-document file](../../../../../docs/layout/new-file-placement-rules.md) rather than overwrite — legal,
 shipped, and probably not what the folder wanted.
 
 **`serializeNamespace: true` matches what inference would do here anyway.** No kustomization governs

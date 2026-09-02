@@ -1,11 +1,11 @@
 # The folder shapes, and the configuration each one needs
 
 > **design**: a specification by example for the layout model in
-> [`../model.md`](../model.md). Both booleans shown here, `spec.serializeNamespace` and
+> [`../model.md`](../../../../docs/layout/model.md). Both booleans shown here, `spec.serializeNamespace` and
 > `spec.placement.useKustomize`, are shipped fields, and every folder below is executed against
 > the write path by the layout corpus.
 > Date: 2026-08-31.
-> Index: [`../../INDEX.md`](../../INDEX.md)
+> Index: [`../../INDEX.md`](../../../../docs/INDEX.md)
 
 [`../specific-examples/`](../specific-examples/README.md) answers *"what does this look like in
 Argo CD, or in Flux?"* This folder answers the question underneath it: **what
@@ -132,7 +132,7 @@ writes the `kustomization.yaml`, adopts whatever is already there into its `reso
 `metadata.namespace` out of every document it places. The created root carries no `namespace:`
 either — the artifact does not encode its deployment namespace, and the installer supplies it, the
 same way it does for shapes 2 and 4 (see
-[`../../design/created-root-namespace.md`](../../design/created-root-namespace.md)).
+[`../../design/created-root-namespace.md`](../../../../docs/design/created-root-namespace.md)).
 [`5-kustomize-single-folder`](5-kustomize-single-folder/README.md) shows both halves — the same
 folder adopted and created — and they differ by two lines of spec.
 
@@ -148,7 +148,7 @@ to promise something that is not theirs to promise and that nothing could check.
 draws instead is **guard what is inside the folder, say nothing about what happens after it
 leaves** — which is why the one-source-namespace rule below is enforced and this one does not exist.
 See
-[`model.md`](../model.md#why-false-needs-no-guard).
+[`model.md`](../../../../docs/layout/model.md#why-false-needs-no-guard).
 
 **Shapes 6 and 7 cannot be bootstrapped from empty, and the reason is not a missing flag.** An
 overlay is not a root plus a namespace; it is a root whose `resources:` names a *relative path to a
@@ -207,7 +207,7 @@ worth seeing that they agree rather than that one of them is the rule.
   fires, and L1 is what keeps the base read-only**. The two rules cover different targets rather
   than doubling up.
 - **A target is a write partition (Option A in the
-  [granularity decision](../../design/support-boundary/gittarget-granularity-and-cross-environment-edits.md)).**
+  [granularity decision](../../../../docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md)).**
   One overlay = one environment = one watch scope = one write scope, so that authorization, audit and
   review line up with the environment boundary. "Manage the app as one thing" is a grouping concern
   for a layer above the operator, not a wider target.
@@ -248,7 +248,7 @@ works both through on its own fixtures.
 source namespace, and the second is refused.** The argument — why
 no third boolean, why explicit `false` only, why `useKustomize: true` makes it mandatory rather than
 optional, and where the refusal lives — is in
-[`model.md`](../model.md#the-second-guard-one-source-namespace-and-this-one-refuses) and is not
+[`model.md`](../../../../docs/layout/model.md#the-second-guard-one-source-namespace-and-this-one-refuses) and is not
 repeated here.
 
 What belongs here is what it means **per shape**:
@@ -296,7 +296,7 @@ Three things follow, and only the first is obvious:
 - **In a `KustomizeRoot` folder deleting the manifest is only half the delete.** An entry still
   naming a file that does not exist makes `kustomize build` fail, so the `resources:` entry goes in
   the same commit
-  ([`dropKustomizationResource`](../../../internal/git/plan_flush.go)). If the entry cannot be removed,
+  ([`dropKustomizationResource`](../../../../internal/git/plan_flush.go)). If the entry cannot be removed,
   nothing is committed: the re-render precondition rebuilds the tree and refuses rather than
   pushing a folder that does not build.
 - **In a `KustomizeOverlay`, deleting an object the overlay INHERITS deletes nothing.** The document
@@ -315,18 +315,18 @@ lets a resync infer one. The table describes what happens once a delete is allow
 read the commits it makes: the file removals, the `resources:` edits and the `$patch: delete` files
 are all right there in a diff. That is the preview, and it is why neither `status.placement` nor
 `spec.suspend` tries to be one — see
-[`model.md`](../model.md#previewing-a-target-point-it-at-a-scratch-branch).
+[`model.md`](../../../../docs/layout/model.md#previewing-a-target-point-it-at-a-scratch-branch).
 
 ## What this set does not cover
 
 - **Secrets and encryption.** `{sensitiveSuffix}`, the SOPS naming convention, and the rule that a
   sensitive resource is never appended into an existing document are specified in
-  [`../new-file-placement-rules.md`](../new-file-placement-rules.md) and are orthogonal to the two
+  [`../new-file-placement-rules.md`](../../../../docs/layout/new-file-placement-rules.md) and are orthogonal to the two
   flags.
 - **Collisions.** Two objects resolving to one path append into a multi-document file; that is
   decided and shipped, and shape 1's `"{namespace}-{name}.yaml"` reaches it whenever a ConfigMap and
   a Service share a name.
-- **A multi-namespace folder with namespace-free documents.** Fact 2 in [`../model.md`](../model.md)
+- **A multi-namespace folder with namespace-free documents.** Fact 2 in [`../model.md`](../../../../docs/layout/model.md)
   proves nested roots make it renderable, and nobody has asked for it. Shape 4 is deliberately
   single-namespace, and the deferred question is whether `useKustomize` should ever create a nested
   root per directory.

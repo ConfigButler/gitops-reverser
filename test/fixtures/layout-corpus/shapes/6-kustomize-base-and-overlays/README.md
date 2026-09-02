@@ -74,7 +74,7 @@ and **the base is editable**, because neither write-boundary layer objects:
 So a write here lands in the shared base and reaches `test`, `acceptance` and `prod` on their next
 sync. That is not a bug in the boundary — it is the boundary working exactly as specified, on a
 `spec.path` that says "the shared default is mine". It is also, in effect,
-[Option C of the granularity decision](../../../design/support-boundary/gittarget-granularity-and-cross-environment-edits.md)
+[Option C of the granularity decision](../../../../../docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md)
 being exercised today: edit the shared default, reach every overlay that does not override that
 field. That option was decided as a **later, narrower verb** — for shared defaults, never as the
 answer to "edit every environment" — and mounting the base is the unguarded version of it.
@@ -113,7 +113,7 @@ The third row is the one that surprises people, and it is deliberate: the operat
 silently invent an overlay override for a field it has no proven way to express. Doing that safely —
 authoring a narrow strategic-merge patch into the overlay and proving the rebuild changes that field
 and nothing else — is designed and unshipped in
-[`patch-authoring.md`](../../../design/support-boundary/patch-authoring.md). Until it lands, "add a
+[`patch-authoring.md`](../../../../../docs/design/support-boundary/patch-authoring.md). Until it lands, "add a
 file to the overlay" works and "change an inherited field" refuses unless it is an image or a replica
 count.
 

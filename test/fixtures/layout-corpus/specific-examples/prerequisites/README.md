@@ -37,4 +37,4 @@ whether those namespaces' `GitTarget`s may look outside their own.
 This example names a credentials Secret and `known_hosts` ConfigMap but does not include either
 object. Repository credentials and SSH host keys are operational inputs, not a layout convention.
 The current setup contract is in
-[GitProvider configuration](../../../configuration.md#gitprovider).
+[GitProvider configuration](../../../../../docs/configuration.md#gitprovider).

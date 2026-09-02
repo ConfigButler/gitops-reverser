@@ -59,7 +59,7 @@ rather than specifying, which is why this one is here.
 
 Changing that annotation for every environment at once is a **Git-level operation above the
 operator** — the
-[cross-environment editing decision](../../../design/support-boundary/gittarget-granularity-and-cross-environment-edits.md)
+[cross-environment editing decision](../../../../../docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md)
 settles that promotion and factor-into-base are verbs for the layer above, not a reason to widen a
 target across environments.
 
@@ -80,4 +80,4 @@ mistake, and the deeper one reaches more environments.
 invent `resources: [../../layers/observability]`, and it certainly cannot invent the layer. A layered
 repository is scaffolded by a template or by hand, and GitOps Reverser adopts it afterwards. To see
 what that adoption would write before committing to it, point a `GitTarget` at a scratch branch and
-read the commits ([`model.md`](../../model.md#previewing-a-target-point-it-at-a-scratch-branch)).
+read the commits ([`model.md`](../../../../../docs/layout/model.md#previewing-a-target-point-it-at-a-scratch-branch)).
