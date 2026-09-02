@@ -51,29 +51,48 @@ target had an `allowedSourceNamespaces` list will start mirroring **every namesp
 can read** unless you either enumerate those namespaces in `rules[].sourceNamespace` or tighten the
 credential's RBAC to match the list you had.
 
-**3. Upgrade the controller and CRDs.** Mirrors do **not** pause. Every removed field is simply
-pruned, so a target that has not been migrated yet keeps writing — under the new defaults, and for a
-`"*"` rule under the new meaning. That is the window step 2 exists to make short: go straight to
-step 4.
+**3. Upgrade the controller and CRDs.** What happens next depends on which field a given object was
+carrying, and the two outcomes are opposites:
 
-**4. Re-apply your objects, `GitProvider` first, then `ClusterProvider` and `GitTarget` together.**
-Provider first because a `GitTarget` reads its commit settings from it; the other two are independent
-of each other. Your manifests should already carry the new spellings from steps 1 and 2.
+- A target whose **`ClusterProvider`** policy was pruned **stops writing**. An absent `accessFrom` is
+  deny-by-default, so the provider admits no namespace and every `GitTarget` through it goes
+  `Validated=False`. Same for a pruned `allowSourceNamespaceOverride: true`, which stalls the
+  cross-namespace `WatchRule`s it used to permit. Loud, and it clears in step 4.
+- A target carrying a pruned **`GitTarget`** or **`GitProvider`** field **keeps writing**, under the
+  new defaults — and for a `"*"` rule, under the new meaning. Nothing stalls and nothing warns.
 
-**5. Confirm the new fields took effect**, which matters more than a green condition here: a pruned
-field and a correctly-migrated one both leave the object `Ready=True`, so read the values back rather
-than the status.
+The second is the one to hurry for, because it is the one that is not telling you anything. Go
+straight to step 4.
+
+**4. Re-apply every migrated object in one sync.** There is no ordering requirement between them,
+so do not stage it: a single apply makes the stall in step 3 one reconcile long.
+
+Ordering is unnecessary because nothing here reads its migrated value from another object. Each
+`GitTarget` now carries its own `spec.commit`, read from the target at write time rather than from
+the `GitProvider` — that is the whole point of the move — so a provider applied first buys a target
+nothing. What a `ClusterProvider` *does* control is whether its targets are admitted at all, which
+is why applying it alongside them is what lifts the stall.
+
+Your manifests should already carry the new spellings from steps 1 and 2.
+
+**5. Confirm the new fields took effect**, which for half the cases matters more than a green
+condition. A pruned `ClusterProvider` policy shows up in the status, so `Ready` catches it. A pruned
+`GitTarget` or `GitProvider` field does not: the object is `Ready=True` either way, and only reading
+the value back distinguishes migrated from silently defaulted.
 
 ```bash
 kubectl get clusterproviders -o custom-columns=\
 NAME:.metadata.name,ACCESS_FROM:.spec.accessFrom,ALLOW_ANY:.spec.allowAnySourceNamespace
 
+# Read back the whole spec.commit, not just the window: a pruned message template is otherwise
+# invisible, since a target with no templates commits perfectly happily under the built-in ones.
 kubectl get gittargets -A -o custom-columns=\
-NS:.metadata.namespace,NAME:.metadata.name,WINDOW:.spec.commit.window
+NS:.metadata.namespace,NAME:.metadata.name,COMMIT:.spec.commit
 ```
 
-An empty `ACCESS_FROM` or `<none>` `WINDOW` on an object you meant to migrate means the value was
-pruned: the manifest still carries an old spelling.
+`<none>` in `ACCESS_FROM` or `COMMIT` on an object you meant to migrate means the value was pruned:
+the manifest still carries an old spelling. Check `COMMIT` renders **both** halves you migrated —
+a `map[window:...]` with no `message:` key means the templates did not come across.
 
 **What you will NOT get is a warning.** Because the fields are removed rather than retained, an
 object still carrying an old spelling is accepted with the value silently pruned — the mirror keeps
