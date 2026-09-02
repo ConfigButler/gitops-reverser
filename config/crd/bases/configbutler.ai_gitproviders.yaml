@@ -84,47 +84,6 @@ spec:
                         description: Name is the git committer name.
                         type: string
                     type: object
-                  message:
-                    description: |-
-                      Message is REMOVED: how a commit is phrased is a property of the folder being written, not of
-                      the connection, so it is now GitTarget.spec.commit.message with the same three templates.
-                      Setting this field is rejected.
-
-                      Deprecated: use GitTarget.spec.commit.message. Removed at v1alpha4.
-                    properties:
-                      eventTemplate:
-                        description: |-
-                          EventTemplate is a Go text/template string for per-event commit messages
-                          (used when spec.commit.window is "0s"; one event per commit).
-                          Available variables: Operation, Group, Version, Resource, Namespace, Name,
-                          APIVersion, Username, GitTarget.
-                        type: string
-                      groupTemplate:
-                        description: |-
-                          GroupTemplate is a Go text/template string for grouped commit messages
-                          (the commit-window path; one commit per (author, gitTarget) group
-                          produced by the batching pipeline).
-                          Available variables: Author, GitTarget, Count, Operations (map of
-                          CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
-                          Resource, Namespace, Name}).
-                        type: string
-                      reconcileTemplate:
-                        description: |-
-                          ReconcileTemplate is a Go text/template string for reconcile commit messages
-                          (the mark-and-sweep reconcile path; one commit per synced type).
-                          Available variables: Count, GitTarget, Group, Version, Resource, APIVersion, Revision.
-                          Group/Version/Resource/APIVersion name the synced type for a per-type reconcile and
-                          Revision is the cluster resourceVersion the reconcile was pinned to; both are empty
-                          for a whole-target reconcile or a pure sweep, so a template referencing them must
-                          render cleanly when they are absent (the default guards them with {{if}}).
-                        type: string
-                    type: object
-                    x-kubernetes-validations:
-                    - message: spec.commit.message has moved to GitTarget.spec.commit.message,
-                        with the same eventTemplate/reconcileTemplate/groupTemplate
-                        fields. Remove it here and set it on each GitTarget whose
-                        commits it should phrase.
-                      rule: "false"
                   signing:
                     description: Signing configures commit signing.
                     properties:
@@ -183,26 +142,6 @@ spec:
                 required:
                 - name
                 type: object
-              push:
-                description: |-
-                  Push is REMOVED: commit batching is a property of the folder being written, not of the
-                  connection, so spec.push.commitWindow is now GitTarget.spec.commit.window. Setting this
-                  field is rejected.
-
-                  Deprecated: use GitTarget.spec.commit.window. Removed at v1alpha4.
-                properties:
-                  commitWindow:
-                    description: |-
-                      CommitWindow is the rolling silence window used to coalesce events into a single commit per
-                      author. It moved to GitTarget.spec.commit.window; setting it here is rejected.
-                    type: string
-                type: object
-                x-kubernetes-validations:
-                - message: spec.push.commitWindow has moved to GitTarget.spec.commit.window;
-                    commit batching belongs to the folder being written, not to the
-                    connection. Remove spec.push here and set spec.commit.window on
-                    each GitTarget that needs a window other than 5s.
-                  rule: "false"
               secretRef:
                 description: SecretRef for authentication credentials (may be nil
                   for public repos)

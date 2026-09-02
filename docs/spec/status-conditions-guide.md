@@ -67,7 +67,7 @@ Flux kind in the same cluster. A reason that restates the condition type (`Ready
 answers nothing and is not used.
 
 Domain reasons stay this project's own — `UnsupportedContent`, `WriteBoundaryRefused`,
-`IgnoreShadowsManagedPath`, `SupersededFieldStored` — because they carry information a generic
+`IgnoreShadowsManagedPath`, `MultipleSourceNamespaces` — because they carry information a generic
 reason cannot. Declaring domain reasons is exactly what the upstream vocabulary asks projects to do.
 
 ### One deliberate deviation: the abnormal-true pair is written when False
@@ -195,24 +195,6 @@ Canonical reads:
   There is no `True` reason for an empty resolved scope any more. `NoAdmittedSourceNamespaces`
   existed so a `sourceNamespace: "*"` against a policy admitting nothing could not look healthy while
   mirroring nothing; `"*"` is now one cluster-wide watch, which cannot resolve to an empty set.
-
-### Objects written against a superseded API
-
-`SupersededFieldStored` is one reason shared by `GitTarget`, `GitProvider` and `ClusterProvider`. A
-field this project removes or renames is retained in the schema and rejected at admission, which
-covers the write path only: an object written by an earlier release keeps its value in etcd and is
-never re-admitted. That population is refused at reconcile with this reason, `Stalled=True`, and a
-message naming the exact field and its replacement.
-
-The refusal is a **data-plane gate, not a remark**. It is evaluated before the referenced provider
-and branch are validated, and therefore before a worker is wired or the target is declared, so an
-unmigrated object writes nothing rather than writing under settings nobody chose. The same check
-runs on the shared compile path, because startup bootstrap seeds the rule store before the first
-reconcile.
-
-One reason serves three kinds deliberately: from an operator's point of view the fact that matters
-is identical — this object was written against the previous API and has not been migrated — and the
-Message carries which field it was.
 
 ### CommitRequest (one-shot)
 

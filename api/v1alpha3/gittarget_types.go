@@ -151,38 +151,6 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
-	// The field presented itself as a DESTINATION policy, and it could not be one. A WatchRule's
-	// targetRef is namespace-local, a GitTarget's providerRef is namespace-local, and spec.path is
-	// immutable, so the chain from a Git folder back to the object that fills it never leaves one
-	// namespace: whoever can create a WatchRule there could already write into that folder. What it
-	// actually bounded was which source namespaces the folder's own tenant may READ, which for a
-	// credential-scoped provider restates what the credential already carries, in the one place
-	// that cannot revoke it.
-	//
-	// Its selector half was evaluated against Namespace labels in ANOTHER cluster, and that single
-	// choice produced the three-valued verdict, the SourceScopeUnavailable degradation path, five
-	// condition reasons, and the operator's need for source-cluster Namespace get/list/watch. All
-	// of it went with the field. What replaces it is the source credential's own RBAC (which bounds
-	// what may be read) plus ClusterProvider.accessFrom (which bounds who may wield it).
-	//
-	// It is retained-and-refused rather than deleted because CRD pruning happens on WRITE: a
-	// deleted field would be dropped from a re-applied manifest with no error, and the target would
-	// silently start admitting a scope its author never asked for.
-	//
-	// See docs/design/source-scope-simplification.md.
-
-	// AllowedSourceNamespaces is REMOVED. Which source namespaces a target may mirror is bounded by
-	// the source credential's own Kubernetes RBAC, and which control-plane namespace may wield that
-	// credential is bounded by ClusterProvider.spec.accessFrom. Setting this field is rejected.
-	//
-	// Deprecated: bound reads with source-cluster RBAC and use ClusterProvider.spec.accessFrom.
-	// Removed at v1alpha4.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="false",message="spec.allowedSourceNamespaces is removed. The source credential's own RBAC bounds what may be read, and ClusterProvider.spec.accessFrom bounds which namespaces may wield it. A rules[].sourceNamespace other than the WatchRule's own namespace now needs only ClusterProvider.spec.allowAnySourceNamespace: true. Source-side label selectors have no replacement; enumerate namespaces in rules[].sourceNamespace, or use \"*\" for every namespace the credential can read."
-	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
-
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
 	// Deliberately MUTABLE, unlike the destination fields above. The whole point of the safe
 	// default is that a target keeps its documents while a scope mistake is diagnosed; turning
 	// convergence back on afterwards must not require deleting and recreating the GitTarget, which

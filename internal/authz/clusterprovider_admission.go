@@ -84,14 +84,6 @@ func GitTargetAdmitted(
 		return Decision{}, fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
 	}
 
-	// A provider written against the previous API is refused BEFORE its policy is consulted. It has
-	// to be: a stored spec.allowedNamespaces leaves spec.accessFrom absent, which is deny-by-default,
-	// so consulting the policy would deny every GitTarget with a message blaming its namespace
-	// instead of naming the rename that actually caused it.
-	if refusal := SupersededFieldRefusal(&provider); refusal != "" {
-		return Decision{Reason: ReasonSupersededFieldStored, Message: refusal}, nil
-	}
-
 	nsLabels := map[string]string{}
 	var ns corev1.Namespace
 	if err := reader.Get(ctx, k8stypes.NamespacedName{Name: target.Namespace}, &ns); err != nil {

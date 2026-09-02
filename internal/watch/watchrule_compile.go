@@ -54,18 +54,6 @@ func CompileWatchRule(
 ) (authz.ResolvedSourceScope, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace}
 
-	// A GitTarget still carrying a field this release removed compiles NOTHING. The check lives
-	// here rather than only on the GitTarget's Validated gate because bootstrap seeds the store
-	// before the first reconcile, on every restart, and a gate the reconciler alone enforced would
-	// be bypassed for that whole window — the same reason the source-namespace gate is here.
-	if refusal := authz.SupersededFieldRefusal(&target); refusal != "" {
-		store.Delete(key)
-		return authz.ResolvedSourceScope{
-			Reason:  authz.ReasonSupersededFieldStored,
-			Message: refusal,
-		}, nil
-	}
-
 	resolved, err := authz.ResolveWatchRuleSourceScope(ctx, reader, &rule, &target)
 	if err != nil {
 		// Transient: leave whatever is compiled alone and let the caller requeue. Tearing down a
@@ -122,18 +110,6 @@ func CompileClusterWatchRule(
 	provider configv1alpha3.GitProvider,
 ) (ClusterWatchRuleDecision, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name}
-
-	// Same refusal as the WatchRule path, and for the same bootstrap reason. A ClusterWatchRule
-	// selects cluster-scoped objects, which the removed field never bounded, so this does not
-	// change what it mirrors — it refuses to run against a target nobody has migrated, so the
-	// operator fixes one object rather than discovering it kind by kind.
-	if refusal := authz.SupersededFieldRefusal(&target); refusal != "" {
-		store.DeleteClusterWatchRule(key)
-		return ClusterWatchRuleDecision{
-			Reason:  authz.ReasonSupersededFieldStored,
-			Message: refusal,
-		}, nil
-	}
 
 	admitted, err := authz.GitTargetAdmitted(ctx, reader, &target)
 	if err != nil {

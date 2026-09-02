@@ -7,6 +7,79 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Safe upgrade order for the GitTarget API changes
+
+Five fields are **removed outright** in this release, across three kinds. There is no shim, no
+conversion webhook and no refusal to catch you: a removed field is pruned from the schema, so the
+next two entries are the whole migration and they are yours to apply by hand.
+
+**Take the inventory FIRST, before you upgrade anything.** This is not a stylistic preference. Once
+the new CRDs are applied, the old values are no longer returned by the API server at all — not
+after a write, but immediately, because a field outside the structural schema is not served. Your
+own manifests in Git are then the only record of what you had. If you upgrade before taking the
+inventory, recover the values from your repository or from an etcd backup.
+
+```bash
+# 1. INVENTORY — run this against the CURRENT cluster, before applying the new CRDs.
+kubectl get gittargets -A -o json |
+  jq -r '.items[] | select(.spec.allowedSourceNamespaces)
+    | "gittarget \(.metadata.namespace)/\(.metadata.name): \(.spec.allowedSourceNamespaces)"'
+
+kubectl get clusterproviders -o json |
+  jq -r '.items[] | select(.spec.allowedNamespaces or .spec.allowSourceNamespaceOverride == true)
+    | "clusterprovider \(.metadata.name): accessFrom<-\(.spec.allowedNamespaces)
+       allowAny<-\(.spec.allowSourceNamespaceOverride)"'
+
+kubectl get gitproviders -A -o json |
+  jq -r '.items[] | select(.spec.push or .spec.commit.message)
+    | "gitprovider \(.metadata.namespace)/\(.metadata.name): window<-\(.spec.push.commitWindow)
+       message<-\(.spec.commit.message)"'
+
+# The rules whose MEANING changes even though their YAML does not:
+kubectl get watchrules -A -o json |
+  jq -r '.items[] | select(.spec.rules[]?.sourceNamespace == "*")
+    | "watchrule \(.metadata.namespace)/\(.metadata.name) -> target \(.spec.targetRef.name)"'
+```
+
+Keep that output. It is the input to every step below.
+
+**2. Decide what each `sourceNamespace: "*"` rule should become.** This is the only step that needs
+judgement rather than transcription, and the only one where getting it wrong is not obvious
+afterwards. `"*"` keeps its spelling and changes its meaning — see
+[its own section below](#sourcenamespace--keeps-its-spelling-and-changes-its-meaning). A rule whose
+target had an `allowedSourceNamespaces` list will start mirroring **every namespace its credential
+can read** unless you either enumerate those namespaces in `rules[].sourceNamespace` or tighten the
+credential's RBAC to match the list you had.
+
+**3. Upgrade the controller and CRDs.** Mirrors do **not** pause. Every removed field is simply
+pruned, so a target that has not been migrated yet keeps writing — under the new defaults, and for a
+`"*"` rule under the new meaning. That is the window step 2 exists to make short: go straight to
+step 4.
+
+**4. Re-apply your objects, `GitProvider` first, then `ClusterProvider` and `GitTarget` together.**
+Provider first because a `GitTarget` reads its commit settings from it; the other two are independent
+of each other. Your manifests should already carry the new spellings from steps 1 and 2.
+
+**5. Confirm the new fields took effect**, which matters more than a green condition here: a pruned
+field and a correctly-migrated one both leave the object `Ready=True`, so read the values back rather
+than the status.
+
+```bash
+kubectl get clusterproviders -o custom-columns=\
+NAME:.metadata.name,ACCESS_FROM:.spec.accessFrom,ALLOW_ANY:.spec.allowAnySourceNamespace
+
+kubectl get gittargets -A -o custom-columns=\
+NS:.metadata.namespace,NAME:.metadata.name,WINDOW:.spec.commit.window
+```
+
+An empty `ACCESS_FROM` or `<none>` `WINDOW` on an object you meant to migrate means the value was
+pruned: the manifest still carries an old spelling.
+
+**What you will NOT get is a warning.** Because the fields are removed rather than retained, an
+object still carrying an old spelling is accepted with the value silently pruned — the mirror keeps
+running under the new defaults. That is a deliberate trade for a much smaller code surface, and it
+is why the inventory is step 1 rather than a footnote.
+
 ## Commit batching and message templates are GitTarget fields
 
 `GitProvider.spec.push.commitWindow` and `GitProvider.spec.commit.message` are now
@@ -23,17 +96,10 @@ connections.
 to the remote — the signing key is a Secret in the provider's namespace, and the committer is the bot
 the platform sees.
 
-**Both old fields are rejected rather than ignored, and a stored one stops writes.** Applying a
-`GitProvider` that still sets either fails with a message naming the replacement. An object written
-before the upgrade is never re-admitted, so it is refused at reconcile instead: the `GitProvider`
-reports `Stalled=True` with reason `SupersededFieldStored`, and **every `GitTarget` writing through
-it is held `Validated=False` and stops writing** until the provider is edited.
-
-That is deliberate, and it is the part to plan for. The alternative is not "keep working" — neither
-value is read any more, so the folder would carry on committing at the default `5s` cadence and
-under the default wording, which for a Git mirror is worse than a mirror that has visibly stopped.
-The refusal clears on the next reconcile after the field is removed; nothing is lost while it is in
-effect, because a target that resumes writes from current cluster state.
+**Both old fields are removed, not retained.** A `GitProvider` that still sets either is accepted
+and the value is pruned, so the folder carries on committing at the default `5s` cadence under the
+default message templates — with nothing anywhere reporting it. That is why the
+[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) comes first.
 
 Move them per target:
 
@@ -75,36 +141,22 @@ last one is defined in terms of the first.
 | `ClusterProvider.spec.allowedNamespaces` | `ClusterProvider.spec.accessFrom` |
 | `sourceNamespace: "*"` = every namespace the `GitTarget` admits | every namespace the source credential can read, as one cluster-wide watch |
 
-All three removed or renamed fields are **rejected rather than ignored, and a stored one stops the
-objects that carry it**. Re-applying a manifest that still sets one fails with a message naming the
-replacement. An object written before the upgrade is never re-admitted, so it is refused at
-reconcile instead, with reason `SupersededFieldStored` and a message naming the field to delete:
+All three are **removed from the schema**, so an object still setting one is accepted with the
+value pruned. Nothing warns you, which is the whole reason the
+[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) is step 1.
 
-- a `GitTarget` still carrying `allowedSourceNamespaces` is held `Validated=False` and writes
-  nothing, and no `WatchRule` or `ClusterWatchRule` pointing at it compiles;
-- a `ClusterProvider` still carrying `allowedNamespaces`, or `allowSourceNamespaceOverride: true`,
-  admits no `GitTarget` at all.
+The consequences differ, and only one of them is quiet:
 
-One value is deliberately **not** refused: a stored `allowSourceNamespaceOverride: false`. That
-field carried a schema default, so the apiserver wrote it into every `ClusterProvider` ever created,
-including the chart-owned `default` one and every install that never used the feature. `kubectl
-apply` cannot remove a server-defaulted field, because it was never in your manifest to remove — so
-refusing it would be an upgrade nobody could complete. It also means nothing: it grants no
-delegation, and `allowAnySourceNamespace` defaults false too. You may leave it or delete it.
+| Old field, left in place | What happens |
+|---|---|
+| `GitTarget.spec.allowedSourceNamespaces` | pruned. A `"*"` rule under that target **widens** to every namespace the credential can read |
+| `ClusterProvider.spec.allowedNamespaces` | pruned, so `accessFrom` is absent. That is deny-by-default: **no `GitTarget` is admitted** and every one of them stalls |
+| `ClusterProvider.spec.allowSourceNamespaceOverride: true` | pruned, so the delegation is **revoked** and every cross-namespace `WatchRule` through it stalls |
 
-That is deliberate: CRD pruning happens on write, so a deleted field would be dropped from your
-manifest with no error at all. Ignoring the stored values is worse than refusing them in each case.
-`allowedSourceNamespaces` would become a field that reads like a bound on which source namespaces
-reach a folder while enforcing nothing — and the moment you migrate that target's `ClusterProvider`,
-a `sourceNamespace: "*"` rule under it widens from the set that field declares to every namespace
-the credential can read, with the stale field still sitting there describing the old bound. A
-pruned `allowedNamespaces` would leave `accessFrom` absent, which is deny-by-default, so every
-`GitTarget` through the provider would fail with a message blaming its namespace rather than naming
-the rename. And a pruned `allowSourceNamespaceOverride: true` would silently revoke a delegation.
-
-**Migrate the `ClusterProvider` and its `GitTarget`s together.** They are refused independently, so
-either order works and neither leaves a half-migrated object running — but doing both in one pass is
-what keeps the outage to a single reconcile.
+The two `ClusterProvider` rows fail closed and are loud — stalled objects with conditions you can
+read — so they are an outage rather than a hazard. The `GitTarget` row is the one to be careful
+about: it fails **open**, widening what a `"*"` rule mirrors into your repository, with no condition
+to notice. Treat it as the reason to do step 1 properly.
 
 ### The two renames
 

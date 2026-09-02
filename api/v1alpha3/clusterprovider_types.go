@@ -92,21 +92,6 @@ type ClusterProviderSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
-	// Retained-and-refused rather than deleted: CRD pruning happens on write, so a deleted field
-	// would be dropped from a re-applied manifest with no error, leaving a deny-by-default policy
-	// silently admitting nothing and every GitTarget through it failing for a reason the manifest
-	// does not show.
-
-	// AllowedNamespaces is RENAMED to accessFrom, with the same shape and the same semantics.
-	// Setting this field is rejected.
-	//
-	// Deprecated: use spec.accessFrom. Removed at v1alpha4.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="false",message="spec.allowedNamespaces is renamed spec.accessFrom. Same shape, same semantics: rename the key."
-	AllowedNamespaces *NamespaceMatcher `json:"allowedNamespaces,omitempty"`
-
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
 	// Remote and in-cluster providers use the same mechanism but deserve very different sign-off.
 	// For a REMOTE provider the config-plane namespace and the source namespace are on different
 	// clusters, so their sharing a name never was a boundary and naming one widens nothing. For an
@@ -143,20 +128,6 @@ type ClusterProviderSpec struct {
 	// +optional
 	// +kubebuilder:default=false
 	AllowAnySourceNamespace bool `json:"allowAnySourceNamespace,omitempty"`
-
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// Retained-and-refused rather than deleted, and this one matters most of the three: pruning a
-	// stored `true` would silently REVOKE a delegation, stalling every cross-namespace WatchRule
-	// through this provider with a message about a flag the manifest still appears to set.
-
-	// AllowSourceNamespaceOverride is RENAMED to allowAnySourceNamespace: same type, same default,
-	// same semantics. Setting this field is rejected.
-	//
-	// Deprecated: use spec.allowAnySourceNamespace. Removed at v1alpha4.
-	// +optional
-	// +kubebuilder:validation:XValidation:rule="false",message="spec.allowSourceNamespaceOverride is renamed spec.allowAnySourceNamespace. Same type, same default, same semantics: rename the key."
-	AllowSourceNamespaceOverride *bool `json:"allowSourceNamespaceOverride,omitempty"`
 
 	// QPS overrides the operator's outgoing kube-client query-per-second throttle for this
 	// cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.

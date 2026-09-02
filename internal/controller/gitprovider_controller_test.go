@@ -429,34 +429,6 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 		})
 
-		It("should reject a GitProvider that still sets the relocated commit.message", func() {
-			// The field is retained in the schema so this apply FAILS rather than being pruned.
-			// A pruned field would leave the provider looking healthy while its message templates
-			// silently stopped applying.
-			gitProvider = &configbutleraiv1alpha3.GitProvider{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-provider-relocated-commit-message",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "git@github.com:test/repo.git",
-					AllowedBranches: []string{"main"},
-					Commit: &configbutleraiv1alpha3.CommitSpec{
-						//nolint:staticcheck // setting the removed field is the point: it must be rejected.
-						Message: &configbutleraiv1alpha3.CommitMessageSpec{
-							EventTemplate: "{{.Operation}}",
-						},
-					},
-				},
-			}
-
-			err := k8sClient.Create(ctx, gitProvider)
-
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("GitTarget.spec.commit.message"))
-			gitProvider = nil
-		})
-
 		It("should fail when commit signing is configured but the signing secret is missing", func() {
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
