@@ -341,7 +341,7 @@
                 }
               }
             },
-            "allowedNamespaces": {
+            "accessFrom": {
               "type": "object",
               "description": "Deny-by-default control-cluster namespace policy (names and/or selector) for which namespaces may reference this provider from a GitTarget.",
               "additionalProperties": true
@@ -497,11 +497,6 @@
               "type": "object",
               "additionalProperties": false,
               "properties": { "name": { "type": "string" } }
-            },
-            "push": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": { "commitWindow": { "$ref": "#/$defs/duration" } }
             }
           }
         },
@@ -512,6 +507,11 @@
             "name": { "type": "string" },
             "branch": { "type": "string" },
             "path": { "type": "string", "minLength": 1 },
+            "commit": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "window": { "$ref": "#/$defs/duration" } }
+            },
             "encryption": {
               "type": "object",
               "additionalProperties": false,

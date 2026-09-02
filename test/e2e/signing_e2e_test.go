@@ -26,8 +26,6 @@ type signingGitProviderData struct {
 	SecretName          string
 	CommitterName       string
 	CommitterEmail      string
-	EventTemplate       string
-	ReconcileTemplate   string
 	SigningSecretName   string
 	GenerateWhenMissing bool
 }
@@ -101,8 +99,6 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				SecretName:          signingRepo.GitSecretHTTP,
 				CommitterName:       committerName,
 				CommitterEmail:      committerEmail,
-				EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-				ReconcileTemplate:   "reconciled {{.Count}} {{.Resource}}",
 				SigningSecretName:   signingSecretName,
 				GenerateWhenMissing: true,
 			}
@@ -238,8 +234,6 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			SecretName:          signingRepo.GitSecretHTTP,
 			CommitterName:       committerName,
 			CommitterEmail:      committerEmail,
-			EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-			ReconcileTemplate:   "reconciled {{.Count}} {{.Resource}}",
 			SigningSecretName:   signingSecretName,
 			GenerateWhenMissing: false,
 		}
@@ -325,7 +319,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			cleanupNamespacedResource(testNs, "gitprovider", providerName)
 		})
 
-		By("creating a GitProvider with custom committer and per-event message template")
+		By("creating a GitProvider with a custom committer")
 		data := signingGitProviderData{
 			Name:                providerName,
 			Namespace:           testNs,
@@ -334,15 +328,15 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			SecretName:          signingRepo.GitSecretHTTP,
 			CommitterName:       customName,
 			CommitterEmail:      customEmail,
-			EventTemplate:       customTemplate,
-			ReconcileTemplate:   "reconciled {{.Count}} {{.Resource}}",
 			SigningSecretName:   "signing-key-committer",
 			GenerateWhenMissing: true,
 		}
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", data, testNs)).To(Succeed())
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
-		createValidatedGitTarget(destName, testNs, providerName, commitPath)
+		By("creating a GitTarget with the per-event message template")
+		createValidatedGitTargetWithCommitMessage(destName, testNs, providerName, commitPath,
+			gitTargetCommitOptions{EventTemplate: customTemplate})
 
 		watchRuleData := struct {
 			Name            string
@@ -439,15 +433,14 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			SecretName:          signingRepo.GitSecretHTTP,
 			CommitterName:       committerName,
 			CommitterEmail:      committerEmail,
-			EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-			ReconcileTemplate:   customReconcileTemplate,
 			SigningSecretName:   "signing-key-batch",
 			GenerateWhenMissing: true,
 		}
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", data, testNs)).To(Succeed())
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
-		createValidatedGitTarget(destName, testNs, providerName, commitPath)
+		createValidatedGitTargetWithCommitMessage(destName, testNs, providerName, commitPath,
+			gitTargetCommitOptions{ReconcileTemplate: customReconcileTemplate})
 
 		watchRuleData := struct {
 			Name            string
@@ -542,26 +535,25 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			"apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "failed to create seed configmaps")
 
-		By("creating the signing GitProvider (commitWindow 0s) with the reconcile/per-event templates")
+		By("creating the signing GitProvider; the message templates belong to the GitTargets below")
 		committerName, committerEmail := signingRepoCommitter()
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", signingGitProviderData{
-			Name:           providerName,
-			Namespace:      testNs,
-			RepoURL:        signingRepo.RepoURLHTTP,
-			Branch:         "main",
-			SecretName:     signingRepo.GitSecretHTTP,
-			CommitterName:  committerName,
-			CommitterEmail: committerEmail,
-			EventTemplate:  "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-			ReconcileTemplate: "e2e-reconcile: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
-				"@{{.Revision}} to {{.GitTarget}}",
+			Name:                providerName,
+			Namespace:           testNs,
+			RepoURL:             signingRepo.RepoURLHTTP,
+			Branch:              "main",
+			SecretName:          signingRepo.GitSecretHTTP,
+			CommitterName:       committerName,
+			CommitterEmail:      committerEmail,
 			SigningSecretName:   "signing-key-overlap",
 			GenerateWhenMissing: true,
 		}, testNs)).To(Succeed())
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
 		By("creating target A and its WatchRule, then waiting for A to reconcile the seed band")
-		createValidatedGitTarget(destNameA, testNs, providerName, commitPathA)
+		createValidatedGitTargetWithCommitMessage(destNameA, testNs, providerName, commitPathA,
+			gitTargetCommitOptions{ReconcileTemplate: "e2e-reconcile: synced {{.Count}} " +
+				"{{.APIVersion}}/{{.Resource}}@{{.Revision}} to {{.GitTarget}}"})
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameA, testNs, destNameA}, testNs)).To(Succeed())
@@ -586,7 +578,9 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		_, err = kubectlRunWithStdin(testNs, signingOverlapConfigMapsManifest(testNs, overlapNames),
 			"apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "failed to create overlap-b configmaps")
-		createGitTarget(destNameB, testNs, providerName, commitPathB, "main")
+		createGitTargetWithCommitMessage(destNameB, testNs, providerName, commitPathB, "main",
+			gitTargetCommitOptions{ReconcileTemplate: "e2e-reconcile: synced {{.Count}} " +
+				"{{.APIVersion}}/{{.Resource}}@{{.Revision}} to {{.GitTarget}}"})
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameB, testNs, destNameB}, testNs)).To(Succeed())

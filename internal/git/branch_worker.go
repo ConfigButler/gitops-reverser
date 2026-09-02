@@ -42,11 +42,11 @@ const (
 
 	// DefaultCommitWindow is the default rolling silence window used to coalesce
 	// events into one commit per (author, gitTarget). Applied when
-	// GitProvider.spec.push.commitWindow is unset or unparseable.
+	// GitTarget.spec.commit.window is unset or unparseable.
 	DefaultCommitWindow = 5 * time.Second
 
 	// PushCooldown is the minimum interval between successful pushes. The cooldown
-	// is intentionally fixed: commit cadence is a user concern (commitWindow on
+	// is intentionally fixed: commit cadence is a user concern (spec.commit.window on
 	// the CRD); push cadence is an implementation/politeness concern.
 	PushCooldown = 5 * time.Second
 )
@@ -739,15 +739,18 @@ func (w *BranchWorker) bootstrapPathIfNeeded(
 // local commits accumulate from retained pending writes and feed
 // replay-on-conflict; only a successful push clears that retained queue.
 func (w *BranchWorker) processEvents() {
-	provider, err := w.getGitProvider(w.ctx)
-	if err != nil {
+	// The provider is no longer read for the commit window — that is now per-GitTarget — but it
+	// remains a precondition for the worker: a branch whose GitProvider cannot be read has no
+	// credential, no allowed-branch list and nowhere to push, so starting the loop would only
+	// accumulate work that can never land.
+	if _, err := w.getGitProvider(w.ctx); err != nil {
 		w.Log.Error(err, "Failed to get GitProvider, worker exiting")
 		return
 	}
 
-	loop := newBranchWorkerEventLoop(w, w.getCommitWindow(provider))
+	loop := newBranchWorkerEventLoop(w, DefaultCommitWindow)
 	w.Log.Info("Branch worker event loop configured",
-		"commitWindow", loop.commitWindow.String(),
+		"defaultCommitWindow", DefaultCommitWindow.String(),
 		"queueSize", cap(w.eventQueue),
 		"branchBufferMaxBytes", w.branchBufferMaxBytes)
 	loop.run()
@@ -759,11 +762,17 @@ func (w *BranchWorker) processEvents() {
 type branchWorkerEventLoop struct {
 	w *BranchWorker
 
+	// defaultCommitWindow is the operator-level default, used for any GitTarget that declares no
+	// spec.commit.window and for one that cannot be read or whose value will not parse.
+	defaultCommitWindow time.Duration
+
+	// commitWindow is the CURRENTLY OPEN window's GitTarget's window, resolved from that target's
+	// spec.commit.window when the window opens and left at defaultCommitWindow until one does.
 	commitWindow time.Duration
 
 	// openWindow holds the one live commit-shaped event window. It is
 	// finalized eagerly on author/target changes, atomic arrivals, byte-cap
-	// trips, commit-window silence, commitWindow=0, and shutdown.
+	// trips, commit-window silence, a zero window, and shutdown.
 	openWindow  *openWindow
 	windowBytes int64
 
@@ -793,8 +802,12 @@ type branchWorkerEventLoop struct {
 	attachTimer *time.Timer
 }
 
-func newBranchWorkerEventLoop(w *BranchWorker, commitWindow time.Duration) *branchWorkerEventLoop {
-	return &branchWorkerEventLoop{w: w, commitWindow: commitWindow}
+func newBranchWorkerEventLoop(w *BranchWorker, defaultCommitWindow time.Duration) *branchWorkerEventLoop {
+	return &branchWorkerEventLoop{
+		w:                   w,
+		defaultCommitWindow: defaultCommitWindow,
+		commitWindow:        defaultCommitWindow,
+	}
 }
 
 func (l *branchWorkerEventLoop) run() {
@@ -930,6 +943,10 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName,
 				"resource", event.Identifier.String())
 			l.openWindow = newOpenWindow(event, l.w.contentWriter)
+			// One window, one GitTarget: read that target's cadence now, so the timer below and
+			// the zero-window check are this target's and not the previous window's.
+			l.commitWindow = l.w.commitWindowFor(
+				l.w.ctx, event.GitTargetName, event.GitTargetNamespace, l.defaultCommitWindow)
 		}
 		l.openWindow.add(event)
 		l.windowBytes += l.w.estimateEventSize(event)
@@ -1612,22 +1629,50 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha3.GitP
 	return &provider, nil
 }
 
-// getCommitWindow returns the configured commit-window duration. The string is
-// parsed at runtime via time.ParseDuration; an unset value, a parse error, or
-// a negative duration falls back to a defensible default. Per design: parse
-// errors → DefaultCommitWindow (loud signal); negative → 0 (caller asked for
-// near-zero coalescing and we honor that).
-func (w *BranchWorker) getCommitWindow(provider *configv1alpha3.GitProvider) time.Duration {
-	if provider.Spec.Push == nil || provider.Spec.Push.CommitWindow == nil {
-		return DefaultCommitWindow
+// commitWindowFor returns the commit-window duration for ONE GitTarget.
+//
+// The window is a GitTarget field (spec.commit.window), not a GitProvider one, and this worker
+// serves every target sharing a (provider, branch). Resolving per target rather than once per
+// worker is what makes that field mean what it says: two targets on one branch can disagree about
+// their cadence. It is affordable because an open window is bound to exactly one target already —
+// windows finalize on a target change — so this is read once per window, not once per event, on
+// the same goroutine that already reads the target's encryption and prune policy at finalize.
+//
+// The string is parsed here rather than at admission so an unparseable stored value degrades
+// loudly to the fallback instead of blocking the whole target — the GitTarget reconciler is where
+// a NEW mistake is reported (Validated=False). Per design: parse errors → fallback (loud signal);
+// negative → 0 (the caller asked for near-zero coalescing and we honor that). An unreadable
+// GitTarget also takes the fallback: a missing target is not a reason to change how the events
+// already in hand are batched.
+func (w *BranchWorker) commitWindowFor(
+	ctx context.Context,
+	targetName, targetNamespace string,
+	fallback time.Duration,
+) time.Duration {
+	// No client is legitimate — the CLI and the narrower unit tests run a worker with none — and it
+	// means there is no GitTarget to ask, not that the default is wrong.
+	if w.Client == nil || targetName == "" || targetNamespace == "" {
+		return fallback
 	}
-	parsed, err := time.ParseDuration(*provider.Spec.Push.CommitWindow)
+	target, err := w.getGitTarget(ctx, targetName, targetNamespace)
 	if err != nil {
-		w.Log.Error(err, "Invalid commitWindow, using default", "value", *provider.Spec.Push.CommitWindow)
-		return DefaultCommitWindow
+		w.Log.V(1).Info("Could not read GitTarget for its commit window, using the default",
+			"gitTarget", targetNamespace+"/"+targetName, "error", err.Error())
+		return fallback
+	}
+	if target.Spec.Commit == nil || target.Spec.Commit.Window == nil {
+		return fallback
+	}
+	raw := *target.Spec.Commit.Window
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		w.Log.Error(err, "Invalid spec.commit.window, using the default",
+			"gitTarget", targetNamespace+"/"+targetName, "value", raw)
+		return fallback
 	}
 	if parsed < 0 {
-		w.Log.Info("Negative commitWindow treated as 0", "value", *provider.Spec.Push.CommitWindow)
+		w.Log.Info("Negative spec.commit.window treated as 0",
+			"gitTarget", targetNamespace+"/"+targetName, "value", raw)
 		return 0
 	}
 	return parsed

@@ -39,15 +39,6 @@ type WatchManagerInterface interface {
 	StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) watch.StreamSummary
 	StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) watch.StreamSummary
 
-	// SourceScope exposes the source-scope service — the manager-owned evaluation of a GitTarget's
-	// allowedSourceNamespaces against its SOURCE cluster, plus the per-rule resolved scopes.
-	//
-	// The gate runs in this package but the labels a selector needs live in a source cluster whose
-	// connection and cache the watch manager already owns, so the reconciler asks the manager
-	// instead of dialling that cluster itself on every pass. It may return nil (the data plane is
-	// not wired), which degrades to exact-name policy evaluation — never to a denial.
-	SourceScope() watch.SourceScopeService
-
 	// StreamStateEvents is the channel a rule controller wires via source.Channel so a stream
 	// reaching (or leaving) Streaming re-reconciles the rules that project it, instead of leaving
 	// them to discover it on RequeueStreamSettleInterval. A stream coming up is the last thing
@@ -57,12 +48,6 @@ type WatchManagerInterface interface {
 	// Every call registers a NEW subscriber: a Go channel has one consumer, and three controllers
 	// project this state. It may return nil when no data plane is wired.
 	StreamStateEvents() <-chan event.GenericEvent
-
-	// SourceNamespaceEvents is the channel the WatchRule controller wires via source.Channel so a
-	// SOURCE-cluster Namespace label change re-reconciles the rules it grants or revokes. Those
-	// labels live in a cluster the controller has no client for, so the watch manager observes
-	// them and pushes the affected GitTargets here.
-	SourceNamespaceEvents() <-chan event.GenericEvent
 }
 
 const (

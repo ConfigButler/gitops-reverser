@@ -65,17 +65,16 @@ it, so the list must cover every type your rules name.
 
 ### `namespaces` on a REMOTE source cluster
 
-The manager role's `namespaces` `get`/`list`/`watch` covers the operator's **own** cluster. A remote
-`ClusterProvider` whose `GitTarget`s declare a **selector-based** `allowedSourceNamespaces` — or whose
-`WatchRule`s use `sourceNamespace: "*"` against one — needs the same for the identity in that
-provider's kubeconfig, because the selector matches labels on `Namespace`s in the *source* cluster.
+The operator needs **no `Namespace` access at all** in a source cluster. The manager role's
+`namespaces` `get`/`list`/`watch` covers the operator's own cluster, where `ClusterProvider.accessFrom`
+selectors match control-cluster labels.
 
-Exact `names` entries stay usable without it: a name-based policy, including a `"*"` item resolved
-against a names-only policy, is answered from the API objects and never reads a `Namespace`. That is
-a deliberate degradation path, not an oversight. When the source credential is forbidden from listing
-Namespaces, a selector policy reports `SourceNamespaceAuthorized=False` with reason
-`SourceNamespacePolicyUnavailable` (or `Unknown` while retaining an already-resolved scope) rather
-than silently narrowing to nothing.
+This used to be different: `GitTarget.spec.allowedSourceNamespaces` could carry a label selector
+evaluated against `Namespace`s in the *source* cluster, so a remote provider's identity needed
+`namespaces` `get`/`list`/`watch` there. That field is gone, and with it the cross-cluster
+`Namespace` read. What a source credential may read is now the whole of the source-side bound, so
+grant it exactly the namespaces and types the rules name — a `sourceNamespace: "*"` item asks for a
+cluster-wide `list`/`watch` of its types, and gets a clean 403 if the credential cannot serve it.
 
 ## The operator does not read Secrets wholesale
 

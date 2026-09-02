@@ -637,31 +637,25 @@ func quickstartTimeout() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// createGitProviderWithURLInNamespace creates a GitProvider that commits each
-// event immediately (commitWindow=0s). Use createGitProviderWithCommitWindow
-// to exercise non-zero windows.
+// createGitProviderWithURLInNamespace creates a GitProvider: a URL, a credential and an allowed
+// branch. Commit cadence is not here — it is the GitTarget's spec.commit.window; see
+// createGitTargetWithCommitWindow.
 func createGitProviderWithURLInNamespace(name, ns, secretName, repoURL string) {
-	createGitProviderWithCommitWindow(name, ns, secretName, repoURL, "0s")
-}
-
-func createGitProviderWithCommitWindow(name, ns, secretName, repoURL, commitWindow string) {
-	By(fmt.Sprintf("creating GitProvider '%s' in ns '%s' (branch 'main', commitWindow '%s', secret '%s', URL '%s')",
-		name, ns, commitWindow, secretName, repoURL))
+	By(fmt.Sprintf("creating GitProvider '%s' in ns '%s' (branch 'main', secret '%s', URL '%s')",
+		name, ns, secretName, repoURL))
 
 	data := struct {
-		Name         string
-		Namespace    string
-		RepoURL      string
-		Branch       string
-		SecretName   string
-		CommitWindow string
+		Name       string
+		Namespace  string
+		RepoURL    string
+		Branch     string
+		SecretName string
 	}{
-		Name:         name,
-		Namespace:    ns,
-		RepoURL:      repoURL,
-		Branch:       "main",
-		SecretName:   secretName,
-		CommitWindow: commitWindow,
+		Name:       name,
+		Namespace:  ns,
+		RepoURL:    repoURL,
+		Branch:     "main",
+		SecretName: secretName,
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gitprovider.tmpl", data, ns)

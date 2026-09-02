@@ -181,7 +181,7 @@ spec:
   kubeConfig:
     secretRef:
       name: %s%s
-  allowedNamespaces:
+  accessFrom:
     names: [%s]
 `, name, secretName, keyLine, allowedNS)
 	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
@@ -208,6 +208,8 @@ spec:
     name: %s
   branch: main
   path: %s
+  commit:
+    window: "0s"
   clusterProviderRef:
     name: %s
 `, name, ns, gitProvider, path, clusterProvider)
@@ -359,6 +361,8 @@ spec:
   providerRef: {kind: GitProvider, name: %s}
   branch: main
   path: clusters/local
+  commit:
+    window: "0s"
 `, target, testNs, providerName)
 		_, err := kubectlRunWithStdin(testNs, manifest, "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())

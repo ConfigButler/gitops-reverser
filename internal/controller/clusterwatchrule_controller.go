@@ -242,7 +242,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 //     cluster-scoped and its targetRef carries a REQUIRED namespace, so it may name a GitTarget in
 //     ANY namespace and widen that target's mirror scope cluster-wide. Compiling such a rule
 //     without re-applying the target's own provider admission would let it mirror through a
-//     credential whose allowedNamespaces never admitted that target.
+//     credential whose accessFrom never admitted that target.
 //  2. the cluster-scope-only narrowing: a STORED rule that still says `scope: Namespaced` compiles
 //     no stream. Admission rejects the value on write, but a pre-release object keeps it in etcd.
 //
@@ -411,7 +411,7 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToClusterWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		// React to a ClusterProvider's allowedNamespaces changing. Without this, REVOKING a
+		// React to a ClusterProvider's accessFrom changing. Without this, REVOKING a
 		// namespace stops the GitTarget (which does watch ClusterProvider) but leaves this rule's
 		// compiled entry resident until the next periodic reconcile, so the admission gate would
 		// converge on a ~10m delay instead of on the event. The GitTarget's own status flip cannot
@@ -421,7 +421,7 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToClusterWatchRules),
 			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
 		).
-		// React to a Namespace's LABELS changing: allowedNamespaces may admit by selector, so a
+		// React to a Namespace's LABELS changing: accessFrom may admit by selector, so a
 		// label change on a GitTarget's namespace grants or revokes every ClusterWatchRule pointing
 		// at a target in it. LabelChangedPredicate ignores unrelated namespace churn.
 		Watches(
@@ -473,7 +473,7 @@ func (r *ClusterWatchRuleReconciler) clusterProviderToClusterWatchRules(
 }
 
 // namespaceToClusterWatchRules maps a Namespace label change to every ClusterWatchRule whose
-// referenced GitTarget lives in that namespace — the selector half of allowedNamespaces.
+// referenced GitTarget lives in that namespace — the selector half of accessFrom.
 func (r *ClusterWatchRuleReconciler) namespaceToClusterWatchRules(
 	ctx context.Context,
 	obj client.Object,

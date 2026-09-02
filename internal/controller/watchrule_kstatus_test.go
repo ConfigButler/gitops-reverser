@@ -17,11 +17,11 @@ import (
 // sigs.k8s.io/cli-utils clients see the same Current/InProgress/Failed results as for the other
 // CRDs — no phase, no state string, no second readiness model.
 //
-// The two rows that matter most are the two that LOOK alike and must not be: a selector that is
-// permanently unevaluatable is Failed when NO scope was ever resolved (nothing runs, and only an
-// operator change fixes it) and InProgress when a scope is being retained (the rule is still
-// mirroring its granted namespace). Collapsing those would either stop a working stream or claim a
-// dead rule is fine.
+// The source-namespace gate has only two outcomes now, so this table shrank with it: an item is
+// either authorized or refused, and a refusal is terminal. The rows that used to distinguish "the
+// policy cannot be read YET" from "the policy can never be read" are gone, because there is no
+// longer a policy in another cluster to read — every input is a control-plane object the reconcile
+// already has.
 func TestWatchRuleSourceNamespaceKstatusContract(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -29,16 +29,16 @@ func TestWatchRuleSourceNamespaceKstatusContract(t *testing.T) {
 		wantStatus kstatus.Status
 		wantMsg    string
 	}{{
-		name: "selector cache starting: source authorization Unknown",
+		name: "not yet evaluated: blocked behind an earlier gate",
 		conds: []map[string]interface{}{
 			conditionMap(ConditionTypeSourceNamespaceAuthorized, "Unknown",
-				WatchRuleReasonCheckingSourceNamespacePolicy, "cache still syncing"),
+				ReasonProgressing, "Blocked by validation; source namespace not evaluated"),
 			conditionMap(ConditionTypeReady, "False",
-				WatchRuleReasonCheckingSourceNamespacePolicy, "cache still syncing"),
+				ReasonProgressing, "Blocked by validation"),
 			conditionMap(ConditionTypeReconciling, "True",
-				WatchRuleReasonCheckingSourceNamespacePolicy, "cache still syncing"),
+				ReasonProgressing, "Blocked by validation"),
 			conditionMap(ConditionTypeStalled, "False",
-				WatchRuleReasonCheckingSourceNamespacePolicy, "WatchRule is not stalled"),
+				ReasonProgressing, "WatchRule is not stalled"),
 		},
 		wantStatus: kstatus.InProgressStatus,
 	}, {
@@ -62,20 +62,7 @@ func TestWatchRuleSourceNamespaceKstatusContract(t *testing.T) {
 		},
 		wantStatus: kstatus.CurrentStatus,
 	}, {
-		name: "selector unevaluatable but a scope is already resolved: retained and still running",
-		conds: []map[string]interface{}{
-			conditionMap(ConditionTypeSourceNamespaceAuthorized, "Unknown",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "retaining the last known-good scope"),
-			conditionMap(ConditionTypeReady, "False",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "retaining the last known-good scope"),
-			conditionMap(ConditionTypeReconciling, "True",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "retaining the last known-good scope"),
-			conditionMap(ConditionTypeStalled, "False",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "WatchRule is not stalled"),
-		},
-		wantStatus: kstatus.InProgressStatus,
-	}, {
-		name: "delegation disabled, or the policy evaluated and denies",
+		name: "delegation disabled: the refusal is terminal",
 		conds: []map[string]interface{}{
 			conditionMap(ConditionTypeSourceNamespaceAuthorized, "False",
 				WatchRuleReasonSourceNamespaceNotAllowed,
@@ -91,20 +78,6 @@ func TestWatchRuleSourceNamespaceKstatusContract(t *testing.T) {
 		},
 		wantStatus: kstatus.FailedStatus,
 		wantMsg:    "repo-config",
-	}, {
-		name: "selector unevaluatable and no scope ever resolved: nothing runs",
-		conds: []map[string]interface{}{
-			conditionMap(ConditionTypeSourceNamespaceAuthorized, "False",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "namespaces list is forbidden"),
-			conditionMap(ConditionTypeReady, "False",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "namespaces list is forbidden"),
-			conditionMap(ConditionTypeReconciling, "False",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "Reconciliation is stalled"),
-			conditionMap(ConditionTypeStalled, "True",
-				WatchRuleReasonSourceNamespacePolicyUnavailable, "namespaces list is forbidden"),
-		},
-		wantStatus: kstatus.FailedStatus,
-		wantMsg:    "forbidden",
 	}}
 
 	for _, tt := range tests {
@@ -148,10 +121,10 @@ func TestRuleReadiness_SourceAuthorizationIsAPrerequisite(t *testing.T) {
 		wantReady:   metav1.ConditionTrue,
 		wantStalled: metav1.ConditionFalse,
 	}, {
-		name: "unknown: progressing, never stalled",
+		name: "not yet evaluated: progressing, never stalled",
 		sourceNS: &metav1.Condition{
 			Type: ConditionTypeSourceNamespaceAuthorized, Status: metav1.ConditionUnknown,
-			Reason: WatchRuleReasonCheckingSourceNamespacePolicy,
+			Reason: ReasonProgressing,
 		},
 		wantReady:   metav1.ConditionFalse,
 		wantStalled: metav1.ConditionFalse,

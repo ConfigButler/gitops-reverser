@@ -18,8 +18,6 @@ spec:
     name: apps
   branch: main
   path: apps/checkout
-  allowedSourceNamespaces:
-    names: [shop, billing]
   placement:
     default: "{name}.yaml"
   # The declaration the rule binds to. Unset would be untouched by it: inference resolves each

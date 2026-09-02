@@ -7,6 +7,272 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Safe upgrade order for the GitTarget API changes
+
+Five fields are **removed outright** in this release, across three kinds. There is no shim, no
+conversion webhook and no refusal to catch you: a removed field is pruned from the schema, so the
+next two entries are the whole migration and they are yours to apply by hand.
+
+**Take the inventory FIRST, before you upgrade anything.** This is not a stylistic preference. Once
+the new CRDs are applied, the old values are no longer returned by the API server at all — not
+after a write, but immediately, because a field outside the structural schema is not served. Your
+own manifests in Git are then the only record of what you had. If you upgrade before taking the
+inventory, recover the values from your repository or from an etcd backup.
+
+```bash
+# 1. INVENTORY — run this against the CURRENT cluster, before applying the new CRDs.
+kubectl get gittargets -A -o json |
+  jq -r '.items[] | select(.spec.allowedSourceNamespaces)
+    | "gittarget \(.metadata.namespace)/\(.metadata.name): \(.spec.allowedSourceNamespaces)"'
+
+kubectl get clusterproviders -o json |
+  jq -r '.items[] | select(.spec.allowedNamespaces or .spec.allowSourceNamespaceOverride == true)
+    | "clusterprovider \(.metadata.name): accessFrom<-\(.spec.allowedNamespaces)
+       allowAny<-\(.spec.allowSourceNamespaceOverride)"'
+
+kubectl get gitproviders -A -o json |
+  jq -r '.items[] | select(.spec.push or .spec.commit.message)
+    | "gitprovider \(.metadata.namespace)/\(.metadata.name): window<-\(.spec.push.commitWindow)
+       message<-\(.spec.commit.message)"'
+
+# The rules whose MEANING changes even though their YAML does not:
+kubectl get watchrules -A -o json |
+  jq -r '.items[] | select(.spec.rules[]?.sourceNamespace == "*")
+    | "watchrule \(.metadata.namespace)/\(.metadata.name) -> target \(.spec.targetRef.name)"'
+```
+
+Keep that output. It is the input to every step below.
+
+**2. Decide what each `sourceNamespace: "*"` rule should become.** This is the only step that needs
+judgement rather than transcription, and the only one where getting it wrong is not obvious
+afterwards. `"*"` keeps its spelling and changes its meaning — see
+[its own section below](#sourcenamespace--keeps-its-spelling-and-changes-its-meaning). A rule whose
+target had an `allowedSourceNamespaces` list will start mirroring **every namespace its credential
+can read** unless you either enumerate those namespaces in `rules[].sourceNamespace` or tighten the
+credential's RBAC to match the list you had.
+
+**3. Upgrade the controller and CRDs.** What happens next depends on which field a given object was
+carrying, and the two outcomes are opposites:
+
+- A target whose **`ClusterProvider`** policy was pruned **stops writing**. An absent `accessFrom` is
+  deny-by-default, so the provider admits no namespace and every `GitTarget` through it goes
+  `Validated=False`. Same for a pruned `allowSourceNamespaceOverride: true`, which stalls the
+  cross-namespace `WatchRule`s it used to permit. Loud, and it clears in step 4.
+- A target carrying a pruned **`GitTarget`** or **`GitProvider`** field **keeps writing**, under the
+  new defaults — and for a `"*"` rule, under the new meaning. Nothing stalls and nothing warns.
+
+The second is the one to hurry for, because it is the one that is not telling you anything. Go
+straight to step 4.
+
+**4. Re-apply every migrated object in one sync.** There is no ordering requirement between them,
+so do not stage it: a single apply makes the stall in step 3 one reconcile long.
+
+Ordering is unnecessary because nothing here reads its migrated value from another object. Each
+`GitTarget` now carries its own `spec.commit`, read from the target at write time rather than from
+the `GitProvider` — that is the whole point of the move — so a provider applied first buys a target
+nothing. What a `ClusterProvider` *does* control is whether its targets are admitted at all, which
+is why applying it alongside them is what lifts the stall.
+
+Your manifests should already carry the new spellings from steps 1 and 2.
+
+**5. Confirm the new fields took effect**, which for half the cases matters more than a green
+condition. A pruned `ClusterProvider` policy shows up in the status, so `Ready` catches it. A pruned
+`GitTarget` or `GitProvider` field does not: the object is `Ready=True` either way, and only reading
+the value back distinguishes migrated from silently defaulted.
+
+```bash
+kubectl get clusterproviders -o custom-columns=\
+NAME:.metadata.name,ACCESS_FROM:.spec.accessFrom,ALLOW_ANY:.spec.allowAnySourceNamespace
+
+# Read back the whole spec.commit, not just the window: a pruned message template is otherwise
+# invisible, since a target with no templates commits perfectly happily under the built-in ones.
+kubectl get gittargets -A -o custom-columns=\
+NS:.metadata.namespace,NAME:.metadata.name,COMMIT:.spec.commit
+```
+
+`<none>` in `ACCESS_FROM` or `COMMIT` on an object you meant to migrate means the value was pruned:
+the manifest still carries an old spelling. Check `COMMIT` renders **both** halves you migrated —
+a `map[window:...]` with no `message:` key means the templates did not come across.
+
+**What you will NOT get is a warning.** Because the fields are removed rather than retained, an
+object still carrying an old spelling is accepted with the value silently pruned — the mirror keeps
+running under the new defaults. That is a deliberate trade for a much smaller code surface, priced
+in [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md), and it is why the inventory
+is step 1 rather than a footnote.
+
+## Commit batching and message templates are GitTarget fields
+
+`GitProvider.spec.push.commitWindow` and `GitProvider.spec.commit.message` are now
+`GitTarget.spec.commit.window` and `GitTarget.spec.commit.message`. The message shape is unchanged:
+the same `eventTemplate`, `reconcileTemplate` and `groupTemplate`, with the same variables.
+
+`GitProvider` is the connection — a URL, a credential, the branches it will accept. How a folder's
+writes are batched and how those commits are phrased describe the folder, and two `GitTarget`s
+sharing one `GitProvider` had no way to disagree about either. They can now: an RBAC folder that
+wants a commit per change and an app folder that wants a burst coalesced no longer have to be two
+connections.
+
+`commit.committer` and `commit.signing` stay on `GitProvider`. Both describe the identity that talks
+to the remote — the signing key is a Secret in the provider's namespace, and the committer is the bot
+the platform sees.
+
+**Both old fields are removed, not retained.** A `GitProvider` that still sets either is accepted
+and the value is pruned, so the folder carries on committing at the default `5s` cadence under the
+default message templates — with nothing anywhere reporting it. That is why the
+[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) comes first.
+
+Move them per target:
+
+```yaml
+# GitProvider: delete spec.push, and spec.commit.message if you set one.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitProvider
+spec:
+  commit:
+    committer:
+      name: GitOps Reverser
+---
+# GitTarget: the values land here, once per folder that needs them.
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+spec:
+  commit:
+    window: "5s"
+    message:
+      groupTemplate: "{{ .Author }} on {{ .GitTarget }}: {{ .Count }} resource(s)"
+```
+
+A `GitTarget` that sets no `spec.commit` batches over a 5s rolling silence window and uses the
+built-in templates, which is what an omitted `spec.push` gave you before. So a `GitProvider` that
+never set either field needs one edit only if it set `spec.commit.message`; otherwise nothing to do.
+
+The chart moves the value with the field: `quickstart.gitProvider.push.commitWindow` is
+`quickstart.gitTarget.commit.window`.
+
+## Source-namespace scope is the ClusterProvider's, and `sourceNamespace: "*"` is cluster-wide
+
+Four changes to how a target's source namespaces are bounded, and they ship together because the
+last one is defined in terms of the first.
+
+| Was | Is |
+|---|---|
+| `GitTarget.spec.allowedSourceNamespaces` | **removed** |
+| `ClusterProvider.spec.allowSourceNamespaceOverride` | `ClusterProvider.spec.allowAnySourceNamespace` |
+| `ClusterProvider.spec.allowedNamespaces` | `ClusterProvider.spec.accessFrom` |
+| `sourceNamespace: "*"` = every namespace the `GitTarget` admits | every namespace the source credential can read, as one cluster-wide watch |
+
+All three are **removed from the schema**, so an object still setting one is accepted with the
+value pruned. Nothing warns you, which is the whole reason the
+[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) is step 1.
+
+The consequences differ, and only one of them is quiet:
+
+| Old field, left in place | What happens |
+|---|---|
+| `GitTarget.spec.allowedSourceNamespaces` | pruned. A `"*"` rule under that target **widens** to every namespace the credential can read |
+| `ClusterProvider.spec.allowedNamespaces` | pruned, so `accessFrom` is absent. That is deny-by-default: **no `GitTarget` is admitted** and every one of them stalls |
+| `ClusterProvider.spec.allowSourceNamespaceOverride: true` | pruned, so the delegation is **revoked** and every cross-namespace `WatchRule` through it stalls |
+
+The two `ClusterProvider` rows fail closed and are loud — stalled objects with conditions you can
+read — so they are an outage rather than a hazard. The `GitTarget` row is the one to be careful
+about: it fails **open**, widening what a `"*"` rule mirrors into your repository, with no condition
+to notice. Treat it as the reason to do step 1 properly.
+
+### The two renames
+
+Mechanical. Same type, same default, same semantics; rename the key.
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+metadata:
+  name: prod-eu-1
+spec:
+  accessFrom:                    # was allowedNamespaces
+    names: [team-a]
+  allowAnySourceNamespace: true  # was allowSourceNamespaceOverride
+```
+
+`accessFrom` keeps doing exactly what it did: it is the deny-by-default policy for which
+**control-cluster** namespaces may reference this provider from a `GitTarget`, matched against
+control-cluster `Namespace` labels. It is the one namespace policy that survived, because the
+boundary it draws is available nowhere else — source-cluster RBAC bounds what a credential may
+*read*, and cannot express which control-plane tenant may *wield* it.
+
+`allowAnySourceNamespace` keeps `Source` in its name on purpose: this object carries two namespace
+planes, and an `allowAnyNamespace` sitting directly beneath `accessFrom` would read as a modifier on
+it.
+
+### Removing `allowedSourceNamespaces`
+
+Delete the field. What it bounded is bounded by the source credential's own Kubernetes RBAC: a
+namespace the credential cannot read fails with a clean 403 instead of being refused by a policy
+field that restated the credential in the one place that could not revoke it.
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+spec:
+  # allowedSourceNamespaces: {...}   <- delete this
+```
+
+After the edit, a `WatchRule` item naming a namespace other than its own needs two things instead of
+three: the `GitTarget`'s namespace admitted by its `ClusterProvider`'s `accessFrom`, and that
+provider setting `allowAnySourceNamespace: true`.
+
+**`allowAnySourceNamespace: false` is not exactly your previous posture**, and it is worth saying
+plainly rather than papering over. A declared `allowedSourceNamespaces` could deny a rule's **own**
+namespace: it was exhaustive once declared, with no self-namespace exception. The new default
+matches the *no-policy* path — every rule keeps its own namespace, and nothing else — which is what
+a default install ran. If you declared a policy that deliberately excluded a co-resident rule's own
+namespace, that exclusion is gone and that rule now watches its own namespace again.
+
+**Source-side label selectors are lost, and there is no replacement.** Admitting every namespace
+carrying a label, and following namespaces as they appear, has no RBAC equivalent short of a
+`RoleBinding` per namespace. This is the real capability cost of the change and it is accepted
+rather than overlooked: an N-way restriction costs N objects wherever it is expressed. If you ran
+`allowedSourceNamespaces: {selector: {...}}`, enumerate the namespaces in `rules[].sourceNamespace`,
+or use `"*"` and bind the credential to exactly the namespaces you mean.
+
+The operator now needs **no `Namespace` access at all** in a source cluster. If you granted a remote
+`ClusterProvider`'s identity `namespaces` `get`/`list`/`watch` only for a selector policy, you can
+take it back.
+
+### `sourceNamespace: "*"` keeps its spelling and changes its meaning
+
+This one has no shim, because there is nothing to rename: the value is still `"*"` and it still
+parses. Read this paragraph even if you change no YAML.
+
+`"*"` used to mean *every namespace this `GitTarget` admits* — resolved live through
+`allowedSourceNamespaces` into a concrete set, then planned as one watch stream and one list per
+namespace. That field is gone, so the definition had to move. `"*"` is now **one cluster-wide list
+and one cluster-wide watch**, bounded by the source credential's RBAC and by nothing else, and
+**refused outright while `allowAnySourceNamespace` is false**.
+
+For a target that declared no `allowedSourceNamespaces`, `"*"` already resolved to whatever the
+credential could see, so the widening is narrower in practice than it reads. For a target that
+declared one, it is real: **a `"*"` item now mirrors namespaces that policy excluded.** Before you
+upgrade, find them:
+
+```bash
+kubectl get watchrules -A -o json |
+  jq -r '.items[]
+    | select(.spec.rules[]?.sourceNamespace == "*")
+    | "\(.metadata.namespace)/\(.metadata.name) -> \(.spec.targetRef.name)"'
+```
+
+For each one, either name the namespaces explicitly in `rules[].sourceNamespace`, or keep `"*"` and
+make the credential's RBAC the fence you meant the policy to be.
+
+Two things get better. A `"*"` rule over a type in a hundred-namespace cluster was a hundred watch
+connections and a hundred list calls at warm-up, each with its own cursor and its own share of the
+apiserver watch cache; it is one of each now, and the saving grows with the cluster. And its failure
+mode is a clean 403 rather than a silently empty set.
+
+A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates. Each rule
+carries its own `operations` filter, so a target holding both runs two streams over overlapping
+objects. That is correct, not something to tune away.
+
 ## A GitTarget must cover exactly one kustomize render root
 
 A `GitTarget` whose `spec.path` covers more than one kustomize render root — an app root above a

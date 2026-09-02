@@ -42,11 +42,8 @@ type GitProviderSpec struct {
 	// +kubebuilder:validation:items:MinLength=1
 	AllowedBranches []string `json:"allowedBranches"`
 
-	// Push controls how events are coalesced into commits before pushing.
-	// +optional
-	Push *PushStrategy `json:"push,omitempty"`
-
-	// Commit configures commit identity, message formatting, and signing behavior.
+	// Commit configures the commit identity and signing behavior this connection uses. Message
+	// formatting moved to GitTarget.spec.commit.message.
 	// +optional
 	Commit *CommitSpec `json:"commit,omitempty"`
 }
@@ -154,17 +151,15 @@ type GitProviderStatus struct {
 	SigningPublicKey string `json:"signingPublicKey,omitempty"`
 }
 
-// CommitSpec configures how gitops-reverser creates commits for a GitProvider.
+// CommitSpec configures the commit identity and signing a GitProvider uses. Message formatting
+// lives on the GitTarget (spec.commit.message), because it describes the folder rather than the
+// connection.
 type CommitSpec struct {
 	// Committer configures the operator identity written as the commit committer.
 	// When signing is enabled, Email must be a verified address on the account
 	// that owns the signing key.
 	// +optional
 	Committer *CommitterSpec `json:"committer,omitempty"`
-
-	// Message configures commit message formatting.
-	// +optional
-	Message *CommitMessageSpec `json:"message,omitempty"`
 
 	// Signing configures commit signing.
 	// +optional
@@ -184,10 +179,12 @@ type CommitterSpec struct {
 	Email string `json:"email,omitempty"`
 }
 
-// CommitMessageSpec configures commit message formatting.
+// CommitMessageSpec configures commit message formatting. It is set on
+// GitTarget.spec.commit.message; the identically-shaped GitProvider.spec.commit.message is
+// retained only to reject a manifest that still sets it there.
 type CommitMessageSpec struct {
 	// EventTemplate is a Go text/template string for per-event commit messages
-	// (used when commitWindow is "0s"; one event per commit).
+	// (used when spec.commit.window is "0s"; one event per commit).
 	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
 	// APIVersion, Username, GitTarget.
 	// +optional

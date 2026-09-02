@@ -10,6 +10,9 @@ spec:
   branch: main
   # Keep playground writes under a folder. Use "." only when testing repo-root ownership.
   path: live-cluster
+  # Every event is its own commit, so a playground change shows up in Git immediately.
+  commit:
+    window: "0s"
   encryption:
     provider: sops
     age:

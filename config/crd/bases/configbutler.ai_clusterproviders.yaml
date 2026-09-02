@@ -38,7 +38,7 @@ spec:
         description: |-
           ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a
           GitTarget mirrors FROM, and owns that cluster's connectivity credential (spec.kubeConfig),
-          namespace-access authorization (spec.allowedNamespaces), and per-cluster status. Its NAME is the
+          namespace-access authorization (spec.accessFrom), and per-cluster status. Its NAME is the
           cluster's identity for the watch data plane, and the DEFAULT for its audit route: attribution
           facts are partitioned by spec.attribution.auditRoute, which falls back to this name. Several
           providers may name one cluster by declaring one route, which is what an API server with a single
@@ -47,7 +47,7 @@ spec:
           in-cluster-ness follows from spec.kubeConfig (omitted = in-cluster) rather than from the name.
 
           It is cluster-scoped and requires platform-admin permissions to create. A GitTarget may reference
-          it only from a namespace spec.allowedNamespaces admits — deny-by-default, enforced at admission
+          it only from a namespace spec.accessFrom admits — deny-by-default, enforced at admission
           and again before any watch starts.
         properties:
           apiVersion:
@@ -70,26 +70,12 @@ spec:
           spec:
             description: spec defines the desired state of ClusterProvider.
             properties:
-              allowSourceNamespaceOverride:
-                default: false
+              accessFrom:
                 description: |-
-                  AllowSourceNamespaceOverride delegates SOURCE-namespace selection to the GitTargets this
-                  provider admits. While false (the default) a WatchRule mirroring through this provider may
-                  watch only its OWN namespace, whatever any GitTarget policy says.
-
-                  It grants no access by itself: an admitted GitTarget must still admit the namespace in its
-                  spec.allowedSourceNamespaces, and the source credential's own RBAC remains the hard maximum.
-                  What it delegates is the AUTHORITY to choose, so set it only when the owners of admitted
-                  GitTargets are trusted to pick a subset of what that credential may read. Every
-                  cross-namespace request needs it, including a rules[].sourceNamespace of "*". It does not
-                  apply to ClusterWatchRule, which selects no namespaces at all.
-                type: boolean
-              allowedNamespaces:
-                description: |-
-                  AllowedNamespaces is the deny-by-default policy for which CONTROL-CLUSTER namespaces may
-                  reference this provider from a GitTarget. Empty (or omitted) means no namespace may
-                  reference it. Its selector matches labels on Namespaces in the control cluster — the
-                  cluster the operator's own CRs live in — never on the source cluster this provider names.
+                  AccessFrom is the deny-by-default policy for which CONTROL-CLUSTER namespaces may reference
+                  this provider from a GitTarget. Empty (or omitted) means no namespace may reference it. Its
+                  selector matches labels on Namespaces in the control cluster (the cluster the operator's own
+                  CRs live in), never on the source cluster this provider names.
                 properties:
                   names:
                     description: |-
@@ -151,6 +137,21 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 type: object
+              allowAnySourceNamespace:
+                default: false
+                description: |-
+                  AllowAnySourceNamespace delegates SOURCE-namespace selection to the GitTargets this provider
+                  admits. While false (the default) a WatchRule mirroring through this provider may watch only
+                  its OWN namespace.
+
+                  It grants no access by itself: the source credential's own RBAC remains the hard maximum, and
+                  a request it permits still fails 403 if the credential cannot read that namespace. What it
+                  delegates is the AUTHORITY to choose, so set it only when the owners of admitted GitTargets
+                  are trusted to pick a subset of what that credential may read. Every cross-namespace request
+                  needs it, including a rules[].sourceNamespace of "*", which reaches every namespace the
+                  credential can read. It does not apply to ClusterWatchRule, which selects no namespaces at
+                  all.
+                type: boolean
               attribution:
                 description: |-
                   Attribution groups this cluster's author-attribution settings. The block is spelled

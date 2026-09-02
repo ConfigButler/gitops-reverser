@@ -2,7 +2,7 @@
 # cluster the operator runs in" — an option open to ANY provider name, not a property of this one.
 # GitTarget.spec.clusterProviderRef defaults to {name: default}, so a single-cluster install needs
 # no ClusterProvider of its own beyond this one (the chart renders it when
-# clusterProvider.createDefault is true; the operator never creates one). allowedNamespaces is
+# clusterProvider.createDefault is true; the operator never creates one). accessFrom is
 # deny-by-default: only the listed/selected namespaces may bind it.
 apiVersion: configbutler.ai/v1alpha3
 kind: ClusterProvider
@@ -10,7 +10,7 @@ metadata:
   name: default
 spec:
   # no kubeConfig => in-cluster. Set it here instead to make "default" mirror a remote cluster.
-  allowedNamespaces:
+  accessFrom:
     names:
       - team-a
 ---
@@ -25,7 +25,11 @@ spec:
   kubeConfig:
     secretRef:
       name: prod-eu-1-kubeconfig
-  allowedNamespaces:
+  accessFrom:
     selector:
       matchLabels:
         tier: trusted
+  # Let the GitTargets in those namespaces choose which SOURCE namespaces to mirror. While false
+  # (the default) a WatchRule may watch only its own namespace, and `sourceNamespace: "*"` is
+  # refused outright.
+  allowAnySourceNamespace: true

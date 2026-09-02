@@ -68,12 +68,27 @@ type ClusterProviderSpec struct {
 	// +optional
 	KubeConfig *meta.KubeConfigReference `json:"kubeConfig,omitempty"`
 
-	// AllowedNamespaces is the deny-by-default policy for which CONTROL-CLUSTER namespaces may
-	// reference this provider from a GitTarget. Empty (or omitted) means no namespace may
-	// reference it. Its selector matches labels on Namespaces in the control cluster — the
-	// cluster the operator's own CRs live in — never on the source cluster this provider names.
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// This is the one namespace policy that survived the source-scope deletion, and it survived
+	// because the boundary it draws is available nowhere else. Source-cluster RBAC bounds what a
+	// CREDENTIAL may read; it cannot express which control-plane tenant may WIELD that credential,
+	// because the tenant is not a subject in the source cluster at all. Deleting it would make a
+	// shared source credential usable from any namespace that can create a GitTarget.
+	//
+	// Its selector is affordable in a way the deleted source-side one was not: it reads
+	// CONTROL-cluster Namespace labels, locally, with no cross-cluster call and no degradation
+	// path. Both halves stay.
+	//
+	// The rename is what makes it readable now that the two allowed*Namespaces fields no longer sit
+	// side by side to disambiguate each other. See docs/design/source-scope-simplification.md.
+
+	// AccessFrom is the deny-by-default policy for which CONTROL-CLUSTER namespaces may reference
+	// this provider from a GitTarget. Empty (or omitted) means no namespace may reference it. Its
+	// selector matches labels on Namespaces in the control cluster (the cluster the operator's own
+	// CRs live in), never on the source cluster this provider names.
 	// +optional
-	AllowedNamespaces *NamespaceMatcher `json:"allowedNamespaces,omitempty"`
+	AccessFrom *NamespaceMatcher `json:"accessFrom,omitempty"`
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
@@ -88,23 +103,31 @@ type ClusterProviderSpec struct {
 	// which is why this exists and defaults to false. LOCALITY is not the switch: in-cluster-ness
 	// follows from spec.kubeConfig, and neither that nor the provider's name decides this.
 	//
-	// A wildcard needs the flag for the same reason a named namespace does: it requests the
-	// target's policy SET, so a later policy edit could otherwise widen the watch with no
-	// platform-admin opt-in.
-
-	// AllowSourceNamespaceOverride delegates SOURCE-namespace selection to the GitTargets this
-	// provider admits. While false (the default) a WatchRule mirroring through this provider may
-	// watch only its OWN namespace, whatever any GitTarget policy says.
+	// The name keeps "Source" deliberately. This object carries two namespace planes, and an
+	// allowAnyNamespace sitting directly beneath accessFrom would read as a modifier on it.
+	// allowCrossNamespace was the other candidate, borrowing Flux's --no-cross-namespace-refs
+	// vocabulary, and it was not taken: in Flux the phrase means references across namespaces in
+	// ONE cluster, while here the far side is a namespace in a DIFFERENT cluster. "Crossing" is
+	// literally true only for the in-cluster provider; "any" is literally true for both.
 	//
-	// It grants no access by itself: an admitted GitTarget must still admit the namespace in its
-	// spec.allowedSourceNamespaces, and the source credential's own RBAC remains the hard maximum.
-	// What it delegates is the AUTHORITY to choose, so set it only when the owners of admitted
-	// GitTargets are trusted to pick a subset of what that credential may read. Every
-	// cross-namespace request needs it, including a rules[].sourceNamespace of "*". It does not
-	// apply to ClusterWatchRule, which selects no namespaces at all.
+	// It stays a boolean because there are two states and no third one is in view: impersonation
+	// and source-side selectors are both out, so an enum would only leave room for something
+	// nobody can name.
+
+	// AllowAnySourceNamespace delegates SOURCE-namespace selection to the GitTargets this provider
+	// admits. While false (the default) a WatchRule mirroring through this provider may watch only
+	// its OWN namespace.
+	//
+	// It grants no access by itself: the source credential's own RBAC remains the hard maximum, and
+	// a request it permits still fails 403 if the credential cannot read that namespace. What it
+	// delegates is the AUTHORITY to choose, so set it only when the owners of admitted GitTargets
+	// are trusted to pick a subset of what that credential may read. Every cross-namespace request
+	// needs it, including a rules[].sourceNamespace of "*", which reaches every namespace the
+	// credential can read. It does not apply to ClusterWatchRule, which selects no namespaces at
+	// all.
 	// +optional
 	// +kubebuilder:default=false
-	AllowSourceNamespaceOverride bool `json:"allowSourceNamespaceOverride,omitempty"`
+	AllowAnySourceNamespace bool `json:"allowAnySourceNamespace,omitempty"`
 
 	// QPS overrides the operator's outgoing kube-client query-per-second throttle for this
 	// cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
@@ -178,7 +201,7 @@ type ClusterProviderStatus struct {
 
 // ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a
 // GitTarget mirrors FROM, and owns that cluster's connectivity credential (spec.kubeConfig),
-// namespace-access authorization (spec.allowedNamespaces), and per-cluster status. Its NAME is the
+// namespace-access authorization (spec.accessFrom), and per-cluster status. Its NAME is the
 // cluster's identity for the watch data plane, and the DEFAULT for its audit route: attribution
 // facts are partitioned by spec.attribution.auditRoute, which falls back to this name. Several
 // providers may name one cluster by declaring one route, which is what an API server with a single
@@ -187,7 +210,7 @@ type ClusterProviderStatus struct {
 // in-cluster-ness follows from spec.kubeConfig (omitted = in-cluster) rather than from the name.
 //
 // It is cluster-scoped and requires platform-admin permissions to create. A GitTarget may reference
-// it only from a namespace spec.allowedNamespaces admits — deny-by-default, enforced at admission
+// it only from a namespace spec.accessFrom admits — deny-by-default, enforced at admission
 // and again before any watch starts.
 type ClusterProvider struct {
 	metav1.TypeMeta `json:",inline"`
@@ -240,30 +263,29 @@ func (p *ClusterProvider) AuditRoute() string {
 }
 
 // AllowsNamespace reports whether a namespace (by name and labels) may reference this provider
-// from a GitTarget, per spec.allowedNamespaces. It is DENY-BY-DEFAULT: a provider with no
-// allowedNamespaces policy (neither names nor selector) admits no namespace. Names and selector
-// are ORed. Enforced on every reconcile and NOWHERE else: checkSourceAuthorization in
+// from a GitTarget, per spec.accessFrom. It is DENY-BY-DEFAULT: a provider with no accessFrom
+// policy (neither names nor selector) admits no namespace. Names and selector are ORed. Enforced on
+// every reconcile and NOWHERE else: checkSourceAuthorization in
 // internal/controller/gittarget_source_cluster.go is the only non-test caller, and it returns
 // before DeclareForGitTarget, so an unauthorized target starts no watch and writes no Git.
-// Reconcile-time is deliberate rather than incidental — it re-evaluates continuously, so it also
+//
+// Reconcile-time is deliberate rather than incidental: it re-evaluates continuously, so it also
 // covers a policy tightened after the GitTarget was created, which an admission webhook could not
 // see. There is no admission webhook for this (docs/spec/where-validation-lives.md). A malformed
-// selector is a configuration error surfaced to the caller (not a silent allow).
-// A malformed selector is a configuration error surfaced to the caller (not a silent allow).
+// selector is a configuration error surfaced to the caller, never a silent allow.
 //
-// It is one of two thin wrappers over NamespaceMatcher.Matches — the other being
-// GitTarget.AllowsSourceNamespace — so the control-cluster and source-cluster policies can never
-// drift in their deny-by-default, names-OR-selector semantics. The labels passed here are always
-// CONTROL-cluster Namespace labels.
+// The labels passed here are always CONTROL-cluster Namespace labels. This is now the only caller
+// of NamespaceMatcher.Matches: the source-side twin was deleted with
+// GitTarget.spec.allowedSourceNamespaces.
 func (p *ClusterProvider) AllowsNamespace(nsName string, nsLabels map[string]string) (bool, error) {
-	return p.Spec.AllowedNamespaces.Matches(nsName, nsLabels)
+	return p.Spec.AccessFrom.Matches(nsName, nsLabels)
 }
 
-// AllowsSourceNamespaceOverride reports whether this provider delegates source-namespace selection
-// to the GitTargets it admits. See the field's documentation: false (the default) means a WatchRule
+// AllowsAnySourceNamespace reports whether this provider delegates source-namespace selection to
+// the GitTargets it admits. See the field's documentation: false (the default) means a WatchRule
 // mirroring through this provider may watch only its own namespace.
-func (p *ClusterProvider) AllowsSourceNamespaceOverride() bool {
-	return p.Spec.AllowSourceNamespaceOverride
+func (p *ClusterProvider) AllowsAnySourceNamespace() bool {
+	return p.Spec.AllowAnySourceNamespace
 }
 
 func init() {

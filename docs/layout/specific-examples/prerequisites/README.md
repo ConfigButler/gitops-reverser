@@ -21,15 +21,16 @@ provider in another namespace.
 ## Source cluster authority
 
 The examples here use the operator's in-cluster source. A target that captures objects from a
-different source namespace needs **two** grants, owned by different people: the `ClusterProvider`
-delegates the *ability* to choose a source namespace (`allowSourceNamespaceOverride`), and the
-`GitTarget` says *which* namespaces may arrive (`allowedSourceNamespaces`). Concrete specimens of
-both are in [`../../shapes/1-flat-serialized/config/`](../../shapes/1-flat-serialized/config/clusterprovider.yaml)
+different source namespace needs one grant, and it belongs to the platform admin: the
+`ClusterProvider` delegates the *ability* to choose a source namespace
+(`allowAnySourceNamespace`). What may actually be read is bounded by that provider credential's own
+RBAC in the source cluster. Concrete specimens are in
+[`../../shapes/1-flat-serialized/config/`](../../shapes/1-flat-serialized/config/clusterprovider.yaml)
 and [`../../shapes/3-tree-serialized/config/`](../../shapes/3-tree-serialized/config/clusterprovider.yaml).
 
-The source-cluster rule and source-namespace authorization are separate checks. The
-`ClusterProvider` decides which configuration namespaces can choose source namespaces. The
-`GitTarget` decides which of those source namespaces may write into its folder.
+The source-cluster rule and source-namespace authorization are separate checks. `accessFrom` decides
+which configuration namespaces may reference the provider at all; `allowAnySourceNamespace` decides
+whether those namespaces' `GitTarget`s may look outside their own.
 
 ## Credentials stay out of this design
 

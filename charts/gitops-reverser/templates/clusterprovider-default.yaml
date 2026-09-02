@@ -4,8 +4,8 @@
 # spec.clusterProviderRef. The operator never creates this object; the chart renders and OWNS it, so
 # clusterProvider.createDefault=false makes Helm delete it again. "default" is only a name: omitting
 # kubeConfig means the operator's own in-cluster cluster, and setting it points the same name at a
-# remote cluster. allowedNamespaces is deny-by-default; the chart default (an empty selector) admits
-# every namespace — tighten it via clusterProvider.default.allowedNamespaces.
+# remote cluster. accessFrom is deny-by-default; the chart default (an empty selector) admits
+# every namespace — tighten it via clusterProvider.default.accessFrom.
 apiVersion: configbutler.ai/v1alpha3
 kind: ClusterProvider
 metadata:
@@ -23,6 +23,6 @@ spec:
       {{- end }}
   {{- end }}
   {{- end }}
-  allowedNamespaces:
-    {{- toYaml .Values.clusterProvider.default.allowedNamespaces | nindent 4 }}
+  accessFrom:
+    {{- toYaml .Values.clusterProvider.default.accessFrom | nindent 4 }}
 {{- end }}

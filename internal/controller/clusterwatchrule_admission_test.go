@@ -32,10 +32,6 @@ import (
 type cwaWatchManager struct {
 	replans     int
 	onReconcile func()
-
-	// scope is the source-scope service this double hands back. It stays nil unless a test needs
-	// grants to be observable, so every existing test keeps the "no data plane is wired" path.
-	scope watch.SourceScopeService
 }
 
 func (m *cwaWatchManager) TriggerRuleChange(internaltypes.ResourceReference) {
@@ -80,14 +76,6 @@ func (m *cwaWatchManager) StreamSummaryForClusterWatchRule(
 	return cwaRunningSummary()
 }
 
-// SourceScope returns the injected service, or nil when a test wired none — in which case
-// selector-based allowedSourceNamespaces degrades to "cannot say yet" while exact names stay fully
-// answerable.
-func (m *cwaWatchManager) SourceScope() watch.SourceScopeService { return m.scope }
-
-// SourceNamespaceEvents returns nil, so no source-cluster Namespace channel is wired.
-func (m *cwaWatchManager) SourceNamespaceEvents() <-chan event.GenericEvent { return nil }
-
 func (m *cwaWatchManager) StreamStateEvents() <-chan event.GenericEvent { return nil }
 
 func cwaRunningSummary() watch.StreamSummary {
@@ -126,7 +114,7 @@ func cwaGitProvider() *configbutleraiv1alpha3.GitProvider {
 func cwaClusterProvider(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.ClusterProvider {
 	return &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaProviderName},
-		Spec:       configbutleraiv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
+		Spec:       configbutleraiv1alpha3.ClusterProviderSpec{AccessFrom: policy},
 	}
 }
 
@@ -258,7 +246,7 @@ func TestReconcile_ClusterWatchRuleRefusedWhenTargetNamespaceUnauthorized(t *tes
 
 // TestReconcile_ClusterWatchRuleRefusedWhenClusterProviderMissing covers the other half of the
 // shared gate: an undeclared provider is a hard denial, so an operator cannot sidestep
-// allowedNamespaces by simply never creating the provider.
+// accessFrom by simply never creating the provider.
 func TestReconcile_ClusterWatchRuleRefusedWhenClusterProviderMissing(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
@@ -371,7 +359,7 @@ func TestReconcile_AdmittedBySelectorOnNamespaceLabels(t *testing.T) {
 }
 
 // TestReconcile_RevocationRemovesCompiledRule is the revocation case: a rule that was admitted and
-// running must be torn down when the provider's allowedNamespaces stops admitting its target's
+// running must be torn down when the provider's accessFrom stops admitting its target's
 // namespace. Same terminal status as an initial denial.
 func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	ctx := context.Background()
@@ -387,10 +375,10 @@ func TestReconcile_RevocationRemovesCompiledRule(t *testing.T) {
 	require.Equal(t, []string{cwaRuleName}, f.compiledNames(), "precondition: the rule is running")
 	replansAfterAdmission := f.wm.replans
 
-	// Revoke: the namespace leaves allowedNamespaces.
+	// Revoke: the namespace leaves accessFrom.
 	var provider configbutleraiv1alpha3.ClusterProvider
 	require.NoError(t, f.client.Get(ctx, k8stypes.NamespacedName{Name: cwaProviderName}, &provider))
-	provider.Spec.AllowedNamespaces = cwaDenying()
+	provider.Spec.AccessFrom = cwaDenying()
 	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Round 2: the same reconcile now refuses.

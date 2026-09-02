@@ -10,13 +10,9 @@ spec:
     name: home
   branch: main
   path: clusters/home
-  # The WatchRule beside this file names source namespaces other than its own, so
-  # the folder owner must say which ones may arrive here. Without it the rule is
-  # refused (SourceNamespaceAuthorized=False) — the deny-by-default posture.
-  # NOTE: the wave in docs/design/source-scope-simplification.md DELETES this field;
-  # afterwards the ClusterProvider's allowAnySourceNamespace is the only grant needed.
-  allowedSourceNamespaces:
-    names: [shop, billing]
+  # The WatchRule beside this file names source namespaces other than its own. The
+  # ClusterProvider's allowAnySourceNamespace is the only grant that needs, and the
+  # source credential's RBAC bounds what it can actually read.
   # No placement declared and no kustomization anywhere in the subtree, so the
   # ladder falls through to the canonical identity path:
   #   {namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml

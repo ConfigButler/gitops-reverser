@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -25,8 +24,10 @@ import (
 // tenant's repository. Nothing else in the suite would catch it.
 //
 // The refusal spec is its safety twin: an unauthorized override must publish a terminal condition
-// AND write nothing at all. The wildcard spec is the third: "*" must resolve to exactly the
-// GitTarget's admitted set — never to every namespace that exists.
+// AND write nothing at all. The wildcard spec is the third, and it is the one whose MEANING
+// changed: "*" is now one cluster-wide watch bounded by the source credential's RBAC, so it reaches
+// a namespace no rule item and no policy ever named. That widening is the thing to keep asserted,
+// because nothing in the API shape shows it.
 var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func() {
 	const (
 		providerName = "gitprovider-srcns"
@@ -44,20 +45,18 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 
 	var (
 		// configNS holds the WatchRules and GitTargets; sourceNS is the namespace they WATCH. The
-		// two differ on purpose — that separation is the entire feature. wildcardNS is admitted by
-		// the granted target's policy but named by NO rule item, so only a wildcard can reach it.
-		// outsideNS exists to prove the policy is a bound rather than a hint: it is never admitted
-		// by any target here.
+		// two differ on purpose — that separation is the entire feature. wildcardNS is named by NO
+		// rule item, so only a wildcard can reach it. outsideNS is named by nothing either, and
+		// exists to prove that "*" really is cluster-wide rather than quietly enumerating.
 		configNS   string
 		sourceNS   string
 		wildcardNS string
 		outsideNS  string
 		srcnsRepo  *RepoArtifacts
-		grantedDir string
 	)
 
 	BeforeAll(func() {
-		By("creating separate config-plane, source, wildcard-only, and unadmitted namespaces")
+		By("creating separate config-plane, source, and two unnamed namespaces")
 		configNS = testNamespaceFor("srcns-config")
 		sourceNS = testNamespaceFor("srcns-source")
 		wildcardNS = testNamespaceFor("srcns-wildcard")
@@ -73,7 +72,6 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 			configNS,
 			fmt.Sprintf("e2e-srcns-%d", GinkgoRandomSeed()),
 		)
-		grantedDir = filepath.Join(srcnsRepo.CheckoutDir, grantedPath)
 		_, err := kubectlRunInNamespace(configNS, "apply", "-f", srcnsRepo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets")
 		applySOPSAgeKeyToNamespace(configNS)
@@ -92,15 +90,15 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		Expect(applyInClusterClusterProvider(nonDelegatingCP, configNS, false)).Error().
 			NotTo(HaveOccurred(), "failed to apply non-delegating ClusterProvider")
 
-		By("creating a GitTarget whose policy admits the source namespaces, and one that is refused")
-		// The granted target admits TWO namespaces; only sourceNS is ever named by a rule item, so
-		// wildcardNS is reachable exclusively through `sourceNamespace: "*"`.
-		Expect(applyGitTargetWithSourceNamespaces(
-			configNS, grantedTarget, providerName, grantedPath, delegatingCP,
-			sourceNS, wildcardNS)).Error().
+		By("creating one GitTarget behind the delegating provider and one behind the refusing one")
+		// The targets are identical. The only thing that differs is which ClusterProvider they
+		// mirror through, which is now the whole of the source-namespace policy: there is no
+		// per-target allow-list any more.
+		Expect(applyGitTargetForClusterProvider(
+			configNS, grantedTarget, providerName, grantedPath, delegatingCP)).Error().
 			NotTo(HaveOccurred(), "failed to apply granted GitTarget")
-		Expect(applyGitTargetWithSourceNamespaces(
-			configNS, refusedTarget, providerName, refusedPath, nonDelegatingCP, sourceNS)).Error().
+		Expect(applyGitTargetForClusterProvider(
+			configNS, refusedTarget, providerName, refusedPath, nonDelegatingCP)).Error().
 			NotTo(HaveOccurred(), "failed to apply refused GitTarget")
 
 		verifyResourceCondition("gittarget", grantedTarget, configNS, "Validated", "True", "Succeeded", "")
@@ -156,58 +154,51 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		}).Should(Succeed())
 	})
 
-	It("resolves a wildcard item to exactly the target's admitted set, and no further", func() {
-		By("creating a WatchRule whose item asks for every namespace the target admits")
-		Expect(applyWatchRuleWithSourceNamespace(
-			wildcardRule, configNS, grantedTarget, "*")).Error().
+	It("reaches every namespace the credential can read through one cluster-wide watch", func() {
+		By("creating a WatchRule whose item asks for every namespace")
+		// ConfigMaps only, deliberately. A cluster-wide "*" mirrors everything the credential can
+		// read, and adding secrets here would file every service-account token in the cluster into
+		// the fixture repository. That the widening reaches that far is the POINT of the change;
+		// one type is enough to observe it.
+		Expect(applyWildcardConfigMapWatchRule(
+			wildcardRule, configNS, grantedTarget)).Error().
 			NotTo(HaveOccurred(), "failed to apply wildcard WatchRule")
 
 		By("asserting the wildcard is authorized")
+		// The gate is what this spec is about. Whole-target Ready is deliberately NOT asserted: a
+		// cluster-wide mirror of a live k3d cluster is a throughput property, not a statement about
+		// "*", and gating on it would make this spec fail for reasons that have nothing to do with
+		// the semantics it pins.
 		verifyResourceCondition("watchrule", wildcardRule, configNS,
 			"SourceNamespaceAuthorized", "True", "SourceNamespaceAllowed", "")
-		verifyResourceStatus("watchrule", wildcardRule, configNS, "True", "Succeeded", "")
 
-		By("creating one ConfigMap in the wildcard-only namespace and one in an unadmitted namespace")
-		// wildcardNS is admitted by the target's policy but named by NO rule item, so anything
-		// arriving from it is attributable to the wildcard expansion alone. sourceNS would prove
-		// nothing here: the granted rule above already watches it by exact name.
-		const admittedCM = "srcns-wildcard-admitted"
+		By("creating ConfigMaps in two namespaces that NOTHING names")
+		// Neither namespace is named by a rule item, and there is no target policy that could have
+		// enumerated them. Under the previous meaning of "*" — every namespace the GitTarget's
+		// allowedSourceNamespaces admitted — both of these would have been out of reach. Both
+		// arriving is the redefinition, observed rather than asserted from the types.
+		const wildcardCM = "srcns-wildcard-unnamed"
 		const outsideCM = "srcns-wildcard-outside"
-		_, err := kubectlRunInNamespace(wildcardNS, "create", "configmap", admittedCM,
+		_, err := kubectlRunInNamespace(wildcardNS, "create", "configmap", wildcardCM,
 			"--from-literal=k=v")
 		Expect(err).NotTo(HaveOccurred())
 		_, err = kubectlRunInNamespace(outsideNS, "create", "configmap", outsideCM,
 			"--from-literal=k=v")
 		Expect(err).NotTo(HaveOccurred())
 
-		By("asserting the wildcard-only namespace arrives, under its own folder")
-		wantPath := path.Join(grantedPath, fmt.Sprintf("%s/configmaps/%s.yaml", wildcardNS, admittedCM))
+		By("asserting both arrive, each under its own namespace's folder")
+		wantWildcard := path.Join(grantedPath, fmt.Sprintf("%s/configmaps/%s.yaml", wildcardNS, wildcardCM))
+		wantOutside := path.Join(grantedPath, fmt.Sprintf("%s/configmaps/%s.yaml", outsideNS, outsideCM))
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, srcnsRepo.CheckoutDir)
-			g.Expect(filepath.Join(srcnsRepo.CheckoutDir, wantPath)).To(BeAnExistingFile(),
-				`"*" must expand to every namespace the target admits, including %q, which no rule `+
-					"item names. Recent commits:\n%s",
+			g.Expect(filepath.Join(srcnsRepo.CheckoutDir, wantWildcard)).To(BeAnExistingFile(),
+				`"*" must reach %q, which no rule item names. Recent commits:\n%s`,
 				wildcardNS, recentCommitDiagnostics(srcnsRepo.CheckoutDir, grantedPath))
-		}).Should(Succeed())
-
-		By("asserting the UNADMITTED namespace never does, against a real commit")
-		// "*" is bounded by allowedSourceNamespaces, never by what exists. If this regresses, a
-		// wildcard silently mirrors every namespace on the cluster into a tenant's repository.
-		Consistently(func(g Gomega) {
-			pullLatestRepoState(g, srcnsRepo.CheckoutDir)
-			g.Expect(findFileByBasename(grantedDir, outsideCM+".yaml")).To(BeEmpty(),
-				"a target whose policy admits only %q and %q must never receive an object from %q",
-				sourceNS, wildcardNS, outsideNS)
-			entries, statErr := os.ReadDir(grantedDir)
-			g.Expect(statErr).NotTo(HaveOccurred())
-			names := make([]string, 0, len(entries))
-			for _, e := range entries {
-				names = append(names, e.Name())
-			}
-			g.Expect(names).NotTo(ContainElement(outsideNS),
-				"and the unadmitted namespace must not even name a folder (saw %s)",
-				strings.Join(names, ", "))
-		}, 20*time.Second, 4*time.Second).Should(Succeed())
+			g.Expect(filepath.Join(srcnsRepo.CheckoutDir, wantOutside)).To(BeAnExistingFile(),
+				`"*" is bounded by the source credential's RBAC and nothing else, so %q arrives `+
+					"too. Recent commits:\n%s",
+				outsideNS, recentCommitDiagnostics(srcnsRepo.CheckoutDir, grantedPath))
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	It("keeps two explicitly-named source namespaces in separate folders", func() {
@@ -262,7 +253,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		By("asserting the terminal refusal is published with a fix-naming message")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"SourceNamespaceAuthorized", "False", "SourceNamespaceNotAllowed",
-			"allowSourceNamespaceOverride")
+			"allowAnySourceNamespace")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"Stalled", "True", "SourceNamespaceNotAllowed", "")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
@@ -296,40 +287,17 @@ kind: ClusterProvider
 metadata:
   name: %s
 spec:
-  allowedNamespaces:
+  accessFrom:
     names: [%s]
-  allowSourceNamespaceOverride: %t
+  allowAnySourceNamespace: %t
 `, name, allowedNS, delegate)
 	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
 }
 
-// applyGitTargetWithSourceNamespaces applies a GitTarget that declares an allowedSourceNamespaces
-// policy naming one or more source namespaces by exact name.
-func applyGitTargetWithSourceNamespaces(
-	ns, name, gitProvider, targetPath, clusterProvider string, sourceNSs ...string,
-) (string, error) {
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  providerRef:
-    kind: GitProvider
-    name: %s
-  branch: main
-  path: %s
-  clusterProviderRef:
-    name: %s
-  allowedSourceNamespaces:
-    names: [%s]
-`, name, ns, gitProvider, targetPath, clusterProvider, strings.Join(sourceNSs, ", "))
-	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
-}
-
-// applyWatchRuleWithSourceNamespace applies a WatchRule whose rule items watch a namespace OTHER
-// than the rule's own. sourceNamespace may be an exact name or "*".
-func applyWatchRuleWithSourceNamespace(name, ns, target, sourceNamespace string) (string, error) {
+// applyWildcardConfigMapWatchRule applies a WatchRule whose single item asks for ConfigMaps in
+// every namespace. One type, so the cluster-wide reach is observable without mirroring every
+// service-account token in the cluster into the fixture repository.
+func applyWildcardConfigMapWatchRule(name, ns, target string) (string, error) {
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
@@ -341,9 +309,7 @@ spec:
     name: %s
   rules:
     - resources: ["configmaps"]
-      sourceNamespace: %q
-    - resources: ["secrets"]
-      sourceNamespace: %q
-`, name, ns, target, sourceNamespace, sourceNamespace)
+      sourceNamespace: "*"
+`, name, ns, target)
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }

@@ -7,8 +7,6 @@ spec:
   allowedBranches:
     - main
     - nl-stuff
-  push:
-    commitWindow: "5s"
   secretRef:
     name: git-creds-demo
 ---
@@ -22,6 +20,8 @@ spec:
     name: demo
   branch: nl-stuff
   path: podinfos
+  commit:
+    window: "5s"
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule

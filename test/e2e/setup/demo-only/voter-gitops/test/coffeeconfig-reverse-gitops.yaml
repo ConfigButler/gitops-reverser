@@ -7,8 +7,6 @@ spec:
   allowedBranches:
     - main
     - demo-test
-  push:
-    commitWindow: "0s"
   secretRef:
     name: git-creds-demo
 ---
@@ -22,6 +20,8 @@ spec:
     name: demo-coffeeconfig
   branch: demo-test
   path: voter-coffee
+  commit:
+    window: "0s"
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule

@@ -151,34 +151,6 @@ type GitTargetSpec struct {
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
-	// There is deliberately NO self-namespace exception. An implicit carve-out would mean the field
-	// does not actually bound what arrives here, so a reader auditing it would be wrong about the
-	// target's contents — which is the whole reason the field exists. The resulting authoring
-	// footgun (adding a policy for one override silently denies co-resident legacy rules) is
-	// mitigated by being LOUD: SourceNamespaceAuthorized=False, Stalled=True, and a message naming
-	// the exact fix. `selector: {}` is the replacement for the removed cluster-wide namespaced
-	// ClusterWatchRule — declared by the destination owner rather than the rule author, and
-	// self-updating as namespaces come and go. The exact-names half stays answerable without any
-	// source-cluster Namespace access; that degradation path is deliberate, and it is the half most
-	// likely to regress unnoticed.
-
-	// AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
-	// target. It belongs to the DESTINATION, not to any requesting rule: once declared it is
-	// exhaustive for every WatchRule that writes here, with no exception for a rule's own namespace.
-	//
-	// Omitted and empty differ. Omitted declares no policy, and a WatchRule keeps its own namespace;
-	// a declared-but-empty policy admits nothing; `selector: {}` admits every source namespace.
-	// Selector labels are read in the SOURCE cluster, so evaluating one needs Namespace
-	// get/list/watch for that cluster's credential, while exact names need no such access. This is
-	// also what a rules[].sourceNamespace of "*" resolves through. Naming any namespace other than
-	// the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
-	// spec.allowSourceNamespaceOverride. It does NOT bound ClusterWatchRule, whose cluster-scoped
-	// objects have no namespace. Full resolution table: docs/configuration.md.
-	// +optional
-	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
-
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
 	// Deliberately MUTABLE, unlike the destination fields above. The whole point of the safe
 	// default is that a target keeps its documents while a scope mistake is diagnosed; turning
 	// convergence back on afterwards must not require deleting and recreating the GitTarget, which
@@ -190,6 +162,31 @@ type GitTargetSpec struct {
 	// ones are not — for a stored GitTarget as well as a new one.
 	// +optional
 	Prune *PrunePolicy `json:"prune,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// These fields lived on GitProvider until this release, as spec.push.commitWindow and
+	// spec.commit.message. GitProvider is the CONNECTION — a URL, a credential, the branches it
+	// will accept — and how a folder's writes are batched and phrased is a property of the folder,
+	// not of the route to the repository. Two GitTargets sharing one GitProvider had no way to
+	// disagree about either, which is the concrete cost of the old placement.
+	//
+	// They are grouped under spec.commit rather than landing as two top-level fields. The move is
+	// breaking either way, so the grouping is free HERE and would cost a bump in any later
+	// release; and spec.commit is the shape these fields already had on GitProvider, so nothing
+	// about them has to be relearned. See docs/design/gittarget-api-wave.md § "Where the fields
+	// live".
+	//
+	// What did NOT move: commit.committer and commit.signing stay on GitProvider. Both are
+	// properties of the identity that talks to the remote — the signing key is a Secret in the
+	// provider's namespace, and the committer is the bot the platform sees — so they belong to the
+	// connection in a way the window and the message do not.
+
+	// Commit configures how this target's writes are batched into commits, and how those commits
+	// are phrased. Omitted, writes coalesce over a 5s rolling silence window and use the built-in
+	// message templates.
+	// +optional
+	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
 	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
@@ -234,6 +231,34 @@ type GitTargetSpec struct {
 	// resync; the writes suppressed while suspended are not replayed.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+}
+
+// Design rationale, kept out of the generated CRD description by the blank line below.
+//
+// Message reuses CommitMessageSpec verbatim rather than collapsing its three templates into one.
+// The three render three genuinely different things with three different variable sets — a single
+// event, a reconcile of one type, and a grouped commit-window batch — so one template could only
+// have been a fourth thing, and inventing it is a redesign this move deliberately is not.
+
+// GitTargetCommitSpec configures how a GitTarget's writes become commits.
+type GitTargetCommitSpec struct {
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// It stays a string rather than becoming metav1.Duration because that is what it was on
+	// GitProvider, and re-typing a field in the same release that relocates it would make a
+	// mechanical migration a rewrite. Parsing stays at the write path, where an unparseable value
+	// falls back to the default loudly rather than blocking admission of the whole target.
+
+	// Window is the rolling silence window used to coalesce this target's events into a single
+	// commit per author. The timer resets on every event arrival, and the commit is made after
+	// this much silence. "0s" opts into per-event commits. Omitted, it is "5s".
+	// +optional
+	Window *string `json:"window,omitempty"`
+
+	// Message configures how this target's commit messages are formatted. Omitted, or with any
+	// individual template left empty, the built-in templates are used.
+	// +optional
+	Message *CommitMessageSpec `json:"message,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
@@ -584,26 +609,6 @@ func (g *GitTarget) SourceCluster() string {
 // default for SourceClusterReachable, which the watch manager overwrites as soon as it is wired.
 func (g *GitTarget) IsLocalSource() bool {
 	return g.SourceCluster() == DefaultClusterProviderName
-}
-
-// DeclaresSourceNamespacePolicy reports whether this target declares spec.allowedSourceNamespaces
-// at all. A declared policy is EXHAUSTIVE — it bounds every WatchRule item writing here, with no
-// self-namespace exception — while an absent one leaves a WatchRule its own namespace. Callers
-// must branch on this rather than on emptiness: a declared-but-empty policy admits nothing.
-func (g *GitTarget) DeclaresSourceNamespacePolicy() bool {
-	return g.Spec.AllowedSourceNamespaces.Declared()
-}
-
-// AllowsSourceNamespace reports whether a SOURCE-cluster namespace (by name and by the labels it
-// carries IN THE SOURCE CLUSTER) may be mirrored into this target, per spec.allowedSourceNamespaces.
-//
-// It is the source-side twin of ClusterProvider.AllowsNamespace, and both are thin wrappers over
-// NamespaceMatcher.Matches so the two policies cannot drift. It answers only the POLICY question:
-// the delegation flag, the provider's own admission of this target's namespace, and the
-// three-valued "can the labels be read at all" question are the caller's (see internal/authz).
-// An undeclared policy admits nothing here — callers apply the legacy rule themselves.
-func (g *GitTarget) AllowsSourceNamespace(nsName string, nsLabels map[string]string) (bool, error) {
-	return g.Spec.AllowedSourceNamespaces.Matches(nsName, nsLabels)
 }
 
 // +kubebuilder:object:root=true

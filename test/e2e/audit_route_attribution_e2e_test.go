@@ -87,8 +87,8 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 
 		By("creating a GitTarget that mirrors through the dedicated provider")
-		Expect(applyGitTargetWithSourceNamespaces(
-			testNs, gitTargetName, gitProvName, basePath, clusterProv, testNs, sourceNs)).Error().
+		Expect(applyGitTargetForClusterProvider(
+			testNs, gitTargetName, gitProvName, basePath, clusterProv)).Error().
 			NotTo(HaveOccurred(), "failed to apply the GitTarget")
 		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "Succeeded", "")
 	})
@@ -181,11 +181,57 @@ kind: ClusterProvider
 metadata:
   name: %s
 spec:
-  allowedNamespaces:
+  accessFrom:
     names: [%s, %s]
-  allowSourceNamespaceOverride: %t
+  allowAnySourceNamespace: %t
   attribution:
     auditRoute: %s
 `, name, allowedNS, extraNS, delegate, auditRoute)
 	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
+}
+
+// applyGitTargetForClusterProvider applies a GitTarget that mirrors through a named
+// ClusterProvider. Which SOURCE namespaces may reach it is bounded by that provider's
+// spec.allowAnySourceNamespace plus the source credential's own RBAC, not by any field here.
+func applyGitTargetForClusterProvider(
+	ns, name, gitProvider, targetPath, clusterProvider string,
+) (string, error) {
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  providerRef:
+    kind: GitProvider
+    name: %s
+  branch: main
+  path: %s
+  clusterProviderRef:
+    name: %s
+  commit:
+    window: "0s"
+`, name, ns, gitProvider, targetPath, clusterProvider)
+	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
+}
+
+// applyWatchRuleWithSourceNamespace applies a WatchRule whose rule items watch a namespace OTHER
+// than the rule's own. sourceNamespace may be an exact name or "*".
+func applyWatchRuleWithSourceNamespace(name, ns, target, sourceNamespace string) (string, error) {
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  targetRef:
+    kind: GitTarget
+    name: %s
+  rules:
+    - resources: ["configmaps"]
+      sourceNamespace: %q
+    - resources: ["secrets"]
+      sourceNamespace: %q
+`, name, ns, target, sourceNamespace, sourceNamespace)
+	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }

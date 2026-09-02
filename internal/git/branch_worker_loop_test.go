@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -16,43 +17,64 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-func TestGetCommitWindow_DefaultsAndParsing(t *testing.T) {
+func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
-	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	target := func(name string, window *string) *configv1alpha3.GitTarget {
+		spec := configv1alpha3.GitTargetSpec{
+			ProviderRef: configv1alpha3.GitProviderReference{Name: "p"},
+			Branch:      "main",
+			Path:        "clusters/prod",
+		}
+		if window != nil {
+			spec.Commit = &configv1alpha3.GitTargetCommitSpec{Window: window}
+		}
+		return &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"},
+			Spec:       spec,
+		}
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		target("unset", nil),
+		target("quarter", ptrString("250ms")),
+		target("zero", ptrString("0s")),
+		target("negative", ptrString("-2s")),
+		target("garbage", ptrString("not-a-duration")),
+	).Build()
 	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, 0)
+	ctx := t.Context()
 
-	defaultWindow := w.getCommitWindow(&configv1alpha3.GitProvider{})
-	assert.Equal(t, DefaultCommitWindow, defaultWindow)
+	for _, tc := range []struct {
+		name   string
+		target string
+		want   time.Duration
+		why    string
+	}{
+		{"unset", "unset", DefaultCommitWindow, "a target that declares no window takes the default"},
+		{"explicit", "quarter", 250 * time.Millisecond, "an explicit window is honored"},
+		{"zero", "zero", 0, `"0s" opts into per-event commits`},
+		{"negative", "negative", 0, "a negative window is treated as 0, not as the default"},
+		{"garbage", "garbage", DefaultCommitWindow, "a parse error falls back to the default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, w.commitWindowFor(ctx, tc.target, "ns", DefaultCommitWindow), tc.why)
+		})
+	}
 
-	parsed := w.getCommitWindow(&configv1alpha3.GitProvider{
-		Spec: configv1alpha3.GitProviderSpec{
-			Push: &configv1alpha3.PushStrategy{CommitWindow: ptrString("250ms")},
-		},
-	})
-	assert.Equal(t, 250*time.Millisecond, parsed)
+	// A window is a property of the GitTarget, so a worker serving two targets on one branch
+	// resolves two different cadences — which is the whole reason the field moved off GitProvider.
+	assert.NotEqual(t,
+		w.commitWindowFor(ctx, "quarter", "ns", DefaultCommitWindow),
+		w.commitWindowFor(ctx, "unset", "ns", DefaultCommitWindow),
+		"two GitTargets on one (provider, branch) worker may disagree about their commit window")
 
-	zero := w.getCommitWindow(&configv1alpha3.GitProvider{
-		Spec: configv1alpha3.GitProviderSpec{
-			Push: &configv1alpha3.PushStrategy{CommitWindow: ptrString("0s")},
-		},
-	})
-	assert.Equal(t, time.Duration(0), zero)
-
-	negative := w.getCommitWindow(&configv1alpha3.GitProvider{
-		Spec: configv1alpha3.GitProviderSpec{
-			Push: &configv1alpha3.PushStrategy{CommitWindow: ptrString("-2s")},
-		},
-	})
-	assert.Equal(t, time.Duration(0), negative, "negative commitWindow falls back to 0")
-
-	garbage := w.getCommitWindow(&configv1alpha3.GitProvider{
-		Spec: configv1alpha3.GitProviderSpec{
-			Push: &configv1alpha3.PushStrategy{CommitWindow: ptrString("not-a-duration")},
-		},
-	})
-	assert.Equal(t, DefaultCommitWindow, garbage, "parse error falls back to default")
+	assert.Equal(t, DefaultCommitWindow, w.commitWindowFor(ctx, "absent", "ns", DefaultCommitWindow),
+		"an unreadable GitTarget takes the fallback rather than stalling the batch")
+	assert.Equal(t, DefaultCommitWindow, w.commitWindowFor(ctx, "", "", DefaultCommitWindow),
+		"an unbound window (no target) takes the fallback")
 }
 
 // TestEventLoop_MaybeSchedulePush covers the cooldown gating logic without

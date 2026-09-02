@@ -399,12 +399,21 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
 	}
 
+	if commitOK, commitMsg := validateCommitConfig(target); !commitOK {
+		st.set(GitTargetConditionValidated,
+			metav1.ConditionFalse,
+			GitTargetReasonInvalidConfig,
+			commitMsg,
+		)
+		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
+	}
+
 	// The source cluster's connectivity inputs (kubeConfig) are validated on the referenced
 	// ClusterProvider now, not here — the GitTarget only NAMES its source cluster. The
 	// ClusterProvider's readiness is projected onto the GitTarget as a separate condition.
 
 	// Namespace authorization: a GitTarget may reference a ClusterProvider only from a namespace
-	// its spec.allowedNamespaces admits. Enforced HERE and only here, on every reconcile — which
+	// its spec.accessFrom admits. Enforced HERE and only here, on every reconcile — which
 	// also covers a policy tightened after the GitTarget was created. Failing this gate returns
 	// before DeclareForGitTarget below, so an unauthorized target starts no watch and writes no Git.
 	authorized, authReason, authMsg, authErr := r.checkSourceAuthorization(ctx, target)
@@ -420,7 +429,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	st.set(GitTargetConditionValidated,
 		metav1.ConditionTrue,
 		GitTargetReasonOK,
-		"Provider, branch, and placement validation passed",
+		"Provider, branch, placement and commit validation passed",
 	)
 	return true, "", nil, nil
 }
@@ -1177,7 +1186,7 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToGitTargets),
 			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
 		).
-		// React to a Namespace's LABELS changing: a ClusterProvider's allowedNamespaces selector is
+		// React to a Namespace's LABELS changing: a ClusterProvider's accessFrom selector is
 		// evaluated against namespace labels, so a label change can grant or revoke a GitTarget's
 		// authorization. Re-enqueue the GitTargets in that namespace so the reconcile-time refusal
 		// converges instead of waiting for the periodic reconcile. LabelChangedPredicate ignores the
@@ -1283,7 +1292,7 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 
 // clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it,
 // across ALL namespaces (the provider is cluster-scoped). It re-enqueues dependents when the
-// provider's Ready flips or its allowedNamespaces policy changes, so the projected
+// provider's Ready flips or its accessFrom policy changes, so the projected
 // ClusterProviderReady and the namespace-authorization refusal converge without waiting for the
 // periodic reconcile.
 func (r *GitTargetReconciler) clusterProviderToGitTargets(

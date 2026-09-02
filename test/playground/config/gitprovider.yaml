@@ -7,7 +7,5 @@ spec:
   url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/playground.git
   allowedBranches:
     - "main"
-  push:
-    commitWindow: "0s"
   secretRef:
     name: git-creds-playground

@@ -429,53 +429,6 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 		})
 
-		It("should fail when commit templates are invalid", func() {
-			gitProvider = &configbutleraiv1alpha3.GitProvider{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-provider-invalid-commit-template",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha3.GitProviderSpec{
-					URL:             "git@github.com:test/repo.git",
-					AllowedBranches: []string{"main"},
-					Commit: &configbutleraiv1alpha3.CommitSpec{
-						Message: &configbutleraiv1alpha3.CommitMessageSpec{
-							EventTemplate: "{{.Operation",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
-
-			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      gitProvider.Name,
-					Namespace: gitProvider.Namespace,
-				},
-			})
-
-			Expect(err).NotTo(HaveOccurred())
-			expectSteadyRequeue(result)
-
-			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
-			err = k8sClient.Get(
-				ctx,
-				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
-				updatedProvider,
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
-			condition := findCondition(updatedProvider.Status.Conditions, ConditionTypeReady)
-			Expect(condition).NotTo(BeNil())
-			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(ReasonCommitConfigInvalid))
-			Expect(condition.Message).To(ContainSubstring("invalid commit configuration"))
-			Expect(findCondition(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
-				To(Equal(metav1.ConditionTrue))
-			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
-		})
-
 		It("should fail when commit signing is configured but the signing secret is missing", func() {
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{

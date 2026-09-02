@@ -220,7 +220,7 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			provider := &ClusterProvider{Spec: ClusterProviderSpec{AllowedNamespaces: tc.policy}}
+			provider := &ClusterProvider{Spec: ClusterProviderSpec{AccessFrom: tc.policy}}
 
 			allowed, err := provider.AllowsNamespace(tc.nsName, tc.labels)
 			if tc.wantErr {

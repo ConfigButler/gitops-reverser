@@ -48,21 +48,23 @@ RBAC above is the hard maximum; *within* it, scope is carried by the rule **kind
 
 - A **`WatchRule`** selects namespaced resources. Each `spec.rules[]` item watches the rule's own
   namespace by default. Naming any other source namespace — including `sourceNamespace: "*"` —
-  requires both `ClusterProvider.spec.allowSourceNamespaceOverride` (a platform-admin delegation,
-  false by default) and an explicit `GitTarget.spec.allowedSourceNamespaces` entry admitting it. A
-  `"*"` expands to exactly that policy's set, never to every namespace that exists.
+  requires `ClusterProvider.spec.allowAnySourceNamespace`, a platform-admin delegation that is false
+  by default. That flag is the only namespace policy in this direction: what may actually be read is
+  bounded by the provider credential's own Kubernetes RBAC, and a `"*"` reaches every namespace that
+  credential can read, as one cluster-wide watch.
 
   On an **in-cluster** provider that delegation deliberately bypasses live namespace RBAC: the owner
   of an admitted `GitTarget` can then mirror another namespace's objects — read through the
   operator's own cluster-wide credential — into a Git destination they control. That is legitimate to
   grant on purpose, and it is why the flag exists and defaults to false.
 - A **`ClusterWatchRule`** selects cluster-scoped resources only. Cluster-scoped objects have no
-  namespace, so `allowedSourceNamespaces` is neither consulted nor a bound for it: it is
-  intentionally cluster-global. Isolating cluster-scoped objects between tenants therefore takes a
-  separate `ClusterProvider` and credential per tenant, so that credential's RBAC is the boundary.
+  namespace, so no namespace policy bounds it: it is intentionally cluster-global. Isolating
+  cluster-scoped objects between tenants therefore takes a separate `ClusterProvider` and credential
+  per tenant, so that credential's RBAC is the boundary.
 
-The audit question is one per kind: read a `WatchRule`'s items and its target's policy, or recognise
-a `ClusterWatchRule` as cluster-global.
+The audit question is one per kind: read a `WatchRule`'s items and the delegation flag on its
+target's `ClusterProvider`, or recognise a `ClusterWatchRule` as cluster-global. In both cases the
+provider credential's RBAC in the source cluster is the outer bound, and it is the only one.
 
 ## The controller does not hold Secret values
 

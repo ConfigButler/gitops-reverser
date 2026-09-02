@@ -439,12 +439,18 @@ func (r *CompiledResourceRule) matches(
 
 // matchesSourceNamespace checks the event's namespace against this item's RESOLVED set. An event
 // with no namespace is left to the caller's cluster-scope check rather than being filtered here.
+//
+// An EMPTY ENTRY in the set is the cluster-wide selection a `sourceNamespace: "*"` item compiles
+// to, and it matches every namespace. The identity is the same one CellKey uses (its Namespace doc
+// records why), so the router and the stream planner agree about what the item selects. Without
+// this the item would open a cluster-wide stream and then route none of its events, since no real
+// object carries the empty namespace.
 func (r *CompiledResourceRule) matchesSourceNamespace(eventNamespace string) bool {
 	if eventNamespace == "" {
 		return true
 	}
 	for _, ns := range r.SourceNamespaces {
-		if ns == eventNamespace {
+		if ns == "" || ns == eventNamespace {
 			return true
 		}
 	}

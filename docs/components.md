@@ -79,7 +79,7 @@ The operator's own API surface and the reconcilers behind it.
 | CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the six kinds users apply |
 | Reconcilers | [`internal/controller/`](../internal/controller/) | one per kind, plus shared condition and status helpers |
 | Admission handlers | [`internal/webhook/`](../internal/webhook/) | the always-allow observer and `validate-operator-types`, which captures a `CommitRequest` submitter |
-| Namespace admission | [`internal/authz/`](../internal/authz/) | the `ClusterProvider.spec.allowedNamespaces` decision, in its own package because three call sites need the same answer |
+| Namespace admission | [`internal/authz/`](../internal/authz/) | the `ClusterProvider.spec.accessFrom` decision and the `spec.allowAnySourceNamespace` gate, in their own package because several call sites need the same answer |
 | Rule store | [`internal/rulestore/`](../internal/rulestore/) | compiled `WatchRule` and `ClusterWatchRule` cache the data plane reads |
 
 ### Type and scope resolution
@@ -94,7 +94,6 @@ this GitTarget claim". Every source cluster gets its own instance of the whole s
 | Followability registry | [`internal/typeset/registry.go`](../internal/typeset/registry.go) | applies "additions fast, removals slow": retain-on-error, and a removal grace before a type is called withdrawn |
 | Relevance funnel | [`internal/typeset/funnel.go`](../internal/typeset/funnel.go) | the pure function that judges one type followable, and names the single reason when it is not |
 | `WatchedTypeTable` | [`internal/watch/watched_type_table.go`](../internal/watch/watched_type_table.go) | the per-GitTarget resident set of claimed and followable `(GVR, scope)` with its operation filter, which `targetWatchStreams` collapses to one stream per cell |
-| Source-namespace scope | [`internal/watch/source_namespace_scope.go`](../internal/watch/source_namespace_scope.go) | Namespace label snapshots for `allowedSourceNamespaces` selectors, refreshed on the manager's cadence rather than by an informer |
 | `clusterContext` | [`internal/watch/cluster_context.go`](../internal/watch/cluster_context.go) | one per distinct cluster: catalog, registry, dynamic client, discovery client, reachability |
 | Type lifecycle | [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) | names each verdict transition (`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`) so a consumer reacts to an edge instead of diffing tables. `Registry.Subscribe` has no observer yet; it is a future input to the watch plan |
 
@@ -186,7 +185,6 @@ flowchart LR
 | API-surface triggers | **types**: `CustomResourceDefinition` and `APIService` objects | config plane only | one private `dynamicinformer` per resource ([`internal/watch/manager_catalog.go:458`](../internal/watch/manager_catalog.go#L458)) |
 | Catalog refresh | **types**: the served API surface | every cluster, including remote | polled every 30s, plus rule changes and the trigger above ([`internal/watch/manager.go:288`](../internal/watch/manager.go#L288)) |
 | Target watches | **objects** of claimed types | source cluster | raw `dynamic ... Watch()`, no informer and no cache ([`internal/watch/target_watch.go:969`](../internal/watch/target_watch.go#L969)) |
-| Namespace snapshot | `Namespace` labels for `allowedSourceNamespaces` | source cluster | periodic LIST, armed lazily by demand ([`internal/watch/source_namespace_scope.go`](../internal/watch/source_namespace_scope.go)) |
 
 Two more paths reach the operator without being watches at all. The audit webhook is a **push** from
 kube-apiserver, and the admission webhooks are synchronous requests. Neither observes state.

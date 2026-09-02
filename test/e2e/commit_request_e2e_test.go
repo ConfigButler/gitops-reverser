@@ -35,8 +35,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		watchRuleName string
 	)
 
-	// commitWindow is long enough that the silence timer cannot be what
-	// produces the commit within the assertion timeout below.
+	// commitWindow is long enough that the silence timer cannot be what produces the commit within
+	// the assertion timeout below. It is a GitTarget field (spec.commit.window).
 	const commitWindow = "300s"
 
 	BeforeAll(func() {
@@ -57,10 +57,11 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		gitTargetName = fmt.Sprintf("commit-request-gittarget-%d", seed)
 		watchRuleName = fmt.Sprintf("commit-request-watchrule-%d", seed)
 
-		By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
-		createReadyGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
+		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 
-		createValidatedGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-test")
+		By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
+		createValidatedGitTargetWithCommitWindow(
+			gitTargetName, testNs, gitProvName, "e2e/commit-request-test", commitWindow)
 
 		// Watch Deployments, not ConfigMaps: a fresh namespace contains NO Deployments, whereas every
 		// namespace is pre-populated with a kube-root-ca.crt ConfigMap that a configmaps WatchRule
@@ -275,7 +276,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		watchRuleName string
 	)
 
-	// A long commitWindow so the silence timer can never be what produces the
+	// A long spec.commit.window so the silence timer can never be what produces the
 	// commit — only the CommitRequest finalize may (A1).
 	const commitWindow = "300s"
 
@@ -297,10 +298,11 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		gitTargetName = fmt.Sprintf("commit-request-bundle-gittarget-%d", seed)
 		watchRuleName = fmt.Sprintf("commit-request-bundle-watchrule-%d", seed)
 
-		By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
-		createReadyGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
+		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 
-		createValidatedGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-bundle")
+		By(fmt.Sprintf("creating GitTarget with spec.commit.window=%s", commitWindow))
+		createValidatedGitTargetWithCommitWindow(
+			gitTargetName, testNs, gitProvName, "e2e/commit-request-bundle", commitWindow)
 
 		// Deployments only (no ConfigMaps): a fresh namespace has no Deployments, so
 		// main stays absent until the bundle is finalized — unlike a ConfigMap rule,

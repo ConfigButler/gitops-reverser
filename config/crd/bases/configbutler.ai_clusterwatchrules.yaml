@@ -49,7 +49,7 @@ spec:
           It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
           (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
           mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
-          spec.rules[].sourceNamespace, whose "*" reaches every namespace the GitTarget admits.
+          spec.rules[].sourceNamespace, whose "*" reaches every namespace the source credential can read.
         properties:
           apiVersion:
             description: |-

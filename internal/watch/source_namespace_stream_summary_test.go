@@ -22,9 +22,9 @@ import (
 // Ready=False — forever, even though its stream was live. Mock WatchManagers hid it; only the real
 // summary path exercises the key.
 //
-// PR 4 raises the stakes: a `sourceNamespace: "*"` item's namespace set does not exist in the spec
-// AT ALL, so a summary rebuilt from the spec cannot even guess the keys. The roll-up therefore reads
-// the COMPILED rule.
+// A `sourceNamespace: "*"` item raises the stakes: what it resolves to is not in the spec at all, so
+// a summary rebuilt from the spec cannot even guess the key. The roll-up therefore reads the
+// COMPILED rule.
 
 func srcnsSummaryManager(t *testing.T) *Manager {
 	t.Helper()
@@ -110,35 +110,54 @@ func TestStreamSummaryForWatchRule_WrongNamespaceKeyMisses(t *testing.T) {
 	assert.False(t, summary.StreamsRunning())
 }
 
-// TestStreamSummaryForWatchRule_WildcardReadsTheCompiledRule is the §5 hazard. A wildcard's resolved
-// namespaces exist ONLY in the compiled rule, so a summary rebuilt from the spec would look for
-// streams under keys that were never opened and report a perfectly healthy rule as permanently
-// not-ready.
+// A wildcard resolves to the CLUSTER-WIDE cell — the empty namespace — which exists only in the
+// compiled rule. A summary rebuilt from the spec would look for a stream under the rule's own
+// namespace, find nothing, and report a perfectly healthy rule as permanently not-ready.
 func TestStreamSummaryForWatchRule_WildcardReadsTheCompiledRule(t *testing.T) {
 	m := srcnsSummaryManager(t)
 	rule := srcnsOverrideRule(configv1alpha3.SourceNamespaceWildcard)
-	compileForSummary(m, rule, itemScope("repo-config", "team-payments"))
+	compileForSummary(m, rule, itemScope(""))
 
-	for _, ns := range []string{"repo-config", "team-payments"} {
-		m.seedStreamState(srcnsGitDest(),
-			targetWatchKey{GVR: srcnsConfigMaps(), Namespace: ns},
-			targetStreamStatus{state: StreamStateStreaming})
-	}
+	m.seedStreamState(srcnsGitDest(),
+		targetWatchKey{GVR: srcnsConfigMaps(), Namespace: ""},
+		targetStreamStatus{state: StreamStateStreaming})
 
 	summary := m.StreamSummaryForWatchRule(rule)
 
-	assert.Equal(t, 1, summary.Total, "the roll-up counts TYPES, not (type × namespace) streams")
+	assert.Equal(t, 1, summary.Total,
+		"a wildcard is ONE stream per type, not one per namespace")
 	assert.Equal(t, 1, summary.Ready)
 	assert.True(t, summary.StreamsRunning(),
-		"a wildcard rule whose streams are running must report ready")
+		"a wildcard rule whose cluster-wide stream is running must report ready")
 }
 
-// TestStreamSummaryForWatchRule_WildcardWithOnePendingNamespaceIsNotReady: the roll-up folds every
-// resolved namespace of a type, so one namespace still replaying holds the type back.
-func TestStreamSummaryForWatchRule_WildcardWithOnePendingNamespaceIsNotReady(t *testing.T) {
+// A wildcard's cluster-wide stream is not found under a NAMED namespace key. This is the miss the
+// roll-up used to have in the other direction, kept pointing the way the redefinition moved it.
+func TestStreamSummaryForWatchRule_WildcardIsNotFoundUnderANamedKey(t *testing.T) {
 	m := srcnsSummaryManager(t)
 	rule := srcnsOverrideRule(configv1alpha3.SourceNamespaceWildcard)
-	compileForSummary(m, rule, itemScope("repo-config", "team-payments"))
+	compileForSummary(m, rule, itemScope(""))
+
+	m.seedStreamState(srcnsGitDest(),
+		targetWatchKey{GVR: srcnsConfigMaps(), Namespace: "repo-config"},
+		targetStreamStatus{state: StreamStateStreaming})
+
+	summary := m.StreamSummaryForWatchRule(rule)
+
+	assert.False(t, summary.StreamsRunning(),
+		"the cluster-wide cell is a PEER of a named one, so a named stream does not satisfy it")
+}
+
+// The roll-up folds every resolved namespace of a type, so one namespace still replaying holds the
+// type back. Reachable now through two named items rather than through a wildcard, which resolves
+// to a single cell.
+func TestStreamSummaryForWatchRule_OnePendingNamespaceHoldsTheTypeBack(t *testing.T) {
+	m := srcnsSummaryManager(t)
+	rule := srcnsOverrideRule("repo-config")
+	rule.Spec.Rules = append(rule.Spec.Rules, configv1alpha3.ResourceRule{
+		Resources: []string{"configmaps"}, SourceNamespace: "team-payments",
+	})
+	compileForSummary(m, rule, [][]string{{"repo-config"}, {"team-payments"}})
 
 	m.seedStreamState(srcnsGitDest(),
 		targetWatchKey{GVR: srcnsConfigMaps(), Namespace: "repo-config"},
@@ -148,7 +167,7 @@ func TestStreamSummaryForWatchRule_WildcardWithOnePendingNamespaceIsNotReady(t *
 	summary := m.StreamSummaryForWatchRule(rule)
 
 	assert.False(t, summary.StreamsRunning(),
-		"one namespace of a wildcard still converging must hold the type back")
+		"one namespace of a multi-namespace rule still converging must hold the type back")
 }
 
 // TestStreamSummaryForWatchRule_UncompiledRuleExpectsNoStreams: a rule the gate refused (or one the

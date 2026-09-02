@@ -19,7 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
-	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
@@ -31,15 +30,14 @@ const (
 	wrsnProvider = "workspaces"
 )
 
-func wrsnGitTarget(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.GitTarget {
+func wrsnGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnTarget, Namespace: wrsnTenantNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef:             configbutleraiv1alpha3.GitProviderReference{Name: "git"},
-			ClusterProviderRef:      &configbutleraiv1alpha3.ClusterProviderReference{Name: wrsnProvider},
-			Branch:                  "main",
-			Path:                    "tenants/acme",
-			AllowedSourceNamespaces: policy,
+			ProviderRef:        configbutleraiv1alpha3.GitProviderReference{Name: "git"},
+			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: wrsnProvider},
+			Branch:             "main",
+			Path:               "tenants/acme",
 		},
 	}
 }
@@ -54,10 +52,10 @@ func wrsnClusterProvider(delegate bool) *configbutleraiv1alpha3.ClusterProvider 
 	return &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnProvider},
 		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{
+			AccessFrom: &configbutleraiv1alpha3.NamespaceMatcher{
 				Names: []string{wrsnTenantNS},
 			},
-			AllowSourceNamespaceOverride: delegate,
+			AllowAnySourceNamespace: delegate,
 		},
 	}
 }
@@ -141,12 +139,11 @@ func wrsnCondition(t *testing.T, rule *configbutleraiv1alpha3.WatchRule, conditi
 }
 
 func wrsnBaseObjects(
-	policy *configbutleraiv1alpha3.NamespaceMatcher,
 	delegate bool,
 	sourceNamespaces ...string,
 ) []client.Object {
 	return []client.Object{
-		wrsnGitTarget(policy),
+		wrsnGitTarget(),
 		wrsnGitProvider(),
 		wrsnClusterProvider(delegate),
 		wrsnWatchRule(sourceNamespaces...),
@@ -160,7 +157,7 @@ func wrsnBaseObjects(
 // flag. If this fails, deny-by-default has broken every existing WatchRule on upgrade.
 func TestReconcile_LegacyWatchRuleNeedsNoPolicyOrFlag(t *testing.T) {
 	ctx := context.Background()
-	f := newWRSNFixture(t, wrsnBaseObjects(nil, false, ""))
+	f := newWRSNFixture(t, wrsnBaseObjects(false, ""))
 
 	_, err := f.reconcile(ctx)
 
@@ -180,7 +177,6 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	ctx := context.Background()
 	// The target names the namespace, but the provider does not delegate.
 	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}},
 		false, wrsnSourceNS))
 
 	_, err := f.reconcile(ctx)
@@ -192,7 +188,7 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "allowSourceNamespaceOverride",
+	assert.Contains(t, cond.Message, "allowAnySourceNamespace",
 		"the message must name the fix")
 }
 
@@ -200,7 +196,7 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 // refusal produces: Failed, under the one reason an operator greps for.
 func TestReconcile_DeniedSourceNamespacePublishesTheFailedTrio(t *testing.T) {
 	ctx := context.Background()
-	f := newWRSNFixture(t, wrsnBaseObjects(nil, true, wrsnSourceNS))
+	f := newWRSNFixture(t, wrsnBaseObjects(false, wrsnSourceNS))
 
 	_, err := f.reconcile(ctx)
 	require.NoError(t, err)
@@ -231,7 +227,6 @@ func TestReconcile_DeniedSourceNamespacePublishesTheFailedTrio(t *testing.T) {
 func TestReconcile_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T) {
 	ctx := context.Background()
 	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}},
 		true, wrsnSourceNS))
 
 	_, err := f.reconcile(ctx)
@@ -248,28 +243,24 @@ func TestReconcile_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T
 }
 
 // TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans is the REVOCATION contract.
-// A rule accepted and then denied by a tightened policy must have its compiled rule REMOVED and
+// A rule accepted and then denied by a withdrawn delegation must have its compiled rule REMOVED and
 // the watch manager replanned — and the removal must already have happened by the time the replan
 // runs, because status is published only after that. A gate that reports without stopping is not a
 // gate.
 func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *testing.T) {
 	ctx := context.Background()
 	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}},
 		true, wrsnSourceNS))
 
 	_, err := f.reconcile(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []string{wrsnRule}, f.compiledNames(), "precondition: the rule is compiled")
 
-	// The target owner tightens the policy so it no longer admits the namespace.
-	var target configbutleraiv1alpha3.GitTarget
-	require.NoError(t, f.client.Get(ctx,
-		k8stypes.NamespacedName{Name: wrsnTarget, Namespace: wrsnTenantNS}, &target))
-	target.Spec.AllowedSourceNamespaces = &configbutleraiv1alpha3.NamespaceMatcher{
-		Names: []string{"a-completely-different-namespace"},
-	}
-	require.NoError(t, f.client.Update(ctx, &target))
+	// The platform admin withdraws the delegation.
+	var provider configbutleraiv1alpha3.ClusterProvider
+	require.NoError(t, f.client.Get(ctx, k8stypes.NamespacedName{Name: wrsnProvider}, &provider))
+	provider.Spec.AllowAnySourceNamespace = false
+	require.NoError(t, f.client.Update(ctx, &provider))
 
 	// Observe the world at the exact moment the data plane is replanned.
 	var compiledAtReplan []string
@@ -286,180 +277,22 @@ func TestReconcile_RevokedSourceNamespaceRemovesTheCompiledRuleAndReplans(t *tes
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 }
 
-// TestReconcile_DeclaredPolicyDeniesCoResidentLegacyRule is the no-self-namespace-exception rule at
-// the reconciler, plus its mitigation: the denial must NAME the fix, since this is the design's
-// acknowledged authoring footgun.
-func TestReconcile_DeclaredPolicyDeniesCoResidentLegacyRule(t *testing.T) {
+// A ClusterProvider that delegates puts NO further namespace policy in the way: the source
+// credential's own RBAC is the bound, and this gate does not try to predict it. That is the whole
+// simplification, so it is asserted rather than left implied — the previous release refused this
+// exact rule unless a GitTarget policy also listed the namespace.
+func TestReconcile_DelegationIsTheOnlyPolicyLeft(t *testing.T) {
 	ctx := context.Background()
-	// A policy was added for some other namespace; this rule watches its OWN namespace.
-	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}},
-		true, ""))
+	f := newWRSNFixture(t, wrsnBaseObjects(true, "some-namespace-nobody-declared"))
 
 	_, err := f.reconcile(ctx)
 	require.NoError(t, err)
 
-	assert.Empty(t, f.compiledNames(), "a declared policy is exhaustive, own namespace included")
-
-	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
-	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "add it to keep watching this rule's own namespace",
-		"the footgun is only acceptable because the denial names the exact fix")
-}
-
-// TestReconcile_DeclaredPolicyAdmittingOwnNamespaceCompiles is the other half: listing the rule's
-// own namespace explicitly is how a legacy rule co-exists with a policy.
-func TestReconcile_DeclaredPolicyAdmittingOwnNamespaceCompiles(t *testing.T) {
-	ctx := context.Background()
-	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnTenantNS, wrsnSourceNS}},
-		true, ""))
-
-	_, err := f.reconcile(ctx)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{wrsnRule}, f.compiledNames())
+	assert.Equal(t, []string{wrsnRule}, f.compiledNames(),
+		"with the delegation granted, no second allow-list stands between the rule and the watch")
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceAllowed, cond.Reason)
-}
-
-// wrsnScopeRecorder is a SourceScopeService that keeps grants exactly as the real one does — keyed
-// by rule AND spec hash — and answers every selector question with a configurable verdict, so a
-// test can make a policy unevaluatable without a source cluster.
-type wrsnScopeRecorder struct {
-	grants    map[k8stypes.NamespacedName]string
-	forgotten []k8stypes.NamespacedName
-	answer    authz.SourceScopeResult
-}
-
-func newWRSNScopeRecorder(answer authz.SourceScopeResult) *wrsnScopeRecorder {
-	return &wrsnScopeRecorder{grants: map[k8stypes.NamespacedName]string{}, answer: answer}
-}
-
-func (s *wrsnScopeRecorder) ResolveSourceNamespace(
-	context.Context, *configbutleraiv1alpha3.GitTarget, string,
-) authz.SourceScopeResult {
-	return s.answer
-}
-
-func (s *wrsnScopeRecorder) EnumerateSourceNamespaces(
-	context.Context, *configbutleraiv1alpha3.GitTarget,
-) ([]string, authz.SourceScopeResult) {
-	return nil, s.answer
-}
-
-func (s *wrsnScopeRecorder) RetainedSourceScope(
-	rule k8stypes.NamespacedName, specHash string,
-) ([][]string, bool) {
-	stored, ok := s.grants[rule]
-	if !ok || stored != specHash {
-		return nil, false
-	}
-	return [][]string{{wrsnSourceNS}}, true
-}
-
-func (s *wrsnScopeRecorder) RecordSourceScopeGrant(
-	rule k8stypes.NamespacedName, specHash string, _ [][]string,
-) {
-	s.grants[rule] = specHash
-}
-
-func (s *wrsnScopeRecorder) ForgetSourceScopeGrant(rule k8stypes.NamespacedName) {
-	s.forgotten = append(s.forgotten, rule)
-	delete(s.grants, rule)
-}
-
-// TestReconcile_DeletedWatchRuleForgetsItsRetainedScope closes the delete/recreate inheritance.
-//
-// The retained grant is the ONE thing that distinguishes a rule MAINTAINING an already-resolved
-// scope from one ESTABLISHING its first — and the two branches are deliberately opposite: the first
-// retains and reports Unknown, the second refuses and reports a terminal, actionable Stalled. A
-// grant left behind by a deleted rule is inherited by the next rule created under that name and
-// spec, which a different tenant may now own, and its unevaluatable policy then reads as
-// "maintaining" forever. The rule never runs and never explains why.
-//
-// The recreated rule here is byte-identical to the deleted one, because that is the case the spec
-// hash cannot catch — only forgetting the grant can.
-func TestReconcile_DeletedWatchRuleForgetsItsRetainedScope(t *testing.T) {
-	ctx := context.Background()
-	ruleKey := k8stypes.NamespacedName{Name: wrsnRule, Namespace: wrsnTenantNS}
-
-	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}}, true, wrsnSourceNS))
-	scope := newWRSNScopeRecorder(authz.SourceScopeResult{
-		Verdict: authz.SourceScopeUnavailable,
-		Message: "listing Namespaces is forbidden for this credential",
-	})
-	f.wm.scope = scope
-
-	// An exact-name policy needs no source-cluster access, so the rule compiles and records a grant.
-	_, err := f.reconcile(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []string{wrsnRule}, f.compiledNames())
-	require.Contains(t, scope.grants, ruleKey, "precondition: an admitted rule records its grant")
-
-	// Delete it.
-	require.NoError(t, f.client.Delete(ctx, wrsnWatchRule(wrsnSourceNS)))
-	_, err = f.reconcile(ctx)
-	require.NoError(t, err)
-	require.Empty(t, f.compiledNames())
-
-	assert.Equal(t, []k8stypes.NamespacedName{ruleKey}, scope.forgotten,
-		"the deleted rule's grant must be dropped with it")
-	assert.NotContains(t, scope.grants, ruleKey)
-
-	// The same name and the same spec come back — but now the target's policy is a selector that
-	// cannot be evaluated. With no grant of its own, this rule is ESTABLISHING.
-	target := &configbutleraiv1alpha3.GitTarget{}
-	require.NoError(t, f.client.Get(ctx,
-		k8stypes.NamespacedName{Name: wrsnTarget, Namespace: wrsnTenantNS}, target))
-	target.Spec.AllowedSourceNamespaces = &configbutleraiv1alpha3.NamespaceMatcher{
-		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
-	}
-	require.NoError(t, f.client.Update(ctx, target))
-	require.NoError(t, f.client.Create(ctx, wrsnWatchRule(wrsnSourceNS)))
-
-	_, err = f.reconcile(ctx)
-	require.NoError(t, err)
-
-	assert.Empty(t, f.compiledNames(), "an unevaluatable policy establishes nothing")
-	rule := f.reloadRule(ctx, t)
-	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
-	assert.Equal(t, metav1.ConditionFalse, cond.Status,
-		"establishing must refuse; inheriting the dead rule's grant would report Unknown instead")
-	assert.Equal(t, WatchRuleReasonSourceNamespacePolicyUnavailable, cond.Reason)
-	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeStalled).Status,
-		"only an operator change fixes this, so it must be terminal and visible")
-}
-
-// TestReconcile_SelectorPolicyWithNoSourceScopeIsInProgress covers the Unknown row of the status
-// table: with no source-scope service wired, a selector policy is "cannot say yet". It must be
-// InProgress (Reconciling=True, Stalled=False), never Failed — turning a transient into a terminal
-// state is precisely what the three-valued result exists to prevent.
-func TestReconcile_SelectorPolicyWithNoSourceScopeIsInProgress(t *testing.T) {
-	ctx := context.Background()
-	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
-		},
-		true, wrsnSourceNS))
-
-	_, err := f.reconcile(ctx)
-	require.NoError(t, err)
-
-	assert.Empty(t, f.compiledNames(), "no grant is established, so nothing runs")
-
-	rule := f.reloadRule(ctx, t)
-	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
-	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
-	assert.Equal(t, WatchRuleReasonCheckingSourceNamespacePolicy, cond.Reason)
-
-	assert.Equal(t, metav1.ConditionFalse, wrsnCondition(t, rule, ConditionTypeReady).Status)
-	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeReconciling).Status)
-	assert.Equal(t, metav1.ConditionFalse, wrsnCondition(t, rule, ConditionTypeStalled).Status,
-		"a cache that has not synced is not a stalled rule")
 }
 
 // TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying: a transient apiserver failure must
@@ -469,7 +302,6 @@ func TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying(t *testing.T) 
 	boom := errors.New("etcdserver: request timed out")
 
 	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}},
 		true, wrsnSourceNS))
 
 	// Compile it once cleanly.
@@ -481,7 +313,6 @@ func TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying(t *testing.T) 
 	f.reconciler.Client = fake.NewClientBuilder().
 		WithScheme(scScheme(t)).
 		WithObjects(wrsnBaseObjects(
-			&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}},
 			true, wrsnSourceNS)...).
 		WithStatusSubresource(&configbutleraiv1alpha3.WatchRule{}).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -510,7 +341,6 @@ func TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying(t *testing.T) 
 func TestReconcile_MixedItemsCompileTheirOwnScopes(t *testing.T) {
 	ctx := context.Background()
 	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnTenantNS, wrsnSourceNS}},
 		true, "", wrsnSourceNS, configbutleraiv1alpha3.SourceNamespaceWildcard))
 
 	_, err := f.reconcile(ctx)
@@ -523,8 +353,8 @@ func TestReconcile_MixedItemsCompileTheirOwnScopes(t *testing.T) {
 		"an omitted item resolves to the rule's own namespace")
 	assert.Equal(t, []string{wrsnSourceNS}, compiled[0].ResourceRules[1].SourceNamespaces,
 		"an explicit item resolves to exactly what it named")
-	assert.Equal(t, []string{wrsnSourceNS, wrsnTenantNS}, compiled[0].ResourceRules[2].SourceNamespaces,
-		`"*" expands to the target's whole admitted set`)
+	assert.Equal(t, []string{""}, compiled[0].ResourceRules[2].SourceNamespaces,
+		`"*" is one cluster-wide list and watch, which is the empty namespace`)
 
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
@@ -536,9 +366,8 @@ func TestReconcile_MixedItemsCompileTheirOwnScopes(t *testing.T) {
 // rule asked for is worse than a loud failure — and the message must name the offending item.
 func TestReconcile_DeniedItemRefusesTheWholeRule(t *testing.T) {
 	ctx := context.Background()
-	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnTenantNS, wrsnSourceNS}},
-		true, "", wrsnSourceNS, "tenant-zen"))
+	// Item 0 is the free legacy case; item 1 asks for a namespace the provider does not delegate.
+	f := newWRSNFixture(t, wrsnBaseObjects(false, "", "tenant-zen"))
 
 	_, err := f.reconcile(ctx)
 	require.NoError(t, err)
@@ -549,32 +378,26 @@ func TestReconcile_DeniedItemRefusesTheWholeRule(t *testing.T) {
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "spec.rules[2]", "the message names the failing item by index...")
+	assert.Contains(t, cond.Message, "spec.rules[1]", "the message names the failing item by index...")
 	assert.Contains(t, cond.Message, "tenant-zen", "...and by what it asked for")
 }
 
-// TestReconcile_EmptyWildcardIsAuthorizedButNotSilentlyHealthy is the other half of decision 5. A
-// "*" against a policy that currently admits nothing is valid — the rule is NOT stalled — but it
-// mirrors nothing, and a rule that mirrors nothing while reporting Ready=True with no explanation is
-// a silent no-op. The reason is what makes it visible.
-func TestReconcile_EmptyWildcardIsAuthorizedButNotSilentlyHealthy(t *testing.T) {
+// "*" is refused outright while the provider does not delegate, and the refusal names the flag. It
+// is the widest request in the API — every namespace the credential can read — so it must not be
+// the one that slips past a provider granting nothing.
+func TestReconcile_WildcardWithoutDelegationIsRefused(t *testing.T) {
 	ctx := context.Background()
-	f := newWRSNFixture(t, wrsnBaseObjects(
-		&configbutleraiv1alpha3.NamespaceMatcher{}, // declared, and admits nothing
-		true, configbutleraiv1alpha3.SourceNamespaceWildcard))
+	f := newWRSNFixture(t, wrsnBaseObjects(false, configbutleraiv1alpha3.SourceNamespaceWildcard))
 
 	_, err := f.reconcile(ctx)
 	require.NoError(t, err)
 
-	compiled := f.store.SnapshotWatchRules()
-	require.Len(t, compiled, 1, "an empty admitted set is not a refusal: the rule still compiles")
-	assert.Empty(t, compiled[0].ResourceRules[0].SourceNamespaces,
-		"...but it watches nothing, rather than falling back to a wider scope")
-
+	assert.Empty(t, f.compiledNames())
 	rule := f.reloadRule(ctx, t)
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
-	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-	assert.Equal(t, WatchRuleReasonNoAdmittedSourceNamespaces, cond.Reason)
-	assert.Equal(t, metav1.ConditionFalse, wrsnCondition(t, rule, ConditionTypeStalled).Status,
-		"a rule with nothing to watch is not stalled — nothing is wrong with it")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
+	assert.Contains(t, cond.Message, "allowAnySourceNamespace")
+	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeStalled).Status,
+		"a refusal is terminal: nothing this controller does will change the verdict")
 }

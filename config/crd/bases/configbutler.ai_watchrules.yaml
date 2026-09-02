@@ -160,13 +160,12 @@ spec:
                       description: |-
                         SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
                         mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
-                        "*" for every namespace the GitTarget's spec.allowedSourceNamespaces currently admits.
+                        "*" for every namespace the source credential can read.
 
-                        "*" never means "every namespace that exists" — it expands to exactly what that policy
-                        admits, so a target declaring no policy denies it. Naming any namespace other than this
-                        rule's own, "*" included, additionally requires the GitTarget's ClusterProvider to admit the
-                        target's namespace AND to set spec.allowSourceNamespaceOverride. Once the GitTarget declares
-                        a policy it is exhaustive, so even an omitted sourceNamespace is checked against it.
+                        "*" is one cluster-wide list and watch rather than a set of per-namespace ones, so its bound
+                        is the credential's own RBAC and nothing else. Naming any namespace other than this rule's
+                        own, "*" included, requires the GitTarget's ClusterProvider to admit the target's namespace
+                        AND to set spec.allowAnySourceNamespace; while that flag is false, "*" is refused outright.
 
                         This changes only which namespace is WATCHED, never where objects are written: Git placement
                         follows each mirrored object's own namespace.

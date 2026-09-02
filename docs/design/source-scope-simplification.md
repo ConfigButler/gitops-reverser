@@ -1,7 +1,12 @@
 # Source scope: what to delete, and what to keep
 
-> Status: design. Nothing here is built, and nothing binds until it is scheduled.
-> Date: 2026-08-28. Index: [`../INDEX.md`](../INDEX.md).
+> Status: **SHIPPED**, except the `SelfSubjectAccessReview` pass under "The one thing to build",
+> which is additive and was deliberately kept out of the release that cost a bump.
+> Date: 2026-08-28, shipped 2026-09-01. Index: [`../INDEX.md`](../INDEX.md).
+>
+> The migration this page specifies is in [`../UPGRADING.md`](../UPGRADING.md). The
+> `sourceNamespace: "*"` section below remains the definition of record; the "Decided for the wave"
+> reading is now the shipped one.
 >
 > Answers a design review's proposal to adopt Flux-style `serviceAccountName` impersonation for
 > source reads, by declining it. Evidence for the impersonation half is in
@@ -116,16 +121,15 @@ flowchart LR
 > the consequence they care about and link here rather than restating the semantics — if you find a
 > second copy of the definition, that copy is the bug.
 >
-> **Shipped today**: every source namespace the `GitTarget` admits, resolved live through
-> `allowedSourceNamespaces` into a concrete set, one stream per namespace. This is what
-> [`configuration.md`](../configuration.md#bounding-which-source-namespaces-reach-a-target),
-> [`architecture.md`](../architecture.md) and
-> [`watchrule_types.go`](../../api/v1alpha3/watchrule_types.go) describe, and they are correct until
-> the wave lands.
+> **Superseded**: every source namespace the `GitTarget` admitted, resolved live through
+> `allowedSourceNamespaces` into a concrete set, one stream per namespace. Recorded here because the
+> migration note and several comments still refer to it.
 >
-> **Decided for the wave**: one cluster-wide list and watch, rejected outright while
-> `allowAnySourceNamespace` is false. Unbuilt. The reference docs above change in the same commit
-> that changes the behavior, never before.
+> **Shipped**: one cluster-wide list and watch, rejected outright while `allowAnySourceNamespace` is
+> false. [`configuration.md`](../configuration.md#watching-a-different-source-namespace),
+> [`architecture.md`](../architecture.md) and
+> [`watchrule_types.go`](../../api/v1alpha3/watchrule_types.go) describe this reading; they changed
+> in the same commit as the behavior.
 
 Today `*` means "every source namespace this `GitTarget` admits", resolved live through
 `allowedSourceNamespaces` into a concrete set, which is then planned as one stream per namespace.

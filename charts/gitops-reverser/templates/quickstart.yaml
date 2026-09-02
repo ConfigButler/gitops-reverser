@@ -24,8 +24,6 @@ spec:
     {{- toYaml .Values.quickstart.gitProvider.allowedBranches | nindent 4 }}
   secretRef:
     name: {{ .Values.quickstart.gitProvider.secretRef.name }}
-  push:
-    commitWindow: {{ .Values.quickstart.gitProvider.push.commitWindow | quote }}
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
@@ -40,6 +38,8 @@ spec:
     name: {{ .Values.quickstart.gitProvider.name }}
   branch: {{ .Values.quickstart.gitTarget.branch | quote }}
   path: {{ .Values.quickstart.gitTarget.path | quote }}
+  commit:
+    window: {{ .Values.quickstart.gitTarget.commit.window | quote }}
   encryption:
     provider: {{ .Values.quickstart.gitTarget.encryption.provider | quote }}
     age:

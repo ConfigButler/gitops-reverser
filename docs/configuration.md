@@ -55,7 +55,7 @@ credential. `GitTarget.spec.clusterProviderRef` instead defaults to the conventi
 name `default`. That is a convenient, concrete reference. It does not claim that `default` is always
 the local cluster.
 
-`ClusterProvider.spec.allowedNamespaces` is the control-cluster authorization boundary for that
+`ClusterProvider.spec.accessFrom` is the control-cluster authorization boundary for that
 shared source connection: it determines which namespaces may contain `GitTarget`s that reference
 the provider. It does not select namespaces in the source cluster or grant permissions there. If a
 platform later needs a shared, platform-owned Git destination, that should be a separate
@@ -73,8 +73,10 @@ The important fields are:
 - `spec.secretRef.name`: Secret with Git credentials such as SSH or HTTPS auth
 - `spec.knownHostsRef`: optional ConfigMap/Secret with SSH `known_hosts` shared across providers
 - `spec.allowedBranches`: branches this provider is allowed to write
-- `spec.push.commitWindow`: rolling silence window that coalesces events into one commit per author
-- `spec.commit`: committer identity, commit templates, and signing
+- `spec.commit`: committer identity and signing
+
+How writes are batched and phrased is **not** here: `spec.commit.window` and `spec.commit.message`
+belong to the [`GitTarget`](#gittargetspeccommit-how-writes-become-commits) that owns the folder.
 
 Example:
 
@@ -143,31 +145,18 @@ fingerprints out of band. The controller flag `--insecure-allow-missing-known-ho
 throwaway/dev clusters only: it permits SSH when **no** source provided any `known_hosts`; a
 `known_hosts` that is present but unparseable is always a hard error.
 
-### `GitProvider.spec.push`
-
-`spec.push.commitWindow` controls how arriving events are grouped into commits. The timer resets
-on every event; when it has been silent for the configured duration, the buffered events for a
-given (author, gitTarget) are written as one commit. The default is `5s`. Setting `0s` opts into
-per-event commits in the steady-state.
-
-```yaml
-spec:
-  push:
-    commitWindow: "5s"
-```
-
-A burst (e.g. `kubectl apply -k`, `helm upgrade`, an ArgoCD sync wave) becomes one commit per
-author with a summary subject; isolated edits still produce one commit each.
-
 ### `GitProvider.spec.commit`
 
-`spec.commit` configures how gitops-reverser writes commits:
+`spec.commit` configures the identity this connection commits under:
 
 - `committer`: the operator identity written as the Git committer
-- `message`: the subject format for per-event and batch commits
 - `signing`: the SSH signing key configuration
 
 If `spec.commit` is omitted, gitops-reverser uses its built-in defaults.
+
+`spec.commit.message` is not here. A commit's wording describes the folder being written, so it is
+[`GitTarget.spec.commit.message`](#commit-message-templates); setting it on a `GitProvider` is
+rejected.
 
 #### Author vs committer
 
@@ -213,91 +202,6 @@ Defaults:
 
 If signing is enabled, `spec.commit.committer.email` should be an email that the Git hosting
 platform recognizes for the account that owns the signing key.
-
-#### Commit message templates
-
-There are three templates, one per commit shape:
-
-- `spec.commit.message.eventTemplate`: per-event commits (only used when `commitWindow` is `0s`).
-- `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
-  common case).
-- `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
-  path; one commit per synced type).
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
-      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
-```
-
-`eventTemplate` can use:
-
-- `Operation`
-- `Group`
-- `Version`
-- `Resource`
-- `Namespace`
-- `Name`
-- `APIVersion`
-- `Username`
-- `GitTarget`
-
-`Username` is empty whenever no actor was named, both in configured-author mode and when
-attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
-**author header** and deliberately does not reach templates or message bodies, so a template
-rendering `{{.Username}}` never has to special-case it. Use `git log` (or
-`author_kind="unresolved"`) to tell the two apart.
-
-`groupTemplate` can use:
-
-- `Author`
-- `GitTarget`
-- `Count`
-- `Operations` (map of `CREATE`/`UPDATE`/`DELETE` counts)
-- `Resources` (slice of `{Group, Version, Resource, Namespace, Name}`)
-
-`reconcileTemplate` can use:
-
-- `Count`
-- `GitTarget`
-- `Group`
-- `Version`
-- `Resource`
-- `APIVersion`
-- `Revision`
-
-`Group`/`Version`/`Resource`/`APIVersion` name the synced type for a per-type reconcile and
-`Revision` is the cluster `resourceVersion` the reconcile was pinned to. The default,
-`reconciled {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}`,
-renders e.g. `reconciled 6 secrets (last resourceVersion: 1331)`. The type and revision fields are
-empty for a whole-target reconcile or a pure sweep, so guard a template that references them
-(the default uses `{{if .Resource}}` / `{{if .Revision}}`) to avoid an identity-less subject.
-
-Examples:
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-```
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "[{{.Operation}}] {{.Resource}}/{{.Name}} ({{.Username}})"
-```
-
-```yaml
-spec:
-  commit:
-    message:
-      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}@{{.Revision}}"
-```
 
 #### Commit signing
 
@@ -386,33 +290,31 @@ spec:
   kubeConfig:
     secretRef:
       name: default-source-kubeconfig
-  allowedNamespaces:
+  accessFrom:
     names: [team-a]
     selector:
       matchLabels:
         gitops.configbutler.ai/source-access: "true"
 ```
 
-`allowedNamespaces` is evaluated against namespaces in the **control cluster**, where
+`accessFrom` is evaluated against namespaces in the **control cluster**, where
 `GitTarget`s live. In this example, a `GitTarget` in `team-a`, or in a control-cluster namespace
 with the shown label, may reference `prod-eu-1`. `names` and `selector` are ORed, and an omitted
 policy admits no control-cluster namespace.
 
-Which namespaces are read *from the source cluster* is bounded by
-[`GitTarget.spec.allowedSourceNamespaces`](#bounding-which-source-namespaces-reach-a-target) when
-that target declares one, and by the source connection's Kubernetes RBAC in every case: the
-credential's own RBAC is always the hard maximum. A `WatchRule` may name a source namespace other
-than its own only when this provider also sets:
+Which namespaces are read *from the source cluster* is bounded by the source connection's Kubernetes
+RBAC: the credential's own RBAC is the hard maximum, and there is no second allow-list beside it. A
+`WatchRule` may name a source namespace other than its own only when this provider also sets:
 
 ```yaml
   # Deny-by-default. While false, a WatchRule mirroring through this provider may
-  # watch only its OWN namespace, whatever any GitTarget policy says.
-  allowSourceNamespaceOverride: true
+  # watch only its OWN namespace.
+  allowAnySourceNamespace: true
 ```
 
 That flag delegates the *choice* of source namespace to the `GitTarget`s this provider admits; it
-grants nothing on its own, since the target must still admit the namespace. It is required for
-**every** cross-source-namespace request, including `sourceNamespace: "*"`. Setting it on an
+grants nothing on its own, since the credential still has to be able to read what is chosen. It is
+required for **every** cross-source-namespace request, including `sourceNamespace: "*"`. Setting it on an
 **in-cluster** provider is a much sharper decision than on a remote one: there the config plane *is*
 the watched cluster, so it deliberately bypasses live namespace RBAC and lets the owner of an
 admitted `GitTarget` mirror another namespace's objects into a Git destination they control. That is
@@ -437,7 +339,7 @@ There are two supported ways to get one, and both are fully declarative:
 - **Commit it yourself.** The object above is ordinary YAML. Put it in the repository that manages
   this install. This is the recommended path once you are past a first trial.
 - **Let the chart render it.** The chart can create and own a `ClusterProvider` named `default`,
-  including its `allowedNamespaces`, from a single value. See
+  including its `accessFrom`, from a single value. See
   [charts/gitops-reverser/README.md](../charts/gitops-reverser/README.md). Turn that value off to
   manage the object yourself. Helm then deletes the provider it created on the next upgrade, so
   ownership never silently splits between Helm and you. Because a missing provider holds its targets
@@ -540,6 +442,123 @@ The most useful status fields are:
   `status.placement` carrying the detail. See below.
 
 Use conditions for automation.
+
+### `GitTarget.spec.commit`: how writes become commits
+
+`spec.commit` says how this target's writes are batched into commits and how those commits are
+phrased. Both halves used to live on the `GitProvider` (as `spec.push.commitWindow` and
+`spec.commit.message`) and moved here because they describe the folder being written rather than
+the route to the repository. Two `GitTarget`s sharing one `GitProvider` can now disagree about
+both: an RBAC folder that wants a commit per change and an app folder that wants a burst coalesced
+no longer have to be two connections.
+
+```yaml
+spec:
+  commit:
+    window: "5s"
+    message:
+      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+```
+
+#### The commit window (`spec.commit.window`)
+
+`spec.commit.window` controls how arriving events are grouped into commits. The timer resets on
+every event; when it has been silent for the configured duration, the buffered events for a given
+author are written as one commit. The default is `5s`. Setting `0s` opts into per-event commits in
+the steady-state.
+
+A burst (`kubectl apply -k`, `helm upgrade`, an ArgoCD sync wave) becomes one commit per author with
+a summary subject; isolated edits still produce one commit each.
+
+An unparseable or negative value is rejected on the object (`Validated=False`, reason
+`InvalidConfig`). A value already stored before that check falls back to the `5s` default at the
+write rather than stopping the mirror.
+
+#### Commit message templates
+
+There are three templates, one per commit shape:
+
+- `spec.commit.message.eventTemplate`: per-event commits (only used when `spec.commit.window` is
+  `0s`).
+- `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
+  common case).
+- `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
+  path; one commit per synced type).
+
+```yaml
+spec:
+  commit:
+    message:
+      eventTemplate: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
+```
+
+`eventTemplate` can use:
+
+- `Operation`
+- `Group`
+- `Version`
+- `Resource`
+- `Namespace`
+- `Name`
+- `APIVersion`
+- `Username`
+- `GitTarget`
+
+`Username` is empty whenever no actor was named, both in configured-author mode and when
+attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
+**author header** and deliberately does not reach templates or message bodies, so a template
+rendering `{{.Username}}` never has to special-case it. Use `git log` (or
+`author_kind="unresolved"`) to tell the two apart.
+
+`groupTemplate` can use:
+
+- `Author`
+- `GitTarget`
+- `Count`
+- `Operations` (map of `CREATE`/`UPDATE`/`DELETE` counts)
+- `Resources` (slice of `{Group, Version, Resource, Namespace, Name}`)
+
+`reconcileTemplate` can use:
+
+- `Count`
+- `GitTarget`
+- `Group`
+- `Version`
+- `Resource`
+- `APIVersion`
+- `Revision`
+
+`Group`/`Version`/`Resource`/`APIVersion` name the synced type for a per-type reconcile and
+`Revision` is the cluster `resourceVersion` the reconcile was pinned to. The default,
+`reconciled {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}`,
+renders e.g. `reconciled 6 secrets (last resourceVersion: 1331)`. The type and revision fields are
+empty for a whole-target reconcile or a pure sweep, so guard a template that references them
+(the default uses `{{if .Resource}}` / `{{if .Revision}}`) to avoid an identity-less subject.
+
+Examples:
+
+```yaml
+spec:
+  commit:
+    message:
+      eventTemplate: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+```
+
+```yaml
+spec:
+  commit:
+    message:
+      eventTemplate: "[{{.Operation}}] {{.Resource}}/{{.Name}} ({{.Username}})"
+```
+
+```yaml
+spec:
+  commit:
+    message:
+      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}@{{.Revision}}"
+```
 
 ### Seeing what a target will do, before it does it
 
@@ -965,7 +984,7 @@ overwriting. A second `WatchRule` bringing another source namespace to such a ta
 `GitPathAccepted=False`, reason `MultipleSourceNamespaces`. A rule naming `sourceNamespace: "*"` is
 refused too, without enumerating anything, because a wildcard cannot be shown to be one namespace.
 The set counted is the target's own namespace plus the explicit `rules[].sourceNamespace` of every
-`WatchRule` pointing at it. It is unrelated to `spec.allowedSourceNamespaces`, which answers who may
+`WatchRule` pointing at it. It is unrelated to the `ClusterProvider` grants, which answer who may
 write here rather than what the folder means.
 
 Inference is never fenced this way. A folder that is truly multi-namespace and namespace-free is
@@ -1122,14 +1141,17 @@ so one `WatchRule` can follow different resource types in different namespaces.
 |---|---|
 | omitted | the `WatchRule`'s own namespace: legacy behavior, byte for byte |
 | an exact name | one source namespace |
-| `"*"` | every namespace `GitTarget.spec.allowedSourceNamespaces` admits, resolved live |
+| `"*"` | every namespace the source credential can read, as one cluster-wide watch |
 
-Naming anything other than the rule's own namespace, **including `"*"`**, is authorized by three
-things, all of which must hold:
+Naming anything other than the rule's own namespace, **including `"*"`**, is authorized by two
+things, both of which must hold:
 
-1. the `GitTarget`'s namespace is admitted by its `ClusterProvider`'s `allowedNamespaces`;
-2. that `ClusterProvider` sets `allowSourceNamespaceOverride: true`; and
-3. the `GitTarget`'s `allowedSourceNamespaces` admits the namespace.
+1. the `GitTarget`'s namespace is admitted by its `ClusterProvider`'s `accessFrom`; and
+2. that `ClusterProvider` sets `allowAnySourceNamespace: true`.
+
+There is no third condition on the `GitTarget`. What a target may read from its source cluster is
+bounded by that cluster's RBAC for the provider's credential: a request these two conditions permit
+still fails with a clean 403 if the credential cannot read the namespace.
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -1145,72 +1167,31 @@ spec:
     - resources: [secrets]
       sourceNamespace: repo-config   # one admitted source namespace
     - resources: [deployments]
-      sourceNamespace: "*"           # every namespace the target admits, live
+      sourceNamespace: "*"           # every namespace the credential can read
 ```
 
-`"*"` never means "every namespace that exists": it expands to exactly what the target's policy
-admits, so a target that declares no policy **denies** it. Each `"*"` item opens one watch stream per
-(matched type × admitted namespace). That is deliberate, because it keeps every replay scoped to a single
-namespace, but a real fan-out on a broad policy.
+`"*"` is one cluster-wide list and one cluster-wide watch per matched type, not one of each per
+namespace, so its cost does not grow with the cluster. It is bounded by the source credential's RBAC
+and by nothing else, which is why it is refused outright while `allowAnySourceNamespace` is false.
+
+A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates: each rule
+carries its own `operations` filter, so a target holding both runs two streams over overlapping
+objects. That is correct rather than something to tune away.
 
 The outcome for all items is aggregated into one `SourceNamespaceAuthorized` condition, also shown by
 `kubectl get watchrules -o wide`. A **denied** explicit name refuses the whole `WatchRule`
 (`Ready=False`, `Stalled=True`, no streams) rather than silently trimming that item and mirroring
-part of what you asked for; the message names the failing item by index and by what it selects. A
-`"*"` that currently admits nothing is not a refusal: the rule stays `Ready` with reason
-`NoAdmittedSourceNamespaces`, so a no-op rule is visible instead of looking healthy. Authorization is
-re-evaluated on every reconcile, so tightening a policy revokes a running rule rather than only
-affecting new ones.
+part of what you asked for; the message names the failing item by index and by what it selects.
+Authorization is re-evaluated on every reconcile, so withdrawing `allowAnySourceNamespace` revokes a
+running rule rather than only affecting new ones.
 
 This changes only which namespace is **watched**. Git placement always follows each mirrored
 object's own namespace, so the rule above writes secrets under `repo-config/…`, not `tenant-acme/…`.
 
-### Bounding which source namespaces reach a target
-
-`GitTarget.spec.allowedSourceNamespaces` bounds which source-cluster namespaces may be mirrored into
-that target by its `WatchRule`s:
-
-```yaml
-spec:
-  allowedSourceNamespaces:
-    names: [repo-config]
-    selector:
-      matchLabels:
-        gitops.configbutler.ai/mirrorable: "true"
-```
-
-`names` and `selector` are ORed, and the selector matches labels on `Namespace`s in the **source**
-cluster, so evaluating it needs `namespaces` `get`/`list`/`watch` for that cluster's credential.
-Exact `names` keep working without that access, which is a deliberate degradation path.
-
-It is also what `sourceNamespace: "*"` resolves *through*:
-
-| Policy on the `GitTarget` | `sourceNamespace: "*"` resolves to |
-|---|---|
-| undeclared | **denied**, deny-by-default; the message names the fix |
-| `{}` (declared, empty) | nothing |
-| `names: [a, b]` | exactly `a` and `b`, statically, with no source-cluster access |
-| `selector: {matchLabels: …}` | every source namespace carrying those labels, live |
-| `selector: {}` | **every source namespace**: the deliberate "all namespaces" declaration |
-
-That last row is how a destination owner says *every* source namespace, and it stays self-updating as
-namespaces come and go. It is the replacement for the removed cluster-wide namespaced
-`ClusterWatchRule`, and it is declared by the destination owner rather than by the rule author.
-
-Two things about this field are easy to get wrong:
-
-- **Omitted and empty differ.** Omitted declares no policy and a `WatchRule` keeps its own namespace.
-  A declared-but-empty policy (`{}`) admits **nothing**.
-- **A declared policy is exhaustive, with no self-namespace exception.** It must admit every namespace
-  that may reach the target, *including* a co-resident legacy `WatchRule`'s own namespace. Adding a
-  policy for one override therefore denies those rules until their namespace is admitted, loudly and with
-  a message naming the fix, but it will happen.
-
 A namespace allow-list cannot partition **cluster-scoped** objects, which have no namespace. A
-`ClusterWatchRule` receives every such object its source credential can read, and this field is
-neither consulted nor a bound for it. If a tenant must not see another tenant's cluster-scoped
-objects, give each tenant its own `ClusterProvider` and credential, so that credential's RBAC is the
-boundary.
+`ClusterWatchRule` receives every such object its source credential can read. If a tenant must not
+see another tenant's cluster-scoped objects, give each tenant its own `ClusterProvider` and
+credential, so that credential's RBAC is the boundary.
 
 Each entry in `spec.rules` is a logical OR. A resource matching any rule is watched. The rule fields
 are:
@@ -1273,10 +1254,10 @@ spec:
       resources: ["clusterroles", "clusterrolebindings"]
 ```
 
-Cluster-scoped objects have no namespace, so `GitTarget.spec.allowedSourceNamespaces` does not bound
-a `ClusterWatchRule` at all: it is intentionally cluster-global, limited only by its source
-credential's Kubernetes RBAC. Use this sparingly. It grants the widest reach of any rule kind and usually belongs
-to cluster-admin-managed setups.
+Cluster-scoped objects have no namespace, so no namespace policy bounds a `ClusterWatchRule` at all:
+it is intentionally cluster-global, limited only by its source credential's Kubernetes RBAC. Use this
+sparingly. It grants the widest reach of any rule kind and usually belongs to cluster-admin-managed
+setups.
 
 > `spec.rules[].scope` is deprecated and accepts only `Cluster` (its default). Re-applying a
 > pre-release manifest that still says `scope: Namespaced` is **rejected**. See
@@ -1286,7 +1267,7 @@ to cluster-admin-managed setups.
 
 `CommitRequest` is a one-shot "save now" signal for a same-namespace `GitTarget`. It does not create
 or change watch rules. Instead, it asks the branch worker to finalize a matching open commit window
-for the request's author instead of waiting for `GitProvider.spec.push.commitWindow`.
+for the request's author instead of waiting for `GitTarget.spec.commit.window`.
 
 The important fields are:
 

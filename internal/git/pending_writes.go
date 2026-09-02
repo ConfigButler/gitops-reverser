@@ -27,11 +27,15 @@ func (w *BranchWorker) buildGroupedPendingWrite(ctx context.Context, events []Ev
 		return nil, fmt.Errorf("resolve signer: %w", err)
 	}
 
-	commitConfig := ResolveCommitConfig(provider.Spec.Commit)
 	resolvedEvents, targets, err := w.resolveEventsForPendingWrite(ctx, events)
 	if err != nil {
 		return nil, err
 	}
+
+	// A grouped commit covers exactly one GitTarget by construction — a window finalizes the
+	// moment the target changes — so its message templates are that one target's.
+	commitConfig := ResolveCommitConfig(provider.Spec.Commit).
+		WithTargetMessage(soleTargetCommitMessage(targets))
 
 	return &PendingWrite{
 		Kind:         PendingWriteCommit,
@@ -80,6 +84,7 @@ func (w *BranchWorker) buildAtomicPendingWrite(ctx context.Context, request *Wri
 			Namespace: targetMetadata.Namespace,
 		}
 		targets[targetKey] = targetMetadata
+		commitConfig = commitConfig.WithTargetMessage(targetMetadata.CommitMessage)
 
 		for i := range resolvedEvents {
 			if resolvedEvents[i].Path == "" {
@@ -175,12 +180,36 @@ func (w *BranchWorker) resolveTargetMetadata(
 		Path:             target.Spec.Path,
 		BootstrapOptions: buildBootstrapOptions(encryptionConfig),
 		EncryptionConfig: encryptionConfig,
+		CommitMessage:    commitMessageSpecOf(target),
 		Placement:        resolvePlacementPolicy(target.Spec.Placement),
 		Namespaces:       namespacePolicyFor(target.Spec, sourceNamespaces, wildcard),
 		PruneMode:        target.EffectivePruneMode(),
 		SourceCluster:    target.SourceCluster(),
 		Suspend:          target.Spec.Suspend,
 	}, nil
+}
+
+// soleTargetCommitMessage returns the commit-message spec of the ONE target a pending write
+// covers, or nil when it covers none or more than one. Nil is the right answer for "more than
+// one": a commit spanning two targets has no single folder to be phrased by, so it keeps the
+// built-in wording rather than borrowing whichever target the map happened to yield first.
+func soleTargetCommitMessage(targets map[pendingTargetKey]ResolvedTargetMetadata) *v1alpha3.CommitMessageSpec {
+	if len(targets) != 1 {
+		return nil
+	}
+	for _, target := range targets {
+		return target.CommitMessage
+	}
+	return nil
+}
+
+// commitMessageSpecOf reads a GitTarget's spec.commit.message, tolerating both nils so callers do
+// not repeat the two-level check.
+func commitMessageSpecOf(target *v1alpha3.GitTarget) *v1alpha3.CommitMessageSpec {
+	if target == nil || target.Spec.Commit == nil {
+		return nil
+	}
+	return target.Spec.Commit.Message
 }
 
 // pruneModeForBase finds the effective prune mode for the GitTarget that owns base among

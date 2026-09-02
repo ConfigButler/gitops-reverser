@@ -20,24 +20,6 @@ import (
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-func TestValidateCommitConfiguration_InvalidTemplate(t *testing.T) {
-	reconciler := &GitProviderReconciler{}
-	provider := &configbutleraiv1alpha3.GitProvider{
-		Spec: configbutleraiv1alpha3.GitProviderSpec{
-			Commit: &configbutleraiv1alpha3.CommitSpec{
-				Message: &configbutleraiv1alpha3.CommitMessageSpec{
-					EventTemplate: "{{.Operation",
-				},
-			},
-		},
-	}
-
-	err := reconciler.validateCommitConfiguration(provider)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid commit configuration")
-	assert.Empty(t, provider.Status.SigningPublicKey)
-}
-
 func TestValidateCommitConfiguration_SigningEnabled(t *testing.T) {
 	reconciler := &GitProviderReconciler{}
 	provider := &configbutleraiv1alpha3.GitProvider{
