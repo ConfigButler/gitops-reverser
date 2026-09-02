@@ -77,8 +77,9 @@ pruned: the manifest still carries an old spelling.
 
 **What you will NOT get is a warning.** Because the fields are removed rather than retained, an
 object still carrying an old spelling is accepted with the value silently pruned — the mirror keeps
-running under the new defaults. That is a deliberate trade for a much smaller code surface, and it
-is why the inventory is step 1 rather than a footnote.
+running under the new defaults. That is a deliberate trade for a much smaller code surface, priced
+in [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md), and it is why the inventory
+is step 1 rather than a footnote.
 
 ## Commit batching and message templates are GitTarget fields
 

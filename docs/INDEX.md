@@ -53,6 +53,14 @@ Provider-specific setup that needed writing down:
 credential Secret is shaped differently from every other provider's, and the three test layers that
 cover a provider CI cannot reach.
 
+**Before you change any CRD field:**
+[`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md) — the two honest strategies for
+removing or renaming one, a decision matrix keyed on whether pruning fails open or closed, and the
+API-server behaviour that decides it. Measured rather than assumed: a status update does not
+re-validate spec; a removed field stops being served immediately, not after the next write (so a
+migration inventory must be taken BEFORE the upgrade); and a previously-defaulted field cannot be
+removed by `kubectl apply`, which makes refusing one an upgrade nobody can complete.
+
 ## The contracts — [`spec/`](spec/)
 
 The code cites these. Breaking one without updating it is how the next person gets
