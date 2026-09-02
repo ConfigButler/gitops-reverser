@@ -67,7 +67,7 @@ Flux kind in the same cluster. A reason that restates the condition type (`Ready
 answers nothing and is not used.
 
 Domain reasons stay this project's own — `UnsupportedContent`, `WriteBoundaryRefused`,
-`IgnoreShadowsManagedPath`, `NoAdmittedSourceNamespaces` — because they carry information a generic
+`IgnoreShadowsManagedPath`, `SupersededFieldStored` — because they carry information a generic
 reason cannot. Declaring domain reasons is exactly what the upstream vocabulary asks projects to do.
 
 ### One deliberate deviation: the abnormal-true pair is written when False
@@ -164,44 +164,55 @@ Canonical reads:
   additional prerequisite of `Ready`, and is deliberately kept out of `GitTargetReady`, which stays
   the referenced target's own health.
 
-  Its three values are not interchangeable. `False` is a **refusal** — terminal, `Stalled=True`,
-  stream stopped — with reason `SourceNamespaceNotAllowed`, or `SourceNamespacePolicyUnavailable`
-  when a selector policy is permanently unevaluatable *and* no scope was ever resolved for the rule.
-  `Unknown` is "cannot say yet": either the answer is still being established
-  (`CheckingSourceNamespacePolicy`), or a rule that already holds a resolved scope has lost the
-  ability to re-evaluate its policy and is **retaining** that scope
-  (`SourceNamespacePolicyUnavailable`, `Stalled=False`, still mirroring).
+  Its values are `True` and `False`, plus an `Unknown` that means only "not evaluated yet, because
+  an earlier gate blocked this reconcile" (reason `Progressing`). `False` is a **refusal**:
+  terminal, `Stalled=True`, stream stopped, reason `SourceNamespaceNotAllowed`.
 
-  That asymmetry is deliberate. While *establishing* a grant, failing closed means "do not start the
-  stream", which is accurate and actionable. While *maintaining* one, failing closed would mean
-  "narrow to nothing" — and a narrowed scope is the input to a resync sweep, so it would delete a
-  tenant's Git content over a transient outage. An unevaluatable policy therefore never produces a
-  resolved namespace set: not the empty one, and not the full one.
+  There is no "cannot say yet" verdict and no retained-scope state, and the reason that is worth
+  recording rather than merely deleting: this condition used to have both, because the gate's
+  selector half read `Namespace` labels in ANOTHER cluster, where the read could be still syncing,
+  unreachable, or permanently `Forbidden`. That forced a three-valued verdict, and it forced the
+  asymmetry between *establishing* a grant (fail closed: do not start the stream) and *maintaining*
+  one (never narrow to the empty set, because a narrowed scope is the input to a resync sweep and
+  would delete a tenant's Git content over a transient outage). Every input is now a control-plane
+  object the reconcile already holds, so an item that is not denied is decided, and there is nothing
+  left to retain a scope through.
 
   **It is one condition per object, aggregated over every `spec.rules[]` item.** The precedence is
   stated rather than derived, because two implementations of "worst wins" would otherwise disagree
   about a mixed rule. First match wins:
 
   1. any item **denied** → `False` / `SourceNamespaceNotAllowed` / `Stalled=True`
-  2. any item **permanently unevaluatable** while establishing → `False` /
-     `SourceNamespacePolicyUnavailable` / `Stalled=True`
-  3. any item retaining a scope it can no longer re-evaluate → `Unknown` /
-     `SourceNamespacePolicyUnavailable` / `Stalled=False`
-  4. any item **still resolving** → `Unknown` / `CheckingSourceNamespacePolicy`
-  5. every item admitted, at least one naming a namespace other than the rule's own → `True` /
+  2. every item admitted, at least one naming a namespace other than the rule's own → `True` /
      `SourceNamespaceAllowed`
-  6. every item omitted → `True` / `LegacySourceNamespace`
+  3. every item on its own namespace → `True` / `LegacySourceNamespace`
 
   A **denied explicit name refuses the whole rule**; the item is never trimmed away so the rest can
   run, because mirroring two of the three namespaces a rule asked for is worse than a loud failure.
   Messages therefore name the deciding item by index *and* by its resources and requested namespace —
   an index alone goes stale the moment somebody reorders the list while reading the message.
 
-  One more `True` reason exists so a no-op cannot look healthy: `NoAdmittedSourceNamespaces`, when
-  every item is authorized but the resolved scope is **empty** (a `sourceNamespace: "*"` against a
-  policy that currently admits nothing). The rule is not stalled — nothing is wrong with it — but it
-  mirrors nothing, and `Ready=True` with no explanation would hide that. The existing
-  `StreamsRunning` and `ResourcesResolved` surfaces show the zero.
+  There is no `True` reason for an empty resolved scope any more. `NoAdmittedSourceNamespaces`
+  existed so a `sourceNamespace: "*"` against a policy admitting nothing could not look healthy while
+  mirroring nothing; `"*"` is now one cluster-wide watch, which cannot resolve to an empty set.
+
+### Objects written against a superseded API
+
+`SupersededFieldStored` is one reason shared by `GitTarget`, `GitProvider` and `ClusterProvider`. A
+field this project removes or renames is retained in the schema and rejected at admission, which
+covers the write path only: an object written by an earlier release keeps its value in etcd and is
+never re-admitted. That population is refused at reconcile with this reason, `Stalled=True`, and a
+message naming the exact field and its replacement.
+
+The refusal is a **data-plane gate, not a remark**. It is evaluated before the referenced provider
+and branch are validated, and therefore before a worker is wired or the target is declared, so an
+unmigrated object writes nothing rather than writing under settings nobody chose. The same check
+runs on the shared compile path, because startup bootstrap seeds the rule store before the first
+reconcile.
+
+One reason serves three kinds deliberately: from an operator's point of view the fact that matters
+is identical — this object was written against the previous API and has not been migrated — and the
+Message carries which field it was.
 
 ### CommitRequest (one-shot)
 

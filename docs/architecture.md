@@ -961,8 +961,11 @@ A projection for each `GitTarget` from the type registry, filtered by that targe
 resolved GVK/GVR/scope plus namespace and operation coverage. **This is where rule matching effectively
 happens:** it resolves the set of `(GVR, scope)` a `GitTarget` claims, so the watch manager opens one
 watch per claimed ∩ followable `(GVR, scope)` and scopes each watch's events back to that GitTarget's
-source namespaces. A `sourceNamespace: "*"` rule is already expanded here, so each admitted namespace has
-its own stream and mark-and-sweep boundary.
+source namespaces. A `sourceNamespace: "*"` rule resolves here to ONE cluster-wide cell (the empty
+namespace, which for a namespaced GVR is the all-namespaces collection), so it has a single stream
+and a single mark-and-sweep boundary however many namespaces it covers. That cell is a peer of any
+named-namespace cell on the same type, never a replacement for one: each rule keeps its own
+operation filter.
 
 ***
 

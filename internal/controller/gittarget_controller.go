@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -372,6 +373,18 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) (bool, string, *ctrl.Result, error) {
+	// A stored superseded field refuses the target BEFORE anything else, including the provider and
+	// branch checks. This gate returns ahead of worker wiring and DeclareForGitTarget, which is what
+	// makes it a data-plane gate rather than a status remark: a refused target wires no worker and
+	// writes nothing, so a value nobody migrated can never be quietly reinterpreted into a write.
+	if refusal := r.supersededFieldRefusal(ctx, target, providerNS); refusal != "" {
+		st.set(GitTargetConditionValidated, metav1.ConditionFalse,
+			authz.ReasonSupersededFieldStored, refusal)
+		r.stopSourceClusterMirror(target)
+		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
+		return false, refusal, &result, nil
+	}
+
 	validated, message, reason, result, err := r.validateProviderAndBranch(ctx, target, providerNS)
 	if err != nil {
 		return false, "", nil, err

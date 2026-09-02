@@ -23,10 +23,17 @@ connections.
 to the remote — the signing key is a Secret in the provider's namespace, and the committer is the bot
 the platform sees.
 
-**Both old fields are rejected rather than ignored.** Applying a `GitProvider` that still sets either
-fails with a message naming the replacement, and a stored one is refused by the reconciler with
-`Stalled=True`, reason `CommitFieldsRelocated`, until it is edited. Nothing is silently
-reinterpreted in either direction.
+**Both old fields are rejected rather than ignored, and a stored one stops writes.** Applying a
+`GitProvider` that still sets either fails with a message naming the replacement. An object written
+before the upgrade is never re-admitted, so it is refused at reconcile instead: the `GitProvider`
+reports `Stalled=True` with reason `SupersededFieldStored`, and **every `GitTarget` writing through
+it is held `Validated=False` and stops writing** until the provider is edited.
+
+That is deliberate, and it is the part to plan for. The alternative is not "keep working" — neither
+value is read any more, so the folder would carry on committing at the default `5s` cadence and
+under the default wording, which for a Git mirror is worse than a mirror that has visibly stopped.
+The refusal clears on the next reconcile after the field is removed; nothing is lost while it is in
+effect, because a target that resumes writes from current cluster state.
 
 Move them per target:
 
@@ -68,11 +75,36 @@ last one is defined in terms of the first.
 | `ClusterProvider.spec.allowedNamespaces` | `ClusterProvider.spec.accessFrom` |
 | `sourceNamespace: "*"` = every namespace the `GitTarget` admits | every namespace the source credential can read, as one cluster-wide watch |
 
-All three removed or renamed fields are **rejected rather than ignored**. Re-applying a manifest that
-still sets one fails with a message naming the replacement. That is deliberate: CRD pruning happens
-on write, so a deleted field would be dropped from your manifest with no error at all — and for
-`allowSourceNamespaceOverride: true` that would silently revoke a delegation, stalling every
-cross-namespace `WatchRule` through that provider.
+All three removed or renamed fields are **rejected rather than ignored, and a stored one stops the
+objects that carry it**. Re-applying a manifest that still sets one fails with a message naming the
+replacement. An object written before the upgrade is never re-admitted, so it is refused at
+reconcile instead, with reason `SupersededFieldStored` and a message naming the field to delete:
+
+- a `GitTarget` still carrying `allowedSourceNamespaces` is held `Validated=False` and writes
+  nothing, and no `WatchRule` or `ClusterWatchRule` pointing at it compiles;
+- a `ClusterProvider` still carrying `allowedNamespaces`, or `allowSourceNamespaceOverride: true`,
+  admits no `GitTarget` at all.
+
+One value is deliberately **not** refused: a stored `allowSourceNamespaceOverride: false`. That
+field carried a schema default, so the apiserver wrote it into every `ClusterProvider` ever created,
+including the chart-owned `default` one and every install that never used the feature. `kubectl
+apply` cannot remove a server-defaulted field, because it was never in your manifest to remove — so
+refusing it would be an upgrade nobody could complete. It also means nothing: it grants no
+delegation, and `allowAnySourceNamespace` defaults false too. You may leave it or delete it.
+
+That is deliberate: CRD pruning happens on write, so a deleted field would be dropped from your
+manifest with no error at all. Ignoring the stored values is worse than refusing them in each case.
+`allowedSourceNamespaces` would become a field that reads like a bound on which source namespaces
+reach a folder while enforcing nothing — and the moment you migrate that target's `ClusterProvider`,
+a `sourceNamespace: "*"` rule under it widens from the set that field declares to every namespace
+the credential can read, with the stale field still sitting there describing the old bound. A
+pruned `allowedNamespaces` would leave `accessFrom` absent, which is deny-by-default, so every
+`GitTarget` through the provider would fail with a message blaming its namespace rather than naming
+the rename. And a pruned `allowSourceNamespaceOverride: true` would silently revoke a delegation.
+
+**Migrate the `ClusterProvider` and its `GitTarget`s together.** They are refused independently, so
+either order works and neither leaves a half-migrated object running — but doing both in one pass is
+what keeps the outage to a single reconcile.
 
 ### The two renames
 

@@ -21,10 +21,10 @@ commits. The design has three main goals:
 - Keep replay stable even if a `GitTarget` or its encryption Secret changes
   while work is locally committed but not yet pushed.
 
-The user-facing commit-shaping control is `GitProvider.spec.push.commitWindow`.
-The default is `5s`; setting it to `0s` gives per-event local commits in the
-normal no-conflict path. Push cadence is intentionally separate and uses a fixed
-5 second cooldown in the branch worker.
+The user-facing commit-shaping control is `GitTarget.spec.commit.window`. The
+default is `5s`; setting it to `0s` gives per-event local commits in the normal
+no-conflict path. Push cadence is intentionally separate and uses a fixed 5
+second cooldown in the branch worker.
 
 ## Use Cases
 
@@ -64,9 +64,9 @@ flowchart TD
     B -->|PerEvent| C[Open window: same author and target]
     C --> E{Finalize trigger}
     E -->|author or target change| F[PendingWriteCommit]
-    E -->|commitWindow silence| F
+    E -->|commit.window silence| F
     E -->|byte cap| F
-    E -->|commitWindow = 0| F
+    E -->|commit.window = 0| F
     E -->|shutdown| F
     B -->|Atomic| Q[Finalize open window if present]
     Q -.-> F
@@ -89,7 +89,7 @@ succeeds. Local commit creation does not clear pending work.
 
 Per-event writes are processed as a stream. The branch worker keeps one open
 window at a time, and that window contains only one author and one target. The
-window finalizes immediately on author change, target change, `commitWindow=0`,
+window finalizes immediately on author change, target change, `commit.window=0`,
 the byte cap, shutdown, or commit-window silence. Repeated writes to the same
 Git path inside the open window are last-write-wins while preserving first-seen
 path order.
@@ -106,7 +106,7 @@ preserves arrival order while keeping atomic writes as one caller-defined batch.
 between:
 
 - `CommitModePerEvent`, used for live audit events that may be windowed. With
-  `commitWindow=0`, each event finalizes immediately.
+  `commit.window=0`, each event finalizes immediately.
 - `CommitModeAtomic`, used for reconcile snapshots that must land as one commit.
 
 `PendingWrite` is the durability unit retained until push succeeds:
@@ -154,7 +154,7 @@ There are three message kinds:
 - Snapshot: atomic reconcile write, operator author, `commit.message.snapshotTemplate`.
 
 A grouped unit with one event intentionally falls back to the per-event message
-kind. This keeps `commitWindow=0` and one-event finalized windows readable.
+kind. This keeps `commit.window=0` and one-event finalized windows readable.
 
 The grouped template receives `GroupedCommitMessageData`:
 
@@ -191,14 +191,27 @@ no replacement commit is created.
 
 ## Operational Controls
 
-`commitWindow` lives on `GitProvider.spec.push` because commit shaping belongs
-to the branch writer for a provider/branch. The byte cap is an operator startup
-setting, `--branch-buffer-max-bytes`, because it protects pod memory rather than
-describing user-facing Git history.
+`commit.window` lives on `GitTarget.spec.commit`, and it used to live on
+`GitProvider.spec.push`. The old placement said commit shaping belonged to the
+branch writer for a provider/branch; that was wrong in a way the object model
+made visible, because a branch worker serves every `GitTarget` sharing a
+`(provider, branch)` pair and those targets had no way to disagree. Commit
+shaping describes the FOLDER being written, so it is a `GitTarget` field.
+
+A branch worker is still per `(provider, branch)`, so the window is resolved per
+OPEN WINDOW rather than once per worker. That is affordable because a window is
+already bound to exactly one `GitTarget` by construction: it finalizes the moment
+the target changes. An unreadable target, or one declaring no window, takes the
+`5s` default; an unparseable stored value takes it loudly, since the value is
+also validated on the `GitTarget` itself (`Validated=False`, reason
+`InvalidConfig`).
+
+The byte cap is an operator startup setting, `--branch-buffer-max-bytes`,
+because it protects pod memory rather than describing user-facing Git history.
 
 The push cooldown is fixed at 5 seconds. It keeps fast local commits from
 spamming the remote while still keeping ordinary single-change latency close to
-`commitWindow + push RTT`.
+`commit.window + push RTT`.
 
 ## Tests
 

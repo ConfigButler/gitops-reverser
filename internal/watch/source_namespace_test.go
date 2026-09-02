@@ -220,3 +220,90 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 	assert.Empty(t, m.RuleStore.SnapshotWatchRules(),
 		"a revoked rule must be removed from the store, not left running with a bad condition")
 }
+
+// A GitTarget still carrying spec.allowedSourceNamespaces compiles NOTHING, and the check is here
+// rather than only on the GitTarget's Validated gate because BOOTSTRAP seeds the store before the
+// first reconcile, on every restart. A gate the reconciler alone enforced would be bypassed for
+// that whole window — the same argument that put the source-namespace gate on this path.
+//
+// The hazard it closes is specific: the removed field is inert, so a target still carrying it reads
+// like a bound on which source namespaces reach its folder while enforcing nothing. The moment its
+// ClusterProvider is migrated, a "*" rule under it widens from that declared set to every namespace
+// the credential can read.
+func TestBootstrap_LegacySourceNamespacePolicyIsNotCompiledOnRestart(t *testing.T) {
+	target := snbGitTarget()
+	//nolint:staticcheck // setting the removed field is the point: it must refuse, not be ignored.
+	target.Spec.AllowedSourceNamespaces = &configv1alpha3.NamespaceMatcher{
+		Names: []string{snbSourceNS},
+	}
+	m := snbManager(t,
+		target, snbGitProvider(), snbClusterProvider(true),
+		snbWatchRule(configv1alpha3.SourceNamespaceWildcard),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
+	)
+
+	require.NoError(t, m.bootstrapRuleStore(context.Background(), logr.Discard()),
+		"an unmigrated target is a refusal, not a startup failure")
+
+	assert.Empty(t, snbCompiledNames(m),
+		"a wildcard rule must not widen to cluster-wide against a target nobody has migrated")
+	assert.True(t, m.RuleStore.IsReady(),
+		"the store must still be marked ready so one unmigrated target cannot wedge the data plane")
+}
+
+// The same refusal at the compile path, with the message an operator reads, and the revocation
+// contract: a target that was compiled and then found to carry the field has its rule REMOVED.
+func TestCompileWatchRule_LegacySourceNamespacePolicyRemovesTheCompiledRule(t *testing.T) {
+	ctx := context.Background()
+	m := snbManager(t,
+		snbGitTarget(), snbGitProvider(), snbClusterProvider(true),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
+	)
+	rule := *snbWatchRule(snbSourceNS)
+
+	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, rule, *snbGitTarget(), *snbGitProvider())
+	require.NoError(t, err)
+	require.True(t, resolved.Admitted(), "precondition: the rule compiles against a migrated target")
+	require.Len(t, m.RuleStore.SnapshotWatchRules(), 1)
+
+	legacy := *snbGitTarget()
+	//nolint:staticcheck // setting the removed field is the point.
+	legacy.Spec.AllowedSourceNamespaces = &configv1alpha3.NamespaceMatcher{Names: []string{snbSourceNS}}
+
+	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, rule, legacy, *snbGitProvider())
+
+	require.NoError(t, err)
+	assert.False(t, resolved.Admitted())
+	assert.Contains(t, resolved.Message, "spec.allowedSourceNamespaces",
+		"the refusal must name the field to delete")
+	assert.Empty(t, m.RuleStore.SnapshotWatchRules(),
+		"a gate that only reports is not a gate: the compiled rule must be gone")
+}
+
+// A ClusterWatchRule selects cluster-scoped objects, which the removed field never bounded, so this
+// refusal does not change what it mirrors. It still refuses, so the operator fixes one object
+// rather than discovering the migration kind by kind.
+func TestCompileClusterWatchRule_LegacySourceNamespacePolicyRefuses(t *testing.T) {
+	ctx := context.Background()
+	m := snbManager(t,
+		snbGitTarget(), snbGitProvider(), snbClusterProvider(true),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
+	)
+	legacy := *snbGitTarget()
+	//nolint:staticcheck // setting the removed field is the point.
+	legacy.Spec.AllowedSourceNamespaces = &configv1alpha3.NamespaceMatcher{Names: []string{snbSourceNS}}
+
+	rule := configv1alpha3.ClusterWatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-rule"},
+		Spec: configv1alpha3.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha3.NamespacedTargetReference{Name: snbTarget, Namespace: snbTenantNS},
+			Rules:     []configv1alpha3.ClusterResourceRule{{Resources: []string{"namespaces"}}},
+		},
+	}
+
+	decision, err := CompileClusterWatchRule(ctx, m.Client, m.RuleStore, rule, legacy, *snbGitProvider())
+
+	require.NoError(t, err)
+	assert.False(t, decision.Admitted)
+	assert.Contains(t, decision.Message, "spec.allowedSourceNamespaces")
+}

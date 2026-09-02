@@ -23,6 +23,7 @@ import (
 	"github.com/go-logr/logr"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -102,8 +103,11 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"GitProvider is not stalled",
 	)
 
-	if err := refuseRelocatedCommitFields(gitProvider); err != nil {
-		rd.stalled(ReasonCommitFieldsRelocated, err.Error())
+	// A stored superseded field refuses the provider outright. This is the FEEDBACK half only: the
+	// gate that actually stops the writes is on each GitTarget, because a provider condition does
+	// not stop a target wiring a worker (see gittarget_superseded_fields.go).
+	if refusal := authz.SupersededFieldRefusal(gitProvider); refusal != "" {
+		rd.stalled(authz.ReasonSupersededFieldStored, refusal)
 		return r.commitProvider(ctx, st, rd)
 	}
 
