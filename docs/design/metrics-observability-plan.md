@@ -1,6 +1,6 @@
 # Metrics & Audit Observability — improvement plan
 
-> **design** — partly built. Index: [`../INDEX.md`](../INDEX.md)
+> **partly built**. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Status: PLAN — revised 2026-07-29, reconciled to the code after the attribution fact-stream
 > switchover. **Architecture-led**: [architecture.md](../architecture.md) is the spine; every metric

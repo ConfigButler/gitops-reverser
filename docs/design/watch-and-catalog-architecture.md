@@ -1,6 +1,6 @@
 # Watch & Catalog Architecture — Requirements, Current State, Target Design
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
 
 Status: **vision / proposed** — supersedes the framing in
 [watchrule-wildcard-support-plan.md](../spec/type-followability.md),

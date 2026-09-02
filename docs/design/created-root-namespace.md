@@ -1,6 +1,6 @@
 # What namespace does a created `kustomization.yaml` carry?
 
-> **design**: decided, and being built. Index: [`../INDEX.md`](../INDEX.md)
+> **design, decided**: being built. Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-01.
 >
 > One question, five answers, and the reason the obvious one is wrong. It came out of review of

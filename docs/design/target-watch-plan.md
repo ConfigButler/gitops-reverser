@@ -1,17 +1,12 @@
----
-status: design
-date: 2026-08-26
-related:
-  - watch-and-catalog-architecture.md
-  - data-plane-triggering.md
-  - ../spec/type-lifecycle-events-and-wobble-settling.md
----
-
 # Target watch plan: reconcile the changed cells
 
-> **design**: open. The diff is built and applied. Removal semantics are not,
+> **partly built**: the diff is built and applied. Removal semantics are not,
 > and the deletion the diff unlocks has not been made.
 > Index: [`../INDEX.md`](../INDEX.md)
+> Date: 2026-08-26.
+> Related: [`watch-and-catalog-architecture.md`](watch-and-catalog-architecture.md),
+> [`data-plane-triggering.md`](data-plane-triggering.md),
+> [`../spec/type-lifecycle-events-and-wobble-settling.md`](../spec/type-lifecycle-events-and-wobble-settling.md)
 
 **The short version.** A GitTarget's watch set is replaced wholesale today, so
 changing one rule replays all of them. This plan diffs the set instead and acts

@@ -1,6 +1,6 @@
 # The e2e Git server: stay on Gitea, or move to Forgejo?
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Scope is test infrastructure only: no shipped code path talks to the Git server. This document
 > records what was measured in both upstreams, the decision **not** to adopt a Go SDK either way, and

@@ -1,6 +1,6 @@
 # Azure DevOps and `multi_ack`: why it fails, and what to do about it
 
-> **design** — **decided and built: Option A, go-git v6.** Index: [`../INDEX.md`](../INDEX.md)
+> **built**: decided and built as Option A, go-git v6. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Written against PR [#292](https://github.com/ConfigButler/gitops-reverser/pull/292)
 > (issue [#288](https://github.com/ConfigButler/gitops-reverser/issues/288)), which proposes shelling

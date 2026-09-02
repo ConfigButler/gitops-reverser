@@ -1,15 +1,12 @@
----
-status: deferred
-date: 2026-08-27
-related:
-  - watch-manager-ownership.md
-  - target-watch-plan.md
-  - ../spec/gittarget-isolation-on-rule-change.md
----
-
 # GitTarget configuration freshness: desired in, applied out
 
-> **Deferred design, kept as a decision record.** Not an active implementation proposal, and
+> **deferred**: kept as a decision record.
+> Date: 2026-08-27. Index: [`../INDEX.md`](../INDEX.md)
+> Related: [`watch-manager-ownership.md`](watch-manager-ownership.md),
+> [`target-watch-plan.md`](target-watch-plan.md),
+> [`../spec/gittarget-isolation-on-rule-change.md`](../spec/gittarget-isolation-on-rule-change.md)
+>
+> **Not an active implementation proposal**, Not an active implementation proposal, and
 > nothing here is being built. `StreamsRunning` reports the health of the applied watch plan
 > without identifying which configuration produced that plan; this page works out what an opaque
 > target-level freshness marker would have to be, and why it is not worth building yet. Read

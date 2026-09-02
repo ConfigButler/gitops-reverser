@@ -1,17 +1,12 @@
----
-status: implemented
-date: 2026-08-27
-related:
-  - target-watch-plan.md
-  - data-plane-triggering.md
-  - watch-and-catalog-architecture.md
----
-
 # One owner for the watch plane: triggers in, work coalesced
 
-> **built.** All four steps have shipped; "Implementation order" records what each one deleted, and
+> **built**: all four steps have shipped; "Implementation order" records what each one deleted, and
 > "What shipped" at the end records where the implementation departed from this page and why.
 > Index: [`../INDEX.md`](../INDEX.md)
+> Date: 2026-08-27.
+> Related: [`target-watch-plan.md`](target-watch-plan.md),
+> [`data-plane-triggering.md`](data-plane-triggering.md),
+> [`watch-and-catalog-architecture.md`](watch-and-catalog-architecture.md)
 
 **The short version.** A rule edit is applied by the controller worker that observed
 it, synchronously, and it re-plans every GitTarget in the process rather than the one
