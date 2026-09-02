@@ -6,10 +6,10 @@
 > [`target-watch-plan.md`](target-watch-plan.md),
 > [`../spec/gittarget-isolation-on-rule-change.md`](../spec/gittarget-isolation-on-rule-change.md)
 >
-> **Not an active implementation proposal**, Not an active implementation proposal, and
-> nothing here is being built. `StreamsRunning` reports the health of the applied watch plan
-> without identifying which configuration produced that plan; this page works out what an opaque
-> target-level freshness marker would have to be, and why it is not worth building yet. Read
+> **Not an active implementation proposal**, and nothing here is being built. `StreamsRunning`
+> reports the health of the applied watch plan without identifying which configuration produced
+> it; this page works out what an opaque target-level freshness marker would have to be, and why it
+> is not worth building yet. Read
 > ["Why this is deferred"](#why-this-is-deferred) first: it carries the trigger conditions for
 > picking it up. The one part that stood on its own has shipped: see
 > ["What already shipped"](#what-already-shipped).

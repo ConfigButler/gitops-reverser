@@ -167,40 +167,40 @@ remains is step 1 (ownership of a field path) plus the update/retract lifecycle 
 omitted. Ballpark: a spike over env vars is a couple of days; a slice worth shipping is one and a
 half to two weeks.
 
-## The corpus is the test, and it is not wired up yet
+## The corpus is the test, and it runs
 
-The corpus is the one item every other item benefits from, and it is why PR 1 leads rather than
-merely happening to be first. The eighteen fixture folders under
-[`../layout/shapes/`](../../test/fixtures/layout-corpus/shapes/README.md) and
-[`../layout/specific-examples/`](../../test/fixtures/layout-corpus/specific-examples/README.md)
-are read today by **nothing but a human**: no Go file references either directory. Wiring them up
-converts every later review from *"does this prose hold together"* into *"does the diff match the
-patch"*.
+The corpus is the one item every other item benefits from, and it is why PR 1 led rather than
+merely happening to be first. It has since moved out of `docs/` entirely: the fixtures are executed,
+so they live with the other executed fixtures, at
+[`test/fixtures/layout-corpus/`](../../test/fixtures/layout-corpus/README.md).
 
-**The seam already exists, at both levels, and neither needs inventing:**
+`TestLayoutCorpus` in `internal/git` runs **fifteen scenarios over ten fixture folders**, one of
+them skipped (shape 8's `images:` authoring, which names track C above). Each seeds a worktree from
+`repository/`, folds the object in `input/` through the real plan-then-flush path with the
+configuration in `config/`, and compares a normalized diff against a committed `expected-*.patch`.
+Eleven scenarios assert a patch and four assert a refusal through `expected-*-status.yaml`. Two
+guards close the set over the filesystem, so a fixture cannot be added and left unrun, and an
+expectation cannot sit in the tree unasserted. An eleventh folder, `prerequisites/`, carries no
+`input/` because it illustrates the shared `GitProvider` rather than a write, and the coverage
+guard skips it on exactly that test.
 
-| What | Where | Does |
-|---|---|---|
-| Golden-directory runner | [`contextual_namespace_corpus_test.go`](../../internal/manifestanalyzer/contextual_namespace_corpus_test.go) | walks `testdata/` folders, asserts a per-document outcome — the exact shape the corpus needs |
-| Write-path driver | `newWorktreeForTest` + `flushEventsToWorktree` ([`inplace_edit_test.go`](../../internal/git/inplace_edit_test.go)) | seeds a worktree, folds events through the real plan-then-flush path |
-| Precedent for a refusal fixture | [`namespace_context_refusal_test.go`](../../internal/git/namespace_context_refusal_test.go) | pins the two folder shapes where the store's view and kustomize's disagree |
+That converts every later review from *"does this prose hold together"* into *"does the diff match
+the patch"*, which is what the rest of this page assumed it would.
 
-So PR 1 is assembly, not construction: seed a worktree from `repository/`, build the event from
-`input/`, derive the policy from `config/gittarget.yaml`, flush, and compare a normalized diff with
-`expected-*.patch`. A `-update` flag that rewrites the patches keeps the corpus cheap to extend.
+**The three rules, and where each one landed:**
 
-**Three rules for the corpus, each of which has already been learned the hard way here:**
-
-- **Scenarios for unbuilt behavior are written now and skipped**, with the track that unskips them
-  named in the skip message. PR 2 is finished when every skip naming PR 2 is gone — shape 8's
-  `images:` authoring names track C and outlives it.
-- **`config/gittarget.yaml` parses into a harness-local struct** until PR 2 deletes that mapping —
-  which is itself a check that the API the examples describe is the API that got built.
-- **Refusals are fixtures too.** A set in which every scenario succeeds is advertising rather than
-  specification. Three: a second source namespace against an explicit `serializeNamespace: false`, a
-  folder covering two render roots, and a base-owned field edit — each asserting an
-  `expected-status.yaml` rather than a patch. Only the two-roots one asserts a rule PR 1 ships; the
-  second-namespace one is written in PR 1 and skipped until PR 2.
+- **Scenarios for unbuilt behavior are written now and skipped**, naming the track that unskips
+  them. One skip is live, and it names track C rather than a PR, which is the rule working as
+  intended: not every skip belongs to the PR that wrote it.
+- **`config/gittarget.yaml` decodes into `v1alpha3.GitTarget`, strictly.** The harness-local struct
+  it used to parse into is gone, which was PR 2's own definition of done: the worked examples and
+  the shipped API are now the same API, and a field either exists or the corpus stops decoding.
+  `watchrule.yaml` decodes the same way.
+- **Refusals are fixtures too.** Four of them: a second source namespace against an explicit
+  `serializeNamespace: false`, a folder covering two render roots, a base-owned field edit, and an
+  edit to a field a shared layer supplies. The last was committed but asserted by nothing until it
+  was wired up, at which point it turned out to describe a refusal the writer does not produce.
+  That is the argument for this whole section, made by the one fixture that was not covered by it.
 
 ### The behavior reference this leaves missing
 
