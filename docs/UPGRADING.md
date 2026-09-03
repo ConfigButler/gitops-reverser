@@ -116,11 +116,23 @@ NS:.metadata.namespace,NAME:.metadata.name,COMMIT:.spec.commit
 the manifest still carries an old spelling. Check `COMMIT` renders **both** halves you migrated —
 a `map[window:...]` with no `message:` key means the templates did not come across.
 
-**What you will NOT get is a warning.** Because the fields are removed rather than retained, an
-object still carrying an old spelling is accepted with the value silently pruned — the mirror keeps
-running under the new defaults. That is a deliberate trade for a much smaller code surface, priced
-in [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md), and it is why the inventory
-is step 1 rather than a footnote.
+**Whether you get a warning depends on the client, and the one that matters is the quiet one.**
+`kubectl apply` asks for strict field validation by default (since 1.25), so a manifest still
+carrying a removed spelling is REJECTED and names the field:
+
+```text
+error: ... strict decoding error: unknown field "spec.allowedSourceNamespaces"
+```
+
+A client that does not ask for strict validation — `kubectl apply --validate=ignore`, and any
+controller applying with `fieldValidation: Ignore`, which includes some GitOps tooling — is
+**accepted with the value silently pruned**, and the mirror carries on under the new defaults with
+nothing reporting it. So if you apply by hand you will be told; if Flux or Argo CD applies your
+manifests for you, check what your tool does before assuming a green sync means a migrated object.
+
+Either way the inventory is step 1 rather than a footnote, because a pruned value is not recoverable
+from the API. The two removal strategies are priced in
+[`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md).
 
 ## Every reference is `{name}` — `group` and `kind` are gone
 
@@ -147,9 +159,10 @@ a default equal to it, so no manifest could ever say anything but `configbutler.
 the field accepts. What the sub-fields cost was four near-identical Go types and a schema that
 implied a choice nobody had.
 
-**They are removed, not refused**, so a manifest that still sets them applies cleanly with the
-values pruned. That is harmless here — the pruned value was the only legal one — but it does mean
-`kubectl apply` will not tell you your manifests are out of date. Tidy them at your convenience.
+**They are removed, not refused.** `kubectl apply` will therefore reject a manifest that still sets
+them, naming the field (`unknown field "spec.providerRef.kind"`), while a client applying with
+field validation off accepts it and prunes. Nothing breaks either way, since the pruned value was
+the only legal one — but a strict apply will stop until you delete the lines.
 
 `GitProvider.spec.knownHostsRef` keeps its `kind`, and that is not an oversight: it chooses between
 a ConfigMap and a Secret, which is a real choice rather than an enum of one.
@@ -175,9 +188,10 @@ setting `scope: Namespaced`, it has not been mirroring anything since then, and 
 same one that entry describes: a `WatchRule` in the tenant namespace with
 `spec.rules[].sourceNamespace`.
 
-From this release the value is pruned instead of rejected, so an unconverted manifest applies
-without complaint. That is the trade for deleting the field, and it is why the
-[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) lists it.
+From this release the value is no longer part of the schema, so `kubectl apply` reports it as an
+unknown field and a non-strict client prunes it silently. Either way it stops being a rejection with
+a message that names the replacement, which is what the shim bought and what the
+[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) now stands in for.
 
 ## The placement metric reports which declaration answered (breaking for dashboards)
 

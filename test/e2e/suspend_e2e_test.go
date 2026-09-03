@@ -214,7 +214,6 @@ metadata:
   namespace: %s
 spec:
   providerRef:
-    kind: GitProvider
     name: %s
   branch: main
   path: %s

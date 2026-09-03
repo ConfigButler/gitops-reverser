@@ -31,8 +31,11 @@ var _ = Describe("Superseded source-scope fields", func() {
 	It("accepts and PRUNES a legacy manifest that still sets rules[].scope", func() {
 		ctx := context.Background()
 
-		// Applied as unstructured, because the Go types no longer have the field to set. This is
-		// how a manifest written for 0.42 or earlier reaches a 0.43 apiserver.
+		// Applied as unstructured, because the Go types no longer have the field to set, and
+		// through a client that does not ask for strict field validation. That is the QUIET half
+		// of a removal and the one worth pinning: `kubectl apply` would reject this manifest by
+		// naming the unknown field, but a GitOps controller reconciling it on the user's behalf
+		// may not. See docs/facts/crd-upgrade-strategies.md.
 		legacy := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "configbutler.ai/v1alpha3",
 			"kind":       "ClusterWatchRule",

@@ -5,7 +5,6 @@ metadata:
   namespace: {{ .Namespace }}
 spec:
   providerRef:
-    kind: GitProvider
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
   path: {{ .Path }}

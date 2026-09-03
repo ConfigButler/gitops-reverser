@@ -204,7 +204,6 @@ metadata:
   namespace: %s
 spec:
   providerRef:
-    kind: GitProvider
     name: %s
   branch: main
   path: %s
@@ -358,7 +357,7 @@ var _ = Describe("Manager source cluster / ClusterProvider attribution", Label("
 kind: GitTarget
 metadata: {name: %s, namespace: %s}
 spec:
-  providerRef: {kind: GitProvider, name: %s}
+  providerRef: {name: %s}
   branch: main
   path: clusters/local
   commit:
@@ -419,7 +418,7 @@ spec:
 kind: WatchRule
 metadata: {name: %s-rule, namespace: %s}
 spec:
-  targetRef: {kind: GitTarget, name: %s}
+  targetRef: {name: %s}
   rules:
   - resources: ["configmaps"]
 `, ws, testNs, target)
@@ -485,7 +484,7 @@ spec:
 kind: WatchRule
 metadata: {name: %s-rule, namespace: %s}
 spec:
-  targetRef: {kind: GitTarget, name: %s}
+  targetRef: {name: %s}
   rules:
   - resources: ["configmaps"]
 `, c.ws, testNs, target)

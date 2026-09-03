@@ -305,7 +305,6 @@ metadata:
   namespace: %s
 spec:
   targetRef:
-    kind: GitTarget
     name: %s
   rules:
     - resources: ["configmaps"]
