@@ -215,12 +215,11 @@ func TestGitTargetRetentionStatus_AbsentAndZeroMeanDifferentThings(t *testing.T)
 
 	converged := gitTargetRetentionStatus(watch.RetentionSummary{
 		Reported: true, Mode: configbutleraiv1alpha3.PruneAlways,
+		ObservedTime: time.Date(2026, 7, 21, 13, 20, 0, 0, time.UTC),
 	})
 	require.NotNil(t, converged, "a reported zero is a report")
 	assert.Zero(t, converged.RetainedDocuments)
 	assert.Equal(t, configbutleraiv1alpha3.PruneAlways, converged.Mode)
-	require.NotNil(t, converged.ObservedTime, "a reading with no timestamp cannot be judged stale")
-	assert.False(t, converged.ObservedTime.IsZero())
 }
 
 // TestGitTargetRetentionStatus_ReportsTheEffectiveMode covers the legacy GitTarget: it stores no

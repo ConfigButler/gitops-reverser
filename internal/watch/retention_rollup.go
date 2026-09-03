@@ -30,7 +30,8 @@ type RetentionSummary struct {
 	Mode v1alpha3.PruneMode
 	// RetainedDocuments is the sum over the target's currently tracked scopes.
 	RetainedDocuments int
-	// ObservedTime is when the most recent contributing resync reported.
+	// ObservedTime is when the most recent contributing resync reported. It is stamped in the same
+	// mutation that sets a scope's reported flag, so it is non-zero whenever Reported is true.
 	ObservedTime time.Time
 }
 
