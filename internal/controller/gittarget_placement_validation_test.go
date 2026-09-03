@@ -184,10 +184,9 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	reconciler := &GitTargetReconciler{Client: client}
 	st := beginStatus(client, nil, target, &target.Status.Conditions)
 
-	validated, msg, result, err := reconciler.evaluateValidatedGate(context.Background(), st, target, ns)
+	validated, msg, err := reconciler.evaluateValidatedGate(context.Background(), st, target, ns)
 
 	require.NoError(t, err)
-	assert.Nil(t, result)
 	assert.False(t, validated)
 	assert.Contains(t, msg, GitTargetReasonInvalidConfig)
 

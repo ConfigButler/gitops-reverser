@@ -62,9 +62,10 @@ const reasonUnspecified = "Unspecified"
 //     reconcile actually saw, which may already be stale — kstatus then reads Current for a spec
 //     nobody looked at. commit() patches with optimistic concurrency instead, so a spec that moved
 //     under us loses the write rather than mislabelling it.
-//   - They retried on conflict with an exponential backoff. A conflict means somebody else wrote
-//     the object, and that write already enqueued us; re-running the reconcile on fresh data is
-//     both simpler and more correct than replaying a status computed from stale data.
+//   - They retried on conflict with an exponential backoff. Re-running the whole reconcile on
+//     fresh data is both simpler and more correct than replaying a status computed from stale
+//     data; commit() records the loss and the caller requeues. See commit() for what the conflict
+//     actually is.
 type reconcileStatus struct {
 	client   client.Client
 	recorder record.EventRecorder
@@ -84,13 +85,13 @@ type reconcileStatus struct {
 	writeLostToRace bool
 }
 
-// writeLost reports whether the last commit() had its status write beaten by a concurrent one.
-// A reconcile whose status never landed must come back soon whatever it computed, or the object
-// keeps the loser's answer until its periodic requeue.
+// writeLost reports whether the last commit() had its status write rejected by the optimistic
+// lock. A reconcile whose status never landed must come back promptly whatever it computed, or the
+// object keeps the older answer until its periodic requeue.
 func (s *reconcileStatus) writeLost() bool { return s.writeLostToRace }
 
-// requeueAfter is the cadence a reconcile should come back on, shortened to the settle interval
-// when its status write was lost.
+// requeueAfter is the cadence a reconcile should come back on, collapsed to
+// RequeueWriteLostInterval when its status write was lost.
 //
 // Every controller in this package has the same exposure, because they share commit() AND the
 // GenerationChangedPredicate that filters status-only updates: a converged object whose write lost
@@ -98,7 +99,7 @@ func (s *reconcileStatus) writeLost() bool { return s.writeLostToRace }
 // Fixing that at one call site would have left the same bug in the other four.
 func (s *reconcileStatus) requeueAfter(cadence time.Duration) time.Duration {
 	if s.writeLostToRace {
-		return RequeueStreamSettleInterval
+		return RequeueWriteLostInterval
 	}
 	return cadence
 }
@@ -163,30 +164,32 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 	}
 
 	// Optimistic concurrency, deliberately WITHOUT a retry loop: a conflict means the object moved
-	// under this reconcile, so the status just computed describes a generation that is no longer
-	// current. Dropping the WRITE is right — publishing a stale observation is worse.
+	// under this reconcile, so the status just computed describes a resourceVersion that is no
+	// longer current. Dropping the WRITE is right — publishing a stale observation is worse.
 	//
-	// Dropping the RECONCILE with it was not. The old code returned nil on conflict, on the
-	// reasoning that "the write that beat us enqueued us again". That is false by construction for
-	// every controller here: the winning write is a STATUS-only update, and each For() carries a
-	// GenerationChangedPredicate precisely to filter those out (it exists to break the
-	// status-write-triggers-reconcile loop). So nothing re-enqueued, the caller saw success and
-	// chose its converged requeue — five minutes for a GitTarget — and the object kept whatever
-	// the loser wrote.
+	// WHO the racing writer is, is the part worth stating, because "another writer" is the wrong
+	// mental picture and sends people hunting for one. There is exactly ONE status writer per kind
+	// here (this helper, from that kind's reconciler), and controller-runtime never runs two
+	// reconciles for the same key concurrently. The loser is racing ITSELF, one reconcile earlier:
 	//
-	// That is Failure A: a 61-scope target produced ~66 reconciles in four seconds, one per scope
-	// report; the last of them computed RenderMatchesLive=True, lost the race, was silently
-	// dropped, and left every WatchRule on that target reading "Rechecking" until the five-minute
-	// requeue.
+	//	reconcile N   Get (cache, rv=1) → Patch → stored rv=2
+	//	reconcile N+1 Get (cache, still rv=1, the informer has not caught up) → Patch if-match rv=1 → 409
+	//
+	// So a conflict is a cache-lag artefact, not contention. It is common for exactly the reason it
+	// looks rare: it needs a second reconcile to arrive within the informer's catch-up window, which
+	// is what a burst does — a 61-scope GitTarget produced ~66 reconciles in four seconds, and one
+	// e2e run logged 74 conflicts.
+	//
+	// Dropping the RECONCILE along with the write was the actual defect. The old code returned nil
+	// on conflict, reasoning that "the write that beat us enqueued us again". That is false by
+	// construction here: the winning write is a STATUS-only update, and each For() carries a
+	// GenerationChangedPredicate precisely to filter those out. So nothing re-enqueued, the caller
+	// saw success and chose its converged requeue, and the object kept the older answer — that is
+	// Failure A, and it is why a spec waiting on a dependency's published status sees a reason that
+	// never advances.
 	//
 	// So the loss is RECORDED and the caller asks writeLost() before choosing its requeue: a
-	// reconcile whose status never landed must come back soon, whatever it computed.
-	//
-	// This race is NOT rare, which was the first thing measurement corrected: one e2e run logged
-	// it 74 times, 55 of them on a reconcile that had computed a CONVERGED status and would
-	// therefore have taken the five-minute cadence. That is Failure A happening dozens of times a
-	// run and only being NOTICED when the stale object is one a spec is waiting on — which is
-	// exactly why it read as intermittent.
+	// reconcile whose status never landed must come back promptly, whatever it computed.
 	patch := client.MergeFromWithOptions(s.before, client.MergeFromWithOptimisticLock{})
 	switch err := s.client.Status().Patch(ctx, s.object, patch); {
 	case err == nil:

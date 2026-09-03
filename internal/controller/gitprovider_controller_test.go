@@ -22,7 +22,7 @@ import (
 )
 
 // expectSteadyRequeue asserts the reconcile asked to come back on its steady cadence — or on the
-// SETTLE cadence, which is the correct answer when this reconcile's status write lost a race.
+// WRITE-LOST cadence, which is the correct answer when this reconcile's status write lost a race.
 //
 // These specs call Reconcile directly while the suite's manager reconciles the same object, so the
 // two status patches can collide on the optimistic lock. reconcileStatus.requeueAfter then shortens
@@ -36,7 +36,7 @@ import (
 // by accepting either value here.
 func expectSteadyRequeue(result reconcile.Result) {
 	GinkgoHelper()
-	Expect(result.RequeueAfter).To(BeElementOf(RequeueSteadyInterval, RequeueStreamSettleInterval))
+	Expect(result.RequeueAfter).To(BeElementOf(RequeueSteadyInterval, RequeueWriteLostInterval))
 }
 
 var _ = Describe("GitProvider Controller", func() {

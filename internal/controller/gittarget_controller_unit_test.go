@@ -99,7 +99,7 @@ func TestCheckForConflicts_ListErrorFailsClosed(t *testing.T) {
 		},
 	}
 
-	conflict, _, _, _, err := reconciler.checkForConflicts(context.Background(), target, target.Namespace)
+	conflict, _, _, err := reconciler.checkForConflicts(context.Background(), target, target.Namespace)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "list GitTargets for conflict validation")

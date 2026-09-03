@@ -124,6 +124,16 @@ const (
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.
 	RequeueStreamSettleInterval = 10 * time.Second
+	// RequeueWriteLostInterval is how soon a reconcile whose status write lost the optimistic-lock
+	// race comes back. It is short because there is nothing to wait FOR: the write was rejected
+	// against a resourceVersion this reconcile had already read, so the only thing that has to
+	// happen before the retry can succeed is the informer cache catching up with a write that is
+	// already durable — milliseconds, not a settle window.
+	//
+	// It used to borrow RequeueStreamSettleInterval, which put the recovery ten seconds out and
+	// made every lost write a ten-second window of published-but-stale status. Two unrelated
+	// cadences shared one constant; only the coincidence that both were "soon" hid it.
+	RequeueWriteLostInterval = 100 * time.Millisecond
 
 	// RetryInitialDuration is the initial duration for exponential backoff retry.
 	RetryInitialDuration = 100 * time.Millisecond
