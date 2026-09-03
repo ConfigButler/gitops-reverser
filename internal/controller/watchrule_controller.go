@@ -88,7 +88,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log.Info("Starting WatchRule validation",
 		"name", watchRule.Name,
 		"namespace", watchRule.Namespace,
-		"target", watchRule.Spec.TargetRef,
+		"target", watchRule.Spec.GitTargetRef,
 		"generation", watchRule.Generation,
 		"resourceVersion", watchRule.ResourceVersion)
 	st := beginStatus(r.Client, r.Recorder, &watchRule, &watchRule.Status.Conditions)
@@ -117,7 +117,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	)
 
 	// Route by configuration surface (Target is required now)
-	if watchRule.Spec.TargetRef.Name == "" {
+	if watchRule.Spec.GitTargetRef.Name == "" {
 		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
@@ -130,14 +130,14 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // reconcileWatchRuleViaTarget validates and stores a WatchRule that references a GitTarget.
-// watchRuleGitTarget names the GitTarget a WatchRule writes through. targetRef is a
-// LocalTargetReference, so the GitTarget is always in the rule's own namespace.
+// watchRuleGitTarget names the GitTarget a WatchRule writes through. gitTargetRef is a
+// meta.LocalObjectReference, so the GitTarget is always in the rule's own namespace.
 //
 // It carries no UID, and that is correct rather than an omission: a rule-derived reference has
 // none to carry, and the watch-plane owner resolves the trigger against the UID the GitTarget
 // controller captured. See resolveGitTargetUID.
 func watchRuleGitTarget(rule *configbutleraiv1alpha3.WatchRule) reverserTypes.ResourceReference {
-	return reverserTypes.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	return reverserTypes.NewResourceReference(rule.Spec.GitTargetRef.Name, rule.Namespace)
 }
 
 func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
@@ -152,25 +152,25 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 
 	// Fetch GitTarget
 	var target configbutleraiv1alpha3.GitTarget
-	targetKey := types.NamespacedName{Name: watchRule.Spec.TargetRef.Name, Namespace: targetNS}
+	targetKey := types.NamespacedName{Name: watchRule.Spec.GitTargetRef.Name, Namespace: targetNS}
 	if err := r.Get(ctx, targetKey, &target); err != nil {
 		log.Error(err, "Failed to get referenced GitTarget",
-			"gitTargetName", watchRule.Spec.TargetRef.Name,
+			"gitTargetName", watchRule.Spec.GitTargetRef.Name,
 			"gitTargetNamespace", targetNS)
 		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			WatchRuleReasonGitTargetNotFound,
-			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v", targetNS, watchRule.Spec.TargetRef.Name, err),
+			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v", targetNS, watchRule.Spec.GitTargetRef.Name, err),
 		)
 		return r.stallRule(ctx, st, WatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
 	}
 	ready := gitTargetReadyCondition(target)
 	st.set(ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
 
-	// Resolve the GitProvider named by the target. A GitProviderReference is a
+	// Resolve the GitProvider named by the target. A meta.LocalObjectReference is a
 	// name-only reference to a GitProvider in the GitTarget's own namespace.
-	providerName := target.Spec.ProviderRef.Name
+	providerName := target.Spec.GitProviderRef.Name
 	providerNS := target.Namespace // GitProvider is namespace-local to the GitTarget
 
 	var provider configbutleraiv1alpha3.GitProvider
@@ -211,7 +211,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	msg := fmt.Sprintf(
 		"WatchRule is ready and monitoring resources via GitTarget '%s/%s'",
 		targetNS,
-		watchRule.Spec.TargetRef.Name,
+		watchRule.Spec.GitTargetRef.Name,
 	)
 	return r.commitRule(ctx, st, ruleReadiness(watchRule.Status.Conditions, "WatchRule", msg))
 }
@@ -336,7 +336,7 @@ func (r *WatchRuleReconciler) clusterProviderToWatchRules(
 		return nil
 	}
 
-	// A WatchRule's targetRef is a LocalTargetReference, so candidates always live in their
+	// A WatchRule's gitTargetRef is a meta.LocalObjectReference, so candidates always live in their
 	// GitTarget's own namespace — collect the affected (namespace, target name) pairs.
 	affected := make(map[types.NamespacedName]struct{}, len(targets.Items))
 	for i := range targets.Items {
@@ -359,7 +359,7 @@ func (r *WatchRuleReconciler) clusterProviderToWatchRules(
 	var requests []ctrlreconcile.Request
 	for i := range rules.Items {
 		rule := &rules.Items[i]
-		key := types.NamespacedName{Name: rule.Spec.TargetRef.Name, Namespace: rule.Namespace}
+		key := types.NamespacedName{Name: rule.Spec.GitTargetRef.Name, Namespace: rule.Namespace}
 		if _, ok := affected[key]; !ok {
 			continue
 		}
@@ -371,8 +371,8 @@ func (r *WatchRuleReconciler) clusterProviderToWatchRules(
 }
 
 // gitTargetToWatchRules maps a GitTarget event to every WatchRule in the
-// GitTarget's namespace that references it. WatchRule.spec.targetRef is a
-// LocalTargetReference, so candidates only live in the same namespace as the
+// GitTarget's namespace that references it. WatchRule.spec.gitTargetRef is a
+// meta.LocalObjectReference, so candidates only live in the same namespace as the
 // GitTarget.
 func (r *WatchRuleReconciler) gitTargetToWatchRules(
 	ctx context.Context,
@@ -387,7 +387,7 @@ func (r *WatchRuleReconciler) gitTargetToWatchRules(
 	var requests []ctrlreconcile.Request
 	for i := range rules.Items {
 		rule := &rules.Items[i]
-		if rule.Spec.TargetRef.Name != obj.GetName() {
+		if rule.Spec.GitTargetRef.Name != obj.GetName() {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{
@@ -415,7 +415,7 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 	matchingTargets := make(map[string]struct{})
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.Spec.ProviderRef.Name == obj.GetName() {
+		if t.Spec.GitProviderRef.Name == obj.GetName() {
 			matchingTargets[t.Name] = struct{}{}
 		}
 	}
@@ -432,7 +432,7 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 	var requests []ctrlreconcile.Request
 	for i := range rules.Items {
 		rule := &rules.Items[i]
-		if _, ok := matchingTargets[rule.Spec.TargetRef.Name]; !ok {
+		if _, ok := matchingTargets[rule.Spec.GitTargetRef.Name]; !ok {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{

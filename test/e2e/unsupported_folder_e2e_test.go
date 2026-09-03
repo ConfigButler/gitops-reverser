@@ -173,7 +173,7 @@ kind: ClusterWatchRule
 metadata:
   name: %s
 spec:
-  targetRef:
+  gitTargetRef:
     name: %s
     namespace: %s
   rules:

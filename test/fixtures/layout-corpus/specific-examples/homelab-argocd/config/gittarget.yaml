@@ -4,7 +4,7 @@ metadata:
   name: argocd-applications
   namespace: argocd
 spec:
-  providerRef:
+  gitProviderRef:
     name: homelab-repository
   branch: main
   path: bootstrap/argocd-applications

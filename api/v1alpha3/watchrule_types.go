@@ -5,6 +5,7 @@ package v1alpha3
 import (
 	"fmt"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -23,35 +24,15 @@ const (
 	OperationAll OperationType = "*"
 )
 
-type LocalTargetReference struct {
-	// API Group of the referent.
-	// +kubebuilder:default=configbutler.ai
-	// +kubebuilder:validation:Enum=configbutler.ai
-	Group string `json:"group,omitempty"`
-
-	// Kind of the referent.
-	// Optional because this reference currently only supports a single kind (GitTarget).
-	// Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
-	// +optional
-	// +kubebuilder:validation:Enum=GitTarget
-	// +kubebuilder:default=GitTarget
-	Kind string `json:"kind,omitempty"`
-
-	// Name of the referent.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-}
-
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
 // carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
 // or "*" for every namespace the GitTarget admits.
 type WatchRuleSpec struct {
-	// TargetRef references the GitTarget to use.
-	// Must be in the same namespace.
+	// GitTargetRef names the GitTarget this rule feeds, in this WatchRule's own namespace.
 	// +required
-	TargetRef LocalTargetReference `json:"targetRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
+	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
 
 	// Rules define which resources to watch, and in which source namespaces.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -243,7 +224,7 @@ type WatchRuleStreamsStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef.name`
+// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`

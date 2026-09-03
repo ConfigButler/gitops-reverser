@@ -162,7 +162,7 @@ func (r *GitTargetReconciler) gitProviderReadiness(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) conditionValue {
-	key := k8stypes.NamespacedName{Name: target.Spec.ProviderRef.Name, Namespace: providerNS}
+	key := k8stypes.NamespacedName{Name: target.Spec.GitProviderRef.Name, Namespace: providerNS}
 	notReady := func(status metav1.ConditionStatus, format string, args ...any) conditionValue {
 		return conditionValue{
 			Status:  status,

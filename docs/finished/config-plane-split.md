@@ -29,7 +29,7 @@ That single `rest.Config` serves two jobs that are conceptually unrelated:
 - **the watched cluster** — where the resources it mirrors to Git actually live.
 
 Because `GitProvider.spec.secretRef` is a local reference and
-`WatchRule.spec.targetRef` must name a same-namespace `GitTarget`, all four
+`WatchRule.spec.gitTargetRef` must name a same-namespace `GitTarget`, all four
 objects have to sit in one namespace **on the cluster being watched**. Nothing
 chose this; it fell out of having one kubeconfig.
 
@@ -51,7 +51,7 @@ single-cluster default, which needs no configuration and behaves exactly as toda
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 spec:
-  providerRef: { name: acme }
+  gitProviderRef: { name: acme }
   branch: main
   path: clusters/acme
   kubeConfig:                    # NEW — omit for "the cluster I run in"
@@ -268,7 +268,7 @@ destination). This redesign keeps the good structure and removes the coupling.
 
 | Closed PR (#220) | This redesign | Why |
 |---|---|---|
-| `sourceCluster` **mutable**, part of the retarget lifecycle (`observedDestination`, `retargetingTo`, teardown-before-validation). | `spec.kubeConfig` **immutable**, exactly like `providerRef`/`branch`/`path` are on `main` today. | The source of a folder's content is destination identity. On `main` the destination is already immutable; extending it is the minimal, coherent change. Mutability is retarget's problem (#6), and can subsume it later. |
+| `sourceCluster` **mutable**, part of the retarget lifecycle (`observedDestination`, `retargetingTo`, teardown-before-validation). | `spec.kubeConfig` **immutable**, exactly like `gitProviderRef`/`branch`/`path` are on `main` today. | The source of a folder's content is destination identity. On `main` the destination is already immutable; extending it is the minimal, coherent change. Mutability is retarget's problem (#6), and can subsume it later. |
 | Source cluster **stamped onto every `CompiledRule`**; a `spec` change raced rule recompilation, needing `CompiledSourceClusters`, `sourceClusterRulesCaughtUp`, and a "rules disagree → watch nothing" state. | Source cluster is a **GitTarget property captured on `Declare`**, the same way `gitTargetUIDs` already is. | It *is* a GitTarget property; normalize it as one. Because it is immutable, there is no "spec changed, rules haven't caught up" window — the entire race apparatus disappears. |
 | `key` **schema-defaulted to `value.yaml`**. | `key` optional, **no schema default**; resolver reads `value` then `value.yaml`. | `value.yaml` alone would **fail** on a standard Flux kubeconfig Secret, whose key is `value`. Matching Flux's fallback order is simpler *and* more compatible. |
 | Resolver did a bare `RESTConfigFromKubeConfig(raw)`. | Resolver **rejects** a kubeconfig carrying `exec`/insecure-TLS (legible `Validated=False`), unless flag-opted-in. | An operator-supplied kubeconfig is attacker-adjacent input; an `exec` stanza runs a binary in the operator Pod. Flux *strips* these silently; we reject for legibility. |
@@ -301,7 +301,7 @@ import meta "github.com/fluxcd/pkg/apis/meta"
 // this one rule, plus wiring the provider path, is the whole future enablement.
 // +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.configMapRef)",message="spec.kubeConfig.configMapRef (provider auth) is not yet supported; use secretRef"
 type GitTargetSpec struct {
-	// … providerRef, branch, path (unchanged, still immutable) …
+	// … gitProviderRef, branch, path (unchanged, still immutable) …
 
 	// KubeConfig names the SOURCE CLUSTER this GitTarget mirrors FROM: the kubeconfig
 	// determines both the cluster and the credentials to reach it. Omitted means the cluster

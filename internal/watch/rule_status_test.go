@@ -64,7 +64,6 @@ func TestResolveClusterWatchRuleResources_WildcardWatchesManyTypes(t *testing.T)
 				APIGroups:   []string{"*"},
 				APIVersions: []string{"*"},
 				Resources:   []string{"*"},
-				Scope:       configv1alpha3.ResourceScopeNamespaced,
 			}},
 		}})
 

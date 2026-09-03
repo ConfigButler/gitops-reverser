@@ -369,13 +369,13 @@ func (m *Manager) ResolveWatchRuleResources(
 			scope: configv1alpha3.ResourceScopeNamespaced,
 		})
 	}
-	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	gitDest := types.NewResourceReference(rule.Spec.GitTargetRef.Name, rule.Namespace)
 	return m.resolveRuleResourceStatus(gitDest, selectors)
 }
 
 // ResolveClusterWatchRuleResources reports one ClusterWatchRule's resource-resolution
 // status for controller feedback. See resolveRuleResourceStatus. A ClusterWatchRule is
-// cluster-scoped, so its targetRef names both the GitTarget and its namespace; the status
+// cluster-scoped, so its gitTargetRef names both the GitTarget and its namespace; the status
 // resolves against that GitTarget's source cluster.
 func (m *Manager) ResolveClusterWatchRuleResources(
 	_ context.Context,
@@ -390,7 +390,7 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 			scope: configv1alpha3.ResourceScopeCluster,
 		})
 	}
-	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
+	gitDest := types.NewResourceReference(rule.Spec.GitTargetRef.Name, rule.Spec.GitTargetRef.Namespace)
 	return m.resolveRuleResourceStatus(gitDest, selectors)
 }
 

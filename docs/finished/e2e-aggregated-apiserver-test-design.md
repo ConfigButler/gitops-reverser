@@ -665,7 +665,7 @@ metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
 spec:
-  targetRef:
+  gitTargetRef:
     name: {{ .GitTargetName }}
   rules:
     - operations: ["CREATE", "UPDATE", "DELETE"]
@@ -695,7 +695,7 @@ kind: ClusterWatchRule
 metadata:
   name: {{ .Name }}
 spec:
-  targetRef:
+  gitTargetRef:
     name: {{ .GitTargetName }}
     namespace: {{ .GitTargetNamespace }}
   rules:

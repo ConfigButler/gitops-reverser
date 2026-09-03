@@ -403,7 +403,7 @@ func readCorpusSourceNamespaces(
 		// Strict, for the same reason the GitTarget above is: a fixture naming a field the API
 		// does not have must fail to parse rather than be quietly ignored.
 		require.NoError(t, yaml.UnmarshalStrict(raw, &rule), "parsing %s", path)
-		require.Equal(t, target.Name, rule.Spec.TargetRef.Name,
+		require.Equal(t, target.Name, rule.Spec.GitTargetRef.Name,
 			"%s points at a different GitTarget than the scenario's config", path)
 		for _, item := range rule.Spec.Rules {
 			if item.IsSourceNamespaceWildcard() {

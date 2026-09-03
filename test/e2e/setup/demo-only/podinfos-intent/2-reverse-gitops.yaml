@@ -15,8 +15,7 @@ kind: GitTarget
 metadata:
   name: demo-podinfos
 spec:
-  providerRef:
-    kind: GitProvider
+  gitProviderRef:
     name: demo
   branch: nl-stuff
   path: podinfos
@@ -28,8 +27,7 @@ kind: WatchRule
 metadata:
   name: demo-podinfos
 spec:
-  targetRef:
-    kind: GitTarget
+  gitTargetRef:
     name: demo-podinfos
   rules:
     - operations: [CREATE, UPDATE, DELETE]

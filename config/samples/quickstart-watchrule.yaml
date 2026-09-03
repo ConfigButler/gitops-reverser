@@ -4,7 +4,7 @@ metadata:
   name: example-watchrule
   namespace: default
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
   rules:
     - operations: [CREATE, UPDATE, DELETE]

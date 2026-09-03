@@ -32,7 +32,7 @@ func watchRuleWithSource(name, gitTargetName, sourceNamespace string) configv1al
 // would hand the store — so the planning assertions run against the real shape.
 func addRule(store *rulestore.RuleStore, rule configv1alpha3.WatchRule, scope [][]string) {
 	store.AddOrUpdateWatchRule(
-		rule, scope, rule.Spec.TargetRef.Name, "test-ns", "test-provider", "test-ns", "main", "test-path")
+		rule, scope, rule.Spec.GitTargetRef.Name, "test-ns", "test-provider", "test-ns", "main", "test-path")
 }
 
 // makeStoreWithScope compiles one WatchRule with a given resolved scope into a fresh store, for the

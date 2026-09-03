@@ -124,7 +124,7 @@ func TestLocateNew_WriteScope_RebasesDeclared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	if res.Source != PlacementSourceDeclared {
+	if res.Source != PlacementSourceDefault {
 		t.Fatalf("expected a declared placement, got %s", res.Source)
 	}
 	if res.Path != "overlays/production/app/configmaps.yaml" {
@@ -334,7 +334,7 @@ func TestLocateNew_DeclaredIntoKustomizeContext_OmitsNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	if res.Source != PlacementSourceDeclared {
+	if res.Source != PlacementSourceDefault {
 		t.Fatalf("expected a declared placement, got %s", res.Source)
 	}
 	if !res.NamespaceInherited {
@@ -421,7 +421,7 @@ func TestLocateNew_DeclaredOutranksTheKustomizeRoot(t *testing.T) {
 		t.Fatalf("LocateNew: %v", err)
 	}
 	want := "app/configmaps.yaml"
-	if res.Path != want || res.Source != PlacementSourceDeclared {
+	if res.Path != want || res.Source != PlacementSourceByType {
 		t.Fatalf("got %+v, want the declared template %q to win over the kustomize root", res, want)
 	}
 }
@@ -860,5 +860,35 @@ func TestLocateNew_DeclaredTemplateEscapingPath_Refused(t *testing.T) {
 	_, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
 	if err == nil {
 		t.Fatal("expected an error for a declared template that escapes spec.path")
+	}
+}
+
+// TestLocateNew_DistinguishesByTypeFromDefault pins the split that makes the placement metric
+// answer "is a rule missing?". A byType entry naming this exact type and a catch-all default both
+// produce a declared path; reported as one value, a default quietly swallowing a type you meant to
+// name explicitly looks identical to a rule working as intended.
+func TestLocateNew_DistinguishesByTypeFromDefault(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	policy := &PlacementPolicy{
+		ByType:  map[string]string{"v1/configmaps": "config/{name}.yaml"},
+		Default: "catchall/{name}.yaml",
+	}
+
+	named, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if named.Source != PlacementSourceByType {
+		t.Fatalf("an exact byType entry must report by_type, got %s", named.Source)
+	}
+
+	unnamed := newConfigMapRequest("cache", "app")
+	unnamed.Identifier.Resource = "secrets"
+	fellThrough, err := LocateNew(store, policy, unnamed)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if fellThrough.Source != PlacementSourceDefault {
+		t.Fatalf("a type no byType entry names must report default, got %s", fellThrough.Source)
 	}
 }

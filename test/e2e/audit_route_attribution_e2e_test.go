@@ -202,8 +202,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  providerRef:
-    kind: GitProvider
+  gitProviderRef:
     name: %s
   branch: main
   path: %s
@@ -224,8 +223,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  targetRef:
-    kind: GitTarget
+  gitTargetRef:
     name: %s
   rules:
     - resources: ["configmaps"]

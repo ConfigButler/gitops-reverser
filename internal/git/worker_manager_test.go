@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,7 +89,7 @@ func createTargetForRegister(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = testTargetNamespace
-	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
+	target.Spec.GitProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch

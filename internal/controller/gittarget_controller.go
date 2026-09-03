@@ -749,18 +749,22 @@ func (r *GitTargetReconciler) ensureEventStream(
 		return nil, errors.New("worker manager is not configured")
 	}
 
-	worker, exists := r.WorkerManager.GetWorkerForTarget(target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch)
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		target.Spec.GitProviderRef.Name,
+		providerNS,
+		target.Spec.Branch,
+	)
 	if !exists {
 		if err := r.WorkerManager.EnsureWorker(
 			context.Background(),
-			target.Spec.ProviderRef.Name,
+			target.Spec.GitProviderRef.Name,
 			providerNS,
 			target.Spec.Branch,
 		); err != nil {
 			return nil, fmt.Errorf(
 				"failed to ensure branch worker for provider=%s/%s branch=%s: %w",
 				providerNS,
-				target.Spec.ProviderRef.Name,
+				target.Spec.GitProviderRef.Name,
 				target.Spec.Branch,
 				err,
 			)
@@ -768,7 +772,7 @@ func (r *GitTargetReconciler) ensureEventStream(
 
 		var ensured bool
 		worker, ensured = r.WorkerManager.GetWorkerForTarget(
-			target.Spec.ProviderRef.Name,
+			target.Spec.GitProviderRef.Name,
 			providerNS,
 			target.Spec.Branch,
 		)
@@ -776,7 +780,7 @@ func (r *GitTargetReconciler) ensureEventStream(
 			return nil, fmt.Errorf(
 				"branch worker not found for provider=%s/%s branch=%s",
 				providerNS,
-				target.Spec.ProviderRef.Name,
+				target.Spec.GitProviderRef.Name,
 				target.Spec.Branch,
 			)
 		}
@@ -798,10 +802,10 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 	providerNS string,
 ) (bool, string, string, error) {
 	var gp configbutleraiv1alpha3.GitProvider
-	gpKey := k8stypes.NamespacedName{Name: target.Spec.ProviderRef.Name, Namespace: providerNS}
+	gpKey := k8stypes.NamespacedName{Name: target.Spec.GitProviderRef.Name, Namespace: providerNS}
 	if err := r.Get(ctx, gpKey, &gp); err != nil {
 		if apierrors.IsNotFound(err) {
-			msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.ProviderRef.Name)
+			msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.GitProviderRef.Name)
 			return false, msg, GitTargetReasonProviderNotFound, nil
 		}
 		return false, "", "", err
@@ -825,7 +829,7 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 			target.Spec.Branch,
 			gp.Spec.AllowedBranches,
 			providerNS,
-			target.Spec.ProviderRef.Name,
+			target.Spec.GitProviderRef.Name,
 		)
 		return false, msg, GitTargetReasonBranchNotAllowed, nil
 	}
@@ -855,7 +859,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 		if existing.Namespace == target.Namespace && existing.Name == target.Name {
 			continue
 		}
-		if existing.Namespace != providerNS || existing.Spec.ProviderRef.Name != target.Spec.ProviderRef.Name {
+		if existing.Namespace != providerNS || existing.Spec.GitProviderRef.Name != target.Spec.GitProviderRef.Name {
 			continue
 		}
 		if existing.Spec.Branch != target.Spec.Branch ||
@@ -876,7 +880,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 					existing.Name,
 					existing.CreationTimestamp.Format(time.RFC3339),
 					providerNS,
-					target.Spec.ProviderRef.Name,
+					target.Spec.GitProviderRef.Name,
 					target.Spec.Branch,
 					target.Spec.Path,
 				)
@@ -889,7 +893,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 					existing.Name,
 					existing.CreationTimestamp.Format(time.RFC3339),
 					providerNS,
-					target.Spec.ProviderRef.Name,
+					target.Spec.GitProviderRef.Name,
 					target.Spec.Branch,
 				)
 			}
@@ -1239,25 +1243,25 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // in its own namespace), so the GitTarget re-Declares its watched-type set when a rule changes.
 func (r *GitTargetReconciler) watchRuleToGitTarget(_ context.Context, obj client.Object) []ctrlreconcile.Request {
 	wr, ok := obj.(*configbutleraiv1alpha3.WatchRule)
-	if !ok || wr.Spec.TargetRef.Name == "" {
+	if !ok || wr.Spec.GitTargetRef.Name == "" {
 		return nil
 	}
 	return []ctrlreconcile.Request{{NamespacedName: k8stypes.NamespacedName{
-		Name: wr.Spec.TargetRef.Name, Namespace: wr.Namespace,
+		Name: wr.Spec.GitTargetRef.Name, Namespace: wr.Namespace,
 	}}}
 }
 
-// clusterWatchRuleToGitTarget enqueues the GitTarget a ClusterWatchRule targets (its TargetRef
+// clusterWatchRuleToGitTarget enqueues the GitTarget a ClusterWatchRule targets (its GitTargetRef
 // carries the namespace), for the same reason as watchRuleToGitTarget.
 func (r *GitTargetReconciler) clusterWatchRuleToGitTarget(
 	_ context.Context, obj client.Object,
 ) []ctrlreconcile.Request {
 	cwr, ok := obj.(*configbutleraiv1alpha3.ClusterWatchRule)
-	if !ok || cwr.Spec.TargetRef.Name == "" {
+	if !ok || cwr.Spec.GitTargetRef.Name == "" {
 		return nil
 	}
 	return []ctrlreconcile.Request{{NamespacedName: k8stypes.NamespacedName{
-		Name: cwr.Spec.TargetRef.Name, Namespace: cwr.Spec.TargetRef.Namespace,
+		Name: cwr.Spec.GitTargetRef.Name, Namespace: cwr.Spec.GitTargetRef.Namespace,
 	}}}
 }
 
@@ -1278,7 +1282,7 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 	var requests []ctrlreconcile.Request
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.Spec.ProviderRef.Name != obj.GetName() {
+		if t.Spec.GitProviderRef.Name != obj.GetName() {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{

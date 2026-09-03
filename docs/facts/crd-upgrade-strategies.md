@@ -20,11 +20,29 @@ governed by how many consumers you have, not by which is technically nicer:
 
 - **Retain and refuse** — keep the field in the schema, reject it, for one release. Costs code,
   buys a signal.
-- **Delete outright** — remove it, accept that stored values are pruned silently, put the migration
-  in a document. Costs nothing, buys nothing, and is correct when the population is small enough to
+- **Delete outright** — remove it, accept that stored values are pruned, put the migration in a
+  document. Costs nothing, buys nothing, and is correct when the population is small enough to
   migrate by hand.
 
 A **conversion webhook is not a third option** for most changes. See the matrix.
+
+### How silent "pruned silently" actually is — measured
+
+Pruning is not uniformly quiet, and which half of it a user meets is decided by their client rather
+than by the schema. Measured against this project's own CRDs on 1.31, applying a `GitTarget` that
+still carries the removed `spec.allowedSourceNamespaces`:
+
+| Client | Result |
+|---|---|
+| `kubectl apply` (strict field validation, the default since 1.25) | **rejected**: `strict decoding error: unknown field "spec.allowedSourceNamespaces"` |
+| `kubectl apply --validate=ignore` | accepted, field absent from the stored object |
+| A controller-runtime client, and any apply with `fieldValidation: Ignore` | accepted, field absent from the stored object |
+
+So "delete outright" buys a signal after all for anyone applying by hand — the loud half of
+retain-and-refuse, without the schema residue, though with a message that names the field rather
+than its replacement. It buys nothing for a GitOps controller reconciling the manifest on the user's
+behalf, which is the population that matters here and the reason the migration still belongs in a
+document.
 
 ## Decision matrix
 

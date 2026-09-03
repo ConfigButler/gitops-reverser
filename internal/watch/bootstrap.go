@@ -50,7 +50,7 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 	targetNS := rule.Namespace
 
 	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
-		Name:      rule.Spec.TargetRef.Name,
+		Name:      rule.Spec.GitTargetRef.Name,
 		Namespace: targetNS,
 	})
 	if err != nil {
@@ -77,10 +77,10 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 }
 
 func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1alpha3.ClusterWatchRule) error {
-	targetNS := rule.Spec.TargetRef.Namespace
+	targetNS := rule.Spec.GitTargetRef.Namespace
 
 	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
-		Name:      rule.Spec.TargetRef.Name,
+		Name:      rule.Spec.GitTargetRef.Name,
 		Namespace: targetNS,
 	})
 	if err != nil {
@@ -90,8 +90,7 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 	// Route through the SHARED gated compile path, never straight at the store. Bootstrap runs
 	// BEFORE the first reconcile on every restart, so a gate the reconciler alone enforced would be
 	// bypassed for the whole startup window — long enough to compile a rule and plan a stream for a
-	// target the provider never admitted, or to open a namespaced watch for a stored
-	// `scope: Namespaced` this release no longer supports. A refusal is not fatal to startup: the
+	// target the provider never admitted. A refusal is not fatal to startup: the
 	// rule is simply left out of the store, and the reconciler's own gate re-decides (and can grant
 	// it) as soon as the controller's initial sync reaches this rule.
 	decision, err := CompileClusterWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)
@@ -116,7 +115,7 @@ func (m *Manager) resolveTargetAndProvider(
 	}
 
 	providerKey := client.ObjectKey{
-		Name:      target.Spec.ProviderRef.Name,
+		Name:      target.Spec.GitProviderRef.Name,
 		Namespace: target.Namespace,
 	}
 	var provider configv1alpha3.GitProvider

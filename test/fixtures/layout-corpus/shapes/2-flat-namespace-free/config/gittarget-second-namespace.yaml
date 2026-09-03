@@ -12,7 +12,7 @@ metadata:
   name: checkout-artifact
   namespace: shop
 spec:
-  providerRef:
+  gitProviderRef:
     name: artifacts-repository
   clusterProviderRef:
     name: apps

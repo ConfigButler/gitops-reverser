@@ -115,7 +115,7 @@ func (r *EventRouter) ServiceCommitRequest(
 	}
 
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.ProviderRef.Name,
+		gitTarget.Spec.GitProviderRef.Name,
 		gitTarget.Namespace, // provider is in the same namespace as the target
 		gitTarget.Spec.Branch,
 	)
@@ -176,7 +176,7 @@ func (r *EventRouter) resolveWorkerForGitDest(
 		return nil, fmt.Errorf("get GitTarget %s: %w", gitDest.String(), err)
 	}
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.ProviderRef.Name,
+		gitTarget.Spec.GitProviderRef.Name,
 		gitTarget.Namespace, // provider is in the same namespace as the target
 		gitTarget.Spec.Branch,
 	)

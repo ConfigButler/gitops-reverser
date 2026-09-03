@@ -34,7 +34,7 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
     app.kubernetes.io/component: quickstart
 spec:
-  providerRef:
+  gitProviderRef:
     name: {{ .Values.quickstart.gitProvider.name }}
   branch: {{ .Values.quickstart.gitTarget.branch | quote }}
   path: {{ .Values.quickstart.gitTarget.path | quote }}
@@ -59,7 +59,7 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
     app.kubernetes.io/component: quickstart
 spec:
-  targetRef:
+  gitTargetRef:
     name: {{ .Values.quickstart.gitTarget.name }}
   rules:
     {{- toYaml .Values.quickstart.watchRule.rules | nindent 4 }}

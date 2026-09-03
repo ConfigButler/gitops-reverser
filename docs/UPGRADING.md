@@ -9,9 +9,24 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 ## Safe upgrade order for the GitTarget API changes
 
-Five fields are **removed outright** in this release, across three kinds. There is no shim, no
+Fields are **removed outright** in this release, across five kinds. There is no shim, no
 conversion webhook and no refusal to catch you: a removed field is pruned from the schema, so the
-next two entries are the whole migration and they are yours to apply by hand.
+entries below are the whole migration and they are yours to apply by hand.
+
+| Kind | Removed |
+|---|---|
+| `GitTarget` | `spec.allowedSourceNamespaces` |
+| `GitProvider` | `spec.push.commitWindow`, `spec.commit.message` |
+| `ClusterProvider` | `spec.allowedNamespaces` (renamed), `spec.allowSourceNamespaceOverride` (renamed) |
+| `ClusterWatchRule` | `spec.rules[].scope` |
+| every reference field | the `group` and `kind` sub-fields |
+| `GitTarget`, `WatchRule`, `ClusterWatchRule`, `CommitRequest` | `providerRef` / `targetRef` are **renamed** to `gitProviderRef` / `gitTargetRef` |
+
+The rename is the one every object needs, and the only one no client can get silently wrong; it has
+[its own entry](#every-reference-names-the-kind-it-points-at). The two rows above it need no value
+migration at all — nothing you set is lost, because every value
+those fields could hold was the only one they accepted. Delete the lines and move on. Everything
+above them is a real value that has somewhere new to be.
 
 **Take the inventory FIRST, before you upgrade anything.** This is not a stylistic preference. Once
 the new CRDs are applied, the old values are no longer returned by the API server at all — not
@@ -34,6 +49,25 @@ kubectl get gitproviders -A -o json |
   jq -r '.items[] | select(.spec.push or .spec.commit.message)
     | "gitprovider \(.metadata.namespace)/\(.metadata.name): window<-\(.spec.push.commitWindow)
        message<-\(.spec.commit.message)"'
+
+# The reference fields and the ClusterWatchRule scope, which carry no information to migrate but
+# will be pruned out from under a manifest that still sets them. Every *Ref on every kind, not
+# just the two obvious ones:
+kubectl get gittargets,watchrules,clusterwatchrules,commitrequests,gitproviders -A -o json |
+  jq -r '.items[]
+    | . as $o
+    | [ (.spec.providerRef, .spec.clusterProviderRef, .spec.targetRef,
+         .spec.secretRef, .spec.encryption.secretRef, .spec.commit.signing.secretRef)
+        | select(. != null) | select(has("kind") or has("group")) ]
+    | select(length > 0)
+    | "\($o.kind) \($o.metadata.namespace // "-")/\($o.metadata.name): drop group/kind under \(length) reference(s)"'
+
+kubectl get clusterwatchrules -o json |
+  jq -r '.items[] | select(any(.spec.rules[]?; has("scope")))
+    | "clusterwatchrule \(.metadata.name): drop spec.rules[].scope"'
+
+# The rename affects EVERY GitTarget and every rule, so it needs no select: see its own entry for
+# the conversion.
 
 # The rules whose MEANING changes even though their YAML does not:
 kubectl get watchrules -A -o json |
@@ -94,11 +128,223 @@ NS:.metadata.namespace,NAME:.metadata.name,COMMIT:.spec.commit
 the manifest still carries an old spelling. Check `COMMIT` renders **both** halves you migrated —
 a `map[window:...]` with no `message:` key means the templates did not come across.
 
-**What you will NOT get is a warning.** Because the fields are removed rather than retained, an
-object still carrying an old spelling is accepted with the value silently pruned — the mirror keeps
-running under the new defaults. That is a deliberate trade for a much smaller code surface, priced
-in [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md), and it is why the inventory
-is step 1 rather than a footnote.
+**Whether you get a warning depends on the client, and the one that matters is the quiet one.**
+`kubectl apply` asks for strict field validation by default (since 1.25), so a manifest still
+carrying a removed spelling is REJECTED and names the field:
+
+```text
+error: ... strict decoding error: unknown field "spec.allowedSourceNamespaces"
+```
+
+A client that does not ask for strict validation — `kubectl apply --validate=ignore`, and any
+controller applying with `fieldValidation: Ignore`, which includes some GitOps tooling — is
+**accepted with the value silently pruned**, and the mirror carries on under the new defaults with
+nothing reporting it. So if you apply by hand you will be told; if Flux or Argo CD applies your
+manifests for you, check what your tool does before assuming a green sync means a migrated object.
+
+Either way the inventory is step 1 rather than a footnote, because a pruned value is not recoverable
+from the API. The two removal strategies are priced in
+[`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md).
+
+## Every reference names the kind it points at
+
+Four fields are renamed. This is the same change as the one below, seen from the other side: once a
+reference carries only a `name`, the FIELD NAME is the only thing left saying what it points at, so
+a field called `providerRef` sitting next to `clusterProviderRef` stops being readable.
+
+| Kind | Was | Is |
+|---|---|---|
+| `GitTarget` | `spec.providerRef` | `spec.gitProviderRef` |
+| `WatchRule` | `spec.targetRef` | `spec.gitTargetRef` |
+| `ClusterWatchRule` | `spec.targetRef` | `spec.gitTargetRef` |
+| `CommitRequest` | `spec.targetRef` | `spec.gitTargetRef` |
+
+Unchanged, because each already names its referent or its role: `GitTarget.spec.clusterProviderRef`,
+`GitProvider.spec.secretRef` and `spec.commit.signing.secretRef`, `GitTarget.spec.encryption.secretRef`,
+`GitProvider.spec.knownHostsRef`, and the `configMapRef` / `secretRef` inside
+`ClusterProvider.spec.kubeConfig`.
+
+### This one cannot be applied silently wrong
+
+Every other removal in this release can be pruned quietly by a non-strict client. These four cannot,
+because the new name is **required**: an object naming only the old one is rejected by every client,
+strict or not.
+
+| Client | Applying the old spelling after the upgrade |
+|---|---|
+| `kubectl apply` (strict, the default) | rejected: `unknown field "spec.providerRef"` |
+| `--validate=ignore`, a controller applying with field validation off | rejected: `spec.gitProviderRef: Required value` |
+
+So there is no silent-damage case to hunt for. What there IS, and what makes this the entry to read
+before you upgrade, is a **stall**: a stored object stops serving the old value the moment the new
+CRDs land, so every `GitTarget` and every rule is missing its reference until you re-apply. Writes
+stop; nothing is lost. This is the same stall [step 4](#safe-upgrade-order-for-the-gittarget-api-changes)
+already asks you to close in one sync — it now applies to every object rather than only to the ones
+using the fields that moved.
+
+### Inventory
+
+Every object of these four kinds is affected, so the inventory is a conversion rather than a search:
+
+```bash
+# Everything that needs the edit, which is everything:
+kubectl get gittargets,watchrules,clusterwatchrules -A -o json |
+  jq -r '.items[] | "\(.kind) \(.metadata.namespace // "-")/\(.metadata.name)"'
+```
+
+### `CommitRequest` is the one that needs a drain
+
+An earlier revision of this entry said `CommitRequest` needed no migration because they are one-shot
+objects. That is wrong in the one case that matters, and it is the only part of this release with a
+window you have to plan around.
+
+A `CommitRequest` that is still pending when the new CRDs land serves an EMPTY `gitTargetRef`, like
+every other object. Unlike every other object, it **cannot be repaired**: `CommitRequest.spec` is
+wholly immutable, so no apply can put the name back. The request names no `GitTarget`, so it can
+never finalize.
+
+The operator no longer retries such a request forever. It fails it terminally with
+`Stalled=True, reason=GitTargetRefPruned` and a message saying to delete it, because an empty name
+is otherwise unreachable: admission refuses one on every path, so the only thing that can produce it
+is this upgrade.
+
+**Before you upgrade, drain.** Stop creating `CommitRequest`s and wait until every existing one is
+terminal — `Ready=True` or `Stalled=True`:
+
+```bash
+kubectl get commitrequests -A -o json |
+  jq -r '.items[]
+    | select([.status.conditions[]? | select(.type == "Ready" or .type == "Stalled")
+              | select(.status == "True")] | length == 0)
+    | "still pending: \(.metadata.namespace)/\(.metadata.name)"'
+```
+
+An empty result means the drain is complete. If you upgrade without draining, nothing is lost from
+Git — an unfinalized request only means its writes were not flushed early, and the next commit
+window picks them up — but the request objects themselves are stuck, and the fix is to delete them:
+
+```bash
+kubectl get commitrequests -A -o json |
+  jq -r '.items[]
+    | select(any(.status.conditions[]?; .type == "Stalled" and .reason == "GitTargetRefPruned"))
+    | "-n \(.metadata.namespace) \(.metadata.name)"' |
+  xargs -r -L1 kubectl delete commitrequest
+```
+
+### Conversion
+
+A mechanical rename in your manifests, then one apply:
+
+```bash
+# In your GitOps repository, not against the cluster.
+grep -rl 'providerRef:\|targetRef:' . |
+  xargs sed -i 's/\bproviderRef:/gitProviderRef:/g; s/\btargetRef:/gitTargetRef:/g'
+```
+
+Check the result before committing: `clusterProviderRef` must NOT become `clusterGitProviderRef`
+(the `\b` above is what prevents that, but a review costs nothing).
+
+### `GitTarget` migrates in place, and that took a guard
+
+`spec.gitProviderRef` is immutable, and the apply that migrates a stored `GitTarget` is also the
+apply that sets that immutable field for the first time. Written as a plain equality, the
+immutability rule would reject exactly that apply — `oldSelf` has no such field — and the only way
+out would be deleting and recreating every target.
+
+The rule is therefore guarded: `!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef`.
+It opens a one-way door for objects stored before the rename and cannot loosen anything afterwards,
+because a required field is never absent on an object created from this release on. Both halves are
+measured in `TestRenamedRequiredField_StoredObjectCanAdoptIt`, so **you do not need to delete and
+recreate anything**: re-apply your manifests and the targets adopt the new name.
+
+## Every reference is `{name}` — `group` and `kind` are gone
+
+Six reference shapes become two, and both are Flux's own
+([`fluxcd/pkg/apis/meta`](https://pkg.go.dev/github.com/fluxcd/pkg/apis/meta)):
+`meta.LocalObjectReference` for a reference into the same namespace, and
+`meta.NamespacedObjectReference` where the namespace has to be spelled out.
+
+```yaml
+# Before                          # After
+spec:                             spec:
+  providerRef:                      providerRef:
+    group: configbutler.ai            name: platform
+    kind: GitProvider
+    name: platform
+```
+
+The same edit applies to every reference on every kind:
+
+| Kind | Reference fields |
+|---|---|
+| `GitTarget` | `spec.gitProviderRef`, `spec.clusterProviderRef`, `spec.encryption.secretRef` |
+| `GitProvider` | `spec.secretRef`, `spec.commit.signing.secretRef` |
+| `WatchRule` | `spec.gitTargetRef` |
+| `ClusterWatchRule` | `spec.gitTargetRef` |
+| `CommitRequest` | `spec.gitTargetRef` |
+
+(Spelled with the new names, because [the rename](#every-reference-names-the-kind-it-points-at)
+lands in the same release: you make both edits in one pass.)
+
+**Nothing is lost.** Each of those `group` and `kind` fields was an enum with exactly one member and
+a default equal to it, so no manifest could ever say anything but `configbutler.ai` and the one kind
+the field accepts. What the sub-fields cost was four near-identical Go types and a schema that
+implied a choice nobody had.
+
+**They are removed, not refused.** `kubectl apply` will therefore reject a manifest that still sets
+them, naming the field (`unknown field "spec.gitProviderRef.kind"`), while a client applying with
+field validation off accepts it and prunes. Nothing breaks either way, since the pruned value was
+the only legal one — but a strict apply will stop until you delete the lines.
+
+`GitProvider.spec.knownHostsRef` keeps its `kind`, and that is not an oversight: it chooses between
+a ConfigMap and a Secret, which is a real choice rather than an enum of one.
+
+## `ClusterWatchRule.spec.rules[].scope` is removed
+
+The field has accepted only `Cluster` since 0.39.0, where it was kept in the schema so that
+re-applying a manifest still saying `Namespaced` would fail loudly rather than be silently pruned.
+That shim has done its release, and four more besides. It is now gone, along with the
+`ClusterScopeOnly` compile refusal that backed it.
+
+```yaml
+spec:
+  rules:
+    - resources: [customresourcedefinitions]
+      apiGroups: [apiextensions.k8s.io]
+      # scope: Cluster        <- delete this line
+```
+
+A `ClusterWatchRule` watches cluster-scoped types and a `WatchRule` watches namespaced ones; which
+you write **is** how scope is chosen, and has been since 0.39.0. If you still have a manifest
+setting `scope: Namespaced`, it has not been mirroring anything since then, and the migration is the
+same one that entry describes: a `WatchRule` in the tenant namespace with
+`spec.rules[].sourceNamespace`.
+
+From this release the value is no longer part of the schema, so `kubectl apply` reports it as an
+unknown field and a non-strict client prunes it silently. Either way it stops being a rejection with
+a message that names the replacement, which is what the shim bought and what the
+[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) now stands in for.
+
+## The placement metric reports which declaration answered (breaking for dashboards)
+
+`gitops_reverser_placements_total`'s `source` label had one value, `declared`, covering both an
+exact `placement.byType` entry and the catch-all `placement.default`. It now has two:
+
+| Was | Is |
+|---|---|
+| `source="declared"` | `source="by_type"` — an exact `placement.byType` entry named this type |
+| `source="declared"` | `source="default"` — no `byType` entry named it, so `placement.default` answered |
+
+`kustomize_root` and `canonical` are unchanged.
+
+The split exists because the two were the one thing this metric is asked to tell apart. A `default`
+template quietly answering for a type you meant to name explicitly produces a working mirror at a
+path you did not intend, and reported as `declared` it looked exactly like the `byType` line you
+added doing its job.
+
+**Any query selecting `source="declared"` returns no data after the upgrade** rather than failing,
+which is the failure mode worth knowing about. Replace it with `source=~"by_type|default"` to keep
+the old meaning, or split the panel to get the new one.
 
 ## Commit batching and message templates are GitTarget fields
 
@@ -311,7 +557,7 @@ spec:
 
 One target is one environment is one write partition, which is what makes authorization, audit and
 review line up with the environment boundary. The reasoning is in
-[`layout/shapes/README.md`](../test/fixtures/layout-corpus/shapes/README.md#why-only-a-leaf-can-be-a-kustomize-target).
+[`layout-corpus/shapes/README.md`](../test/fixtures/layout-corpus/shapes/README.md#why-only-a-leaf-can-be-a-kustomize-target).
 
 `status.placement.mode` and `status.placement.renderRoot` report what the scan resolved, and both
 are published before a target has written anything — so a target you have just declared already
@@ -369,8 +615,9 @@ sum by (gittarget_namespace, gittarget_name, group, version, resource) (
 ```
 
 Each series is a type that took the built-in path. For a canonical-layout folder that is simply the
-layout. For a folder with a convention of its own it is the `byType` line to add. `source="declared"`
-and `source="kustomize_root"` need no attention. Two companions ship with it:
+layout. For a folder with a convention of its own it is the `byType` line to add. The declared
+sources (`by_type` and `default`, one value `declared` in the release this entry describes) and
+`source="kustomize_root"` need no attention. Two companions ship with it:
 `gitopsreverser_placement_refusals_total{reason}` (resources the writer declined to place — each one
 is absent from the mirror) and `gitopsreverser_placement_kustomization_entries_total{outcome}`, whose
 `failed` value is a new file committed outside every render. See
@@ -729,13 +976,16 @@ spec:
 
 ### `ClusterWatchRule.spec.rules[].scope` is retained for one release as a loud rejection
 
-The field was not deleted, because deleting it is the **silent** option: CRD pruning happens on
-write, so a re-applied legacy manifest would be accepted with the value dropped — no error anywhere —
-and the rule would quietly stop mirroring namespaced objects.
+> **Superseded.** The shim described here did its job and the field is now **deleted** — see
+> [its own entry above](#clusterwatchrulespecrulesscope-is-removed). What follows is why it existed.
 
-It is now optional, defaults to `Cluster`, and its enum accepts only `Cluster`. Applying
-`scope: Namespaced` is **rejected at apply time**, and a stored one is refused at compile with
-`ClusterScopeOnly`. The field is removed entirely one release from now, or at `v1beta1`.
+The field was not deleted at the time, because deleting it is the **silent** option: CRD pruning
+happens on write, so a re-applied legacy manifest would be accepted with the value dropped — no
+error anywhere — and the rule would quietly stop mirroring namespaced objects.
+
+It was made optional, defaulting to `Cluster`, with an enum accepting only `Cluster`. Applying
+`scope: Namespaced` was **rejected at apply time**, and a stored one refused at compile with
+`ClusterScopeOnly`.
 
 No such shim exists for `WatchRule.spec.sourceNamespace`, and none is needed: that field never
 reached a release, so no stored object can carry it and no manifest in the wild sets it. It is simply

@@ -123,23 +123,6 @@ func TestResourceRule_EffectiveSourceNamespace(t *testing.T) {
 	assert.True(t, item.OverridesSourceNamespace(own))
 }
 
-// TestClusterWatchRuleSpec_DeclaresNamespacedScope covers the other half of decision 10. The
-// refusal keys on the STORED value, never on what the selector happens to resolve.
-func TestClusterWatchRuleSpec_DeclaresNamespacedScope(t *testing.T) {
-	clusterOnly := ClusterWatchRuleSpec{Rules: []ClusterResourceRule{
-		{Resources: []string{"customresourcedefinitions"}, Scope: ResourceScopeCluster},
-		{Resources: []string{"*"}},
-	}}
-	assert.False(t, clusterOnly.DeclaresNamespacedScope(),
-		"an omitted scope defaults to Cluster and a wildcard selector is not itself a refusal")
-
-	stored := ClusterWatchRuleSpec{Rules: []ClusterResourceRule{
-		{Resources: []string{"nodes"}, Scope: ResourceScopeCluster},
-		{Resources: []string{"configmaps"}, Scope: ResourceScopeNamespaced},
-	}}
-	assert.True(t, stored.DeclaresNamespacedScope(), "one namespaced item refuses the whole rule")
-}
-
 // The security default in one line: the delegation flag must be false on a provider that never
 // mentions it, so a WatchRule may watch only its own namespace until a platform admin says
 // otherwise.

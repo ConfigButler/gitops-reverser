@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -95,7 +96,7 @@ func createGitTarget(
 			Namespace: "default",
 		},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: configv1alpha3.GitProviderReference{
+			GitProviderRef: meta.LocalObjectReference{
 				Name: worker.GitProviderRef,
 			},
 			Branch: worker.Branch,

@@ -276,13 +276,13 @@ func gitTargetConditionDetail(obj unstructured.Unstructured, ns string) string {
 	if kind != "watchrule" && kind != "clusterwatchrule" {
 		return ""
 	}
-	targetName, found, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "name")
+	targetName, found, _ := unstructured.NestedString(obj.Object, "spec", "gitTargetRef", "name")
 	if !found || targetName == "" {
 		return ""
 	}
 	targetNS := ns
 	if kind == "clusterwatchrule" {
-		if v, ok, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "namespace"); ok {
+		if v, ok, _ := unstructured.NestedString(obj.Object, "spec", "gitTargetRef", "namespace"); ok {
 			targetNS = v
 		}
 	}

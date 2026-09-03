@@ -175,7 +175,7 @@ kind: GitTarget
 metadata:
   name: shop-config
 spec:
-  providerRef:
+  gitProviderRef:
     name: artifacts-repo
   branch: main
   path: apps/shop
@@ -194,7 +194,7 @@ metadata:
   name: shop-config-content
   namespace: shop              # rules subscribe from inside the one admitted namespace
 spec:
-  targetRef:
+  gitTargetRef:
     name: shop-config
   rules:
     - apiGroups: ["config.shop.example"]

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -72,8 +73,8 @@ func newCommitRequest(name string) *configv1alpha3.CommitRequest {
 			UID:       types.UID("uid-" + name),
 		},
 		Spec: configv1alpha3.CommitRequestSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: "team-a-config"},
-			Message:   "save: " + name,
+			GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
+			Message:      "save: " + name,
 		},
 	}
 }
@@ -587,4 +588,51 @@ func TestTruncateUTF8(t *testing.T) {
 	// "é" is 2 bytes; truncating at 3 bytes must drop the split rune.
 	assert.Equal(t, "aé", truncateUTF8("aéé", 3))
 	assert.True(t, utf8.ValidString(truncateUTF8(strings.Repeat("世", 100), 7)))
+}
+
+// A CommitRequest stored before spec.targetRef became spec.gitTargetRef serves an EMPTY name after
+// the upgrade prunes it, and its spec is immutable, so no apply can put the name back. The
+// reconciler must say that once and stop, rather than retry a "get GitTarget" that names the empty
+// string and can never succeed.
+func TestCommitRequestReconciler_PrunedGitTargetRefIsTerminal(t *testing.T) {
+	request := &configv1alpha3.CommitRequest{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "stored-before-the-rename",
+			Namespace: "team-a",
+			UID:       "cr-uid",
+		},
+		Spec: configv1alpha3.CommitRequestSpec{
+			GitTargetRef: meta.LocalObjectReference{Name: ""},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(request).
+		WithStatusSubresource(request).
+		Build()
+
+	finalizer := &fakeFinalizer{}
+	reconciler := &CommitRequestReconciler{Client: k8sClient, Scheme: scheme, Finalizer: finalizer}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: request.Name, Namespace: request.Namespace},
+	})
+
+	require.NoError(t, err, "an unrepairable request is a terminal outcome, not a reconcile error")
+	assert.Zero(t, result.RequeueAfter, "it must not be retried: no apply can ever fix it")
+	assert.Empty(t, finalizer.calls, "the router must never be asked for GitTarget \"\"")
+
+	var got configv1alpha3.CommitRequest
+	require.NoError(t, k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: request.Name, Namespace: request.Namespace}, &got))
+	assert.True(t, commitRequestIsTerminal(&got), "the request must reach a terminal condition")
+	stalled := findCondition(got.Status.Conditions, ConditionTypeStalled)
+	require.NotNil(t, stalled)
+	assert.Equal(t, metav1.ConditionTrue, stalled.Status)
+	assert.Equal(t, crReasonGitTargetRefPruned, stalled.Reason)
+	assert.Contains(t, stalled.Message, "delete it and create a new one",
+		"the message must name the only repair there is, because the spec is immutable")
 }

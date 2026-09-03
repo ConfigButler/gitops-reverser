@@ -38,29 +38,19 @@ multiple watch rules.
 
 ## Why the two provider types have different scopes
 
-`GitProvider` and `ClusterProvider` are both named connections, but their scope follows what they
-identify and who normally owns their credentials. API symmetry was not a goal. A Git
-destination is normally a team's write boundary, so a namespaced `GitProvider` keeps the repository
-credential and its consumers together. A source cluster is a shared physical identity: its client,
-discovery surface, watch state, and attribution partition must mean the same thing to every target
-that uses it. That makes `ClusterProvider` cluster-scoped.
-
-| Object | Scope | What it represents | Why |
-|---|---|---|---|
-| `GitProvider` | Namespace | A Git destination and the credentials allowed to write it | A repository destination is normally owned by one team. Keeping the provider and its Secret in that team's namespace makes the ownership boundary direct. |
-| `ClusterProvider` | Cluster | One physical Kubernetes source cluster | A source cluster can feed targets in several namespaces, while its connection, watch state, and attribution identity must stay the same everywhere. |
+| Object | Scope | What it represents |
+|---|---|---|
+| `GitProvider` | Namespace | A Git destination and the credentials allowed to write it. A repository is normally one team's write boundary, so the provider and its Secret sit in that team's namespace. |
+| `ClusterProvider` | Cluster | One Kubernetes source cluster. It can feed targets in several namespaces, and its connection, watch state and attribution identity must mean the same thing to all of them. |
 
 There is no default `GitProvider`: the operator cannot infer a safe repository, branch, or write
-credential. `GitTarget.spec.clusterProviderRef` instead defaults to the conventionally opinionated
-name `default`. That is a convenient, concrete reference. It does not claim that `default` is always
-the local cluster.
+credential, so every `GitTarget` names one. `GitTarget.spec.clusterProviderRef` does default, to the
+conventional name `default`. That is a concrete reference to jump to; it does not claim that
+`default` is the local cluster.
 
-`ClusterProvider.spec.accessFrom` is the control-cluster authorization boundary for that
-shared source connection: it determines which namespaces may contain `GitTarget`s that reference
-the provider. It does not select namespaces in the source cluster or grant permissions there. If a
-platform later needs a shared, platform-owned Git destination, that should be a separate
-cluster-scoped Git-destination concept with an explicit ownership model, leaving the namespaced
-`GitProvider` to mean what it means today.
+`ClusterProvider.spec.accessFrom` decides which control-cluster namespaces may contain `GitTarget`s
+that reference the provider. It does not select namespaces in the source cluster and grants nothing
+there.
 
 ## `GitProvider`
 
@@ -372,7 +362,7 @@ immutable.
 
 The important fields are:
 
-- `spec.providerRef`: which `GitProvider` backs this target
+- `spec.gitProviderRef`: which `GitProvider` backs this target
 - `spec.clusterProviderRef`: which `ClusterProvider` supplies resources; omit it to reference the
   user-created `default` provider
 - `spec.branch`: which allowed branch to write to
@@ -400,7 +390,7 @@ metadata:
   name: example-target
   namespace: default
 spec:
-  providerRef:
+  gitProviderRef:
     name: example-provider
   # Omit clusterProviderRef to reference the user-created ClusterProvider named "default".
   # clusterProviderRef: {name: prod-eu-1} selects a different source provider.
@@ -419,11 +409,11 @@ dedicated to this target.
 If you enable `spec.encryption`, that applies to `Secret` resource writes for this target. For SOPS
 and age details, see [sops-age-guide.md](sops-age-guide.md).
 
-`spec.providerRef` references a `GitProvider` in the same namespace as the `GitTarget`. Its `group`
-and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only set `name`.
+`spec.gitProviderRef` references a `GitProvider` in the same namespace as the `GitTarget`, by name.
+The field name says what it points at, so the reference itself carries nothing but the `name`.
 
 `spec.clusterProviderRef` references a cluster-scoped `ClusterProvider`. It defaults to
-`{name: default}` when omitted. That is intentionally different from `providerRef`: a source cluster
+`{name: default}` when omitted. That is intentionally different from `gitProviderRef`: a source cluster
 is a shared physical identity, while a Git destination and its credential normally belong to the
 target's namespace. The default name can represent either an in-cluster or remote source according
 to the `ClusterProvider` the user created.
@@ -446,11 +436,10 @@ Use conditions for automation.
 ### `GitTarget.spec.commit`: how writes become commits
 
 `spec.commit` says how this target's writes are batched into commits and how those commits are
-phrased. Both halves used to live on the `GitProvider` (as `spec.push.commitWindow` and
-`spec.commit.message`) and moved here because they describe the folder being written rather than
-the route to the repository. Two `GitTarget`s sharing one `GitProvider` can now disagree about
-both: an RBAC folder that wants a commit per change and an app folder that wants a burst coalesced
-no longer have to be two connections.
+phrased. Both describe the folder being written rather than the route to the repository, which is
+why they sit here and not on the `GitProvider`: two `GitTarget`s sharing one connection can disagree
+about both, so an RBAC folder that wants a commit per change and an app folder that wants a burst
+coalesced need not be two connections.
 
 ```yaml
 spec:
@@ -566,7 +555,7 @@ spec:
 
 ```yaml
 spec:
-  providerRef: {name: homelab}
+  gitProviderRef: {name: homelab}
   branch: gitops-preview          # not main
   path: apps/checkout
 ```
@@ -753,7 +742,7 @@ counted, so a `Never` target can report `0` while still declining to mirror dele
 The count is refreshed when a resync runs, so it lags a change in the cluster until the next one.
 Read `observedTime` before treating a `0` as live.
 
-`spec.prune` is mutable (unlike `providerRef`, `branch`, and `path`), so a target can be moved to
+`spec.prune` is mutable (unlike `gitProviderRef`, `branch`, and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists
 the target's watched scopes, so the cleanup runs on the edit instead of waiting for the next replay.
 Tightening it applies to the next write and leaves the streams alone, which is what makes it usable
@@ -785,10 +774,7 @@ For each new resource the operator walks this order and stops at the first that 
 
 **The operator does not read the rest of your repository to place a file.** Where you keep the other
 ConfigMaps does not decide where a new ConfigMap goes: a layout the ladder above cannot derive is one
-you declare. That is deliberate. An earlier version followed the surrounding layout, which meant
-editing the repository silently changed where the operator wrote next, with no Kubernetes object
-changing and nothing recording the move. If you are upgrading from a release that had it, see
-[`UPGRADING.md`](UPGRADING.md).
+you declare. So editing the repository never changes where the operator writes next.
 
 #### Knowing when you need a rule
 
@@ -802,8 +788,11 @@ sum by (gittarget_namespace, gittarget_name, group, version, resource) (
 )
 ```
 
-`source="declared"` is a path you asked for, and `source="kustomize_root"` is a folder whose own
-structure answered. Neither needs attention, and two companions matter as much:
+`source="by_type"` is the exact rule you wrote for that type, `source="default"` is your catch-all
+answering for a type no `byType` line names, and `source="kustomize_root"` is a folder whose own
+structure answered. None needs attention, though a `default` series climbing where you expected
+`by_type` is worth a look: it means a rule you thought you had written is not matching. Two
+companions matter as much:
 
 - `gitopsreverser_placement_refusals_total{reason}` counts resources the operator **did not write**:
   a template that escapes `spec.path` (`invalid_path`), a sensitive resource whose path is already
@@ -894,8 +883,8 @@ co-mingled with a plaintext document. Two consequences for your templates:
 
 ### Choosing between the two layout fields
 
-`spec.serializeNamespace` and `spec.placement.useKustomize` answer two independent questions, and a
-target that sets neither behaves exactly as it did before they existed. Start here, then read the
+`spec.serializeNamespace` and `spec.placement.useKustomize` answer two independent questions. Both
+are optional; a target that sets neither infers the answer per document. Start here, then read the
 section for whichever you set.
 
 **Question 1: where does the namespace of a mirrored object live?**
@@ -1125,7 +1114,7 @@ when its GitTarget reports `GitPathAccepted=False`.
 
 The important fields are:
 
-- `spec.targetRef.name`: target to write to
+- `spec.gitTargetRef.name`: target to write to
 - `spec.rules`: one or more resource-match rules
 - `spec.rules[].sourceNamespace`: the source-cluster namespace that item watches; omitted means the
   rule's own namespace
@@ -1139,7 +1128,7 @@ so one `WatchRule` can follow different resource types in different namespaces.
 
 | `rules[].sourceNamespace` | Meaning |
 |---|---|
-| omitted | the `WatchRule`'s own namespace: legacy behavior, byte for byte |
+| omitted | the `WatchRule`'s own namespace |
 | an exact name | one source namespace |
 | `"*"` | every namespace the source credential can read, as one cluster-wide watch |
 
@@ -1160,7 +1149,7 @@ metadata:
   name: repo-config
   namespace: tenant-acme
 spec:
-  targetRef:
+  gitTargetRef:
     name: acme
   rules:
     - resources: [configmaps]        # omitted → tenant-acme, this rule's own namespace
@@ -1214,7 +1203,7 @@ metadata:
   name: example-watchrule
   namespace: default
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
   rules:
     - operations: [CREATE, UPDATE, DELETE]
@@ -1233,7 +1222,7 @@ namespace.
 namespaced resources across namespaces, use a `WatchRule` with
 [`rules[].sourceNamespace`](#watching-a-different-source-namespace).
 
-Because it is cluster-scoped, its `targetRef` must include the namespace of the referenced
+Because it is cluster-scoped, its `gitTargetRef` must include the namespace of the referenced
 `GitTarget`, and that namespace must be admitted by the target's `ClusterProvider`.
 
 Example:
@@ -1244,7 +1233,7 @@ kind: ClusterWatchRule
 metadata:
   name: cluster-rbac
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
     namespace: default
   rules:
@@ -1259,10 +1248,6 @@ it is intentionally cluster-global, limited only by its source credential's Kube
 sparingly. It grants the widest reach of any rule kind and usually belongs to cluster-admin-managed
 setups.
 
-> `spec.rules[].scope` is deprecated and accepts only `Cluster` (its default). Re-applying a
-> pre-release manifest that still says `scope: Namespaced` is **rejected**. See
-> [UPGRADING.md](UPGRADING.md) for the conversion.
-
 ## `CommitRequest`
 
 `CommitRequest` is a one-shot "save now" signal for a same-namespace `GitTarget`. It does not create
@@ -1271,7 +1256,7 @@ for the request's author instead of waiting for `GitTarget.spec.commit.window`.
 
 The important fields are:
 
-- `spec.targetRef.name`: target whose open window should be finalized
+- `spec.gitTargetRef.name`: target whose open window should be finalized
 - `spec.message`: optional verbatim commit message
 - `spec.closeDelaySeconds`: optional 0-300 second delay before the open window is closed, after the
   request author is known, an extra collect window
@@ -1285,7 +1270,7 @@ metadata:
   name: save-now
   namespace: default
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
   message: "save default/example-target"
   closeDelaySeconds: 2

@@ -4,7 +4,7 @@ metadata:
   name: example-target
   namespace: default
 spec:
-  providerRef:
+  gitProviderRef:
     name: example-provider
   branch: main
   # Required relative repository path. Use "." only to deliberately write at repo root.

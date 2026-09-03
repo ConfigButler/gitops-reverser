@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -27,8 +28,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.WatchRuleSpec{
-					TargetRef: configbutleraiv1alpha3.LocalTargetReference{
-						Kind: "GitTarget",
+					GitTargetRef: meta.LocalObjectReference{
 						Name: "target",
 					},
 					Rules: []configbutleraiv1alpha3.ResourceRule{{
@@ -64,7 +64,7 @@ var _ = Describe("WatchRule Controller", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://github.com/test/repo.git",
 					AllowedBranches: []string{"*"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "git-credentials",
 					},
 				},
@@ -78,7 +78,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					GitProviderRef: meta.LocalObjectReference{
 						Name: "test-provider",
 					},
 					Branch: "main",
@@ -96,8 +96,7 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.WatchRuleSpec{
-						TargetRef: configbutleraiv1alpha3.LocalTargetReference{
-							Kind: "GitTarget",
+						GitTargetRef: meta.LocalObjectReference{
 							Name: "test-target",
 						},
 						Rules: []configbutleraiv1alpha3.ResourceRule{
@@ -195,7 +194,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					GitProviderRef: meta.LocalObjectReference{
 						Name: "local-provider",
 					},
 					Branch: "main",
@@ -211,8 +210,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.WatchRuleSpec{
-					TargetRef: configbutleraiv1alpha3.LocalTargetReference{
-						Kind: "GitTarget",
+					GitTargetRef: meta.LocalObjectReference{
 						Name: "local-target",
 					},
 					Rules: []configbutleraiv1alpha3.ResourceRule{

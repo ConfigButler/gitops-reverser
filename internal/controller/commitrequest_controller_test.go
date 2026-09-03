@@ -5,6 +5,7 @@ package controller
 import (
 	"time"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -29,7 +30,7 @@ var _ = Describe("CommitRequest controller", func() {
 				Namespace:    namespace,
 			},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				TargetRef: configbutleraiv1alpha3.LocalTargetReference{
+				GitTargetRef: meta.LocalObjectReference{
 					Name: "team-a-config",
 				},
 				Message: "increase checkout API memory",
@@ -57,7 +58,7 @@ var _ = Describe("CommitRequest controller", func() {
 				Namespace:    namespace,
 			},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				TargetRef: configbutleraiv1alpha3.LocalTargetReference{
+				GitTargetRef: meta.LocalObjectReference{
 					Name: "team-a-config",
 				},
 			},

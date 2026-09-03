@@ -24,6 +24,18 @@ that shared source; it does not grant source-cluster RBAC or select source names
 is the `ClusterProvider` name alone, with no API-server identity probe: two providers configured for the same
 server deliberately remain separate source partitions.
 
+The asymmetry is not an oversight, and it is worth stating what would change it. A source cluster is
+an inherent singleton; a Git destination is not, and a namespaced `GitProvider` keeps a repository's
+write credential in the namespace of whoever owns that repository, which is what makes a team able
+to start mirroring without a platform admin. The known cost is duplication: a cluster whose
+`GitTarget`s live in several namespaces needs a copy of one credential in each of them. If that ever
+has to be solved, the two additive shapes are a `GitProvider` that admits other namespaces through
+an `accessFrom` policy of its own (the `ClusterProvider` pattern, applied to the destination), or a
+separate cluster-scoped destination kind with an explicit ownership model. **Converting
+`GitProvider` itself is not one of the options**: a CRD's `spec.scope` is immutable once the
+definition is `Established`, so the change would mean deleting the definition (and every
+`GitProvider` in the cluster with it) and recreating both.
+
 ***
 
 ## Ground rules
@@ -52,8 +64,8 @@ Every write to that branch goes through the worker's single event loop and commi
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
 Redis stores watch resume cursors (warm restarts) and the small coordination records used by
-CommitRequest author capture and HA. Attribution no longer requires it on its own: its facts travel
-on a selectable transport, Redis Streams by default and an in-process ring with
+CommitRequest author capture and HA. Attribution does not require it on its own: its facts travel on a
+selectable transport, Redis Streams by default and an in-process ring with
 `--author-attribution-transport=memory`, which is refused with more than one replica. HA will require
 Redis as the shared store across replicas.
 
@@ -176,11 +188,11 @@ Git destination. `ClusterProvider` supplies the source connection and authorizat
 ```mermaid
 graph LR
     subgraph CONTROL["Control plane: operator cluster"]
-        WR[WatchRule] -->|targetRef| GT[GitTarget]
-        CWR[ClusterWatchRule] -->|targetRef| GT
-        CR[CommitRequest] -->|targetRef| GT
+        WR[WatchRule] -->|gitTargetRef| GT[GitTarget]
+        CWR[ClusterWatchRule] -->|gitTargetRef| GT
+        CR[CommitRequest] -->|gitTargetRef| GT
         GT -->|clusterProviderRef| CP[ClusterProvider]
-        GT -->|providerRef| GP[GitProvider]
+        GT -->|gitProviderRef| GP[GitProvider]
         KCFG[("Remote kubeconfig Secret\noperator namespace")]
         WM["Watch manager\nper-provider source context"]
     end
@@ -226,7 +238,7 @@ by provider name and are released when no `GitTarget` references them.
 
 Scope is carried by the rule KIND. A `WatchRule` selects NAMESPACED resources and routes matching
 events to a same namespace `GitTarget`; each of its rule items names the source namespace it watches.
-A `ClusterWatchRule` selects CLUSTER SCOPED resources, with an explicit namespace `targetRef` and no
+A `ClusterWatchRule` selects CLUSTER SCOPED resources, with an explicit namespace `gitTargetRef` and no
 namespace selection of its own. Both share the rule model:
 
 - `spec.rules[]`: OR resource rules (`MinItems=1`).
@@ -242,8 +254,7 @@ namespace selection of its own. Both share the rule model:
   stream and one list per matched type however large the cluster is. That cell is a peer of any
   named-namespace cell on the same type, never a replacement: each rule keeps its own operations
   filter.
-- `ClusterWatchRule` has no scope or namespace choice. `rules[].scope` is deprecated, accepts only
-  `Cluster`, and a stored `Namespaced` value is refused at compile time.
+- `ClusterWatchRule` has no scope or namespace choice of its own: the kind is the choice.
 
 Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
 `/scale` subresource effect is translated separately into a parent `spec.replicas` field patch.
@@ -265,7 +276,7 @@ The two namespace controls intentionally live in different planes:
 A one shot "save now" signal that finalizes the open commit window for a same namespace `GitTarget`
 instead of waiting for the silence timer. The **entire spec is immutable**. Key fields:
 
-- `spec.targetRef.name`: target whose open window should be finalized.
+- `spec.gitTargetRef.name`: target whose open window should be finalized.
 - `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
 - `spec.closeDelaySeconds`: optional `0–300s` delay before the window is closed, so the author's own
   in flight changes can join the window before it closes.
@@ -291,8 +302,7 @@ How attribution and finalization interact is described under
 One materialization from a source provider to a Git destination: `(cluster provider, provider, branch, path)`.
 Key fields:
 
-- `spec.providerRef`: a `GitProvider` in the same namespace (`group`/`kind` default to
-  `configbutler.ai`/`GitProvider`, the only accepted values).
+- `spec.gitProviderRef`: a `GitProvider` in the same namespace, by name.
 - `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 - `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
@@ -305,7 +315,7 @@ Key fields:
 may batch and phrase their commits differently. A branch worker serves a `(provider, branch)` pair and
 resolves the window per open window, since a window is bound to exactly one target.
 
-`providerRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
+`gitProviderRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
 orphan an old materialization or change its source cluster. The controller also rejects path overlaps
 between GitTargets sharing a provider and branch.
 
@@ -1160,10 +1170,9 @@ placed never moves a file already in Git. A new resource is placed by the first 
    `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml`: namespace-first, group omitted for core, no
    version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive.
 
-**The layout of the folder's other documents is not an input.** An earlier release followed it (sibling
-inference), which made a human's edit to the repository change where the operator wrote next, with no
-Kubernetes object changing and nothing in status recording the move. It was removed; a layout the ladder
-cannot derive is declared in `spec.placement`, and
+**The layout of the folder's other documents is not an input.** Where a new file goes is decided by the
+three rungs above and nothing else, so a human's edit to the repository never changes where the
+operator writes next. A layout the ladder cannot derive is declared in `spec.placement`, and
 `gitopsreverser_placements_total{source="canonical"}` names the target and type that needs the line.
 
 Sensitivity is a write-safety classifier, not a placement input: whatever path is chosen, a sensitive

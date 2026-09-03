@@ -3,6 +3,7 @@
 package v1alpha3
 
 import (
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -13,10 +14,11 @@ import (
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="CommitRequest spec is immutable after creation"
 type CommitRequestSpec struct {
-	// TargetRef names the GitTarget whose open commit window to finalize.
+	// GitTargetRef names the GitTarget whose open commit window to finalize.
 	// The GitTarget must be in the same namespace as this CommitRequest.
 	// +required
-	TargetRef LocalTargetReference `json:"targetRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
+	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
 
 	// Message is an optional commit message for the finalized commit. When
 	// omitted, the generated grouped-commit message is used.
@@ -87,7 +89,7 @@ type CommitRequestStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.targetRef.name`
+// +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`

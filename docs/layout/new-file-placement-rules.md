@@ -87,7 +87,7 @@ per-type policy explicit:
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 spec:
-  providerRef:
+  gitProviderRef:
     name: platform
   branch: main
   path: clusters/prod
@@ -118,7 +118,7 @@ escape hatch if users later need scope-wide or metadata-aware placement.
 
 ## Current implementation, as reviewed
 
-The current `GitTargetSpec` has `providerRef`, `branch`, `path`, and optional
+The current `GitTargetSpec` has `gitProviderRef`, `branch`, `path`, and optional
 `encryption`; it has no placement policy yet
 ([api/v1alpha3/gittarget_types.go](../../api/v1alpha3/gittarget_types.go)).
 
@@ -584,7 +584,8 @@ and each one either answers or declines:
 
 | Step | Mechanism | `placements_total{source}` | Decides because |
 |---|---|---|---|
-| 1 | declared `placement.byType`, then `placement.default` | `declared` | the GitTarget said so |
+| 1a | declared `placement.byType` for this exact type | `by_type` | the GitTarget named this type |
+| 1b | declared `placement.default`, the catch-all | `default` | the GitTarget named a fallback |
 | 2 | the folder's single supported kustomization root | `kustomize_root` | a file that root cannot reach never renders |
 | 3 | canonical `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` | `canonical` | nothing else did |
 
@@ -1249,9 +1250,8 @@ placement:
 ```
 
 after which the same ConfigMap is appended to `all.yaml`, and the metric moves to
-`source="declared", disposition="appended"`. **This is the behaviour change**: before the
-Option C deletion the bundle was extended with no declaration at all. One line of YAML buys
-back the old behaviour, and it says on the page what used to be a guess.
+`source="by_type", disposition="appended"`. Bundling is something a target declares: one line
+of YAML, and it says on the page what would otherwise be a guess.
 
 If instead the folder is a kustomize overlay — one `kustomization.yaml` governing the whole
 subtree — no declaration is needed: the new document lands beside it and joins its

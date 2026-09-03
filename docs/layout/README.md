@@ -13,7 +13,7 @@ had in the old layout. Read the label before you read the page.
 |---|---|---|
 | [`new-file-placement-rules.md`](new-file-placement-rules.md) | **spec** | where a brand-new resource's file goes: declared, the folder's one kustomize root, canonical. Go source cites it by path, and `task lint-docs` checks those citations |
 | [`contextual-namespace.md`](contextual-namespace.md) | **spec** | kustomize graph-aware namespace inference, and the supported subset. This is the inference `serializeNamespace` overrides |
-| [`model.md`](model.md) | **design** | the proposal, reversed and much smaller: the path template **stays**, and gains two optional booleans — `spec.placement.useKustomize`, and `spec.serializeNamespace` one level up because it governs every write rather than only new files. Carries the status stanza, the post-scan pass, and the order the work is built in |
+| [`model.md`](model.md) | **built** | the proposal, reversed and much smaller, and now shipped: the path template **stays**, and gained two optional booleans — `spec.placement.useKustomize`, and `spec.serializeNamespace` one level up because it governs every write rather than only new files. Carries the status stanza, the post-scan pass, the order the work was built in, and the four questions it deliberately left open |
 
 ## The worked examples are a test, and they live in the test tree
 
@@ -37,10 +37,11 @@ that produced them. What moved is the evidence.
 
 ## What is deliberately not here
 
-- [`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md) sequences the breaking work on
-  `GitTarget`. The placement work is additive and is not part of it.
+- [`../design/gittarget-api-wave.md`](../design/gittarget-api-wave.md) sequenced the breaking work on
+  `GitTarget`, which shipped in #330. The placement work was additive and was never part of it.
 - [`../design/placement-visibility-and-declared-defaults.md`](../design/placement-visibility-and-declared-defaults.md)
-  holds the three questions the sibling-inference deletion left. Decided, mostly unbuilt. Its
+  holds the three questions the sibling-inference deletion left. Decided; `status.placement` has
+  since shipped and the rest is unbuilt. Its
   Question 2 (a CRD default for `placement.default`) is **reopened** by [`model.md`](model.md)'s
   reversal, not superseded by it.
 - [`../design/support-boundary/`](../design/support-boundary/README.md) owns what the operator may

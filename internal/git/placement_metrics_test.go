@@ -108,9 +108,10 @@ func TestPlacementMetrics_CanonicalFallbackNamesTargetAndType(t *testing.T) {
 }
 
 // A declared template is the answer to a canonical fall-back, so the two must be
-// distinguishable in the same series: `source="declared"` is how an operator confirms the
-// byType line they added is actually the one being used.
-func TestPlacementMetrics_DeclaredPlacementIsCountedAsDeclared(t *testing.T) {
+// distinguishable in the same series: `source="by_type"` is how an operator confirms the
+// byType line they added is actually the one being used, and it is reported separately from
+// `source="default"` so a catch-all swallowing a type does not read as that line working.
+func TestPlacementMetrics_ByTypePlacementIsCountedAsByType(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	worktree := newWorktreeForTest(t)
@@ -121,10 +122,10 @@ func TestPlacementMetrics_DeclaredPlacementIsCountedAsDeclared(t *testing.T) {
 	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
 
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
-		"source":      "declared",
+		"source":      "by_type",
 		"disposition": "new_file",
 	}))
-	require.True(t, ok, "expected a declared placement sample")
+	require.True(t, ok, "expected a byType placement sample")
 	assert.Equal(t, int64(1), got)
 }
 
@@ -142,7 +143,7 @@ func TestPlacementMetrics_DeclaredBundleRecordsAppendedDisposition(t *testing.T)
 	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
 
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
-		"source":      "declared",
+		"source":      "by_type",
 		"disposition": "appended",
 	}))
 	require.True(t, ok, "expected an appended placement sample")
@@ -388,4 +389,29 @@ func TestPlacementMetrics_DeclaredSubdirectoryEntryIsAdded(t *testing.T) {
 		"outcome":             "failed",
 	})
 	assert.False(t, hasFailed && failed > 0, "no entry may be counted as failed")
+}
+
+// The catch-all gets its own series, and this is the reason the split exists: a `default`
+// template answering for a type is indistinguishable, in behaviour, from the byType line that
+// type was supposed to have. Only the label tells an operator which one they are looking at.
+func TestPlacementMetrics_DefaultTemplateIsCountedSeparatelyFromByType(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	worktree := newWorktreeForTest(t)
+	policy := &manifestanalyzer.PlacementPolicy{Default: "{namespace}/{name}.yaml"}
+
+	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
+
+	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
+		"source":      "default",
+		"disposition": "new_file",
+	}))
+	require.True(t, ok, "expected a default-template placement sample")
+	assert.Equal(t, int64(1), got)
+
+	_, byType := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
+		"source":      "by_type",
+		"disposition": "new_file",
+	}))
+	assert.False(t, byType, "a catch-all must never be reported as an exact byType rule")
 }

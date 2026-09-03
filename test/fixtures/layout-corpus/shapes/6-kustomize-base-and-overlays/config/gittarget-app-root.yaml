@@ -13,7 +13,7 @@ metadata:
   name: checkout-app
   namespace: shop-prod
 spec:
-  providerRef:
+  gitProviderRef:
     name: app-repository
   branch: main
   path: apps/checkout

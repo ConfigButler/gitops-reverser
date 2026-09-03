@@ -11,8 +11,8 @@ metadata:
   generateName: save-
   namespace: default
 spec:
-  targetRef:
-    name: quickstart-gittarget
+  gitTargetRef:
+    name: example-target
   # Optional commit message (1-1024 Unicode characters). Newlines are allowed
   # for a subject plus body; other control characters are rejected. When
   # omitted, the generated grouped-commit message is used.

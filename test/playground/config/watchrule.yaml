@@ -4,8 +4,7 @@ metadata:
   name: playground-watchrule
   namespace: tilt-playground
 spec:
-  targetRef:
-    kind: GitTarget
+  gitTargetRef:
     name: playground-target
   rules:
     - resources: ["deployments", "services", "configmaps", "secrets"]

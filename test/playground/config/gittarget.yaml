@@ -4,8 +4,7 @@ metadata:
   name: playground-target
   namespace: tilt-playground
 spec:
-  providerRef:
-    kind: GitProvider
+  gitProviderRef:
     name: playground-provider
   branch: main
   # Keep playground writes under a folder. Use "." only when testing repo-root ownership.

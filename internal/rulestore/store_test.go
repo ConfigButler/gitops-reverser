@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -138,7 +139,6 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"nodes"},
-					Scope:       configv1alpha3.ResourceScopeCluster,
 				},
 			},
 		},
@@ -227,7 +227,6 @@ func TestDeleteClusterWatchRule(t *testing.T) {
 			Rules: []configv1alpha3.ClusterResourceRule{
 				{
 					Resources: []string{"nodes"},
-					Scope:     configv1alpha3.ResourceScopeCluster,
 				},
 			},
 		},
@@ -521,7 +520,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"nodes"},
-					Scope:       configv1alpha3.ResourceScopeCluster,
 				},
 			},
 		},
@@ -844,7 +842,6 @@ func TestSnapshotClusterWatchRules(t *testing.T) {
 			Rules: []configv1alpha3.ClusterResourceRule{
 				{
 					Resources: []string{"nodes"},
-					Scope:     configv1alpha3.ResourceScopeCluster,
 				},
 			},
 		},
@@ -1027,7 +1024,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 		configv1alpha3.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "cluster-services"},
 			Spec: configv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha3.NamespacedTargetReference{Name: "cluster-target", Namespace: "ops"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "cluster-target", Namespace: "ops"},
 				Rules: []configv1alpha3.ClusterResourceRule{{
 					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 					APIGroups:   []string{""},

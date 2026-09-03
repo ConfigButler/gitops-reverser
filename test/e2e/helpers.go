@@ -394,6 +394,8 @@ func expectServiceRoutesToPod(g Gomega, serviceName, expectedPod string) {
 		"endpoints",
 		serviceName,
 		"-o",
+		// core/v1 Endpoints' OWN targetRef, not one of ours: this names the Pod behind an
+		// endpoint address. It is spelled targetRef because Kubernetes spells it that way.
 		"jsonpath={.subsets[*].addresses[*].targetRef.name}",
 	)
 	g.Expect(err).NotTo(HaveOccurred(), "Failed to get %s endpoints", serviceName)

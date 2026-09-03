@@ -49,14 +49,21 @@ type PlacementRequest struct {
 // The values are a public observability contract (metric label values), so lower_snake_case and
 // not renamed lightly.
 //
-// Exactly three, closed by construction: a declaration, one structural fact about the folder, and
-// the built-in path. Nothing reads the repository's layout to guess intent.
+// Exactly four, closed by construction: two kinds of declaration, one structural fact about the
+// folder, and the built-in path. Nothing reads the repository's layout to guess intent.
+//
+// The two declared values are separate because a catch-all quietly swallowing a type you meant to
+// name explicitly otherwise looks identical to a rule working as intended, and telling those apart
+// is the whole job of a metric that answers "is a placement rule missing?".
 type PlacementSource string
 
 const (
-	// PlacementSourceDeclared is Option B: an explicit placement.byType/default
-	// template matched.
-	PlacementSourceDeclared PlacementSource = "declared"
+	// PlacementSourceByType is an explicit placement.byType entry for this exact type.
+	PlacementSourceByType PlacementSource = "by_type"
+	// PlacementSourceDefault is the declared catch-all, placement.default: no byType entry named
+	// this type, so the target's own fallback template answered instead. Distinct from
+	// PlacementSourceCanonical, which is the absence of any declaration at all.
+	PlacementSourceDefault PlacementSource = "default"
 	// PlacementSourceKustomizeRoot is the structural fallback: no declared template
 	// matched, and the whole writable subtree is governed by exactly one supported
 	// kustomization, so the new document goes beside it and into its resources: list
@@ -160,8 +167,8 @@ func (e *PlacementRefusedError) Unwrap() error { return e.cause }
 func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementRequest) (PlacementResult, error) {
 	vars := placementVars(req)
 
-	if path, ok, err := resolveDeclared(policy, req, vars); err == nil && ok {
-		return finishPlacement(store, req, path, PlacementSourceDeclared)
+	if path, source, ok, err := resolveDeclared(policy, req, vars); err == nil && ok {
+		return finishPlacement(store, req, path, source)
 	}
 
 	if path, ok := resolveKustomizeRoot(store, req); ok {
@@ -420,25 +427,32 @@ func canonicalPath(req PlacementRequest) string {
 
 // --- Option B: declared type-map placement -------------------------------------
 
-func resolveDeclared(policy *PlacementPolicy, req PlacementRequest, vars map[string]string) (string, bool, error) {
+// resolveDeclared renders the declared template that answers for this type, and reports WHICH
+// declaration answered: an exact byType entry, or the target's catch-all default.
+func resolveDeclared(
+	policy *PlacementPolicy,
+	req PlacementRequest,
+	vars map[string]string,
+) (string, PlacementSource, bool, error) {
 	if policy == nil {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	key := PlacementTypeKey(req.Identifier.Group, req.Identifier.Version, req.Identifier.Resource)
 	var tmpl string
+	var source PlacementSource
 	switch {
 	case strings.TrimSpace(policy.ByType[key]) != "":
-		tmpl = policy.ByType[key]
+		tmpl, source = policy.ByType[key], PlacementSourceByType
 	case strings.TrimSpace(policy.Default) != "":
-		tmpl = policy.Default
+		tmpl, source = policy.Default, PlacementSourceDefault
 	default:
-		return "", false, nil
+		return "", "", false, nil
 	}
 	rendered, err := RenderPlacementTemplate(tmpl, vars)
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
-	return rendered, true, nil
+	return rendered, source, true, nil
 }
 
 // PlacementTypeKey renders the exact-type key used by GitTargetPlacementSpec.ByType:

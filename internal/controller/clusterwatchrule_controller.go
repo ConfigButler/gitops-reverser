@@ -44,10 +44,6 @@ const (
 	// re-exported from internal/watch, where the shared compile path both bootstrap and this
 	// reconciler call decides it, so the two can never drift.
 	ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized = watch.ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized
-
-	// ClusterWatchRuleReasonScopeNotSupported is the terminal reason for a STORED ClusterWatchRule
-	// that still selects namespaced resources through the removed scope choice.
-	ClusterWatchRuleReasonScopeNotSupported = watch.ClusterWatchRuleReasonScopeNotSupported
 )
 
 // ClusterWatchRuleReconciler reconciles a ClusterWatchRule object.
@@ -71,13 +67,13 @@ type ClusterWatchRuleReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // clusterWatchRuleGitTarget names the GitTarget a ClusterWatchRule writes through. Unlike a
-// WatchRule's, its targetRef carries a namespace of its own.
+// WatchRule's, its gitTargetRef carries a namespace of its own.
 //
 // It carries no UID, and that is correct rather than an omission: a rule-derived reference has
 // none to carry, and the watch-plane owner resolves the trigger against the UID the GitTarget
 // controller captured. See resolveGitTargetUID.
 func clusterWatchRuleGitTarget(rule *configbutleraiv1alpha3.ClusterWatchRule) reverserTypes.ResourceReference {
-	return reverserTypes.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
+	return reverserTypes.NewResourceReference(rule.Spec.GitTargetRef.Name, rule.Spec.GitTargetRef.Namespace)
 }
 
 func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -108,7 +104,7 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	log.Info("Starting ClusterWatchRule validation",
 		"name", clusterRule.Name,
-		"target", clusterRule.Spec.TargetRef,
+		"target", clusterRule.Spec.GitTargetRef,
 		"generation", clusterRule.Generation,
 		"resourceVersion", clusterRule.ResourceVersion)
 	st := beginStatus(r.Client, r.Recorder, &clusterRule, &clusterRule.Status.Conditions)
@@ -142,7 +138,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	log := logf.FromContext(ctx).WithName("reconcileClusterWatchRuleViaTarget")
 
 	// Target is required
-	if clusterRule.Spec.TargetRef.Name == "" {
+	if clusterRule.Spec.GitTargetRef.Name == "" {
 		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
@@ -154,7 +150,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	}
 
 	// For ClusterWatchRule, target namespace must be specified
-	targetNS := clusterRule.Spec.TargetRef.Namespace
+	targetNS := clusterRule.Spec.GitTargetRef.Namespace
 	if targetNS == "" {
 		st.set(
 			ConditionTypeGitTargetReady,
@@ -168,24 +164,24 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 
 	// Fetch GitTarget
 	var target configbutleraiv1alpha3.GitTarget
-	targetKey := types.NamespacedName{Name: clusterRule.Spec.TargetRef.Name, Namespace: targetNS}
+	targetKey := types.NamespacedName{Name: clusterRule.Spec.GitTargetRef.Name, Namespace: targetNS}
 	if err := r.Get(ctx, targetKey, &target); err != nil {
 		log.Error(err, "Failed to get referenced GitTarget",
-			"gitTargetName", clusterRule.Spec.TargetRef.Name,
+			"gitTargetName", clusterRule.Spec.GitTargetRef.Name,
 			"gitTargetNamespace", targetNS)
 		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			ClusterWatchRuleReasonGitTargetNotFound,
 			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v",
-				targetNS, clusterRule.Spec.TargetRef.Name, err),
+				targetNS, clusterRule.Spec.GitTargetRef.Name, err),
 		)
 		return r.stallRule(ctx, st, ClusterWatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
 	}
 	r.setGitTargetReadyCondition(st, target)
 
 	// Resolve GitProvider from target
-	providerName := target.Spec.ProviderRef.Name
+	providerName := target.Spec.GitProviderRef.Name
 	providerNS := target.Namespace // Same as GitTarget
 
 	var provider configbutleraiv1alpha3.GitProvider
@@ -229,25 +225,21 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 
 	msg := fmt.Sprintf(
 		"ClusterWatchRule is ready and monitoring resources via GitTarget '%s/%s'",
-		clusterRule.Spec.TargetRef.Namespace,
-		clusterRule.Spec.TargetRef.Name,
+		clusterRule.Spec.GitTargetRef.Namespace,
+		clusterRule.Spec.GitTargetRef.Name,
 	)
 	return r.commitRule(ctx, st, ruleReadiness(clusterRule.Status.Conditions, "ClusterWatchRule", msg))
 }
 
 // gateClusterWatchRule is the ClusterWatchRule gate and the ONE place this controller compiles a
-// cluster rule. It runs the shared compile path, which applies two refusals in order:
+// cluster rule. It runs the shared compile path, whose refusal is the ClusterProvider namespace
+// admission of the referenced GitTarget: a ClusterWatchRule is cluster-scoped and its gitTargetRef
+// carries a REQUIRED namespace, so it may name a GitTarget in ANY namespace and widen that target's
+// mirror scope cluster-wide. Compiling such a rule without re-applying the target's own provider
+// admission would let it mirror through a credential whose accessFrom never admitted that target.
 //
-//  1. the ClusterProvider namespace admission of the referenced GitTarget. A ClusterWatchRule is
-//     cluster-scoped and its targetRef carries a REQUIRED namespace, so it may name a GitTarget in
-//     ANY namespace and widen that target's mirror scope cluster-wide. Compiling such a rule
-//     without re-applying the target's own provider admission would let it mirror through a
-//     credential whose accessFrom never admitted that target.
-//  2. the cluster-scope-only narrowing: a STORED rule that still says `scope: Namespaced` compiles
-//     no stream. Admission rejects the value on write, but a pre-release object keeps it in etcd.
-//
-// Both live in internal/watch rather than here because the startup bootstrap must apply exactly the
-// same refusals BEFORE the first reconcile — otherwise every restart reopens the window they close.
+// It lives in internal/watch rather than here because the startup bootstrap must apply exactly the
+// same refusal BEFORE the first reconcile — otherwise every restart reopens the window it closes.
 //
 // It returns handled=false when the rule compiled and the reconcile should continue; handled=true
 // means the reconcile is over and the caller must return the accompanying result and error
@@ -494,7 +486,7 @@ func (r *ClusterWatchRuleReconciler) namespaceToClusterWatchRules(
 	return r.clusterWatchRulesTargeting(ctx, affected, obj)
 }
 
-// clusterWatchRulesTargeting returns a request for every ClusterWatchRule whose targetRef names one
+// clusterWatchRulesTargeting returns a request for every ClusterWatchRule whose gitTargetRef names one
 // of the given GitTargets. Requests carry a name only — ClusterWatchRule is cluster-scoped.
 func (r *ClusterWatchRuleReconciler) clusterWatchRulesTargeting(
 	ctx context.Context,
@@ -515,8 +507,8 @@ func (r *ClusterWatchRuleReconciler) clusterWatchRulesTargeting(
 	for i := range rules.Items {
 		rule := &rules.Items[i]
 		key := types.NamespacedName{
-			Name:      rule.Spec.TargetRef.Name,
-			Namespace: rule.Spec.TargetRef.Namespace,
+			Name:      rule.Spec.GitTargetRef.Name,
+			Namespace: rule.Spec.GitTargetRef.Namespace,
 		}
 		if _, ok := targets[key]; !ok {
 			continue
@@ -529,7 +521,7 @@ func (r *ClusterWatchRuleReconciler) clusterWatchRulesTargeting(
 }
 
 // gitTargetToClusterWatchRules maps a GitTarget event to every ClusterWatchRule
-// whose targetRef matches it. ClusterWatchRule is cluster-scoped, so the lookup
+// whose gitTargetRef matches it. ClusterWatchRule is cluster-scoped, so the lookup
 // is cluster-wide.
 func (r *ClusterWatchRuleReconciler) gitTargetToClusterWatchRules(
 	ctx context.Context,
@@ -544,10 +536,10 @@ func (r *ClusterWatchRuleReconciler) gitTargetToClusterWatchRules(
 	var requests []ctrlreconcile.Request
 	for i := range rules.Items {
 		rule := &rules.Items[i]
-		if rule.Spec.TargetRef.Name != obj.GetName() {
+		if rule.Spec.GitTargetRef.Name != obj.GetName() {
 			continue
 		}
-		if rule.Spec.TargetRef.Namespace != obj.GetNamespace() {
+		if rule.Spec.GitTargetRef.Namespace != obj.GetNamespace() {
 			continue
 		}
 		requests = append(requests, ctrlreconcile.Request{
@@ -575,7 +567,7 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 	matchingTargets := make(map[types.NamespacedName]struct{})
 	for i := range targets.Items {
 		t := &targets.Items[i]
-		if t.Spec.ProviderRef.Name == obj.GetName() {
+		if t.Spec.GitProviderRef.Name == obj.GetName() {
 			matchingTargets[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
 		}
 	}
@@ -593,8 +585,8 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 	for i := range rules.Items {
 		rule := &rules.Items[i]
 		key := types.NamespacedName{
-			Name:      rule.Spec.TargetRef.Name,
-			Namespace: rule.Spec.TargetRef.Namespace,
+			Name:      rule.Spec.GitTargetRef.Name,
+			Namespace: rule.Spec.GitTargetRef.Namespace,
 		}
 		if _, ok := matchingTargets[key]; !ok {
 			continue

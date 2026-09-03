@@ -1,12 +1,18 @@
 # What namespace does a created `kustomization.yaml` carry?
 
-> **design, decided**: being built. Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-09-01.
+> **built**: decided as B, and implemented. Index: [`../INDEX.md`](../INDEX.md)
+> Date: 2026-09-01, built in #328 itself.
+>
+> The created root carries no `namespace:`, and
+> [`kustomization_bootstrap.go`](../../internal/git/kustomization_bootstrap.go) cites this page by
+> path as the reason. That citation is why the document stays in `design/` rather than moving to
+> `finished/`.
 >
 > One question, five answers, and the reason the obvious one is wrong. It came out of review of
-> [#328](https://github.com/ConfigButler/gitops-reverser/pull/328), which shipped
-> `spec.placement.useKustomize` writing `namespace:` into every root it created. This page records
-> the choice so the next reader does not have to re-derive it from a diff.
+> [#328](https://github.com/ConfigButler/gitops-reverser/pull/328), whose first cut had
+> `spec.placement.useKustomize` write `namespace:` into every root it created. That cut did not
+> merge: #328 shipped answer B, and this page records the choice so the next reader does not have
+> to re-derive it from a diff.
 
 ## The question
 

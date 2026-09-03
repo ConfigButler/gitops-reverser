@@ -47,7 +47,7 @@ func resolveSourceNamespaces(
 	seen := map[string]struct{}{target.Namespace: {}}
 	for i := range rules.Items {
 		rule := &rules.Items[i]
-		if rule.Spec.TargetRef.Name != target.Name {
+		if rule.Spec.GitTargetRef.Name != target.Name {
 			continue
 		}
 		for _, item := range rule.Spec.Rules {

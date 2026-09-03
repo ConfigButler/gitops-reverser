@@ -5,49 +5,59 @@ package controller
 import (
 	"context"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// ClusterWatchRule.spec.rules[].scope was NARROWED rather than deleted, and this is the guard that
-// it still is. It runs against the GENERATED CRDs, so it fails the moment somebody "cleans up" the
-// field out of the Go types.
+// Every field this project has superseded is now DELETED outright rather than retained and
+// narrowed, and these specs run against the GENERATED CRDs so they say what that actually means.
 //
 // Deleting a field is the silent option: CRD pruning happens on write, so once the schema drops a
 // field, re-applying a legacy manifest is ACCEPTED with the value pruned away — no error anywhere.
-// A retained-but-narrowed field turns that into an apply-time rejection an operator cannot miss.
+// The first spec pins exactly that, because it is the behaviour docs/UPGRADING.md's pre-upgrade
+// inventory exists to compensate for: if an apply of a legacy manifest ever started failing
+// instead, the migration guidance would be wrong in the other direction.
 //
-// The GitTarget/GitProvider/ClusterProvider fields this release removed took the OTHER option
-// deliberately: they are deleted outright, so an old manifest is accepted and pruned, and
-// docs/UPGRADING.md carries a pre-upgrade inventory instead. That trade is priced there, and the
-// last spec below is what stops the replacement spellings regressing unnoticed.
+// The remaining specs pin the replacement spellings, which is what stops a typo in one of them
+// surfacing as a silently pruned field and a mirror behaving as if unconfigured.
 var _ = Describe("Superseded source-scope fields", func() {
-	It("rejects ClusterWatchRule scope: Namespaced at admission", func() {
+	It("accepts and PRUNES a legacy manifest that still sets rules[].scope", func() {
 		ctx := context.Background()
 
-		rule := &configbutleraiv1alpha3.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "legacy-namespaced-scope"},
-			Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: configbutleraiv1alpha3.NamespacedTargetReference{
-					Name: "any-target", Namespace: "default",
-				},
-				Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
-					Resources: []string{"configmaps"},
-					Scope:     configbutleraiv1alpha3.ResourceScopeNamespaced,
+		// Applied as unstructured, because the Go types no longer have the field to set, and
+		// through a client that does not ask for strict field validation. That is the QUIET half
+		// of a removal and the one worth pinning: `kubectl apply` would reject this manifest by
+		// naming the unknown field, but a GitOps controller reconciling it on the user's behalf
+		// may not. See docs/facts/crd-upgrade-strategies.md.
+		legacy := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "ClusterWatchRule",
+			"metadata":   map[string]any{"name": "legacy-namespaced-scope"},
+			"spec": map[string]any{
+				"gitTargetRef": map[string]any{"name": "any-target", "namespace": "default"},
+				"rules": []any{map[string]any{
+					"resources": []any{"configmaps"},
+					"scope":     "Namespaced",
 				}},
 			},
-		}
+		}}
 
-		err := k8sClient.Create(ctx, rule)
+		Expect(k8sClient.Create(ctx, legacy)).To(Succeed(),
+			"a removed field is pruned on write, so a legacy manifest applies cleanly")
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, legacy) })
 
-		Expect(err).To(HaveOccurred(),
-			"a legacy namespaced ClusterWatchRule must FAIL to apply, never be silently pruned")
-		Expect(err.Error()).To(ContainSubstring("scope"))
+		rules, _, err := unstructured.NestedSlice(legacy.Object, "spec", "rules")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rules).To(HaveLen(1))
+		Expect(rules[0]).NotTo(HaveKey("scope"),
+			"the value is dropped silently, which is why UPGRADING.md asks for an inventory first")
 	})
 
 	It("accepts the replacement spellings on every kind the wave touched", func() {
@@ -74,9 +84,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "any-provider"},
-				Branch:      "main",
-				Path:        "clusters/prod",
+				GitProviderRef: meta.LocalObjectReference{Name: "any-provider"},
+				Branch:         "main",
+				Path:           "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
 					Window: ptr.To("30s"),
 					Message: &configbutleraiv1alpha3.CommitMessageSpec{
@@ -102,7 +112,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		rule := &configbutleraiv1alpha3.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "cluster-only-rule"},
 			Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: configbutleraiv1alpha3.NamespacedTargetReference{
+				GitTargetRef: meta.NamespacedObjectReference{
 					Name: "any-target", Namespace: "default",
 				},
 				Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
@@ -112,12 +122,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 			},
 		}
 
-		Expect(k8sClient.Create(ctx, rule)).To(Succeed())
+		Expect(k8sClient.Create(ctx, rule)).To(Succeed(),
+			"a ClusterWatchRule names types and nothing else: which scope it watches is the kind")
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, rule) })
-
-		//nolint:staticcheck // reading the deprecated field is the point: it must still default.
-		Expect(rule.Spec.Rules[0].Scope).To(Equal(configbutleraiv1alpha3.ResourceScopeCluster),
-			"the field is omittable and defaults to Cluster, so a converted manifest need not set it")
 	})
 
 	It("accepts rules[].sourceNamespace, including the wildcard", func() {
@@ -126,7 +133,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		rule := &configbutleraiv1alpha3.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "per-item-source", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.WatchRuleSpec{
-				TargetRef: configbutleraiv1alpha3.LocalTargetReference{Name: "any-target"},
+				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
 				Rules: []configbutleraiv1alpha3.ResourceRule{
 					{Resources: []string{"configmaps"}},
 					{Resources: []string{"secrets"}, SourceNamespace: "repo-config"},
@@ -145,7 +152,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		rule := &configbutleraiv1alpha3.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "malformed-source", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.WatchRuleSpec{
-				TargetRef: configbutleraiv1alpha3.LocalTargetReference{Name: "any-target"},
+				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
 				Rules: []configbutleraiv1alpha3.ResourceRule{{
 					Resources: []string{"configmaps"}, SourceNamespace: "Not A Namespace",
 				}},
@@ -157,5 +164,58 @@ var _ = Describe("Superseded source-scope fields", func() {
 		Expect(err).To(HaveOccurred(),
 			"a malformed namespace must be rejected at admission rather than resolving to nothing "+
 				"at compile time")
+	})
+})
+
+// Collapsing our reference types onto Flux's dropped the MinLength=1 those types carried on name,
+// and `{name: ""}` is not a harmless value: GitProvider.spec.secretRef treats an absent credential
+// as anonymous access, so an empty name would downgrade a private repository to anonymous rather
+// than fail. The constraint is back as a field-level CEL rule on every reference, and this is the
+// guard that it stays there.
+var _ = Describe("Reference names must not be empty", func() {
+	It("refuses an empty secretRef name rather than reading it as anonymous access", func() {
+		ctx := context.Background()
+
+		provider := &configbutleraiv1alpha3.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-secret-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.GitProviderSpec{
+				URL:             "https://example.com/repo.git",
+				AllowedBranches: []string{"main"},
+				SecretRef:       &meta.LocalObjectReference{Name: ""},
+			},
+		}
+
+		err := k8sClient.Create(ctx, provider)
+
+		Expect(err).To(HaveOccurred(),
+			"an empty secretRef.name must be refused, not read as anonymous access")
+		Expect(err.Error()).To(ContainSubstring("must not be empty"))
+	})
+
+	It("refuses an empty name on the provider and target references", func() {
+		ctx := context.Background()
+
+		target := &configbutleraiv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.GitTargetSpec{
+				GitProviderRef: meta.LocalObjectReference{Name: ""},
+				Branch:         "main",
+				Path:           "clusters/prod",
+			},
+		}
+		Expect(k8sClient.Create(ctx, target)).NotTo(Succeed(),
+			"an empty gitProviderRef.name names nothing and must be refused at admission")
+
+		rule := &configbutleraiv1alpha3.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-target-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.WatchRuleSpec{
+				GitTargetRef: meta.LocalObjectReference{Name: ""},
+				Rules: []configbutleraiv1alpha3.ResourceRule{
+					{Resources: []string{"configmaps"}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, rule)).NotTo(Succeed(),
+			"an empty gitTargetRef.name names nothing and must be refused at admission")
 	})
 })

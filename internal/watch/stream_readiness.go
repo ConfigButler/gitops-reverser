@@ -157,9 +157,9 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 // A rule that is not compiled expects no streams, which is correct: the gate refused it, or the
 // store has not been seeded yet.
 func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) StreamSummary {
-	// The GitTarget is in the rule's OWN namespace (targetRef is a LocalTargetReference), but the
+	// The GitTarget is in the rule's OWN namespace (gitTargetRef is a meta.LocalObjectReference), but the
 	// streams are keyed on the namespaces being WATCHED.
-	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	gitDest := types.NewResourceReference(rule.Spec.GitTargetRef.Name, rule.Namespace)
 	if m.RuleStore == nil {
 		return streamSummaryForTypes(nil, nil, nil)
 	}
@@ -191,7 +191,7 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 // against the source cluster its GitTarget mirrors from. It always matches cluster-scoped records,
 // because a ClusterWatchRule is cluster-scope-only.
 func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) StreamSummary {
-	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
+	gitDest := types.NewResourceReference(rule.Spec.GitTargetRef.Name, rule.Spec.GitTargetRef.Namespace)
 	reg := m.registryForGitTarget(gitDest)
 	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 	records := reg.Followable()

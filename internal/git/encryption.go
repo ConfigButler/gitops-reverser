@@ -120,14 +120,6 @@ func resolveSecretRecipients(
 		return nil, nil
 	}
 
-	secretKind := strings.TrimSpace(encryptionSpec.SecretRef.Kind)
-	if secretKind != "" && secretKind != "Secret" {
-		return nil, fmt.Errorf(
-			"encryption.secretRef.kind must be Secret, got %q",
-			encryptionSpec.SecretRef.Kind,
-		)
-	}
-
 	secretName := strings.TrimSpace(encryptionSpec.SecretRef.Name)
 	if secretName == "" {
 		return nil, errors.New(

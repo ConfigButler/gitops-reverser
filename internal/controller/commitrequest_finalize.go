@@ -30,6 +30,7 @@ const (
 	crReasonCommitterFallback       = "CommitterFallback"
 	crReasonAuthorCaptureDisabled   = "AuthorCaptureDisabled"
 	crReasonPushed                  = "Pushed"
+	crReasonGitTargetRefPruned      = "GitTargetRefPruned"
 )
 
 // noWindowInGraceMessage is the prose for a NoWindowInGrace outcome: the grace

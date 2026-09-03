@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"testing"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gossh "golang.org/x/crypto/ssh"
@@ -262,7 +263,7 @@ func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 		c := credTestClient(t, secret)
 		provider := &configv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec:       configv1alpha3.GitProviderSpec{SecretRef: &configv1alpha3.LocalSecretReference{Name: "creds"}},
+			Spec:       configv1alpha3.GitProviderSpec{SecretRef: &meta.LocalObjectReference{Name: "creds"}},
 		}
 		auth, err := credentialFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.NoError(t, err)
@@ -273,7 +274,7 @@ func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 		c := credTestClient(t)
 		provider := &configv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec:       configv1alpha3.GitProviderSpec{SecretRef: &configv1alpha3.LocalSecretReference{Name: "absent"}},
+			Spec:       configv1alpha3.GitProviderSpec{SecretRef: &meta.LocalObjectReference{Name: "absent"}},
 		}
 		_, err := credentialFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.Error(t, err)

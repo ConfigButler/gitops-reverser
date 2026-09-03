@@ -79,7 +79,7 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 | `git_operations_total` | counter | — | Events that produced Git work in a flush. |
 | `objects_written_total` | counter | — | Objects that resulted in a file write in a flush. |
 | `resync_sweep_deletes_total` | counter | `group`, `version`, `resource` | Managed documents deleted by mark-and-sweep resyncs. Steady-state watch deletes do not increment this. |
-| `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document written at a resolved path. `source` is `declared` / `kustomize_root` / `canonical`; `disposition` is `new_file` / `appended`. |
+| `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document written at a resolved path. `source` is `by_type` / `default` / `kustomize_root` / `canonical`; `disposition` is `new_file` / `appended`. |
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined to place. Every increment is a resource **absent** from the mirror. |
 | `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | The `resources:` entry a newly placed file needs: `added`, `no_change`, `failed`. |
 | `branch_worker_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed work; reads 0 only when the worker has fully drained. |
@@ -164,13 +164,14 @@ one — and a zero rate is the steady state, not a broken exporter.
 
 | `source` | Means | Needs attention? |
 | --- | --- | --- |
-| `declared` | a `spec.placement.byType` or `.default` template matched | no — this is what you asked for |
+| `by_type` | a `spec.placement.byType` entry named this exact type | no — this is what you asked for |
+| `default` | no `byType` entry named the type, so the catch-all `spec.placement.default` answered | **maybe** — a rule you meant to write may not be matching |
 | `kustomize_root` | the folder is governed by exactly one supported kustomization, so the file went beside it and joined its `resources:` list | no — the folder's own structure decided |
 | `canonical` | nothing else applied, so the built-in `{namespace}/{group}/{resource}/{name}.yaml` path was used | **maybe** — see below |
 
 **Which types are falling back, and in which target?** Each series is a candidate for one
-`placement.byType` line. This is the signal that replaced sibling inference: the operator no longer
-guesses a hand-authored layout from the folder, so this is how you learn a layout needs declaring:
+`placement.byType` line. The operator never guesses a hand-authored layout from the folder, so this
+is how you learn a layout needs declaring:
 
 ```promql
 sum by (gittarget_namespace, gittarget_name, group, version, resource) (
@@ -182,8 +183,8 @@ layout and always will be. It is worth acting on when the folder has a conventio
 told about — the file lands somewhere tidy but not where the rest of that type lives.
 
 **Is a bundling policy actually bundling?** `disposition="appended"` proves documents are joining an
-existing file rather than each getting their own. It should only ever appear with
-`source="declared"`; the fallbacks never append:
+existing file rather than each getting their own. It should only ever appear with `source="by_type"`
+or `source="default"`; the fallbacks never append:
 
 ```promql
 sum by (source, disposition) (increase(gitopsreverser_placements_total[24h]))

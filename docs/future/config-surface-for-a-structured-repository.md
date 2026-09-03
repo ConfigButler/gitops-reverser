@@ -283,7 +283,7 @@ With B4:
 kind: GitTarget
 metadata: {name: platform-rbac}
 spec:
-  providerRef: {name: platform-repo}
+  gitProviderRef: {name: platform-repo}
   branch: main
   path: platform/rbac
   push:

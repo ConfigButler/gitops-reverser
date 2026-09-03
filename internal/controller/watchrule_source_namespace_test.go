@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -34,8 +35,8 @@ func wrsnGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnTarget, Namespace: wrsnTenantNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef:        configbutleraiv1alpha3.GitProviderReference{Name: "git"},
-			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: wrsnProvider},
+			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: wrsnProvider},
 			Branch:             "main",
 			Path:               "tenants/acme",
 		},
@@ -71,8 +72,8 @@ func wrsnWatchRule(sourceNamespaces ...string) *configbutleraiv1alpha3.WatchRule
 	return &configbutleraiv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnRule, Namespace: wrsnTenantNS, Generation: 1},
 		Spec: configbutleraiv1alpha3.WatchRuleSpec{
-			TargetRef: configbutleraiv1alpha3.LocalTargetReference{Name: wrsnTarget},
-			Rules:     items,
+			GitTargetRef: meta.LocalObjectReference{Name: wrsnTarget},
+			Rules:        items,
 		},
 	}
 }

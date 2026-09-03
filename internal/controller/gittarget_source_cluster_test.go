@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,7 +127,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: providerName},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 			},
 		}
 	}
@@ -134,14 +135,14 @@ func TestCheckSourceAuthorization(t *testing.T) {
 	tests := []struct {
 		name           string
 		objects        []client.Object
-		providerRef    string
+		gitProviderRef string
 		wantAuthorized bool
 		wantReason     string
 	}{
 		{
 			name:           "provider not found -> hard gate (NotReady, no mirroring)",
 			objects:        []client.Object{ns},
-			providerRef:    "absent",
+			gitProviderRef: "absent",
 			wantAuthorized: false,
 			wantReason:     GitTargetReasonClusterProviderNotFound,
 		},
@@ -150,14 +151,14 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			objects: []client.Object{
 				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}), ns,
 			},
-			providerRef: "prod-eu-1", wantAuthorized: true,
+			gitProviderRef: "prod-eu-1", wantAuthorized: true,
 		},
 		{
 			name: "provider does not allow the namespace -> refused",
 			objects: []client.Object{
 				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}}), ns,
 			},
-			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
+			gitProviderRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
 		},
 		{
 			name: "provider allows the namespace by label selector",
@@ -166,7 +167,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
 				}), ns,
 			},
-			providerRef: "prod-eu-1", wantAuthorized: true,
+			gitProviderRef: "prod-eu-1", wantAuthorized: true,
 		},
 		{
 			// A selector the API accepted but that cannot compile must FAIL CLOSED. Treating an
@@ -181,7 +182,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 					},
 				}), ns,
 			},
-			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
+			gitProviderRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
 		},
 		{
 			// A missing Namespace object is not an error: the policy is still evaluated, just with
@@ -190,7 +191,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			objects: []client.Object{
 				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
 			},
-			providerRef: "prod-eu-1", wantAuthorized: true,
+			gitProviderRef: "prod-eu-1", wantAuthorized: true,
 		},
 		{
 			name: "namespace object absent -> selector-only policy denies (no labels to match)",
@@ -199,14 +200,14 @@ func TestCheckSourceAuthorization(t *testing.T) {
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
 				}),
 			},
-			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
+			gitProviderRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(tc.objects...).Build()
 			r := &GitTargetReconciler{Client: cl}
-			ok, reason, msg, err := r.checkSourceAuthorization(context.Background(), target(tc.providerRef))
+			ok, reason, msg, err := r.checkSourceAuthorization(context.Background(), target(tc.gitProviderRef))
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantAuthorized, ok)
 			if !tc.wantAuthorized {
@@ -225,7 +226,7 @@ func TestCheckSourceAuthorization_ReadErrorsRequeue(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: "prod-eu-1"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-eu-1"},
 		},
 	}
 	provider := &configbutleraiv1alpha3.ClusterProvider{
@@ -334,10 +335,10 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: ns, UID: "gt-uid"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef:        configbutleraiv1alpha3.GitProviderReference{Name: "gp"},
+			GitProviderRef:     meta.LocalObjectReference{Name: "gp"},
 			Branch:             "main",
 			Path:               "apps",
-			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: providerName},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 		},
 	}
 
@@ -484,7 +485,7 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 			target := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov"},
+					GitProviderRef: meta.LocalObjectReference{Name: "prov"},
 				},
 			}
 			got := r.gitProviderReadiness(context.Background(), target, "team-a")
@@ -509,7 +510,7 @@ func TestResolveSourceClusterProvider(t *testing.T) {
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "tenant"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: providerName},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 			},
 		}
 	}

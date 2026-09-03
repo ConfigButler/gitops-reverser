@@ -3,14 +3,14 @@
 package v1alpha3
 
 import (
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ResourceScope names a Kubernetes resource's scope. It is an INTERNAL matching vocabulary: the
-// resolver uses both constants to align a rule's selector with the discovered scope of each type
-// (a WatchRule always resolves Namespaced records, a ClusterWatchRule always Cluster ones). The
-// only field that still exposes it — ClusterResourceRule.scope — is narrowed to Cluster alone, so
-// "Namespaced" is no longer a public choice anywhere in the API.
+// ResourceScope names a Kubernetes resource's scope. It is a purely INTERNAL matching vocabulary
+// with no field in any CRD: the resolver uses both constants to align a rule's selector with the
+// discovered scope of each type. A WatchRule always resolves Namespaced records, a ClusterWatchRule
+// always Cluster ones, and which kind you write is the whole of how scope is chosen.
 type ResourceScope string
 
 const (
@@ -21,37 +21,14 @@ const (
 	ResourceScopeNamespaced ResourceScope = "Namespaced"
 )
 
-type NamespacedTargetReference struct {
-	// API Group of the referent.
-	// +kubebuilder:validation:Enum=configbutler.ai
-	// +kubebuilder:default=configbutler.ai
-	Group string `json:"group,omitempty"`
-
-	// Kind of the referent.
-	// Optional because this reference currently only supports a single kind (GitTarget).
-	// Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
-	// +optional
-	// +kubebuilder:validation:Enum=GitTarget
-	// +kubebuilder:default=GitTarget
-	Kind string `json:"kind,omitempty"`
-
-	// Name of the referent.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Required because ClusterWatchRule has no namespace.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Namespace string `json:"namespace"`
-}
-
 // ClusterWatchRuleSpec defines the desired state of ClusterWatchRule.
 type ClusterWatchRuleSpec struct {
-	// TargetRef references the GitTarget to use.
-	// Must specify namespace.
+	// GitTargetRef names the GitTarget this rule feeds. A ClusterWatchRule has no namespace of its
+	// own, so the namespace is required here rather than defaulted.
 	// +required
-	TargetRef NamespacedTargetReference `json:"targetRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
+	// +kubebuilder:validation:XValidation:rule="has(self.namespace) && self.namespace != ''",message="spec.gitTargetRef.namespace is required: a ClusterWatchRule has no namespace to default to"
+	GitTargetRef meta.NamespacedObjectReference `json:"gitTargetRef"`
 
 	// Rules define which CLUSTER-SCOPED resources to watch.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -110,39 +87,6 @@ type ClusterResourceRule struct {
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
-
-	// Retained in the schema purely so re-applying a manifest that still says "Namespaced" FAILS.
-	// Deleting it would be silent twice over: pruning drops the value without an error, and a
-	// stored pre-release object would keep its value with no Go field left to refuse it.
-
-	// Scope is REMOVED as a choice: a ClusterWatchRule is cluster-scoped only, so "Cluster" is the
-	// only accepted value and also the default, making the field omittable. To watch NAMESPACED
-	// resources, use a WatchRule in the tenant namespace and set spec.rules[].sourceNamespace.
-	//
-	// Deprecated: ClusterWatchRule is cluster-scope-only; use WatchRule with
-	// spec.rules[].sourceNamespace for namespaced resources. Removed one release from now, or at
-	// v1beta1.
-	// +optional
-	// +kubebuilder:default=Cluster
-	// +kubebuilder:validation:Enum=Cluster
-	Scope ResourceScope `json:"scope,omitempty"`
-}
-
-// DeclaresNamespacedScope reports whether a STORED ClusterWatchRule still selects namespaced
-// resources through the removed scope choice. Admission rejects the value, but an object written
-// before this release keeps it in etcd, so the compile path must refuse it rather than let the
-// rule resolve as if it had asked for cluster scope.
-//
-// It keys on the STORED value, not on what the selector happens to resolve: `resources: ["*"]`
-// legitimately resolves cluster-scoped records, so inferring the refusal from the resolution would
-// be ambiguous exactly where it matters.
-func (s *ClusterWatchRuleSpec) DeclaresNamespacedScope() bool {
-	for i := range s.Rules {
-		if s.Rules[i].Scope != "" && s.Rules[i].Scope != ResourceScopeCluster {
-			return true
-		}
-	}
-	return false
 }
 
 // ClusterWatchRuleStatus defines the observed state of ClusterWatchRule.
@@ -171,7 +115,7 @@ type ClusterWatchRuleStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef.name`
+// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
@@ -183,7 +127,7 @@ type ClusterWatchRuleStatus struct {
 // from — Nodes, PersistentVolumes, StorageClasses, ClusterRoles, CRDs, and the like. Scope is
 // carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
 //
-// It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
+// It is cluster-scoped and requires cluster-admin permissions. Its gitTargetRef names a GitTarget
 // (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
 // mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
 // spec.rules[].sourceNamespace, whose "*" reaches every namespace the source credential can read.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -43,8 +44,8 @@ func snTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snTargetName, Namespace: snTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef:        configv1alpha3.GitProviderReference{Name: "acme-git"},
-			ClusterProviderRef: &configv1alpha3.ClusterProviderReference{Name: snProvider},
+			GitProviderRef:     meta.LocalObjectReference{Name: "acme-git"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: snProvider},
 			Branch:             "main",
 			Path:               "tenants/acme",
 		},
@@ -62,8 +63,8 @@ func snRule(sourceNamespaces ...string) *configv1alpha3.WatchRule {
 	return &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: snRuleName, Namespace: snTenantNS},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: snTargetName},
-			Rules:     items,
+			GitTargetRef: meta.LocalObjectReference{Name: snTargetName},
+			Rules:        items,
 		},
 	}
 }

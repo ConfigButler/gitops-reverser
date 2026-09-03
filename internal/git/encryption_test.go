@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"filippo.io/age"
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -165,7 +166,7 @@ func TestResolveTargetEncryption(t *testing.T) {
 			Spec: v1alpha3.GitTargetSpec{
 				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					SecretRef: v1alpha3.LocalSecretReference{
+					SecretRef: meta.LocalObjectReference{
 						Name: "enc-secret",
 					},
 					Age: &v1alpha3.AgeEncryptionSpec{
@@ -195,7 +196,7 @@ func TestResolveTargetEncryption(t *testing.T) {
 			Spec: v1alpha3.GitTargetSpec{
 				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					SecretRef: v1alpha3.LocalSecretReference{
+					SecretRef: meta.LocalObjectReference{
 						Name: "enc-secret",
 					},
 					Age: &v1alpha3.AgeEncryptionSpec{
@@ -235,7 +236,7 @@ func TestResolveTargetEncryption(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
 			Spec: v1alpha3.GitTargetSpec{
 				Encryption: &v1alpha3.EncryptionSpec{
-					SecretRef: v1alpha3.LocalSecretReference{
+					SecretRef: meta.LocalObjectReference{
 						Name: "enc-secret",
 					},
 					Age: &v1alpha3.AgeEncryptionSpec{

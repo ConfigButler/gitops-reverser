@@ -72,7 +72,7 @@ spec:
       name: Encryption
       priority: 1
       type: string
-    - jsonPath: .spec.providerRef.name
+    - jsonPath: .spec.gitProviderRef.name
       name: Provider
       priority: 1
       type: string
@@ -129,27 +129,15 @@ spec:
                   name is "default" and must exist; it may be in-cluster or remote.
                   Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
                 properties:
-                  group:
-                    default: configbutler.ai
-                    description: API Group of the referent.
-                    enum:
-                    - configbutler.ai
-                    type: string
-                  kind:
-                    default: ClusterProvider
-                    description: |-
-                      Kind of the referent.
-                      Optional because this reference currently only supports a single kind (ClusterProvider).
-                    enum:
-                    - ClusterProvider
-                    type: string
                   name:
                     description: Name of the referent.
-                    minLength: 1
                     type: string
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: spec.clusterProviderRef.name must not be empty
+                  rule: self.name != ''
               commit:
                 description: |-
                   Commit configures how this target's writes are batched into commits, and how those commits
@@ -241,26 +229,33 @@ spec:
                     description: SecretRef references namespace-local Secret data
                       used by the encryption provider.
                     properties:
-                      group:
-                        default: ""
-                        description: Group of the referent.
-                        type: string
-                      kind:
-                        default: Secret
-                        description: Kind of the referent.
-                        enum:
-                        - Secret
-                        type: string
                       name:
-                        description: Name of the Secret.
-                        minLength: 1
+                        description: Name of the referent.
                         type: string
                     required:
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: encryption.secretRef.name must not be empty
+                      rule: self.name != ''
                 required:
                 - provider
                 type: object
+              gitProviderRef:
+                description: |-
+                  GitProviderRef names the GitProvider that backs this target, in this GitTarget's own
+                  namespace. Many GitTargets may name the same GitProvider.
+                  Immutable: delete and recreate the GitTarget to change its destination.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.gitProviderRef.name must not be empty
+                  rule: self.name != ''
               path:
                 description: |-
                   Path within the repository to write resources to, relative to the repository
@@ -327,33 +322,6 @@ spec:
                       the nearest kustomization governing it, whatever chose its path, because a file no
                       kustomization lists is a file kustomize never builds.
                     type: boolean
-                type: object
-              providerRef:
-                description: |-
-                  ProviderRef references the GitProvider that backs this target.
-                  Immutable: delete and recreate the GitTarget to change its destination.
-                properties:
-                  group:
-                    default: configbutler.ai
-                    description: API Group of the referent.
-                    enum:
-                    - configbutler.ai
-                    type: string
-                  kind:
-                    default: GitProvider
-                    description: |-
-                      Kind of the referent.
-                      Optional because this reference currently only supports a single kind (GitProvider).
-                      Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
-                    enum:
-                    - GitProvider
-                    type: string
-                  name:
-                    description: Name of the referent.
-                    minLength: 1
-                    type: string
-                required:
-                - name
                 type: object
               prune:
                 description: |-
@@ -422,13 +390,13 @@ spec:
                 type: boolean
             required:
             - branch
+            - gitProviderRef
             - path
-            - providerRef
             type: object
             x-kubernetes-validations:
-            - message: spec.providerRef is immutable; delete and recreate the GitTarget
+            - message: spec.gitProviderRef is immutable; delete and recreate the GitTarget
                 to change its destination
-              rule: self.providerRef == oldSelf.providerRef
+              rule: '!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef'
             - message: spec.branch is immutable; delete and recreate the GitTarget
                 to change its destination
               rule: self.branch == oldSelf.branch

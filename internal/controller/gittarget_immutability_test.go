@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,7 +15,7 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// A GitTarget's destination — providerRef, branch, path — is immutable: changing where
+// A GitTarget's destination — gitProviderRef, branch, path — is immutable: changing where
 // it materializes would orphan the old materialization, so the API server rejects the
 // change (CEL transition rules) and a relocation is a delete + recreate. This replaces
 // the alternative of reconciling a destination move (which would need a generation-aware
@@ -26,16 +27,16 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		interval = time.Millisecond * 250
 	)
 
-	It("rejects changes to providerRef, branch, and path but allows a no-op update", func() {
+	It("rejects changes to gitProviderRef, branch, and path but allows a no-op update", func() {
 		ctx := context.Background()
 		key := types.NamespacedName{Name: "immutable-target", Namespace: "default"}
 
 		gitTarget := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov-a"},
-				Branch:      "main",
-				Path:        "apps",
+				GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+				Branch:         "main",
+				Path:           "apps",
 			},
 		}
 		Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
@@ -70,8 +71,8 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 			gt.Spec.Branch = "develop"
 		}, "spec.branch is immutable")
 		expectImmutable(func(gt *configbutleraiv1alpha3.GitTarget) {
-			gt.Spec.ProviderRef.Name = "prov-b"
-		}, "spec.providerRef is immutable")
+			gt.Spec.GitProviderRef.Name = "prov-b"
+		}, "spec.gitProviderRef is immutable")
 	})
 
 	It("requires a non-empty path: rejects an omitted or empty path but allows an explicit \".\" root", func() {
@@ -81,8 +82,8 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		base := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov-a"},
-				Branch:      "main",
+				GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+				Branch:         "main",
 			},
 		}
 

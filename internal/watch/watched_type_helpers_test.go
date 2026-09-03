@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,7 +22,7 @@ func clusterRuleForResource(name, resource string) configv1alpha3.ClusterWatchRu
 	return configv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: configv1alpha3.NamespacedTargetReference{
+			GitTargetRef: meta.NamespacedObjectReference{
 				Name:      "test-target",
 				Namespace: "test-ns",
 			},
@@ -39,7 +40,7 @@ func watchRuleForTarget(name, gitTargetName, namespace string) configv1alpha3.Wa
 	return configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: gitTargetName},
+			GitTargetRef: meta.LocalObjectReference{Name: gitTargetName},
 			Rules: []configv1alpha3.ResourceRule{{
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},

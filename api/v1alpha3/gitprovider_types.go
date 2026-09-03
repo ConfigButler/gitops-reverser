@@ -3,6 +3,7 @@
 package v1alpha3
 
 import (
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -25,7 +26,14 @@ type GitProviderSpec struct {
 	URL string `json:"url"`
 
 	// SecretRef for authentication credentials (may be nil for public repos)
-	SecretRef *LocalSecretReference `json:"secretRef,omitempty"`
+	//
+	// An OMITTED secretRef means anonymous access. An empty name is refused rather than treated as
+	// one: a typo there would otherwise downgrade a private repository to anonymous silently, and
+	// the failure would surface as an authentication error against the remote rather than as a
+	// mistake in this object.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.secretRef.name must not be empty; omit secretRef entirely for anonymous access"
+	SecretRef *meta.LocalObjectReference `json:"secretRef,omitempty"`
 
 	// KnownHostsRef optionally points at a namespace-local ConfigMap or Secret holding SSH
 	// known_hosts, so host trust can be centralized across GitProviders on the same host instead
@@ -46,24 +54,6 @@ type GitProviderSpec struct {
 	// formatting moved to GitTarget.spec.commit.message.
 	// +optional
 	Commit *CommitSpec `json:"commit,omitempty"`
-}
-
-// LocalSecretReference is a typed reference to a Secret in the same namespace.
-type LocalSecretReference struct {
-	// Group of the referent.
-	// +kubebuilder:default=""
-	// +optional
-	Group string `json:"group,omitempty"`
-
-	// Kind of the referent.
-	// +kubebuilder:validation:Enum=Secret
-	// +kubebuilder:default=Secret
-	// +optional
-	Kind string `json:"kind,omitempty"`
-
-	// Name of the Secret.
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
 }
 
 // KnownHostsReference points at a namespace-local ConfigMap or Secret that holds SSH known_hosts
@@ -91,8 +81,9 @@ type EncryptionSpec struct {
 	Provider string `json:"provider"`
 
 	// SecretRef references namespace-local Secret data used by the encryption provider.
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="encryption.secretRef.name must not be empty"
 	// +optional
-	SecretRef LocalSecretReference `json:"secretRef,omitempty"`
+	SecretRef meta.LocalObjectReference `json:"secretRef,omitempty"`
 
 	// Age configures age-specific encryption behavior for SOPS.
 	// +optional
@@ -213,8 +204,9 @@ type CommitMessageSpec struct {
 // CommitSigningSpec configures commit signing.
 type CommitSigningSpec struct {
 	// SecretRef references the Secret containing the signing key material.
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="commit.signing.secretRef.name must not be empty"
 	// Expected keys will be defined by the signing implementation.
-	SecretRef LocalSecretReference `json:"secretRef"`
+	SecretRef meta.LocalObjectReference `json:"secretRef"`
 
 	// GenerateWhenMissing causes the operator to generate signing key material
 	// in the referenced Secret when it is missing.

@@ -93,7 +93,7 @@ func itemNamespaces(resolved authz.ResolvedSourceScope) [][]string {
 // Two refusals, both terminal, in this order:
 //
 //  1. the referenced GitTarget's namespace must be admitted by that target's ClusterProvider — a
-//     ClusterWatchRule's targetRef carries a namespace, so it can name a target in ANY namespace
+//     ClusterWatchRule's gitTargetRef carries a namespace, so it can name a target in ANY namespace
 //     and widen that target's mirror scope cluster-wide;
 //  2. the rule must not carry a stored scope other than "Cluster". Admission rejects the value on
 //     write, but a pre-release object keeps it in etcd, and resolving it as if it had asked for
@@ -125,14 +125,6 @@ func CompileClusterWatchRule(
 		}, nil
 	}
 
-	if rule.Spec.DeclaresNamespacedScope() {
-		store.DeleteClusterWatchRule(key)
-		return ClusterWatchRuleDecision{
-			Reason:  ClusterWatchRuleReasonScopeNotSupported,
-			Message: ClusterWatchRuleNamespacedScopeMessage,
-		}, nil
-	}
-
 	store.AddOrUpdateClusterWatchRule(
 		rule,
 		target.Name, target.Namespace,
@@ -155,17 +147,7 @@ const (
 	// point of view the single fact that matters is that this rule may not compile against this
 	// target. The Message carries which of the two it was.
 	ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized = "GitTargetNamespaceNotAuthorized"
-
-	// ClusterWatchRuleReasonScopeNotSupported is the terminal reason for a STORED ClusterWatchRule
-	// that still selects namespaced resources through the removed scope choice.
-	ClusterWatchRuleReasonScopeNotSupported = "ClusterScopeOnly"
 )
-
-// ClusterWatchRuleNamespacedScopeMessage is the operator-facing refusal for a stored
-// scope: Namespaced. It names the replacement, because the migration is cross-kind and cannot be
-// performed automatically.
-const ClusterWatchRuleNamespacedScopeMessage = "ClusterWatchRule is cluster-scoped only; watch " +
-	"namespaced resources with a WatchRule and `rules[].sourceNamespace`."
 
 // ClusterWatchRuleDecision is the outcome of the shared ClusterWatchRule compile path.
 type ClusterWatchRuleDecision struct {
