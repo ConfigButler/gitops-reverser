@@ -24,6 +24,18 @@ that shared source; it does not grant source-cluster RBAC or select source names
 is the `ClusterProvider` name alone, with no API-server identity probe: two providers configured for the same
 server deliberately remain separate source partitions.
 
+The asymmetry is not an oversight, and it is worth stating what would change it. A source cluster is
+an inherent singleton; a Git destination is not, and a namespaced `GitProvider` keeps a repository's
+write credential in the namespace of whoever owns that repository, which is what makes a team able
+to start mirroring without a platform admin. The known cost is duplication: a cluster whose
+`GitTarget`s live in several namespaces needs a copy of one credential in each of them. If that ever
+has to be solved, the two additive shapes are a `GitProvider` that admits other namespaces through
+an `accessFrom` policy of its own (the `ClusterProvider` pattern, applied to the destination), or a
+separate cluster-scoped destination kind with an explicit ownership model. **Converting
+`GitProvider` itself is not one of the options**: a CRD's `spec.scope` is immutable once the
+definition is `Established`, so the change would mean deleting the definition (and every
+`GitProvider` in the cluster with it) and recreating both.
+
 ***
 
 ## Ground rules
