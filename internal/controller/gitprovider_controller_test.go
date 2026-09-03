@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"time"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -316,7 +317,7 @@ var _ = Describe("GitProvider Controller", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "nonexistent-secret",
 					},
 				},
@@ -377,7 +378,7 @@ var _ = Describe("GitProvider Controller", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "malformed-secret",
 					},
 				},
@@ -439,7 +440,7 @@ var _ = Describe("GitProvider Controller", func() {
 					AllowedBranches: []string{"main"},
 					Commit: &configbutleraiv1alpha3.CommitSpec{
 						Signing: &configbutleraiv1alpha3.CommitSigningSpec{
-							SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+							SecretRef: meta.LocalObjectReference{
 								Name: "signing-secret",
 							},
 						},

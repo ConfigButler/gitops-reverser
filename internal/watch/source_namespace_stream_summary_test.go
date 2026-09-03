@@ -5,6 +5,7 @@ package watch
 import (
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,7 +48,7 @@ func srcnsOverrideRule(sourceNamespace string) configv1alpha3.WatchRule {
 	return configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "repo-config-rule", Namespace: "tenant-acme"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: "acme"},
+			TargetRef: meta.LocalObjectReference{Name: "acme"},
 			Rules: []configv1alpha3.ResourceRule{{
 				Resources: []string{"configmaps"}, SourceNamespace: sourceNamespace,
 			}},

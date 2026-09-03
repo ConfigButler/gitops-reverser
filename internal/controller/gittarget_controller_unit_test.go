@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -93,7 +94,7 @@ func TestCheckForConflicts_ListErrorFailsClosed(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: "default"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "provider-a"},
+			ProviderRef: meta.LocalObjectReference{Name: "provider-a"},
 			Branch:      "main",
 			Path:        "apps",
 		},

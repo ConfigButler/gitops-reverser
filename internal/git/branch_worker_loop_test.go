@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +25,7 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 
 	target := func(name string, window *string) *configv1alpha3.GitTarget {
 		spec := configv1alpha3.GitTargetSpec{
-			ProviderRef: configv1alpha3.GitProviderReference{Name: "p"},
+			ProviderRef: meta.LocalObjectReference{Name: "p"},
 			Branch:      "main",
 			Path:        "clusters/prod",
 		}

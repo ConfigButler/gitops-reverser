@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,8 +35,8 @@ func bootGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: bootTargetName, Namespace: bootTargetNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef:        configv1alpha3.GitProviderReference{Name: "git"},
-			ClusterProviderRef: &configv1alpha3.ClusterProviderReference{Name: bootProviderName},
+			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
 			Branch:             "main",
 			Path:               "clusters/prod",
 		},
@@ -59,26 +60,13 @@ func bootClusterWatchRule() *configv1alpha3.ClusterWatchRule {
 	return &configv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: bootRuleName},
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: configv1alpha3.NamespacedTargetReference{
-				Kind: "GitTarget", Name: bootTargetName, Namespace: bootTargetNS,
-			},
+			TargetRef: meta.NamespacedObjectReference{Name: bootTargetName, Namespace: bootTargetNS},
 			Rules: []configv1alpha3.ClusterResourceRule{{
 				Resources: []string{"customresourcedefinitions"},
 				APIGroups: []string{"apiextensions.k8s.io"},
 			}},
 		},
 	}
-}
-
-// bootNamespacedClusterWatchRule is a STORED pre-release object: `scope: Namespaced` is rejected at
-// admission from this release on, but etcd still holds objects written before it.
-func bootNamespacedClusterWatchRule() *configv1alpha3.ClusterWatchRule {
-	rule := bootClusterWatchRule()
-	rule.Spec.Rules = []configv1alpha3.ClusterResourceRule{
-		{Resources: []string{"customresourcedefinitions"}, APIGroups: []string{"apiextensions.k8s.io"}},
-		{Resources: []string{"configmaps"}, Scope: configv1alpha3.ResourceScopeNamespaced},
-	}
-	return rule
 }
 
 func bootManager(t *testing.T, objects ...client.Object) *Manager {
@@ -155,8 +143,8 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 	admittedTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ok-mirror", Namespace: "team-ok"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef:        configv1alpha3.GitProviderReference{Name: "git"},
-			ClusterProviderRef: &configv1alpha3.ClusterProviderReference{Name: bootProviderName},
+			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
 			Branch:             "main",
 			Path:               "clusters/ok",
 		},
@@ -186,33 +174,10 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 		"the store must still be marked ready: a refused rule is a refusal, not a startup failure")
 }
 
-// TestBootstrap_PreExistingNamespacedClusterRuleIsRefused is THE cluster-scope-only test.
-//
-// A ClusterWatchRule stored with `scope: Namespaced` before this release keeps that value in etcd,
-// and bootstrap seeds the store BEFORE the first reconcile can publish any status. So the refusal
-// has to live in the shared compile path: a reconciler-only check would let every restart open a
-// cluster-wide namespaced watch for the whole startup window. This asserts the state at the moment
-// MarkReady() returns — the only moment that proves it.
-func TestBootstrap_PreExistingNamespacedClusterRuleIsRefused(t *testing.T) {
-	m := bootManager(t,
-		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
-		bootNamespacedClusterWatchRule(),
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
-	)
-
-	require.NoError(t, m.bootstrapRuleStore(context.Background(), logr.Discard()),
-		"a refused rule is a refusal, not a startup failure")
-
-	assert.Empty(t, bootCompiledNames(m),
-		"a stored namespaced ClusterWatchRule must compile NO stream before status can be published")
-	assert.True(t, m.RuleStore.IsReady())
-}
-
-// TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes: the refusal keys on the
-// STORED scope, not on what the selector happens to resolve. `resources: ["*"]` legitimately
-// resolves cluster-scoped records — inferring the refusal from the resolution would break exactly
-// the rule that the restart fixture exists to protect.
+// TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes pins what a wildcard
+// selector means on the cluster kind. Which scope a rule watches is decided by which KIND you
+// write, never by a field, so `resources: ["*"]` on a ClusterWatchRule resolves the cluster-scoped
+// records and nothing else.
 func TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes(t *testing.T) {
 	rule := bootClusterWatchRule()
 	rule.Spec.Rules = []configv1alpha3.ClusterResourceRule{{
@@ -233,7 +198,8 @@ func TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes(t 
 
 // TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule is the REVOCATION contract for the
 // cluster kind: a rule accepted earlier and then refused must have its compiled rule REMOVED, not
-// merely reported unready.
+// merely reported unready. The refusal used here is the ClusterProvider withdrawing the target's
+// namespace, which is the one refusal the compile path can reach at runtime.
 func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.T) {
 	ctx := context.Background()
 	m := bootManager(t,
@@ -248,15 +214,18 @@ func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.
 	require.True(t, decision.Admitted)
 	require.Len(t, bootCompiledNames(m), 1, "precondition: the rule is compiled")
 
-	// Somebody re-applies the pre-release manifest (or an old object is re-observed).
+	// The platform admin narrows the ClusterProvider so it no longer admits the target's namespace.
+	var provider configv1alpha3.ClusterProvider
+	require.NoError(t, m.Client.Get(ctx, client.ObjectKey{Name: bootProviderName}, &provider))
+	provider.Spec.AccessFrom = &configv1alpha3.NamespaceMatcher{Names: []string{"someone-else"}}
+	require.NoError(t, m.Client.Update(ctx, &provider))
+
 	decision, err = CompileClusterWatchRule(
-		ctx, m.Client, m.RuleStore, *bootNamespacedClusterWatchRule(), *bootGitTarget(), *bootGitProvider())
+		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget(), *bootGitProvider())
 
 	require.NoError(t, err)
 	assert.False(t, decision.Admitted)
-	assert.Equal(t, ClusterWatchRuleReasonScopeNotSupported, decision.Reason)
-	assert.Contains(t, decision.Message, "rules[].sourceNamespace",
-		"the refusal must name the replacement, because the migration is cross-kind")
+	assert.Equal(t, ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized, decision.Reason)
 	assert.Empty(t, bootCompiledNames(m),
 		"a refused rule must be removed from the store, not left running with a bad condition")
 }

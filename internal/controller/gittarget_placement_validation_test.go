@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -171,7 +172,7 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: ns},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "provider-a"},
+			ProviderRef: meta.LocalObjectReference{Name: "provider-a"},
 			Branch:      "main",
 			Path:        "apps",
 			Placement: &configbutleraiv1alpha3.GitTargetPlacementSpec{

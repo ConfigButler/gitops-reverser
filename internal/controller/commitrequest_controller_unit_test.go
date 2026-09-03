@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -72,7 +73,7 @@ func newCommitRequest(name string) *configv1alpha3.CommitRequest {
 			UID:       types.UID("uid-" + name),
 		},
 		Spec: configv1alpha3.CommitRequestSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: "team-a-config"},
+			TargetRef: meta.LocalObjectReference{Name: "team-a-config"},
 			Message:   "save: " + name,
 		},
 	}

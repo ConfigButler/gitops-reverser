@@ -16,7 +16,6 @@ metadata:
   name: demo-podinfos
 spec:
   providerRef:
-    kind: GitProvider
     name: demo
   branch: nl-stuff
   path: podinfos
@@ -29,7 +28,6 @@ metadata:
   name: demo-podinfos
 spec:
   targetRef:
-    kind: GitTarget
     name: demo-podinfos
   rules:
     - operations: [CREATE, UPDATE, DELETE]

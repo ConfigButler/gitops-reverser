@@ -44,10 +44,6 @@ const (
 	// re-exported from internal/watch, where the shared compile path both bootstrap and this
 	// reconciler call decides it, so the two can never drift.
 	ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized = watch.ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized
-
-	// ClusterWatchRuleReasonScopeNotSupported is the terminal reason for a STORED ClusterWatchRule
-	// that still selects namespaced resources through the removed scope choice.
-	ClusterWatchRuleReasonScopeNotSupported = watch.ClusterWatchRuleReasonScopeNotSupported
 )
 
 // ClusterWatchRuleReconciler reconciles a ClusterWatchRule object.

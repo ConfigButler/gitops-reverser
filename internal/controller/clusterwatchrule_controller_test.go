@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,13 +24,11 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 					Name: "invalid-subresource-cluster-rule",
 				},
 				Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-					TargetRef: configbutleraiv1alpha3.NamespacedTargetReference{
-						Kind:      "GitTarget",
+					TargetRef: meta.NamespacedObjectReference{
 						Name:      "target",
 						Namespace: "default",
 					},
 					Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
-						Scope:     configbutleraiv1alpha3.ResourceScopeNamespaced,
 						Resources: []string{"pods/*"},
 					}},
 				},
@@ -72,14 +71,12 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 					Name: "missing-target-rule",
 				},
 				Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-					TargetRef: configbutleraiv1alpha3.NamespacedTargetReference{
-						Kind:      "GitTarget",
+					TargetRef: meta.NamespacedObjectReference{
 						Name:      "nonexistent-target",
 						Namespace: "default",
 					},
 					Rules: []configbutleraiv1alpha3.ClusterResourceRule{
 						{
-							Scope:     configbutleraiv1alpha3.ResourceScopeCluster,
 							Resources: []string{"nodes"},
 						},
 					},

@@ -69,7 +69,7 @@ const (
 	// placementDispositionAppended is a placement that added a document to a file that
 	// already held one — only ever reachable through a declared bundling template now that
 	// sibling inference is gone, which is what makes the two dispositions worth splitting:
-	// `disposition="appended"` with `source!="declared"` should not exist.
+	// `disposition="appended"` with a source other than `by_type` or `default` should not exist.
 	placementDispositionAppended = "appended"
 )
 

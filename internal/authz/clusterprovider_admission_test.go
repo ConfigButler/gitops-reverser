@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -36,7 +37,7 @@ func targetIn(providerName string) *configv1alpha3.GitTarget {
 		ObjectMeta: metav1.ObjectMeta{Name: "mirror", Namespace: testNS},
 	}
 	if providerName != "" {
-		t.Spec.ClusterProviderRef = &configv1alpha3.ClusterProviderReference{Name: providerName}
+		t.Spec.ClusterProviderRef = &meta.LocalObjectReference{Name: providerName}
 	}
 	return t
 }

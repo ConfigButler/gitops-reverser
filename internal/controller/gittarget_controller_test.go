@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -33,7 +34,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "missing-provider",
 					},
 					Branch: "main",
@@ -99,7 +100,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "develop"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret", // Dummy secret
 					},
 				},
@@ -114,7 +115,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-security",
 					},
 					Branch: unauthorizedBranch,
@@ -191,7 +192,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "feature/*"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
 				},
@@ -205,7 +206,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-allowed",
 					},
 					Branch: "feature/allowed",
@@ -276,7 +277,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
 				},
@@ -289,7 +290,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-two-axis",
 					},
 					Branch: "main",
@@ -335,7 +336,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						"feature/*",
 						"release/v*",
 					},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
 				},
@@ -367,7 +368,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.GitTargetSpec{
-						ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+						ProviderRef: meta.LocalObjectReference{
 							Name: "test-provider-glob",
 						},
 						Branch: tc.branch,
@@ -448,7 +449,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "develop"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
 				},
@@ -462,7 +463,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-conflict",
 					},
 					Branch: "main",
@@ -497,7 +498,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-conflict",
 					},
 					Branch: "main",
@@ -567,7 +568,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
 				},
@@ -581,7 +582,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-no-conflict",
 					},
 					Branch: "main",
@@ -597,7 +598,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-no-conflict",
 					},
 					Branch: "main",
@@ -655,7 +656,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: &meta.LocalObjectReference{
 						Name: "test-secret",
 					},
 				},
@@ -669,7 +670,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-nested",
 					},
 					Branch: "main",
@@ -703,7 +704,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-nested",
 					},
 					Branch: "main",
@@ -783,14 +784,14 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-generate-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+						SecretRef: meta.LocalObjectReference{
 							Name: "generated-sops-age-key",
 						},
 						Age: &configbutleraiv1alpha3.AgeEncryptionSpec{
@@ -848,14 +849,14 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-no-generate-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+						SecretRef: meta.LocalObjectReference{
 							Name: "missing-sops-age-key",
 						},
 						Age: &configbutleraiv1alpha3.AgeEncryptionSpec{
@@ -925,14 +926,14 @@ var _ = Describe("GitTarget Controller Security", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.GitTargetSpec{
-						ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+						ProviderRef: meta.LocalObjectReference{
 							Name: "test-provider-no-enc-recipients",
 						},
 						Branch: "main",
 						Path:   "test-path",
 						Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 							Provider: "sops",
-							SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+							SecretRef: meta.LocalObjectReference{
 								Name: "unused-encryption-secret",
 							},
 							Age: &configbutleraiv1alpha3.AgeEncryptionSpec{
@@ -1018,14 +1019,14 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-update-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+						SecretRef: meta.LocalObjectReference{
 							Name: "existing-sops-secret",
 						},
 						Age: &configbutleraiv1alpha3.AgeEncryptionSpec{
@@ -1078,14 +1079,14 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-recreate-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+						SecretRef: meta.LocalObjectReference{
 							Name: "recreated-sops-age-key",
 						},
 						Age: &configbutleraiv1alpha3.AgeEncryptionSpec{
@@ -1173,14 +1174,14 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{
+					ProviderRef: meta.LocalObjectReference{
 						Name: "test-provider-existing-agekey",
 					},
 					Branch: "main",
 					Path:   "test-path",
 					Encryption: &configbutleraiv1alpha3.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+						SecretRef: meta.LocalObjectReference{
 							Name: "existing-agekey-secret",
 						},
 						Age: &configbutleraiv1alpha3.AgeEncryptionSpec{

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -202,7 +203,7 @@ func diamondGitTarget(providerName, branch string) *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "podinfo-test", Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: configv1alpha3.GitProviderReference{Name: providerName},
+			ProviderRef: meta.LocalObjectReference{Name: providerName},
 			Branch:      branch,
 			Path:        "",
 		},

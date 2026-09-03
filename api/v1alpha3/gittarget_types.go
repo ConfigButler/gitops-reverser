@@ -3,33 +3,9 @@
 package v1alpha3
 
 import (
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-// GitProviderReference references the GitProvider that backs a GitTarget. Many GitTargets may
-// reference the same GitProvider; the reference is always to a GitProvider in the GitTarget's own
-// namespace. Group and Kind are typed (with defaults) for consistency with the project's other
-// local references and so the schema is explicit about what it accepts — currently only
-// configbutler.ai/GitProvider.
-type GitProviderReference struct {
-	// API Group of the referent.
-	// +kubebuilder:default=configbutler.ai
-	// +kubebuilder:validation:Enum=configbutler.ai
-	Group string `json:"group,omitempty"`
-
-	// Kind of the referent.
-	// Optional because this reference currently only supports a single kind (GitProvider).
-	// Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
-	// +optional
-	// +kubebuilder:validation:Enum=GitProvider
-	// +kubebuilder:default=GitProvider
-	Kind string `json:"kind,omitempty"`
-
-	// Name of the referent.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-}
 
 // GitTargetSpec defines the desired state of GitTarget.
 //
@@ -52,10 +28,12 @@ type GitProviderReference struct {
 // always populated (never nil) and always jumpable.
 // +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
 type GitTargetSpec struct {
-	// ProviderRef references the GitProvider that backs this target.
+	// ProviderRef names the GitProvider that backs this target, in this GitTarget's own namespace.
+	// Many GitTargets may name the same GitProvider.
 	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
-	ProviderRef GitProviderReference `json:"providerRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.providerRef.name must not be empty"
+	ProviderRef meta.LocalObjectReference `json:"providerRef"`
 
 	// Branch to use for this target.
 	// Must be one of the allowed branches in the provider.
@@ -128,7 +106,8 @@ type GitTargetSpec struct {
 	// Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
 	// +kubebuilder:default={name: "default"}
 	// +optional
-	ClusterProviderRef *ClusterProviderReference `json:"clusterProviderRef,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.clusterProviderRef.name must not be empty"
+	ClusterProviderRef *meta.LocalObjectReference `json:"clusterProviderRef,omitempty"`
 
 	// Mutable, unlike the destination fields above: recovering from a scope mistake must not
 	// require recreating the GitTarget, which is the one operation that loses the folder's history.

@@ -3,6 +3,7 @@
 package v1alpha3
 
 import (
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -16,7 +17,8 @@ type CommitRequestSpec struct {
 	// TargetRef names the GitTarget whose open commit window to finalize.
 	// The GitTarget must be in the same namespace as this CommitRequest.
 	// +required
-	TargetRef LocalTargetReference `json:"targetRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.targetRef.name must not be empty"
+	TargetRef meta.LocalObjectReference `json:"targetRef"`
 
 	// Message is an optional commit message for the finalized commit. When
 	// omitted, the generated grouped-commit message is used.

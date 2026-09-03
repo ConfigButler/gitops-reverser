@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,7 +69,7 @@ func addSecretsWatchRule(store *rulestore.RuleStore) {
 	rule := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
+			TargetRef: meta.LocalObjectReference{Name: "my-target"},
 			Rules: []configv1alpha3.ResourceRule{{
 				APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
 			}},

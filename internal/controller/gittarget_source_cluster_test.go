@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,7 +127,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: providerName},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 			},
 		}
 	}
@@ -225,7 +226,7 @@ func TestCheckSourceAuthorization_ReadErrorsRequeue(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: "prod-eu-1"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-eu-1"},
 		},
 	}
 	provider := &configbutleraiv1alpha3.ClusterProvider{
@@ -334,10 +335,10 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: ns, UID: "gt-uid"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef:        configbutleraiv1alpha3.GitProviderReference{Name: "gp"},
+			ProviderRef:        meta.LocalObjectReference{Name: "gp"},
 			Branch:             "main",
 			Path:               "apps",
-			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: providerName},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 		},
 	}
 
@@ -484,7 +485,7 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 			target := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov"},
+					ProviderRef: meta.LocalObjectReference{Name: "prov"},
 				},
 			}
 			got := r.gitProviderReadiness(context.Background(), target, "team-a")
@@ -509,7 +510,7 @@ func TestResolveSourceClusterProvider(t *testing.T) {
 		return &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "tenant"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: providerName},
+				ClusterProviderRef: &meta.LocalObjectReference{Name: providerName},
 			},
 		}
 	}

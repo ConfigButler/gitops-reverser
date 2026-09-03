@@ -143,19 +143,6 @@ spec:
                         type: string
                       minItems: 1
                       type: array
-                    scope:
-                      default: Cluster
-                      description: |-
-                        Scope is REMOVED as a choice: a ClusterWatchRule is cluster-scoped only, so "Cluster" is the
-                        only accepted value and also the default, making the field omittable. To watch NAMESPACED
-                        resources, use a WatchRule in the tenant namespace and set spec.rules[].sourceNamespace.
-
-                        Deprecated: ClusterWatchRule is cluster-scope-only; use WatchRule with
-                        spec.rules[].sourceNamespace for namespaced resources. Removed one release from now, or at
-                        v1beta1.
-                      enum:
-                      - Cluster
-                      type: string
                   required:
                   - resources
                   type: object
@@ -163,36 +150,25 @@ spec:
                 type: array
               targetRef:
                 description: |-
-                  TargetRef references the GitTarget to use.
-                  Must specify namespace.
+                  TargetRef names the GitTarget this rule feeds. A ClusterWatchRule has no namespace of its
+                  own, so the namespace is required here rather than defaulted.
                 properties:
-                  group:
-                    default: configbutler.ai
-                    description: API Group of the referent.
-                    enum:
-                    - configbutler.ai
-                    type: string
-                  kind:
-                    default: GitTarget
-                    description: |-
-                      Kind of the referent.
-                      Optional because this reference currently only supports a single kind (GitTarget).
-                      Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
-                    enum:
-                    - GitTarget
-                    type: string
                   name:
                     description: Name of the referent.
-                    minLength: 1
                     type: string
                   namespace:
-                    description: Required because ClusterWatchRule has no namespace.
-                    minLength: 1
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
                     type: string
                 required:
                 - name
-                - namespace
                 type: object
+                x-kubernetes-validations:
+                - message: spec.targetRef.name must not be empty
+                  rule: self.name != ''
+                - message: 'spec.targetRef.namespace is required: a ClusterWatchRule
+                    has no namespace to default to'
+                  rule: has(self.namespace) && self.namespace != ''
             required:
             - rules
             - targetRef

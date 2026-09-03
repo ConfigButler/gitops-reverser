@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -37,7 +38,7 @@ func watchRuleFor(name, sourceNamespace string) *v1alpha3.WatchRule {
 	return &v1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop"},
 		Spec: v1alpha3.WatchRuleSpec{
-			TargetRef: v1alpha3.LocalTargetReference{Name: "checkout-artifact"},
+			TargetRef: meta.LocalObjectReference{Name: "checkout-artifact"},
 			Rules: []v1alpha3.ResourceRule{{
 				Resources:       []string{"configmaps"},
 				SourceNamespace: sourceNamespace,

@@ -178,32 +178,18 @@ spec:
                 minItems: 1
                 type: array
               targetRef:
-                description: |-
-                  TargetRef references the GitTarget to use.
-                  Must be in the same namespace.
+                description: TargetRef names the GitTarget this rule feeds, in this
+                  WatchRule's own namespace.
                 properties:
-                  group:
-                    default: configbutler.ai
-                    description: API Group of the referent.
-                    enum:
-                    - configbutler.ai
-                    type: string
-                  kind:
-                    default: GitTarget
-                    description: |-
-                      Kind of the referent.
-                      Optional because this reference currently only supports a single kind (GitTarget).
-                      Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
-                    enum:
-                    - GitTarget
-                    type: string
                   name:
                     description: Name of the referent.
-                    minLength: 1
                     type: string
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: spec.targetRef.name must not be empty
+                  rule: self.name != ''
             required:
             - rules
             - targetRef

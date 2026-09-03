@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,8 +32,8 @@ func snbGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snbTarget, Namespace: snbTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef:        configv1alpha3.GitProviderReference{Name: "git"},
-			ClusterProviderRef: &configv1alpha3.ClusterProviderReference{Name: snbProvider},
+			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: snbProvider},
 			Branch:             "main",
 			Path:               "tenants/acme",
 		},
@@ -66,7 +67,7 @@ func snbWatchRule(sourceNamespaces ...string) *configv1alpha3.WatchRule {
 	return &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: snbRule, Namespace: snbTenantNS},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: snbTarget},
+			TargetRef: meta.LocalObjectReference{Name: snbTarget},
 			Rules:     items,
 		},
 	}

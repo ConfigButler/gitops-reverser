@@ -157,7 +157,7 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 // A rule that is not compiled expects no streams, which is correct: the gate refused it, or the
 // store has not been seeded yet.
 func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) StreamSummary {
-	// The GitTarget is in the rule's OWN namespace (targetRef is a LocalTargetReference), but the
+	// The GitTarget is in the rule's OWN namespace (targetRef is a meta.LocalObjectReference), but the
 	// streams are keyed on the namespaces being WATCHED.
 	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
 	if m.RuleStore == nil {

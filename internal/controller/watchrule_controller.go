@@ -131,7 +131,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 // reconcileWatchRuleViaTarget validates and stores a WatchRule that references a GitTarget.
 // watchRuleGitTarget names the GitTarget a WatchRule writes through. targetRef is a
-// LocalTargetReference, so the GitTarget is always in the rule's own namespace.
+// meta.LocalObjectReference, so the GitTarget is always in the rule's own namespace.
 //
 // It carries no UID, and that is correct rather than an omission: a rule-derived reference has
 // none to carry, and the watch-plane owner resolves the trigger against the UID the GitTarget
@@ -168,7 +168,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	ready := gitTargetReadyCondition(target)
 	st.set(ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
 
-	// Resolve the GitProvider named by the target. A GitProviderReference is a
+	// Resolve the GitProvider named by the target. A meta.LocalObjectReference is a
 	// name-only reference to a GitProvider in the GitTarget's own namespace.
 	providerName := target.Spec.ProviderRef.Name
 	providerNS := target.Namespace // GitProvider is namespace-local to the GitTarget
@@ -336,7 +336,7 @@ func (r *WatchRuleReconciler) clusterProviderToWatchRules(
 		return nil
 	}
 
-	// A WatchRule's targetRef is a LocalTargetReference, so candidates always live in their
+	// A WatchRule's targetRef is a meta.LocalObjectReference, so candidates always live in their
 	// GitTarget's own namespace — collect the affected (namespace, target name) pairs.
 	affected := make(map[types.NamespacedName]struct{}, len(targets.Items))
 	for i := range targets.Items {
@@ -372,7 +372,7 @@ func (r *WatchRuleReconciler) clusterProviderToWatchRules(
 
 // gitTargetToWatchRules maps a GitTarget event to every WatchRule in the
 // GitTarget's namespace that references it. WatchRule.spec.targetRef is a
-// LocalTargetReference, so candidates only live in the same namespace as the
+// meta.LocalObjectReference, so candidates only live in the same namespace as the
 // GitTarget.
 func (r *WatchRuleReconciler) gitTargetToWatchRules(
 	ctx context.Context,

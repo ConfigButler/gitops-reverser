@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,7 +88,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: configv1alpha3.GitProviderReference{Name: "team-a-provider"},
+			ProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}
@@ -273,7 +274,7 @@ func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: configv1alpha3.GitProviderReference{Name: "team-a-provider"},
+			ProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}
@@ -298,7 +299,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: configv1alpha3.GitProviderReference{Name: "team-a-provider"},
+			ProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}

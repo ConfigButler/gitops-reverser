@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -29,7 +30,7 @@ func TestValidateCommitConfiguration_SigningEnabled(t *testing.T) {
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
 			Commit: &configbutleraiv1alpha3.CommitSpec{
 				Signing: &configbutleraiv1alpha3.CommitSigningSpec{
-					SecretRef: configbutleraiv1alpha3.LocalSecretReference{
+					SecretRef: meta.LocalObjectReference{
 						Name: "signing-secret",
 					},
 				},
@@ -53,7 +54,7 @@ func TestEnsureSigningKey_GeneratesMissingSecret(t *testing.T) {
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
 			Commit: &configbutleraiv1alpha3.CommitSpec{
 				Signing: &configbutleraiv1alpha3.CommitSigningSpec{
-					SecretRef:           configbutleraiv1alpha3.LocalSecretReference{Name: "signing-secret"},
+					SecretRef:           meta.LocalObjectReference{Name: "signing-secret"},
 					GenerateWhenMissing: true,
 				},
 			},
@@ -95,7 +96,7 @@ func TestEnsureSigningKey_UsesExistingKey(t *testing.T) {
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
 			Commit: &configbutleraiv1alpha3.CommitSpec{
 				Signing: &configbutleraiv1alpha3.CommitSigningSpec{
-					SecretRef: configbutleraiv1alpha3.LocalSecretReference{Name: "signing-secret"},
+					SecretRef: meta.LocalObjectReference{Name: "signing-secret"},
 				},
 			},
 		},
@@ -125,7 +126,7 @@ func TestEnsureSigningKey_MissingSecretWithoutGeneration(t *testing.T) {
 		Spec: configbutleraiv1alpha3.GitProviderSpec{
 			Commit: &configbutleraiv1alpha3.CommitSpec{
 				Signing: &configbutleraiv1alpha3.CommitSigningSpec{
-					SecretRef: configbutleraiv1alpha3.LocalSecretReference{Name: "signing-secret"},
+					SecretRef: meta.LocalObjectReference{Name: "signing-secret"},
 				},
 			},
 		},

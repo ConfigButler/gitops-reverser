@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -440,14 +441,14 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "bootstrap-target"
 	target.Namespace = "default"
-	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
+	target.Spec.ProviderRef = meta.LocalObjectReference{
 		Name: "test-repo",
 	}
 	target.Spec.Branch = "main"
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha3.LocalSecretReference{
+		SecretRef: meta.LocalObjectReference{
 			Name: encryptionSecret.Name,
 		},
 		Age: &configv1alpha3.AgeEncryptionSpec{
@@ -733,7 +734,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitterAndTargetMessage
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "audit-target"
 	target.Namespace = "default"
-	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{Name: "test-repo"}
+	target.Spec.ProviderRef = meta.LocalObjectReference{Name: "test-repo"}
 	target.Spec.Branch = "main"
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
@@ -823,7 +824,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "demo-target"
 	target.Namespace = "default"
-	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{Name: "test-repo"}
+	target.Spec.ProviderRef = meta.LocalObjectReference{Name: "test-repo"}
 	target.Spec.Branch = "main"
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
@@ -949,7 +950,7 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 			URL: remoteURL,
 			Commit: &configv1alpha3.CommitSpec{
 				Signing: &configv1alpha3.CommitSigningSpec{
-					SecretRef: configv1alpha3.LocalSecretReference{Name: "signing-secret"},
+					SecretRef: meta.LocalObjectReference{Name: "signing-secret"},
 				},
 			},
 		},
@@ -1046,7 +1047,7 @@ func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(
 			URL: remoteURL,
 			Commit: &configv1alpha3.CommitSpec{
 				Signing: &configv1alpha3.CommitSigningSpec{
-					SecretRef: configv1alpha3.LocalSecretReference{Name: "signing-secret"},
+					SecretRef: meta.LocalObjectReference{Name: "signing-secret"},
 				},
 			},
 		},
@@ -1112,14 +1113,14 @@ func createTargetWithEncryption(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
+	target.Spec.ProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
 	target.Spec.Path = path
 	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha3.LocalSecretReference{
+		SecretRef: meta.LocalObjectReference{
 			Name: "sops-age-key",
 		},
 		Age: &configv1alpha3.AgeEncryptionSpec{
@@ -1142,7 +1143,7 @@ func createTargetWithoutEncryption(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
+	target.Spec.ProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
@@ -1168,14 +1169,14 @@ func createTargetWithEncryptionSecretData(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
+	target.Spec.ProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
 	target.Spec.Path = path
 	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha3.LocalSecretReference{
+		SecretRef: meta.LocalObjectReference{
 			Name: encryptionSecret.Name,
 		},
 		Age: &configv1alpha3.AgeEncryptionSpec{
@@ -1210,7 +1211,7 @@ func attachEncryptionToTarget(
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{Name: targetName, Namespace: targetNamespace}, target))
 	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha3.LocalSecretReference{
+		SecretRef: meta.LocalObjectReference{
 			Name: encryptionSecret.Name,
 		},
 		Age: &configv1alpha3.AgeEncryptionSpec{

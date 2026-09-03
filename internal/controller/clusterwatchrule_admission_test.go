@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -97,8 +98,8 @@ func cwaGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaTargetName, Namespace: cwaTargetNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef:        configbutleraiv1alpha3.GitProviderReference{Name: "git"},
-			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: cwaProviderName},
+			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: cwaProviderName},
 			Branch:             "main",
 			Path:               "clusters/prod",
 		},
@@ -122,9 +123,7 @@ func cwaClusterWatchRule() *configbutleraiv1alpha3.ClusterWatchRule {
 	return &configbutleraiv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaRuleName, Generation: 1},
 		Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: configbutleraiv1alpha3.NamespacedTargetReference{
-				Kind: "GitTarget", Name: cwaTargetName, Namespace: cwaTargetNS,
-			},
+			TargetRef: meta.NamespacedObjectReference{Name: cwaTargetName, Namespace: cwaTargetNS},
 			Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
 				Resources: []string{"customresourcedefinitions"},
 				APIGroups: []string{"apiextensions.k8s.io"},
@@ -435,7 +434,7 @@ func TestClusterProviderToClusterWatchRules(t *testing.T) {
 	elsewhere := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "other-mirror", Namespace: "team-b"},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: "prod-us-1"},
+			ClusterProviderRef: &meta.LocalObjectReference{Name: "prod-us-1"},
 		},
 	}
 

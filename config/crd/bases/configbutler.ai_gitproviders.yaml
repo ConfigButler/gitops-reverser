@@ -98,19 +98,8 @@ spec:
                           SecretRef references the Secret containing the signing key material.
                           Expected keys will be defined by the signing implementation.
                         properties:
-                          group:
-                            default: ""
-                            description: Group of the referent.
-                            type: string
-                          kind:
-                            default: Secret
-                            description: Kind of the referent.
-                            enum:
-                            - Secret
-                            type: string
                           name:
-                            description: Name of the Secret.
-                            minLength: 1
+                            description: Name of the referent.
                             type: string
                         required:
                         - name
@@ -146,19 +135,8 @@ spec:
                 description: SecretRef for authentication credentials (may be nil
                   for public repos)
                 properties:
-                  group:
-                    default: ""
-                    description: Group of the referent.
-                    type: string
-                  kind:
-                    default: Secret
-                    description: Kind of the referent.
-                    enum:
-                    - Secret
-                    type: string
                   name:
-                    description: Name of the Secret.
-                    minLength: 1
+                    description: Name of the referent.
                     type: string
                 required:
                 - name

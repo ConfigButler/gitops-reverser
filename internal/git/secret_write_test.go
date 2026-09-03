@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/fluxcd/pkg/apis/meta"
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -67,7 +68,7 @@ func secretTargetObjects(t *testing.T, providerName, branch, path string) []clie
 				Namespace: "default",
 			},
 			Spec: configv1alpha3.GitTargetSpec{
-				ProviderRef: configv1alpha3.GitProviderReference{
+				ProviderRef: meta.LocalObjectReference{
 					Name: providerName,
 				},
 				Branch: branch,
@@ -80,7 +81,7 @@ func secretTargetObjects(t *testing.T, providerName, branch, path string) []clie
 							ExtractFromSecret: true,
 						},
 					},
-					SecretRef: configv1alpha3.LocalSecretReference{
+					SecretRef: meta.LocalObjectReference{
 						Name: "sops-age-key",
 					},
 				},

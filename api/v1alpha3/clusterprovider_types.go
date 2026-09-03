@@ -14,30 +14,6 @@ import (
 // every other provider's, and it is never created by the operator.
 const DefaultClusterProviderName = "default"
 
-// ClusterProviderReference references the cluster-scoped ClusterProvider a GitTarget sources
-// FROM. It is the read-side peer of GitProviderReference (which names the WRITE destination):
-// a GitTarget names one ClusterProvider by name and its author-attribution facts, kube client,
-// and namespace authorization all follow from that single reference. Group and Kind are typed
-// (with defaults) for consistency with the project's other typed references.
-type ClusterProviderReference struct {
-	// API Group of the referent.
-	// +kubebuilder:default=configbutler.ai
-	// +kubebuilder:validation:Enum=configbutler.ai
-	Group string `json:"group,omitempty"`
-
-	// Kind of the referent.
-	// Optional because this reference currently only supports a single kind (ClusterProvider).
-	// +optional
-	// +kubebuilder:validation:Enum=ClusterProvider
-	// +kubebuilder:default=ClusterProvider
-	Kind string `json:"kind,omitempty"`
-
-	// Name of the referent.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-}
-
 // ClusterProviderSpec defines the desired state of ClusterProvider.
 //
 // kubeConfig is IMMUTABLE and OPTIONAL: which physical cluster a provider name means must not

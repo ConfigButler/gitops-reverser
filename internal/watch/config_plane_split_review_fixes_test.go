@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -304,7 +305,7 @@ func TestResolveWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 	remoteOnly := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "test-ns"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: "t"},
+			TargetRef: meta.LocalObjectReference{Name: "t"},
 			Rules: []configv1alpha3.ResourceRule{
 				{APIGroups: []string{"example.com"}, Resources: []string{"widgets"}},
 			},
@@ -318,7 +319,7 @@ func TestResolveWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 	localOnly := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "r2", Namespace: "test-ns"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: configv1alpha3.LocalTargetReference{Name: "t"},
+			TargetRef: meta.LocalObjectReference{Name: "t"},
 			Rules:     []configv1alpha3.ResourceRule{{Resources: []string{"deployments"}}},
 		},
 	}
@@ -337,7 +338,7 @@ func TestResolveClusterWatchRuleResources_ResolvesAgainstSourceCluster(t *testin
 
 	rule := configv1alpha3.ClusterWatchRule{
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "t", Namespace: "test-ns"},
+			TargetRef: meta.NamespacedObjectReference{Name: "t", Namespace: "test-ns"},
 			Rules: []configv1alpha3.ClusterResourceRule{{
 				APIGroups: []string{"example.com"},
 				Resources: []string{"widgetclasses"},

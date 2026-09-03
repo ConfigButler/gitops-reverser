@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +44,7 @@ func TestCommitPendingWrites_ResolvesCredentialsOncePerPushCycle(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-repo", Namespace: "default"},
 		Spec: configv1alpha3.GitProviderSpec{
 			URL:       "file://" + remotePath,
-			SecretRef: &configv1alpha3.LocalSecretReference{Name: credsSecretName},
+			SecretRef: &meta.LocalObjectReference{Name: credsSecretName},
 		},
 	}
 	// username/password resolves to HTTP basic auth, which the file:// transport ignores — so the

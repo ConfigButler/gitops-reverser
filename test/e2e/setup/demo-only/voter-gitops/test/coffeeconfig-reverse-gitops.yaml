@@ -16,7 +16,6 @@ metadata:
   name: demo-coffeeconfig
 spec:
   providerRef:
-    kind: GitProvider
     name: demo-coffeeconfig
   branch: demo-test
   path: voter-coffee
@@ -29,7 +28,6 @@ metadata:
   name: demo-coffeeconfig
 spec:
   targetRef:
-    kind: GitTarget
     name: demo-coffeeconfig
   rules:
     - operations: [CREATE, UPDATE, DELETE]

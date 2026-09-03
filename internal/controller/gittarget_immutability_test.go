@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,7 +34,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		gitTarget := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov-a"},
+				ProviderRef: meta.LocalObjectReference{Name: "prov-a"},
 				Branch:      "main",
 				Path:        "apps",
 			},
@@ -81,7 +82,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		base := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov-a"},
+				ProviderRef: meta.LocalObjectReference{Name: "prov-a"},
 				Branch:      "main",
 			},
 		}

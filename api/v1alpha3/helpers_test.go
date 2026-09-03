@@ -241,7 +241,7 @@ func TestSourceCluster_DefaultsToDefaultProviderName(t *testing.T) {
 
 	tests := []struct {
 		name string
-		ref  *ClusterProviderReference
+		ref  *meta.LocalObjectReference
 		want string
 	}{
 		{
@@ -253,20 +253,18 @@ func TestSourceCluster_DefaultsToDefaultProviderName(t *testing.T) {
 			// An empty Name is rejected by CRD validation, but the helper must not depend on
 			// admission having run — an unvalidated object still has to yield a usable key.
 			name: "empty name resolves to the default provider name",
-			ref:  &ClusterProviderReference{Name: ""},
+			ref:  &meta.LocalObjectReference{Name: ""},
 			want: DefaultClusterProviderName,
 		},
 		{
 			name: "explicit name is returned verbatim",
-			ref:  &ClusterProviderReference{Name: "prod-eu"},
+			ref:  &meta.LocalObjectReference{Name: "prod-eu"},
 			want: "prod-eu",
 		},
 		{
 			name: "explicitly naming default is the same as omitting the ref",
-			ref: &ClusterProviderReference{
-				Group: "configbutler.ai",
-				Kind:  "ClusterProvider",
-				Name:  DefaultClusterProviderName,
+			ref: &meta.LocalObjectReference{
+				Name: DefaultClusterProviderName,
 			},
 			want: DefaultClusterProviderName,
 		},
@@ -294,21 +292,21 @@ func TestIsLocalSource_IsANameTest(t *testing.T) {
 
 	tests := []struct {
 		name string
-		ref  *ClusterProviderReference
+		ref  *meta.LocalObjectReference
 		want bool
 	}{
 		{name: "omitted ref is local", ref: nil, want: true},
-		{name: "empty name is local", ref: &ClusterProviderReference{Name: ""}, want: true},
+		{name: "empty name is local", ref: &meta.LocalObjectReference{Name: ""}, want: true},
 		{
 			name: "explicit default is local",
-			ref:  &ClusterProviderReference{Name: DefaultClusterProviderName},
+			ref:  &meta.LocalObjectReference{Name: DefaultClusterProviderName},
 			want: true,
 		},
-		{name: "any other name is not local", ref: &ClusterProviderReference{Name: "prod-eu"}, want: false},
+		{name: "any other name is not local", ref: &meta.LocalObjectReference{Name: "prod-eu"}, want: false},
 		{
 			// Near-miss names must not be treated as the default; the comparison is exact.
 			name: "a name that merely contains \"default\" is not local",
-			ref:  &ClusterProviderReference{Name: "default-eu"},
+			ref:  &meta.LocalObjectReference{Name: "default-eu"},
 			want: false,
 		},
 	}
