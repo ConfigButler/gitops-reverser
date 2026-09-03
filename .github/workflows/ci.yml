@@ -688,7 +688,7 @@ jobs:
         run: docker load -i ci-container-image.tar && rm -f ci-container-image.tar
 
       - name: Restore Trivy vulnerability DB
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .stamps/trivy-cache
           key: trivy-db-${{ github.run_id }}
@@ -762,7 +762,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
       - name: Restore Trivy vulnerability DB
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .stamps/trivy-cache
           key: trivy-db-${{ github.run_id }}
@@ -809,7 +809,7 @@ jobs:
         # always(): the SARIF is written by the report pass BEFORE the gate runs, so a
         # gate failure must not swallow the report that explains it.
         if: always()
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: trivy-image.sarif
           # Distinct category so the amd64 and arm64 legs don't overwrite each
