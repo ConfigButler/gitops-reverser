@@ -93,10 +93,11 @@ func (s *reconcileStatus) writeLost() bool { return s.writeLostToRace }
 // requeueAfter is the cadence a reconcile should come back on, collapsed to
 // RequeueWriteLostInterval when its status write was lost.
 //
-// Every controller in this package has the same exposure, because they share commit() AND the
-// GenerationChangedPredicate that filters status-only updates: a converged object whose write lost
-// a race keeps the winner's older answer for its full steady interval, with nothing to correct it.
-// Fixing that at one call site would have left the same bug in the other four.
+// Every controller USING THIS HELPER has the same exposure, because the hazard needs both halves:
+// commit() drops the write, and the GenerationChangedPredicate on their For() filters the
+// status-only update that won, so nothing re-enqueues the object — it keeps the older answer for
+// its full steady interval. Fixing that at one call site would have left the same bug in the other
+// four. CommitRequestReconciler carries neither half; see its Reconcile for why.
 func (s *reconcileStatus) requeueAfter(cadence time.Duration) time.Duration {
 	if s.writeLostToRace {
 		return RequeueWriteLostInterval

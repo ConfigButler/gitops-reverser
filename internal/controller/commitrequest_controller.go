@@ -70,6 +70,19 @@ const (
 	commitRequestResolveTimeout = 300*time.Second + 120*time.Second
 )
 
+// CommitRequestReconciler deliberately does NOT use reconcileStatus, which every other controller
+// here shares. The difference is not stylistic, so it is worth saying once:
+//
+//   - Its For() carries no GenerationChangedPredicate, so a status write re-enqueues the object.
+//     The lost-write hazard reconcileStatus exists to close — the winning status-only update being
+//     filtered out, leaving nothing to correct the stale answer — cannot arise.
+//   - It reads through APIReader (uncached) precisely so a cache echo cannot re-drive work, which
+//     is the same lag that makes reconcileStatus lose its optimistic lock in the first place.
+//   - The policies are opposites, and reconcileStatus's is the wrong one here. It drops a losing
+//     write and asks the caller to come back and recompute; a re-run of THIS reconcile would
+//     re-finalize an already-flushed window and mis-report the outcome as NoOpenWindow. So
+//     writeTerminalStatus retries in place, bounded, and gives up rather than requeue.
+//
 // CommitRequestReconciler drives a CommitRequest through its state machine
 // (docs/spec/commitrequest-design.md and
 // docs/spec/commitrequest-admission-authorship.md):
