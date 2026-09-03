@@ -52,8 +52,8 @@ Every write to that branch goes through the worker's single event loop and commi
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
 Redis stores watch resume cursors (warm restarts) and the small coordination records used by
-CommitRequest author capture and HA. Attribution no longer requires it on its own: its facts travel
-on a selectable transport, Redis Streams by default and an in-process ring with
+CommitRequest author capture and HA. Attribution does not require it on its own: its facts travel on a
+selectable transport, Redis Streams by default and an in-process ring with
 `--author-attribution-transport=memory`, which is refused with more than one replica. HA will require
 Redis as the shared store across replicas.
 
@@ -242,8 +242,7 @@ namespace selection of its own. Both share the rule model:
   stream and one list per matched type however large the cluster is. That cell is a peer of any
   named-namespace cell on the same type, never a replacement: each rule keeps its own operations
   filter.
-- `ClusterWatchRule` has no scope or namespace choice. `rules[].scope` is deprecated, accepts only
-  `Cluster`, and a stored `Namespaced` value is refused at compile time.
+- `ClusterWatchRule` has no scope or namespace choice of its own: the kind is the choice.
 
 Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
 `/scale` subresource effect is translated separately into a parent `spec.replicas` field patch.
@@ -291,8 +290,7 @@ How attribution and finalization interact is described under
 One materialization from a source provider to a Git destination: `(cluster provider, provider, branch, path)`.
 Key fields:
 
-- `spec.providerRef`: a `GitProvider` in the same namespace (`group`/`kind` default to
-  `configbutler.ai`/`GitProvider`, the only accepted values).
+- `spec.providerRef`: a `GitProvider` in the same namespace, by name.
 - `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 - `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
@@ -1160,10 +1158,9 @@ placed never moves a file already in Git. A new resource is placed by the first 
    `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml`: namespace-first, group omitted for core, no
    version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive.
 
-**The layout of the folder's other documents is not an input.** An earlier release followed it (sibling
-inference), which made a human's edit to the repository change where the operator wrote next, with no
-Kubernetes object changing and nothing in status recording the move. It was removed; a layout the ladder
-cannot derive is declared in `spec.placement`, and
+**The layout of the folder's other documents is not an input.** Where a new file goes is decided by the
+three rungs above and nothing else, so a human's edit to the repository never changes where the
+operator writes next. A layout the ladder cannot derive is declared in `spec.placement`, and
 `gitopsreverser_placements_total{source="canonical"}` names the target and type that needs the line.
 
 Sensitivity is a write-safety classifier, not a placement input: whatever path is chosen, a sensitive

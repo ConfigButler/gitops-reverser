@@ -9,9 +9,21 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 ## Safe upgrade order for the GitTarget API changes
 
-Five fields are **removed outright** in this release, across three kinds. There is no shim, no
+Fields are **removed outright** in this release, across five kinds. There is no shim, no
 conversion webhook and no refusal to catch you: a removed field is pruned from the schema, so the
-next two entries are the whole migration and they are yours to apply by hand.
+entries below are the whole migration and they are yours to apply by hand.
+
+| Kind | Removed |
+|---|---|
+| `GitTarget` | `spec.allowedSourceNamespaces` |
+| `GitProvider` | `spec.push.commitWindow`, `spec.commit.message` |
+| `ClusterProvider` | `spec.allowedNamespaces` (renamed), `spec.allowSourceNamespaceOverride` (renamed) |
+| `ClusterWatchRule` | `spec.rules[].scope` |
+| every reference field | the `group` and `kind` sub-fields |
+
+The last two rows need no value migration at all — nothing you set is lost, because every value
+those fields could hold was the only one they accepted. Delete the lines and move on. Everything
+above them is a real value that has somewhere new to be.
 
 **Take the inventory FIRST, before you upgrade anything.** This is not a stylistic preference. Once
 the new CRDs are applied, the old values are no longer returned by the API server at all — not
@@ -34,6 +46,16 @@ kubectl get gitproviders -A -o json |
   jq -r '.items[] | select(.spec.push or .spec.commit.message)
     | "gitprovider \(.metadata.namespace)/\(.metadata.name): window<-\(.spec.push.commitWindow)
        message<-\(.spec.commit.message)"'
+
+# The reference fields and the ClusterWatchRule scope, which carry no information to migrate but
+# will be pruned out from under a manifest that still sets them:
+kubectl get gittargets,watchrules,commitrequests -A -o json |
+  jq -r '.items[] | select((.spec.targetRef.kind? // .spec.providerRef.kind?) != null)
+    | "\(.kind) \(.metadata.namespace)/\(.metadata.name): drop the group/kind under its *Ref"'
+
+kubectl get clusterwatchrules -o json |
+  jq -r '.items[] | select(any(.spec.rules[]?; has("scope")))
+    | "clusterwatchrule \(.metadata.name): drop spec.rules[].scope"'
 
 # The rules whose MEANING changes even though their YAML does not:
 kubectl get watchrules -A -o json |
@@ -99,6 +121,84 @@ object still carrying an old spelling is accepted with the value silently pruned
 running under the new defaults. That is a deliberate trade for a much smaller code surface, priced
 in [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md), and it is why the inventory
 is step 1 rather than a footnote.
+
+## Every reference is `{name}` — `group` and `kind` are gone
+
+Six reference shapes become two, and both are Flux's own
+([`fluxcd/pkg/apis/meta`](https://pkg.go.dev/github.com/fluxcd/pkg/apis/meta)):
+`meta.LocalObjectReference` for a reference into the same namespace, and
+`meta.NamespacedObjectReference` where the namespace has to be spelled out.
+
+```yaml
+# Before                          # After
+spec:                             spec:
+  providerRef:                      providerRef:
+    group: configbutler.ai            name: platform
+    kind: GitProvider
+    name: platform
+```
+
+The same edit applies to `GitTarget.spec.providerRef` and `.spec.clusterProviderRef`,
+`WatchRule.spec.targetRef`, `ClusterWatchRule.spec.targetRef`, `CommitRequest.spec.targetRef`,
+`GitProvider.spec.secretRef`, and the `secretRef` under `spec.encryption`.
+
+**Nothing is lost.** Each of those `group` and `kind` fields was an enum with exactly one member and
+a default equal to it, so no manifest could ever say anything but `configbutler.ai` and the one kind
+the field accepts. What the sub-fields cost was four near-identical Go types and a schema that
+implied a choice nobody had.
+
+**They are removed, not refused**, so a manifest that still sets them applies cleanly with the
+values pruned. That is harmless here — the pruned value was the only legal one — but it does mean
+`kubectl apply` will not tell you your manifests are out of date. Tidy them at your convenience.
+
+`GitProvider.spec.knownHostsRef` keeps its `kind`, and that is not an oversight: it chooses between
+a ConfigMap and a Secret, which is a real choice rather than an enum of one.
+
+## `ClusterWatchRule.spec.rules[].scope` is removed
+
+The field has accepted only `Cluster` since 0.39.0, where it was kept in the schema so that
+re-applying a manifest still saying `Namespaced` would fail loudly rather than be silently pruned.
+That shim has done its release, and four more besides. It is now gone, along with the
+`ClusterScopeOnly` compile refusal that backed it.
+
+```yaml
+spec:
+  rules:
+    - resources: [customresourcedefinitions]
+      apiGroups: [apiextensions.k8s.io]
+      # scope: Cluster        <- delete this line
+```
+
+A `ClusterWatchRule` watches cluster-scoped types and a `WatchRule` watches namespaced ones; which
+you write **is** how scope is chosen, and has been since 0.39.0. If you still have a manifest
+setting `scope: Namespaced`, it has not been mirroring anything since then, and the migration is the
+same one that entry describes: a `WatchRule` in the tenant namespace with
+`spec.rules[].sourceNamespace`.
+
+From this release the value is pruned instead of rejected, so an unconverted manifest applies
+without complaint. That is the trade for deleting the field, and it is why the
+[inventory](#safe-upgrade-order-for-the-gittarget-api-changes) lists it.
+
+## The placement metric reports which declaration answered (breaking for dashboards)
+
+`gitops_reverser_placements_total`'s `source` label had one value, `declared`, covering both an
+exact `placement.byType` entry and the catch-all `placement.default`. It now has two:
+
+| Was | Is |
+|---|---|
+| `source="declared"` | `source="by_type"` — an exact `placement.byType` entry named this type |
+| `source="declared"` | `source="default"` — no `byType` entry named it, so `placement.default` answered |
+
+`kustomize_root` and `canonical` are unchanged.
+
+The split exists because the two were the one thing this metric is asked to tell apart. A `default`
+template quietly answering for a type you meant to name explicitly produces a working mirror at a
+path you did not intend, and reported as `declared` it looked exactly like the `byType` line you
+added doing its job.
+
+**Any query selecting `source="declared"` returns no data after the upgrade** rather than failing,
+which is the failure mode worth knowing about. Replace it with `source=~"by_type|default"` to keep
+the old meaning, or split the panel to get the new one.
 
 ## Commit batching and message templates are GitTarget fields
 
@@ -369,8 +469,9 @@ sum by (gittarget_namespace, gittarget_name, group, version, resource) (
 ```
 
 Each series is a type that took the built-in path. For a canonical-layout folder that is simply the
-layout. For a folder with a convention of its own it is the `byType` line to add. `source="declared"`
-and `source="kustomize_root"` need no attention. Two companions ship with it:
+layout. For a folder with a convention of its own it is the `byType` line to add. The declared
+sources (`by_type` and `default`, one value `declared` in the release this entry describes) and
+`source="kustomize_root"` need no attention. Two companions ship with it:
 `gitopsreverser_placement_refusals_total{reason}` (resources the writer declined to place — each one
 is absent from the mirror) and `gitopsreverser_placement_kustomization_entries_total{outcome}`, whose
 `failed` value is a new file committed outside every render. See
@@ -729,13 +830,16 @@ spec:
 
 ### `ClusterWatchRule.spec.rules[].scope` is retained for one release as a loud rejection
 
-The field was not deleted, because deleting it is the **silent** option: CRD pruning happens on
-write, so a re-applied legacy manifest would be accepted with the value dropped — no error anywhere —
-and the rule would quietly stop mirroring namespaced objects.
+> **Superseded.** The shim described here did its job and the field is now **deleted** — see
+> [its own entry above](#clusterwatchrulespecrulesscope-is-removed). What follows is why it existed.
 
-It is now optional, defaults to `Cluster`, and its enum accepts only `Cluster`. Applying
-`scope: Namespaced` is **rejected at apply time**, and a stored one is refused at compile with
-`ClusterScopeOnly`. The field is removed entirely one release from now, or at `v1beta1`.
+The field was not deleted at the time, because deleting it is the **silent** option: CRD pruning
+happens on write, so a re-applied legacy manifest would be accepted with the value dropped — no
+error anywhere — and the rule would quietly stop mirroring namespaced objects.
+
+It was made optional, defaulting to `Cluster`, with an enum accepting only `Cluster`. Applying
+`scope: Namespaced` was **rejected at apply time**, and a stored one refused at compile with
+`ClusterScopeOnly`.
 
 No such shim exists for `WatchRule.spec.sourceNamespace`, and none is needed: that field never
 reached a release, so no stored object can carry it and no manifest in the wild sets it. It is simply

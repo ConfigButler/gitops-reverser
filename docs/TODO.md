@@ -21,6 +21,15 @@ This file is meant to track the smaller current backlog, not historical notes.
   runs attribution in-process. Only useful until HA lands (HA needs the shared Redis store); low
   priority.
 
+- [ ] Make a lost audit route loud. A `ClusterProvider` whose declared
+  `spec.attribution.auditRoute` has received **zero** facts should say so in a condition, before the
+  first commit lands wrong. Today, if the write route and the read route diverge, nothing errors:
+  mirroring stays perfect and every commit is authored `unknown (attribution unresolved)`. That is
+  visible in Git and in `attribution_resolutions_total{result="absent"}`, but only after the fact —
+  and for a consumer whose product is attribution it is the highest-consequence silent failure
+  there is. Zero facts on a declared route is something the operator knows and nobody else can see.
+  This is the last open ask from the consumer's revision-11 list that has a failure mode behind it.
+
 - [ ] Prevent same-repository write collisions across multiple `GitProvider` objects.
   Decide whether the fix should be validation, a shared queue/lock per repo, or both.
   Until then, keep recommending one `GitProvider` per repository.

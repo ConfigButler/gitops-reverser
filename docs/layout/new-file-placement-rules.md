@@ -1249,9 +1249,8 @@ placement:
 ```
 
 after which the same ConfigMap is appended to `all.yaml`, and the metric moves to
-`source="declared", disposition="appended"`. **This is the behaviour change**: before the
-Option C deletion the bundle was extended with no declaration at all. One line of YAML buys
-back the old behaviour, and it says on the page what used to be a guess.
+`source="by_type", disposition="appended"`. Bundling is something a target declares: one line
+of YAML, and it says on the page what would otherwise be a guess.
 
 If instead the folder is a kustomize overlay — one `kustomization.yaml` governing the whole
 subtree — no declaration is needed: the new document lands beside it and joins its
