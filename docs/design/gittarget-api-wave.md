@@ -1,7 +1,13 @@
 # The wave after placement left it
 
-> **partly built**: a sequencing proposal. Steps 6 and 7 (B4 and the source-scope deletion) **shipped**
-> on 2026-09-01; step 8, the riders, was trimmed under this page's own rule and is unbuilt.
+> **partly built**: a sequencing proposal. Steps 2 to 7 have all **shipped** — `spec.suspend`,
+> `status.placement` and the reconcile-request annotation in
+> [#326](https://github.com/ConfigButler/gitops-reverser/pull/326), B4 and the source-scope deletion
+> in [#330](https://github.com/ConfigButler/gitops-reverser/pull/330) on 2026-09-01. **Step 8, the
+> riders, is the only unbuilt member**, trimmed under this page's own rule; step 5 (an Event on a
+> changed resolution) is additive and also unbuilt. What that leaves of
+> [#294](https://github.com/ConfigButler/gitops-reverser/issues/294) is the riders alone, so the
+> issue wants narrowing rather than closing.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-08-28 (originally 2026-07-30).
 >
@@ -231,8 +237,12 @@ status:
     mode: KustomizeRoot
     renderRoot: .
     resolvedAtRevision: 9f3c1ab
-  lastHandledReconcileAt: "2026-07-30T09:14:22Z"
 ```
+
+**`status.lastHandledReconcileAt` was not built.** #326 tracks the last handled request in memory
+instead, so a standing annotation forces one re-read rather than one per reconcile, and a restart
+costs one extra re-check rather than a field every consumer has to understand
+([`gittarget_reconcile_request.go`](../../internal/controller/gittarget_reconcile_request.go)).
 
 The placement fields are shown in place so the object reads as a whole, but they carry defaults equal
 to today's behavior and are additive: only `spec.commit` and the riders make this release breaking.
@@ -275,11 +285,20 @@ rejection is cheap because a single coordinated bump can absorb it; a second con
 wave cost two, on two schedules. Two things follow, and both belong on this repo's roadmap rather
 than only on the consumer's:
 
-- **Each wave leaves residue.** A refused field stays in the schema to say "no, not that anymore" —
-  `allowedSourceNamespaces` now, more later. That graveyard is a real cost to a newcomer reading the
-  CRD, and it is paid per wave, so the number of remaining waves on `v1alpha3` is finite. Sweeping
-  the refusals is what `v1alpha4` should be for, and it should be one version bump carrying the
-  removals rather than a version bump per change.
+- **Each wave leaves residue.** A refused field stays in the schema to say "no, not that anymore".
+  That graveyard is a real cost to a newcomer reading the CRD, and it is paid per wave, so the
+  number of remaining waves on `v1alpha3` is finite. Sweeping the refusals is what `v1alpha4` should
+  be for, and it should be one version bump carrying the removals rather than a version bump per
+  change.
+
+  **What the residue turned out to be, measured on `main` after #330: one field.** This wave itself
+  left none — `allowedSourceNamespaces` and the two relocated `GitProvider` fields were **removed
+  outright** rather than refused, which is what
+  [`../UPGRADING.md`](../UPGRADING.md) is a hand-written migration for and what
+  [`../facts/crd-upgrade-strategies.md`](../facts/crd-upgrade-strategies.md) prices. The one
+  survivor is `ClusterWatchRule.spec.rules[].scope`, whose own doc comment says "Removed one release
+  from now" and which has now stood through 0.40, 0.41 and 0.42. Its countdown has expired, so a
+  release that is breaking anyway is where it goes.
 - **The coupling is a dependency, not a courtesy.** Staying on `v1alpha3` requires the consumer to
   keep pace with this repo's release cadence. If it cannot, the choice is not "revisit" in the
   abstract — it is a real API version with a real conversion path, and the time to notice is before
@@ -295,7 +314,8 @@ Dependencies first, then the things that only need the object to be breaking.
    highest-value gap: a way to stop the writes that is not deleting the object.
 3. **`status.placement`** plus the post-scan validation pass. Independent of step 2 — it explains a
    write that already happened, rather than previewing one that has not.
-4. **`requestedAt` + `lastHandledReconcileAt`.** On-demand refresh of step 3.
+4. **`requestedAt`.** On-demand refresh of step 3. Shipped without the
+   `lastHandledReconcileAt` echo, for the reason recorded above.
 5. **Events on a changed resolution**, over the existing recorder.
 6. **B4**, as `spec.commit`. Last of the principle items, and the one that makes the object coherent.
 7. **The source-scope deletion.** Independent of every step above, so it can be written in parallel;

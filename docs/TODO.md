@@ -64,30 +64,45 @@ This file is meant to track the smaller current backlog, not historical notes.
   Secrets and CozyStack `tenantsecrets`; resources with sensitive fields under shapes such as
   `spec.credentials` need an explicit field policy or full-file encryption decision.
 
-- [ ] Revisit output layout. **Now designed and postponed, not open-ended, and the answer has
-  reversed since [#293](https://github.com/ConfigButler/gitops-reverser/issues/293) was filed.** The
-  path template **stays**; what it could not express becomes two optional booleans,
-  `spec.placement.useKustomize` and `spec.serializeNamespace`. [layout/model.md](layout/model.md)
-  carries the reversal, the fields and the order. The placement work
-  is no longer breaking, so it no longer needs
-  [#294](https://github.com/ConfigButler/gitops-reverser/issues/294); the issues still describe the
-  discriminated union and want updating.
-  Deliberately **not** in 0.41.0, which already carries the new attribution model and the
-  sibling-inference removal. Multiple resources per file is bundle support, which exists for
-  match-first today and is a separate question from where a *new* file goes.
+- [ ] Decide the four layout questions [`layout/model.md`](layout/model.md#open-questions) left open.
+  The model itself is **built** — the path template stayed and gained `spec.placement.useKustomize`
+  and `spec.serializeNamespace`, shipped in
+  [#326](https://github.com/ConfigButler/gitops-reverser/pull/326) and
+  [#328](https://github.com/ConfigButler/gitops-reverser/pull/328) with the corpus that executes it.
+  None of the four blocks anything: nested roots per directory (re-open trigger written down),
+  refusing rather than reporting when a governing root disappears, a CRD default for
+  `placement.default` (legibility only, since #319 removed the correctness objection), and a
+  namespace-local `GitProvider` so three targets in three namespaces need not copy one credential.
+
+- [ ] Remove `ClusterWatchRule.spec.rules[].scope`. It is the **whole** deprecation graveyard in the
+  CRDs: everything else this project has removed was removed outright, with
+  [`UPGRADING.md`](UPGRADING.md) as the migration. The field is retained purely so that re-applying
+  a manifest still saying `Namespaced` fails, and its own doc comment says "Removed one release from
+  now" — written for 0.39.0, and it has now stood through 0.40, 0.41 and 0.42. Delete the field, the
+  `DeclaresNamespacedScope` compile-path refusal that backs it, and the `Deprecated:` line in the
+  CRD. Breaking, so it wants a release that is breaking anyway; the reasoning is in
+  [`design/gittarget-api-wave.md`](design/gittarget-api-wave.md#version-strategy-stay-v1alpha3).
+
+- [ ] Build the riders that are all that is left of the `GitTarget` API wave
+  ([`design/gittarget-api-wave.md`](design/gittarget-api-wave.md), filed as
+  [#294](https://github.com/ConfigButler/gitops-reverser/issues/294), which wants narrowing to
+  them): an asserted `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole,
+  `meta.LocalObjectReference` for our six reference shapes, the `TooManyStreams` cap, and the
+  `default` `ClusterProvider` message. **Only the reference-shape collapse is breaking**, and it is
+  breaking in the quiet way: `GitProviderReference`, `ClusterProviderReference`,
+  `LocalSecretReference` and friends each carry a defaulted, enum-of-one `group`/`kind`, so every
+  stored object has those persisted and collapsing the shape prunes them with no error. It belongs
+  in a breaking release or in none.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
-- [ ] Collapse wildcard source-namespace stream fan-out. **Superseded as a standalone item** —
-  [`source-scope-simplification.md`](design/source-scope-simplification.md#sourcenamespace--needs-its-own-decision)
-  is the definition of record for `sourceNamespace: "*"`, and the redefinition it decides deletes
-  this fan-out rather than optimizing it. The direction recorded here (a cluster-wide stream whose
-  resync scope carries a namespace **set**) is *not* what was decided, and building it would be
-  building the thing the wave removes.
-
-  What survives the redefinition and still needs doing: revisit
-  `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap stops being representative once a
-  wildcard produces one cluster-wide cell instead of N named ones.
+- [ ] Revisit `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap stops being
+  representative now that `sourceNamespace: "*"` produces one cluster-wide cell instead of N named
+  ones. This is all that survives of a "collapse the wildcard fan-out" item: the redefinition that
+  shipped in [#330](https://github.com/ConfigButler/gitops-reverser/pull/330) deleted the fan-out
+  rather than optimizing it, so the optimization it described is no longer a thing to build.
+  [`source-scope-simplification.md`](design/source-scope-simplification.md) is the definition of
+  record.
 
 - [ ] Subscribe the watch plane to `typeset.Registry` lifecycle events.
   `Registry.Subscribe` has **no production observer**: the events are computed on every `Update`
@@ -147,8 +162,8 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Handle resources whose GVK cannot be resolved against the live cluster.
   A manifest may reference a `apiVersion`/`kind` whose CRD is not installed, so the RESTMapper
   cannot map it to a GVR. This is already a problem today and also blocks the manifest-inventory
-  work in [docs/design/manifest/manifest-inventory-file-agnostic-placement.md](spec/manifest-system.md):
-  indexing must record the manifest identity and defer rather than fail the whole scan.
+  work in [`spec/manifest-system.md`](spec/manifest-system.md): indexing must record the manifest
+  identity and defer rather than fail the whole scan.
 
 ## Future directions worth revisiting
 

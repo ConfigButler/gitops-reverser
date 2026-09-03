@@ -1,9 +1,14 @@
 # The template was the right primitive. Two things were missing
 
-> **design**: a proposal, not a plan of record. Nothing here binds until scheduled.
+> **built**: everything this page proposed has shipped — `spec.suspend`, `status.placement` and the
+> post-scan `Ambiguous` rule in [#326](https://github.com/ConfigButler/gitops-reverser/pull/326),
+> `spec.placement.useKustomize` and `spec.serializeNamespace` with the one-source-namespace refusal
+> in [#328](https://github.com/ConfigButler/gitops-reverser/pull/328), and the corpus that proves
+> them in both. What is still open is the four questions at the end, none of which blocks anything.
 > Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-08-29. Supersedes this document's own earlier thesis, which argued that a path template
-> is the wrong primitive and should be replaced by a `spec.layout` discriminated union. That argument
+> Date: 2026-08-29, shipped 2026-09-02. Supersedes this document's own earlier thesis, which argued
+> that a path template is the wrong primitive and should be replaced by a `spec.layout` discriminated
+> union. That argument
 > no longer holds; why it stopped holding is the first section, because a reversal is worth more than
 > a quiet edit.
 >

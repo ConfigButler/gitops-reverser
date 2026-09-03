@@ -311,7 +311,7 @@ spec:
 
 One target is one environment is one write partition, which is what makes authorization, audit and
 review line up with the environment boundary. The reasoning is in
-[`layout/shapes/README.md`](../test/fixtures/layout-corpus/shapes/README.md#why-only-a-leaf-can-be-a-kustomize-target).
+[`layout-corpus/shapes/README.md`](../test/fixtures/layout-corpus/shapes/README.md#why-only-a-leaf-can-be-a-kustomize-target).
 
 `status.placement.mode` and `status.placement.renderRoot` report what the scan resolved, and both
 are published before a target has written anything — so a target you have just declared already

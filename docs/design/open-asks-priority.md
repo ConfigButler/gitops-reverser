@@ -2,7 +2,21 @@
 
 > **design**: a priority call, not a plan of record. Nothing here binds until scheduled.
 > Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-07-29, swept 2026-07-30 against the 0.41.0 release.
+> Date: 2026-07-29, swept 2026-07-30 against the 0.41.0 release and again 2026-09-03 against 0.43.0.
+>
+> **What the second sweep found.** The postponed wave is no longer postponed: `spec.suspend`,
+> `status.placement` and the reconcile-request annotation shipped in
+> [#326](https://github.com/ConfigButler/gitops-reverser/pull/326); `useKustomize` and
+> `serializeNamespace` in [#328](https://github.com/ConfigButler/gitops-reverser/pull/328); B4 and
+> the source-scope deletion in [#330](https://github.com/ConfigButler/gitops-reverser/pull/330),
+> which is what makes 0.43.0 a breaking release. Of the consumer asks this page ranks, **#22, #11
+> and #10 are gone**: the `permanent` doc comment was rewritten, the two encoders became one
+> (`internal/yamlstyle`, which is why a create and an update now emit identical bytes), and sibling
+> inference — the thing #10 was about — was deleted outright. What is left of the consumer list is
+> **#15** (a declared `auditRoute` that has received zero facts should say so), **#23** (which actor
+> deletion-as-intent picks when a controller clears a finalizer), and **#6** (a movable
+> `GitTarget` destination), and of the wave, the riders. The tiers below have not been re-ordered
+> against that; read them as the argument, and [`../TODO.md`](../TODO.md) as the queue.
 >
 > **Where this stands as of the sweep.** `0.41.0` is the attribution release: the fact stream, the
 > sticky removal pointer, the metric relabel, the name tier, and the analyzer/encoder corrections,

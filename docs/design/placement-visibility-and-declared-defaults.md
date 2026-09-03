@@ -1,7 +1,14 @@
 # Placement, made visible: naming, a declared default, and `status.layout`
 
-> **design, decided**: mostly not built. Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-07-30, reconciled 2026-07-30 against what PR #291 actually contains.
+> **design, decided**: half built. Index: [`../INDEX.md`](../INDEX.md)
+> Date: 2026-07-30, reconciled 2026-09-03 against what has since shipped.
+>
+> **`status.layout` shipped as `status.placement`, and the ambiguous render root with it**, both in
+> [#326](https://github.com/ConfigButler/gitops-reverser/pull/326) — so the two largest rows of the
+> table below are done. What is left is the legibility set: the `declared` metric-value split, the
+> canonical path as a template constant, `{kindLower}`, and the re-opened CRD default. The metric
+> split is the only one with an external consumer, because it changes a label value a dashboard may
+> already select on.
 >
 > **The decisions below stand. The build list does not.** An earlier revision of this page said
 > "everything decided here lands in that same PR", and that turned out to be wrong: PR #291 shipped
@@ -504,19 +511,20 @@ kustomization naming a namespace other than the resource's own no longer renders
 different object). `source="canonical"` kept its name, which is this page's Question 1 answered by
 doing nothing.
 
-Everything else below is **decided and unbuilt**. It is filed as GitHub issues so it is legible
-without reading this page, and the two correctness items are separated from the legibility ones
+Everything else below was **decided and unbuilt** when this page was written; two rows have since
+shipped and are marked. The rest is filed as GitHub issues so it is legible without reading this
+page, and the two correctness items are separated from the legibility ones
 because they are worth different urgency:
 
 | Item | State | Why it is where it is |
 |---|---|---|
 | F10: register a declared path with the kustomization that governs it | **SHIPPED** in 0.42.1 (#319) | One `byType` line into a subdirectory silently produced a file nothing renders. The fix made registration an invariant, which is what reversed [`model.md`](../layout/model.md) |
 | Drop the `{version}` requirement from `IdentityCompletePlacementTemplate` | **SHIPPED** in 0.42.1 (#319) | It contradicted the versionless-path decision, and it was what made any future spec default fail our own gate |
-| `status.layout` | **filed** | The durable half of "what did the operator understand about this folder". Wants the layout model's vocabulary, so it follows it |
+| `status.layout` | **SHIPPED** as `status.placement` in #326 | The durable half of "what did the operator understand about this folder". It waited for the layout model's vocabulary and shipped with it |
 | Split `declared` into `byType` and `default`; unify the prose on "canonical" | **filed, legibility** | A catch-all quietly swallowing a type you meant to name looks identical to a rule working |
 | `{kindLower}` | **filed, legibility** | Small, self-contained |
 | Canonical path as a template constant | **filed, cleanup** | Removes the hand-written duplication; what a future default would reuse |
-| `renderRootReason: Ambiguous` | **filed** | Belongs with `status.layout`, and the layout model decides the refuse-or-write policy |
+| `renderRootReason: Ambiguous` | **SHIPPED** in #326 | Shipped with `status.placement`, and the layout model decided the policy: a folder covering two roots REFUSES the placement rather than writing it unrendered |
 | A CRD default for `placement.default` | **re-opened** | The reversal took away the answer this row used to give. There is no `layout.kind`; the template stays, and now that the ancestor walk registers a defaulted path, the objection is legibility rather than correctness. It is an open question in [`model.md`](../layout/model.md) |
 
 The original build list follows, because each entry says *how* to build the thing and that is the part
