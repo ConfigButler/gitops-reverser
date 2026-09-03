@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package layoutfixture reads the expected-*-status.yaml fixtures under docs/layout.
+// Package layoutfixture reads the expected-*-status.yaml fixtures under test/fixtures/layout-corpus.
 //
 // It exists because those fixtures are asserted from two packages that cannot share a test
 // helper: internal/git pins the half a refusal produces (GitPathAccepted), and
@@ -17,11 +17,12 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Root is docs/layout as reached from a package directory two levels below the repository root
+// Root is test/fixtures/layout-corpus as reached from a package directory two levels below the
+// repository root
 // (internal/git, internal/controller). The fixtures are read in place rather than copied into a
 // testdata directory: a copy would drift from the documents it illustrates, and the drift would
 // be invisible in review.
-const Root = "../../docs/layout"
+const Root = "../../test/fixtures/layout-corpus"
 
 // Condition is one expected condition in a fixture.
 type Condition struct {

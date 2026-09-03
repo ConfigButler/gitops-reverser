@@ -30,7 +30,8 @@ type RetentionSummary struct {
 	Mode v1alpha3.PruneMode
 	// RetainedDocuments is the sum over the target's currently tracked scopes.
 	RetainedDocuments int
-	// ObservedTime is when the most recent contributing resync reported.
+	// ObservedTime is when the most recent contributing resync reported. It is stamped in the same
+	// mutation that sets a scope's reported flag, so it is non-zero whenever Reported is true.
 	ObservedTime time.Time
 }
 
@@ -42,8 +43,7 @@ type targetRetentionScope struct {
 	// reportedRevision is the revision of the report that produced `retained`. It separates a
 	// stream RE-reporting under the revision it already reported (routine, every resync) from a
 	// NEW incarnation measuring the cell afresh and arriving at the same number. Only the second
-	// is interesting: it is the one an unchanged published count can be hiding
-	// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+	// is interesting: it is the one an unchanged published count can be hiding.
 	reportedRevision uint64
 }
 
@@ -138,8 +138,7 @@ func (m *Manager) MarkTargetRetention(
 	// lands and changes nothing an operator would see is DISCARDED whole by mutateWatchPlane, so
 	// "accepted and unchanged" and "never reported at all" look identical from outside. The
 	// refusals above have been logged since c24844a1; the acceptances were not, and that asymmetry
-	// is why B could be narrowed to this function and no further
-	// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+	// is why B could be narrowed to this function and no further.
 	//
 	// Info is reserved for the one shape that is genuinely ambiguous: a cell RE-MEASURED under a
 	// new revision that arrived at the number already published, so the mutation was discarded and

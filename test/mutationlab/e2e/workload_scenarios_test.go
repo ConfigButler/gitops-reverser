@@ -177,8 +177,7 @@ func gracefulPod(s scenario, name string) *corev1.Pod {
 // have twice generalised this row into "a graceful pod delete produces no audit event at all" and
 // built arguments on it, so the distinction is worth stating where the measurement is taken. What
 // this row actually demonstrates is the shape of an AUDIT-EXCLUDED type, which is the population
-// that costs the attribution resolver its whole grace window on every removal
-// (docs/design/attribution-removal-wait-options.md).
+// that costs the attribution resolver its whole grace window on every removal.
 //
 // The audited equivalent of this two-step removal is TestFinalizerDelete: a configmap held by a
 // finalizer takes the same deletionTimestamp-then-DELETED path and IS audited, so that is the row

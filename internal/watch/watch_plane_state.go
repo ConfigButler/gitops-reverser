@@ -19,8 +19,6 @@ import (
 // declaredGVRsMu each guarded a value written by one goroutine and read by many, which is a
 // snapshot rather than a critical section, and targetWatchesMu / targetRetentionMu guarded maps
 // whose only writers are now reports.
-//
-// See docs/design/watch-manager-ownership.md.
 type watchPlaneState struct {
 	// streams is the readiness surface, keyed by GitTarget and CELL — not by the served version
 	// the stream runs at. See markTargetStreamState for why the version is absent.

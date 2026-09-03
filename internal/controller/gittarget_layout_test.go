@@ -151,7 +151,7 @@ func TestPublishLayout_AmbiguousNamesTheRoots(t *testing.T) {
 		"with several roots there is no single way the folder is written")
 }
 
-// The controller's half of docs/layout/shapes/6-kustomize-base-and-overlays. The corpus asserts
+// The controller's half of the corpus's shapes/6-kustomize-base-and-overlays. The corpus asserts
 // that fixture's GitPathAccepted condition, which is the writer's own; LayoutResolved is projected
 // here, from data no write-path test can produce, so without this the fixture could claim anything
 // about it and stay green.
@@ -185,6 +185,7 @@ func TestGitTargetReadiness_StalledFollowsGitPathAccepted(t *testing.T) {
 	for _, fixture := range []struct{ dir, file string }{
 		{"2-flat-namespace-free", "expected-second-namespace-status.yaml"},
 		{"6-kustomize-base-and-overlays", "expected-app-root-status.yaml"},
+		{"7-kustomize-layered", "expected-shared-layer-status.yaml"},
 		{"8-base-owned-field-edit", "expected-env-change-status.yaml"},
 	} {
 		t.Run(fixture.dir, func(t *testing.T) {

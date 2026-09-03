@@ -68,20 +68,10 @@ type ClusterProviderSpec struct {
 	// +optional
 	KubeConfig *meta.KubeConfigReference `json:"kubeConfig,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// This is the one namespace policy that survived the source-scope deletion, and it survived
-	// because the boundary it draws is available nowhere else. Source-cluster RBAC bounds what a
-	// CREDENTIAL may read; it cannot express which control-plane tenant may WIELD that credential,
-	// because the tenant is not a subject in the source cluster at all. Deleting it would make a
-	// shared source credential usable from any namespace that can create a GitTarget.
-	//
-	// Its selector is affordable in a way the deleted source-side one was not: it reads
-	// CONTROL-cluster Namespace labels, locally, with no cross-cluster call and no degradation
-	// path. Both halves stay.
-	//
-	// The rename is what makes it readable now that the two allowed*Namespaces fields no longer sit
-	// side by side to disambiguate each other. See docs/design/source-scope-simplification.md.
+	// The one namespace policy that survived the source-scope deletion: source-cluster RBAC bounds
+	// what a credential may READ, and cannot express which control-plane tenant may WIELD it.
+	// Without this, a shared source credential is usable from any namespace that can create a
+	// GitTarget. The selector reads control-cluster labels locally, so it has no degradation path.
 
 	// AccessFrom is the deny-by-default policy for which CONTROL-CLUSTER namespaces may reference
 	// this provider from a GitTarget. Empty (or omitted) means no namespace may reference it. Its
@@ -90,29 +80,11 @@ type ClusterProviderSpec struct {
 	// +optional
 	AccessFrom *NamespaceMatcher `json:"accessFrom,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// Remote and in-cluster providers use the same mechanism but deserve very different sign-off.
-	// For a REMOTE provider the config-plane namespace and the source namespace are on different
-	// clusters, so their sharing a name never was a boundary and naming one widens nothing. For an
-	// IN-CLUSTER provider (kubeConfig omitted) the same-name coupling WAS the boundary: setting this
-	// deliberately bypasses live namespace RBAC, letting the owner of an admitted GitTarget in one
-	// namespace mirror another namespace's objects — read through the operator's own cluster-wide
-	// credential — into a Git destination they control. That is legitimate for a cluster-admin to
-	// grant on purpose, and must never happen by default or as a side effect of another field,
-	// which is why this exists and defaults to false. LOCALITY is not the switch: in-cluster-ness
-	// follows from spec.kubeConfig, and neither that nor the provider's name decides this.
-	//
-	// The name keeps "Source" deliberately. This object carries two namespace planes, and an
-	// allowAnyNamespace sitting directly beneath accessFrom would read as a modifier on it.
-	// allowCrossNamespace was the other candidate, borrowing Flux's --no-cross-namespace-refs
-	// vocabulary, and it was not taken: in Flux the phrase means references across namespaces in
-	// ONE cluster, while here the far side is a namespace in a DIFFERENT cluster. "Crossing" is
-	// literally true only for the in-cluster provider; "any" is literally true for both.
-	//
-	// It stays a boolean because there are two states and no third one is in view: impersonation
-	// and source-side selectors are both out, so an enum would only leave room for something
-	// nobody can name.
+	// The dangerous case is an IN-CLUSTER provider (kubeConfig omitted), where same-name coupling
+	// WAS the boundary: setting this bypasses live namespace RBAC, letting the owner of an admitted
+	// GitTarget mirror another namespace's objects through the operator's own cluster-wide
+	// credential into a destination they control. Legitimate to grant deliberately, never by
+	// default or as a side effect of another field, which is why it defaults to false.
 
 	// AllowAnySourceNamespace delegates SOURCE-namespace selection to the GitTargets this provider
 	// admits. While false (the default) a WatchRule mirroring through this provider may watch only
@@ -254,7 +226,7 @@ func (p *ClusterProvider) IsInCluster() bool {
 // cluster already partitions its facts by name, so an unset field resolves exactly what it always
 // resolved. Deliberately NOT conditional on locality: defaulting an in-cluster provider to the
 // literal "default" would make that name reserved for the local cluster again, a rule this project
-// enforced with CEL and then reversed before shipping (docs/finished/multi-cluster-author-attribution.md).
+// enforced with CEL and then reversed before shipping.
 func (p *ClusterProvider) AuditRoute() string {
 	if p.Spec.Attribution == nil || p.Spec.Attribution.AuditRoute == "" {
 		return p.Name

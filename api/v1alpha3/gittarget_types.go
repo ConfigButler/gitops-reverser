@@ -87,26 +87,10 @@ type GitTargetSpec struct {
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// It sits at the TOP LEVEL rather than inside placement, and the line between the two is
-	// retroactivity. spec.placement decides where a NEW document goes and never moves one already
-	// written; this governs the bytes of EVERY write, and it also decides how a managed document
-	// is FOUND — a document whose namespace is inherited is located in the file bytes by a
-	// namespace-less identity. A field with that blast radius nested inside a struct documented as
-	// "new files only" would be a trap.
-	//
-	// It is a *bool because no plain default preserves today's behavior: false breaks a flat
-	// folder, whose documents must carry their own namespace or they are ambiguous, and true
-	// writes a redundant line into every kustomize folder that already supplies one. nil means
-	// infer, which is what the operator has always done.
-	//
-	// The name deliberately avoids writeNamespace. "Write" is the most loaded word in this API —
-	// the write boundary, the write jail, WriteBoundaryRefused — so writeNamespace: false invites
-	// the reading "never write to this namespace", a permission, which is precisely what the
-	// neighbouring sourceNamespace fields are.
-	//
-	// See docs/layout/model.md § "serializeNamespace".
+	// Top level rather than inside placement because it is retroactive: placement decides where a
+	// NEW document goes, this governs the bytes of every write and how a managed document is found.
+	// *bool because neither default is safe — false breaks a flat folder, true writes a redundant
+	// line into a kustomize folder that already supplies one.
 
 	// SerializeNamespace declares whether a committed document carries its own
 	// metadata.namespace. It governs every write this target makes, not just the first one, and it
@@ -133,12 +117,9 @@ type GitTargetSpec struct {
 	// +optional
 	SerializeNamespace *bool `json:"serializeNamespace,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// It defaults to a concrete {name: "default"} rather than an implicit nil so a target that omits
-	// it persists with a ref a reader can jump to. The operator never creates that provider: a
-	// GitTarget naming one that does not exist is held unready rather than silently defaulting to
-	// in-cluster access.
+	// Defaults to a concrete {name: "default"}, not nil, so the persisted object names something a
+	// reader can jump to. The operator never creates that provider; a missing one holds the target
+	// unready rather than falling back to in-cluster access.
 
 	// ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
 	// cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
@@ -149,12 +130,8 @@ type GitTargetSpec struct {
 	// +optional
 	ClusterProviderRef *ClusterProviderReference `json:"clusterProviderRef,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// Deliberately MUTABLE, unlike the destination fields above. The whole point of the safe
-	// default is that a target keeps its documents while a scope mistake is diagnosed; turning
-	// convergence back on afterwards must not require deleting and recreating the GitTarget, which
-	// would be the one operation guaranteed to lose the folder's history.
+	// Mutable, unlike the destination fields above: recovering from a scope mistake must not
+	// require recreating the GitTarget, which is the one operation that loses the folder's history.
 
 	// Prune controls which deletion paths may remove documents from this target's folder: an
 	// explicit source DELETE event, and the resync mark-and-sweep that infers a deletion from a
@@ -163,24 +140,8 @@ type GitTargetSpec struct {
 	// +optional
 	Prune *PrunePolicy `json:"prune,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// These fields lived on GitProvider until this release, as spec.push.commitWindow and
-	// spec.commit.message. GitProvider is the CONNECTION — a URL, a credential, the branches it
-	// will accept — and how a folder's writes are batched and phrased is a property of the folder,
-	// not of the route to the repository. Two GitTargets sharing one GitProvider had no way to
-	// disagree about either, which is the concrete cost of the old placement.
-	//
-	// They are grouped under spec.commit rather than landing as two top-level fields. The move is
-	// breaking either way, so the grouping is free HERE and would cost a bump in any later
-	// release; and spec.commit is the shape these fields already had on GitProvider, so nothing
-	// about them has to be relearned. See docs/design/gittarget-api-wave.md § "Where the fields
-	// live".
-	//
-	// What did NOT move: commit.committer and commit.signing stay on GitProvider. Both are
-	// properties of the identity that talks to the remote — the signing key is a Secret in the
-	// provider's namespace, and the committer is the bot the platform sees — so they belong to the
-	// connection in a way the window and the message do not.
+	// Batching and phrasing describe the folder, so they live here; committer and signing describe
+	// the identity talking to the remote and stay on GitProvider. Migration: docs/UPGRADING.md.
 
 	// Commit configures how this target's writes are batched into commits, and how those commits
 	// are phrased. Omitted, writes coalesce over a 5s rolling silence window and use the built-in
@@ -188,28 +149,9 @@ type GitTargetSpec struct {
 	// +optional
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// Suspend is a PANIC KNOB: one field that stops this target writing, reachable without
-	// deleting anything and without unpicking the watch configuration that would have to be
-	// rebuilt afterwards. That is the whole justification, and it is enough on its own.
-	//
-	// It is deliberately NOT a preview mechanism. A target that writes nothing has nothing to
-	// show, and the honest way to see what a target would do is to point one at a scratch branch
-	// and read the commits — real bytes, real registrations, real deletes, diffable. The
-	// manifest-analyzer CLI is the other half of that answer. Neither is something status should
-	// grow a second, worse copy of; see docs/layout/model.md § "Previewing a target: point it at a
-	// scratch branch".
-	//
-	// The scan is deliberately NOT suspended with the write, and the reason is incident response
-	// rather than preview: a stopped valve that also stopped looking would freeze status.placement
-	// at whatever the folder looked like the moment someone panicked, which is exactly when a
-	// stale answer costs the most.
-	//
-	// Deliberately MUTABLE and deliberately not a fault: a suspended target reports Ready=True with
-	// reason Suspended, because not writing is the configured outcome. The precedent is
-	// status.retention — a condition asserts health, and suppressing a write on request is not ill
-	// health.
+	// The scan keeps running while writes are suspended: freezing status.placement too would leave
+	// a stale answer at the moment it costs most. A suspended target is Ready=True reason
+	// Suspended, because not writing is the configured outcome rather than ill health.
 
 	// Suspend stops this target from writing to Git, without deleting it. It is the knob to turn
 	// when something is wrong and the writes have to stop now: watches keep running, events keep
@@ -233,21 +175,10 @@ type GitTargetSpec struct {
 	Suspend bool `json:"suspend,omitempty"`
 }
 
-// Design rationale, kept out of the generated CRD description by the blank line below.
-//
-// Message reuses CommitMessageSpec verbatim rather than collapsing its three templates into one.
-// The three render three genuinely different things with three different variable sets — a single
-// event, a reconcile of one type, and a grouped commit-window batch — so one template could only
-// have been a fourth thing, and inventing it is a redesign this move deliberately is not.
-
 // GitTargetCommitSpec configures how a GitTarget's writes become commits.
 type GitTargetCommitSpec struct {
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// It stays a string rather than becoming metav1.Duration because that is what it was on
-	// GitProvider, and re-typing a field in the same release that relocates it would make a
-	// mechanical migration a rewrite. Parsing stays at the write path, where an unparseable value
-	// falls back to the default loudly rather than blocking admission of the whole target.
+	// A string, not metav1.Duration: parsing happens at the write path, where an unparseable value
+	// falls back to the default loudly instead of blocking admission of the whole target.
 
 	// Window is the rolling silence window used to coalesce this target's events into a single
 	// commit per author. The timer resets on every event arrival, and the commit is made after
@@ -300,24 +231,10 @@ type GitTargetPlacementSpec struct {
 	// +optional
 	Default string `json:"default,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// It has exactly ONE job, and the name says less than the field does. Registering a new file
-	// with the kustomization that already governs its directory is an INVARIANT rather than a
-	// setting (#295, fixed by #319): a file no kustomization lists is a file nothing renders, so
-	// that happens in both columns. What this flag decides is only what to do when there is no
-	// root at all.
-	//
-	// So useKustomize: false does not mean "leave kustomize alone". If a folder's root must not be
-	// touched, do not point a GitTarget at that folder: the ancestor walk is bounded by the write
-	// jail, so a kustomization ABOVE spec.path is never edited, and rooting the target lower is
-	// the existing, better-tested way to say it.
-	//
-	// It belongs inside placement, unlike spec.serializeNamespace, because it is retroactive in
-	// the same way the rest of this struct is: it decides whether a NEW file's directory has a
-	// root to join, and creates one if not. Nothing already written moves or changes.
-	//
-	// See docs/layout/model.md § "useKustomize".
+	// The trap: false does NOT mean "leave kustomize alone". Registering a new file with the
+	// kustomization already governing its directory is an invariant, not a setting, so it happens
+	// either way; this flag only decides what to do when there is no root at all. To leave a
+	// folder's root untouched, root the target lower — the ancestor walk stops at the write jail.
 
 	// UseKustomize declares that this folder is a kustomize folder whose root the operator
 	// maintains. It controls one thing: what happens when NO kustomization governs the path a new
@@ -370,13 +287,8 @@ type GitTargetStatus struct {
 	// +optional
 	Streams *GitTargetStreamsStatus `json:"streams,omitempty"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// An observation, not a condition. A sweep suppressed by spec.prune.mode is the configured
-	// outcome and a healthy reconciliation, so no condition may go False for it — doing so would
-	// train operators to ignore the conditions that mean the mirror is genuinely broken. The
-	// distinction this field rests on: a condition asserts health, an observation reports a fact.
-	// status.streams is the precedent for the second kind.
+	// An observation, not a condition: a sweep suppressed by spec.prune.mode is the configured
+	// outcome, and a condition going False for it would train operators to ignore the real ones.
 
 	// Retention reports documents a resync kept because this target's spec.prune.mode suppressed
 	// the mark-and-sweep. It covers the INFERRED deletion path only: under `never`, a suppressed
@@ -394,33 +306,10 @@ type GitTargetStatus struct {
 	Placement *GitTargetPlacementStatus `json:"placement,omitempty"`
 }
 
-// Design rationale, kept out of the generated CRD description by the blank line below.
-//
-// This stanza answers ONE question: why did a write take the shape it did, or why was it refused.
-// It is deliberately not a preview of what the target would do, and three fields were removed for
-// trying to be one — examples (a fabricated object at a fabricated path), byTypeEntries (a count
-// of a spec map the same GET already returns), and serializeNamespace (a copy of a spec field).
-//
-// The rule that kept them out is worth stating, because it is what to hold new fields against: a
-// field earns its place only if a reader cannot get it from the spec, AND it varies with this
-// folder. The write behaviours that follow from Mode — registration into resources:, the
-// deregistration a delete performs, the $patch: delete an inherited object needs — are constants
-// of the mode rather than facts about the folder, so they are documented on Mode and not
-// enumerated here.
-//
-// To PREVIEW what a target would do, point one at a scratch branch and read the commits it makes.
-// That is complete, reviewable, and real, where any status stanza is a summary; see
-// docs/layout/model.md § "Previewing a target: point it at a scratch branch".
-//
-// The resolution REASON is a condition reason (LayoutResolved), not a field, because every
-// consumer in this ecosystem already reads reasons from conditions.
-//
-// There are NO counters. placedResources, overriddenTypes and refusedResources are metrics, and
-// placements_total carries them with better labels; a counter in status is a status write per
-// event, which re-creates the self-triggering reconcile edge the status work already fixed once.
-//
-// Nothing here may depend on a placement having HAPPENED. Every field is a fact about the folder
-// from the last scan, so the whole stanza is available before the target has ever written a byte.
+// Two rules for anything added here. A field earns its place only if a reader cannot get it from
+// the spec AND it varies with this folder. And nothing may depend on a placement having HAPPENED:
+// every field is a fact from the last scan, available before the target has written a byte.
+// No counters — those are metrics, and a counter in status is a status write per event.
 
 // GitTargetPlacementStatus is what the last scan resolved about a GitTarget folder's layout.
 type GitTargetPlacementStatus struct {
@@ -517,17 +406,9 @@ type GitTargetStreamsStatus struct {
 	Blocked int32 `json:"blocked"`
 }
 
-// Design rationale, kept out of the generated CRD description by the blank line below.
-//
-// Counts, never a per-document list, for the same reason GitTargetStreamsStatus is counts: the
-// field must stay bounded however many documents are retained. An operator who needs to know WHICH
-// documents reads the retention log line or the folder; status answers "how many, under what
-// policy, as of when".
-//
-// The projection is pull-based — the GitTarget controller reads it from the watch manager on each
-// reconcile — so it is only as fresh as the last reconcile, exactly like GitPathAccepted. That is
-// acceptable for an observation and would not be for a gate, which is a further reason this must
-// not become a condition.
+// Counts, never a per-document list, so the field stays bounded however many documents are
+// retained. Pull-based: only as fresh as the last reconcile, which is fine for an observation and
+// is another reason this must not become a condition.
 
 // GitTargetRetentionStatus is a bounded roll-up of what this GitTarget's prune policy kept.
 type GitTargetRetentionStatus struct {
@@ -550,8 +431,7 @@ type GitTargetRetentionStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// Seven default-priority columns wrapped `kubectl get gittargets` on any normal terminal.
-// Flux ships three or four; the identity fields stay one `-o wide` away.
+// Three default columns; seven wrapped `kubectl get gittargets` on a normal terminal.
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`

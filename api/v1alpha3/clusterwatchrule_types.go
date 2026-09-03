@@ -111,14 +111,9 @@ type ClusterResourceRule struct {
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// The field is retained in the schema purely so that re-applying a manifest that still says
-	// "Namespaced" FAILS. Deleting it outright would be worse and silent twice over: CRD pruning
-	// happens on write, so the value would be dropped without an error and the rule would quietly
-	// stop mirroring namespaced objects; and a stored pre-release object would keep its value in
-	// etcd with no Go field left to read, leaving the controller nothing to refuse. The narrowed
-	// enum rejects it at admission, and the compile path refuses a stored value.
+	// Retained in the schema purely so re-applying a manifest that still says "Namespaced" FAILS.
+	// Deleting it would be silent twice over: pruning drops the value without an error, and a
+	// stored pre-release object would keep its value with no Go field left to refuse it.
 
 	// Scope is REMOVED as a choice: a ClusterWatchRule is cluster-scoped only, so "Cluster" is the
 	// only accepted value and also the default, making the field omittable. To watch NAMESPACED
@@ -169,12 +164,9 @@ type ClusterWatchRuleStatus struct {
 	Streams *WatchRuleStreamsStatus `json:"streams,omitempty"`
 }
 
-// Design rationale, kept out of the generated CRD description by the blank line below.
-//
-// Cluster-scoped objects have no namespace, so no namespace policy is a bound for them: a
-// ClusterWatchRule is intentionally cluster-global and is limited only by its source credential's
-// Kubernetes RBAC. Isolating cluster-scoped objects between tenants therefore takes separate
-// credentials/ClusterProviders.
+// Cluster-scoped objects have no namespace, so no namespace policy bounds them: this is
+// cluster-global, limited only by its source credential's RBAC. Isolating tenants takes separate
+// ClusterProviders.
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

@@ -13,7 +13,7 @@
 > Related: [support contract](support-contract.md),
 > [render-root scoping](render-root-scoping.md),
 > [render attribution](render-attribution.md), and
-> [layout shape 8](../../layout/shapes/8-base-owned-field-edit/README.md), which is this
+> [layout shape 8](../../../test/fixtures/layout-corpus/shapes/8-base-owned-field-edit/README.md), which is this
 > document's refusal as an executable scenario.
 
 An external-base overlay must never write an inherited field into the shared base. For

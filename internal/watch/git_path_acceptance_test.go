@@ -165,8 +165,7 @@ func TestReportGitPathRefusal_RenderFidelityKeepsGitPathAccepted(t *testing.T) {
 // TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake covers the branch that made
 // Failure A undiagnosable: the gate answers applied=false for a stale revision, an unknown scope
 // or an unknown target, and the caller used to discard that answer without a word — so a scope
-// could owe a report for ever with nothing anywhere saying why
-// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
+// could owe a report for ever with nothing anywhere saying why.
 func TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake(t *testing.T) {
 	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 	log, lines := recordingLogger()
@@ -210,7 +209,7 @@ func TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision(t *testing.T) {
 // Sibling drains record concurrently and their publishes can reorder, so a drain that observed
 // "one scope still pending" could write that over the fresh "True" a later drain had already
 // published. Publishing what the GATE currently says instead of what this drain saw removes the
-// race (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+// race.
 func TestRenderFidelityStatus_PublishesTheCurrentStatusNotTheObservedOne(t *testing.T) {
 	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 	manager := &Manager{Log: logr.Discard()}

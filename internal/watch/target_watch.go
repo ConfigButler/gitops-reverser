@@ -55,7 +55,7 @@ func targetWatchClosedErr(ctx context.Context) error {
 // targetWatchSet is one GitTarget's running streams, keyed by the cell each one covers. The
 // plan is applied cell by cell, so cancellation is too: there is no set-wide cancel, because a
 // single one is what made adding a rule replay every unrelated cell into a queue shared with
-// other tenants (docs/design/target-watch-plan.md, "Implementation order", step 2).
+// other tenants.
 type targetWatchSet struct {
 	streams map[types.CellKey]*runningTargetWatch
 }
@@ -77,8 +77,7 @@ func (s *targetWatchSet) plan() targetWatchPlan {
 }
 
 // stop cancels one cell's stream and drops it. It never touches files: a deselected cell's
-// documents are converged by a Git-side sweep, not by the watch layer
-// (docs/design/target-watch-plan.md, "Removal is a Git-side sweep").
+// documents are converged by a Git-side sweep, not by the watch layer.
 func (s *targetWatchSet) stop(cell types.CellKey) {
 	running, ok := s.streams[cell]
 	if !ok {
@@ -106,8 +105,7 @@ type targetWatchKey struct {
 // Nothing about a stream fences the work it queues. Once an item is on the branch worker's
 // FIFO it will be applied, and a canceled stream's goroutine can still be in flight, so a
 // short tail of writes from a deselected cell is accepted rather than rejected on arrival. The
-// plan is applied by canceling streams, at the producer
-// (docs/design/target-watch-plan.md, "Cut at the producer").
+// plan is applied by canceling streams, at the producer.
 type targetWatchStream struct {
 	key targetWatchKey
 	ops OperationSet
@@ -129,7 +127,7 @@ func (s targetWatchStream) sourceCell() types.CellKey {
 // its replay runs under, the render-fidelity scope it reports into, and the source cell stamped
 // on the work it queues. The served version stays on the key — a stream has to open a watch
 // with a concrete version — but it is not part of the cell, so the key always round-trips to
-// the boundary it sweeps (docs/design/target-watch-plan.md, "Diff the plan").
+// the boundary it sweeps.
 func (k targetWatchKey) Cell() types.CellKey {
 	return types.CellKeyFor(k.GVR, k.Namespace)
 }
@@ -836,9 +834,9 @@ func (m *Manager) enqueueReplayResync(
 		return nil
 	}
 	// Cancellation has to be prompt on the PRODUCER side: nothing filters the branch worker's
-	// queue, so what bounds a retired stream's tail is how quickly it stops enqueuing
-	// (docs/design/target-watch-plan.md, "Cut at the producer"). A snapshot gathered for a cell
-	// that has since been stopped or restarted has nothing left to report into either.
+	// queue, so what bounds a retired stream's tail is how quickly it stops enqueuing. A snapshot
+	// gathered for a cell that has since been stopped or restarted has nothing left to report
+	// into either.
 	select {
 	case <-ctx.Done():
 		return nil
@@ -860,7 +858,7 @@ func (m *Manager) enqueueReplayResync(
 	// read -- and with it went the only calls that mark acceptance, render fidelity and retention
 	// for this cell. The render-fidelity scope then owed a report under a revision no running
 	// stream would ever report again, which pins the GitTarget at Ready=False and, through it,
-	// every WatchRule pointing at it (docs/design/watch-plane-status-convergence-failures.md).
+	// every WatchRule pointing at it.
 	//
 	// The stream.key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather

@@ -25,7 +25,6 @@ type WatchManagerInterface interface {
 	// It replaces a ReconcileForRuleChange that did the work inline, on the controller worker
 	// that observed the rule: a discovery call, a namespace list, a full re-projection, and then a
 	// replan of every running GitTarget. A rule edit now replans the ONE target the rule names.
-	// See docs/design/watch-manager-ownership.md.
 	TriggerRuleChange(gitDest types.ResourceReference)
 
 	// TriggerAllRuleChange marks every declared GitTarget. It is the rule-DELETION path only: the
@@ -125,6 +124,16 @@ const (
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.
 	RequeueStreamSettleInterval = 10 * time.Second
+	// RequeueWriteLostInterval is how soon a reconcile whose status write lost the optimistic-lock
+	// race comes back. It is short because there is nothing to wait FOR: the write was rejected
+	// against a resourceVersion this reconcile had already read, so the only thing that has to
+	// happen before the retry can succeed is the informer cache catching up with a write that is
+	// already durable — milliseconds, not a settle window.
+	//
+	// It used to borrow RequeueStreamSettleInterval, which put the recovery ten seconds out and
+	// made every lost write a ten-second window of published-but-stale status. Two unrelated
+	// cadences shared one constant; only the coincidence that both were "soon" hid it.
+	RequeueWriteLostInterval = 100 * time.Millisecond
 
 	// RetryInitialDuration is the initial duration for exponential backoff retry.
 	RetryInitialDuration = 100 * time.Millisecond

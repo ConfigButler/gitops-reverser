@@ -19,8 +19,7 @@ import (
 // (see [types.CellKey]), so a storage-version bump is one cell whose spec changed — a
 // `restart` — and not the retirement of one key plus the birth of another. Diffing
 // `map[targetWatchKey]string` directly would classify it the second way, which would replay
-// the cell AND drop its readiness result rather than replacing the stream in place
-// (docs/design/target-watch-plan.md, "Diff the plan").
+// the cell AND drop its readiness result rather than replacing the stream in place.
 type cellSpec struct {
 	// Operations is the canonical, sorted operation filter, as rendered by operationSpec.
 	Operations string
@@ -37,8 +36,7 @@ type targetWatchPlan struct {
 // named by either plan appears in exactly one of the four lists, each sorted for a stable log.
 //
 // It is what the streams are driven from: keep leaves a stream and its readiness result alone,
-// start and restart open one, and stop cancels one and drops its key without touching files
-// (docs/design/target-watch-plan.md, "Diff the plan").
+// start and restart open one, and stop cancels one and drops its key without touching files.
 type targetWatchPlanDiff struct {
 	// Keep is the cells whose key and specification are unchanged.
 	Keep []types.CellKey

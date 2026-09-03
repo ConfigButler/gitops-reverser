@@ -1,0 +1,26 @@
+# The second half of this scenario: an edit to the pod-template annotation that the shared layer
+# patches in. No file is written, and the whole flush is refused before a byte moves.
+#
+# The refusal names base/deployment.yaml, NOT layers/observability/scrape-annotations.yaml, and
+# that is the part worth reading. The layer's patch and the base's Deployment carry the same
+# identity, so the manifest store keeps one of them (the base) and drops the other as a duplicate.
+# The edit is therefore planned against the base document and refused for escaping the write scope
+# -- the same refusal shape 8 produces, reached by a different route. Adding a shared layer above
+# a base does not add a new refusal; it does not change the answer at all.
+#
+# GitPathAccepted's message is the writer's own and is asserted by the corpus. Stalled is the
+# controller's summary of it.
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "False"
+      reason: WriteBoundaryRefused
+      message: >-
+        planned write path "base/deployment.yaml" escapes the GitTarget write scope: the operator
+        only ever writes inside spec.path (reads may reach shared context such as ../../base,
+        writes never leave it)
+    - type: Stalled
+      status: "True"
+      reason: WriteBoundaryRefused
+      message: >-
+        the edit had nowhere safe to land; the folder itself is accepted

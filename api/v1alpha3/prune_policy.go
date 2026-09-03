@@ -23,22 +23,14 @@ const (
 	PruneAlways PruneMode = "Always"
 )
 
-// Design rationale, kept out of the generated CRD description by the blank line below.
-//
-// An object rather than a bare enum field on GitTargetSpec, so a later volume guard (for example
-// maxDeletesPerCommit) can be added as a sibling field. Shipping the enum as a scalar would force
-// a scalar-to-object change later, which is breaking; shipping the object costs one nesting level
-// now and nothing afterwards.
+// An object rather than a bare enum so a later volume guard (maxDeletesPerCommit) can be a sibling
+// field; scalar-to-object would be breaking later, the nesting level costs nothing now.
 
 // PrunePolicy declares which deletion paths may remove documents from a GitTarget's folder.
 type PrunePolicy struct {
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// The kubebuilder default writes OnEvent into a NEWLY created object, which is useful but is
-	// deliberately NOT the compatibility mechanism: a GitTarget stored before this field existed
-	// carries no value at all, and Kubernetes does not retro-default stored objects. Every reader
-	// must therefore go through EffectivePruneMode, which maps both an absent policy and an empty
-	// mode to OnEvent — so an old GitTarget becomes safe without first being edited.
+	// The kubebuilder default only applies to NEWLY created objects; Kubernetes does not
+	// retro-default stored ones. Every reader must go through EffectivePruneMode, which maps an
+	// absent policy and an empty mode to OnEvent.
 
 	// Mode selects which deletion paths are enabled. `Never` removes nothing; `OnEvent` mirrors an
 	// observed source DELETE but never infers a deletion from a resync snapshot; `Always` enables

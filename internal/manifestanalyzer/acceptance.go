@@ -11,36 +11,23 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// Acceptance is the M4 adoption gate: the distinct step between "build the store"
-// and "use it as the planning model", described in
-// docs/spec/current-manifest-support-review.md ("Acceptance Checks On
-// First Materialization"). A GitTarget folder is adopted only when it passes; any
-// blocking refusal stops it and reconciles nothing until a human cleans the folder.
+// Acceptance is the adoption gate between building the store and using it as the planning model.
+// A folder is adopted only when it passes; any blocking refusal reconciles nothing until a human
+// cleans the folder. It refuses:
 //
-// The gate implements the five-bucket classification and the refuse rules:
-//
-//   - duplicate manifest identity (we will not guess which copy the author meant);
-//   - a managed file that is not entirely valid KRM — a multi-document file may hold
-//     only managed KRM documents, never an empty/comment/non-KRM/invalid passenger
-//     (Non-Negotiable Design Decision #2). This is what lets the store drop the
-//     per-document index: an accepted managed file's documents are contiguous;
-//   - a standalone non-KRM or invalid YAML file (bucket 2: the dangerous unknown);
-//   - unwatched API-backed KRM (bucket 4: served, but this GitTarget does not watch
-//     it) — refused, never pruned;
-//   - recognised KRM the mapper cannot tie to a single served, watched resource and
-//     that is not allowlisted;
+//   - a duplicate manifest identity (we will not guess which copy the author meant);
+//   - a managed file that is not entirely valid KRM, never an empty/non-KRM passenger. This is
+//     what lets the store drop the per-document index: an accepted file's documents are contiguous;
+//   - a standalone non-KRM or invalid YAML file;
+//   - unwatched API-backed KRM: refused, never pruned;
+//   - KRM the mapper cannot tie to a single served, watched resource and that is not allowlisted;
 //   - a watched resource outside this GitTarget's scope (right kind, wrong namespace);
-//   - a managed file that mixes managed resources with an allowlisted non-API KRM
-//     document (allowlisted KRM must live in its own retained file).
+//   - a managed file mixing managed resources with an allowlisted non-API KRM document.
 //
-// Allowlisted non-API KRM such as kustomization.yaml is retained outside the model
-// (store.Retained) and never materialised — see the Allowlist type. Non-YAML files
-// and standalone empty documents are ignored and never cause a refusal.
+// Non-YAML files and standalone empty documents are ignored and never refuse.
 //
-// The mapping-aware refusals (unwatched/unresolved/out-of-scope) require an API
-// source: a structure-only store cannot judge them, so they are skipped, leaving
-// the structure-only starter checks (duplicate, impure managed file, non-KRM,
-// invalid). This matches the design's "starter requirement".
+// The mapping-aware refusals need an API source, so a structure-only store skips them and runs
+// only the structural checks. See docs/spec/current-manifest-support-review.md.
 type Acceptance struct {
 	// Accepted is true only when no blocking refusal was found.
 	Accepted bool
@@ -85,16 +72,12 @@ const (
 	// IssueOutOfScope marks a watched kind whose resource falls outside this
 	// GitTarget's scope (right kind, wrong namespace).
 	IssueOutOfScope IssueKind = "out-of-scope"
-	// IssueUnsupportedKustomize marks a retained kustomization.yaml that uses a feature
-	// the contextual-namespace writer cannot map back to editable source documents
-	// (generators / components / helm / replacements / transformers / name(pre|suf)fix /
-	// remote bases). The folder is refused rather than written, because the operator cannot
-	// take responsibility for content produced this way.
+	// IssueUnsupportedKustomize marks a kustomization using a feature the writer cannot map back
+	// to editable source. The folder is refused rather than written, because the operator cannot
+	// take responsibility for content produced that way.
 	//
-	// `patches:` is NOT on that list any more: a strategic-merge patch named by path is
-	// tolerated as read-only build context (the render is mirrored, the patch file is never
-	// managed, and nothing is routed into it). The shapes we cannot read still refuse by name —
-	// an inline patch, a JSON6902 op list, a path outside the tree.
+	// `patches:` is NOT on that list: a strategic-merge patch named by path is tolerated as
+	// read-only build context. The shapes we cannot read still refuse by name.
 	IssueUnsupportedKustomize IssueKind = "unsupported-kustomize"
 	// IssueForeignFile marks a non-YAML regular file under spec.path that matches no
 	// recognized role — the operator-exclusive subtree refuses content it cannot manage
@@ -131,13 +114,11 @@ const (
 	// flush was re-rendered with the write applied, and either the edited document did not
 	// come out as the live object, or the write moved an object it never set out to touch.
 	//
-	// It is the write-plan half of "attribution may be heuristic, verification may not"
-	// (docs/design/support-boundary/render-attribution.md §5). The projection is ALLOWED to
-	// guess which file an edit belongs in, precisely because this refuses the guess when the
-	// renderer disagrees. And it must refuse LOUDLY: a write that does not survive the
-	// re-render is one that would not converge — the entry overrides it straight back on the
-	// next render — so absorbing it would leave a resource silently un-mirrored forever,
-	// which is the exact failure this whole path exists to prevent.
+	// The write-plan half of "attribution may be heuristic, verification may not": the projection
+	// is ALLOWED to guess which file an edit belongs in precisely because this refuses the guess
+	// when the renderer disagrees. It must refuse LOUDLY, because a write that does not survive
+	// the re-render would never converge and absorbing it leaves a resource silently un-mirrored.
+	// See docs/design/support-boundary/render-attribution.md §5.
 	IssueRenderRefused IssueKind = "kustomize-render-refused"
 	// IssueRenderDoesNotMatchLive marks a rendered ${...} value whose corresponding live field is
 	// absent or different. It is a runtime fidelity refusal, distinct from structural Git-path
@@ -147,13 +128,11 @@ const (
 	// document: the BUILD and the USER both rewrote one list whose elements carry no unique
 	// name to pair the source's with the render's by (see SourceFormRefusedError).
 	//
-	// The alternative to refusing is aligning the two lists by position, and that is not a
-	// conservative guess — it is measurably wrong: kustomize's strategic merge PREPENDS a
-	// container a patch adds, so the source's first element is not the render's first element in
-	// exactly the case where it matters. Writing one element's fields into another is the kind of
-	// corruption no re-render can catch, because the patch re-imposes its own values and the
-	// render comes out identical either way. So this refusal is not the oracle being cautious; it
-	// is the one place the oracle cannot see, and it must fail loudly instead.
+	// Aligning the two lists by position is not a conservative guess but measurably wrong:
+	// kustomize's strategic merge PREPENDS a container a patch adds, so the source's first element
+	// is not the render's first in exactly the case where it matters. Writing one element's fields
+	// into another is corruption no re-render can catch, since the patch re-imposes its values.
+	// This is the one place the oracle cannot see, so it must fail loudly.
 	IssueUnplaceableEdit IssueKind = "unplaceable-edit"
 
 	// A refusal made up purely of the write-boundary kinds above surfaces as the GitTarget
@@ -231,16 +210,12 @@ func Accept(store *ManifestStore, policy AcceptancePolicy) Acceptance {
 	return acceptWith(store, policy, hasAPISource(store))
 }
 
-// AcceptStructureOnly runs only the refusals that are pure structural facts about the
-// folder — duplicate identity, impure managed file, standalone non-KRM/invalid YAML,
-// a managed resource hiding in an allowlisted build-directive, and an unsupported
-// kustomization. It NEVER runs the mapping-aware refusals (unwatched / out-of-scope),
-// which depend on live followability discovery and can blink on a discovery wobble.
+// AcceptStructureOnly runs only the refusals that are pure structural facts about the folder. It
+// NEVER runs the mapping-aware ones, which depend on live discovery and can blink on a wobble.
 //
-// This is the live writer's entry point. The writer's store is built with a ready
-// followability registry, so hasAPISource would be true and plain Accept would also run
-// the mapping refusals — but the writer must refuse only on the cases we already know are
-// a problem from structure alone, never on a transient discovery fact.
+// This is the live writer's entry point. Its store has a ready followability registry, so plain
+// Accept would run the mapping refusals too — but the writer must refuse only on what is a problem
+// from structure alone, never on a transient discovery fact.
 func AcceptStructureOnly(store *ManifestStore) Acceptance {
 	return acceptWith(store, AcceptancePolicy{}, false)
 }

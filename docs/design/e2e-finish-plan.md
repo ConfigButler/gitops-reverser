@@ -1,6 +1,6 @@
 # E2E Finish Plan
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
 
 This is the one active plan for the remaining e2e harness work.
 

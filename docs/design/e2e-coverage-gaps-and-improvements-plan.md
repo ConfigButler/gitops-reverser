@@ -1,6 +1,6 @@
 # E2E Coverage Gaps & Improvements — plan
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Status: PROPOSAL — 2026-06-26. **Architecture-led**: [architecture.md](../architecture.md) is the
 > spine. This plan reads the current e2e suite against the architecture's load-bearing guarantees,

@@ -68,18 +68,13 @@ type AttributionResult string
 // `latest` and `name` can hold a delete fact too, so they are NOT named for one: either can equally
 // hold a write, and a value that could mean either must not claim a verb.
 const (
-	// AttributionDeleteSticky is the sticky removal pointer: a fact whose own verb is a delete, filed by
-	// uid into a slot no later WRITE fact may overwrite. It is the strongest evidence a removal can
-	// have about itself, so it is consulted before the exact tier — and only by a removal, because an
-	// exact-capable event asks who produced a version rather than who deleted an object.
+	// AttributionDeleteSticky is the sticky removal pointer: a delete-verb fact filed by uid into a
+	// slot no later WRITE may overwrite. The stickiness is the whole reason it can answer at all —
+	// every other structure would have been overwritten by the finalizer patch following the
+	// delete. Consulted before the exact tier, and only by a removal.
 	//
-	// "sticky" is the half of the name that is not the verb, and it is there because the stickiness is
-	// the whole reason this tier can answer at all: every other structure would have been overwritten
-	// by the finalizer patch that followed the delete.
-	//
-	// It is also the only tier the TTL does not bound. A uid is unique across space and time, so the
-	// statement can never be superseded; its horizon is the index's caps instead. See
-	// docs/spec/attribution.md.
+	// The only tier the TTL does not bound: a uid is unique across space and time, so the statement
+	// can never be superseded. See docs/spec/attribution.md.
 	AttributionDeleteSticky AttributionResult = "delete_sticky"
 	// AttributionExact is an exact UID+resourceVersion match: this actor produced this exact version.
 	AttributionExact AttributionResult = "exact"
@@ -125,24 +120,15 @@ const (
 // back by the watch-event resolver. It names an author candidate and carries the evidence the join
 // needs to decide confidence; it is never object state.
 //
-// Every field here is either read by the join or printed when a fact is investigated. That is a
-// deliberate bar, because a fact is not stored once: it is broadcast to every process following its
-// type, held for the whole TTL, and replayed into memory on every restart, so a field nothing reads
-// is paid for on all three. Three fields were removed for failing it:
+// Every field is read by the join or printed when a fact is investigated. A deliberate bar: a fact
+// is broadcast to every process following its type, held for the whole TTL, and replayed on every
+// restart, so a field nothing reads is paid for three times.
 //
-//   - the group/resource, which is the STREAM'S OWN NAME — the index takes the scope from the
-//     entry's key, never from the fact, so carrying it duplicated the routing on every entry;
-//   - the subresource, which no tier joins on and nothing logs.
-//
-// A stored is-service-account bool went the same way, for a different reason: it is not evidence,
-// it is a prefix check on Author that the reader can do for itself (see ActorKind).
-//
-// Name was removed with the subresource, on the same observation — no tier read it — and is back,
-// because that observation was true of the code and false of the domain. An aggregated-API write is
-// audited with no uid and no resourceVersion, and the name from the URL path is the ONLY identity it
-// carries, so a fact without it could not be joined at all for that whole population. "No code reads
-// it" and "nothing could ever read it" are different claims, and only the second justifies dropping a
-// field.
+// Name was once removed on the observation that no tier read it, and is back, because that was true
+// of the code and false of the domain: an aggregated-API write is audited with no uid and no
+// resourceVersion, so the name from the URL path is the ONLY identity it carries. "No code reads
+// it" and "nothing could ever read it" are different claims, and only the second justifies dropping
+// a field.
 type AuthorFact struct {
 	Namespace string `json:"namespace,omitempty"`
 	UID       string `json:"uid,omitempty"`
@@ -188,18 +174,13 @@ var errFactWithoutAuthor = errors.New("attribution fact carries no author")
 // `author` must be present, a string, and non-empty. Missing, `null`, and `""` are the same
 // violation and are all refused.
 //
-// Go cannot express "a string of at least one character" as a type — every type has a zero value
-// that is constructible without going through any constructor, and `encoding/json` writes exported
-// fields straight past one anyway — so the constraint lives at the only boundary that can hold it:
-// the point where a fact written by somebody else enters this process.
+// Go cannot express "a non-empty string" as a type, so the constraint lives at the only boundary
+// that can hold it: where a fact written by somebody else enters this process.
 //
-// The refusal is deliberately at ENTRY granularity, not per fact. This operator's publish gate
-// cannot produce an authorless fact (AuthorFactFromEvent refuses an event whose user is
-// unresolvable, and counts it as no_attribution_fact), so an entry carrying one was written by
-// something else: a different version, a different producer, or a hand-written entry. That is a
-// protocol violation rather than a low-quality fact, and it is better counted and logged loudly —
-// it lands on attribution_fact_stream_decode_errors_total with the stream and entry id — than
-// half-absorbed by silently dropping one fact out of a batch.
+// The refusal is at ENTRY granularity, not per fact. Our own publish gate cannot produce an
+// authorless fact, so an entry carrying one came from a different version or producer. That is a
+// protocol violation rather than a low-quality fact, and counting it loudly beats half-absorbing it
+// by dropping one fact out of a batch.
 func (f *AuthorFact) UnmarshalJSON(raw []byte) error {
 	// wire has AuthorFact's fields and tags but none of its methods, so decoding it does not recurse.
 	type wire AuthorFact
@@ -261,13 +242,9 @@ func (r AuthorResolution) ActorKind() ActorKind {
 // may be published: an event with no objectRef or no user produces nothing, or waiters are woken by
 // facts that can name nobody.
 //
-// The one rule that changes from the per-key write path is the name check. A deletecollection is
-// name-less by nature and is now exactly the case that produces a fact — one fact describing the
-// COLLECTION, which every removal in its scope joins — so "no resolvable name" becomes "no name and
-// not a collection verb".
-//
-// The caller has already applied the intrinsic accept gate: reads, failures, dry runs, and
-// non-ResponseComplete stages never reach here.
+// The one rule that changes from the per-key write path is the name check: a deletecollection is
+// name-less by nature and is exactly the case that produces a fact, so "no resolvable name" becomes
+// "no name and not a collection verb". The caller has already applied the intrinsic accept gate.
 func AuthorFactFromEvent(
 	ctx context.Context,
 	event auditv1.Event,

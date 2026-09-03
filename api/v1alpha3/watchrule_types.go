@@ -120,27 +120,14 @@ type ResourceRule struct {
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// Every item's outcome is aggregated into the ONE SourceNamespaceAuthorized condition, so
-	// automation has a single condition to inspect. A denied explicit name refuses the whole
-	// WatchRule rather than silently trimming that item: mirroring two of the three namespaces a
-	// rule asked for is worse than a loud failure.
-	//
-	// "*" used to mean "every namespace the GitTarget's allowedSourceNamespaces admits", resolved
-	// live into a concrete set and planned as one stream PER NAMESPACE. It was therefore defined in
-	// terms of a field that no longer exists, and RBAC cannot supply the missing definition: it
-	// answers "may I watch X in namespace Y", never "which namespaces may I watch". Any set-valued
-	// reading needs a Namespace LIST in the source cluster, which is exactly the read the deletion
-	// removed. So "*" is now one cluster-wide list and one cluster-wide watch, all or nothing,
-	// which is what a Kubernetes reader expects it to mean and whose failure is a clean 403 rather
-	// than a silent empty set.
+	// A denied explicit name refuses the WHOLE WatchRule rather than trimming that item: mirroring
+	// two of the three namespaces a rule asked for is worse than a loud failure.
 	//
 	// A cluster-wide cell is a PEER of a named-namespace cell on the same type, never a
 	// replacement: each rule carries its own operations filter, and collapsing the two once widened
-	// a named rule's stream to every namespace its credential could read while discarding that
-	// filter (see CellKey in internal/types/cell.go). A target carrying both "*" and a named rule
-	// for one type therefore runs two streams over overlapping objects, and that is correct.
+	// a named rule's stream while discarding that filter (see CellKey in internal/types/cell.go).
+	// A target carrying both therefore runs two streams over overlapping objects, and that is
+	// correct.
 
 	// SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
 	// mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
@@ -250,13 +237,8 @@ type WatchRuleStreamsStatus struct {
 	PendingSample []string `json:"pendingSample,omitempty"`
 }
 
-// Design rationale, kept out of the generated CRD description by the blank line below.
-//
-// The source-namespace gate is deny-by-default and re-evaluated on EVERY reconcile, which is what
-// makes a policy tightened after a rule was accepted revoke that rule rather than grandfather it.
-// Where the source is the operator's OWN cluster, an authorized override deliberately bypasses live
-// namespace RBAC — the operator reads through its own cluster-wide credential — which is why it
-// takes an explicit platform-admin delegation on the ClusterProvider to enable at all.
+// Deny-by-default and re-evaluated on EVERY reconcile, so a policy tightened after a rule was
+// accepted revokes it rather than grandfathering it.
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

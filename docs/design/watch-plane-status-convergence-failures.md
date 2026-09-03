@@ -1,5 +1,11 @@
 # Status convergence failures on the watch-plane rework
 
+> **design**: Failure A solved, Failure B open. An investigation log rather than a proposal,
+> written so a fresh context can continue without re-deriving anything.
+> Index: [`../INDEX.md`](../INDEX.md)
+> Related: [`target-watch-plan.md`](target-watch-plan.md),
+> [`watch-manager-ownership.md`](watch-manager-ownership.md)
+
 **Failure A solved; Failure B open.** Two reproducible failures on
 `feat/target-watch-cell-identity` (PR #315), both in status the branch's own rework produces, plus
 an inventory of what is ambient and must not be confused with them. Written so a fresh context can

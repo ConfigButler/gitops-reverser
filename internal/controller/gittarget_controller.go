@@ -175,7 +175,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	publishLayout(st, &target, layout, scanned)
 
 	providerNS := target.Namespace
-	validated, validationMsg, validationResult, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS)
+	validated, validationMsg, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS)
 	if validationErr != nil {
 		return ctrl.Result{}, validationErr
 	}
@@ -197,17 +197,16 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			reason:  GitTargetReadyReasonValidationFailed,
 			message: validationMsg,
 			blocked: "Blocked by Validated=False",
-			result:  validationResult,
 		})
 	}
 
 	encryptionReady, encryptionMessage, encryptionRequeueAfter := r.evaluateEncryptionGate(ctx, st, &target, log)
 	if !encryptionReady {
 		return r.stall(ctx, st, blockedGate{
-			reason:  GitTargetReadyReasonEncryptionNotConfigured,
-			message: encryptionMessage,
-			blocked: "Blocked by EncryptionConfigured=False",
-			result:  &ctrl.Result{RequeueAfter: encryptionRequeueAfter},
+			reason:       GitTargetReadyReasonEncryptionNotConfigured,
+			message:      encryptionMessage,
+			blocked:      "Blocked by EncryptionConfigured=False",
+			requeueAfter: encryptionRequeueAfter,
 		})
 	}
 
@@ -272,14 +271,14 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	// requeueAfter shortens the cadence when the status write lost a race: the object then holds
 	// the WINNER's older answer and nothing re-enqueues it, because the For() predicate filters
-	// status-only updates by design (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+	// status-only updates by design.
 	requeue := st.requeueAfter(gitTargetRequeue(rd))
 	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
 	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
 	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
 	// request to explain it. This is the only place that publishes the axis, so it is the only
 	// place that can say what it published and how long it intends to wait before saying anything
-	// again (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+	// again.
 	log.Info("GitTarget status published",
 		"writeLost", st.writeLost(),
 		"gitTarget", target.Namespace+"/"+target.Name,
@@ -310,8 +309,8 @@ type blockedGate struct {
 	reason, message string
 	// blocked explains, on each data-plane condition, why it was not evaluated at all.
 	blocked string
-	// result overrides the requeue this gate would otherwise get.
-	result *ctrl.Result
+	// requeueAfter overrides the steady cadence this gate would otherwise get. Zero means take it.
+	requeueAfter time.Duration
 }
 
 // stall publishes a terminal control-plane outcome and ends the reconcile.
@@ -338,10 +337,15 @@ func (r *GitTargetReconciler) stall(
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
-	if gate.result != nil {
-		return *gate.result, nil
+	// Through st.requeueAfter, exactly like the converged path below: a stalled reconcile whose
+	// status write lost the race has published nothing, so leaving it on the gate's own cadence
+	// strands the object on the previous answer for five minutes. This path returned gate.result
+	// directly and was the one place that skipped the check.
+	cadence := gate.requeueAfter
+	if cadence == 0 {
+		cadence = RequeueSteadyInterval
 	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+	return ctrl.Result{RequeueAfter: st.requeueAfter(cadence)}, nil
 }
 
 // observeSourceReachable projects the source cluster's runtime reachability.
@@ -371,23 +375,23 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
-) (bool, string, *ctrl.Result, error) {
-	validated, message, reason, result, err := r.validateProviderAndBranch(ctx, target, providerNS)
+) (bool, string, error) {
+	validated, message, reason, err := r.validateProviderAndBranch(ctx, target, providerNS)
 	if err != nil {
-		return false, "", nil, err
+		return false, "", err
 	}
 	if !validated {
 		st.set(GitTargetConditionValidated, metav1.ConditionFalse, reason, message)
-		return false, fmt.Sprintf("Validated gate failed: %s", reason), result, nil
+		return false, fmt.Sprintf("Validated gate failed: %s", reason), nil
 	}
 
-	conflict, conflictMsg, conflictReason, conflictResult, conflictErr := r.checkForConflicts(ctx, target, providerNS)
+	conflict, conflictMsg, conflictReason, conflictErr := r.checkForConflicts(ctx, target, providerNS)
 	if conflictErr != nil {
-		return false, "", nil, conflictErr
+		return false, "", conflictErr
 	}
 	if conflict {
 		st.set(GitTargetConditionValidated, metav1.ConditionFalse, conflictReason, conflictMsg)
-		return false, fmt.Sprintf("Validated gate failed: %s", conflictReason), &conflictResult, nil
+		return false, fmt.Sprintf("Validated gate failed: %s", conflictReason), nil
 	}
 
 	if placementOK, placementMsg := validatePlacementPolicy(target.Spec.Placement); !placementOK {
@@ -396,7 +400,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 			GitTargetReasonInvalidConfig,
 			placementMsg,
 		)
-		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
+		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil
 	}
 
 	if commitOK, commitMsg := validateCommitConfig(target); !commitOK {
@@ -405,7 +409,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 			GitTargetReasonInvalidConfig,
 			commitMsg,
 		)
-		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
+		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil
 	}
 
 	// The source cluster's connectivity inputs (kubeConfig) are validated on the referenced
@@ -418,12 +422,11 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	// before DeclareForGitTarget below, so an unauthorized target starts no watch and writes no Git.
 	authorized, authReason, authMsg, authErr := r.checkSourceAuthorization(ctx, target)
 	if authErr != nil {
-		return false, "", nil, authErr
+		return false, "", authErr
 	}
 	if !authorized {
 		st.set(GitTargetConditionValidated, metav1.ConditionFalse, authReason, authMsg)
-		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
-		return false, fmt.Sprintf("Validated gate failed: %s", authReason), &result, nil
+		return false, fmt.Sprintf("Validated gate failed: %s", authReason), nil
 	}
 
 	st.set(GitTargetConditionValidated,
@@ -431,7 +434,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		GitTargetReasonOK,
 		"Provider, branch, placement and commit validation passed",
 	)
-	return true, "", nil, nil
+	return true, "", nil
 }
 
 func (r *GitTargetReconciler) evaluateEncryptionGate(
@@ -574,7 +577,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 	// target has been quiet for its settle window, so this reconcile has no result to wait for —
 	// it reads back the LAST pass's outcome, which is the honest thing to project: the reconcile
 	// has never observed its own effect, it previously observed an intermediate state that merely
-	// looked more immediate. See docs/design/watch-manager-ownership.md.
+	// looked more immediate.
 	manager.DeclareForGitTarget(
 		gitDest,
 		target.SourceCluster(),
@@ -793,16 +796,15 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
-) (bool, string, string, *ctrl.Result, error) {
+) (bool, string, string, error) {
 	var gp configbutleraiv1alpha3.GitProvider
 	gpKey := k8stypes.NamespacedName{Name: target.Spec.ProviderRef.Name, Namespace: providerNS}
 	if err := r.Get(ctx, gpKey, &gp); err != nil {
 		if apierrors.IsNotFound(err) {
 			msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.ProviderRef.Name)
-			result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
-			return false, msg, GitTargetReasonProviderNotFound, &result, nil
+			return false, msg, GitTargetReasonProviderNotFound, nil
 		}
-		return false, "", "", nil, err
+		return false, "", "", err
 	}
 
 	branchAllowed := false
@@ -825,28 +827,27 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 			providerNS,
 			target.Spec.ProviderRef.Name,
 		)
-		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
-		return false, msg, GitTargetReasonBranchNotAllowed, &result, nil
+		return false, msg, GitTargetReasonBranchNotAllowed, nil
 	}
 
-	return true, "", "", nil, nil
+	return true, "", "", nil
 }
 
 func (r *GitTargetReconciler) checkForConflicts(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
-) (bool, string, string, ctrl.Result, error) {
+) (bool, string, string, error) {
 	// A path the writer would reject (absolute, backslashes, ".." traversal) owns
 	// nothing, so it must neither block others nor be blocked here — its own write
 	// path fails it. Only well-formed paths participate in overlap detection.
 	if !git.IsValidTargetPath(target.Spec.Path) {
-		return false, "", "", ctrl.Result{}, nil
+		return false, "", "", nil
 	}
 
 	var allTargets configbutleraiv1alpha3.GitTargetList
 	if err := r.List(ctx, &allTargets); err != nil {
-		return false, "", "", ctrl.Result{}, fmt.Errorf("list GitTargets for conflict validation: %w", err)
+		return false, "", "", fmt.Errorf("list GitTargets for conflict validation: %w", err)
 	}
 
 	for i := range allTargets.Items {
@@ -892,11 +893,11 @@ func (r *GitTargetReconciler) checkForConflicts(
 					target.Spec.Branch,
 				)
 			}
-			return true, msg, GitTargetReasonTargetConflict, ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+			return true, msg, GitTargetReasonTargetConflict, nil
 		}
 	}
 
-	return false, "", "", ctrl.Result{}, nil
+	return false, "", "", nil
 }
 
 func (r *GitTargetReconciler) ensureEncryptionSecret(
@@ -1141,9 +1142,6 @@ func gitTargetRetentionStatus(summary watch.RetentionSummary) *configbutleraiv1a
 		return nil
 	}
 	observed := metav1.NewTime(summary.ObservedTime)
-	if summary.ObservedTime.IsZero() {
-		observed = metav1.Now()
-	}
 	return &configbutleraiv1alpha3.GitTargetRetentionStatus{
 		Mode:              summary.Mode,
 		RetainedDocuments: clampIntToInt32(summary.RetainedDocuments),

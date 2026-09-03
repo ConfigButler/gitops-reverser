@@ -53,8 +53,7 @@ type renderFidelityScopeResult struct {
 	// stale tail is correct and must stay; being unable to see that it happened is not. A scope
 	// stuck pending looks identical whether no stream has reported yet or a stream is reporting
 	// steadily under a revision the plan has moved past, and those two have opposite repairs —
-	// the first waits, the second can wait for ever
-	// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
+	// the first waits, the second can wait for ever.
 	refusedRevision uint64
 }
 
@@ -80,8 +79,7 @@ type renderFidelityTargetState struct {
 // a cell whose stream is left running across a plan change keeps its result and its revision,
 // and only the cells that were started or restarted go back to pending. A target-wide epoch
 // would have marked every cell pending on every plan edit — closing writes on a target whose
-// streams never moved — and would have cleared a divergence that nothing re-measured
-// (docs/design/target-watch-plan.md, "Readiness").
+// streams never moved — and would have cleared a divergence that nothing re-measured.
 type RenderFidelityGate struct {
 	mu      sync.RWMutex
 	targets map[string]renderFidelityTargetState
@@ -297,7 +295,7 @@ func reduceRenderFidelity(state renderFidelityTargetState) RenderFidelityStatus 
 // the one surface an operator, a WatchRule and an e2e assertion can all read — said that
 // something was pending but never what, how many, or under which revision. A roll-up that
 // cannot name what it is waiting for is not observable, and an unobservable roll-up that latches
-// is indistinguishable from a hang (docs/design/watch-plane-status-convergence-failures.md).
+// is indistinguishable from a hang.
 //
 // The revision is part of the answer, not decoration. The failure mode this diagnoses is a scope
 // holding a revision that no running stream will ever report under, so "which revision" is

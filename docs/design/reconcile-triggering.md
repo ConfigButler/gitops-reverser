@@ -1,14 +1,7 @@
----
-status: investigation + design
-date: 2026-06-29
-related:
-  - manifest/gitpathaccepted-projection-race-and-external-drift.md
-  - crd-relationships.md
----
-
 # Reconcile triggering — how our controllers wake up
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> Date: 2026-06-29.
 
 A controller is only as good as the events that wake it. Periodic requeue is a
 **safety net**, not a mechanism: if state changes and nothing enqueues the owner,

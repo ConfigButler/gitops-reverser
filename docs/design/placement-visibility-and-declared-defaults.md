@@ -1,6 +1,6 @@
 # Placement, made visible: naming, a declared default, and `status.layout`
 
-> **design**: decided, mostly **not built**. Index: [`../INDEX.md`](../INDEX.md)
+> **design, decided**: mostly not built. Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-07-30, reconciled 2026-07-30 against what PR #291 actually contains.
 >
 > **The decisions below stand. The build list does not.** An earlier revision of this page said

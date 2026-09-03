@@ -202,14 +202,12 @@ func (t *watchPlaneTriggers) markDirtyLocked(ref types.ResourceReference, reason
 
 // TriggerRuleChange marks the GitTarget a rule names as needing a new plan pass.
 //
-// It replaces the six inline ReconcileForRuleChange call sites. Those did the work — a discovery
-// call, a namespace list, a full re-projection, and then a replan of EVERY running GitTarget —
-// synchronously, on the controller worker that observed the rule. This posts intent and returns.
+// It posts intent and returns, where the inline call sites it replaced did a discovery call, a
+// namespace list, a re-projection and a replan of EVERY running GitTarget synchronously.
 //
-// It deliberately does NOT also enqueue the GitTarget for reconcile. The GitTarget already learns
-// that its plan moved from the pass itself, which enqueues on a render-fidelity change — the one
-// moment its answer differs. Enqueueing here too would be a third path to the same channel, firing
-// before anything it would report has changed.
+// It deliberately does NOT also enqueue the GitTarget: the pass itself enqueues on a
+// render-fidelity change, the one moment its answer differs. Enqueueing here would fire before
+// anything it would report has changed.
 func (m *Manager) TriggerRuleChange(gitDest types.ResourceReference) {
 	m.trigger(gitDest, TriggerReasonRuleChange)
 }
@@ -502,15 +500,12 @@ func (m *Manager) staleTeardown(action forgetAction) (string, bool) {
 // cluster's API catalog and the source-namespace scopes — and then marks dirty only the targets
 // the refresh actually invalidated.
 //
-// Keeping this apart from replanning a target is the point. A target's plan depends on three
-// inputs, two of them shared, and one rule edit used to re-derive all three and then walk every
-// target. Here a rule edit replans one target and rediscovers nothing.
+// Keeping this apart from replanning a target is the point: a rule edit replans one target and
+// rediscovers nothing, where it used to re-derive all three inputs and walk every target.
 //
-// It runs on its OWN goroutine, and the loop does not wait for it. This is the only I/O the watch
-// plane does, so leaving it inline would mean an unreachable source cluster stalling every healthy
-// target, every teardown and every report for the full refresh timeout — the availability failure
-// this design exists to remove, relocated rather than fixed. One refresh runs at a time; a request
-// arriving while one is in flight is held and served by the next.
+// It runs on its OWN goroutine and the loop does not wait. This is the only I/O the watch plane
+// does, so inline it would let an unreachable source cluster stall every healthy target for the
+// full refresh timeout. One refresh at a time; a request arriving during one is served by the next.
 func (m *Manager) refreshSharedSnapshotsIfDue(ctx context.Context, log logr.Logger) {
 	t := m.triggers()
 	t.mu.Lock()

@@ -29,38 +29,27 @@ const (
 	// AttributionNotAttempted is configured-author mode: attribution is switched off, so the
 	// committer legitimately IS the author and no actor was ever sought.
 	//
-	// It is deliberately the EMPTY string, so that it is also the ZERO VALUE of the type. Most
-	// paths that build an Event never assign Attribution at all — reconcile, resync, bootstrap,
-	// and configured-author mode's early return in the watch pipeline — and every one of them
-	// means exactly "no actor was sought". Any other string would make the zero value a silent
-	// fourth state equal to none of the three named outcomes, which is precisely the bug that
-	// stopped every CommitRequest attaching in the default deployment. Nothing serializes this
-	// value (it reaches no CRD field and no metric label; authorKind branches on the typed
-	// value), so the empty string costs nothing. TestAttributionZeroValueIsNotAttempted pins it.
+	// Deliberately the EMPTY string so it is also the ZERO VALUE: the many paths that never assign
+	// Attribution (reconcile, resync, bootstrap) all mean exactly this. Any other value makes the
+	// zero value a silent fourth state, which is the bug that stopped every CommitRequest
+	// attaching. TestAttributionZeroValueIsNotAttempted pins it.
 	AttributionNotAttempted AttributionOutcome = ""
 	// AttributionResolved means an audit fact named the actor.
 	AttributionResolved AttributionOutcome = "resolved"
 	// AttributionUnresolved means attribution ran and did not arrive at an actor.
 	//
-	// Deliberately "unresolved", not "failed": the lookup collapses several genuinely
-	// different situations into one miss — no fact was ever produced (correct; not every
-	// change has an audited human actor), a cancelled wait, a Redis read error, and a
-	// malformed value all return the same not-found. Calling that a failure would assert a
-	// fault the operator cannot prove.
+	// "Unresolved", not "failed": no fact produced (correct; not every change has a human actor),
+	// a cancelled wait, a read error and a malformed value all return the same not-found, so
+	// calling it a failure would assert a fault the operator cannot prove.
 	AttributionUnresolved AttributionOutcome = "unresolved"
 )
 
 // NamesActor reports whether the outcome carries an actor to compare against.
 //
-// This is the ONLY distinction that survives across subsystem boundaries. Whether an outcome
-// is "not attempted" or "unresolved" is a property of how the subsystem that produced it is
-// configured — and the mirrored-resource attribution path (--author-attribution) and the
-// command-authorship path (--admission-webhook) are configured independently of each other
-// (cmd/main.go:311-316). Two independently configured producers can therefore disagree about
-// the enum while agreeing perfectly about the thing that matters: whether there is an actor.
-// Compare the enums across that boundary and you couple the two flags; compare NamesActor and
-// you do not. Within a single subsystem the enum itself is meaningful and IS compared directly
-// (openWindow.canAppend), because both sides come from the same producer.
+// The ONLY distinction that survives across subsystem boundaries: --author-attribution and
+// --admission-webhook are configured independently, so two producers can disagree about the enum
+// while agreeing about whether there is an actor. Comparing enums across that boundary couples the
+// two flags; comparing NamesActor does not. Within one subsystem the enum IS compared directly.
 func (o AttributionOutcome) NamesActor() bool {
 	return o == AttributionResolved
 }
@@ -69,21 +58,13 @@ func (o AttributionOutcome) NamesActor() bool {
 // did not resolve an actor. It exists so an unresolved attribution is visible in `git log`
 // instead of being indistinguishable from a configured-author commit.
 //
-// Scope: the git author header, and nothing else. It is DERIVED at the write path
-// (commitOptionsFor) from the carried AttributionOutcome — it is never stamped onto an Event.
-// The outcome is the fact; this identity is one rendering of it. So the sentinel deliberately
-// does NOT reach window grouping, the grouped commit-message body, or user-authored
-// {{.Username}} templates: those keep the empty author they have always had for an unnamed
-// actor, on both this path and in configured-author mode. Pushing a magic token into message
-// bodies would change the commit text of every existing deployment that has attribution misses,
-// and force user templates to special-case a value they never had to handle.
+// Scope: the git author header and nothing else. DERIVED at the write path from the carried
+// outcome, never stamped onto an Event, so it does NOT reach window grouping, message bodies, or
+// {{.Username}} templates — pushing a magic token there would change commit text in every existing
+// deployment and force user templates to handle a value they never had.
 //
-// Three fields, three different strings, because the header needs all three:
-//   - Username is the stable machine token, so tooling that parses the header has something
-//     greppable that will not drift with the human-facing wording.
-//   - DisplayName is what a human reads in `git log`, so it leads with what they care about.
-//   - Email uses the RFC 2606 reserved .invalid TLD, so it can never collide with a real
-//     address and never routes mail.
+// Three strings because the header needs all three: Username is the greppable machine token,
+// DisplayName is what a human reads, Email uses the RFC 2606 .invalid TLD so it never routes mail.
 func UnresolvedAuthor() UserInfo {
 	return UserInfo{
 		Username:    UnresolvedAuthorUsername,
@@ -108,16 +89,11 @@ const (
 	DefaultCommitterEmail = "noreply@configbutler.ai"
 	// DefaultEventCommitMessageTemplate reproduces the current per-event commit message shape.
 	DefaultEventCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-	// DefaultReconcileCommitMessageTemplate is the default reconcile commit message shape.
-	// It names the synced type for a per-type reconcile (e.g. "reconciled 6 secrets (last
-	// resourceVersion: 1331)"), so the otherwise-indistinguishable per-type reconciles a single
-	// GitTarget produces become self-describing — and the pinned resourceVersion shows exactly
-	// how fresh the reconcile is, which is useful for demos and first-user trust. The plural
-	// resource alone (no group/version) is chosen for readability; a custom template can add
-	// {{.APIVersion}} when cross-group plural collisions matter. The {{if .Resource}} and
-	// {{if .Revision}} guards fall back to "reconciled N resources" for a whole-target reconcile
-	// (nil Scope) or the events-based atomic path, where the type/revision fields are empty —
-	// so the subject never degrades to a trailing-space, identity-less "reconciled N ".
+	// DefaultReconcileCommitMessageTemplate names the synced type, so the otherwise
+	// indistinguishable per-type reconciles one GitTarget produces are self-describing. Plural
+	// resource alone for readability; add {{.APIVersion}} when plural collisions matter. The
+	// {{if}} guards fall back to "reconciled N resources" for a whole-target reconcile, so the
+	// subject never degrades to an identity-less "reconciled N ".
 	DefaultReconcileCommitMessageTemplate = "reconciled {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
 		"{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
@@ -261,14 +237,10 @@ type ResolvedTargetMetadata struct {
 	// It gates both deletion paths: the resync mark-and-sweep (through the planner's
 	// SweepMode) and the steady-state DELETE-event writer.
 	//
-	// Retained on the pending write with the rest of the target's metadata, so a write replayed
-	// after a rebase is not re-planned under a LOOSER policy than the one it was planned against:
-	// its retention decisions were taken over a desired snapshot that is now stale, and a later
-	// `always` applies to the next resync, which gathers a fresh one.
-	//
-	// It is not frozen, though. tightenPendingPruneModes lowers it before a replay when the
-	// GitTarget's current policy is stricter, because the whole point of tightening a deletion
-	// policy is to stop deletions that have not landed yet.
+	// Retained on the pending write so a replay after a rebase is not re-planned under a LOOSER
+	// policy than it was planned against. Not frozen, though: tightenPendingPruneModes lowers it
+	// when the current policy is stricter, because tightening exists to stop deletions that have
+	// not landed yet.
 	PruneMode v1alpha3.PruneMode
 	// SourceCluster is the NAME of the source cluster the GitTarget mirrors from —
 	// (api/v1alpha3).GitTarget.SourceCluster(), the referenced ClusterProvider's name
@@ -277,16 +249,10 @@ type ResolvedTargetMetadata struct {
 	// against the right cluster's mapping.
 	SourceCluster string
 
-	// Suspend is the GitTarget's spec.suspend, captured with the rest of its metadata so a write
-	// replayed after a rebase honours the policy it was planned under. It suppresses the write
-	// only: the scan that precedes it still runs, and the layout that scan resolves is still
-	// published, which is what keeps a suspended target's status fresh while it is stopped.
-	//
-	// Being CAPTURED is what defines suspend's cutover: it is the value as of planning, so a
-	// suspension that arrives after this write was planned does not retract it, and a write
-	// already committed locally is still pushed. Reading the live GitTarget at push time instead
-	// would strand that commit in the worker's checkout, to surface later and out of order on
-	// resume. See the field's doc on GitTargetSpec.
+	// Suspend suppresses the WRITE only; the scan still runs, which keeps a suspended target's
+	// status fresh. Being CAPTURED defines the cutover: a suspension arriving after this write was
+	// planned does not retract it, and a commit already made locally is still pushed. Reading the
+	// live GitTarget at push time would strand that commit, to resurface out of order on resume.
 	Suspend bool
 }
 
@@ -361,13 +327,10 @@ type WorkItem struct {
 // snapshot was actually gathered over: one cell, and the served version that cell was
 // gathered at.
 //
-// The invariant this type exists to hold: THE SWEEP SCOPE MUST BE EXACTLY THE SCOPE THE
-// DESIRED SET WAS GATHERED OVER. A desired set narrower than its sweep scope deletes
-// managed documents that were never in scope; a desired set wider than its sweep scope
-// silently leaves documents unmanaged. The namespace lives inside the cell, next to the
-// type, precisely so a per-namespace replay cannot reach the sweep carrying only its type. That
-// was a real defect: a replay of one namespace swept every other namespace's documents of the
-// same type, because the sweep knew the type and had lost the namespace.
+// The invariant: THE SWEEP SCOPE MUST BE EXACTLY THE SCOPE THE DESIRED SET WAS GATHERED OVER.
+// Narrower deletes documents that were never in scope; wider silently leaves documents unmanaged.
+// The namespace lives inside the cell so a per-namespace replay cannot reach the sweep carrying
+// only its type — a replay of one namespace once swept every other namespace's documents.
 type ResyncScope struct {
 	// Cell is the sweep boundary and the scope's identity: group, resource, namespace.
 	Cell types.CellKey
@@ -430,13 +393,10 @@ type ResyncRequest struct {
 	// removed type). Nil is a whole-GitTarget resync. See ResyncScope for the invariant
 	// binding this to Desired.
 	Scope *ResyncScope
-	// Heal marks a non-urgent drift-correcting resync (a watch re-establishment re-anchor or a
-	// removed-type sweep) that the worker DEFERS while a commit window is open, instead of
-	// force-finalizing it. Because one worker serves N GitTargets and the commit window is a
-	// worker singleton, a force-finalizing heal can steal a DIFFERENT GitTarget's held
-	// CommitRequest window — the 8f2ad84 regression. A heal therefore waits for the worker to be
-	// idle (no open window), a boundary that recurs on every silence timeout and identity switch,
-	// so it never starves and, when it runs, has no window to steal. A first-sync backfill is NOT
+	// Heal marks a non-urgent drift-correcting resync the worker DEFERS while a commit window is
+	// open. One worker serves N GitTargets and the window is a worker singleton, so a
+	// force-finalizing heal can steal a DIFFERENT GitTarget's held CommitRequest window. Waiting
+	// for idle recurs on every silence timeout, so it never starves. A first-sync backfill is NOT
 	// a heal: it must establish initial state promptly.
 	Heal bool
 	// SourceCell names the target-watch cell that gathered this snapshot. Zero for a
@@ -489,15 +449,10 @@ type ResyncResult struct {
 	Err   error
 }
 
-// ResyncStats summarises what a resync changed, for GitTarget status. Created,
-// Updated, and Deleted are the materialised create / patch+replace / managed-drop
-// counts; Skipped is documents present but not safely editable (e.g. encrypted or
-// disallowed constructs). PlacementSkipped is new resources the writer refused to
-// place fail-safe — placement could not be resolved safely, or the write would
-// co-mingle sensitive and plaintext documents (placement Option B2). It is counted (not
-// silently swallowed) and logged per-resource so a not-mirrored resource is visible
-// in the resync summary; it is not (yet) surfaced as a dedicated GitTarget status
-// condition.
+// ResyncStats summarises what a resync changed. Skipped is documents present but not safely
+// editable; PlacementSkipped is new resources the writer refused to place fail-safe. Both are
+// counted and logged per-resource rather than swallowed, so a not-mirrored resource is visible in
+// the summary. Neither has a dedicated status condition yet.
 type ResyncStats struct {
 	Created          int
 	Updated          int
@@ -552,14 +507,10 @@ type Event struct {
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
 
-	// Attribution records whether naming the actor was attempted and whether it succeeded.
-	// It is the authority for author rendering, the author_kind metric, and CommitRequest
-	// window matching — none of which may infer the outcome from UserInfo, because an empty
-	// or sentinel username cannot distinguish "attribution is off" from "attribution ran and
-	// found nothing". The zero value is AttributionNotAttempted — the constant is defined as the
-	// empty string precisely so that it is — which is correct for every non-live path
-	// (reconcile, resync, bootstrap) where no actor is ever sought, and for configured-author
-	// mode. attachAuthor is the only assignment to this field outside tests.
+	// Attribution is the authority for author rendering, the author_kind metric, and
+	// CommitRequest window matching. None may infer the outcome from UserInfo: an empty username
+	// cannot distinguish "attribution is off" from "it ran and found nothing". attachAuthor is
+	// the only assignment outside tests.
 	Attribution AttributionOutcome
 
 	// Path is the POSIX-like relative path prefix for this event's files.
@@ -609,12 +560,9 @@ type FieldPatch struct {
 	// Source is a bounded origin label for commit messages and metrics, e.g.
 	// "deployments/scale". Never the request URI.
 	//
-	// The parent Kind is intentionally NOT carried here. The audit objectRef gives
-	// only the GVR (plural resource), and the subresource body's own Kind (e.g.
-	// "Scale") is not the parent's. The writer resolves the parent document from the
-	// objectRef GVR through the same resource-identity inventory the GVR-only delete
-	// uses — it already has the live-catalog mapper — so the consumer never needs
-	// GVR->GVK resolution.
+	// The parent Kind is NOT carried: the audit objectRef gives only the GVR, and the subresource
+	// body's own Kind ("Scale") is not the parent's. The writer resolves the parent through the
+	// same resource-identity inventory the GVR-only delete uses.
 	Source string
 }
 
@@ -652,13 +600,10 @@ type CommitMessageData struct {
 
 // ReconcileCommitMessageData is the template context for reconcile commit messages.
 //
-// Group, Version, Resource, and APIVersion name the synced type, mirroring the per-event
-// CommitMessageData fields so a reconcile template can identify its type exactly as a per-event
-// template does. They are populated for a per-type reconcile (whose ResyncRequest carries a
-// non-nil Scope) and left empty for a whole-target reconcile or the events-based atomic
-// path. Revision is the cluster resourceVersion the desired set was pinned to
-// (empty for a pure sweep or the events-based path). Any template that references these fields
-// must render cleanly when they are absent — the default guards both with {{if}}.
+// Group, Version, Resource and APIVersion mirror the per-event CommitMessageData fields, and are
+// populated only for a per-type reconcile. Revision is the resourceVersion the desired set was
+// pinned to. Any template referencing these must render cleanly when absent; the default guards
+// both with {{if}}.
 type ReconcileCommitMessageData struct {
 	Count      int
 	GitTarget  string

@@ -27,20 +27,11 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// flushEventsToWorktree is the plan-then-flush write path (M7), described in
-// docs/spec/current-manifest-support-review.md ("Writer Model: Plan,
-// Apply, Dirty Flush"). It replaces the per-event locate+write loop: it builds the
-// byte-free structure model for the GitTarget subtree once, resolves each coalesced
-// event to a single-identity action over that model, applies the actions to
-// hydrated commit-scoped file buffers, and flushes only the files whose bytes
-// changed or were deleted. It returns true when at least one file was written or
-// removed.
+// flushEventsToWorktree is the plan-then-flush write path: model the subtree once, resolve each
+// event to a single-identity action, apply to commit-scoped buffers, flush only what changed.
 //
-// This is the steady-state half of the design's "Two Paths, One Plan Type"
-// (docs/spec/reconcile-via-watchlist-mark-and-sweep.md): every event is
-// a single-identity intent — an upsert (create/patch/replace) for an object-bearing
-// event, or a delete-document for a DELETE — and the writer NEVER mark-and-sweeps a
-// batch. Whole-folder mark-and-sweep is the resync mechanism (M8), not steady state.
+// Every event is a single-identity intent and the writer NEVER mark-and-sweeps a batch.
+// Whole-folder mark-and-sweep is the resync path, not steady state.
 // mapperForCluster returns the GVK->GVR lookup for a source cluster: the per-cluster registry
 // when a cluster is named and a cluster resolver is wired, else the default (local) mapper.
 // The CLI and tests leave clusterMapper nil, so they always resolve against `mapper`.
@@ -148,15 +139,9 @@ type writeBatch struct {
 	// is "declare nothing", i.e. infer per document, which is what every caller with no GitTarget
 	// to read (the CLI, most tests) gets.
 	namespaces namespacePolicy
-	// pruneMode is the GitTarget's effective spec.prune.mode, gating the EXPLICIT delete
-	// path only (applyDelete). The inferred mark-and-sweep is gated a layer up, in the
-	// planner, so a suppressed drop never becomes an action in the first place.
-	//
-	// Set only on the live-event batch, because that is the only batch that folds DELETE
-	// events; the resync batch drops documents through the plan instead and leaves this
-	// zero. It is therefore always read through OrDefault: the zero value is unset, not
-	// `never`, and reading it literally would make a batch that simply never set it stop
-	// mirroring deletes.
+	// pruneMode gates the EXPLICIT delete path only; inferred mark-and-sweep is gated in the
+	// planner. Always read through OrDefault: the zero value is unset, not `never`, and the resync
+	// batch never sets it — reading it literally would stop that batch mirroring deletes.
 	pruneMode v1alpha3.PruneMode
 	// writeSubdir is spec.path expressed relative to the render anchor (renderBase) — the
 	// write jail. It is "" for a self-contained subtree (renderBase == spec.path), where
@@ -175,17 +160,11 @@ type writeBatch struct {
 	// status.placement, and createNew reads it: a folder covering several render roots has no
 	// single one to place a new document into, so placing one is refused rather than guessed.
 	layout manifestanalyzer.LayoutResolution
-	// coldBundles tracks, per path, the new resources this batch has placed at a
-	// path that held no document before the batch started (keyed the same as
-	// buffers). It exists so several new resources that render to the same
-	// brand-new path — a collision LocateNew resolves against the pre-batch store
-	// and therefore cannot see coming — form one deterministic, resource-identity-
-	// sorted multi-document file instead of each writeWholeFile call silently
-	// discarding the one before it. See
-	// docs/layout/new-file-placement-rules.md,
-	// "Collision and append behavior": "if several new plaintext resources in one
-	// plan render to the same path, write a multi-document file in deterministic
-	// resource-identity order."
+	// coldBundles tracks new resources placed at a path that held nothing before the batch.
+	// LocateNew resolves against the PRE-BATCH store, so it cannot see two new resources landing
+	// on one path; without this each write would silently discard the last. Members are re-sorted
+	// by resource identity so the result does not depend on event order.
+	// See docs/layout/new-file-placement-rules.md, "Collision and append behavior".
 	coldBundles map[string][]coldBundleMember
 }
 
@@ -250,29 +229,20 @@ func newWriteBatch(
 	return batch
 }
 
-// refusal runs the structure-only acceptance gate over the batch's store and returns a
-// *manifestanalyzer.AcceptanceRefusedError when the GitTarget subtree holds content the
-// operator cannot safely manage: a duplicate manifest identity, an impure managed file, a
-// standalone non-KRM / invalid YAML file, a managed resource hiding in a build directive,
-// or an unsupported kustomization. A refusal aborts the commit before any file is touched,
-// so the folder is left exactly as the human left it until they clean it.
+// refusal runs the acceptance gate over the batch's store; a refusal aborts the commit before any
+// file is touched.
 //
-// It is structure-only on purpose: the writer must never refuse on a discovery-derived
-// followability fact (unwatched / out-of-scope), which can blink on a discovery wobble and
-// would otherwise turn a transient into a stuck, unwritable GitTarget.
+// Structure-only on purpose: refusing on a discovery-derived fact (unwatched / out-of-scope) would
+// turn a discovery wobble into a stuck, unwritable GitTarget.
 func (wb *writeBatch) refusal() error {
 	return manifestanalyzer.RefusalError(manifestanalyzer.AcceptStructureOnly(wb.store))
 }
 
-// sourceNamespaceRefusal is the write-plan precondition for the one-source-namespace rule: a target
-// that declared its folder namespace-free admits exactly one source namespace, and the second is
-// refused before a byte moves.
+// sourceNamespaceRefusal is the write-plan precondition for the one-source-namespace rule.
 //
-// It is the CORRECTNESS layer, and it holds whatever admission did. The WatchRule admission check
-// is atomic feedback at the moment the mistake is made, but it is one-shot: it cannot see a
-// serializeNamespace flipped to false after the rules were created, and it is a fail-open webhook
-// that a cluster need not be running at all. Everything that must be true of the bytes is decided
-// here. See docs/spec/where-validation-lives.md.
+// This is the CORRECTNESS layer and it holds whatever admission did: the WatchRule webhook is
+// one-shot, cannot see a serializeNamespace flipped afterwards, and fails open.
+// See docs/spec/where-validation-lives.md.
 func (wb *writeBatch) sourceNamespaceRefusal() error {
 	issues := manifestanalyzer.MultipleSourceNamespacesRefusal(
 		wb.namespaces.declaresNamespaceFree(),
@@ -396,15 +366,10 @@ func wroteBytes(o upsertOutcome) bool {
 	return o == upsertCreated || o == upsertUpdated
 }
 
-// createNew resolves the placement of a resource with no existing document —
-// declared policy (Option B), the folder's one kustomize root, or the canonical
-// fallback — per docs/layout/new-file-placement-rules.md,
-// adds the kustomize resources: entry the placement may require, and writes the new
-// document: a brand-new file, or an additional document appended to an existing
-// accepted plaintext bundle. A placement LocateNew cannot honour safely (today, only
-// a sensitive resource whose resolved path collides with an existing file) is logged
-// and left unwritten rather than risking a mis-write; the next event or resync
-// retries it once the conflict is resolved (e.g. the placement policy is fixed).
+// createNew places a resource with no existing document, per
+// docs/layout/new-file-placement-rules.md, and adds any kustomize resources: entry it requires.
+// A placement that cannot be honoured safely (a sensitive resource colliding with an existing
+// file) is logged and left unwritten rather than mis-written; the next event or resync retries.
 func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome, error) {
 	kind := ""
 	if event.Object != nil {
@@ -482,16 +447,10 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		wb.appendKustomizationResource(ctx, event, placement)
 	}
 
-	// A new document that joins a kustomization's resources: list is INSIDE a render root, so
-	// the folder's images:/replicas: entries govern it from the moment it lands — and we do not
-	// route a new document's values onto an entry (it has no override chain yet; it did not
-	// exist when the store was built). So the live value goes into the file, and if an entry
-	// overrides it, the folder renders something else and the resource never converges.
-	//
-	// Declaring it governed puts it in front of the oracle, which turns that from a silent
-	// non-converging commit into a reported refusal naming the file and the object. It does not
-	// make the write work — that needs attribution for a document that does not exist yet — but
-	// "we cannot express this here" is an answer, and quietly writing a lie is not.
+	// A new document inside a render root is governed by the folder's images:/replicas: entries
+	// immediately, but has no override chain to route onto, so an entry that overrides it makes
+	// the resource never converge. Declaring it governed puts it in front of the oracle, turning a
+	// silent non-converging commit into a refusal naming the file and object.
 	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil || wb.createdRoot != nil
 	wb.intend(markUnchecked(intentFor(live, placement.Path, false), sensitive))
 	return outcome, nil
@@ -556,22 +515,12 @@ func (wb *writeBatch) placeNewDocument(
 
 	buf := wb.buffer(placement.Path)
 	if buf.original == nil {
-		// Nothing occupied this path before the batch started, so every write
-		// here is a new resource: this event, or an earlier one in the same
-		// batch that rendered to the same path (a collision LocateNew cannot
-		// see coming — it only ever consults the pre-batch store). Route
-		// through the cold-bundle path so a collision forms a deterministic
-		// multi-document file instead of a second writeWholeFile silently
-		// discarding whichever new resource arrived first.
+		// Nothing occupied this path pre-batch, so route through the cold-bundle path: a collision
+		// LocateNew could not see must form a deterministic multi-document file rather than one
+		// write discarding another.
 		//
-		// A sensitive resource must never share a file (with anything), and a
-		// plaintext resource must never join a bundle that already holds a
-		// sensitive member — either way the file would co-mingle encrypted and
-		// plaintext documents. Skip rather than mix; the next event or resync
-		// retries once the placement policy stops routing them together. This is
-		// the same-batch half of Option B2's write-safety guard (the cross-batch
-		// half — appending into an already-encrypted file — is refused in
-		// LocateNew/finishPlacement).
+		// A sensitive resource never shares a file, and plaintext never joins a bundle holding a
+		// sensitive member. Skip rather than co-mingle; the next event or resync retries.
 		if buf.current != nil && (sensitive || wb.coldBundleHasSensitive(placement.Path)) {
 			log.FromContext(ctx).Info(
 				"Skipping new resource: sensitive and plaintext resources must not share a new file",
@@ -588,18 +537,9 @@ func (wb *writeBatch) placeNewDocument(
 	return outcome, "", err
 }
 
-// writeColdBundleMember writes a resource with no existing document to rel, a
-// path nothing occupied before this batch started. Because LocateNew resolves
-// every event against the pre-batch store snapshot (P2 of the design doc),
-// several new resources rendering to the same brand-new path each look like the
-// sole occupant to LocateNew, so a plain single-document write would let each
-// one overwrite the last. Instead every member seen so far at rel (including
-// this one) is re-sorted by resource identity and the file is rebuilt from
-// scratch, so the result is independent of which new resource's event the
-// writer processed first — see the design doc's "Collision and append
-// behavior": "if several new plaintext resources in one plan render to the same
-// path, write a multi-document file in deterministic resource-identity order."
-// For the common single-member case this produces byte-identical output to a
+// writeColdBundleMember writes a resource to a path nothing occupied before this batch. Every
+// member seen at rel is re-sorted by resource identity and the file rebuilt, so the result does
+// not depend on which event was processed first. The single-member case is byte-identical to a
 // plain write.
 func (wb *writeBatch) writeColdBundleMember(
 	ctx context.Context,
@@ -727,20 +667,15 @@ func (wb *writeBatch) appendKustomizationResource(
 	}
 }
 
-// applyFieldPatch folds a subresource field-patch event into the batch: it locates the
-// existing managed parent document by content identity and sets only the patch's
-// declared field paths via manifestedit.PatchFields, preserving every other byte.
+// applyFieldPatch sets only the patch's declared field paths on the existing parent document.
 //
-// Two deliberate refusals make this safe for a partial intent:
-//   - There is NO creation path. A patch whose parent is absent from Git is dropped,
-//     because fabricating the parent would mean guessing every unaudited field.
-//   - The renderer is NOT injected. A document that cannot be patched field-by-field
-//     is SKIPPED, not whole-replaced — a whole-replace from the partial desired would
-//     delete every field the subresource did not mention. An encrypted parent is
-//     likewise skipped (PatchFields inherits the SOPS refusal from Decide).
+// Two refusals make a partial intent safe:
+//   - NO creation path: a patch whose parent is absent is dropped rather than fabricated.
+//   - A document that cannot be patched field-by-field is SKIPPED, never whole-replaced, which
+//     would delete every field the subresource did not mention.
 //
-// The document index is re-derived from the buffer's CURRENT bytes so an earlier event
-// in the same batch that shifted a multi-document file does not misdirect the edit.
+// The document index is re-derived from CURRENT bytes so an earlier event in the batch that
+// shifted a multi-document file does not misdirect the edit.
 func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 	filePath, id, ok := wb.resolveFieldPatchTarget(event)
 	if !ok {
@@ -856,19 +791,13 @@ func (wb *writeBatch) resolveFieldPatchTarget(event Event) (string, manifestedit
 	return "", manifestedit.Identity{}, false
 }
 
-// patchExisting edits the existing managed document for id in place via manifestedit,
-// preserving the sibling documents' bytes and the target's hand-authored formatting.
-// The no-op / patch / whole-replace / skip choice is a plan decision (Decide), not a
-// per-event heuristic. The document position is re-derived from the buffer's CURRENT
-// bytes (currentDocIndex), not the pre-batch store index, so an earlier event in the
-// same batch that shifted a multi-document file does not misdirect this edit. A
-// document the store located but an earlier event already removed is simply absent now,
-// so there is nothing to patch.
+// patchExisting edits the managed document in place, preserving sibling bytes and hand-authored
+// formatting. The no-op / patch / whole-replace / skip choice is a plan decision, not a per-event
+// heuristic, and the position is re-derived from CURRENT bytes so an earlier event in the batch
+// does not misdirect it.
 //
-// When the document is governed by a kustomize images/replicas override chain, the
-// desired projection is first split: values the chain produces are restored to their
-// source form (so the file keeps its bytes) and the divergence is routed to the
-// override entries instead — see docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
+// Under a kustomize images/replicas override chain the desired projection is split first: values
+// the chain produces are restored to source form and the divergence routed to the entries.
 func (wb *writeBatch) patchExisting(
 	ctx context.Context,
 	event Event,
@@ -922,25 +851,17 @@ func (wb *writeBatch) patchExisting(
 		outcome = upsertUpdated
 	}
 
-	// Declare what this document must render to. Attribution above decided WHERE the edit
-	// goes and is allowed to be wrong; the render precondition adjudicates it once the whole
-	// plan is known (see renderPrecondition).
+	// Declare what this document must render to. Attribution decided WHERE the edit goes and may
+	// be wrong; renderPrecondition adjudicates once the whole plan is known.
 	//
-	// A GOVERNED document declares its intent even when its own bytes did not change, and
-	// that is not belt-and-braces — it is the difference between the oracle working and the
-	// oracle refusing perfectly good writes. An images: entry is shared: when two Deployments
-	// run the same image and are bumped together, the FIRST event's entry edit already moves
-	// what the second one renders to, so by the time the second is processed there is nothing
-	// left to write. Its render still moves, and it moves onto its own live state — that is
-	// the resource converging, not collateral damage, and only its declared intent says so.
+	// A GOVERNED document declares intent even when its own bytes did not change. images: entries
+	// are shared: bumping two Deployments on one image means the first event's edit already moved
+	// what the second renders to, leaving nothing to write. Its render still moves, onto its own
+	// live state, and only the declared intent says that is convergence rather than damage.
 	//
-	// The oracle is armed for ANY document a render root produces, not only one an override
-	// chain governs, and the difference is a hole rather than a refinement. The source form
-	// leaves a field the build supplies to the source file — but where the live object and the
-	// render DISAGREE the user has changed something, and that change is written through. If a
-	// transformer or a patch owns that field it will be overridden right back, and the write
-	// never converges. Only the re-render can see that, and until now it did not run at all
-	// unless an images:/replicas: entry happened to exist somewhere in the chain.
+	// The oracle is armed for ANY document a render root produces, not only one an override chain
+	// governs: where live and render disagree the user changed something, and if a transformer
+	// owns that field the write never converges. Only the re-render can see that.
 	if dm.Rendered != nil {
 		wb.putToKustomize = true
 	}
@@ -1050,20 +971,13 @@ func renderFidelityRefusal(
 	return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
 }
 
-// renderPrecondition is the oracle, and it is a write-plan precondition like the three
-// above it: it runs at the one moment the whole plan is known and before a single byte is
-// touched, so a refusal aborts the flush and commits nothing.
+// renderPrecondition is the oracle: it runs once the whole plan is known and before a byte is
+// touched, so a refusal aborts the flush and commits nothing. It only runs when the flush routed
+// something through a kustomization, so a repo with no override chain pays nothing.
 //
-// It only runs when the flush actually routed something through a kustomization. A repo
-// with no override chain pays nothing, and a flush that changed no governed document has
-// nothing for kustomize to adjudicate.
-//
-// A refusal is an AcceptanceRefusedError, which is the seam that carries it to the user as
-// GitPathAccepted=False / Stalled=True with the file and object named. That is deliberate:
-// render-attribution.md §7 is explicit that a proposal the renderer cannot vouch for
-// "becomes a refused flush — that is the correct outcome and it must be reported, not
-// absorbed." A resource we silently stop mirroring is the failure this path exists to
-// prevent, so it must not be the failure this path introduces.
+// A refusal is an AcceptanceRefusedError, surfacing as GitPathAccepted=False / Stalled=True with
+// the file and object named. Silently not mirroring a resource is the failure this path exists to
+// prevent, so it must not be the failure it introduces.
 func (wb *writeBatch) renderPrecondition() error {
 	if !wb.putToKustomize {
 		return nil
@@ -1108,16 +1022,13 @@ func (wb *writeBatch) intend(in manifestanalyzer.WriteIntent) {
 	wb.intents = append(wb.intents, in)
 }
 
-// intentFor builds the intent for an ordinary object-bearing write: the document must
-// render to exactly the live object.
+// intentFor builds the intent for an object-bearing write: the document must render to exactly
+// the live object.
 //
-// It takes the LIVE object, not the event, and that distinction is load-bearing. createNew
-// strips metadata.namespace out of the bytes it writes when the destination inherits its
-// namespace from a kustomization's namespace: transformer — correct, because the transformer
-// puts it back. But the render therefore HAS the namespace, so an intent built from the
-// stripped object would demand that the render not have one, and the oracle would refuse a
-// flush it had just planned perfectly. The bytes and the intent are different objects, and
-// the caller is the only one that still holds both.
+// It takes the LIVE object, not the event. createNew strips metadata.namespace when the
+// destination inherits it from a transformer, but the RENDER then has it, so an intent built from
+// the stripped object would demand a render without one and the oracle would refuse a perfectly
+// planned flush. The bytes and the intent are different objects.
 func intentFor(live *unstructured.Unstructured, filePath string, governed bool) manifestanalyzer.WriteIntent {
 	desired := manifestreport.Project(live)
 	return manifestanalyzer.WriteIntent{
@@ -1316,17 +1227,12 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 	return upsertUpdated, nil
 }
 
-// applyDelete removes the document a DELETE event targets. The document is located by
-// content (resolveDelete), so a manifest moved off its canonical path is still deleted.
-// The position is re-derived from the buffer's CURRENT bytes, so an earlier delete in
-// the same batch that shifted a multi-document file does not misdirect this one.
-// Removing the last document in a file marks it for deletion; otherwise the surviving
-// documents are kept byte-for-byte.
+// applyDelete removes the document a DELETE event targets, located by content so a manifest moved
+// off its canonical path is still found. Removing the last document marks the file for deletion.
 //
-// The target's spec.prune.mode gates this whole path: under `never` the managed document is
-// left exactly as Git holds it. The check is FIRST, before the document is even located, so a
-// suppressed delete touches no buffer, records no write intent, and cannot turn the kustomize
-// oracle on — a retention must be indistinguishable from the event never having arrived.
+// spec.prune.mode gates the whole path, and the check is FIRST, before the document is located: a
+// suppressed delete must be indistinguishable from the event never having arrived, so it touches
+// no buffer and cannot turn the kustomize oracle on.
 func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	if !wb.pruneMode.OrDefault().AppliesEventDeletes() {
 		log.FromContext(ctx).V(1).Info("source DELETE not mirrored (spec.prune.mode)",
@@ -1545,15 +1451,12 @@ func (wb *writeBatch) resolveDelete(event Event) (deleteTarget, bool) {
 	return deleteTarget{}, false
 }
 
-// rawManifestIDForCurrentBytes maps an effective manifest identity back to the raw
-// identity as written in the file: when the namespace came from anywhere but the file — a
-// kustomization's namespace: transformer, or the GitTarget's declaration that this folder's
-// documents carry none — the bytes hold no metadata.namespace, so the document is located by a
+// rawManifestIDForCurrentBytes maps an effective manifest identity back to the raw identity as
+// written: where the namespace came from anywhere but the file, the document is located by a
 // namespace-less identity.
 //
-// It reads the DOCUMENT, never spec.serializeNamespace. The setting says what the next write will
-// contain; this asks what the file already contains, and a folder written before the setting
-// changed still has to be found.
+// It reads the DOCUMENT, never spec.serializeNamespace: the setting says what the NEXT write will
+// contain, and a folder written before it changed still has to be found.
 func rawManifestIDForCurrentBytes(
 	id manifestedit.Identity,
 	dm *manifestanalyzer.DocumentModel,
@@ -1576,16 +1479,12 @@ func currentDocIndex(filePath string, content []byte, id manifestedit.Identity) 
 	return loc.DocumentIndex, ok
 }
 
-// flush writes every dirty buffer and removes every deleted buffer under the
-// GitTarget base path, staging each change in the worktree. It returns true when at
-// least one file was written or removed.
+// flush writes every dirty buffer and removes every deleted one, staging each change.
 //
-// Before touching a single byte it enforces the write-plan precondition (§4.3 of
-// docs/spec/gitpath-foreign-content-stringency.md): no path the operator is about to
-// write, edit, or delete may be shadowed by the active .gittargetignore. The check is a
-// precondition, not a post-hoc detector, so the unrecoverable state (an ignored file the
-// operator can no longer see) is never reached — the flush is refused and the GitTarget
-// fails before the file exists.
+// Before touching a byte it enforces the write-plan precondition: no path about to be written may
+// be shadowed by the active .gittargetignore. A precondition rather than a detector, so the
+// unrecoverable state (an ignored file the operator can no longer see) is never reached.
+// See docs/spec/gitpath-foreign-content-stringency.md §4.3.
 func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root, base string) (bool, error) {
 	// Write-plan preconditions run before any byte is touched, so a violation aborts the
 	// whole flush and commits nothing (each reuses the existing "refusal aborts before a file
@@ -1727,16 +1626,10 @@ func (wb *writeBatch) writePathEscapesScope(rel string) bool {
 	return wb.writeSubdir != "" && !pathWithin(clean, wb.writeSubdir)
 }
 
-// fanInPrecondition enforces the L2 write-boundary invariant: never write a live change
-// through into a source file that more than one kustomize render root reaches (write-fan-in
-// > 1). It refuses the whole flush — one IssueWriteFanIn per offending path — when a
-// dirty/deleted buffer targets a file the store flags either as override-ambiguous
-// (reasonAmbiguousOverrides) or, since render-root scoping, as reachable from more than one
-// render root at all (ReachedByMultipleRenderRoots). The generalised check no longer leans on
-// the emergent side effect that a namespace-ambiguous base with no override entries never
-// becomes dirty: any file two roots read is refused for in-place editing, whether or not an
-// images/replicas entry is at stake. It fires only on an actual planned write, so a base
-// reached by a single overlay (write-fan-in = 1) is edited through normally.
+// fanInPrecondition enforces the L2 write-boundary invariant: never write through into a source
+// file that more than one kustomize render root reaches. Any file two roots read is refused for
+// in-place editing, whether or not an images/replicas entry is at stake. It fires only on an
+// actual planned write, so a base reached by a single overlay is edited through normally.
 func (wb *writeBatch) fanInPrecondition() error {
 	var issues []manifestanalyzer.AcceptanceIssue
 	for _, rel := range sortedBufferKeys(wb.buffers) {
@@ -1783,17 +1676,12 @@ func writeAndStageFile(worktree *gogit.Worktree, worktreePath, fullPath string, 
 	return nil
 }
 
-// scanWorktreeSubtree walks the GitTarget subtree at absBase into a
-// manifestanalyzer.FolderScan: the YAML manifests to model and hydrate, the foreign
-// entries the acceptance gate refuses, and the active root .gittargetignore matcher the
-// write-plan precondition consults. It applies the SAME shared ClassifyEntry policy the
-// analyzer's fs.FS scan uses, so the live writer and a dry-run scan agree on what is
-// foreign, what is ignored, and what is an operator artifact.
+// scanWorktreeSubtree walks the GitTarget subtree into a FolderScan, applying the SAME
+// ClassifyEntry policy the analyzer uses so the live writer and a dry-run scan agree.
 //
-// A missing base directory (a never-written GitTarget path) yields an empty scan, not an
-// error. Unlike the analyzer scan, a mid-walk read error is fatal: the live writer must
-// never plan against a partial view of the subtree (an unreadable managed file it skipped
-// would be re-created, churning the mirror). Symlinks are never followed.
+// A missing base directory yields an empty scan. Unlike the analyzer scan, a mid-walk read error
+// is FATAL: planning against a partial view would re-create an unreadable managed file it skipped
+// and churn the mirror. Symlinks are never followed.
 func scanWorktreeSubtree(absBase string) (manifestanalyzer.FolderScan, error) {
 	ignore, ignoreIssues := loadWorktreeGitTargetIgnore(absBase)
 	scan := manifestanalyzer.FolderScan{Ignore: ignore, IgnoreIssues: ignoreIssues}

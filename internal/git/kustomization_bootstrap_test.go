@@ -17,8 +17,8 @@ import (
 
 // spec.placement.useKustomize is the only thing in this operator that writes a file nobody asked
 // for by name, so what it does NOT do matters as much as what it does. The corpus
-// (docs/layout/shapes/5-kustomize-single-folder) pins the bytes of the one commit it produces;
-// these pin its boundaries.
+// (test/fixtures/layout-corpus/shapes/5-kustomize-single-folder) pins the bytes of the one commit
+// it produces; these pin its boundaries.
 
 func useKustomizePolicy() *manifestanalyzer.PlacementPolicy {
 	return &manifestanalyzer.PlacementPolicy{UseKustomize: true}

@@ -89,8 +89,7 @@ func flushWithPolicy(
 // The signal the Option C deletion owes its users: a repository whose layout this operator
 // cannot derive gets the canonical path, and `source="canonical"` on placements_total names
 // the GitTarget and the type that needs one `placement.byType` line. Without the labels the
-// counter would only say a fall-back happened somewhere, which is not a fix anybody can act
-// on — see docs/design/open-asks-priority.md.
+// counter would only say a fall-back happened somewhere, which is not a fix anybody can act on.
 func TestPlacementMetrics_CanonicalFallbackNamesTargetAndType(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)

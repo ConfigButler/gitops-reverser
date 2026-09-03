@@ -19,7 +19,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// The edit-through scenarios (docs/design/support-boundary/finished/images-and-replicas-edit-through.md):
+// The edit-through scenarios:
 // a live change produced by a kustomization's images:/replicas: entry lands on
 // the entry, and the source manifest keeps its bytes.
 

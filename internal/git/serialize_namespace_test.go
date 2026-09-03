@@ -18,10 +18,11 @@ import (
 )
 
 // spec.serializeNamespace overrides the inference at every site that decides whether
-// metadata.namespace is in the bytes. The corpus (docs/layout/shapes/2-flat-namespace-free and
-// 4-tree-namespace-free) pins the FIRST write of a namespace-free folder; what it cannot pin is
-// everything after it — an update, a second write of the same object, and the folder that already
-// supplies the namespace being overridden the other way. Those are here.
+// metadata.namespace is in the bytes. The corpus (shapes/2-flat-namespace-free and
+// 4-tree-namespace-free under test/fixtures/layout-corpus) pins the FIRST write of a
+// namespace-free folder; what it cannot pin is everything after it: an update, a second write
+// of the same object, and the folder that already supplies the namespace being overridden the
+// other way. Those are here.
 
 func serializeNamespacePolicy(serialize bool, sources ...string) namespacePolicy {
 	return namespacePolicy{Serialize: &serialize, SourceNamespaces: sources}
@@ -144,7 +145,7 @@ func TestSerializeNamespace_FalseAttributesNothingWhenTwoNamespacesReachTheTarge
 // billing/checkout-config both resolve to bytes carrying no namespace, so one document ends up
 // flipping between two live objects and Git holds no record that it happened.
 //
-// docs/layout/shapes/2-flat-namespace-free asserts the same refusal end to end, against the
+// test/fixtures/layout-corpus/shapes/2-flat-namespace-free asserts the same refusal end to end, against the
 // condition a user reads. This asserts the halves that fixture cannot: that the refusal is a
 // precondition (nothing is written, whatever the events were), and that a wildcard is refused
 // without enumerating anything.

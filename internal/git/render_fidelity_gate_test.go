@@ -275,8 +275,7 @@ func TestRenderFidelityGate_AnEmptyPlanDoesNotClearAWriteDivergence(t *testing.T
 
 // TestRenderFidelityGate_PendingMessageNamesTheScope is the regression guard for the diagnostic
 // gap that made Failure A cost three rounds of controller-log archaeology: the gate knew which
-// scope it was waiting on and published a constant string that named nothing
-// (docs/design/watch-plane-status-convergence-failures.md, §2.3).
+// scope it was waiting on and published a constant string that named nothing.
 //
 // The GitTarget condition carries this message verbatim, and a WatchRule's Ready inherits it, so
 // this string is the whole diagnosis surface for a target that will not converge. It must name
@@ -327,8 +326,7 @@ func TestRenderFidelityGate_PendingMessageIsBounded(t *testing.T) {
 // roll-up. Refusing a report that carries a superseded revision is correct and must stay — a stale
 // tail must never reopen writes — but a scope that is refusing reports and a scope that has simply
 // not been replayed yet look identical from outside, and they have opposite repairs: one converges
-// by waiting, the other never does
-// (docs/design/watch-plane-status-convergence-failures.md, §2.4).
+// by waiting, the other never does.
 func TestRenderFidelityGate_PendingMessageNamesARefusedReport(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.NewResourceReference("apps", "default")

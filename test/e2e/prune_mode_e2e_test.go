@@ -278,7 +278,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		// roll-up stopped: mode=Always with a stale count means a report DID land under the new
 		// mode and a later one was lost, while mode=OnEvent means no post-widen report landed at
 		// all. Asserting the count alone threw that away and cost a round of controller-log
-		// archaeology (docs/design/watch-plane-status-convergence-failures.md, Failure B).
+		// archaeology.
 		Eventually(func(g Gomega) {
 			retained := retainedDocumentsOf(g, defaultTarget, testNs)
 			mode := retentionModeOf(g, defaultTarget, testNs)

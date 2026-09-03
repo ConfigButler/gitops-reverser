@@ -22,14 +22,13 @@ import (
 )
 
 // expectSteadyRequeue asserts the reconcile asked to come back on its steady cadence — or on the
-// SETTLE cadence, which is the correct answer when this reconcile's status write lost a race.
+// WRITE-LOST cadence, which is the correct answer when this reconcile's status write lost a race.
 //
 // These specs call Reconcile directly while the suite's manager reconciles the same object, so the
 // two status patches can collide on the optimistic lock. reconcileStatus.requeueAfter then shortens
 // the cadence deliberately: an object whose published status is the WINNER's older answer must be
 // revisited sooner than its converged interval, because the winning write is status-only and every
-// For() filters those out, so nothing else re-enqueues it
-// (docs/design/watch-plane-status-convergence-failures.md, §2).
+// For() filters those out, so nothing else re-enqueues it.
 //
 // Pinning the exact interval made these specs depend on winning that race — they passed locally and
 // failed under CI contention. The flag itself is covered deterministically by
@@ -37,7 +36,7 @@ import (
 // by accepting either value here.
 func expectSteadyRequeue(result reconcile.Result) {
 	GinkgoHelper()
-	Expect(result.RequeueAfter).To(BeElementOf(RequeueSteadyInterval, RequeueStreamSettleInterval))
+	Expect(result.RequeueAfter).To(BeElementOf(RequeueSteadyInterval, RequeueWriteLostInterval))
 }
 
 var _ = Describe("GitProvider Controller", func() {

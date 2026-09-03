@@ -20,7 +20,6 @@ import (
 // version bump, launch use case 2) round-trips into the mirrored file in place,
 // preserving hand-authored formatting. The generic-CRD case is already pinned by
 // crd_lifecycle_e2e_test.go; this pins a real, named higher-level type.
-// See docs/design/support-boundary/finished/higher-level-krm-documents.md.
 var _ = Describe("Manager Higher-Level KRM (HelmRelease)",
 	Label("manager", "higher-level-krm"), Ordered, func() {
 		var (

@@ -235,15 +235,14 @@ func verifyResourceCondition(
 		// timeout reports only `Expected <string>: False to equal <string>: True` -- which names
 		// neither what the controller was waiting for nor what it thought was wrong. Two 90s
 		// failures on this helper cost a round of controller-log archaeology each to learn that one
-		// said "0/1 streams running (configmaps)" and the other something else entirely
-		// (docs/design/watch-plane-status-convergence-failures.md). The controller already
-		// publishes the answer; the assertion just has to print it.
+		// said "0/1 streams running (configmaps)" and the other something else entirely. The
+		// controller already publishes the answer; the assertion just has to print it.
 		// Built ONLY when the assertion is about to fail. A rule's Ready is a COPY of its
 		// GitTarget's, not a live view of it: reconcileWatchRuleViaTarget reads the target's stored
 		// Ready and folds it in as an independent prerequisite. So a rule reporting a
 		// GitTarget-derived reason is ambiguous — the target may genuinely be stuck, or the target
 		// may have converged and the rule's copy be stale — and those have completely different
-		// searches (docs/design/watch-plane-status-convergence-failures.md, Failure A).
+		// searches.
 		//
 		// Laziness is not an optimisation here. This runs inside an Eventually that polls for up to
 		// 90s, so building it eagerly issued a `kubectl get gittarget` per poll per rule wait —

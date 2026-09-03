@@ -23,12 +23,9 @@ import (
 // Matches therefore still takes the labels rather than fetching them, which is now merely
 // convenient rather than load-bearing.
 type NamespaceMatcher struct {
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// `*` is rejected for a reason that is not cosmetic: Kubernetes treats it as a LITERAL namespace
-	// name — a list or watch against `namespaces/*` matches nothing — so `names: ["*"]` would name a
-	// namespace that cannot exist, and the policy would admit nothing while reading as if it
-	// admitted everything. `selector: {}` is the "every namespace" form because it resolves live.
+	// `*` is rejected because Kubernetes treats it as a LITERAL name: `names: ["*"]` would admit
+	// nothing while reading as if it admitted everything. `selector: {}` is the "every namespace"
+	// form, because it resolves live.
 
 	// Names is an explicit allow-list of namespace names. Entries are namespace names (DNS-1123
 	// labels), never patterns — `*` is rejected. To admit every namespace, declare `selector: {}`.

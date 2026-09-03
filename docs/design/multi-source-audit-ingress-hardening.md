@@ -1,6 +1,6 @@
 # Multi-source audit-ingress hardening
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
 >
 > This is deliberately narrow: `ClusterProvider` source connectivity, provider-name fact partitioning,
 > and reconcile-time namespace authorization are shipped. This document decides how several source

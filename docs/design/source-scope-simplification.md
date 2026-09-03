@@ -1,6 +1,6 @@
 # Source scope: what to delete, and what to keep
 
-> Status: **SHIPPED**, except the `SelfSubjectAccessReview` pass under "The one thing to build",
+> **built**: except the `SelfSubjectAccessReview` pass under "The one thing to build",
 > which is additive and was deliberately kept out of the release that cost a bump.
 > Date: 2026-08-28, shipped 2026-09-01. Index: [`../INDEX.md`](../INDEX.md).
 >

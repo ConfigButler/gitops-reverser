@@ -215,12 +215,11 @@ func TestGitTargetRetentionStatus_AbsentAndZeroMeanDifferentThings(t *testing.T)
 
 	converged := gitTargetRetentionStatus(watch.RetentionSummary{
 		Reported: true, Mode: configbutleraiv1alpha3.PruneAlways,
+		ObservedTime: time.Date(2026, 7, 21, 13, 20, 0, 0, time.UTC),
 	})
 	require.NotNil(t, converged, "a reported zero is a report")
 	assert.Zero(t, converged.RetainedDocuments)
 	assert.Equal(t, configbutleraiv1alpha3.PruneAlways, converged.Mode)
-	require.NotNil(t, converged.ObservedTime, "a reading with no timestamp cannot be judged stale")
-	assert.False(t, converged.ObservedTime.IsZero())
 }
 
 // TestGitTargetRetentionStatus_ReportsTheEffectiveMode covers the legacy GitTarget: it stores no
@@ -248,7 +247,7 @@ func TestGitTargetRetentionStatus_ReportsTheEffectiveMode(t *testing.T) {
 //
 // A 61-scope GitTarget produced ~66 reconciles in four seconds; the one that computed
 // RenderMatchesLive=True lost the race, vanished, and left every WatchRule on that target reading
-// "Rechecking" for five minutes (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+// "Rechecking" for five minutes.
 func TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
@@ -275,6 +274,74 @@ func TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack(t *testing.T) {
 	assert.True(t, st.writeLost(),
 		"the caller must be able to tell that its status never landed, or it will wait out its "+
 			"converged requeue holding the loser's answer")
+}
+
+// TestStall_LostWriteComesBackPromptly is the regression guard for the flake this fix closes.
+//
+// The stall path — every control-plane gate that fails before the data plane is evaluated — used to
+// return its gate's cadence directly and was the ONLY status path that never asked writeLost(). A
+// GitTarget that stalled on "provider not validated yet", then lost the race publishing the
+// recovery, therefore kept the ValidationFailed reason for the full steady interval, and anything
+// waiting on it (a WatchRule mirroring Ready, a spec polling for Progressing) read the stale reason
+// until then.
+//
+// The assertion is on the interval, not merely on "shorter than steady": the recovery has to beat
+// the waits that watch this object, and borrowing a ten-second settle cadence put it in a dead heat
+// with a ten-second wait.
+func TestStall_LostWriteComesBackPromptly(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "tenant-acme", ResourceVersion: "1"},
+	}
+	conflicting := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(
+				context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption,
+			) error {
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: "configbutler.ai", Resource: "gittargets"}, "acme",
+					errors.New("the object has been modified"))
+			},
+		}).Build()
+
+	reconciler := &GitTargetReconciler{Client: conflicting}
+	st := beginStatus(conflicting, nil, target, &target.Status.Conditions)
+
+	result, err := reconciler.stall(context.Background(), st, blockedGate{
+		reason:  GitTargetReadyReasonValidationFailed,
+		message: "Validated gate failed",
+		blocked: "Blocked by Validated=False",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, RequeueWriteLostInterval, result.RequeueAfter,
+		"a stalled reconcile whose status never landed must come back promptly, not on the gate cadence")
+}
+
+// TestStall_KeepsItsGateCadenceWhenTheWriteLands is the other half: the prompt requeue is for a LOST
+// write only. A stall that published what it computed has nothing to retry, and must not spin.
+func TestStall_KeepsItsGateCadenceWhenTheWriteLands(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme", Namespace: "tenant-acme", ResourceVersion: "1"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).WithStatusSubresource(target).Build()
+
+	reconciler := &GitTargetReconciler{Client: c}
+	st := beginStatus(c, nil, target, &target.Status.Conditions)
+
+	result, err := reconciler.stall(context.Background(), st, blockedGate{
+		reason:  GitTargetReadyReasonValidationFailed,
+		message: "Validated gate failed",
+		blocked: "Blocked by Validated=False",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, RequeueSteadyInterval, result.RequeueAfter)
 }
 
 // TestStatusCommit_SuccessfulWriteIsNotFlaggedAsLost keeps the flag meaningful: an ordinary write

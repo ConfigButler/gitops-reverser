@@ -1,5 +1,11 @@
 # Docs linting with markdownlint-cli2 and Vale
 
+> **built**: both linters are wired into `task lint`. This page stays in `design/` because it is
+> the reasoning behind the gate, and the measured backlog it records is still the plan for
+> widening it. Index: [`../INDEX.md`](../INDEX.md)
+> Related: [`../style-guide.md`](../style-guide.md),
+> [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md)
+
 **Proposal: add two linters that between them mechanize most of
 [`style-guide.md`](../style-guide.md), and gate them differently because their backlogs differ by
 an order of magnitude.**

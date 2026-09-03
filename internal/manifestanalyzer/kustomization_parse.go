@@ -13,40 +13,23 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
-// This file decodes kustomization.yaml with kustomize's own type
-// (sigs.k8s.io/kustomize/api/types.Kustomization) instead of a hand-written walk
-// over map[string]interface{}, and derives the unsupported-feature set by
-// reflecting over that type's fields.
-//
-// The point is not brevity. It is that the check becomes exhaustive by
-// construction: a kustomization field the operator has never heard of lands
-// outside supportedKustomizationFields and refuses the folder, instead of being
-// silently tolerated. The hand-written deny-list could only refuse what someone
-// had remembered to add to it, and it had holes — see supportedKustomizationFields.
-//
+// Decodes kustomization.yaml with kustomize's own type and derives the unsupported-feature set by
+// reflecting over that type's fields, which makes the check exhaustive by construction: a field
+// the operator has never heard of lands outside supportedKustomizationFields and refuses the
+// folder rather than being silently tolerated.
 // See docs/design/support-boundary/kustomize-support-boundary.md §7.
 
 // supportedKustomizationFields names the struct fields of kustypes.Kustomization
 // that the operator models. Every other field, present and non-zero, refuses the
 // folder by its own name.
 //
-// Inverting the old hand-written deny-list into an allowlist over kustomize's own
-// type closed two holes it had, each of which let a kustomization render
-// differently from what we believed:
+// The allowlist closed two holes the old deny-list had: `vars` (a source document containing
+// $(SOME_VAR) renders to the substituted value, which we mirrored back over the variable — silent
+// corruption in a folder we accepted) and `validators` (plugin code, an unknowable render).
+// Neither could be missed here, because anything not named below is refused.
 //
-//   - vars — a source document containing $(SOME_VAR) renders to the substituted
-//     value. We mirrored that value straight back over the variable in the source
-//     file. Silent corruption, in a folder we accepted.
-//   - validators — plugin code. Arbitrary code is an unknowable render.
-//
-// Neither was in the deny-list, and neither could have been missed here: they are
-// fields on kustomize's type, and anything not named below is refused. When
-// kustomize grows a field, it lands outside this set and refuses rather than being
-// silently tolerated.
-//
-// Deprecated spellings (bases, imageTags) are absent on purpose: FixKustomization
-// folds them into resources/images before this map is consulted, exactly as the
-// builder does.
+// Deprecated spellings are absent on purpose: FixKustomization folds them into resources/images
+// before this map is consulted, exactly as the builder does.
 func supportedKustomizationFields() map[string]struct{} {
 	return map[string]struct{}{
 		"TypeMeta": {}, // apiVersion / kind
@@ -59,16 +42,11 @@ func supportedKustomizationFields() map[string]struct{} {
 		"Images":    {},
 		"Replicas":  {},
 
-		// TOLERATED, NOT AUTHORED. A patch is read-only context: kustomize applies it, we
-		// mirror what it renders, and nothing is ever routed INTO it. That is a weaker claim
-		// than the four above, and it is the whole of what "tolerate" means — see
-		// patchRefusals for the shapes that are still refused by name.
-		//
-		// It is only safe because the projection leaves every field the BUILD supplies to the
-		// build (sourceForm): a patched base is no longer something the writer can absorb one
-		// environment's values into. Tolerating patches without that is silent corruption, and
-		// no re-render can catch it — the patch re-imposes its value, so the render comes out
-		// identical either way.
+		// TOLERATED, NOT AUTHORED: kustomize applies it, we mirror what it renders, nothing is
+		// routed INTO it. Only safe because the projection leaves every field the BUILD supplies
+		// to the build, so a patched base cannot absorb one environment's values. Tolerating
+		// patches without that is corruption no re-render can catch, since the patch re-imposes
+		// its value and the render comes out identical either way.
 		"Patches": {},
 
 		// These inject metadata into every rendered object. They used to leak into mirrored
@@ -114,20 +92,13 @@ const featureRenderFailed = "render-failed"
 // `path:` to a sparse KRM document inside the scanned tree — and everything else says so rather
 // than falling through into a folder we would then mishandle.
 //
-// The three of them are not arbitrary. Each is a different kind of thing wearing the same key:
+// Each is a different kind of thing wearing the same key: an INLINE patch has no document to
+// retain and no file to edit; a JSON6902 patch is an op list, not a sparse KRM document, and would
+// otherwise index as a broken manifest; a path leaving the tree is a file we never read.
 //
-//   - an INLINE patch is bytes in the kustomization, so there is no document to retain as build
-//     context and no file an authoring step could ever edit;
-//   - a JSON6902 patch is not a sparse KRM document at all — it is a list of `op`/`path`/`value`
-//     operations, and a file full of them would otherwise be indexed as a broken manifest;
-//   - a path leaving the scanned tree is a file we never read, so we cannot know what it does.
-//
-// The deprecated spellings need no entry here, and that was MEASURED rather than assumed:
-// FixKustomization folds `bases` into `resources` and `imageTags` into `images`, but it does NOT
-// fold `patchesStrategicMerge` or `patchesJson6902` into `Patches`. They stay in their own fields,
-// land outside supportedKustomizationFields, and refuse the folder under their own names — which
-// is what we want, and which a kustomize bump could change. TestParse_DeprecatedPatchSpellings
-// pins it.
+// The deprecated spellings need no entry, MEASURED rather than assumed: FixKustomization does NOT
+// fold patchesStrategicMerge or patchesJson6902 into Patches, so they refuse under their own
+// names. A kustomize bump could change that; TestParse_DeprecatedPatchSpellings pins it.
 const (
 	featurePatchInline      = "patches-inline"
 	featurePatchJSON6902    = "patches-json6902"
@@ -145,15 +116,10 @@ const (
 func parseKustomization(content []byte, path string, tree map[string][]byte) (*kustomizationDoc, []string) {
 	doc := &kustomizationDoc{path: path}
 
-	// Unmarshal then FixKustomization is exactly what kustomize's own loader does
-	// (internal/target/kusttarget.go: load), so we model the kustomization the
-	// builder will actually see: bases folded into resources, imageTags into
-	// images, the deprecated generator spellings normalised.
-	//
-	// The loader's CheckEmpty/EnforceFields validations are deliberately not run
-	// here: they decide whether a build would succeed, which is a different
-	// question from whether we can model the render, and adding them would refuse
-	// more than this change intends to.
+	// Unmarshal then FixKustomization is exactly what kustomize's own loader does, so we model
+	// the kustomization the builder will actually see. Its CheckEmpty/EnforceFields validations
+	// are deliberately NOT run: they decide whether a build would succeed, a different question
+	// from whether we can model the render.
 	var k kustypes.Kustomization
 	if err := k.Unmarshal(content); err != nil {
 		doc.unsupported = true
@@ -195,16 +161,13 @@ func parseKustomization(content []byte, path string, tree map[string][]byte) (*k
 	return doc, out
 }
 
-// KustomizationBuildRefs returns the local files a kustomization loads from disk: its
-// resources+bases graph entries and its patch `path:` files, each raw and relative to the
-// kustomization's own directory (deprecated bases: folded into resources exactly as the
-// builder does). ok is false when the bytes are not a parseable kustomization. Remote and
-// inline entries are omitted — they name no local file to scan.
+// KustomizationBuildRefs returns the local files a kustomization loads: its resources+bases graph
+// entries and its patch `path:` files, relative to its own directory. Remote and inline entries
+// name no local file, so they are omitted.
 //
 // The live writer follows these to resolve the exact files an overlay reads from OUTSIDE its
-// spec.path, so render-root scoping pulls in only what kustomize would load — a referenced
-// file or base kustomization — never a whole sibling directory. See
-// internal/git/render_scope.go and docs/design/support-boundary/render-root-scoping.md §4.
+// spec.path, so render-root scoping pulls in only what kustomize would load, never a whole sibling
+// directory. See docs/design/support-boundary/render-root-scoping.md §4.
 func KustomizationBuildRefs(content []byte) ([]string, []string, bool) {
 	var k kustypes.Kustomization
 	if err := k.Unmarshal(content); err != nil {
@@ -422,11 +385,9 @@ func trimmedEntries(lists ...[]string) []string {
 // by its directory. An unparseable kustomization, or one using an unsupported
 // feature, is kept but marked unsupported so it never acts as a namespace source.
 //
-// It is the ONE place a kustomization is judged, and it is file-aware because it has to be: a
-// `patches:` entry names a file, and what that file holds — a sparse KRM document, or a JSON6902
-// op list, or nothing at all — is what decides whether the folder can be tolerated. Every consumer
-// (the acceptance gate, the repo scan, the namespace walk) reads the doc this produces, so no two
-// of them can drift on what "unsupported" means.
+// The ONE place a kustomization is judged, and file-aware because it must be: a `patches:` entry
+// names a file, and what that file holds decides whether the folder can be tolerated. Every
+// consumer reads the doc this produces, so none of them can drift on what "unsupported" means.
 func parseKustomizations(files []manifestedit.FileContent) map[string]*kustomizationDoc {
 	tree := contentByPath(files)
 	out := map[string]*kustomizationDoc{}

@@ -1,17 +1,12 @@
----
-status: design
-date: 2026-08-25
-related:
-  - target-watch-plan.md
-  - reconcile-triggering.md
-  - watch-and-catalog-architecture.md
-  - ../spec/reconcile-via-watchlist-mark-and-sweep.md
-  - ../spec/type-lifecycle-events-and-wobble-settling.md
----
-
 # Data-plane triggering: why one config change replays everything
 
 > **design**: background, open. Index: [`../INDEX.md`](../INDEX.md)
+> Date: 2026-08-25.
+> Related: [`target-watch-plan.md`](target-watch-plan.md),
+> [`reconcile-triggering.md`](reconcile-triggering.md),
+> [`watch-and-catalog-architecture.md`](watch-and-catalog-architecture.md),
+> [`../spec/reconcile-via-watchlist-mark-and-sweep.md`](../spec/reconcile-via-watchlist-mark-and-sweep.md),
+> [`../spec/type-lifecycle-events-and-wobble-settling.md`](../spec/type-lifecycle-events-and-wobble-settling.md)
 
 **The short version.** Adding a single WatchRule tears down and replays every
 watch stream a GitTarget has. Under load that floods a queue which is shared with

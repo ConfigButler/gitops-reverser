@@ -1,6 +1,6 @@
 # The wave after placement left it
 
-> **design**: a sequencing proposal. Steps 6 and 7 (B4 and the source-scope deletion) **shipped**
+> **partly built**: a sequencing proposal. Steps 6 and 7 (B4 and the source-scope deletion) **shipped**
 > on 2026-09-01; step 8, the riders, was trimmed under this page's own rule and is unbuilt.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-08-28 (originally 2026-07-30).

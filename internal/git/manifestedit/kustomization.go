@@ -9,11 +9,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Kustomization override sections the editor accepts. The editor is the
-// mechanism half of the images/replicas edit-through
-// (docs/design/support-boundary/finished/images-and-replicas-edit-through.md): it updates the
-// scalar value of a field that ALREADY EXISTS on an entry that ALREADY EXISTS,
-// and nothing else — it never adds or removes entries, keys, or files.
+// Kustomization override sections the editor accepts. The editor is the mechanism half of the
+// images/replicas edit-through: it updates the scalar value of a field that ALREADY EXISTS on an
+// entry that ALREADY EXISTS, and nothing else — it never adds or removes entries, keys, or files.
 const (
 	KustomizationSectionImages   = "images"
 	KustomizationSectionReplicas = "replicas"

@@ -25,8 +25,8 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// The layout corpus executes the worked examples under docs/layout/. Until this file
-// existed those folders were read by nothing but a human, so every claim in them was
+// The layout corpus executes the worked examples under test/fixtures/layout-corpus/. Until this
+// file existed those folders were read by nothing but a human, so every claim in them was
 // prose: the READMEs said where a document lands and what the commit looks like, and
 // nothing failed when the writer disagreed. Each scenario now seeds a worktree from
 // `repository/`, folds `input/` through the real plan-then-flush path with the flush
@@ -34,7 +34,7 @@ import (
 // `expected-*.patch`.
 //
 // Three conventions here are load-bearing and are stated in
-// docs/layout/shapes/README.md as well:
+// test/fixtures/layout-corpus/shapes/README.md as well:
 //
 //   - A scenario describing behavior that is not built yet is written NOW and skipped, naming the
 //     track that unskips it. The corpus is the definition of done for that track: PR 2 is
@@ -52,11 +52,11 @@ import (
 // Run with -update to rewrite the expected patches from the observed diff.
 
 var updateLayoutCorpus = flag.Bool("update", false,
-	"rewrite docs/layout expected-*.patch fixtures from the observed diff")
+	"rewrite test/fixtures/layout-corpus expected-*.patch fixtures from the observed diff")
 
-// layoutCorpusRoot is docs/layout/ as reached from this package's directory. The fixtures are read
-// in place rather than copied into testdata/: a copy would drift from the documents it
-// illustrates, and the drift would be invisible in review.
+// layoutCorpusRoot is test/fixtures/layout-corpus/ as reached from this package's directory. The
+// fixtures are read in place rather than copied into testdata/: a copy would drift from the
+// documents it illustrates, and the drift would be invisible in review.
 const layoutCorpusRoot = layoutfixture.Root
 
 // corpusNamespaces projects a scenario onto the namespace policy the write path takes: the
@@ -70,7 +70,7 @@ func corpusNamespaces(target v1alpha3.GitTarget, sources []string, wildcard bool
 // it drives the write, which input object arrives, and what Git is expected to look like
 // afterwards.
 type corpusScenario struct {
-	// dir is the fixture folder, relative to docs/layout.
+	// dir is the fixture folder, relative to test/fixtures/layout-corpus.
 	dir string
 	// config names the GitTarget under config/; folders with one target may omit it.
 	config string
@@ -124,8 +124,8 @@ func (s corpusScenario) name() string {
 }
 
 // layoutCorpus is the whole corpus. The eight folder shapes are the cross-product of
-// docs/layout/shapes/README.md; the two specific examples are the Argo CD and Flux
-// repositories of docs/layout/specific-examples/README.md.
+// test/fixtures/layout-corpus/shapes/README.md; the two specific examples are the Argo CD and Flux
+// repositories of test/fixtures/layout-corpus/specific-examples/README.md.
 func layoutCorpus() []corpusScenario {
 	return []corpusScenario{
 		{
@@ -194,12 +194,24 @@ func layoutCorpus() []corpusScenario {
 			patch:  "expected-checkout-config.patch",
 		},
 		{
+			// The refusal half of shape 7. The changed field (a pod-template annotation) is
+			// expressed only in layers/observability, which this target reads and never writes.
+			// The refusal it produces names base/deployment.yaml rather than the layer, because
+			// the layer's patch and the base's Deployment share an identity and the store keeps
+			// the base -- so a shared layer above a base does not change the answer. The fixture
+			// says so; it claimed the opposite for as long as nothing executed it.
+			dir:    "shapes/7-kustomize-layered",
+			config: "gittarget-prod.yaml",
+			input:  "deployment-scrape-changed.yaml",
+			status: "expected-shared-layer-status.yaml",
+		},
+		{
 			dir:    "shapes/8-base-owned-field-edit",
 			config: "gittarget-prod.yaml",
 			input:  "deployment-image-bumped.yaml",
 			patch:  "expected-image-bump.patch",
-			skip: "patch authoring (track C of docs/design/build-order.md): writing an " +
-				"images: declaration into the overlay is not built, and is not PR 2 either",
+			skip: "patch authoring (docs/design/support-boundary/patch-authoring.md, step 1): " +
+				"writing an images: declaration into the overlay is not built",
 		},
 		{
 			// The refusal half of shape 8, and the reason the shape is in the set at all: the
@@ -224,7 +236,7 @@ func layoutCorpus() []corpusScenario {
 	}
 }
 
-// TestLayoutCorpus runs every scenario in docs/layout/ against the real write path.
+// TestLayoutCorpus runs every scenario in test/fixtures/layout-corpus/ against the real write path.
 func TestLayoutCorpus(t *testing.T) {
 	for _, sc := range layoutCorpus() {
 		t.Run(sc.name(), func(t *testing.T) {
@@ -233,6 +245,44 @@ func TestLayoutCorpus(t *testing.T) {
 			}
 			runCorpusScenario(t, sc)
 		})
+	}
+}
+
+// TestLayoutCorpus_EveryExpectationIsAsserted closes the corpus over its expectations, which the
+// folder-level guard above cannot do. A folder can be executed by one scenario and still carry an
+// expected-*.patch or expected-*-status.yaml that no row names, and such a file is worse than an
+// absent one: it reads in review as a behavior that is pinned, and pins nothing.
+//
+// That is not hypothetical. Shape 7's expected-shared-layer-status.yaml sat here unasserted for
+// long enough to describe a refusal the writer does not produce, in a condition shape the harness
+// cannot even read, while its README called it "the whole result".
+func TestLayoutCorpus_EveryExpectationIsAsserted(t *testing.T) {
+	asserted := map[string]bool{}
+	for _, sc := range layoutCorpus() {
+		expectation := sc.patch
+		if expectation == "" {
+			expectation = sc.status
+		}
+		asserted[sc.dir+"/"+expectation] = true
+	}
+	for _, parent := range []string{"shapes", "specific-examples"} {
+		entries, err := os.ReadDir(filepath.Join(layoutCorpusRoot, parent))
+		require.NoError(t, err)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			dir := parent + "/" + entry.Name()
+			files, err := os.ReadDir(filepath.Join(layoutCorpusRoot, dir))
+			require.NoError(t, err)
+			for _, f := range files {
+				if !strings.HasPrefix(f.Name(), "expected-") {
+					continue
+				}
+				require.True(t, asserted[dir+"/"+f.Name()],
+					"%s/%s is an expectation no scenario in layoutCorpus() asserts", dir, f.Name())
+			}
+		}
 	}
 }
 
@@ -350,7 +400,9 @@ func readCorpusSourceNamespaces(
 		}
 		require.NoError(t, err)
 		var rule v1alpha3.WatchRule
-		require.NoError(t, yaml.Unmarshal(raw, &rule), "parsing %s", path)
+		// Strict, for the same reason the GitTarget above is: a fixture naming a field the API
+		// does not have must fail to parse rather than be quietly ignored.
+		require.NoError(t, yaml.UnmarshalStrict(raw, &rule), "parsing %s", path)
 		require.Equal(t, target.Name, rule.Spec.TargetRef.Name,
 			"%s points at a different GitTarget than the scenario's config", path)
 		for _, item := range rule.Spec.Rules {

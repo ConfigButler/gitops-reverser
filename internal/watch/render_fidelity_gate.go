@@ -79,8 +79,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	// TEMPORARY at Info, while Failure A is open. The refusal paths above are logged and the
 	// accept path was not, so SILENCE from this function was ambiguous between "never called" and
 	// "called and accepted" -- and the reproduction that finally carried every other diagnostic
-	// produced exactly that silence, which decided nothing
-	// (docs/design/watch-plane-status-convergence-failures.md, §2.7).
+	// produced exactly that silence, which decided nothing.
 	//
 	// It is bounded: a scope accepts one report per revision, and a revision only moves when the
 	// plan restarts the cell. Lower it to V(1) once A is named.
@@ -99,8 +98,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 // This is the last silent branch in the roll-up. RecordScope* answers applied=false for three
 // different reasons — the target is unknown, the scope is not in the current plan, or the result
 // carries a superseded revision — and every caller used to drop that answer on the floor. A scope
-// then owes a report for ever with nothing to say why, which is Failure A's signature
-// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
+// then owes a report for ever with nothing to say why, which is Failure A's signature.
 //
 // The retention roll-up already logs its refusals, and that asymmetry is exactly why B had
 // evidence and A had none. Info, because it is rare by construction: a healthy plan produces one
