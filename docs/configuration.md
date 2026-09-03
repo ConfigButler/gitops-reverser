@@ -362,7 +362,7 @@ immutable.
 
 The important fields are:
 
-- `spec.providerRef`: which `GitProvider` backs this target
+- `spec.gitProviderRef`: which `GitProvider` backs this target
 - `spec.clusterProviderRef`: which `ClusterProvider` supplies resources; omit it to reference the
   user-created `default` provider
 - `spec.branch`: which allowed branch to write to
@@ -409,8 +409,8 @@ dedicated to this target.
 If you enable `spec.encryption`, that applies to `Secret` resource writes for this target. For SOPS
 and age details, see [sops-age-guide.md](sops-age-guide.md).
 
-`spec.providerRef` references a `GitProvider` in the same namespace as the `GitTarget`. Its `group`
-and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only set `name`.
+`spec.gitProviderRef` references a `GitProvider` in the same namespace as the `GitTarget`, by name.
+The field name says what it points at, so the reference itself carries nothing but the `name`.
 
 `spec.clusterProviderRef` references a cluster-scoped `ClusterProvider`. It defaults to
 `{name: default}` when omitted. That is intentionally different from `gitProviderRef`: a source cluster

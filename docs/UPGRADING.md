@@ -192,9 +192,44 @@ kubectl get gittargets,watchrules,clusterwatchrules -A -o json |
   jq -r '.items[] | "\(.kind) \(.metadata.namespace // "-")/\(.metadata.name)"'
 ```
 
-`CommitRequest` needs no migration: they are one-shot objects you create and never update, so the
-ones in flight during an upgrade finalize under the old name and the next one you create uses the
-new one.
+### `CommitRequest` is the one that needs a drain
+
+An earlier revision of this entry said `CommitRequest` needed no migration because they are one-shot
+objects. That is wrong in the one case that matters, and it is the only part of this release with a
+window you have to plan around.
+
+A `CommitRequest` that is still pending when the new CRDs land serves an EMPTY `gitTargetRef`, like
+every other object. Unlike every other object, it **cannot be repaired**: `CommitRequest.spec` is
+wholly immutable, so no apply can put the name back. The request names no `GitTarget`, so it can
+never finalize.
+
+The operator no longer retries such a request forever. It fails it terminally with
+`Stalled=True, reason=GitTargetRefPruned` and a message saying to delete it, because an empty name
+is otherwise unreachable: admission refuses one on every path, so the only thing that can produce it
+is this upgrade.
+
+**Before you upgrade, drain.** Stop creating `CommitRequest`s and wait until every existing one is
+terminal — `Ready=True` or `Stalled=True`:
+
+```bash
+kubectl get commitrequests -A -o json |
+  jq -r '.items[]
+    | select([.status.conditions[]? | select(.type == "Ready" or .type == "Stalled")
+              | select(.status == "True")] | length == 0)
+    | "still pending: \(.metadata.namespace)/\(.metadata.name)"'
+```
+
+An empty result means the drain is complete. If you upgrade without draining, nothing is lost from
+Git — an unfinalized request only means its writes were not flushed early, and the next commit
+window picks them up — but the request objects themselves are stuck, and the fix is to delete them:
+
+```bash
+kubectl get commitrequests -A -o json |
+  jq -r '.items[]
+    | select(any(.status.conditions[]?; .type == "Stalled" and .reason == "GitTargetRefPruned"))
+    | "-n \(.metadata.namespace) \(.metadata.name)"' |
+  xargs -r -L1 kubectl delete commitrequest
+```
 
 ### Conversion
 
@@ -242,11 +277,14 @@ The same edit applies to every reference on every kind:
 
 | Kind | Reference fields |
 |---|---|
-| `GitTarget` | `spec.providerRef`, `spec.clusterProviderRef`, `spec.encryption.secretRef` |
+| `GitTarget` | `spec.gitProviderRef`, `spec.clusterProviderRef`, `spec.encryption.secretRef` |
 | `GitProvider` | `spec.secretRef`, `spec.commit.signing.secretRef` |
-| `WatchRule` | `spec.targetRef` |
-| `ClusterWatchRule` | `spec.targetRef` |
-| `CommitRequest` | `spec.targetRef` |
+| `WatchRule` | `spec.gitTargetRef` |
+| `ClusterWatchRule` | `spec.gitTargetRef` |
+| `CommitRequest` | `spec.gitTargetRef` |
+
+(Spelled with the new names, because [the rename](#every-reference-names-the-kind-it-points-at)
+lands in the same release: you make both edits in one pass.)
 
 **Nothing is lost.** Each of those `group` and `kind` fields was an enum with exactly one member and
 a default equal to it, so no manifest could ever say anything but `configbutler.ai` and the one kind
@@ -254,7 +292,7 @@ the field accepts. What the sub-fields cost was four near-identical Go types and
 implied a choice nobody had.
 
 **They are removed, not refused.** `kubectl apply` will therefore reject a manifest that still sets
-them, naming the field (`unknown field "spec.providerRef.kind"`), while a client applying with
+them, naming the field (`unknown field "spec.gitProviderRef.kind"`), while a client applying with
 field validation off accepts it and prunes. Nothing breaks either way, since the pruned value was
 the only legal one — but a strict apply will stop until you delete the lines.
 

@@ -330,9 +330,9 @@ change at all.
   affects only files written afterwards, and a folder can hold documents placed under two templates.
   Match-first identity keeps finding and updating them in place. The immutability-plus-CEL-widening
   machinery an earlier draft proposed was invented to protect a discriminator that no longer exists.
-- **`placements_total` keeps its `source` label** — today `declared`, `kustomize_root` and
-  `canonical`, with the `declared` split into `byType`/`default` still queued. It names the rung
-  that answered rather than a resolved layout kind, so nothing here breaks a label.
+- **`placements_total` keeps its `source` label** — `by_type`, `default`, `kustomize_root` and
+  `canonical`. It names the rung that answered rather than a resolved layout kind, so nothing here
+  breaks a label.
 - **`{kindLower}` and the versionless identity fix** are template features and stay queued.
 
 ## Previewing a target: point it at a scratch branch

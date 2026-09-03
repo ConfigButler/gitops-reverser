@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,27 +72,39 @@ func TestRenamedRequiredField_StoredObjectCanAdoptIt(t *testing.T) {
 		}}
 	}
 
-	// Stand in for the pre-rename release: gitProviderRef not yet required.
-	setGitProviderRefRequired(ctx, t, c, false)
-	legacy := target("stored-before-the-rename", false)
+	// Stand in for the PRE-rename release: the schema serves `providerRef` and does not know
+	// `gitProviderRef` at all. Storing under this schema is what makes the assertions below mean
+	// something — an object created without the new field under the SHIPPED schema would prove only
+	// that the guard works, not that the loss it exists for is real.
+	renameGitProviderRefTo(ctx, t, c, "providerRef")
+	legacy := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "configbutler.ai/v1alpha3",
+		"kind":       "GitTarget",
+		"metadata":   map[string]any{"name": "stored-before-the-rename", "namespace": "default"},
+		"spec": map[string]any{
+			"providerRef": map[string]any{"name": "platform"},
+			"branch":      "main",
+			"path":        "clusters/prod",
+		},
+	}}
 	createUntilServed(ctx, t, c, legacy)
 
-	// Ship the rename: the field is required from here on.
-	setGitProviderRefRequired(ctx, t, c, true)
+	// Ship the rename.
+	renameGitProviderRefTo(ctx, t, c, "gitProviderRef")
 	requireRefLessCreateRejected(ctx, t, c, target)
 
-	// The migrating apply: one update that sets a required, immutable field for the first time.
-	stored := &unstructured.Unstructured{}
-	stored.SetAPIVersion("configbutler.ai/v1alpha3")
-	stored.SetKind("GitTarget")
-	if err := c.Get(ctx, client.ObjectKey{Name: legacy.GetName(), Namespace: "default"}, stored); err != nil {
-		t.Fatalf("get stored object: %v", err)
-	}
+	// FIRST CLAIM: the old value is gone on READ, immediately, with no write in between. This is
+	// what makes the rename a stall rather than a silent mis-configuration, and it is the premise
+	// docs/UPGRADING.md's "re-apply every object" step rests on.
+	afterRename := requirePrunedOfBothSpellings(ctx, t, c, legacy.GetName())
+
+	// SECOND CLAIM: the migrating apply works. One update sets a required, immutable field for the
+	// first time, which is the shape the guard exists for.
 	if err := unstructured.SetNestedMap(
-		stored.Object, map[string]any{"name": "platform"}, "spec", "gitProviderRef"); err != nil {
+		afterRename.Object, map[string]any{"name": "platform"}, "spec", "gitProviderRef"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Update(ctx, stored); err != nil {
+	if err := c.Update(ctx, afterRename); err != nil {
 		t.Fatalf("a stored object could not adopt the renamed required field in one apply: %v\n"+
 			"Without this, upgrading across the rename would force delete-and-recreate on every "+
 			"GitTarget. See the guard on spec.gitProviderRef in api/v1alpha3/gittarget_types.go.", err)
@@ -112,25 +125,45 @@ func TestRenamedRequiredField_StoredObjectCanAdoptIt(t *testing.T) {
 	}
 }
 
-// setGitProviderRefRequired flips whether the SERVED GitTarget schema requires spec.gitProviderRef,
-// standing in for the release boundary the rename crosses.
-func setGitProviderRefRequired(ctx context.Context, t *testing.T, c client.Client, required bool) {
+// renameGitProviderRefTo rewrites the SERVED GitTarget schema so the provider reference is spelled
+// `to` — property, required list and all — standing in for the release boundary the rename crosses.
+// Crossing it in the test the way the release crosses it is the whole point: a field the schema no
+// longer describes is a field the apiserver no longer serves.
+func renameGitProviderRefTo(ctx context.Context, t *testing.T, c client.Client, to string) {
 	t.Helper()
+	const (
+		oldName = "providerRef"
+		newName = "gitProviderRef"
+	)
+	from := newName
+	if to == newName {
+		from = oldName
+	}
+
 	var crd apiextv1.CustomResourceDefinition
 	if err := c.Get(ctx, client.ObjectKey{Name: "gittargets.configbutler.ai"}, &crd); err != nil {
 		t.Fatalf("get CRD: %v", err)
 	}
 	spec := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
-	kept := make([]string, 0, len(spec.Required)+1)
+	if prop, ok := spec.Properties[from]; ok {
+		spec.Properties[to] = prop
+		delete(spec.Properties, from)
+	}
+	required := make([]string, 0, len(spec.Required))
 	for _, r := range spec.Required {
-		if r != "gitProviderRef" {
-			kept = append(kept, r)
+		if r == from {
+			r = to
 		}
+		required = append(required, r)
 	}
-	if required {
-		kept = append(kept, "gitProviderRef")
+	spec.Required = required
+	// The rules move with the field. A CEL rule is compiled against the schema, so leaving one
+	// naming a property that no longer exists makes the CRD itself invalid — which is a useful
+	// thing to have learned: the immutability rule and the field it guards cannot drift apart.
+	for i := range spec.XValidations {
+		spec.XValidations[i].Rule = strings.ReplaceAll(spec.XValidations[i].Rule, from, to)
+		spec.XValidations[i].Message = strings.ReplaceAll(spec.XValidations[i].Message, from, to)
 	}
-	spec.Required = kept
 	crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"] = spec
 	if err := c.Update(ctx, &crd); err != nil {
 		t.Fatalf("update CRD schema: %v", err)
@@ -173,4 +206,33 @@ func requireRefLessCreateRejected(
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("gitProviderRef never became required, so the migration assertion would be vacuous")
+}
+
+// requirePrunedOfBothSpellings reads the stored object back and holds the premise of the migration:
+// after the rename it serves NEITHER the old name (the schema no longer describes it) nor the new
+// one (nothing has written it). It returns the object so the caller can attempt the migration.
+func requirePrunedOfBothSpellings(
+	ctx context.Context,
+	t *testing.T,
+	c client.Client,
+	name string,
+) *unstructured.Unstructured {
+	t.Helper()
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("configbutler.ai/v1alpha3")
+	obj.SetKind("GitTarget")
+	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, obj); err != nil {
+		t.Fatalf("get stored object after the rename: %v", err)
+	}
+	spec, _, err := unstructured.NestedMap(obj.Object, "spec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := spec["providerRef"]; ok {
+		t.Fatalf("the pruned field is still served, so this test is not reproducing the migration: %v", spec)
+	}
+	if _, ok := spec["gitProviderRef"]; ok {
+		t.Fatalf("the stored object gained the new field without being written: %v", spec)
+	}
+	return obj
 }

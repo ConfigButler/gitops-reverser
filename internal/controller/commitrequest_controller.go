@@ -139,20 +139,17 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	if handled, err := r.refusePrunedGitTargetRef(ctx, commitRequest); handled || err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 1. ATTRIBUTE: settle the request's actor synchronously (present-or-never).
 	// A hit names the admission submitter; a miss claims no actor. Either way the
 	// decision is final — there is no wait and no requeue for the author.
 	author, attribution := r.attributeAuthor(ctx, commitRequest)
 
-	// First sight: stamp the still-running conditions so the object reports its
-	// progress (kstatus InProgress) and AuthorAttributed is settled immediately. A
-	// disabled controller returns above, so it never stamps.
-	if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
-		markCommitRequestWaitingForCloseDelay(commitRequest, attribution)
-		if err := r.Status().Update(ctx, commitRequest); err != nil {
-			return ctrl.Result{}, err
-		}
-		log.V(1).Info("Stamped CommitRequest in-progress conditions", "name", req.NamespacedName)
+	if err := r.stampFirstSightConditions(ctx, commitRequest, attribution); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute
@@ -193,6 +190,56 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution)
 	return ctrl.Result{}, nil
+}
+
+// stampFirstSightConditions stamps the still-running conditions the first time a request is seen,
+// so the object reports its progress (kstatus InProgress) and AuthorAttributed is settled
+// immediately. A disabled controller returns before this, so it never stamps.
+func (r *CommitRequestReconciler) stampFirstSightConditions(
+	ctx context.Context,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+) error {
+	if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) != nil {
+		return nil
+	}
+	markCommitRequestWaitingForCloseDelay(commitRequest, attribution)
+	if err := r.Status().Update(ctx, commitRequest); err != nil {
+		return err
+	}
+	logf.FromContext(ctx).V(1).Info("Stamped CommitRequest in-progress conditions",
+		"name", client.ObjectKeyFromObject(commitRequest))
+	return nil
+}
+
+// refusePrunedGitTargetRef fails a CommitRequest whose spec names no GitTarget, which can only be
+// one thing: an object stored before spec.targetRef was renamed to spec.gitTargetRef, whose old
+// value the apiserver stopped serving the moment the new CRDs landed. Admission refuses an empty
+// name on every path, so nothing else can produce it.
+//
+// It is terminal rather than retried, and it has to be, because the object cannot be repaired:
+// CommitRequest.spec is wholly immutable, so no apply can put the name back. Retrying would spend
+// the controller's attention on an object that will never resolve, and would report a transient
+// "get GitTarget" error for a permanent condition. The message names the only fix there is.
+func (r *CommitRequestReconciler) refusePrunedGitTargetRef(
+	ctx context.Context,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+) (bool, error) {
+	if commitRequest.Spec.GitTargetRef.Name != "" {
+		return false, nil
+	}
+
+	failCommitRequest(commitRequest, crReasonGitTargetRefPruned,
+		"spec.gitTargetRef is empty: this request was created before spec.targetRef was renamed, "+
+			"and its value was pruned by the upgrade. A CommitRequest spec is immutable, so this "+
+			"one cannot be repaired — delete it and create a new one.")
+	if err := r.Status().Update(ctx, commitRequest); err != nil {
+		return true, err
+	}
+	logf.FromContext(ctx).Info(
+		"CommitRequest names no GitTarget: created before the gitTargetRef rename",
+		"name", client.ObjectKeyFromObject(commitRequest))
+	return true, nil
 }
 
 // attributeAuthor settles the commit author with a single synchronous lookup of the

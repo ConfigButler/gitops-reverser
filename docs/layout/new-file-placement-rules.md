@@ -584,7 +584,8 @@ and each one either answers or declines:
 
 | Step | Mechanism | `placements_total{source}` | Decides because |
 |---|---|---|---|
-| 1 | declared `placement.byType`, then `placement.default` | `declared` | the GitTarget said so |
+| 1a | declared `placement.byType` for this exact type | `by_type` | the GitTarget named this type |
+| 1b | declared `placement.default`, the catch-all | `default` | the GitTarget named a fallback |
 | 2 | the folder's single supported kustomization root | `kustomize_root` | a file that root cannot reach never renders |
 | 3 | canonical `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` | `canonical` | nothing else did |
 

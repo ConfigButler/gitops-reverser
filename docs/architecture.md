@@ -290,7 +290,7 @@ How attribution and finalization interact is described under
 One materialization from a source provider to a Git destination: `(cluster provider, provider, branch, path)`.
 Key fields:
 
-- `spec.providerRef`: a `GitProvider` in the same namespace, by name.
+- `spec.gitProviderRef`: a `GitProvider` in the same namespace, by name.
 - `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 - `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be

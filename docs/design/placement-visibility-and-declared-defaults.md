@@ -5,10 +5,9 @@
 >
 > **`status.layout` shipped as `status.placement`, and the ambiguous render root with it**, both in
 > [#326](https://github.com/ConfigButler/gitops-reverser/pull/326) — so the two largest rows of the
-> table below are done. What is left is the legibility set: the `declared` metric-value split, the
-> canonical path as a template constant, `{kindLower}`, and the re-opened CRD default. The metric
-> split is the only one with an external consumer, because it changes a label value a dashboard may
-> already select on.
+> table below are done, and the `declared` metric value has since split into `by_type`/`default`.
+> What is left is the rest of the legibility set: the canonical path as a template constant,
+> `{kindLower}`, and the re-opened CRD default.
 >
 > **The decisions below stand. The build list does not.** An earlier revision of this page said
 > "everything decided here lands in that same PR", and that turned out to be wrong: PR #291 shipped
@@ -521,7 +520,7 @@ because they are worth different urgency:
 | F10: register a declared path with the kustomization that governs it | **SHIPPED** in 0.42.1 (#319) | One `byType` line into a subdirectory silently produced a file nothing renders. The fix made registration an invariant, which is what reversed [`model.md`](../layout/model.md) |
 | Drop the `{version}` requirement from `IdentityCompletePlacementTemplate` | **SHIPPED** in 0.42.1 (#319) | It contradicted the versionless-path decision, and it was what made any future spec default fail our own gate |
 | `status.layout` | **SHIPPED** as `status.placement` in #326 | The durable half of "what did the operator understand about this folder". It waited for the layout model's vocabulary and shipped with it |
-| Split `declared` into `byType` and `default`; unify the prose on "canonical" | **filed, legibility** | A catch-all quietly swallowing a type you meant to name looks identical to a rule working |
+| Split `declared` into `byType` and `default`; unify the prose on "canonical" | **SHIPPED** as `by_type`/`default` | A catch-all quietly swallowing a type you meant to name looks identical to a rule working |
 | `{kindLower}` | **filed, legibility** | Small, self-contained |
 | Canonical path as a template constant | **filed, cleanup** | Removes the hand-written duplication; what a future default would reuse |
 | `renderRootReason: Ambiguous` | **SHIPPED** in #326 | Shipped with `status.placement`, and the layout model decided the policy: a folder covering two roots REFUSES the placement rather than writing it unrendered |
