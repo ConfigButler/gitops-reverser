@@ -14,6 +14,54 @@ persist changes to it, and RBAC for it is granted separately from the main resou
   verbs: ["get", "patch", "update"]
 ```
 
+## What belongs in status, and what is a metric
+
+**Status writes are bounded by configuration changes and health transitions, never by data-plane
+throughput.** That is the rule a proposed field has to pass, and it is a rule about the field's
+*rate*, not its subject.
+
+Two questions decide it:
+
+- Does the value move when a **user** changes something, or when health flips? That is status.
+- Does it move when the **workload** moves, on an event, a commit, or a mirrored object? That is a
+  metric, whatever it is called.
+
+A field that fails this is not merely expensive. It is wrong three ways, and only the first is cost:
+
+1. Every status write is an etcd write and a `resourceVersion` bump, which invalidates the cached
+   copy held by every watcher of that type, not just ours.
+2. It is a **feedback loop**. A status write fires an Update event that the controller's own `For()`
+   turns back into a queued request, which is the self-triggering edge the section below exists to
+   suppress. A field that moves on every pass defeats that suppression by construction.
+3. It destroys the field's own readability. A value that changes constantly cannot be read as a
+   statement about convergence, because there is no steady state to compare against.
+
+The rule is already visible in the fields this project ships, and they are the worked examples:
+
+| Field | Moves when | Verdict |
+|---|---|---|
+| `status.placement.mode`, `.renderRoot`, `.readOnlyBases` | the folder's shape changes | status |
+| `status.placement.resolvedAtRevision` | the **resolution** changes, deliberately not on every scan | status |
+| `status.streams` | counts that move when a stream's readiness changes | status |
+| `status.retention` | counts and a roll-up time that move when a **resync** reports, not per event | status |
+| placements, placement refusals | every placed or refused document | metric (`gitopsreverser_placements_total`, `_placement_refusals_total`) |
+| a "last reconcile attempt" timestamp | every pass | removed, see below |
+
+`resolvedAtRevision` is the one worth reading twice, because it looks like a timestamp field and is
+not one. Re-stamping it on every scan would write status once per commit to the branch, whichever
+target caused that commit, so it dates the resolution and not the last scan. A revision older than
+the branch head means the layout has been stable, not that nothing has looked.
+
+**The bound is on rate, not on human involvement.** A field written once per deliberate user action
+passes: a reconcile-request handshake such as Flux's `lastHandledReconcileAt` is bounded by how often
+someone pokes the annotation, which is not a throughput. Rejecting that kind of field is stricter
+than this rule requires.
+
+**Where this bites in review:** the durable per-type record. A map in status keyed by watched type
+grows with the number of types *and* is rewritten by each scan, so it fails on both halves at once.
+Publish the per-type facts as metric labels and keep status to the one resolved answer for the
+object.
+
 ## Conditions
 
 A list treated as a map keyed by `type`. Don't append duplicates — update the existing entry.
