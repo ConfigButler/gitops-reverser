@@ -210,8 +210,8 @@ func layoutCorpus() []corpusScenario {
 			config: "gittarget-prod.yaml",
 			input:  "deployment-image-bumped.yaml",
 			patch:  "expected-image-bump.patch",
-			skip: "patch authoring (track C of docs/design/build-order.md): writing an " +
-				"images: declaration into the overlay is not built, and is not PR 2 either",
+			skip: "patch authoring (docs/design/support-boundary/patch-authoring.md, step 1): " +
+				"writing an images: declaration into the overlay is not built",
 		},
 		{
 			// The refusal half of shape 8, and the reason the shape is in the set at all: the

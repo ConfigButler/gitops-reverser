@@ -52,8 +52,8 @@ specification, which is why the refusing halves are here at all.
 
 **A scenario for behavior that is not built yet is written now and skipped, naming the track that
 unskips it.** The corpus is then the definition of done for that track. One such skip is live
-today: shape 8's `images:` authoring belongs to track C of
-[`build-order.md`](../../../docs/design/build-order.md).
+today: shape 8's `images:` authoring is step 1 of
+[`patch-authoring.md`](../../../docs/design/support-boundary/patch-authoring.md).
 
 ## Adding a scenario
 

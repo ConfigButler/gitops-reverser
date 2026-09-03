@@ -443,11 +443,12 @@ exactly the truth.
 registration, the render fidelity gate, refusal accounting, the metrics — already exists and stays
 where it is. The two flags sit beside the ladder.
 
-These two PRs are **track A** of [`../design/build-order.md`](../design/build-order.md), which is
-the only page that carries the cross-track order and the authority on the cut. Two other tracks are
-in flight and neither is covered here: the breaking source-scope wave (PR 3 there), and patch
-authoring. Nothing below waits for either — see
-[the couplings that do not exist](../design/build-order.md#three-couplings-people-expect-and-that-do-not-exist).
+**Both PRs below have shipped**, and the table is kept as the record of what each one carried.
+The breaking source-scope wave shipped separately and is written up in
+[`../design/source-scope-simplification.md`](../design/source-scope-simplification.md); patch
+authoring remains unbuilt and lives in
+[`../design/support-boundary/patch-authoring.md`](../design/support-boundary/patch-authoring.md).
+Neither of those was ever a dependency of the two here.
 
 | PR | Content | Breaking |
 |---|---|---|
@@ -461,8 +462,7 @@ rule, which **gates**: a folder covering several render roots stops placing new 
 before it placed them at the canonical path inside whichever folder it covered. Existing documents
 are untouched, and the refusal is raised at the
 write rather than on `Validated` so the target keeps scanning and can observe the folder being
-fixed. [`../design/build-order.md`](../design/build-order.md#the-plan-as-three-prs) carries the
-before-and-after.
+fixed.
 
 The post-scan pass lands whole in PR 1: it is the `Ambiguous` rule and nothing else, and that rule
 reads only the scan.

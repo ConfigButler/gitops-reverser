@@ -52,6 +52,5 @@ The same as `shapes/`, so one harness reads both:
   written to Git.
 - `expected-*.patch` — the exact change proposed for Git, without `index` lines.
 
-[`../model.md`](../../../../docs/layout/model.md#how-it-gets-built) turns both folders into an executable corpus in its
-first PR; [`../../design/build-order.md`](../../../../docs/design/build-order.md) says when, and what the
-harness seam already is.
+[`../model.md`](../../../../docs/layout/model.md#how-it-gets-built) is where turning both folders
+into an executable corpus was specified. That has shipped: `TestLayoutCorpus` runs them.
