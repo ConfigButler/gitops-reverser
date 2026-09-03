@@ -139,7 +139,7 @@ metadata:
   name: watch-helmreleases
   namespace: apps
 spec:
-  targetRef:
+  gitTargetRef:
     name: my-gittarget
   rules:
   - apiGroups: ["helm.toolkit.fluxcd.io"]

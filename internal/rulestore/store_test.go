@@ -1024,7 +1024,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 		configv1alpha3.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "cluster-services"},
 			Spec: configv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: meta.NamespacedObjectReference{Name: "cluster-target", Namespace: "ops"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "cluster-target", Namespace: "ops"},
 				Rules: []configv1alpha3.ClusterResourceRule{{
 					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 					APIGroups:   []string{""},

@@ -291,9 +291,9 @@ func (m *Manager) collectWatchRuleSelections(
 	get func(types.ResourceReference, string, string, string, string) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotWatchRules() {
-		targetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		records := recordsFor(m.clusterIDForGitTarget(targetRef))
-		ts := get(targetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
+		gitTargetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		records := recordsFor(m.clusterIDForGitTarget(gitTargetRef))
+		ts := get(gitTargetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
 		for _, rr := range rule.ResourceRules {
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
@@ -333,9 +333,9 @@ func (m *Manager) collectClusterWatchRuleSelections(
 	get func(types.ResourceReference, string, string, string, string) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
-		targetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		records := recordsFor(m.clusterIDForGitTarget(targetRef))
-		ts := get(targetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
+		gitTargetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		records := recordsFor(m.clusterIDForGitTarget(gitTargetRef))
+		ts := get(gitTargetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
 		for _, rr := range rule.Rules {
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)

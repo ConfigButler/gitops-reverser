@@ -390,7 +390,7 @@ metadata:
   name: example-target
   namespace: default
 spec:
-  providerRef:
+  gitProviderRef:
     name: example-provider
   # Omit clusterProviderRef to reference the user-created ClusterProvider named "default".
   # clusterProviderRef: {name: prod-eu-1} selects a different source provider.
@@ -413,7 +413,7 @@ and age details, see [sops-age-guide.md](sops-age-guide.md).
 and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only set `name`.
 
 `spec.clusterProviderRef` references a cluster-scoped `ClusterProvider`. It defaults to
-`{name: default}` when omitted. That is intentionally different from `providerRef`: a source cluster
+`{name: default}` when omitted. That is intentionally different from `gitProviderRef`: a source cluster
 is a shared physical identity, while a Git destination and its credential normally belong to the
 target's namespace. The default name can represent either an in-cluster or remote source according
 to the `ClusterProvider` the user created.
@@ -555,7 +555,7 @@ spec:
 
 ```yaml
 spec:
-  providerRef: {name: homelab}
+  gitProviderRef: {name: homelab}
   branch: gitops-preview          # not main
   path: apps/checkout
 ```
@@ -742,7 +742,7 @@ counted, so a `Never` target can report `0` while still declining to mirror dele
 The count is refreshed when a resync runs, so it lags a change in the cluster until the next one.
 Read `observedTime` before treating a `0` as live.
 
-`spec.prune` is mutable (unlike `providerRef`, `branch`, and `path`), so a target can be moved to
+`spec.prune` is mutable (unlike `gitProviderRef`, `branch`, and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists
 the target's watched scopes, so the cleanup runs on the edit instead of waiting for the next replay.
 Tightening it applies to the next write and leaves the streams alone, which is what makes it usable
@@ -1114,7 +1114,7 @@ when its GitTarget reports `GitPathAccepted=False`.
 
 The important fields are:
 
-- `spec.targetRef.name`: target to write to
+- `spec.gitTargetRef.name`: target to write to
 - `spec.rules`: one or more resource-match rules
 - `spec.rules[].sourceNamespace`: the source-cluster namespace that item watches; omitted means the
   rule's own namespace
@@ -1149,7 +1149,7 @@ metadata:
   name: repo-config
   namespace: tenant-acme
 spec:
-  targetRef:
+  gitTargetRef:
     name: acme
   rules:
     - resources: [configmaps]        # omitted → tenant-acme, this rule's own namespace
@@ -1203,7 +1203,7 @@ metadata:
   name: example-watchrule
   namespace: default
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
   rules:
     - operations: [CREATE, UPDATE, DELETE]
@@ -1222,7 +1222,7 @@ namespace.
 namespaced resources across namespaces, use a `WatchRule` with
 [`rules[].sourceNamespace`](#watching-a-different-source-namespace).
 
-Because it is cluster-scoped, its `targetRef` must include the namespace of the referenced
+Because it is cluster-scoped, its `gitTargetRef` must include the namespace of the referenced
 `GitTarget`, and that namespace must be admitted by the target's `ClusterProvider`.
 
 Example:
@@ -1233,7 +1233,7 @@ kind: ClusterWatchRule
 metadata:
   name: cluster-rbac
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
     namespace: default
   rules:
@@ -1256,7 +1256,7 @@ for the request's author instead of waiting for `GitTarget.spec.commit.window`.
 
 The important fields are:
 
-- `spec.targetRef.name`: target whose open window should be finalized
+- `spec.gitTargetRef.name`: target whose open window should be finalized
 - `spec.message`: optional verbatim commit message
 - `spec.closeDelaySeconds`: optional 0-300 second delay before the open window is closed, after the
   request author is known, an extra collect window
@@ -1270,7 +1270,7 @@ metadata:
   name: save-now
   namespace: default
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
   message: "save default/example-target"
   closeDelaySeconds: 2

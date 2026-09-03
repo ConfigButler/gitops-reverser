@@ -176,11 +176,11 @@ Git destination. `ClusterProvider` supplies the source connection and authorizat
 ```mermaid
 graph LR
     subgraph CONTROL["Control plane: operator cluster"]
-        WR[WatchRule] -->|targetRef| GT[GitTarget]
-        CWR[ClusterWatchRule] -->|targetRef| GT
-        CR[CommitRequest] -->|targetRef| GT
+        WR[WatchRule] -->|gitTargetRef| GT[GitTarget]
+        CWR[ClusterWatchRule] -->|gitTargetRef| GT
+        CR[CommitRequest] -->|gitTargetRef| GT
         GT -->|clusterProviderRef| CP[ClusterProvider]
-        GT -->|providerRef| GP[GitProvider]
+        GT -->|gitProviderRef| GP[GitProvider]
         KCFG[("Remote kubeconfig Secret\noperator namespace")]
         WM["Watch manager\nper-provider source context"]
     end
@@ -226,7 +226,7 @@ by provider name and are released when no `GitTarget` references them.
 
 Scope is carried by the rule KIND. A `WatchRule` selects NAMESPACED resources and routes matching
 events to a same namespace `GitTarget`; each of its rule items names the source namespace it watches.
-A `ClusterWatchRule` selects CLUSTER SCOPED resources, with an explicit namespace `targetRef` and no
+A `ClusterWatchRule` selects CLUSTER SCOPED resources, with an explicit namespace `gitTargetRef` and no
 namespace selection of its own. Both share the rule model:
 
 - `spec.rules[]`: OR resource rules (`MinItems=1`).
@@ -264,7 +264,7 @@ The two namespace controls intentionally live in different planes:
 A one shot "save now" signal that finalizes the open commit window for a same namespace `GitTarget`
 instead of waiting for the silence timer. The **entire spec is immutable**. Key fields:
 
-- `spec.targetRef.name`: target whose open window should be finalized.
+- `spec.gitTargetRef.name`: target whose open window should be finalized.
 - `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
 - `spec.closeDelaySeconds`: optional `0–300s` delay before the window is closed, so the author's own
   in flight changes can join the window before it closes.
@@ -303,7 +303,7 @@ Key fields:
 may batch and phrase their commits differently. A branch worker serves a `(provider, branch)` pair and
 resolves the window per open window, since a window is bound to exactly one target.
 
-`providerRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
+`gitProviderRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
 orphan an old materialization or change its source cluster. The controller also rejects path overlaps
 between GitTargets sharing a provider and branch.
 

@@ -87,7 +87,7 @@ per-type policy explicit:
 apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 spec:
-  providerRef:
+  gitProviderRef:
     name: platform
   branch: main
   path: clusters/prod
@@ -118,7 +118,7 @@ escape hatch if users later need scope-wide or metadata-aware placement.
 
 ## Current implementation, as reviewed
 
-The current `GitTargetSpec` has `providerRef`, `branch`, `path`, and optional
+The current `GitTargetSpec` has `gitProviderRef`, `branch`, `path`, and optional
 `encryption`; it has no placement policy yet
 ([api/v1alpha3/gittarget_types.go](../../api/v1alpha3/gittarget_types.go)).
 

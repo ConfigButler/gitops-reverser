@@ -4,7 +4,7 @@ metadata:
   name: home-workloads
   namespace: homelab-config
 spec:
-  targetRef:
+  gitTargetRef:
     name: home-cluster-state
   rules:
     - apiGroups: [""]

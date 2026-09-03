@@ -8,7 +8,7 @@ metadata:
   name: flux-media
   namespace: flux-system
 spec:
-  providerRef:
+  gitProviderRef:
     name: homelab-repository
   branch: main
   path: apps/home/media

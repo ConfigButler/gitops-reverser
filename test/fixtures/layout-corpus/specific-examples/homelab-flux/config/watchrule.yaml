@@ -4,7 +4,7 @@ metadata:
   name: flux-sources
   namespace: flux-system
 spec:
-  targetRef:
+  gitTargetRef:
     name: flux-sources
   rules:
     - apiGroups: ["source.toolkit.fluxcd.io"]

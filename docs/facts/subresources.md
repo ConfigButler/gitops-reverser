@@ -197,7 +197,7 @@ metadata:
   name: platform
   namespace: default
 spec:
-  providerRef:
+  gitProviderRef:
     name: platform-config
   branch: main
   path: clusters/dev

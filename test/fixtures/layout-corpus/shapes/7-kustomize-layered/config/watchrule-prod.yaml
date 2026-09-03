@@ -4,7 +4,7 @@ metadata:
   name: checkout-prod-content
   namespace: shop-prod
 spec:
-  targetRef:
+  gitTargetRef:
     name: checkout-prod
   rules:
     - apiGroups: [""]

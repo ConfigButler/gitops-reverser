@@ -4,7 +4,7 @@ metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
 spec:
-  providerRef:
+  gitProviderRef:
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
   path: {{ .Path }}

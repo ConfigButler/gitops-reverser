@@ -88,8 +88,8 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
-			Branch:      "main",
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
@@ -274,8 +274,8 @@ func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
-			Branch:      "main",
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
@@ -299,8 +299,8 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
-			Branch:      "main",
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()

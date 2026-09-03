@@ -441,7 +441,7 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "bootstrap-target"
 	target.Namespace = "default"
-	target.Spec.ProviderRef = meta.LocalObjectReference{
+	target.Spec.GitProviderRef = meta.LocalObjectReference{
 		Name: "test-repo",
 	}
 	target.Spec.Branch = "main"
@@ -734,7 +734,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitterAndTargetMessage
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "audit-target"
 	target.Namespace = "default"
-	target.Spec.ProviderRef = meta.LocalObjectReference{Name: "test-repo"}
+	target.Spec.GitProviderRef = meta.LocalObjectReference{Name: "test-repo"}
 	target.Spec.Branch = "main"
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
@@ -824,7 +824,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 	target := &configv1alpha3.GitTarget{}
 	target.Name = "demo-target"
 	target.Namespace = "default"
-	target.Spec.ProviderRef = meta.LocalObjectReference{Name: "test-repo"}
+	target.Spec.GitProviderRef = meta.LocalObjectReference{Name: "test-repo"}
 	target.Spec.Branch = "main"
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
@@ -1113,7 +1113,7 @@ func createTargetWithEncryption(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = meta.LocalObjectReference{
+	target.Spec.GitProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
@@ -1143,7 +1143,7 @@ func createTargetWithoutEncryption(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = meta.LocalObjectReference{
+	target.Spec.GitProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
@@ -1169,7 +1169,7 @@ func createTargetWithEncryptionSecretData(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = meta.LocalObjectReference{
+	target.Spec.GitProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch

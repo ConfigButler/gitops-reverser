@@ -4,7 +4,7 @@ metadata:
   name: argocd-applications
   namespace: argocd
 spec:
-  targetRef:
+  gitTargetRef:
     name: argocd-applications
   rules:
     - apiGroups: ["argoproj.io"]

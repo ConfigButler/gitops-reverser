@@ -48,7 +48,7 @@ func srcnsOverrideRule(sourceNamespace string) configv1alpha3.WatchRule {
 	return configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "repo-config-rule", Namespace: "tenant-acme"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: "acme"},
+			GitTargetRef: meta.LocalObjectReference{Name: "acme"},
 			Rules: []configv1alpha3.ResourceRule{{
 				Resources: []string{"configmaps"}, SourceNamespace: sourceNamespace,
 			}},

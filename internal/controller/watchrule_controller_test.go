@@ -28,7 +28,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.WatchRuleSpec{
-					TargetRef: meta.LocalObjectReference{
+					GitTargetRef: meta.LocalObjectReference{
 						Name: "target",
 					},
 					Rules: []configbutleraiv1alpha3.ResourceRule{{
@@ -78,7 +78,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: meta.LocalObjectReference{
+					GitProviderRef: meta.LocalObjectReference{
 						Name: "test-provider",
 					},
 					Branch: "main",
@@ -96,7 +96,7 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha3.WatchRuleSpec{
-						TargetRef: meta.LocalObjectReference{
+						GitTargetRef: meta.LocalObjectReference{
 							Name: "test-target",
 						},
 						Rules: []configbutleraiv1alpha3.ResourceRule{
@@ -194,7 +194,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ProviderRef: meta.LocalObjectReference{
+					GitProviderRef: meta.LocalObjectReference{
 						Name: "local-provider",
 					},
 					Branch: "main",
@@ -210,7 +210,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha3.WatchRuleSpec{
-					TargetRef: meta.LocalObjectReference{
+					GitTargetRef: meta.LocalObjectReference{
 						Name: "local-target",
 					},
 					Rules: []configbutleraiv1alpha3.ResourceRule{

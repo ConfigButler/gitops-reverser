@@ -29,10 +29,10 @@ const (
 // carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
 // or "*" for every namespace the GitTarget admits.
 type WatchRuleSpec struct {
-	// TargetRef names the GitTarget this rule feeds, in this WatchRule's own namespace.
+	// GitTargetRef names the GitTarget this rule feeds, in this WatchRule's own namespace.
 	// +required
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.targetRef.name must not be empty"
-	TargetRef meta.LocalObjectReference `json:"targetRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
+	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
 
 	// Rules define which resources to watch, and in which source namespaces.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -224,7 +224,7 @@ type WatchRuleStreamsStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef.name`
+// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`

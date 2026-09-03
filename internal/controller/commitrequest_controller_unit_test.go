@@ -73,8 +73,8 @@ func newCommitRequest(name string) *configv1alpha3.CommitRequest {
 			UID:       types.UID("uid-" + name),
 		},
 		Spec: configv1alpha3.CommitRequestSpec{
-			TargetRef: meta.LocalObjectReference{Name: "team-a-config"},
-			Message:   "save: " + name,
+			GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
+			Message:      "save: " + name,
 		},
 	}
 }

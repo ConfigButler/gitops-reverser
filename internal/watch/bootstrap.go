@@ -50,7 +50,7 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 	targetNS := rule.Namespace
 
 	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
-		Name:      rule.Spec.TargetRef.Name,
+		Name:      rule.Spec.GitTargetRef.Name,
 		Namespace: targetNS,
 	})
 	if err != nil {
@@ -77,10 +77,10 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 }
 
 func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1alpha3.ClusterWatchRule) error {
-	targetNS := rule.Spec.TargetRef.Namespace
+	targetNS := rule.Spec.GitTargetRef.Namespace
 
 	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
-		Name:      rule.Spec.TargetRef.Name,
+		Name:      rule.Spec.GitTargetRef.Name,
 		Namespace: targetNS,
 	})
 	if err != nil {
@@ -115,7 +115,7 @@ func (m *Manager) resolveTargetAndProvider(
 	}
 
 	providerKey := client.ObjectKey{
-		Name:      target.Spec.ProviderRef.Name,
+		Name:      target.Spec.GitProviderRef.Name,
 		Namespace: target.Namespace,
 	}
 	var provider configv1alpha3.GitProvider

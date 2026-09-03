@@ -53,7 +53,7 @@ metadata:
   name: ado-target
   namespace: my-namespace
 spec:
-  providerRef:
+  gitProviderRef:
     name: ado-provider
   branch: <branch>
   path: clusters/my-cluster
@@ -64,7 +64,7 @@ metadata:
   name: ado-rule
   namespace: my-namespace
 spec:
-  targetRef:
+  gitTargetRef:
     name: ado-target
   rules:
     - resources: ["configmaps"]

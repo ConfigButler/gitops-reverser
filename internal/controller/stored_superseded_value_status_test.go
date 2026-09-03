@@ -75,7 +75,7 @@ func TestStoredSupersededValue_StatusUpdateIsAccepted(t *testing.T) {
 	stored := &configbutleraiv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "stored-superseded-value"},
 		Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: meta.NamespacedObjectReference{Name: "t", Namespace: "default"},
+			GitTargetRef: meta.NamespacedObjectReference{Name: "t", Namespace: "default"},
 			Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
 				Resources: []string{"configmaps"},
 			}},
@@ -159,7 +159,7 @@ func requireCreateRejected(ctx context.Context, t *testing.T, c client.Client) {
 		probe := &configbutleraiv1alpha3.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("narrowing-probe-%d", i)},
 			Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: meta.NamespacedObjectReference{Name: "t", Namespace: "default"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "t", Namespace: "default"},
 				Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
 					Resources: []string{"configmaps"},
 				}},

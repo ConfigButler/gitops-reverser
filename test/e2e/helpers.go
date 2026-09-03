@@ -394,7 +394,7 @@ func expectServiceRoutesToPod(g Gomega, serviceName, expectedPod string) {
 		"endpoints",
 		serviceName,
 		"-o",
-		"jsonpath={.subsets[*].addresses[*].targetRef.name}",
+		"jsonpath={.subsets[*].addresses[*].gitTargetRef.name}",
 	)
 	g.Expect(err).NotTo(HaveOccurred(), "Failed to get %s endpoints", serviceName)
 

@@ -6,7 +6,7 @@ metadata:
   name: checkout-content-billing
   namespace: shop
 spec:
-  targetRef:
+  gitTargetRef:
     name: checkout-artifact
   rules:
     - apiGroups: [""]

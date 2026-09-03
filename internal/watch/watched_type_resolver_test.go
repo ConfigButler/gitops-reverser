@@ -164,7 +164,7 @@ func TestRefreshWatchedTypeTables_ExcludesAmbiguousGVK(t *testing.T) {
 		configv1alpha3.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "rule-widgets"},
 			Spec: configv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: meta.NamespacedObjectReference{Name: "test-target", Namespace: "test-ns"},
+				GitTargetRef: meta.NamespacedObjectReference{Name: "test-target", Namespace: "test-ns"},
 				Rules: []configv1alpha3.ClusterResourceRule{{
 					APIGroups:   []string{"example.com"},
 					APIVersions: []string{"v1"},

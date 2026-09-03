@@ -213,7 +213,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  providerRef:
+  gitProviderRef:
     name: %s
   branch: main
   path: %s

@@ -4,7 +4,7 @@ metadata:
   name: checkout-prod
   namespace: shop-prod
 spec:
-  providerRef:
+  gitProviderRef:
     name: app-repository
   branch: main
   # A LEAF overlay, not the app root. One target = one overlay = one environment =

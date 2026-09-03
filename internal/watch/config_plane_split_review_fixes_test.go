@@ -305,7 +305,7 @@ func TestResolveWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 	remoteOnly := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "test-ns"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: "t"},
+			GitTargetRef: meta.LocalObjectReference{Name: "t"},
 			Rules: []configv1alpha3.ResourceRule{
 				{APIGroups: []string{"example.com"}, Resources: []string{"widgets"}},
 			},
@@ -319,8 +319,8 @@ func TestResolveWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 	localOnly := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "r2", Namespace: "test-ns"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: "t"},
-			Rules:     []configv1alpha3.ResourceRule{{Resources: []string{"deployments"}}},
+			GitTargetRef: meta.LocalObjectReference{Name: "t"},
+			Rules:        []configv1alpha3.ResourceRule{{Resources: []string{"deployments"}}},
 		},
 	}
 	resolved, message = m.ResolveWatchRuleResources(context.Background(), localOnly)
@@ -338,7 +338,7 @@ func TestResolveClusterWatchRuleResources_ResolvesAgainstSourceCluster(t *testin
 
 	rule := configv1alpha3.ClusterWatchRule{
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: meta.NamespacedObjectReference{Name: "t", Namespace: "test-ns"},
+			GitTargetRef: meta.NamespacedObjectReference{Name: "t", Namespace: "test-ns"},
 			Rules: []configv1alpha3.ClusterResourceRule{{
 				APIGroups: []string{"example.com"},
 				Resources: []string{"widgetclasses"},

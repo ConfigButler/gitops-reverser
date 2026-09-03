@@ -21,7 +21,7 @@ func sourceNamespaceRule(name, targetName, sourceNamespace string) *configv1alph
 	return &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "shop"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: targetName},
+			GitTargetRef: meta.LocalObjectReference{Name: targetName},
 			Rules: []configv1alpha3.ResourceRule{{
 				Resources:       []string{"configmaps"},
 				SourceNamespace: sourceNamespace,

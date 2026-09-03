@@ -93,7 +93,7 @@ func itemNamespaces(resolved authz.ResolvedSourceScope) [][]string {
 // Two refusals, both terminal, in this order:
 //
 //  1. the referenced GitTarget's namespace must be admitted by that target's ClusterProvider — a
-//     ClusterWatchRule's targetRef carries a namespace, so it can name a target in ANY namespace
+//     ClusterWatchRule's gitTargetRef carries a namespace, so it can name a target in ANY namespace
 //     and widen that target's mirror scope cluster-wide;
 //  2. the rule must not carry a stored scope other than "Cluster". Admission rejects the value on
 //     write, but a pre-release object keeps it in etcd, and resolving it as if it had asked for

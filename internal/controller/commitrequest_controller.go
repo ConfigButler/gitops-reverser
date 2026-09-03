@@ -164,7 +164,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		UID:                string(commitRequest.UID),
 		Author:             author.Author,
 		Attribution:        attribution.gitOutcome(),
-		GitTargetName:      commitRequest.Spec.TargetRef.Name,
+		GitTargetName:      commitRequest.Spec.GitTargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
 		Message:            capCommitRequestMessage(commitRequest.Spec.Message),
 		CloseDelaySeconds:  commitRequest.Spec.CloseDelaySeconds,
@@ -189,7 +189,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if result.Err != nil {
 		log.Error(result.Err, "CommitRequest finalize failed",
-			"gitTarget", commitRequest.Spec.TargetRef.Name, "name", req.NamespacedName)
+			"gitTarget", commitRequest.Spec.GitTargetRef.Name, "name", req.NamespacedName)
 	}
 	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution)
 	return ctrl.Result{}, nil
@@ -318,7 +318,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 				"sha", current.Status.SHA,
 				"outcome", result.Outcome,
 				"finalizeError", finalizeError,
-				"gitTarget", current.Spec.TargetRef.Name,
+				"gitTarget", current.Spec.GitTargetRef.Name,
 				"age", time.Since(current.CreationTimestamp.Time).String())
 			return
 		}

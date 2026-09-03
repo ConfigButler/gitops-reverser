@@ -20,8 +20,11 @@ entries below are the whole migration and they are yours to apply by hand.
 | `ClusterProvider` | `spec.allowedNamespaces` (renamed), `spec.allowSourceNamespaceOverride` (renamed) |
 | `ClusterWatchRule` | `spec.rules[].scope` |
 | every reference field | the `group` and `kind` sub-fields |
+| `GitTarget`, `WatchRule`, `ClusterWatchRule`, `CommitRequest` | `providerRef` / `targetRef` are **renamed** to `gitProviderRef` / `gitTargetRef` |
 
-The last two rows need no value migration at all — nothing you set is lost, because every value
+The rename is the one every object needs, and the only one no client can get silently wrong; it has
+[its own entry](#every-reference-names-the-kind-it-points-at). The two rows above it need no value
+migration at all — nothing you set is lost, because every value
 those fields could hold was the only one they accepted. Delete the lines and move on. Everything
 above them is a real value that has somewhere new to be.
 
@@ -62,6 +65,9 @@ kubectl get gittargets,watchrules,clusterwatchrules,commitrequests,gitproviders 
 kubectl get clusterwatchrules -o json |
   jq -r '.items[] | select(any(.spec.rules[]?; has("scope")))
     | "clusterwatchrule \(.metadata.name): drop spec.rules[].scope"'
+
+# The rename affects EVERY GitTarget and every rule, so it needs no select: see its own entry for
+# the conversion.
 
 # The rules whose MEANING changes even though their YAML does not:
 kubectl get watchrules -A -o json |
@@ -139,6 +145,82 @@ manifests for you, check what your tool does before assuming a green sync means 
 Either way the inventory is step 1 rather than a footnote, because a pruned value is not recoverable
 from the API. The two removal strategies are priced in
 [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md).
+
+## Every reference names the kind it points at
+
+Four fields are renamed. This is the same change as the one below, seen from the other side: once a
+reference carries only a `name`, the FIELD NAME is the only thing left saying what it points at, so
+a field called `providerRef` sitting next to `clusterProviderRef` stops being readable.
+
+| Kind | Was | Is |
+|---|---|---|
+| `GitTarget` | `spec.providerRef` | `spec.gitProviderRef` |
+| `WatchRule` | `spec.targetRef` | `spec.gitTargetRef` |
+| `ClusterWatchRule` | `spec.targetRef` | `spec.gitTargetRef` |
+| `CommitRequest` | `spec.targetRef` | `spec.gitTargetRef` |
+
+Unchanged, because each already names its referent or its role: `GitTarget.spec.clusterProviderRef`,
+`GitProvider.spec.secretRef` and `spec.commit.signing.secretRef`, `GitTarget.spec.encryption.secretRef`,
+`GitProvider.spec.knownHostsRef`, and the `configMapRef` / `secretRef` inside
+`ClusterProvider.spec.kubeConfig`.
+
+### This one cannot be applied silently wrong
+
+Every other removal in this release can be pruned quietly by a non-strict client. These four cannot,
+because the new name is **required**: an object naming only the old one is rejected by every client,
+strict or not.
+
+| Client | Applying the old spelling after the upgrade |
+|---|---|
+| `kubectl apply` (strict, the default) | rejected: `unknown field "spec.providerRef"` |
+| `--validate=ignore`, a controller applying with field validation off | rejected: `spec.gitProviderRef: Required value` |
+
+So there is no silent-damage case to hunt for. What there IS, and what makes this the entry to read
+before you upgrade, is a **stall**: a stored object stops serving the old value the moment the new
+CRDs land, so every `GitTarget` and every rule is missing its reference until you re-apply. Writes
+stop; nothing is lost. This is the same stall [step 4](#safe-upgrade-order-for-the-gittarget-api-changes)
+already asks you to close in one sync — it now applies to every object rather than only to the ones
+using the fields that moved.
+
+### Inventory
+
+Every object of these four kinds is affected, so the inventory is a conversion rather than a search:
+
+```bash
+# Everything that needs the edit, which is everything:
+kubectl get gittargets,watchrules,clusterwatchrules -A -o json |
+  jq -r '.items[] | "\(.kind) \(.metadata.namespace // "-")/\(.metadata.name)"'
+```
+
+`CommitRequest` needs no migration: they are one-shot objects you create and never update, so the
+ones in flight during an upgrade finalize under the old name and the next one you create uses the
+new one.
+
+### Conversion
+
+A mechanical rename in your manifests, then one apply:
+
+```bash
+# In your GitOps repository, not against the cluster.
+grep -rl 'providerRef:\|targetRef:' . |
+  xargs sed -i 's/\bproviderRef:/gitProviderRef:/g; s/\btargetRef:/gitTargetRef:/g'
+```
+
+Check the result before committing: `clusterProviderRef` must NOT become `clusterGitProviderRef`
+(the `\b` above is what prevents that, but a review costs nothing).
+
+### `GitTarget` migrates in place, and that took a guard
+
+`spec.gitProviderRef` is immutable, and the apply that migrates a stored `GitTarget` is also the
+apply that sets that immutable field for the first time. Written as a plain equality, the
+immutability rule would reject exactly that apply — `oldSelf` has no such field — and the only way
+out would be deleting and recreating every target.
+
+The rule is therefore guarded: `!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef`.
+It opens a one-way door for objects stored before the rename and cannot loosen anything afterwards,
+because a required field is never absent on an object created from this release on. Both halves are
+measured in `TestRenamedRequiredField_StoredObjectCanAdoptIt`, so **you do not need to delete and
+recreate anything**: re-apply your manifests and the targets adopt the new name.
 
 ## Every reference is `{name}` — `group` and `kind` are gone
 

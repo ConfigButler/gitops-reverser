@@ -4,7 +4,7 @@ metadata:
   name: checkout-artifact
   namespace: shop
 spec:
-  providerRef:
+  gitProviderRef:
     name: artifacts-repository
   branch: main
   path: apps/checkout

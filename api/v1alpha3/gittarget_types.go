@@ -9,7 +9,7 @@ import (
 
 // GitTargetSpec defines the desired state of GitTarget.
 //
-// The destination fields — providerRef, branch, and path — are immutable. A
+// The destination fields — gitProviderRef, branch, and path — are immutable. A
 // GitTarget materializes the watched resources at exactly one (provider, branch,
 // folder); changing where it writes would orphan the old materialization and require
 // migrating manifests between repositories/branches/folders. Instead of reconciling
@@ -18,22 +18,29 @@ import (
 // simple — a successful snapshot can never be silently invalidated by a destination
 // change.
 //
-// +kubebuilder:validation:XValidation:rule="self.providerRef == oldSelf.providerRef",message="spec.providerRef is immutable; delete and recreate the GitTarget to change its destination"
+// The gitProviderRef rule is guarded on oldSelf rather than written as a plain equality, and the
+// guard is a one-way migration door rather than a loosening. A GitTarget stored before this field
+// was named gitProviderRef serves NO value for it (a field outside the structural schema is not
+// served, measured in TestRenamedRequiredField_StoredObjectCanAdoptIt), so a plain equality would
+// reject the very apply that migrates it and force a delete-and-recreate. Because the field is
+// REQUIRED, it can never be absent on an object created from this release on, so the door is shut
+// for everything except the objects it exists for.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef",message="spec.gitProviderRef is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
 //
 // spec.clusterProviderRef names the SOURCE cluster a GitTarget mirrors FROM (see its field doc). It
 // is immutable — a folder's source cluster is part of what the folder means, like
-// providerRef/branch/path above — and defaults to a ClusterProvider named "default", so it is
+// gitProviderRef/branch/path above — and defaults to a ClusterProvider named "default", so it is
 // always populated (never nil) and always jumpable.
 // +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
 type GitTargetSpec struct {
-	// ProviderRef names the GitProvider that backs this target, in this GitTarget's own namespace.
-	// Many GitTargets may name the same GitProvider.
+	// GitProviderRef names the GitProvider that backs this target, in this GitTarget's own
+	// namespace. Many GitTargets may name the same GitProvider.
 	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.providerRef.name must not be empty"
-	ProviderRef meta.LocalObjectReference `json:"providerRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitProviderRef.name must not be empty"
+	GitProviderRef meta.LocalObjectReference `json:"gitProviderRef"`
 
 	// Branch to use for this target.
 	// Must be one of the allowed branches in the provider.
@@ -426,7 +433,7 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="ClusterProviderReady",type=string,JSONPath=`.status.conditions[?(@.type=="ClusterProviderReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
-// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`,priority=1
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.gitProviderRef.name`,priority=1
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`,priority=1
 // +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

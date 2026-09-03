@@ -29,7 +29,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 	existingWatchRule := &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-watchrule", Namespace: "tilt-playground"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: "playground-target"},
+			GitTargetRef: meta.LocalObjectReference{Name: "playground-target"},
 			Rules: []configv1alpha3.ResourceRule{{
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
@@ -40,9 +40,9 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-target", Namespace: "tilt-playground"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: "playground-provider"},
-			Branch:      "main",
-			Path:        "live-cluster",
+			GitProviderRef: meta.LocalObjectReference{Name: "playground-provider"},
+			Branch:         "main",
+			Path:           "live-cluster",
 		},
 	}
 	existingGitProvider := &configv1alpha3.GitProvider{
@@ -96,7 +96,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	existingClusterWatchRule := &configv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster-namespaces"},
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: meta.NamespacedObjectReference{Name: "ops-target", Namespace: "ops"},
+			GitTargetRef: meta.NamespacedObjectReference{Name: "ops-target", Namespace: "ops"},
 			Rules: []configv1alpha3.ClusterResourceRule{{
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
@@ -107,9 +107,9 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-target", Namespace: "ops"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: "ops-provider"},
-			Branch:      "main",
-			Path:        "cluster-state",
+			GitProviderRef: meta.LocalObjectReference{Name: "ops-provider"},
+			Branch:         "main",
+			Path:           "cluster-state",
 		},
 	}
 	existingGitProvider := &configv1alpha3.GitProvider{

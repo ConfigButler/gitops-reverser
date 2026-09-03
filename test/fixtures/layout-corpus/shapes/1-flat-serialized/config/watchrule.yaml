@@ -4,7 +4,7 @@ metadata:
   name: prod-mirror-content
   namespace: homelab-config
 spec:
-  targetRef:
+  gitTargetRef:
     name: prod-mirror
   rules:
     - apiGroups: [""]

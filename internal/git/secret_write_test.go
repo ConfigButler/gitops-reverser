@@ -68,7 +68,7 @@ func secretTargetObjects(t *testing.T, providerName, branch, path string) []clie
 				Namespace: "default",
 			},
 			Spec: configv1alpha3.GitTargetSpec{
-				ProviderRef: meta.LocalObjectReference{
+				GitProviderRef: meta.LocalObjectReference{
 					Name: providerName,
 				},
 				Branch: branch,

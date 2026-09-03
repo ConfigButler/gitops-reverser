@@ -71,7 +71,7 @@ to disambiguate each other.
 ## Why the rest goes
 
 `GitTarget.spec.allowedSourceNamespaces` presents itself as a destination policy: "it belongs to
-the DESTINATION, not to any requesting rule". It cannot be one. `WatchRule.spec.targetRef` is a
+the DESTINATION, not to any requesting rule". It cannot be one. `WatchRule.spec.gitTargetRef` is a
 `LocalTargetReference` ("Must be in the same namespace"), `GitTarget.spec.providerRef` is local
 too, and `spec.path` is immutable, so the chain from a Git folder back to the object that fills it
 never leaves one namespace:

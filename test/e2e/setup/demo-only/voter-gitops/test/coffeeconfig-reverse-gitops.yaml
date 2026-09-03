@@ -15,7 +15,7 @@ kind: GitTarget
 metadata:
   name: demo-coffeeconfig
 spec:
-  providerRef:
+  gitProviderRef:
     name: demo-coffeeconfig
   branch: demo-test
   path: voter-coffee
@@ -27,7 +27,7 @@ kind: WatchRule
 metadata:
   name: demo-coffeeconfig
 spec:
-  targetRef:
+  gitTargetRef:
     name: demo-coffeeconfig
   rules:
     - operations: [CREATE, UPDATE, DELETE]

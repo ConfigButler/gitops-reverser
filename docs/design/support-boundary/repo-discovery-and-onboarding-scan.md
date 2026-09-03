@@ -198,7 +198,7 @@ comment — the shipped report is strict JSON.)
 
   "proposedGitTarget": {                          // FUTURE — not emitted by the first cut
     "spec": {
-      "providerRef": { "name": "<from onboarding config>" },
+      "gitProviderRef": { "name": "<from onboarding config>" },
       "branch": "<provider default allowedBranch>",
       "path": "apps/podinfo/overlays/test"
     }

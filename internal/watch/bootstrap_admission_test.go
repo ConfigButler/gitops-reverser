@@ -35,7 +35,7 @@ func bootGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: bootTargetName, Namespace: bootTargetNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
 			Branch:             "main",
 			Path:               "clusters/prod",
@@ -60,7 +60,7 @@ func bootClusterWatchRule() *configv1alpha3.ClusterWatchRule {
 	return &configv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: bootRuleName},
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: meta.NamespacedObjectReference{Name: bootTargetName, Namespace: bootTargetNS},
+			GitTargetRef: meta.NamespacedObjectReference{Name: bootTargetName, Namespace: bootTargetNS},
 			Rules: []configv1alpha3.ClusterResourceRule{{
 				Resources: []string{"customresourcedefinitions"},
 				APIGroups: []string{"apiextensions.k8s.io"},
@@ -143,7 +143,7 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 	admittedTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ok-mirror", Namespace: "team-ok"},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: bootProviderName},
 			Branch:             "main",
 			Path:               "clusters/ok",
@@ -151,8 +151,8 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 	}
 	admittedRule := bootClusterWatchRule()
 	admittedRule.Name = "admitted-rule"
-	admittedRule.Spec.TargetRef.Name = "ok-mirror"
-	admittedRule.Spec.TargetRef.Namespace = "team-ok"
+	admittedRule.Spec.GitTargetRef.Name = "ok-mirror"
+	admittedRule.Spec.GitTargetRef.Namespace = "team-ok"
 
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(), bootClusterWatchRule(),

@@ -41,7 +41,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 			"kind":       "ClusterWatchRule",
 			"metadata":   map[string]any{"name": "legacy-namespaced-scope"},
 			"spec": map[string]any{
-				"targetRef": map[string]any{"name": "any-target", "namespace": "default"},
+				"gitTargetRef": map[string]any{"name": "any-target", "namespace": "default"},
 				"rules": []any{map[string]any{
 					"resources": []any{"configmaps"},
 					"scope":     "Namespaced",
@@ -84,9 +84,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "renamed-commit", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ProviderRef: meta.LocalObjectReference{Name: "any-provider"},
-				Branch:      "main",
-				Path:        "clusters/prod",
+				GitProviderRef: meta.LocalObjectReference{Name: "any-provider"},
+				Branch:         "main",
+				Path:           "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
 					Window: ptr.To("30s"),
 					Message: &configbutleraiv1alpha3.CommitMessageSpec{
@@ -112,7 +112,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		rule := &configbutleraiv1alpha3.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "cluster-only-rule"},
 			Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: meta.NamespacedObjectReference{
+				GitTargetRef: meta.NamespacedObjectReference{
 					Name: "any-target", Namespace: "default",
 				},
 				Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
@@ -133,7 +133,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		rule := &configbutleraiv1alpha3.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "per-item-source", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.WatchRuleSpec{
-				TargetRef: meta.LocalObjectReference{Name: "any-target"},
+				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
 				Rules: []configbutleraiv1alpha3.ResourceRule{
 					{Resources: []string{"configmaps"}},
 					{Resources: []string{"secrets"}, SourceNamespace: "repo-config"},
@@ -152,7 +152,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		rule := &configbutleraiv1alpha3.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "malformed-source", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.WatchRuleSpec{
-				TargetRef: meta.LocalObjectReference{Name: "any-target"},
+				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
 				Rules: []configbutleraiv1alpha3.ResourceRule{{
 					Resources: []string{"configmaps"}, SourceNamespace: "Not A Namespace",
 				}},
@@ -198,24 +198,24 @@ var _ = Describe("Reference names must not be empty", func() {
 		target := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.GitTargetSpec{
-				ProviderRef: meta.LocalObjectReference{Name: ""},
-				Branch:      "main",
-				Path:        "clusters/prod",
+				GitProviderRef: meta.LocalObjectReference{Name: ""},
+				Branch:         "main",
+				Path:           "clusters/prod",
 			},
 		}
 		Expect(k8sClient.Create(ctx, target)).NotTo(Succeed(),
-			"an empty providerRef.name names nothing and must be refused at admission")
+			"an empty gitProviderRef.name names nothing and must be refused at admission")
 
 		rule := &configbutleraiv1alpha3.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "empty-target-name", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.WatchRuleSpec{
-				TargetRef: meta.LocalObjectReference{Name: ""},
+				GitTargetRef: meta.LocalObjectReference{Name: ""},
 				Rules: []configbutleraiv1alpha3.ResourceRule{
 					{Resources: []string{"configmaps"}},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, rule)).NotTo(Succeed(),
-			"an empty targetRef.name names nothing and must be refused at admission")
+			"an empty gitTargetRef.name names nothing and must be refused at admission")
 	})
 })

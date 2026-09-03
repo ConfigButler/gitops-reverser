@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.targetRef.name
+    - jsonPath: .spec.gitTargetRef.name
       name: GitTarget
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -83,6 +83,20 @@ spec:
                 maximum: 300
                 minimum: 0
                 type: integer
+              gitTargetRef:
+                description: |-
+                  GitTargetRef names the GitTarget whose open commit window to finalize.
+                  The GitTarget must be in the same namespace as this CommitRequest.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.gitTargetRef.name must not be empty
+                  rule: self.name != ''
               message:
                 description: |-
                   Message is an optional commit message for the finalized commit. When
@@ -96,22 +110,8 @@ spec:
                 minLength: 1
                 pattern: ^[^\x00-\x09\x0B-\x1F\x7F]*$
                 type: string
-              targetRef:
-                description: |-
-                  TargetRef names the GitTarget whose open commit window to finalize.
-                  The GitTarget must be in the same namespace as this CommitRequest.
-                properties:
-                  name:
-                    description: Name of the referent.
-                    type: string
-                required:
-                - name
-                type: object
-                x-kubernetes-validations:
-                - message: spec.targetRef.name must not be empty
-                  rule: self.name != ''
             required:
-            - targetRef
+            - gitTargetRef
             type: object
             x-kubernetes-validations:
             - message: CommitRequest spec is immutable after creation

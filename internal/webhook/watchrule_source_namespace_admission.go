@@ -58,7 +58,7 @@ func (h *ValidateOperatorTypesHandler) validateWatchRuleSourceNamespaces(
 	}
 
 	var target v1alpha3.GitTarget
-	targetKey := k8stypes.NamespacedName{Namespace: rule.Namespace, Name: rule.Spec.TargetRef.Name}
+	targetKey := k8stypes.NamespacedName{Namespace: rule.Namespace, Name: rule.Spec.GitTargetRef.Name}
 	if err := h.Client.Get(ctx, targetKey, &target); err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Error(err, "could not read the GitTarget this rule names", "gitTarget", targetKey)
@@ -124,7 +124,7 @@ func (h *ValidateOperatorTypesHandler) admittedSourceNamespaces(
 	admitted := map[string]struct{}{target.Namespace: {}}
 	for i := range rules.Items {
 		sibling := &rules.Items[i]
-		if sibling.Name == excludeRule || sibling.Spec.TargetRef.Name != target.Name {
+		if sibling.Name == excludeRule || sibling.Spec.GitTargetRef.Name != target.Name {
 			continue
 		}
 		for _, item := range sibling.Spec.Rules {

@@ -219,7 +219,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  targetRef:
+  gitTargetRef:
     name: %s
   rules:
     - apiGroups: ["apps"]

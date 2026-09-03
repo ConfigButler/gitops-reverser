@@ -25,9 +25,9 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 
 	target := func(name string, window *string) *configv1alpha3.GitTarget {
 		spec := configv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: "p"},
-			Branch:      "main",
-			Path:        "clusters/prod",
+			GitProviderRef: meta.LocalObjectReference{Name: "p"},
+			Branch:         "main",
+			Path:           "clusters/prod",
 		}
 		if window != nil {
 			spec.Commit = &configv1alpha3.GitTargetCommitSpec{Window: window}

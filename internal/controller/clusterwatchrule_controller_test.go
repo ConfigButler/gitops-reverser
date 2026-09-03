@@ -24,7 +24,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 					Name: "invalid-subresource-cluster-rule",
 				},
 				Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-					TargetRef: meta.NamespacedObjectReference{
+					GitTargetRef: meta.NamespacedObjectReference{
 						Name:      "target",
 						Namespace: "default",
 					},
@@ -71,7 +71,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 					Name: "missing-target-rule",
 				},
 				Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-					TargetRef: meta.NamespacedObjectReference{
+					GitTargetRef: meta.NamespacedObjectReference{
 						Name:      "nonexistent-target",
 						Namespace: "default",
 					},

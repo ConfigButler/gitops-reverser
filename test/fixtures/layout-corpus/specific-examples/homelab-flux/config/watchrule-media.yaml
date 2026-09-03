@@ -4,7 +4,7 @@ metadata:
   name: flux-media
   namespace: flux-system
 spec:
-  targetRef:
+  gitTargetRef:
     name: flux-media
   rules:
     - apiGroups: ["helm.toolkit.fluxcd.io"]

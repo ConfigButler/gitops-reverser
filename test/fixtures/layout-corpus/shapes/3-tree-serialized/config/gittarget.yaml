@@ -4,7 +4,7 @@ metadata:
   name: home-cluster-state
   namespace: homelab-config
 spec:
-  providerRef:
+  gitProviderRef:
     name: mirror-repository
   clusterProviderRef:
     name: home

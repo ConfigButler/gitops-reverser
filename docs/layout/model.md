@@ -342,7 +342,7 @@ folder. The way to see what a target would do is to let one do it, somewhere har
 
 ```yaml
 spec:
-  providerRef: {name: homelab}
+  gitProviderRef: {name: homelab}
   branch: gitops-preview          # not main
   path: apps/checkout
 ```

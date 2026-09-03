@@ -4,7 +4,7 @@ metadata:
   name: flux-sources
   namespace: flux-system
 spec:
-  providerRef:
+  gitProviderRef:
     name: homelab-repository
   branch: main
   # Not clusters/home/flux-system. That directory belongs to `flux bootstrap`, and a

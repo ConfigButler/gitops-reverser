@@ -66,8 +66,8 @@ func gitTarget(name, namespace, providerName string) *configbutleraiv1alpha3.Git
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: providerName},
-			Branch:      "main",
+			GitProviderRef: meta.LocalObjectReference{Name: providerName},
+			Branch:         "main",
 		},
 	}
 }
@@ -76,7 +76,7 @@ func watchRule(name, namespace, targetName string) *configbutleraiv1alpha3.Watch
 	return &configbutleraiv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: configbutleraiv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: targetName},
+			GitTargetRef: meta.LocalObjectReference{Name: targetName},
 		},
 	}
 }
@@ -85,7 +85,7 @@ func clusterWatchRule(name, targetName, targetNamespace string) *configbutleraiv
 	return &configbutleraiv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: meta.NamespacedObjectReference{
+			GitTargetRef: meta.NamespacedObjectReference{
 				Name:      targetName,
 				Namespace: targetNamespace,
 			},
@@ -159,7 +159,7 @@ func TestGitProviderToGitTargets(t *testing.T) {
 }
 
 // TestGitTargetToClusterWatchRules verifies that a GitTarget event enqueues
-// every ClusterWatchRule whose targetRef matches both name and namespace.
+// every ClusterWatchRule whose gitTargetRef matches both name and namespace.
 func TestGitTargetToClusterWatchRules(t *testing.T) {
 	tests := []struct {
 		name    string

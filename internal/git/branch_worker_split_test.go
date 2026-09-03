@@ -96,7 +96,7 @@ func createGitTarget(
 			Namespace: "default",
 		},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{
+			GitProviderRef: meta.LocalObjectReference{
 				Name: worker.GitProviderRef,
 			},
 			Branch: worker.Branch,

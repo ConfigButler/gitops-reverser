@@ -4,7 +4,7 @@ metadata:
   name: checkout-prod
   namespace: shop-prod
 spec:
-  providerRef:
+  gitProviderRef:
     name: app-repository
   branch: main
   # The leaf overlay. The base one directory up is READ to render this folder and is

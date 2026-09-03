@@ -72,7 +72,7 @@ spec:
       name: Encryption
       priority: 1
       type: string
-    - jsonPath: .spec.providerRef.name
+    - jsonPath: .spec.gitProviderRef.name
       name: Provider
       priority: 1
       type: string
@@ -241,6 +241,21 @@ spec:
                 required:
                 - provider
                 type: object
+              gitProviderRef:
+                description: |-
+                  GitProviderRef names the GitProvider that backs this target, in this GitTarget's own
+                  namespace. Many GitTargets may name the same GitProvider.
+                  Immutable: delete and recreate the GitTarget to change its destination.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.gitProviderRef.name must not be empty
+                  rule: self.name != ''
               path:
                 description: |-
                   Path within the repository to write resources to, relative to the repository
@@ -308,21 +323,6 @@ spec:
                       kustomization lists is a file kustomize never builds.
                     type: boolean
                 type: object
-              providerRef:
-                description: |-
-                  ProviderRef names the GitProvider that backs this target, in this GitTarget's own namespace.
-                  Many GitTargets may name the same GitProvider.
-                  Immutable: delete and recreate the GitTarget to change its destination.
-                properties:
-                  name:
-                    description: Name of the referent.
-                    type: string
-                required:
-                - name
-                type: object
-                x-kubernetes-validations:
-                - message: spec.providerRef.name must not be empty
-                  rule: self.name != ''
               prune:
                 description: |-
                   Prune controls which deletion paths may remove documents from this target's folder: an
@@ -390,13 +390,13 @@ spec:
                 type: boolean
             required:
             - branch
+            - gitProviderRef
             - path
-            - providerRef
             type: object
             x-kubernetes-validations:
-            - message: spec.providerRef is immutable; delete and recreate the GitTarget
+            - message: spec.gitProviderRef is immutable; delete and recreate the GitTarget
                 to change its destination
-              rule: self.providerRef == oldSelf.providerRef
+              rule: '!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef'
             - message: spec.branch is immutable; delete and recreate the GitTarget
                 to change its destination
               rule: self.branch == oldSelf.branch

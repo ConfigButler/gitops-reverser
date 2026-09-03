@@ -9,7 +9,7 @@ worker to close that window after the requested collect delay.
 
 ## Request and window contract
 
-The request identifies the target in `spec.targetRef.name`, may provide `spec.message`, and sets
+The request identifies the target in `spec.gitTargetRef.name`, may provide `spec.message`, and sets
 `spec.closeDelaySeconds` (0–300 seconds). It is handled by the target’s single branch worker, so resource
 events and the attach request share one FIFO.
 

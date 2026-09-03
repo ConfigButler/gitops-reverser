@@ -23,12 +23,12 @@ const (
 
 // ClusterWatchRuleSpec defines the desired state of ClusterWatchRule.
 type ClusterWatchRuleSpec struct {
-	// TargetRef names the GitTarget this rule feeds. A ClusterWatchRule has no namespace of its
+	// GitTargetRef names the GitTarget this rule feeds. A ClusterWatchRule has no namespace of its
 	// own, so the namespace is required here rather than defaulted.
 	// +required
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.targetRef.name must not be empty"
-	// +kubebuilder:validation:XValidation:rule="has(self.namespace) && self.namespace != ''",message="spec.targetRef.namespace is required: a ClusterWatchRule has no namespace to default to"
-	TargetRef meta.NamespacedObjectReference `json:"targetRef"`
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
+	// +kubebuilder:validation:XValidation:rule="has(self.namespace) && self.namespace != ''",message="spec.gitTargetRef.namespace is required: a ClusterWatchRule has no namespace to default to"
+	GitTargetRef meta.NamespacedObjectReference `json:"gitTargetRef"`
 
 	// Rules define which CLUSTER-SCOPED resources to watch.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -115,7 +115,7 @@ type ClusterWatchRuleStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef.name`
+// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
@@ -127,7 +127,7 @@ type ClusterWatchRuleStatus struct {
 // from — Nodes, PersistentVolumes, StorageClasses, ClusterRoles, CRDs, and the like. Scope is
 // carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
 //
-// It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
+// It is cluster-scoped and requires cluster-admin permissions. Its gitTargetRef names a GitTarget
 // (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
 // mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
 // spec.rules[].sourceNamespace, whose "*" reaches every namespace the source credential can read.

@@ -32,7 +32,7 @@ func snbGitTarget() *configv1alpha3.GitTarget {
 	return &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: snbTarget, Namespace: snbTenantNS},
 		Spec: configv1alpha3.GitTargetSpec{
-			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: snbProvider},
 			Branch:             "main",
 			Path:               "tenants/acme",
@@ -67,8 +67,8 @@ func snbWatchRule(sourceNamespaces ...string) *configv1alpha3.WatchRule {
 	return &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: snbRule, Namespace: snbTenantNS},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: snbTarget},
-			Rules:     items,
+			GitTargetRef: meta.LocalObjectReference{Name: snbTarget},
+			Rules:        items,
 		},
 	}
 }

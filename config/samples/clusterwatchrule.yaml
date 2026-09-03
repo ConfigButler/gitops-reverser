@@ -3,7 +3,7 @@ kind: ClusterWatchRule
 metadata:
   name: example-clusterwatchrule
 spec:
-  targetRef:
+  gitTargetRef:
     name: example-target
     namespace: default
   rules:

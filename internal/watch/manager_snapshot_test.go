@@ -69,7 +69,7 @@ func addSecretsWatchRule(store *rulestore.RuleStore) {
 	rule := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: "my-target"},
+			GitTargetRef: meta.LocalObjectReference{Name: "my-target"},
 			Rules: []configv1alpha3.ResourceRule{{
 				APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
 			}},

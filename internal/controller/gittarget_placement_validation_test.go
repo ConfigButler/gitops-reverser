@@ -172,9 +172,9 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: ns},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef: meta.LocalObjectReference{Name: "provider-a"},
-			Branch:      "main",
-			Path:        "apps",
+			GitProviderRef: meta.LocalObjectReference{Name: "provider-a"},
+			Branch:         "main",
+			Path:           "apps",
 			Placement: &configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "{bogus}/all.yaml",
 			},

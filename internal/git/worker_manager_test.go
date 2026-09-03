@@ -89,7 +89,7 @@ func createTargetForRegister(
 	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = testTargetNamespace
-	target.Spec.ProviderRef = meta.LocalObjectReference{
+	target.Spec.GitProviderRef = meta.LocalObjectReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch

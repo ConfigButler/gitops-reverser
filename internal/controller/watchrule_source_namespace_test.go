@@ -35,7 +35,7 @@ func wrsnGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnTarget, Namespace: wrsnTenantNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: wrsnProvider},
 			Branch:             "main",
 			Path:               "tenants/acme",
@@ -72,8 +72,8 @@ func wrsnWatchRule(sourceNamespaces ...string) *configbutleraiv1alpha3.WatchRule
 	return &configbutleraiv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnRule, Namespace: wrsnTenantNS, Generation: 1},
 		Spec: configbutleraiv1alpha3.WatchRuleSpec{
-			TargetRef: meta.LocalObjectReference{Name: wrsnTarget},
-			Rules:     items,
+			GitTargetRef: meta.LocalObjectReference{Name: wrsnTarget},
+			Rules:        items,
 		},
 	}
 }

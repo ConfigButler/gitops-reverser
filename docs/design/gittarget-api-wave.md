@@ -62,7 +62,7 @@ The principle above has been a sentence in a document for two drafts. This wave 
 becomes a struct boundary, because grouping a field costs nothing extra in a release that is
 breaking anyway, and costs a bump in every release that is not.
 
-`GitTargetSpec` today is flat: `providerRef`, `branch`, `path`, `encryption`, `placement`,
+`GitTargetSpec` today is flat: `gitProviderRef`, `branch`, `path`, `encryption`, `placement`,
 `clusterProviderRef`, `allowedSourceNamespaces`, `prune`. Queued on top of it were `suspend`,
 `serializeNamespace`, `useKustomize`, `commitWindow` and `commit.message` — five more members on a
 spec that already flattens six orthogonal axes. Left alone, this object accumulates faster than it
@@ -88,7 +88,7 @@ Two groupings, and one deliberate exception:
   a category we made up rather than one the API already has. `prune` is its own struct already.
 
 After the wave the spec reads as named axes rather than a list: the immutable destination
-(`providerRef`/`branch`/`path`), `encryption`, `clusterProviderRef`, `placement`, `commit`, `prune`,
+(`gitProviderRef`/`branch`/`path`), `encryption`, `clusterProviderRef`, `placement`, `commit`, `prune`,
 and two object-level switches — `suspend` and `serializeNamespace`. That is the test for the next
 field too: a new member joins an axis, or names a new one, or is genuinely object-level — and if it
 can do none of the three it is probably not a `GitTarget` field.
@@ -203,7 +203,7 @@ metadata:
     reconcile.configbutler.ai/requestedAt: "2026-07-30T09:14:22Z"
 spec:
   # --- the connection: unchanged, and now only the connection ---
-  providerRef:
+  gitProviderRef:
     name: platform
   branch: main
   path: clusters/prod

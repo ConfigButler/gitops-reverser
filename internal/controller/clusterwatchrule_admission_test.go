@@ -98,7 +98,7 @@ func cwaGitTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaTargetName, Namespace: cwaTargetNS},
 		Spec: configbutleraiv1alpha3.GitTargetSpec{
-			ProviderRef:        meta.LocalObjectReference{Name: "git"},
+			GitProviderRef:     meta.LocalObjectReference{Name: "git"},
 			ClusterProviderRef: &meta.LocalObjectReference{Name: cwaProviderName},
 			Branch:             "main",
 			Path:               "clusters/prod",
@@ -123,7 +123,7 @@ func cwaClusterWatchRule() *configbutleraiv1alpha3.ClusterWatchRule {
 	return &configbutleraiv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaRuleName, Generation: 1},
 		Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
-			TargetRef: meta.NamespacedObjectReference{Name: cwaTargetName, Namespace: cwaTargetNS},
+			GitTargetRef: meta.NamespacedObjectReference{Name: cwaTargetName, Namespace: cwaTargetNS},
 			Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
 				Resources: []string{"customresourcedefinitions"},
 				APIGroups: []string{"apiextensions.k8s.io"},
@@ -441,8 +441,8 @@ func TestClusterProviderToClusterWatchRules(t *testing.T) {
 	ruleFor := func(name, targetName, targetNS string) *configbutleraiv1alpha3.ClusterWatchRule {
 		r := cwaClusterWatchRule()
 		r.Name = name
-		r.Spec.TargetRef.Name = targetName
-		r.Spec.TargetRef.Namespace = targetNS
+		r.Spec.GitTargetRef.Name = targetName
+		r.Spec.GitTargetRef.Namespace = targetNS
 		return r
 	}
 
@@ -476,8 +476,8 @@ func TestNamespaceToClusterWatchRules(t *testing.T) {
 	ruleFor := func(name, targetName, targetNS string) *configbutleraiv1alpha3.ClusterWatchRule {
 		r := cwaClusterWatchRule()
 		r.Name = name
-		r.Spec.TargetRef.Name = targetName
-		r.Spec.TargetRef.Namespace = targetNS
+		r.Spec.GitTargetRef.Name = targetName
+		r.Spec.GitTargetRef.Namespace = targetNS
 		return r
 	}
 

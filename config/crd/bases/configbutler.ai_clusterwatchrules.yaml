@@ -15,7 +15,7 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.targetRef.name
+    - jsonPath: .spec.gitTargetRef.name
       name: Target
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -46,7 +46,7 @@ spec:
           from — Nodes, PersistentVolumes, StorageClasses, ClusterRoles, CRDs, and the like. Scope is
           carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
 
-          It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
+          It is cluster-scoped and requires cluster-admin permissions. Its gitTargetRef names a GitTarget
           (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
           mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
           spec.rules[].sourceNamespace, whose "*" reaches every namespace the source credential can read.
@@ -71,6 +71,27 @@ spec:
           spec:
             description: spec defines the desired state of ClusterWatchRule.
             properties:
+              gitTargetRef:
+                description: |-
+                  GitTargetRef names the GitTarget this rule feeds. A ClusterWatchRule has no namespace of its
+                  own, so the namespace is required here rather than defaulted.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent, when not specified it
+                      acts as LocalObjectReference.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: spec.gitTargetRef.name must not be empty
+                  rule: self.name != ''
+                - message: 'spec.gitTargetRef.namespace is required: a ClusterWatchRule
+                    has no namespace to default to'
+                  rule: has(self.namespace) && self.namespace != ''
               rules:
                 description: |-
                   Rules define which CLUSTER-SCOPED resources to watch.
@@ -148,30 +169,9 @@ spec:
                   type: object
                 minItems: 1
                 type: array
-              targetRef:
-                description: |-
-                  TargetRef names the GitTarget this rule feeds. A ClusterWatchRule has no namespace of its
-                  own, so the namespace is required here rather than defaulted.
-                properties:
-                  name:
-                    description: Name of the referent.
-                    type: string
-                  namespace:
-                    description: Namespace of the referent, when not specified it
-                      acts as LocalObjectReference.
-                    type: string
-                required:
-                - name
-                type: object
-                x-kubernetes-validations:
-                - message: spec.targetRef.name must not be empty
-                  rule: self.name != ''
-                - message: 'spec.targetRef.namespace is required: a ClusterWatchRule
-                    has no namespace to default to'
-                  rule: has(self.namespace) && self.namespace != ''
             required:
+            - gitTargetRef
             - rules
-            - targetRef
             type: object
           status:
             description: status defines the observed state of ClusterWatchRule.

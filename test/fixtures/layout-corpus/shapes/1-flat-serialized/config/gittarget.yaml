@@ -4,7 +4,7 @@ metadata:
   name: prod-mirror
   namespace: homelab-config
 spec:
-  providerRef:
+  gitProviderRef:
     name: mirror-repository
   clusterProviderRef:
     name: prod
