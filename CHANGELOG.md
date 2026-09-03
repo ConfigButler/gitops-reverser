@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.42.1...v0.43.0) (2026-09-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** delete ClusterWatchRule scope, collapse every reference onto Flux's, and split the placement metric ([#333](https://github.com/ConfigButler/gitops-reverser/issues/333))
+* **api:** move commit batching onto GitTarget, delete allowedSourceNamespaces, and make sourceNamespace "*" cluster-wide ([#330](https://github.com/ConfigButler/gitops-reverser/issues/330))
+
+### Features
+
+* **api:** delete ClusterWatchRule scope, collapse every reference onto Flux's, and split the placement metric ([#333](https://github.com/ConfigButler/gitops-reverser/issues/333)) ([f87e227](https://github.com/ConfigButler/gitops-reverser/commit/f87e2275eb2b619cd439e8e00adb52f5f313ff36))
+* **api:** move commit batching onto GitTarget, delete allowedSourceNamespaces, and make sourceNamespace "*" cluster-wide ([#330](https://github.com/ConfigButler/gitops-reverser/issues/330)) ([f994a90](https://github.com/ConfigButler/gitops-reverser/commit/f994a905a8aefc5b3c9170d0b9e63de6a5a5f0c3))
+* **gittarget:** add spec.serializeNamespace and placement.useKustomize, and fence a namespace-free folder to one source namespace ([#328](https://github.com/ConfigButler/gitops-reverser/issues/328)) ([18d4ac7](https://github.com/ConfigButler/gitops-reverser/commit/18d4ac77e3937789a1f184a86cbe7fa389b77055))
+* **gittarget:** add spec.suspend and status.placement, refuse ambiguous layouts, and execute the layout corpus ([#326](https://github.com/ConfigButler/gitops-reverser/issues/326)) ([1ce4f4d](https://github.com/ConfigButler/gitops-reverser/commit/1ce4f4deb878c75fc60ef1766cff5dcb814c58fc))
+
+
+### Documentation
+
+* **layout:** reverse the layout model onto two optional booleans, and shrink the source-scope surface ([#325](https://github.com/ConfigButler/gitops-reverser/issues/325)) ([db20d17](https://github.com/ConfigButler/gitops-reverser/commit/db20d17be43cf679796d61c37ccaed7e65899b0a))
+
 ## [0.42.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.42.0...v0.42.1) (2026-08-28)
 
 
