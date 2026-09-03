@@ -232,18 +232,14 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 }
 
 // gateClusterWatchRule is the ClusterWatchRule gate and the ONE place this controller compiles a
-// cluster rule. It runs the shared compile path, which applies two refusals in order:
+// cluster rule. It runs the shared compile path, whose refusal is the ClusterProvider namespace
+// admission of the referenced GitTarget: a ClusterWatchRule is cluster-scoped and its targetRef
+// carries a REQUIRED namespace, so it may name a GitTarget in ANY namespace and widen that target's
+// mirror scope cluster-wide. Compiling such a rule without re-applying the target's own provider
+// admission would let it mirror through a credential whose accessFrom never admitted that target.
 //
-//  1. the ClusterProvider namespace admission of the referenced GitTarget. A ClusterWatchRule is
-//     cluster-scoped and its targetRef carries a REQUIRED namespace, so it may name a GitTarget in
-//     ANY namespace and widen that target's mirror scope cluster-wide. Compiling such a rule
-//     without re-applying the target's own provider admission would let it mirror through a
-//     credential whose accessFrom never admitted that target.
-//  2. the cluster-scope-only narrowing: a STORED rule that still says `scope: Namespaced` compiles
-//     no stream. Admission rejects the value on write, but a pre-release object keeps it in etcd.
-//
-// Both live in internal/watch rather than here because the startup bootstrap must apply exactly the
-// same refusals BEFORE the first reconcile — otherwise every restart reopens the window they close.
+// It lives in internal/watch rather than here because the startup bootstrap must apply exactly the
+// same refusal BEFORE the first reconcile — otherwise every restart reopens the window it closes.
 //
 // It returns handled=false when the rule compiled and the reconcile should continue; handled=true
 // means the reconcile is over and the caller must return the accompanying result and error

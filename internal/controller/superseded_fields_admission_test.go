@@ -166,3 +166,56 @@ var _ = Describe("Superseded source-scope fields", func() {
 				"at compile time")
 	})
 })
+
+// Collapsing our reference types onto Flux's dropped the MinLength=1 those types carried on name,
+// and `{name: ""}` is not a harmless value: GitProvider.spec.secretRef treats an absent credential
+// as anonymous access, so an empty name would downgrade a private repository to anonymous rather
+// than fail. The constraint is back as a field-level CEL rule on every reference, and this is the
+// guard that it stays there.
+var _ = Describe("Reference names must not be empty", func() {
+	It("refuses an empty secretRef name rather than reading it as anonymous access", func() {
+		ctx := context.Background()
+
+		provider := &configbutleraiv1alpha3.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-secret-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.GitProviderSpec{
+				URL:             "https://example.com/repo.git",
+				AllowedBranches: []string{"main"},
+				SecretRef:       &meta.LocalObjectReference{Name: ""},
+			},
+		}
+
+		err := k8sClient.Create(ctx, provider)
+
+		Expect(err).To(HaveOccurred(),
+			"an empty secretRef.name must be refused, not read as anonymous access")
+		Expect(err.Error()).To(ContainSubstring("must not be empty"))
+	})
+
+	It("refuses an empty name on the provider and target references", func() {
+		ctx := context.Background()
+
+		target := &configbutleraiv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-provider-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.GitTargetSpec{
+				ProviderRef: meta.LocalObjectReference{Name: ""},
+				Branch:      "main",
+				Path:        "clusters/prod",
+			},
+		}
+		Expect(k8sClient.Create(ctx, target)).NotTo(Succeed(),
+			"an empty providerRef.name names nothing and must be refused at admission")
+
+		rule := &configbutleraiv1alpha3.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "empty-target-name", Namespace: "default"},
+			Spec: configbutleraiv1alpha3.WatchRuleSpec{
+				TargetRef: meta.LocalObjectReference{Name: ""},
+				Rules: []configbutleraiv1alpha3.ResourceRule{
+					{Resources: []string{"configmaps"}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, rule)).NotTo(Succeed(),
+			"an empty targetRef.name names nothing and must be refused at admission")
+	})
+})

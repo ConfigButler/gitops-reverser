@@ -26,6 +26,13 @@ type GitProviderSpec struct {
 	URL string `json:"url"`
 
 	// SecretRef for authentication credentials (may be nil for public repos)
+	//
+	// An OMITTED secretRef means anonymous access. An empty name is refused rather than treated as
+	// one: a typo there would otherwise downgrade a private repository to anonymous silently, and
+	// the failure would surface as an authentication error against the remote rather than as a
+	// mistake in this object.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.secretRef.name must not be empty; omit secretRef entirely for anonymous access"
 	SecretRef *meta.LocalObjectReference `json:"secretRef,omitempty"`
 
 	// KnownHostsRef optionally points at a namespace-local ConfigMap or Secret holding SSH
@@ -74,6 +81,7 @@ type EncryptionSpec struct {
 	Provider string `json:"provider"`
 
 	// SecretRef references namespace-local Secret data used by the encryption provider.
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="encryption.secretRef.name must not be empty"
 	// +optional
 	SecretRef meta.LocalObjectReference `json:"secretRef,omitempty"`
 
@@ -196,6 +204,7 @@ type CommitMessageSpec struct {
 // CommitSigningSpec configures commit signing.
 type CommitSigningSpec struct {
 	// SecretRef references the Secret containing the signing key material.
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="commit.signing.secretRef.name must not be empty"
 	// Expected keys will be defined by the signing implementation.
 	SecretRef meta.LocalObjectReference `json:"secretRef"`
 

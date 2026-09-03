@@ -8,7 +8,7 @@ package v1alpha3
 
 import (
 	"github.com/fluxcd/pkg/apis/meta"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 

@@ -104,6 +104,9 @@ spec:
                         required:
                         - name
                         type: object
+                        x-kubernetes-validations:
+                        - message: commit.signing.secretRef.name must not be empty
+                          rule: self.name != ''
                     required:
                     - secretRef
                     type: object
@@ -132,8 +135,13 @@ spec:
                 - name
                 type: object
               secretRef:
-                description: SecretRef for authentication credentials (may be nil
-                  for public repos)
+                description: |-
+                  SecretRef for authentication credentials (may be nil for public repos)
+
+                  An OMITTED secretRef means anonymous access. An empty name is refused rather than treated as
+                  one: a typo there would otherwise downgrade a private repository to anonymous silently, and
+                  the failure would surface as an authentication error against the remote rather than as a
+                  mistake in this object.
                 properties:
                   name:
                     description: Name of the referent.
@@ -141,6 +149,10 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: spec.secretRef.name must not be empty; omit secretRef entirely
+                    for anonymous access
+                  rule: self.name != ''
               url:
                 description: |-
                   URL of the repository (HTTP/SSH).

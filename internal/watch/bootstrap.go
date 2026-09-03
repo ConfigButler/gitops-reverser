@@ -90,8 +90,7 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 	// Route through the SHARED gated compile path, never straight at the store. Bootstrap runs
 	// BEFORE the first reconcile on every restart, so a gate the reconciler alone enforced would be
 	// bypassed for the whole startup window — long enough to compile a rule and plan a stream for a
-	// target the provider never admitted, or to open a namespaced watch for a stored
-	// `scope: Namespaced` this release no longer supports. A refusal is not fatal to startup: the
+	// target the provider never admitted. A refusal is not fatal to startup: the
 	// rule is simply left out of the store, and the reconciler's own gate re-decides (and can grant
 	// it) as soon as the controller's initial sync reaches this rule.
 	decision, err := CompileClusterWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)

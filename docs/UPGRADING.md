@@ -48,10 +48,16 @@ kubectl get gitproviders -A -o json |
        message<-\(.spec.commit.message)"'
 
 # The reference fields and the ClusterWatchRule scope, which carry no information to migrate but
-# will be pruned out from under a manifest that still sets them:
-kubectl get gittargets,watchrules,commitrequests -A -o json |
-  jq -r '.items[] | select((.spec.targetRef.kind? // .spec.providerRef.kind?) != null)
-    | "\(.kind) \(.metadata.namespace)/\(.metadata.name): drop the group/kind under its *Ref"'
+# will be pruned out from under a manifest that still sets them. Every *Ref on every kind, not
+# just the two obvious ones:
+kubectl get gittargets,watchrules,clusterwatchrules,commitrequests,gitproviders -A -o json |
+  jq -r '.items[]
+    | . as $o
+    | [ (.spec.providerRef, .spec.clusterProviderRef, .spec.targetRef,
+         .spec.secretRef, .spec.encryption.secretRef, .spec.commit.signing.secretRef)
+        | select(. != null) | select(has("kind") or has("group")) ]
+    | select(length > 0)
+    | "\($o.kind) \($o.metadata.namespace // "-")/\($o.metadata.name): drop group/kind under \(length) reference(s)"'
 
 kubectl get clusterwatchrules -o json |
   jq -r '.items[] | select(any(.spec.rules[]?; has("scope")))
@@ -150,9 +156,15 @@ spec:                             spec:
     name: platform
 ```
 
-The same edit applies to `GitTarget.spec.providerRef` and `.spec.clusterProviderRef`,
-`WatchRule.spec.targetRef`, `ClusterWatchRule.spec.targetRef`, `CommitRequest.spec.targetRef`,
-`GitProvider.spec.secretRef`, and the `secretRef` under `spec.encryption`.
+The same edit applies to every reference on every kind:
+
+| Kind | Reference fields |
+|---|---|
+| `GitTarget` | `spec.providerRef`, `spec.clusterProviderRef`, `spec.encryption.secretRef` |
+| `GitProvider` | `spec.secretRef`, `spec.commit.signing.secretRef` |
+| `WatchRule` | `spec.targetRef` |
+| `ClusterWatchRule` | `spec.targetRef` |
+| `CommitRequest` | `spec.targetRef` |
 
 **Nothing is lost.** Each of those `group` and `kind` fields was an enum with exactly one member and
 a default equal to it, so no manifest could ever say anything but `configbutler.ai` and the one kind
