@@ -167,29 +167,17 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 	// under this reconcile, so the status just computed describes a resourceVersion that is no
 	// longer current. Dropping the WRITE is right — publishing a stale observation is worse.
 	//
-	// WHO the racing writer is, is the part worth stating, because "another writer" is the wrong
-	// mental picture and sends people hunting for one. There is exactly ONE status writer per kind
-	// here (this helper, from that kind's reconciler), and controller-runtime never runs two
-	// reconciles for the same key concurrently. The loser is racing ITSELF, one reconcile earlier:
+	// The conflict is cache lag, not contention, and saying so saves the reader hunting for a
+	// second writer: there is exactly ONE status writer per kind (this helper, from that kind's
+	// reconciler) and controller-runtime never reconciles one key twice concurrently, so the loser
+	// is racing itself — reconcile N stores rv=2, reconcile N+1 reads rv=1 from a cache that has
+	// not caught up, and patches if-match rv=1.
 	//
-	//	reconcile N   Get (cache, rv=1) → Patch → stored rv=2
-	//	reconcile N+1 Get (cache, still rv=1, the informer has not caught up) → Patch if-match rv=1 → 409
-	//
-	// So a conflict is a cache-lag artefact, not contention. It is common for exactly the reason it
-	// looks rare: it needs a second reconcile to arrive within the informer's catch-up window, which
-	// is what a burst does — a 61-scope GitTarget produced ~66 reconciles in four seconds, and one
-	// e2e run logged 74 conflicts.
-	//
-	// Dropping the RECONCILE along with the write was the actual defect. The old code returned nil
-	// on conflict, reasoning that "the write that beat us enqueued us again". That is false by
-	// construction here: the winning write is a STATUS-only update, and each For() carries a
-	// GenerationChangedPredicate precisely to filter those out. So nothing re-enqueued, the caller
-	// saw success and chose its converged requeue, and the object kept the older answer — that is
-	// Failure A, and it is why a spec waiting on a dependency's published status sees a reason that
-	// never advances.
-	//
-	// So the loss is RECORDED and the caller asks writeLost() before choosing its requeue: a
-	// reconcile whose status never landed must come back promptly, whatever it computed.
+	// Dropping the RECONCILE along with the write is what made that a defect. Nothing re-enqueues
+	// the object: the winning write is status-only and every For() here carries a
+	// GenerationChangedPredicate to filter exactly those out. So the loss is RECORDED and the
+	// caller asks writeLost() before choosing its requeue — see the tests in gittarget_status_test.go
+	// for the behaviour this guarantees.
 	patch := client.MergeFromWithOptions(s.before, client.MergeFromWithOptimisticLock{})
 	switch err := s.client.Status().Patch(ctx, s.object, patch); {
 	case err == nil:

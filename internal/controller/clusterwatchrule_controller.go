@@ -349,10 +349,11 @@ func (r *ClusterWatchRuleReconciler) commitRule(
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
+	cadence := RequeueSteadyInterval
 	if rd.converging() {
-		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
+		cadence = RequeueStreamSettleInterval
 	}
-	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
+	return ctrl.Result{RequeueAfter: st.requeueAfter(cadence)}, nil
 }
 
 func (r *ClusterWatchRuleReconciler) setGitTargetReadyCondition(
