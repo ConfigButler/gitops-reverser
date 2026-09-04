@@ -161,3 +161,13 @@ func TestRouteHealth_NilIsUsableForProcessWideSignals(t *testing.T) {
 	assert.False(t, h.AuditDelivered())
 	assert.False(t, h.TransportFailing())
 }
+
+// TestRouteHealth_TransportName covers the name the failing-publish message points at. The zero
+// value must stay usable, so an unset transport yields "" and the caller falls back to neutral
+// wording rather than naming a dependency that may not be the one running.
+func TestRouteHealth_TransportName(t *testing.T) {
+	var nilHealth *RouteHealth
+	assert.Empty(t, nilHealth.TransportName())
+	assert.Empty(t, (&RouteHealth{}).TransportName())
+	assert.Equal(t, "redis", (&RouteHealth{Transport: "redis"}).TransportName())
+}

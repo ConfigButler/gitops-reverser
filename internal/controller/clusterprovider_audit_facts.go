@@ -16,6 +16,14 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
+// The two transports --author-attribution-transport selects between. They are spelled here rather
+// than imported from internal/queue so the controller does not take a dependency on the transport
+// package for two strings it only ever prints.
+const (
+	auditTransportRedis  = "redis"
+	auditTransportMemory = "memory"
+)
+
 // AuditRouteFacts is the per-route "has a fact ever been published here" registry the
 // AuditFactsReceived condition reads. internal/attribution.RouteHealth implements it; a nil
 // reconciler field means author attribution is off, and the condition is then absent rather than
@@ -33,6 +41,9 @@ type AuditRouteFacts interface {
 	// repeated on every object that reads it.
 	TransportFailing() bool
 	AuditDelivered() bool
+	// TransportName is the configured transport ("redis" or "memory"), used only to point the
+	// reader at the right thing while publishes are failing. Empty yields neutral wording.
+	TransportName() string
 }
 
 // applyAuditFactsCondition writes the one-way AuditFactsReceived latch.
@@ -92,11 +103,12 @@ func (r *ClusterProviderReconciler) auditFactsPending(route string, createdAt ti
 	switch {
 	case r.AuditFacts.TransportFailing():
 		return ReasonTransportUnavailable, fmt.Sprintf(
-			"the attribution fact transport is refusing writes, so no fact can be recorded on audit "+
-				"route %q (or any other) %s. Until it recovers nothing can be concluded about this "+
-				"provider's route: check the operator's fact transport, not the audit webhook. "+
-				"Mirroring is unaffected; only the commit author is lost",
-			route, waited)
+			"the %s is refusing writes, so no fact can be recorded on audit route %q (or any other) "+
+				"%s. %s Until it recovers nothing can be concluded about this provider's route, so "+
+				"the audit webhook is not the thing to check. Mirroring is unaffected; only the "+
+				"commit author is lost",
+			auditTransportSubject(r.AuditFacts.TransportName()), route, waited,
+			auditTransportAdvice(r.AuditFacts.TransportName()))
 	case !r.AuditFacts.AuditDelivered():
 		return ReasonNoAuditDelivery, fmt.Sprintf(
 			"no audit request has reached this operator on ANY route %s, so nothing is posting to it "+
@@ -106,6 +118,36 @@ func (r *ClusterProviderReconciler) auditFactsPending(route string, createdAt ti
 			waited, route)
 	default:
 		return ReasonRouteUnused, auditFactsPendingMessage(route, waited)
+	}
+}
+
+// auditTransportSubject and auditTransportAdvice name the configured transport and where its
+// failures are diagnosed. They are split by transport because the two fail for entirely unrelated
+// reasons: Redis is a network dependency that can simply be down, while the in-process ring fails
+// only on a cancelled request or an unencodable batch, which is a log line rather than a service to
+// go and restart. Naming one when the other is running would send the reader somewhere with nothing
+// to find.
+func auditTransportSubject(transport string) string {
+	switch transport {
+	case auditTransportRedis:
+		return "Redis fact transport"
+	case auditTransportMemory:
+		return "in-process fact transport"
+	default:
+		return "attribution fact transport"
+	}
+}
+
+func auditTransportAdvice(transport string) string {
+	switch transport {
+	case auditTransportRedis:
+		return "Check that the Redis/Valkey the operator is pointed at (--redis-addr) is reachable " +
+			"and accepting writes."
+	case auditTransportMemory:
+		return "The in-process transport fails only on a cancelled request or an unencodable fact, " +
+			"so the operator's logs carry the cause."
+	default:
+		return "Check the operator's fact transport."
 	}
 }
 

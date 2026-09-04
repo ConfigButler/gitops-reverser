@@ -133,6 +133,30 @@ func TestClusterProviderAuditFacts_NamesWhichSilenceItIsIn(t *testing.T) {
 			notMessage:  "/audit-webhook/",
 		},
 		{
+			name: "a failing Redis transport points at Redis",
+			arrange: func(h *attribution.RouteHealth) {
+				h.Transport = "redis"
+				h.RecordAuditDelivery()
+				h.RecordPublishFailure()
+			},
+			wantReason:  ReasonTransportUnavailable,
+			wantMessage: []string{"Redis fact transport", "--redis-addr"},
+			notMessage:  "/audit-webhook/",
+		},
+		{
+			name: "a failing in-process transport does NOT point at Redis",
+			arrange: func(h *attribution.RouteHealth) {
+				h.Transport = "memory"
+				h.RecordAuditDelivery()
+				h.RecordPublishFailure()
+			},
+			wantReason: ReasonTransportUnavailable,
+			// The single-replica memory transport has no service to restart; sending its operator to
+			// Redis would be a hunt with nothing at the end of it.
+			wantMessage: []string{"in-process fact transport", "operator's logs"},
+			notMessage:  "Redis",
+		},
+		{
 			name:        "nothing is posting audit to this operator",
 			arrange:     func(_ *attribution.RouteHealth) {},
 			wantReason:  ReasonNoAuditDelivery,

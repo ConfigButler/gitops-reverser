@@ -62,8 +62,22 @@ type RouteHealth struct {
 	// the providers reading that route within seconds instead of on their periodic requeue.
 	firstFactEvents chan event.GenericEvent
 
+	// Transport names the fact transport this operator was built with ("redis" or "memory"), for
+	// the message a provider shows while publishes are failing: the two fail for entirely different
+	// reasons and send the reader to different places. Set once at construction and read-only
+	// after; empty is fine and yields transport-neutral wording.
+	Transport string
+
 	// now is the clock, injectable for tests.
 	now func() time.Time
+}
+
+// TransportName returns the configured fact transport's name, or "" when it was not set.
+func (h *RouteHealth) TransportName() string {
+	if h == nil {
+		return ""
+	}
+	return h.Transport
 }
 
 // clock returns the time source, defaulting to the wall clock.

@@ -245,8 +245,10 @@ func main() {
 		// The transport is the only thing that differs between the two modes. Everything above it —
 		// the index, the waiter registry, the subscription set, the resolver — has one implementation
 		// and never learns which transport it was handed.
-		routeHealth = &attribution.RouteHealth{}
 		transport := buildFactTransport(cfg, redisStore)
+		// The transport names itself, rather than the controller re-deriving it from the flag: a
+		// provider whose publishes are failing then points at the thing actually carrying its facts.
+		routeHealth = &attribution.RouteHealth{Transport: string(transport.TransportKind())}
 		factIndex := queue.NewFactIndex(queue.FactIndexConfig{
 			TTL:              cfg.attributionFactTTL,
 			MaxFactsPerType:  cfg.attributionMaxFactsPerType,
