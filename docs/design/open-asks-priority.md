@@ -391,8 +391,11 @@ stays perfect and every commit is authored `unknown (attribution unresolved)`. T
 mitigation (an alert plus a test) fires *after* a wrong commit exists.
 
 What shipped is `AuditFactsReceived` on `ClusterProvider`, plus a default-priority `FACTS` printer
-column: `Unknown`/`NoFactsYet` from creation until the first fact is published on the provider's
-route, `True`/`Received` from then on. Two of the notes below were **reversed** when it was built:
+column: `True`/`Received` once a fact has been published on the provider's route, and until then
+`Unknown` with the reason naming which silence it is (`TransportUnavailable`, `NoAuditDelivery` or
+`RouteUnused`), since the three send the reader to three different places.
+
+Two of the notes below were **reversed** when it was built:
 
 - It is **not** in `Ready` and not a `Stalled` — that part held. Mirroring genuinely works; a
   kstatus consumer that read `Failed` here would be wrong.

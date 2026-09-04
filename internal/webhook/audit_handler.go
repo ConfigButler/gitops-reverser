@@ -218,6 +218,9 @@ func (h *AuditHandler) serveEventListRequest(
 		return outcomeEmpty, 0
 	}
 
+	// Recorded before the batch is processed: the apiserver reaching us at all is what this
+	// establishes, independently of whether any event in it can name an author.
+	h.config.RouteHealth.RecordAuditDelivery()
 	h.firsts.request.Do(func() {
 		reqLog.Info("Received first audit request", "eventCount", eventCount)
 	})
@@ -436,6 +439,9 @@ func (h *AuditHandler) publishFactBatches(
 	for _, key := range batches.order {
 		facts := batches.facts[key]
 		if err := h.config.FactPublisher.PublishFacts(ctx, key, facts); err != nil {
+			// The transport refusing a write is process-wide news, not news about this route: while
+			// it holds, EVERY route looks silent and none of them can be judged.
+			h.config.RouteHealth.RecordPublishFailure()
 			return appended, fmt.Errorf("publish attribution facts for %s: %w", key, err)
 		}
 		queue.RecordFactsWritten(ctx, len(facts))

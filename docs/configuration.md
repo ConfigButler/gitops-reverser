@@ -343,10 +343,20 @@ default            True    Succeeded   True      31m
 srcns-delegating   True    Succeeded   Unknown   4m
 ```
 
-- `Unknown` / `NoFactsYet`: no fact has ever been published on this provider's route. Every commit
-  mirrored through it is authored `unknown (attribution unresolved)`. The condition message names
-  the route and the webhook URL to check.
 - `True` / `Received`: a fact has arrived, and the message carries when the first one did.
+- `Unknown`: none ever has, so every commit mirrored through this provider is authored
+  `unknown (attribution unresolved)`. Three silences look identical on the object and need three
+  different fixes, so the **reason** says which one it is:
+
+| Reason | What was observed | Where to look |
+|---|---|---|
+| `TransportUnavailable` | the last append to the fact transport failed | the operator's fact transport. No route can be judged while this holds: every route looks silent for the same reason |
+| `NoAuditDelivery` | no audit request has ever reached this operator, on any route | the API server's audit webhook backend and its connectivity to the operator. This provider's route is not at fault |
+| `RouteUnused` | audit is arriving and has never carried this route | this provider's `spec.attribution.auditRoute` |
+
+The status stays `Unknown` for all three. A failing transport is a fault in the pipeline, not in
+this provider, and turning it into a per-object `False` would flip every not-yet-latched
+`ClusterProvider` at once: one outage, many verdicts. The reason carries the diagnosis instead.
 
 It is a **one-way latch**: once `True` it stays `True`, across controller restarts and regardless of
 how long the route stays quiet afterwards. Silence before any proof is a misconfiguration; silence

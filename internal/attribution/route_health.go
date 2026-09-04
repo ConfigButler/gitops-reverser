@@ -49,6 +49,14 @@ type RouteHealth struct {
 	absent    map[string]int
 	warned    map[string]bool
 
+	// delivered and transportFailing are PROCESS-WIDE, deliberately not keyed by route: an audit
+	// request reaching this operator at all, and the fact transport being able to accept a write,
+	// are properties of the pipeline rather than of any one route. They exist so a provider with no
+	// facts can say WHICH of the three silences it is in — nothing is posting to us, the transport
+	// is refusing writes, or traffic is flowing and simply never carries this route.
+	delivered        bool
+	transportFailing bool
+
 	// firstFactEvents carries a ClusterProvider-shaped GenericEvent naming the ROUTE (not an
 	// object) the first time a fact lands on it, so the ClusterProvider controller re-reconciles
 	// the providers reading that route within seconds instead of on their periodic requeue.
@@ -80,6 +88,8 @@ func (h *RouteHealth) RecordFactPublished(route string) bool {
 	if h.firstFact == nil {
 		h.firstFact = map[string]time.Time{}
 	}
+	// A successful append is the only evidence that the transport is accepting writes again.
+	h.transportFailing = false
 	_, seen := h.firstFact[route]
 	if !seen {
 		h.firstFact[route] = h.clock()
@@ -109,6 +119,54 @@ func notifyFirstFact(ch chan event.GenericEvent, route string) {
 	case ch <- evt:
 	default:
 	}
+}
+
+// RecordAuditDelivery notes that an audit request carrying events reached this operator. It says
+// nothing about routes: the apiserver posting anywhere is what it establishes, which is the
+// difference between "nobody is sending us audit" and "your route is not the one being sent".
+func (h *RouteHealth) RecordAuditDelivery() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.delivered = true
+}
+
+// AuditDelivered reports whether any audit request has ever reached this operator in this process.
+func (h *RouteHealth) AuditDelivered() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.delivered
+}
+
+// RecordPublishFailure notes that an append to the fact transport failed. It is cleared by the next
+// successful publish, so the flag tracks the CURRENT state rather than accumulating history.
+//
+// It can read stale-failing for as long as no further batch is attempted, because only an attempt
+// can observe a recovery. In practice that window is short: a failed publish returns an error to
+// the API server, which retries the same batch.
+func (h *RouteHealth) RecordPublishFailure() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.transportFailing = true
+}
+
+// TransportFailing reports whether the last observed append to the fact transport failed. While
+// true, nothing can be concluded about any route's configuration: every route looks silent.
+func (h *RouteHealth) TransportFailing() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.transportFailing
 }
 
 // FirstFactAt returns when the first fact was published on this route, and whether one ever was.

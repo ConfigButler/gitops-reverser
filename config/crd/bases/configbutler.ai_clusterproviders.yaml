@@ -297,10 +297,14 @@ spec:
                   Reconciling/Stalled pair. Runtime reachability/discovery health and a last-audit-event
                   timestamp are deferred until authenticated remote ingest wires them from the watch engine.
 
-                  AuditFactsReceived reports whether an attribution fact has ever arrived on this provider's
-                  audit route. It is Unknown (NoFactsYet) until the first one and True (Received) afterwards,
-                  and it never goes back: later silence is a quiet cluster, not a fault. It is absent when the
-                  operator runs with author attribution disabled. It is not part of Ready.
+                  AuditFactsReceived reports whether an attribution fact has ever been accepted and recorded on
+                  this provider's audit route. It is True (Received) from the first one on and never goes back:
+                  later silence is a quiet cluster, not a fault. Until then it is Unknown, with the reason
+                  naming which silence it is and therefore where to look: TransportUnavailable (the fact
+                  transport is refusing writes, so no route can be judged), NoAuditDelivery (nothing is posting
+                  audit to this operator at all), or RouteUnused (audit is arriving and has never carried this
+                  route). It is absent when the operator runs with author attribution disabled. It is not part
+                  of Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

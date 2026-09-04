@@ -102,10 +102,10 @@ const (
 
 	// ClusterProviderConditionAuditFactsReceived reports whether an attribution fact has ever been
 	// published on this provider's audit route (spec.attribution.auditRoute, defaulting to the
-	// provider's name). It is Unknown (ReasonNoFactsYet) from creation until the first fact and
-	// True (ReasonFactsReceived) from then on, and it NEVER regresses: the persisted status is the
-	// latch, so a restart — or the memory transport, whose in-process state is lost with the
-	// process — keeps it True. Later silence is a quiet cluster, not a fault, which is why there is
+	// provider's name). It is Unknown from creation until the first fact, with the reason naming
+	// which silence it is (see the three below), and True (ReasonFactsReceived) from then on. It
+	// NEVER regresses: the persisted status is the latch, so a restart — or the memory transport,
+	// whose in-process state is lost with the process — keeps it True. Later silence is a quiet cluster, not a fault, which is why there is
 	// no False state, no grace window and no timer.
 	//
 	// It is deliberately NOT part of Ready: a provider reading a route nobody posts under mirrors
@@ -114,9 +114,28 @@ const (
 	// --author-attribution=false, where no fact was ever expected.
 	ClusterProviderConditionAuditFactsReceived = "AuditFactsReceived"
 
-	// ReasonNoFactsYet is the AuditFactsReceived=Unknown reason: nothing has been published on the
-	// provider's audit route yet.
-	ReasonNoFactsYet = "NoFactsYet"
+	// The three AuditFactsReceived=Unknown reasons below separate the silences by SCOPE, because
+	// they send the reader to three different places. None of them repeats "AuditFacts" (the
+	// condition type says it) or "yet" (the Unknown status says it). They are evaluated in the
+	// order listed: a failing transport makes every route look silent, so no route may be judged
+	// while it holds; and with nothing delivered at all, no route can be the one at fault.
+
+	// ReasonTransportUnavailable is the AuditFactsReceived=Unknown reason when the last append to
+	// the fact transport failed. Nothing can be concluded about any route's configuration while
+	// this holds. The fix is the operator's transport, not the reader's audit webhook.
+	ReasonTransportUnavailable = "TransportUnavailable"
+	// ReasonNoAuditDelivery is the AuditFactsReceived=Unknown reason when no audit request has ever
+	// reached this operator, on any route. Nothing is posting to it, so the fix is the API server's
+	// audit webhook configuration and its connectivity, never this provider's route.
+	ReasonNoAuditDelivery = "NoAuditDelivery"
+	// ReasonRouteUnused is the AuditFactsReceived=Unknown reason when audit requests ARE arriving
+	// and nothing has ever landed on this provider's route. That is the one case where the route
+	// itself is the thing to look at.
+	//
+	// It deliberately does not claim the facts went to some OTHER route, which would be the sharper
+	// message: requests can also arrive and produce no fact anywhere, when the audit policy's level
+	// or verbs leave nothing attributable. This reason stays true for both.
+	ReasonRouteUnused = "RouteUnused"
 	// ReasonFactsReceived is the AuditFactsReceived=True reason: a fact has arrived on the route,
 	// and that answer is latched.
 	ReasonFactsReceived = "Received"

@@ -51,12 +51,17 @@ func TestClusterProviderAuditFacts_UnknownUntilTheFirstFact(t *testing.T) {
 	provider := clusterProviderWithKubeConfig("srcns-delegating", "", "")
 	provider.CreationTimestamp = metav1.NewTime(time.Now().Add(-12 * time.Minute))
 
-	_, got := reconcileClusterProviderOnce(t, provider, &attribution.RouteHealth{})
+	// Audit IS being delivered and the transport is healthy, which is what narrows the diagnosis to
+	// this provider's own route.
+	health := &attribution.RouteHealth{}
+	health.RecordAuditDelivery()
+
+	_, got := reconcileClusterProviderOnce(t, provider, health)
 
 	cond := findCondition(got.Status.Conditions, ClusterProviderConditionAuditFactsReceived)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
-	assert.Equal(t, ReasonNoFactsYet, cond.Reason)
+	assert.Equal(t, ReasonRouteUnused, cond.Reason)
 	assert.Contains(t, cond.Message, `"srcns-delegating"`, "the message must name the route")
 	assert.Contains(t, cond.Message, "12m0s", "the message must say how long the wait has been")
 	assert.Contains(t, cond.Message, "/audit-webhook/srcns-delegating",
@@ -95,6 +100,7 @@ func TestClusterProviderAuditFacts_LatchesOnTheFirstFact(t *testing.T) {
 func TestClusterProviderAuditFacts_FactOnAnotherRouteDoesNotLatch(t *testing.T) {
 	provider := clusterProviderWithKubeConfig("srcns-delegating", "", "")
 	health := &attribution.RouteHealth{}
+	health.RecordAuditDelivery()
 	health.RecordFactPublished("default")
 
 	_, got := reconcileClusterProviderOnce(t, provider, health)
@@ -102,7 +108,93 @@ func TestClusterProviderAuditFacts_FactOnAnotherRouteDoesNotLatch(t *testing.T) 
 	cond := findCondition(got.Status.Conditions, ClusterProviderConditionAuditFactsReceived)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionUnknown, cond.Status)
-	assert.Equal(t, ReasonNoFactsYet, cond.Reason)
+	assert.Equal(t, ReasonRouteUnused, cond.Reason)
+}
+
+// TestClusterProviderAuditFacts_NamesWhichSilenceItIsIn is the whole point of splitting the reason:
+// three silences that look identical on the object send the reader to three different places. The
+// status stays Unknown for all three — a pipeline-wide fault must not become a per-provider
+// verdict — so the reason is what carries the diagnosis.
+func TestClusterProviderAuditFacts_NamesWhichSilenceItIsIn(t *testing.T) {
+	tests := []struct {
+		name        string
+		arrange     func(h *attribution.RouteHealth)
+		wantReason  string
+		wantMessage []string
+		notMessage  string
+	}{
+		{
+			name:       "the transport is refusing writes",
+			arrange:    func(h *attribution.RouteHealth) { h.RecordAuditDelivery(); h.RecordPublishFailure() },
+			wantReason: ReasonTransportUnavailable,
+			// It must NOT send the reader to the audit webhook: the route cannot be judged at all
+			// while every route looks silent for the same reason.
+			wantMessage: []string{"fact transport", "nothing can be concluded"},
+			notMessage:  "/audit-webhook/",
+		},
+		{
+			name:        "nothing is posting audit to this operator",
+			arrange:     func(_ *attribution.RouteHealth) {},
+			wantReason:  ReasonNoAuditDelivery,
+			wantMessage: []string{"ANY route", "audit webhook backend", "not the thing at fault"},
+		},
+		{
+			name:        "audit is arriving and has never carried this route",
+			arrange:     func(h *attribution.RouteHealth) { h.RecordAuditDelivery() },
+			wantReason:  ReasonRouteUnused,
+			wantMessage: []string{"audit requests are arriving", "/audit-webhook/srcns-delegating"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			health := &attribution.RouteHealth{}
+			tt.arrange(health)
+
+			_, got := reconcileClusterProviderOnce(t,
+				clusterProviderWithKubeConfig("srcns-delegating", "", ""), health)
+
+			cond := findCondition(got.Status.Conditions, ClusterProviderConditionAuditFactsReceived)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionUnknown, cond.Status,
+				"a pipeline-wide fault is still not this provider's verdict")
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			for _, want := range tt.wantMessage {
+				assert.Contains(t, cond.Message, want)
+			}
+			if tt.notMessage != "" {
+				assert.NotContains(t, cond.Message, tt.notMessage)
+			}
+			// Never a fault on the object itself, whichever silence it is.
+			assert.Equal(t, metav1.ConditionTrue, findCondition(got.Status.Conditions, ConditionTypeReady).Status)
+		})
+	}
+}
+
+// TestClusterProviderAuditFacts_TransportRecoveryClearsTheReason pins that the transport flag
+// tracks the CURRENT state rather than accumulating history: a successful append after a failure
+// puts the provider back to the route diagnosis.
+func TestClusterProviderAuditFacts_TransportRecoveryClearsTheReason(t *testing.T) {
+	health := &attribution.RouteHealth{}
+	health.RecordAuditDelivery()
+	health.RecordPublishFailure()
+
+	r, got := reconcileClusterProviderOnce(t,
+		clusterProviderWithKubeConfig("srcns-delegating", "", ""), health)
+	require.Equal(t, ReasonTransportUnavailable,
+		findCondition(got.Status.Conditions, ClusterProviderConditionAuditFactsReceived).Reason)
+
+	// A publish landing on some OTHER route is still proof the transport accepts writes.
+	health.RecordFactPublished("default")
+
+	_, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: "srcns-delegating"}})
+	require.NoError(t, err)
+
+	var after configbutleraiv1alpha3.ClusterProvider
+	require.NoError(t, r.Get(context.Background(),
+		k8stypes.NamespacedName{Name: "srcns-delegating"}, &after))
+	assert.Equal(t, ReasonRouteUnused,
+		findCondition(after.Status.Conditions, ClusterProviderConditionAuditFactsReceived).Reason)
 }
 
 // TestClusterProviderAuditFacts_NeverRegresses is the latch itself, in the two shapes that would

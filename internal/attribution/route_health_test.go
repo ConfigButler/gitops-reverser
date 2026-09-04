@@ -128,3 +128,36 @@ func TestRouteHealth_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
 		assert.Equal(t, 1, streak, "the run restarts, so an intermittent miss never accumulates into a warning")
 	})
 }
+
+// TestRouteHealth_ProcessWideSignals covers the two flags that separate the three silences. Both
+// are deliberately process-wide: an audit request reaching this operator, and the transport
+// accepting a write, are properties of the pipeline rather than of any one route.
+func TestRouteHealth_ProcessWideSignals(t *testing.T) {
+	h := &RouteHealth{}
+	assert.False(t, h.AuditDelivered(), "nothing has posted to this operator yet")
+	assert.False(t, h.TransportFailing(), "no append has been attempted, so nothing has failed")
+
+	h.RecordAuditDelivery()
+	assert.True(t, h.AuditDelivered())
+	assert.False(t, h.TransportFailing(), "delivery says nothing about the transport")
+
+	h.RecordPublishFailure()
+	assert.True(t, h.TransportFailing())
+
+	// A successful append is the only evidence of recovery, and it counts whichever route it lands
+	// on: the transport is one thing, shared by every route.
+	h.RecordFactPublished("some-other-route")
+	assert.False(t, h.TransportFailing(), "a landed append proves the transport accepts writes again")
+	_, seen := h.FirstFactAt("this-route")
+	assert.False(t, seen, "recovery on another route is not evidence about this one")
+}
+
+// TestRouteHealth_NilIsUsableForProcessWideSignals extends the configured-author wiring to the two
+// new flags.
+func TestRouteHealth_NilIsUsableForProcessWideSignals(t *testing.T) {
+	var h *RouteHealth
+	h.RecordAuditDelivery()
+	h.RecordPublishFailure()
+	assert.False(t, h.AuditDelivered())
+	assert.False(t, h.TransportFailing())
+}

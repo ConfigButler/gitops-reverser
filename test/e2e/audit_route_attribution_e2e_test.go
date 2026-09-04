@@ -151,8 +151,12 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 	// mirroring provider declares is already latched by the time any spec here runs, and asserting
 	// "no facts yet" against it would assert a race.
 	It("says so when a ClusterProvider's audit route has never carried a fact", func() {
+		// RouteUnused, not one of the other two silences: this cluster's apiserver IS delivering
+		// audit (every other spec here depends on it) and the transport is accepting writes, so the
+		// only thing left to look at is this provider's own route. That is exactly the distinction
+		// the three reasons exist to make.
 		verifyResourceCondition("clusterprovider", quietProv, "",
-			"AuditFactsReceived", "Unknown", "NoFactsYet", quietProv)
+			"AuditFactsReceived", "Unknown", "RouteUnused", quietProv)
 
 		// The whole reason this is not folded into Ready: nothing about the provider is broken.
 		// Mirroring through it would work; only the commit AUTHOR would be lost.

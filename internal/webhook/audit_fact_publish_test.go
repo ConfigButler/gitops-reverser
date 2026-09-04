@@ -471,3 +471,40 @@ func TestAuditHandler_RecordsNoRouteWhenNothingAppends(t *testing.T) {
 		})
 	}
 }
+
+// TestAuditHandler_RecordsDeliveryAndTransportFailure pins the two process-wide signals the
+// ClusterProvider condition uses to say WHICH silence a provider with no facts is in. Delivery is
+// recorded for the request itself, independently of whether anything in it could name an author;
+// the transport flag follows the append.
+func TestAuditHandler_RecordsDeliveryAndTransportFailure(t *testing.T) {
+	t.Run("a request that produces no fact still proves audit is being delivered", func(t *testing.T) {
+		health := &attribution.RouteHealth{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: &fakeFactPublisher{}, RouteHealth: health})
+		require.NoError(t, err)
+
+		// No user, so the event can name nobody and publishes nothing.
+		body := eventListBody(writeEvent("a", "", "configmaps", "config", ""))
+		require.Equal(t, http.StatusOK, serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body).Code)
+
+		assert.True(t, health.AuditDelivered(), "the apiserver reached us, which is what this establishes")
+		_, seen := health.FirstFactAt("prod-eu-1")
+		assert.False(t, seen, "and it is still not evidence that the route carries facts")
+	})
+
+	t.Run("a failing transport is recorded, and cleared by the next landed append", func(t *testing.T) {
+		publisher := &fakeFactPublisher{err: errors.New("transport down")}
+		health := &attribution.RouteHealth{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: publisher, RouteHealth: health})
+		require.NoError(t, err)
+
+		body := eventListBody(writeEvent("a", "", "configmaps", "config", "bob"))
+		serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body)
+		assert.True(t, health.TransportFailing())
+
+		publisher.err = nil
+		require.Equal(t, http.StatusOK, serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body).Code)
+		assert.False(t, health.TransportFailing(), "the retried batch landing is the recovery signal")
+		_, seen := health.FirstFactAt("prod-eu-1")
+		assert.True(t, seen)
+	})
+}

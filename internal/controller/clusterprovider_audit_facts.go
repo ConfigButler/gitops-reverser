@@ -27,6 +27,12 @@ type AuditRouteFacts interface {
 	// FirstFactEvents carries a ClusterProvider-shaped event naming the ROUTE whose first fact just
 	// landed, so the providers reading it re-reconcile within seconds.
 	FirstFactEvents() <-chan event.GenericEvent
+	// TransportFailing and AuditDelivered are PROCESS-WIDE, not per route. They exist only to say
+	// which of the three silences a provider with no facts is in; neither is ever asserted as this
+	// provider's own status, because a fault shared by the whole pipeline must not become a verdict
+	// repeated on every object that reads it.
+	TransportFailing() bool
+	AuditDelivered() bool
 }
 
 // applyAuditFactsCondition writes the one-way AuditFactsReceived latch.
@@ -67,8 +73,49 @@ func (r *ClusterProviderReconciler) applyAuditFactsCondition(
 		return
 	}
 
-	st.set(ClusterProviderConditionAuditFactsReceived, metav1.ConditionUnknown,
-		ReasonNoFactsYet, auditFactsPendingMessage(route, provider.CreationTimestamp.Time))
+	reason, message := r.auditFactsPending(route, provider.CreationTimestamp.Time)
+	st.set(ClusterProviderConditionAuditFactsReceived, metav1.ConditionUnknown, reason, message)
+}
+
+// auditFactsPending picks which of the three silences this provider is in, and says where to look.
+//
+// The status stays Unknown for all three: a failing transport is positive evidence of a fault, but
+// it is the PIPELINE's fault, not this provider's, and turning it into a per-object False would
+// make one outage flip every not-yet-latched provider at once — N verdicts about one process. The
+// reason carries the diagnosis instead, which alerting can still select on and kstatus ignores.
+//
+// Only the first-fact transition is pushed (see FirstFactEvents); a transport recovery or a first
+// delivery changes only these MESSAGES, so they converge on the periodic requeue rather than
+// enqueueing every provider in the cluster.
+func (r *ClusterProviderReconciler) auditFactsPending(route string, createdAt time.Time) (string, string) {
+	waited := auditFactsWaited(createdAt)
+	switch {
+	case r.AuditFacts.TransportFailing():
+		return ReasonTransportUnavailable, fmt.Sprintf(
+			"the attribution fact transport is refusing writes, so no fact can be recorded on audit "+
+				"route %q (or any other) %s. Until it recovers nothing can be concluded about this "+
+				"provider's route: check the operator's fact transport, not the audit webhook. "+
+				"Mirroring is unaffected; only the commit author is lost",
+			route, waited)
+	case !r.AuditFacts.AuditDelivered():
+		return ReasonNoAuditDelivery, fmt.Sprintf(
+			"no audit request has reached this operator on ANY route %s, so nothing is posting to it "+
+				"and audit route %q is not the thing at fault. Check that this cluster's API server "+
+				"has an audit webhook backend configured and that it can reach the operator's audit "+
+				"service. Mirroring is unaffected; only the commit author is lost",
+			waited, route)
+	default:
+		return ReasonRouteUnused, auditFactsPendingMessage(route, waited)
+	}
+}
+
+// auditFactsWaited renders how long the provider has been without facts, or a bare "so far" when
+// its creation timestamp is unset (a hand-built object in a test).
+func auditFactsWaited(createdAt time.Time) string {
+	if createdAt.IsZero() {
+		return "so far"
+	}
+	return fmt.Sprintf("in %s", time.Since(createdAt).Round(time.Minute))
 }
 
 // auditFactsReceivedMessage names the route and when its first fact arrived. A zero time is the
@@ -82,21 +129,18 @@ func auditFactsReceivedMessage(route string, at time.Time) string {
 		route, at.UTC().Format(time.RFC3339))
 }
 
-// auditFactsPendingMessage says what is missing, for how long, and where to look. It names the
+// auditFactsPendingMessage is the RouteUnused message: audit is being delivered and the transport
+// is accepting writes, so this provider's route is the one thing left to look at. It names the
 // route explicitly because the route is usually NOT the field anyone set — it defaults to the
 // provider's name, which is exactly how a second provider on one cluster ends up reading a
 // partition nothing writes.
-func auditFactsPendingMessage(route string, createdAt time.Time) string {
-	waited := "so far"
-	if !createdAt.IsZero() {
-		waited = fmt.Sprintf("in %s", time.Since(createdAt).Round(time.Minute))
-	}
+func auditFactsPendingMessage(route, waited string) string {
 	return fmt.Sprintf(
-		"no attribution fact has arrived on audit route %q %s, so every commit mirrored through this "+
-			"provider is authored as attribution-unresolved. Check that this cluster's audit webhook URL "+
-			"ends in /audit-webhook/%s (or, when several logical clusters share one backend, that its "+
-			"events carry that route in the configured audit-route annotation). Mirroring itself is "+
-			"unaffected",
+		"audit requests are arriving, but no attribution fact has ever landed on audit route %q %s, so "+
+			"every commit mirrored through this provider is authored as attribution-unresolved. Check "+
+			"that this cluster's audit webhook URL ends in /audit-webhook/%s (or, when several logical "+
+			"clusters share one backend, that its events carry that route in the configured audit-route "+
+			"annotation). Mirroring itself is unaffected",
 		route, waited, route)
 }
 

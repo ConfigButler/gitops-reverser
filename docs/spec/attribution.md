@@ -548,8 +548,21 @@ with a default `FACTS` printer column.
 
 | Status | Reason | Means |
 |---|---|---|
-| `Unknown` | `NoFactsYet` | no fact has ever been published on this provider's audit route |
-| `True` | `Received` | one has, and this answer is latched for good |
+| `True` | `Received` | a fact has been published on this provider's audit route, and this answer is latched for good |
+| `Unknown` | `TransportUnavailable` | the last append to the fact transport failed, so no route can be judged |
+| `Unknown` | `NoAuditDelivery` | no audit request has ever reached this operator, on any route |
+| `Unknown` | `RouteUnused` | audit is arriving and has never carried this route |
+
+The three `Unknown` reasons are evaluated in that order, and they are separated by **scope**, not by
+severity: a failing transport makes every route look silent, and with nothing delivered at all no
+route can be the one at fault. Only the last is a statement about this provider's own
+configuration. The status stays `Unknown` for all three because the first two are faults in the
+pipeline rather than in the object carrying them; a per-object `False` would turn one outage into a
+verdict repeated on every `ClusterProvider` that has not yet latched.
+
+`RouteUnused` deliberately does not claim the facts went to some *other* route, which would be
+sharper: audit can also arrive and produce no fact anywhere, when the policy's level or verbs leave
+nothing attributable. The reason stays true for both.
 
 The condition is a **one-way latch**, and that is what makes it readable without a threshold. A
 route that has never carried a fact is a route nobody posts to: a `ClusterProvider` that did not
