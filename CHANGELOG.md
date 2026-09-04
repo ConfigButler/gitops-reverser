@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.43.0...v0.44.0) (2026-09-04)
+
+
+### Features
+
+* **clusterprovider:** latch an AuditFactsReceived condition on the first fact per audit route ([#341](https://github.com/ConfigButler/gitops-reverser/issues/341)) ([0e38cf4](https://github.com/ConfigButler/gitops-reverser/commit/0e38cf4845dfdbd8357bfd058616ca3f8ec1dd37))
+
+
+### Documentation
+
+* close the API wave and placement-visibility issues, and drop three items ([#340](https://github.com/ConfigButler/gitops-reverser/issues/340)) ([183964f](https://github.com/ConfigButler/gitops-reverser/commit/183964f70f938c7d00c0c38a44767023dbe77114))
+
 ## [0.43.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.42.1...v0.43.0) (2026-09-03)
 
 
