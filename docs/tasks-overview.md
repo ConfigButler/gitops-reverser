@@ -57,7 +57,7 @@ Run `task` (or `task help`) to list everything.
 | Task | What it does | When to run it |
 | --- | --- | --- |
 | `task test` | Regenerates manifests + deepcopy, runs `go fmt`/`go vet`, sets up envtest, runs all non-e2e packages, then the coverage ratchet (`cover-check`). | Before every commit. |
-| `task lint` | Aggregates `lint-golang` (golangci-lint), `lint-dockerfiles` (hadolint), `lint-actions` (actionlint), and `lint-helm` (helm lint). Dockerfile/action lint can run immediately; Go and Helm lint both wait for generated files to settle first. | Before every commit. |
+| `task lint` | Aggregates `lint-golang` (golangci-lint), `lint-gomod` (`go mod tidy -diff`), `lint-dockerfiles` (hadolint), `lint-actions` (actionlint), `lint-helm` (helm lint), and `lint-docs` (links, markdown, prose). Dockerfile/action/module lint can run immediately; Go and Helm lint both wait for generated files to settle first. | Before every commit. |
 | **`task test-e2e`** | Builds the controller image, brings up k3d + Flux + services, installs and deploys the controller, then runs the Ginkgo suite against it. The suite's before-hook invokes `task prepare-e2e`, so this one command walks the entire DAG below. | Before every commit that changes behavior. Needs Docker running. |
 | `task prepare-e2e` | Runs the bring-up/deploy half of the DAG, without specs. | Rarely by hand; it's what Tilt and the suite call. |
 | **`task clean-cluster`** | Deletes the k3d cluster and removes its stamps (`.stamps/cluster/<ctx>/`). Forces the entire cluster subtree to rebuild cold (~5–6 min) next run. | **Only when your cluster is broken**, or when you deliberately want a cold, slow, from-scratch run. Not part of the normal loop. |
@@ -127,10 +127,13 @@ flowchart BT
   WF[".github/workflows/*.yml"]:::src
   CHART["charts/gitops-reverser/**"]:::src
   API["api / internal / cmd/*.go"]:::src
+  MD["tracked *.md<br/>+ .vale.ini + .docs-lint-scope"]:::src
 
   GO --> LGO
+  GO --> GOMOD
   DOCKER --> DLINT
   WF --> ALINT
+  MD --> DOCS
   API --> manifests --> SYNC["helm-sync<br/>(regens chart CRDs)"]
   manifests --> LGO
   CHART --> HLINT
@@ -139,17 +142,22 @@ flowchart BT
   DLINT["lint-dockerfiles<br/>(hadolint)"] --> LINT
   ALINT["lint-actions<br/>(actionlint)"] --> LINT
   HLINT --> LINT
+  GOMOD["lint-gomod<br/>(go mod tidy -diff)"] --> LINT
+  DOCS["lint-docs<br/>(links, markdown, prose)"] --> LINT
 ```
 
-`task lint` is a pure aggregator: it lists `lint-golang`, `lint-dockerfiles`, `lint-actions`, and
-`lint-helm` as `deps:`. Dockerfile and workflow lint can run immediately. `lint-golang` waits on
-`manifests`, and `lint-helm` waits on `helm-sync`, so neither scans files while codegen is rewriting
-generated Go or chart inputs. CI runs this same `task lint` (in the `lint` job), so the local gate
-and the CI gate are identical — the four linters can't drift apart. Each sub-task's `sources:` is
-what makes the skip precise: `lint-golang` fingerprints the module's Go files (`api`, `cmd`,
-`internal`, `test`), `.golangci.yml`, and `go.mod`/`go.sum`; `lint-dockerfiles` the two Dockerfiles
-plus `.hadolint.yaml`; `lint-actions` the `.github/workflows/*` glob (it runs `actionlint` with no
-path argument, so new workflows are auto-discovered); `lint-helm` the chart's YAML and templates.
+`task lint` is a pure aggregator: it lists `lint-golang`, `lint-gomod`, `lint-dockerfiles`,
+`lint-actions`, `lint-helm`, and `lint-docs` as `deps:`. Dockerfile, workflow and module lint can run
+immediately. `lint-golang` waits on `manifests`, and `lint-helm` waits on `helm-sync`, so neither
+scans files while codegen is rewriting generated Go or chart inputs. CI runs this same `task lint`
+(in the `lint` job), so the local gate and the CI gate are identical: the six linters can't drift
+apart. Each sub-task's `sources:` is what makes the skip precise: `lint-golang` fingerprints the
+module's Go files (`api`, `cmd`, `internal`, `test`), `.golangci.yml`, and `go.mod`/`go.sum`;
+`lint-gomod` the same Go files plus `go.mod`/`go.sum`, because whether the module graph is tidy
+depends on what the code imports; `lint-dockerfiles` the two Dockerfiles plus `.hadolint.yaml`;
+`lint-actions` the `.github/workflows/*` glob (it runs `actionlint` with no path argument, so new
+workflows are auto-discovered); `lint-helm` the chart's YAML and templates; `lint-docs` the tracked
+markdown together with the prose config.
 Each fingerprint includes that tool's config, so changing a lint rule re-triggers just that linter.
 
 `task scan-image` is deliberately **not** one of them, and is not in the DAG above. It scans a
