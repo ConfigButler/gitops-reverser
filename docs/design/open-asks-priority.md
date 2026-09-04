@@ -13,9 +13,10 @@
 > and #10 are gone**: the `permanent` doc comment was rewritten, the two encoders became one
 > (`internal/yamlstyle`, which is why a create and an update now emit identical bytes), and sibling
 > inference — the thing #10 was about — was deleted outright. What is left of the consumer list is
-> **#15** (a declared `auditRoute` that has received zero facts should say so), **#23** (which actor
-> deletion-as-intent picks when a controller clears a finalizer), and **#6** (a movable
-> `GitTarget` destination), and of the wave, the riders. The tiers below have not been re-ordered
+> **#15** (a declared `auditRoute` that has received zero facts should say so) and **#23** (which
+> actor deletion-as-intent picks when a controller clears a finalizer); **#6** (a movable `GitTarget`
+> destination) is **refused**, the destination stays immutable. Of the wave, three riders remain,
+> tracked on [#339](https://github.com/ConfigButler/gitops-reverser/issues/339). The tiers below have not been re-ordered
 > against that; read them as the argument, and [`../TODO.md`](../TODO.md) as the queue.
 >
 > **Where this stands as of the sweep.** `0.41.0` is the attribution release: the fact stream, the
@@ -197,10 +198,11 @@ and the word *Event* meant a real `corev1.Event` through
   later. Good enough for a durable condition, weak for a notification. Events are also
   deduplicated and expire (`--event-ttl` defaults to 1h), so an Event is never the record.
 
-**The shape that follows is a split, not one of the three.** An **Event on the GitTarget** for
-timeliness, over the existing refusal seam plus an enqueue; and **`status.layout` (B2)** for
-durability, because "what the operator understood about this folder" is where someone looks a day
-later. The log line stays.
+**The shape that followed was a split**, an **Event on the GitTarget** for timeliness and
+**`status.layout` (B2)** for durability. The durable half shipped as `status.placement`. **The Event
+half was dropped on 2026-09-04** ([#339](https://github.com/ConfigButler/gitops-reverser/issues/339)):
+with the metric naming the target and the missing key, a deduplicated, expiring third surface bought
+nothing a reader could not already get. The log line stays.
 
 **What shipped, and where this paragraph was wrong.** A Prometheus counter was the one this document
 argued *against* leading with, on the grounds that `placement_fell_back_total` says it happened
@@ -210,9 +212,8 @@ group, version, resource}` names the target and the exact `byType` key, so one s
 that is missing. It shipped with two companions the argument had not asked for and should have —
 `placement_refusals_total{reason}`, because a resource the writer *declined* to place had no
 countable trace at all, and `placement_kustomization_entries_total{outcome}`, whose `failed` value is
-a file committed outside every render. The Event and `status.layout` are still the right split for
-timeliness and durability, and neither is built; what is no longer true is that there was nothing
-actionable in a metric.
+a file committed outside every render. `status.placement` is built and carries the durable half; the
+Event is dropped; what is no longer true is that there was nothing actionable in a metric.
 
 ### What the deletion taught
 
@@ -258,7 +259,7 @@ and is not independently schedulable.
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
 | ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` already stops the writes, and `mode` buys only a declared posture over a pause | config surface | — | [`gittarget-api-wave.md`](gittarget-api-wave.md) |
-| 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** | wave |
+| 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **refused** | the destination stays immutable; a folder moves by delete-and-recreate |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
 | B2 | `GitTarget.status.placement` (was `status.layout`) | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
@@ -521,13 +522,12 @@ carry, and an aggregated-API create is logged with no name and no response body 
 `#220` shape — honored only against an admission record carrying an authorized verdict, fail-closed
 independent of the webhook's `failurePolicy` — remains the right one, on the first argument alone.
 
-**B4, #6, F10** as written in their source documents. **B1 has left the wave**: `suspend` already
+**B4 and F10** as written in their source documents. **B1 has left the wave**: `suspend` already
 stops a target writing without deleting it, so `mode` buys only the difference between a pause and a
 declared permanent posture — a distinction in intent, not in behavior. The re-open trigger is in the wave
-document. #6 is explicitly a lower priority than
-when it was filed: the consumer downgraded it themselves, because branch and folder are now
-chosen once per repository on an object that exists because the user picked that repository.
-It rides the wave because it is in the wave, not because it is urgent.
+document. **#6 is refused.** The consumer had already downgraded it themselves, because branch and
+folder are chosen once per repository on an object that exists because the user picked that
+repository; the destination stays immutable and a folder moves by delete-and-recreate.
 
 ### Tier 3: legibility
 
@@ -561,13 +561,11 @@ bytes reach a mirror. One style authority for Git output, not one library for th
 after the inference deletion. `ambiguousDocuments` in particular is a correctness-relevant
 fallback that is currently a debug-level store diagnostic.
 
-It also carries the durable half of the inference deletion's notification question, argued above:
-**the Event says a fall-back to canonical happened, `status.layout` says what the operator
-understood.** An Event is deduplicated and expires; a status field is what someone reads a day later,
-and it is the only one of the two a `kubectl get -o yaml` in a bug report will contain. So the two are
-not alternatives, and B2 should carry the per-target record of which types resolved by declaration and
-which fell back — which is why this is worth doing in the same change as the deletion rather than
-after it.
+It carries the durable half of the inference deletion's notification question, argued above:
+**`status.placement` says what the operator understood.** A status field is what someone reads a day
+later, and it is what a `kubectl get -o yaml` in a bug report contains. The Event half is dropped, so
+this is the record, and it carries the per-target statement of which types resolved by declaration
+and which fell back.
 
 **B6** as filed: one error message that will otherwise be the most likely first-run support ticket.
 F9 has moved to Tier 1.
@@ -607,8 +605,8 @@ defects.
    the reason to batch it was never only the consumer's bump, it was that four of the items are one
    decision and deciding it four times is how the object stops reading as one idea.
 2. ~~A behavior change (inference removal) that needs its own UPGRADING entry and a decision on the
-   fall-back-to-canonical Event.~~ **Done for the removal and the entry**; the Event is still
-   undecided, and the metric now carries the actionable part in the meantime.
+   fall-back-to-canonical Event.~~ **Done for the removal and the entry**; the Event was decided
+   against, and the metric carries the actionable part.
 3. ~~Rewriting Option C's sections in
    [`../layout/new-file-placement-rules.md`](../layout/new-file-placement-rules.md).~~
    **Done**: the ladder is documented as three steps, the kustomize-root fallback keeps its section

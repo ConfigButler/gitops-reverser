@@ -3,11 +3,12 @@
 > **partly built**: a sequencing proposal. Steps 2 to 7 have all **shipped** — `spec.suspend`,
 > `status.placement` and the reconcile-request annotation in
 > [#326](https://github.com/ConfigButler/gitops-reverser/pull/326), B4 and the source-scope deletion
-> in [#330](https://github.com/ConfigButler/gitops-reverser/pull/330) on 2026-09-01. **Step 8, the
-> riders, is the only unbuilt member**, trimmed under this page's own rule; step 5 (an Event on a
-> changed resolution) is additive and also unbuilt. What that leaves of
-> [#294](https://github.com/ConfigButler/gitops-reverser/issues/294) is the riders alone, so the
-> issue wants narrowing rather than closing.
+> in [#330](https://github.com/ConfigButler/gitops-reverser/pull/330) on 2026-09-01, and the
+> reference collapse in [#333](https://github.com/ConfigButler/gitops-reverser/pull/333). **Step 8,
+> the riders, is the only unbuilt member**, trimmed under this page's own rule to three items. Step 5
+> (an Event on a changed resolution) and the `TooManyStreams` cap were **dropped**, not deferred.
+> [#294](https://github.com/ConfigButler/gitops-reverser/issues/294) is closed; the riders are
+> tracked on [#339](https://github.com/ConfigButler/gitops-reverser/issues/339).
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-08-28 (originally 2026-07-30).
 >
@@ -33,7 +34,7 @@
 |---|---|---|
 | **B4**: `commitWindow` and `commit.message` move off the connection | `GitProvider` → `GitTarget` | fields change object |
 | The source-scope deletion ([`source-scope-simplification.md`](source-scope-simplification.md)) | `GitTarget`, `ClusterProvider`, `WatchRule` | one removal, two renames, one redefinition |
-| The riders: **#5** asserted `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole, `meta.LocalObjectReference` for our six reference shapes, the `TooManyStreams` cap, the `default` `ClusterProvider` message | various | shape changes |
+| The riders: **#5** asserted `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole, the `default` `ClusterProvider` message; `meta.LocalObjectReference` for our six reference shapes shipped in #333 | various | shape changes |
 
 Additive, and therefore **not** wave members even though they are discussed here: `spec.suspend`,
 `status.placement` and the post-scan pass, the reconcile-request annotation, and the two placement
@@ -148,14 +149,14 @@ review's central complaint: *this controller writes to a Git repository and ther
 it stop that is not deleting the object.* So `suspend` is not a rider here, it is a precondition —
 and it must stop bootstrap creation specifically, not only resource writes.
 
-### 4. The Events question is answered by the recorder that shipped
+### 4. The Events question is closed: no Event
 
 [`open-asks-priority.md`](open-asks-priority.md) left open whether a fall-back to canonical
-should raise an Event, and reasoned it was expensive because placement runs on the branch worker with
-no recorder. An `EventRecorder` now ships on every reconciler, and the roll-up seam projects
-data-plane facts into status with an enqueue on change. So the Event is: emit when `status.placement`
-changes in a way a human should know about — `LayoutResolved` becoming `Ambiguous`, or a type falling
-back for the first time. One Event per persisted change, the pattern already established for `Ready`.
+should raise a `corev1.Event` on the GitTarget. Decided against on 2026-09-04
+([#339](https://github.com/ConfigButler/gitops-reverser/issues/339)). The metric already names the
+target and the exact `byType` key that is missing, and `status.placement` is the
+durable record a bug report contains. A third surface for the same fact would be one more thing to
+keep consistent, for a notification that is deduplicated and expires within the hour anyway.
 
 ### 5. The source-scope deletion is the only member that shrinks the API
 
@@ -172,11 +173,10 @@ Two interactions worth naming, because they change what gets built rather than m
   you would do before you do it". They are separate conditions on separate objects and neither
   depends on the other, so the SAR work stays additive and can ship after the wave — but whoever
   writes the second should read the first.
-- **`TooManyStreams` is sized by the `*` decision**
+- **The `TooManyStreams` cap is dropped by the `*` decision**
   ([definition of record](source-scope-simplification.md#sourcenamespace--needs-its-own-decision)),
-  which removes the fan-out the cap was queued for. What is left to bound is explicit enumeration,
-  so the cap is still worth a `Stalled` reason and a bound — sized against enumerated rules, and not
-  planned before the `*` change lands.
+  which removes the fan-out the cap was queued for. Explicit enumeration is bounded by whoever
+  writes the rules; a cap on it would be a guard against a list a human typed. It was never in code.
 
 ### 6. Two facts kept from arguments that dissolved
 
@@ -316,13 +316,13 @@ Dependencies first, then the things that only need the object to be breaking.
    write that already happened, rather than previewing one that has not.
 4. **`requestedAt`.** On-demand refresh of step 3. Shipped without the
    `lastHandledReconcileAt` echo, for the reason recorded above.
-5. **Events on a changed resolution**, over the existing recorder.
+5. ~~**Events on a changed resolution**, over the existing recorder.~~ Dropped; see interaction 4.
 6. **B4**, as `spec.commit`. Last of the principle items, and the one that makes the object coherent.
 7. **The source-scope deletion.** Independent of every step above, so it can be written in parallel;
    placed here because a deletion reviews better once the additions it is not entangled with are
    settled.
-8. **The riders.** `TooManyStreams` must come after step 7, which removes the fan-out it was written
-   to bound.
+8. **The riders.** Three remain: `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole and
+   the `default` `ClusterProvider` message. The `TooManyStreams` cap was dropped by step 7.
 
 Steps 2 to 5 are additive and need no bump. Steps 6 to 8 are one release; step 1 gates the planning;
 step 8 can be trimmed if the wave gets too big to review, since nothing else depends on it. The

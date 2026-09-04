@@ -1452,11 +1452,10 @@ Integration/e2e tests:
   operator understood about the folder, and it expires with the scrape window. That is what
   `status.layout` (B2 in the config-surface doc) is for, and the two are complements: a
   status field is what a `kubectl get -o yaml` in a bug report contains.
-- Whether the first canonical fall-back for a (target, type) should also raise a
-  `corev1.Event` on the GitTarget for timeliness. Placement runs on the branch worker, which
-  has no recorder and no reconcile context, so this is a hand-back over the existing
-  refusal→condition seam rather than a one-line addition — see the same section of
-  [`open-asks-priority.md`](../design/open-asks-priority.md).
+- ~~Whether the first canonical fall-back for a (target, type) should also raise a
+  `corev1.Event` on the GitTarget for timeliness.~~ **Closed, no Event**
+  ([#339](https://github.com/ConfigButler/gitops-reverser/issues/339)): the metric names the
+  target and the missing key, and `status.placement` is the durable record.
 - Should the Validated gate learn about operator-configured *additional* sensitive
   types (beyond core Secrets) so a bundling `default` that could catch one is
   rejected up front, instead of relying on the write-time guards to skip those

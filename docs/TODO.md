@@ -83,25 +83,14 @@ This file is meant to track the smaller current backlog, not historical notes.
   `placement.default` (legibility only, since #319 removed the correctness objection), and a
   namespace-local `GitProvider` so three targets in three namespaces need not copy one credential.
 
-- [ ] Remove `ClusterWatchRule.spec.rules[].scope`. It is the **whole** deprecation graveyard in the
-  CRDs: everything else this project has removed was removed outright, with
-  [`UPGRADING.md`](UPGRADING.md) as the migration. The field is retained purely so that re-applying
-  a manifest still saying `Namespaced` fails, and its own doc comment says "Removed one release from
-  now" — written for 0.39.0, and it has now stood through 0.40, 0.41 and 0.42. Delete the field, the
-  `DeclaresNamespacedScope` compile-path refusal that backs it, and the `Deprecated:` line in the
-  CRD. Breaking, so it wants a release that is breaking anyway; the reasoning is in
-  [`design/gittarget-api-wave.md`](design/gittarget-api-wave.md#version-strategy-stay-v1alpha3).
-
-- [ ] Build the riders that are all that is left of the `GitTarget` API wave
-  ([`design/gittarget-api-wave.md`](design/gittarget-api-wave.md), filed as
-  [#294](https://github.com/ConfigButler/gitops-reverser/issues/294), which wants narrowing to
-  them): an asserted `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole,
-  `meta.LocalObjectReference` for our six reference shapes, the `TooManyStreams` cap, and the
-  `default` `ClusterProvider` message. **Only the reference-shape collapse is breaking**, and it is
-  breaking in the quiet way: `GitProviderReference`, `ClusterProviderReference`,
-  `LocalSecretReference` and friends each carry a defaulted, enum-of-one `group`/`kind`, so every
-  stored object has those persisted and collapsing the shape prunes them with no error. It belongs
-  in a breaking release or in none.
+- [ ] Build what is left of the `GitTarget` API wave and the placement-visibility set, tracked as
+  [#339](https://github.com/ConfigButler/gitops-reverser/issues/339): an asserted
+  `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole, the `default` `ClusterProvider`
+  message, the canonical path as a template constant, and `{kindLower}`. All
+  additive. The `scope` field, the reference-shape collapse and the metric split shipped in
+  [#333](https://github.com/ConfigButler/gitops-reverser/pull/333); the `TooManyStreams` cap, a
+  `corev1.Event` on the GitTarget for a canonical fall-back, and a movable destination were
+  **dropped**, with the reasons on that issue.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
