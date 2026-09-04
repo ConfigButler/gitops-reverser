@@ -43,7 +43,7 @@ func windowOutcomeAttributionOff() git.AttributionOutcome {
 // is what a live watch event gets when attribution is on and nothing matched in the grace.
 func windowOutcomeAttributionMissed(t *testing.T) git.AttributionOutcome {
 	t.Helper()
-	_, outcome := watch.NewAuthorResolver(absentLookup{}, 0, logr.Discard()).ResolveAuthor(
+	_, outcome := watch.NewAuthorResolver(absentLookup{}, 0, logr.Discard(), nil).ResolveAuthor(
 		context.Background(),
 		watch.AuthorQuery{
 			AuditRoute:      "default",

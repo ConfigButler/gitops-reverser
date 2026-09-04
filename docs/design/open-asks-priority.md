@@ -12,8 +12,9 @@
 > which is what makes 0.43.0 a breaking release. Of the consumer asks this page ranks, **#22, #11
 > and #10 are gone**: the `permanent` doc comment was rewritten, the two encoders became one
 > (`internal/yamlstyle`, which is why a create and an update now emit identical bytes), and sibling
-> inference — the thing #10 was about — was deleted outright. What is left of the consumer list is
-> **#15** (a declared `auditRoute` that has received zero facts should say so) and **#23** (which
+> inference — the thing #10 was about — was deleted outright. **#15 has since shipped** (a declared
+> `auditRoute` that has received zero facts now says so, as the latched `AuditFactsReceived`
+> condition on `ClusterProvider`), so what is left of the consumer list is **#23** (which
 > actor deletion-as-intent picks when a controller clears a finalizer); **#6** (a movable `GitTarget`
 > destination) is **refused**, the destination stays immutable. Of the wave, three riders remain,
 > tracked on [#339](https://github.com/ConfigButler/gitops-reverser/issues/339). The tiers below have not been re-ordered
@@ -250,7 +251,7 @@ and is not independently schedulable.
 
 | # | Ask | Source | Tier | Tracked |
 |---|---|---|---|---|
-| 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** | — |
+| ~~15~~ | ~~A declared `auditRoute` with zero facts must say so~~ **SHIPPED** as the latched `AuditFactsReceived` condition and `FACTS` column on `ClusterProvider` | gitops-api | — | — |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
 | F9 | The `scope: Namespaced` status-write envtest | maintainer review | **1** | outside the wave, and **gates its planning**: the answer decides whether the narrowed enum can be kept ([`gittarget-api-wave.md`](gittarget-api-wave.md)) |
 | ~~n/a~~ | ~~A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path~~ **SHIPPED** in 0.42.1 | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | — | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), [#319](https://github.com/ConfigButler/gitops-reverser/pull/319) |
@@ -383,22 +384,29 @@ them.
 
 ### Tier 1: silent wrongness
 
-**#15: a declared audit route that has received zero facts.** This is the highest-value item on
-the page, because it is the only one where the failure is invisible *and* the thing it breaks is
-the product's reason to exist. If the write route and the read route diverge, mirroring stays
-perfect and every commit is authored `unknown (attribution unresolved)`. The consumer's own
+**#15: a declared audit route that has received zero facts — SHIPPED.** It was the highest-value
+item on the page, because it is the only one where the failure is invisible *and* the thing it
+breaks is the product's reason to exist. If the write route and the read route diverge, mirroring
+stays perfect and every commit is authored `unknown (attribution unresolved)`. The consumer's own
 mitigation (an alert plus a test) fires *after* a wrong commit exists.
 
-Design notes, going slightly beyond the ask:
+What shipped is `AuditFactsReceived` on `ClusterProvider`, plus a default-priority `FACTS` printer
+column: `Unknown`/`NoFactsYet` from creation until the first fact is published on the provider's
+route, `True`/`Received` from then on. Two of the notes below were **reversed** when it was built:
 
-- It must **not** be a `Stalled`, and must not make `Ready` false. Mirroring genuinely works; a
-  kstatus consumer that reads `Failed` here would be wrong. This is a separate condition on
-  ClusterProvider (`AuditRouteReceiving`, or similar) plus an Event.
-- It must start `Unknown`, not `False`. A route that has existed for four seconds has legitimately
-  received nothing. `False` after a grace window, with the window named in the message.
-- It should carry the two facts we already hold and the user cannot see: when a fact last arrived
-  on this route, and how many have. Zero-with-a-timestamp is the whole signal.
-- The Event recorder landed with F7, so the Event is nearly free.
+- It is **not** in `Ready` and not a `Stalled` — that part held. Mirroring genuinely works; a
+  kstatus consumer that read `Failed` here would be wrong.
+- It starts `Unknown`, and it **stays** `Unknown`. The `False`-after-a-grace-window half was
+  dropped: no window can distinguish a misconfigured route from a quiet cluster, and a `False` that
+  a weekend of quiet produces is a false alarm. Instead the condition is a **one-way latch** — the
+  persisted status is the latch, so it survives a restart and the memory transport — which
+  separates "never proved" from "quiet since" with no timer at all.
+- The **Event was not built**. The condition plus the column is the whole debug surface; an Event
+  for a state that changes once per provider lifetime adds a second thing to watch and expires from
+  the API in an hour.
+- The signal is a fact **published** on the route (recorded at the audit ingress after the batch
+  appends), not a resolution: a resolution can only fail once a commit has already been written
+  with the wrong author.
 
 **The transport question is settled, and it settled in #15's favour.** This section used to warn
 against deferring #15 until the transport changed. The transport changed first anyway — and the
@@ -617,10 +625,12 @@ defects.
    (`delete_sticky` on `attribution_resolutions_total{tier}`) they can assert on, and that the
    reproduction they offered was not needed because their own report matched a corpus scenario we
    could build.
-5. Building #15's condition **once, on the stream**, with the trim-gap counter and the F circuit
-   breaker feeding the same surface rather than three that say "attribution is not resolving".
-   ~~Specifying it in transport-neutral terms before the stream work starts~~ — the stream landed
-   first, which makes this cheaper rather than harder.
+5. ~~Building #15's condition **once**, with the trim-gap counter and the F circuit breaker feeding
+   the same surface rather than three that say "attribution is not resolving".~~ **Done for the
+   condition**: `AuditFactsReceived` latches on the first fact published per route, from one
+   in-process route registry shared by the audit ingress and the resolver's never-resolves warning.
+   The trim-gap counter and the F circuit breaker still have to fold into that surface when they
+   land, rather than growing their own.
 6. ~~Retiring §5 and §8 of the expander spec when the expander goes~~ — **done**: §5, §6 and §8 of
    the expander spec are gone with the spec itself, folded into
    [`../spec/attribution.md`](../spec/attribution.md). Its deletion-as-intent rule is kept as §1, which

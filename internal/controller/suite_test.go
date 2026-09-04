@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -109,10 +110,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	// Wired with a live route registry, as the operator is by default (--author-attribution=true):
+	// that is what exercises the first-fact channel source and the AuditFactsReceived condition.
 	err = (&ClusterProviderReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		OperatorNamespace: "default",
+		AuditFacts:        &attribution.RouteHealth{},
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

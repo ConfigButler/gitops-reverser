@@ -18,8 +18,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/go-logr/logr"
 
@@ -65,6 +67,11 @@ type ClusterProviderReconciler struct {
 	// KubeConfigSafety gates exec-auth and insecure-TLS kubeconfigs (reject-not-strip), matching
 	// what the watch engine's resolver enforces, so Validated agrees with what a watch would use.
 	KubeConfigSafety kubeconfig.SafetyPolicy
+
+	// AuditFacts is the per-audit-route fact registry the AuditFactsReceived condition latches on.
+	// Nil means the operator runs with author attribution disabled, and the condition is then
+	// absent rather than Unknown.
+	AuditFacts AuditRouteFacts
 
 	firsts clusterProviderLogFirsts
 
@@ -169,6 +176,10 @@ func (r *ClusterProviderReconciler) reconcileClusterProvider(
 		rd.stalled(reason, message)
 	}
 	st.set(ClusterProviderConditionValidated, validated, reason, message)
+	// Written after the readiness trio and deliberately not contributing to it: an audit route
+	// nobody posts under costs the commit AUTHOR, never the mirror, so it must not make a working
+	// provider look broken to a kstatus reader.
+	r.applyAuditFactsCondition(st, provider)
 	st.applyReadiness(rd)
 
 	// A failed status write is a real failure, not a verdict: propagate it so the provider is
@@ -253,11 +264,25 @@ func clusterProviderReconcilePredicate() predicate.Predicate {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(
 			&configbutleraiv1alpha3.ClusterProvider{},
 			builder.WithPredicates(clusterProviderReconcilePredicate()),
 		).
-		Named("clusterprovider").
-		Complete(r)
+		Named("clusterprovider")
+
+	// React to the FIRST attribution fact on an audit route so AuditFactsReceived latches True
+	// within seconds instead of on the provider's next periodic requeue, which for a converged
+	// provider is RequeueSteadyInterval. The event names the route; the map fans it out to every
+	// provider reading it, the in-cluster "default" included.
+	if r.AuditFacts != nil {
+		if events := r.AuditFacts.FirstFactEvents(); events != nil {
+			b = b.WatchesRawSource(source.Channel(
+				events,
+				handler.EnqueueRequestsFromMapFunc(r.auditRouteToClusterProviders),
+			))
+		}
+	}
+
+	return b.Complete(r)
 }

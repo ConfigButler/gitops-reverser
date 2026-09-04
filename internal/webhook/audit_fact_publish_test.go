@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
@@ -417,4 +418,56 @@ func TestAuditHandler_AnEventThatProducesNoFactIsCountedAsSuch(t *testing.T) {
 	// The invariant the e2e suite gates on is untouched: nothing here is an error.
 	_, anyError := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{"category": "error"})
 	assert.False(t, anyError, "an event that owes no append has not failed")
+}
+
+// TestAuditHandler_RecordsTheRouteOfEveryAppendedBatch pins the publish-side signal the
+// ClusterProvider AuditFactsReceived condition latches on: the route is recorded once a batch has
+// actually appended, and it is the route the events were posted under.
+func TestAuditHandler_RecordsTheRouteOfEveryAppendedBatch(t *testing.T) {
+	publisher := &fakeFactPublisher{}
+	health := &attribution.RouteHealth{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: publisher, RouteHealth: health})
+	require.NoError(t, err)
+
+	body := eventListBody(writeEvent("a", "", "configmaps", "config", "bob"))
+	require.Equal(t, http.StatusOK, serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body).Code)
+
+	_, seen := health.FirstFactAt("prod-eu-1")
+	assert.True(t, seen, "an appended batch is what proves a route is wired end to end")
+	_, seen = health.FirstFactAt("default")
+	assert.False(t, seen, "one route's traffic says nothing about another's")
+}
+
+// TestAuditHandler_RecordsNoRouteWhenNothingAppends covers the two ways a request produces no
+// evidence: a failing transport, and events that can name nobody. Neither may claim the route is
+// carrying facts.
+func TestAuditHandler_RecordsNoRouteWhenNothingAppends(t *testing.T) {
+	tests := []struct {
+		name      string
+		publisher *fakeFactPublisher
+		body      string
+	}{
+		{
+			name:      "the transport is down",
+			publisher: &fakeFactPublisher{err: errors.New("transport down")},
+			body:      eventListBody(writeEvent("a", "", "configmaps", "config", "bob")),
+		},
+		{
+			name:      "no event could name an author",
+			publisher: &fakeFactPublisher{},
+			body:      eventListBody(writeEvent("a", "", "configmaps", "config", "")),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			health := &attribution.RouteHealth{}
+			handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: tt.publisher, RouteHealth: health})
+			require.NoError(t, err)
+
+			serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", tt.body)
+
+			_, seen := health.FirstFactAt("prod-eu-1")
+			assert.False(t, seen, "nothing appended, so nothing was proved about the route")
+		})
+	}
 }

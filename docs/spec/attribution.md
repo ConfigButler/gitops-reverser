@@ -542,6 +542,33 @@ publish time and stop paying a grace for evidence that cannot arrive) is ranked 
 | `gitopsreverser_audit_events_total` | …, `no_attribution_fact` | audit events that produced no fact |
 | `gitopsreverser_commits_total` | …, `author_kind` | what reached Git |
 
+Metrics are not the whole surface. One misconfiguration is a **state**, not a rate, and it is
+reported as a condition on the object that carries it: `AuditFactsReceived` on `ClusterProvider`,
+with a default `FACTS` printer column.
+
+| Status | Reason | Means |
+|---|---|---|
+| `Unknown` | `NoFactsYet` | no fact has ever been published on this provider's audit route |
+| `True` | `Received` | one has, and this answer is latched for good |
+
+The condition is a **one-way latch**, and that is what makes it readable without a threshold. A
+route that has never carried a fact is a route nobody posts to: a `ClusterProvider` that did not
+declare `spec.attribution.auditRoute` on a cluster whose apiserver posts under a different one, and
+therefore every commit through it authored `unknown (attribution unresolved)`. A route that carried
+facts yesterday and none today is a quiet cluster. No timer separates those, so the condition does
+not try: it never returns to `Unknown` and it has no `False` state.
+
+It is deliberately **not part of `Ready`**. Mirroring through such a provider is perfect; only the
+author is lost. A kstatus reader treats `Ready=False` as broken, and blocking a rollout on a cluster
+that is working correctly would be the wrong report. The condition is absent entirely when the
+operator runs with `--author-attribution=false`, where no fact was ever expected.
+
+The signal is a fact **published** on the route, taken at the audit ingress after the batch appends,
+rather than a resolution. A resolution can only fail after a commit has already been written with the wrong
+author, which is precisely the ordering that made this invisible. The read side keeps its own
+warning (a route that has produced a run of unresolved events and never resolved one says so in the
+log, once), but that fires later and only after the damage is legible in Git.
+
 The wait histogram is the one that earns its keep. Splitting wait time **by tier** is what turned a
 missed commit window from a mystery into a measurement: the uid-latest tier at a 6.7s mean against
 the exact tier at 0.18s said immediately that removals were sitting out their grace, which no

@@ -31,7 +31,7 @@ var configmapsResolverGVR = schema.GroupVersionResource{Version: "v1", Resource:
 func newIndexResolver(t *testing.T, grace time.Duration) (AuthorResolver, *queue.FactIndex) {
 	t.Helper()
 	index := queue.NewFactIndex(queue.FactIndexConfig{Log: logr.Discard()})
-	return NewAuthorResolver(index, grace, logr.Discard()), index
+	return NewAuthorResolver(index, grace, logr.Discard(), nil), index
 }
 
 // applyFact delivers one fact the way the follower would: as an entry on the type's stream.

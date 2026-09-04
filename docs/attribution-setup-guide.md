@@ -172,6 +172,27 @@ the audit policy, webhook route, source identity, and Redis connectivity are ver
 
 ## Verifying and reverting
 
+Check the `ClusterProvider` first:
+
+```console
+$ kubectl get clusterprovider
+NAME               READY   REASON      FACTS     AGE
+default            True    Succeeded   True      31m
+srcns-delegating   True    Succeeded   Unknown   4m
+```
+
+`FACTS` is the `AuditFactsReceived` condition. `True` means an attribution fact has arrived on that
+provider's audit route, so the route is wired end to end. `Unknown` means none ever has, and every
+commit mirrored through that provider is authored `unknown (attribution unresolved)`;
+`kubectl describe clusterprovider <name>` names the route and the audit webhook URL to check. The
+condition never goes back to `Unknown` once it has been `True`: a route that has proved itself and
+then goes quiet is a quiet cluster, not a fault. It is absent when attribution is disabled.
+
+An `Unknown` that persists is almost always one thing: an apiserver takes a single audit webhook
+backend and so posts under a single route, while a `ClusterProvider` that does not set
+`spec.attribution.auditRoute` reads a route named after itself. Point every provider for that
+cluster at the route the apiserver posts to.
+
 The controller reports `NotReady` on `/readyz` until the audit listener is accepting connections
 (with a loaded TLS cert) and it has reached Redis, so a rollout or cert rotation buffers events in the
 apiserver instead of dropping them. Once ready, make a change as a distinct user and confirm the

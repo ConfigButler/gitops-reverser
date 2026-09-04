@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -131,6 +132,12 @@ func (s *reconcileStatus) set(conditionType string, status metav1.ConditionStatu
 	}
 	*s.conditions = upsertCondition(
 		*s.conditions, conditionType, status, reason, message, s.object.GetGeneration())
+}
+
+// remove drops one condition from the set, so a report the operator no longer makes leaves no
+// stale answer standing. It is the only way a condition ever disappears.
+func (s *reconcileStatus) remove(conditionType string) {
+	apimeta.RemoveStatusCondition(s.conditions, conditionType)
 }
 
 // setValue writes one condition from a gate's verdict.

@@ -126,10 +126,19 @@ type ClusterProviderStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// AuditFactsReceived is separate from Ready because a provider with no facts yet mirrors
+	// correctly; only the commit AUTHOR is lost. Reporting it through Ready would tell every
+	// kstatus reader the object is broken.
+
 	// Conditions report the provider's readiness: Validated (kubeconfig inputs are safe and
 	// resolvable, asserted without a network dial) plus the aggregated Ready and the kstatus
 	// Reconciling/Stalled pair. Runtime reachability/discovery health and a last-audit-event
 	// timestamp are deferred until authenticated remote ingest wires them from the watch engine.
+	//
+	// AuditFactsReceived reports whether an attribution fact has ever arrived on this provider's
+	// audit route. It is Unknown (NoFactsYet) until the first one and True (Received) afterwards,
+	// and it never goes back: later silence is a quiet cluster, not a fault. It is absent when the
+	// operator runs with author attribution disabled. It is not part of Ready.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -143,6 +152,7 @@ type ClusterProviderStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Facts",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
 // +kubebuilder:printcolumn:name="Validated",type=string,JSONPath=`.status.conditions[?(@.type=="Validated")].status`,priority=1
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

@@ -38,6 +38,7 @@ import (
 	ctrladmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
@@ -233,12 +234,18 @@ func main() {
 	var (
 		auditRunnable    *auditServerRunnable
 		auditCertWatcher *certwatcher.CertWatcher
+		// routeHealth is the ONE per-audit-route registry in the process: the audit ingress records
+		// each route's first published fact in it, the resolver keeps its never-resolved warning
+		// there, and the ClusterProvider controller latches AuditFactsReceived from it. It stays nil
+		// in configured-author mode, where no fact was ever expected and the condition is absent.
+		routeHealth *attribution.RouteHealth
 	)
 	switch {
 	case cfg.authorAttribution:
 		// The transport is the only thing that differs between the two modes. Everything above it —
 		// the index, the waiter registry, the subscription set, the resolver — has one implementation
 		// and never learns which transport it was handed.
+		routeHealth = &attribution.RouteHealth{}
 		transport := buildFactTransport(cfg, redisStore)
 		factIndex := queue.NewFactIndex(queue.FactIndexConfig{
 			TTL:              cfg.attributionFactTTL,
@@ -251,6 +258,7 @@ func main() {
 		auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 			MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
 			FactPublisher:       transport,
+			RouteHealth:         routeHealth,
 			CollectionUIDCap:    cfg.attributionCollectionUIDCap,
 			// Empty leaves the bare /audit-webhook endpoint disabled (400); set, it demultiplexes a
 			// shared stream per event by this annotation.
@@ -274,6 +282,7 @@ func main() {
 			factIndex,
 			cfg.attributionGrace,
 			ctrl.Log.WithName("attribution"),
+			routeHealth,
 		)
 		setupLog.Info("author attribution enabled: matched audit facts name the commit author",
 			"transport", cfg.attributionTransport, "redisAddr", cfg.redisAddr,
@@ -312,13 +321,19 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitProvider")
 		os.Exit(1)
 	}
-	if err := (&controller.ClusterProviderReconciler{
+	clusterProviderReconciler := &controller.ClusterProviderReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 		KubeConfigSafety:  cfg.kubeConfigSafety,
 		Recorder:          mgr.GetEventRecorderFor("clusterprovider"),
-	}).SetupWithManager(mgr); err != nil {
+	}
+	// A nil registry must stay a nil INTERFACE, not one wrapping a nil pointer: the reconciler
+	// reads that field to decide whether AuditFactsReceived is reported at all.
+	if routeHealth != nil {
+		clusterProviderReconciler.AuditFacts = routeHealth
+	}
+	if err := clusterProviderReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterProvider")
 		os.Exit(1)
 	}

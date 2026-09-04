@@ -100,6 +100,27 @@ const (
 	// deferred until authenticated remote ingest wires them from the watch engine.
 	ClusterProviderConditionValidated = "Validated"
 
+	// ClusterProviderConditionAuditFactsReceived reports whether an attribution fact has ever been
+	// published on this provider's audit route (spec.attribution.auditRoute, defaulting to the
+	// provider's name). It is Unknown (ReasonNoFactsYet) from creation until the first fact and
+	// True (ReasonFactsReceived) from then on, and it NEVER regresses: the persisted status is the
+	// latch, so a restart — or the memory transport, whose in-process state is lost with the
+	// process — keeps it True. Later silence is a quiet cluster, not a fault, which is why there is
+	// no False state, no grace window and no timer.
+	//
+	// It is deliberately NOT part of Ready: a provider reading a route nobody posts under mirrors
+	// perfectly and loses only the commit AUTHOR, so reporting it through Ready would tell every
+	// kstatus reader the object is broken. It is absent entirely when the operator runs with
+	// --author-attribution=false, where no fact was ever expected.
+	ClusterProviderConditionAuditFactsReceived = "AuditFactsReceived"
+
+	// ReasonNoFactsYet is the AuditFactsReceived=Unknown reason: nothing has been published on the
+	// provider's audit route yet.
+	ReasonNoFactsYet = "NoFactsYet"
+	// ReasonFactsReceived is the AuditFactsReceived=True reason: a fact has arrived on the route,
+	// and that answer is latched.
+	ReasonFactsReceived = "Received"
+
 	// ReasonValidated is the Validated=True reason.
 	ReasonValidated = "Validated"
 	// ReasonInCluster is the Validated=True reason for the in-cluster "default" provider.

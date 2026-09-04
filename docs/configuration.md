@@ -316,6 +316,47 @@ referenced Secret instead. `qps` and `burst` optionally tune a remote provider's
 `ClusterProvider` conditions validate its configuration, while the consuming `GitTarget` reports the
 live source reachability and stream state.
 
+### Audit route and `AuditFactsReceived`
+
+`spec.attribution.auditRoute` is the route this cluster's attribution facts arrive on: the `<name>`
+segment the apiserver's audit webhook URL ends in, `/audit-webhook/<name>`. It defaults to the
+provider's own `metadata.name`, and it is what partitions the facts, so two providers carrying the
+same route read one cluster's facts and two carrying different routes can never cross-credit an
+author.
+
+An apiserver takes one audit webhook backend and therefore posts under one route. A second
+`ClusterProvider` naming the same cluster must be pointed at that route:
+
+```yaml
+spec:
+  attribution:
+    auditRoute: default
+```
+
+The `AuditFactsReceived` condition reports whether that route has ever delivered, with a default
+`FACTS` printer column:
+
+```console
+$ kubectl get clusterprovider
+NAME               READY   REASON      FACTS     AGE
+default            True    Succeeded   True      31m
+srcns-delegating   True    Succeeded   Unknown   4m
+```
+
+- `Unknown` / `NoFactsYet`: no fact has ever been published on this provider's route. Every commit
+  mirrored through it is authored `unknown (attribution unresolved)`. The condition message names
+  the route and the webhook URL to check.
+- `True` / `Received`: a fact has arrived, and the message carries when the first one did.
+
+It is a **one-way latch**: once `True` it stays `True`, across controller restarts and regardless of
+how long the route stays quiet afterwards. Silence before any proof is a misconfiguration; silence
+after proof is a quiet cluster, and the latch separates the two without a timer. There is no `False`
+state and no grace window.
+
+The condition is **not part of `Ready`**: a provider reading a route nobody posts to mirrors
+perfectly and loses only the commit author. It is absent entirely when the operator runs with
+`--author-attribution=false`.
+
 ### Creating and managing the `default` provider
 
 The operator **never creates a `ClusterProvider`**, and never re-creates one you delete. If a
