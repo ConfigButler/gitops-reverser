@@ -129,7 +129,8 @@ Early-stage software; CRDs and behavior may still change.
 - Runs as a single controller pod (`replicas=1`).
 - Shared-resource bi-directional workflows need explicit coordination.
 - Source recovery covers Kubernetes manifests and simple Kustomize layouts, not Helm authoring models.
-- Tested against Kubernetes `1.36`; other versions may work but are not in the matrix.
+- Tested against Kubernetes `1.37` at the API level (envtest) and `1.36` end-to-end (k3s, which has
+  no stable `1.37` release yet); other versions may work but are not in the matrix.
 - Runtime behavior is deterministic: no AI or heuristic mutation at runtime.
 
 Good fit for pilots, lab clusters, brownfield discovery, and design partners who can tolerate change.

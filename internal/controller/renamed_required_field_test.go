@@ -91,7 +91,7 @@ func TestRenamedRequiredField_StoredObjectCanAdoptIt(t *testing.T) {
 
 	// Ship the rename.
 	renameGitProviderRefTo(ctx, t, c, "gitProviderRef")
-	requireRefLessCreateRejected(ctx, t, c, target)
+	requireRenamedSchemaServed(ctx, t, c, target)
 
 	// FIRST CLAIM: the old value is gone on READ, immediately, with no write in between. This is
 	// what makes the rename a stall rather than a silent mis-configuration, and it is the premise
@@ -186,10 +186,22 @@ func createUntilServed(ctx context.Context, t *testing.T, c client.Client, obj c
 	t.Fatalf("create never succeeded under the widened schema: %v", err)
 }
 
-// requireRefLessCreateRejected blocks until the NARROWED schema is the one being served, proven by
-// a create that must fail. Waiting on the rejection rather than on a sleep is what stops the
-// migration assertion passing vacuously against the widened schema.
-func requireRefLessCreateRejected(
+// requireRenamedSchemaServed blocks until the NARROWED schema is the one being served, proven by a
+// create that must SUCCEED: one carrying only `gitProviderRef`. Under the widened schema that name
+// is not described, so it is pruned and the create fails on the missing required `providerRef`;
+// only once the rename is served does it get through.
+//
+// Waiting on a REJECTION instead is vacuous, and was the bug here: the schema surgery renames the
+// required field rather than dropping it, so an object with no reference at all is refused under
+// BOTH schemas. The very first probe therefore returned immediately — before the apiserver's CR
+// handler had picked up the new schema — and the migration assertion then ran against whatever was
+// still being served. On a fast machine the handler usually won the race and the test passed; under
+// CI load it did not, and the stored object still served `providerRef`.
+//
+// A ref-less create must still be rejected once the rename IS served, or the object below could
+// satisfy the schema without ever adopting the field. That claim is now checked after the wait,
+// where it discriminates, instead of standing in for it.
+func requireRenamedSchemaServed(
 	ctx context.Context,
 	t *testing.T,
 	c client.Client,
@@ -198,14 +210,22 @@ func requireRefLessCreateRejected(
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for i := 0; time.Now().Before(deadline); i++ {
-		probe := target(fmt.Sprintf("narrowing-probe-%d", i), false)
+		probe := target(fmt.Sprintf("narrowing-probe-%d", i), true)
 		if err := c.Create(ctx, probe); err != nil {
-			return
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 		_ = c.Delete(ctx, probe)
-		time.Sleep(100 * time.Millisecond)
+
+		refLess := target("ref-less-probe", false)
+		if err := c.Create(ctx, refLess); err == nil {
+			_ = c.Delete(ctx, refLess)
+			t.Fatal("gitProviderRef is not required under the shipped schema, so the migration " +
+				"assertion would be vacuous")
+		}
+		return
 	}
-	t.Fatal("gitProviderRef never became required, so the migration assertion would be vacuous")
+	t.Fatal("the renamed schema was never served, so the migration assertion would be vacuous")
 }
 
 // requirePrunedOfBothSpellings reads the stored object back and holds the premise of the migration:
