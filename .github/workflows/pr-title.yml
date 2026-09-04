@@ -1,0 +1,49 @@
+# PR titles become the squash-merge commit subject (the repository squash-merges with
+# COMMIT_OR_PR_TITLE), and release-please reads those subjects to decide the version bump and
+# to write the changelog. A title that is not a Conventional Commit is therefore not a style
+# nit: it is a change that release-please cannot classify. This check fails such a PR until the
+# title is fixed, and re-runs on `edited` so fixing the title is enough to turn it green.
+#
+# Deliberately a plain shell check rather than a marketplace action: there is no secret, no
+# write, and nothing to pin. The title is passed through an environment variable, never
+# interpolated into the script, so a hostile title cannot become shell.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-commit:
+    name: Conventional Commit title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The type list is the one release-please-config.json classifies, so a title that
+          # passes here is one the changelog can file. Scope is optional; `!` marks a breaking
+          # change; the subject must follow ": " and must not be empty.
+          pattern='^(feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(\([A-Za-z0-9._/ -]+\))?!?: [^ ].*$'
+          if [[ "$PR_TITLE" =~ $pattern ]]; then
+            echo "ok: $PR_TITLE"
+            exit 0
+          fi
+          {
+            echo "## PR title is not a Conventional Commit"
+            echo
+            echo '```'
+            echo "$PR_TITLE"
+            echo '```'
+            echo
+            echo 'Expected `type(scope): imperative summary`, scope optional, `!` before the colon for a'
+            echo 'breaking change. Types: feat, fix, perf, revert, docs, style, chore, refactor, test,'
+            echo 'build, ci. Examples: `feat(controller): add SSH key rotation`,'
+            echo '`fix(webhook)!: reject unsigned requests`. Edit the title and this check re-runs.'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit 1

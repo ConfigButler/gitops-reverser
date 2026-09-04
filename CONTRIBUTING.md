@@ -208,6 +208,11 @@ determines whether a release is triggered and what version bump applies:
 
 Examples: `feat(controller): add SSH key rotation`, `fix(webhook): prevent queue race`
 
+The pull request **title** must follow the same format: the repository squash-merges with the PR
+title as the commit subject, so that title is what release-please classifies. The
+[`PR title`](.github/workflows/pr-title.yml) check fails a PR whose title does not parse, and
+re-runs when the title is edited.
+
 See [`.github/RELEASES.md`](.github/RELEASES.md) for how releases and changelogs are automated.
 
 ## AI tooling

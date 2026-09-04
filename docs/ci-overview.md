@@ -18,6 +18,7 @@ so local and CI results cannot drift apart.
 | Trusted validation | [release.yml](../.github/workflows/release.yml) → calls `ci.yml` | `push` to `main` | `GITHUB_TOKEN` | `packages` (CI base container + release-grade image digests) | The *same* jobs, plus building the release-grade multi-arch digests (per-arch, by digest) the release tail retags. The instrumented test image stays artifact-only. |
 | Release & publish | [release.yml](../.github/workflows/release.yml) tail jobs | after trusted validation is green | `GITHUB_TOKEN` + OIDC | packages, releases, attestations | Version (release-please), **retag** the CI-built multi-arch digests to semver + `latest` (zero rebuilds), publish chart, sign, attest |
 | Hygiene | [scorecard.yml](../.github/workflows/scorecard.yml) | weekly + `main` | none | security-events | OpenSSF Scorecard supply-chain checks |
+| Hygiene | [pr-title.yml](../.github/workflows/pr-title.yml) | `pull_request` (including `edited`) | none | none | The PR title is a Conventional Commit, since it becomes the squash-merge subject release-please classifies |
 
 Three properties are worth calling out:
 
