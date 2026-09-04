@@ -70,8 +70,15 @@ func (r *ClusterProviderReconciler) applyAuditFactsCondition(
 	}
 
 	route := provider.AuditRoute()
+	// The route the persisted condition was earned on, read BEFORE status.auditRoute is restamped
+	// below. A latch may only be carried forward for the same route: spec.attribution.auditRoute is
+	// mutable, and a provider repointed at a route nothing posts under must go back to reporting
+	// that, not inherit the old route's proof.
+	latchedRoute := provider.Status.AuditRoute
+	provider.Status.AuditRoute = route
+
 	existing := findCondition(provider.Status.Conditions, ClusterProviderConditionAuditFactsReceived)
-	if existing != nil && existing.Status == metav1.ConditionTrue {
+	if existing != nil && existing.Status == metav1.ConditionTrue && latchedRoute == route {
 		reason, message := conditionReasonMessage(
 			existing, ReasonFactsReceived, auditFactsReceivedMessage(route, time.Time{}))
 		st.set(ClusterProviderConditionAuditFactsReceived, metav1.ConditionTrue, reason, message)

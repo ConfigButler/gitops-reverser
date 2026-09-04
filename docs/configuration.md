@@ -358,10 +358,15 @@ The status stays `Unknown` for all three. A failing transport is a fault in the 
 this provider, and turning it into a per-object `False` would flip every not-yet-latched
 `ClusterProvider` at once: one outage, many verdicts. The reason carries the diagnosis instead.
 
-It is a **one-way latch**: once `True` it stays `True`, across controller restarts and regardless of
-how long the route stays quiet afterwards. Silence before any proof is a misconfiguration; silence
-after proof is a quiet cluster, and the latch separates the two without a timer. There is no `False`
-state and no grace window.
+It is a **one-way latch** for a given route: once `True` it stays `True`, across controller restarts
+and regardless of how long the route stays quiet afterward. Silence *after* proof is a quiet
+cluster; silence *before* it is inconclusive rather than a verdict, which is why the status is
+`Unknown` and the reason above says which of the three cases it is. The latch separates the two
+without a timer, so there is no `False` state and no grace window.
+
+The latch is keyed to the route it was earned on, recorded in `status.auditRoute`. Because
+`spec.attribution.auditRoute` is mutable, repointing a provider at a different route starts the
+condition over: proof that one route delivered says nothing about another.
 
 The condition is **not part of `Ready`**: a provider reading a route nobody posts to mirrors
 perfectly and loses only the commit author. It is absent entirely when the operator runs with

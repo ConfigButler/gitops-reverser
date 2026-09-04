@@ -558,7 +558,9 @@ severity: a failing transport makes every route look silent, and with nothing de
 route can be the one at fault. Only the last is a statement about this provider's own
 configuration. The status stays `Unknown` for all three because the first two are faults in the
 pipeline rather than in the object carrying them; a per-object `False` would turn one outage into a
-verdict repeated on every `ClusterProvider` that has not yet latched.
+verdict repeated on every `ClusterProvider` that has not yet latched. Pre-latch `Unknown` is
+therefore inconclusive rather than an accusation: only `RouteUnused` points at the object's own
+configuration, and even it names the audit policy as a second candidate.
 
 `RouteUnused` deliberately does not claim the facts went to some *other* route, which would be
 sharper: audit can also arrive and produce no fact anywhere, when the policy's level or verbs leave
@@ -578,10 +580,16 @@ that is working correctly would be the wrong report. The condition is absent ent
 operator runs with `--author-attribution=false`, where no fact was ever expected.
 
 The signal is a fact **published** on the route, taken at the audit ingress after the batch appends,
-rather than a resolution. A resolution can only fail after a commit has already been written with the wrong
-author, which is precisely the ordering that made this invisible. The read side keeps its own
-warning (a route that has produced a run of unresolved events and never resolved one says so in the
-log, once), but that fires later and only after the damage is legible in Git.
+rather than a resolution. Publication proves the route is carrying facts independently of any
+particular event's join: it is recorded once per route, by the ingress, whether or not a later watch
+event ever matches it.
+
+A resolution cannot substitute for that. It is per event and it is reached *before* the event is
+routed to its branch worker (`attachAuthor` runs ahead of `RouteToGitTargetEventStream`), so an
+unresolved outcome is determined before the commit exists. Its CONSEQUENCE, a commit carrying the
+unresolved-author placeholder, is only visible once that commit lands, which is what made the loss
+invisible. The read side keeps its own warning (a route that has produced a run of unresolved
+events and never resolved one says so in the log, once), and that fires later still.
 
 The wait histogram is the one that earns its keep. Splitting wait time **by tier** is what turned a
 missed commit window from a mystery into a measurement: the uid-latest tier at a 6.7s mean against

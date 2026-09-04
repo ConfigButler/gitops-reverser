@@ -309,3 +309,54 @@ func TestAuditRouteToClusterProviders(t *testing.T) {
 	assert.Empty(t, r.auditRouteToClusterProviders(context.Background(),
 		&configbutleraiv1alpha3.ClusterProvider{}), "an event with no route names nothing")
 }
+
+// TestClusterProviderAuditFacts_RouteChangeStartsTheLatchOver is the one case where carrying the
+// latch forward would recreate the exact failure this condition exists to catch.
+// spec.attribution.auditRoute is MUTABLE — only spec.kubeConfig is pinned — so a provider that
+// earned True on route A and is then repointed at route B would keep claiming facts it has never
+// received on B, which is a silent misconfiguration reporting itself as healthy.
+//
+// The latch is one-way for a GIVEN route, not for the object.
+func TestClusterProviderAuditFacts_RouteChangeStartsTheLatchOver(t *testing.T) {
+	provider := clusterProviderWithKubeConfig("srcns-delegating", "", "")
+	provider.Spec.Attribution = &configbutleraiv1alpha3.ClusterProviderAttribution{AuditRoute: "old"}
+
+	health := &attribution.RouteHealth{}
+	health.RecordAuditDelivery()
+	health.RecordFactPublished("old")
+
+	r, latched := reconcileClusterProviderOnce(t, provider, health)
+	require.Equal(t, metav1.ConditionTrue,
+		findCondition(latched.Status.Conditions, ClusterProviderConditionAuditFactsReceived).Status)
+	assert.Equal(t, "old", latched.Status.AuditRoute, "the status records which route the latch was earned on")
+
+	// Repoint the provider at a route nothing has ever posted under.
+	latched.Spec.Attribution.AuditRoute = "new"
+	require.NoError(t, r.Update(context.Background(), &latched))
+
+	_, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: provider.Name}})
+	require.NoError(t, err)
+
+	var got configbutleraiv1alpha3.ClusterProvider
+	require.NoError(t, r.Get(context.Background(),
+		k8stypes.NamespacedName{Name: provider.Name}, &got))
+
+	cond := findCondition(got.Status.Conditions, ClusterProviderConditionAuditFactsReceived)
+	require.NotNil(t, cond)
+	assert.Equal(t, metav1.ConditionUnknown, cond.Status,
+		"proof that one route delivered says nothing about another")
+	assert.Equal(t, ReasonRouteUnused, cond.Reason)
+	assert.Contains(t, cond.Message, `"new"`, "the message must name the route now in effect")
+	assert.Equal(t, "new", got.Status.AuditRoute)
+
+	// And a fact on the NEW route latches it again, from scratch.
+	health.RecordFactPublished("new")
+	_, err = r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: provider.Name}})
+	require.NoError(t, err)
+	require.NoError(t, r.Get(context.Background(),
+		k8stypes.NamespacedName{Name: provider.Name}, &got))
+	assert.Equal(t, metav1.ConditionTrue,
+		findCondition(got.Status.Conditions, ClusterProviderConditionAuditFactsReceived).Status)
+}

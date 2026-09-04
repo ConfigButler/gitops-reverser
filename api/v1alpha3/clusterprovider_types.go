@@ -130,6 +130,18 @@ type ClusterProviderStatus struct {
 	// correctly; only the commit AUTHOR is lost. Reporting it through Ready would tell every
 	// kstatus reader the object is broken.
 
+	// AuditRoute exists because the AuditFactsReceived latch needs a KEY. spec.attribution.auditRoute
+	// is mutable (only spec.kubeConfig is pinned), and without recording which route earned the
+	// latch, a provider repointed at a new route would carry True forward and report facts it has
+	// never received there — the exact silent misconfiguration the condition exists to catch.
+
+	// AuditRoute is the route this provider's attribution facts are partitioned under, as resolved:
+	// spec.attribution.auditRoute, or metadata.name when that is empty. It is the route the
+	// AuditFactsReceived condition describes, so when it changes that condition starts over —
+	// proof that one route delivered says nothing about another.
+	// +optional
+	AuditRoute string `json:"auditRoute,omitempty"`
+
 	// Conditions report the provider's readiness: Validated (kubeconfig inputs are safe and
 	// resolvable, asserted without a network dial) plus the aggregated Ready and the kstatus
 	// Reconciling/Stalled pair. Runtime reachability/discovery health and a last-audit-event

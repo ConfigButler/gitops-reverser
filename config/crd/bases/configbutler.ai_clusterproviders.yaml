@@ -290,6 +290,13 @@ spec:
           status:
             description: status defines the observed state of ClusterProvider.
             properties:
+              auditRoute:
+                description: |-
+                  AuditRoute is the route this provider's attribution facts are partitioned under, as resolved:
+                  spec.attribution.auditRoute, or metadata.name when that is empty. It is the route the
+                  AuditFactsReceived condition describes, so when it changes that condition starts over —
+                  proof that one route delivered says nothing about another.
+                type: string
               conditions:
                 description: |-
                   Conditions report the provider's readiness: Validated (kubeconfig inputs are safe and
