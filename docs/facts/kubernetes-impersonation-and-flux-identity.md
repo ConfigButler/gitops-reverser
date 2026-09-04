@@ -102,5 +102,5 @@ Recorded so the cost is not re-estimated:
   carry `system:serviceaccounts` and `system:serviceaccounts:<namespace>` as groups or it answers
   narrower than reality. That needs `create subjectaccessreviews` on a credential users have
   already issued.
-- Identity joins cluster, GVR, and namespace in the informer key, so it multiplies the resource the
-  `TooManyStreams` cap exists to bound.
+- Identity joins cluster, GVR, and namespace in the informer key, so it multiplies the number of
+  informers a rule set opens, one per distinct identity.

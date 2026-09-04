@@ -177,9 +177,9 @@ silent empty set.
 right.** A `*` rule over a type in a hundred-namespace cluster is a hundred watch connections and a
 hundred list calls at warm-up today, one per namespace, each with its own cursor, its own retry
 schedule and its own share of apiserver watch cache. Cluster-wide makes it one of each, and the
-saving grows with the cluster, which is exactly the direction the enumeration got worse in. The
-`TooManyStreams` cap was queued for the fan-out this deletes; see
-[`gittarget-api-wave.md`](gittarget-api-wave.md), where that rider is now smaller than it was.
+saving grows with the cluster, which is exactly the direction the enumeration got worse in. A
+stream-count cap had been queued to bound that fan-out; with the fan-out deleted, the cap was dropped
+rather than resized ([`gittarget-api-wave.md`](gittarget-api-wave.md)).
 
 ## Consequences, including two breaking semantic changes
 
