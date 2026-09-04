@@ -210,6 +210,7 @@ tasks:
     desc: Run all linters (Go, Dockerfiles, workflows, Helm chart, docs); deps run in parallel where safe
     deps:
       - lint-golang
+      - lint-gomod
       - lint-dockerfiles
       - lint-actions
       - lint-helm
@@ -333,6 +334,30 @@ tasks:
       - go.sum
     cmds:
       - '{{.GOLANGCI_LINT}} run'
+
+  lint-gomod:
+    desc: Check that go.mod and go.sum are tidy
+    # Only `go mod tidy` knows whether the module graph is tidy, so ask it rather than
+    # re-deriving the answer. `-diff` reports what tidying WOULD change and exits non-zero,
+    # without writing anything, so the check never mutates the tree it is checking.
+    #
+    # Nothing gated this before, and it drifted: k8s.io/apiextensions-apiserver sat marked
+    # `// indirect` while internal/controller imported it directly in a test.
+    sources:
+      - api/**/*.go
+      - cmd/**/*.go
+      - hack/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - test/**/*.go
+      - go.mod
+      - go.sum
+    cmds:
+      - |
+        if ! go mod tidy -diff; then
+          echo "❌ go.mod/go.sum are not tidy — run 'go mod tidy' and commit the result" >&2
+          exit 1
+        fi
 
   lint-actions:
     desc: Lint GitHub Actions workflows with actionlint

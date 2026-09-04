@@ -19,11 +19,14 @@ updates:
           - "*"
 
   - package-ecosystem: "docker"
-    # Covers the project Dockerfile and the devcontainer/CI base image, so
-    # digest-pinned FROM lines keep moving with upstream.
+    # Covers the project Dockerfile, the devcontainer/CI base image and the
+    # mutation-lab fixture image, so FROM lines keep moving with upstream.
+    # A directory left off this list silently drifts: /test/mutationlab sat on
+    # golang 1.27.0 while the other two were bumped.
     directories:
       - "/"
       - "/.devcontainer"
+      - "/test/mutationlab"
     schedule:
       interval: "weekly"
     groups:

@@ -1,6 +1,6 @@
 module github.com/ConfigButler/gitops-reverser
 
-go 1.27.0
+go 1.27.1
 
 require (
 	filippo.io/age v1.3.2
@@ -25,13 +25,13 @@ require (
 	golang.org/x/crypto v0.55.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.37.0
-	k8s.io/apiextensions-apiserver v0.36.4
+	k8s.io/apiextensions-apiserver v0.37.0
 	k8s.io/apimachinery v0.37.0
 	k8s.io/apiserver v0.37.0
 	k8s.io/client-go v0.37.0
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3
 	sigs.k8s.io/cli-utils v0.37.2
-	sigs.k8s.io/controller-runtime v0.24.1
+	sigs.k8s.io/controller-runtime v0.25.0
 	sigs.k8s.io/kustomize/api v0.21.1
 	sigs.k8s.io/kustomize/kyaml v0.21.1
 	sigs.k8s.io/yaml v1.6.0

@@ -2,7 +2,7 @@
 # Stage 1: CI base image with essential build tools
 # Pinned by digest (Scorecard "pinned dependencies"); Dependabot's docker
 # ecosystem keeps version + digest current together.
-FROM golang:1.27.0-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466 AS ci
+FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -66,24 +66,24 @@ RUN apt-get update \
 # TRIVY_VERSION -> https://github.com/aquasecurity/trivy/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
-    KUBECTL_VERSION=v1.36.4 \
+    KUBECTL_VERSION=v1.37.0 \
     KUSTOMIZE_VERSION=5.8.1 \
     KUBEBUILDER_VERSION=4.15.0 \
-    GOLANGCI_LINT_VERSION=v2.13.1 \
+    GOLANGCI_LINT_VERSION=v2.13.2 \
     HELM_VERSION=v4.2.4 \
     K3D_VERSION=v5.9.0 \
-    FLUX_VERSION=2.9.4 \
-    FLUX_OPERATOR_VERSION=0.58.1 \
+    FLUX_VERSION=2.9.5 \
+    FLUX_OPERATOR_VERSION=0.59.0 \
     TASK_VERSION=v3.53.1 \
     ACTIONLINT_VERSION=1.7.12 \
     HADOLINT_VERSION=2.15.1 \
-    VALKEY_VERSION=9.1.1 \
+    VALKEY_VERSION=9.1.2 \
     COSIGN_VERSION=v3.1.3 \
-    ORAS_VERSION=1.3.3 \
+    ORAS_VERSION=1.3.4 \
     NODE_MAJOR=24 \
     MARKDOWNLINT_CLI2_VERSION=0.23.2 \
-    VALE_VERSION=3.18.0 \
-    TRIVY_VERSION=0.70.0
+    VALE_VERSION=3.20.0 \
+    TRIVY_VERSION=0.74.0
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -276,11 +276,11 @@ RUN chgrp -R godev /go && \
 
 # Install Go tools used by the project (using @version doesn't need go.mod)
 # These run AFTER permissions are set to ensure proper group ownership
-RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0 \
+RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 \
     && go install github.com/onsi/ginkgo/v2/ginkgo@v2.32.1 \
-    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 \
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.0 \
     && go install golang.org/x/tools/cmd/goimports@v0.49.0 \
-    && go install github.com/boyter/scc/v3@v3.7.0
+    && go install github.com/boyter/scc/v4@v4.0.0
 
 # Initialize golangci-lint cache by running it once on an empty directory
 # This downloads linter dependencies without needing source code
