@@ -165,7 +165,12 @@ func (r *attributionResolver) ResolveAuthor(
 	if resolution.Result != queue.AttributionAbsent {
 		ui, outcome, result := r.userInfoForResolution(resolution)
 		recordAttributionResolution(ctx, query, result, resolution.ActorKind(), time.Since(start))
-		r.health.ObserveResolution(query.AuditRoute, outcome == git.AttributionResolved)
+		// A fact MATCHED, so the route is alive — which is the only thing the never-resolves warning
+		// is about. That holds even when the fact named nobody: an authorless fact is a different
+		// problem with a different fix, and feeding it to the route warning would both print the
+		// wrong diagnosis ("no facts have ever arrived") and silently burn the route's one warning,
+		// since reaching the threshold latches it whether or not the caller logs.
+		r.health.ObserveResolution(query.AuditRoute, true)
 		return ui, outcome
 	}
 	recordAttributionResolution(ctx, query, queue.AttributionAbsent, queue.ActorKindNone, time.Since(start))

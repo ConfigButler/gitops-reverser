@@ -178,11 +178,13 @@ func auditFactsReceivedMessage(route string, at time.Time) string {
 // partition nothing writes.
 func auditFactsPendingMessage(route, waited string) string {
 	return fmt.Sprintf(
-		"audit requests are arriving, but no attribution fact has ever landed on audit route %q %s, so "+
-			"every commit mirrored through this provider is authored as attribution-unresolved. Check "+
-			"that this cluster's audit webhook URL ends in /audit-webhook/%s (or, when several logical "+
-			"clusters share one backend, that its events carry that route in the configured audit-route "+
-			"annotation). Mirroring itself is unaffected",
+		"audit requests are arriving, but no attribution fact has ever been published for audit route "+
+			"%q %s, so every commit mirrored through this provider is authored as "+
+			"attribution-unresolved. Check that this cluster's audit webhook URL ends in "+
+			"/audit-webhook/%s (or, when several logical clusters share one backend, that its events "+
+			"carry that route in the configured audit-route annotation); if the route is right, check "+
+			"that the audit policy's level and verbs leave something attributable. Mirroring itself is "+
+			"unaffected",
 		route, waited, route)
 }
 

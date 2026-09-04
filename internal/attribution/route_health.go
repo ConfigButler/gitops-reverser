@@ -217,7 +217,15 @@ func (h *RouteHealth) FirstFactEvents() <-chan event.GenericEvent {
 // moment to warn, plus the current unresolved run length. It warns at most once per route per
 // process: the condition is a configuration mistake, so repeating it every event would bury the
 // log without telling anyone anything new.
-func (h *RouteHealth) ObserveResolution(route string, resolved bool) (bool, int) {
+//
+// factMatched is "did a fact for this event exist on this route", NOT "did we name an author". The
+// warning this feeds says the route has never carried a fact at all, so a fact that matched and
+// named nobody still answers it: the route is demonstrably alive and the missing author is a
+// different problem with a different fix.
+//
+// The caller MUST act on the returned bool. Reaching the threshold latches warned[route], so a
+// dropped true silences the route's warning for the life of the process.
+func (h *RouteHealth) ObserveResolution(route string, factMatched bool) (bool, int) {
 	if h == nil {
 		return false, 0
 	}
@@ -228,7 +236,7 @@ func (h *RouteHealth) ObserveResolution(route string, resolved bool) (bool, int)
 		h.absent = map[string]int{}
 		h.warned = map[string]bool{}
 	}
-	if resolved {
+	if factMatched {
 		h.resolved[route] = true
 		delete(h.absent, route)
 		return false, 0

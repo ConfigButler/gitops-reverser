@@ -551,7 +551,7 @@ with a default `FACTS` printer column.
 | `True` | `Received` | a fact has been published on this provider's audit route, and this answer is latched for good |
 | `Unknown` | `TransportUnavailable` | the last append to the fact transport failed, so no route can be judged |
 | `Unknown` | `NoAuditDelivery` | no audit request has ever reached this operator, on any route |
-| `Unknown` | `RouteUnused` | audit is arriving and has never carried this route |
+| `Unknown` | `RouteUnused` | audit is arriving and no fact has ever been published for this route |
 
 The three `Unknown` reasons are evaluated in that order, and they are separated by **scope**, not by
 severity: a failing transport makes every route look silent, and with nothing delivered at all no
@@ -562,7 +562,8 @@ verdict repeated on every `ClusterProvider` that has not yet latched.
 
 `RouteUnused` deliberately does not claim the facts went to some *other* route, which would be
 sharper: audit can also arrive and produce no fact anywhere, when the policy's level or verbs leave
-nothing attributable. The reason stays true for both.
+nothing attributable. The reason stays true for both, and its message names the audit policy as the
+second thing to check once the route has been ruled out.
 
 The condition is a **one-way latch**, and that is what makes it readable without a threshold. A
 route that has never carried a fact is a route nobody posts to: a `ClusterProvider` that did not

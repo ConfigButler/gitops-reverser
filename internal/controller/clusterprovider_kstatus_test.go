@@ -54,7 +54,7 @@ func TestClusterProviderKstatusContract(t *testing.T) {
 				conditionMap(ConditionTypeStalled, "False", ReasonSucceeded, "ClusterProvider is not stalled"),
 				conditionMap(ClusterProviderConditionValidated, "True", ReasonInCluster, "the operator's own cluster"),
 				conditionMap(ClusterProviderConditionAuditFactsReceived, "Unknown", ReasonRouteUnused,
-					`audit requests are arriving, but nothing has landed on route "srcns-delegating"`),
+					`audit requests are arriving, but nothing has been published for route "srcns-delegating"`),
 			},
 			wantStatus: kstatus.CurrentStatus,
 		},

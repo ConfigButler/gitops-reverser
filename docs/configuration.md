@@ -352,7 +352,7 @@ srcns-delegating   True    Succeeded   Unknown   4m
 |---|---|---|
 | `TransportUnavailable` | the last append to the fact transport failed | the transport itself, named in the message: with `--author-attribution-transport=redis` (the default) the Redis/Valkey at `--redis-addr`, and with `memory` the operator's logs. No route can be judged while this holds: every route looks silent for the same reason |
 | `NoAuditDelivery` | no audit request has ever reached this operator, on any route | the API server's audit webhook backend and its connectivity to the operator. This provider's route is not at fault |
-| `RouteUnused` | audit is arriving and has never carried this route | this provider's `spec.attribution.auditRoute` |
+| `RouteUnused` | audit is arriving and no fact has ever been published for this route | this provider's `spec.attribution.auditRoute` first, then the audit policy: a policy whose level or verbs leave nothing attributable produces no fact even when the route is correct |
 
 The status stays `Unknown` for all three. A failing transport is a fault in the pipeline, not in
 this provider, and turning it into a per-object `False` would flip every not-yet-latched

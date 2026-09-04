@@ -327,3 +327,35 @@ func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
 	_, outcome := healthy.ResolveAuthor(context.Background(), resolverQuery("default", "uid-2", "1", true))
 	assert.Equal(t, git.AttributionResolved, outcome)
 }
+
+// TestAuthorResolver_AuthorlessMatchProvesTheRouteIsAlive covers a matched fact that names nobody.
+// It used to be observed as a MISS, which was wrong in both directions: a few of them followed by
+// real misses could push the route over the warn threshold and log "no audit facts have ever
+// arrived on this audit route" about a route that had just delivered several, and a run of them on
+// its own reached the threshold inside ObserveResolution — which latches warned[route] — while the
+// caller discarded the returned bool.
+//
+// A matched fact means the route is alive, which is the only thing that warning is about. The
+// missing author is a different problem with a different fix.
+func TestAuthorResolver_AuthorlessMatchProvesTheRouteIsAlive(t *testing.T) {
+	const route = "srcns-delegating"
+	health := &attribution.RouteHealth{}
+
+	authorless := &fakeLookup{resolution: queue.AuthorResolution{
+		Fact:   queue.AuthorFact{Author: ""},
+		Result: queue.AttributionExact,
+	}}
+	resolver := NewAuthorResolver(authorless, 0, logr.Discard(), health)
+
+	for range attribution.UnresolvedWarnThreshold {
+		_, outcome := resolver.ResolveAuthor(context.Background(), resolverQuery(route, "uid-1", "101", true))
+		require.Equal(t, git.AttributionUnresolved, outcome, "an authorless fact still names nobody")
+	}
+
+	// However many real misses follow, the route never claims "no facts have ever arrived": facts
+	// HAVE arrived on it, so that sentence would be false.
+	for range attribution.UnresolvedWarnThreshold * 2 {
+		warn, _ := health.ObserveResolution(route, false)
+		assert.False(t, warn, "a route that has delivered a fact must never be accused of delivering none")
+	}
+}
