@@ -25,6 +25,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/audit/outcome"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
@@ -67,6 +68,10 @@ type AuditHandlerConfig struct {
 	// CollectionUIDCap is how many object uids a deletecollection fact may carry before the set is
 	// dropped and the join falls back to scope matching. Zero means queue.DefaultCollectionUIDCap.
 	CollectionUIDCap int
+	// RouteHealth is the process-wide per-route registry. Every fact batch that actually appends
+	// records its route there, which is what latches the ClusterProvider AuditFactsReceived
+	// condition for the providers reading that route. Nil disables the bookkeeping.
+	RouteHealth *attribution.RouteHealth
 	// AuditRouteAnnotationKey enables the bare /audit-webhook endpoint for a SHARED audit stream
 	// that carries several logical clusters: the AUDIT ROUTE is read PER EVENT from this
 	// audit-event annotation, so one batch may fan out to several routes. Empty (the default) means
@@ -213,6 +218,9 @@ func (h *AuditHandler) serveEventListRequest(
 		return outcomeEmpty, 0
 	}
 
+	// Recorded before the batch is processed: the apiserver reaching us at all is what this
+	// establishes, independently of whether any event in it can name an author.
+	h.config.RouteHealth.RecordAuditDelivery()
 	h.firsts.request.Do(func() {
 		reqLog.Info("Received first audit request", "eventCount", eventCount)
 	})
@@ -431,10 +439,16 @@ func (h *AuditHandler) publishFactBatches(
 	for _, key := range batches.order {
 		facts := batches.facts[key]
 		if err := h.config.FactPublisher.PublishFacts(ctx, key, facts); err != nil {
+			// The transport refusing a write is process-wide news, not news about this route: while
+			// it holds, EVERY route looks silent and none of them can be judged.
+			h.config.RouteHealth.RecordPublishFailure()
 			return appended, fmt.Errorf("publish attribution facts for %s: %w", key, err)
 		}
 		queue.RecordFactsWritten(ctx, len(facts))
 		appended[key] = struct{}{}
+		// AFTER the append, never before: the condition this feeds says a fact reached the
+		// transport on this route, which is the thing an operator cannot otherwise observe.
+		h.config.RouteHealth.RecordFactPublished(key.AuditRoute)
 	}
 	return appended, nil
 }

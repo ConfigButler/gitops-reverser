@@ -126,10 +126,35 @@ type ClusterProviderStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// AuditFactsReceived is separate from Ready because a provider with no facts yet mirrors
+	// correctly; only the commit AUTHOR is lost. Reporting it through Ready would tell every
+	// kstatus reader the object is broken.
+
+	// AuditRoute exists because the AuditFactsReceived latch needs a KEY. spec.attribution.auditRoute
+	// is mutable (only spec.kubeConfig is pinned), and without recording which route earned the
+	// latch, a provider repointed at a new route would carry True forward and report facts it has
+	// never received there — the exact silent misconfiguration the condition exists to catch.
+
+	// AuditRoute is the route this provider's attribution facts are partitioned under, as resolved:
+	// spec.attribution.auditRoute, or metadata.name when that is empty. It is the route the
+	// AuditFactsReceived condition describes, so when it changes that condition starts over —
+	// proof that one route delivered says nothing about another.
+	// +optional
+	AuditRoute string `json:"auditRoute,omitempty"`
+
 	// Conditions report the provider's readiness: Validated (kubeconfig inputs are safe and
 	// resolvable, asserted without a network dial) plus the aggregated Ready and the kstatus
 	// Reconciling/Stalled pair. Runtime reachability/discovery health and a last-audit-event
 	// timestamp are deferred until authenticated remote ingest wires them from the watch engine.
+	//
+	// AuditFactsReceived reports whether an attribution fact has ever been accepted and recorded on
+	// this provider's audit route. It is True (Received) from the first one on and never goes back:
+	// later silence is a quiet cluster, not a fault. Until then it is Unknown, with the reason
+	// naming which silence it is and therefore where to look: TransportUnavailable (the fact
+	// transport is refusing writes, so no route can be judged), NoAuditDelivery (nothing is posting
+	// audit to this operator at all), or RouteUnused (audit is arriving and has never carried this
+	// route). It is absent when the operator runs with author attribution disabled. It is not part
+	// of Ready.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -143,6 +168,7 @@ type ClusterProviderStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Facts",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
 // +kubebuilder:printcolumn:name="Validated",type=string,JSONPath=`.status.conditions[?(@.type=="Validated")].status`,priority=1
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

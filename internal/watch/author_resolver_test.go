@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
+	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -73,7 +74,7 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 			Result: queue.AttributionExact,
 		},
 	}
-	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
+	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard(), nil)
 
 	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 	require.Equal(t, git.AttributionResolved, outcome)
@@ -98,7 +99,7 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 			Result: queue.AttributionExact,
 		},
 	}
-	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
+	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard(), nil)
 
 	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 	require.Equal(t, git.AttributionResolved, outcome,
@@ -138,7 +139,7 @@ func TestAuthorResolver_UserAndServiceAccountShareOneTier(t *testing.T) {
 				Result: queue.AttributionExact,
 			},
 		}
-		r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
+		r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard(), nil)
 		_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 		require.Equal(t, git.AttributionResolved, outcome)
 	}
@@ -170,7 +171,7 @@ func TestAuthorResolver_RemovalWaitIsItsOwnSeries(t *testing.T) {
 	require.NoError(t, err)
 
 	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}}
-	r := NewAuthorResolver(lookup, 0, logr.Discard())
+	r := NewAuthorResolver(lookup, 0, logr.Discard(), nil)
 
 	_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "999", false))
 	require.Equal(t, git.AttributionUnresolved, outcome)
@@ -202,7 +203,7 @@ func TestAuthorResolver_RemovalWaitIsItsOwnSeries(t *testing.T) {
 
 func TestAuthorResolver_MissExpiresToUnresolved(t *testing.T) {
 	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}}
-	r := NewAuthorResolver(lookup, 0, logr.Discard())
+	r := NewAuthorResolver(lookup, 0, logr.Discard(), nil)
 
 	// A zero grace does a single lookup and, on a miss, reports UNRESOLVED — attribution ran
 	// and did not name anyone. It is deliberately not NotAttempted, which would claim
@@ -220,7 +221,7 @@ func TestAuthorResolver_DeleteEventIsNotExactCapable(t *testing.T) {
 			Result: queue.AttributionLatest,
 		},
 	}
-	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
+	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard(), nil)
 
 	_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "999", false))
 	require.Equal(t, git.AttributionResolved, outcome)
@@ -235,7 +236,7 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 		},
 		availableAfter: 50 * time.Millisecond,
 	}
-	r := NewAuthorResolver(lookup, 2*time.Second, logr.Discard())
+	r := NewAuthorResolver(lookup, 2*time.Second, logr.Discard(), nil)
 
 	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 	require.Equal(t, git.AttributionResolved, outcome)
@@ -247,7 +248,7 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 // must be NotAttempted — not Unresolved. Conflating the two is what made a lost actor
 // indistinguishable from a deployment that simply does not do attribution.
 func TestAuthorResolver_NilLookupIsNotAttempted(t *testing.T) {
-	r := NewAuthorResolver(nil, DefaultAttributionGraceWindow, logr.Discard())
+	r := NewAuthorResolver(nil, DefaultAttributionGraceWindow, logr.Discard(), nil)
 
 	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 
@@ -274,7 +275,7 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 			Result: queue.AttributionExact,
 		},
 	}
-	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
+	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard(), nil)
 
 	_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 
@@ -301,18 +302,18 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
 	// hitAfter is beyond any call this test makes, so every lookup misses.
 	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}}
-	resolver := NewAuthorResolver(lookup, 0, logr.Discard())
+	resolver := NewAuthorResolver(lookup, 0, logr.Discard(), &attribution.RouteHealth{})
 	concrete, ok := resolver.(*attributionResolver)
 	require.True(t, ok)
 
 	const route = "srcns-delegating"
-	for range attributionUnresolvedWarnThreshold {
+	for range attribution.UnresolvedWarnThreshold {
 		_, outcome := resolver.ResolveAuthor(context.Background(), resolverQuery(route, "uid-1", "101", true))
 		require.Equal(t, git.AttributionUnresolved, outcome)
 	}
 
 	// The threshold has been reached, so the route is marked warned and never warns again.
-	warn, _ := concrete.health.observe(route, false)
+	warn, _ := concrete.health.ObserveResolution(route, false)
 	assert.False(t, warn, "a configuration mistake is worth saying once, not once per event")
 
 	// A route that resolves is never implicated, even after the other one has warned.
@@ -322,7 +323,39 @@ func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
 			Result: queue.AttributionExact,
 		},
 	}
-	healthy := NewAuthorResolver(other, 0, logr.Discard())
+	healthy := NewAuthorResolver(other, 0, logr.Discard(), &attribution.RouteHealth{})
 	_, outcome := healthy.ResolveAuthor(context.Background(), resolverQuery("default", "uid-2", "1", true))
 	assert.Equal(t, git.AttributionResolved, outcome)
+}
+
+// TestAuthorResolver_AuthorlessMatchProvesTheRouteIsAlive covers a matched fact that names nobody.
+// It used to be observed as a MISS, which was wrong in both directions: a few of them followed by
+// real misses could push the route over the warn threshold and log "no audit facts have ever
+// arrived on this audit route" about a route that had just delivered several, and a run of them on
+// its own reached the threshold inside ObserveResolution — which latches warned[route] — while the
+// caller discarded the returned bool.
+//
+// A matched fact means the route is alive, which is the only thing that warning is about. The
+// missing author is a different problem with a different fix.
+func TestAuthorResolver_AuthorlessMatchProvesTheRouteIsAlive(t *testing.T) {
+	const route = "srcns-delegating"
+	health := &attribution.RouteHealth{}
+
+	authorless := &fakeLookup{resolution: queue.AuthorResolution{
+		Fact:   queue.AuthorFact{Author: ""},
+		Result: queue.AttributionExact,
+	}}
+	resolver := NewAuthorResolver(authorless, 0, logr.Discard(), health)
+
+	for range attribution.UnresolvedWarnThreshold {
+		_, outcome := resolver.ResolveAuthor(context.Background(), resolverQuery(route, "uid-1", "101", true))
+		require.Equal(t, git.AttributionUnresolved, outcome, "an authorless fact still names nobody")
+	}
+
+	// However many real misses follow, the route never claims "no facts have ever arrived": facts
+	// HAVE arrived on it, so that sentence would be false.
+	for range attribution.UnresolvedWarnThreshold * 2 {
+		warn, _ := health.ObserveResolution(route, false)
+		assert.False(t, warn, "a route that has delivered a fact must never be accused of delivering none")
+	}
 }

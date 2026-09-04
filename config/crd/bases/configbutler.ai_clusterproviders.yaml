@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
+    - jsonPath: .status.conditions[?(@.type=="AuditFactsReceived")].status
+      name: Facts
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Validated")].status
       name: Validated
       priority: 1
@@ -287,12 +290,28 @@ spec:
           status:
             description: status defines the observed state of ClusterProvider.
             properties:
+              auditRoute:
+                description: |-
+                  AuditRoute is the route this provider's attribution facts are partitioned under, as resolved:
+                  spec.attribution.auditRoute, or metadata.name when that is empty. It is the route the
+                  AuditFactsReceived condition describes, so when it changes that condition starts over —
+                  proof that one route delivered says nothing about another.
+                type: string
               conditions:
                 description: |-
                   Conditions report the provider's readiness: Validated (kubeconfig inputs are safe and
                   resolvable, asserted without a network dial) plus the aggregated Ready and the kstatus
                   Reconciling/Stalled pair. Runtime reachability/discovery health and a last-audit-event
                   timestamp are deferred until authenticated remote ingest wires them from the watch engine.
+
+                  AuditFactsReceived reports whether an attribution fact has ever been accepted and recorded on
+                  this provider's audit route. It is True (Received) from the first one on and never goes back:
+                  later silence is a quiet cluster, not a fault. Until then it is Unknown, with the reason
+                  naming which silence it is and therefore where to look: TransportUnavailable (the fact
+                  transport is refusing writes, so no route can be judged), NoAuditDelivery (nothing is posting
+                  audit to this operator at all), or RouteUnused (audit is arriving and has never carried this
+                  route). It is absent when the operator runs with author attribution disabled. It is not part
+                  of Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

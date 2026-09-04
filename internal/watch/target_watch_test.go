@@ -279,7 +279,7 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 					Result: queue.AttributionExact,
 				},
 			},
-			time.Second, logr.Discard(),
+			time.Second, logr.Discard(), nil,
 		),
 	}
 

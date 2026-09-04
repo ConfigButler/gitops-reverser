@@ -4,7 +4,6 @@ package watch
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -13,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
+	"github.com/ConfigButler/gitops-reverser/internal/attribution"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -121,68 +121,27 @@ type AuthorResolver interface {
 	ResolveAuthor(ctx context.Context, query AuthorQuery) (git.UserInfo, git.AttributionOutcome)
 }
 
-// attributionUnresolvedWarnThreshold is how many consecutive unresolved events one audit route may
-// produce, having never resolved a single one, before the resolver says so. It is not 1 because a
-// lone miss is ordinary: an audit batch can arrive after the grace window under load. A run of them
-// with nothing ever matched is the signature of a route nobody writes to, which is exactly the
-// misconfiguration that used to be silent.
-const attributionUnresolvedWarnThreshold = 5
-
-// routeAttributionHealth tracks, per audit route, whether attribution has ever resolved and how many
-// events have gone unresolved since. It exists to make one specific misconfiguration loud: a
-// ClusterProvider whose spec.attribution.auditRoute names a route no API server posts under reads a
-// partition nothing writes, so every commit is authored "unresolved" with no error, no condition,
-// and no failed reconcile.
-type routeAttributionHealth struct {
-	mu       sync.Mutex
-	resolved map[string]bool
-	absent   map[string]int
-	warned   map[string]bool
-}
-
-// observe records one resolution outcome for a route and reports whether this is the moment to warn,
-// plus the current unresolved run length. It warns at most once per route per process: the condition
-// is a configuration mistake, so repeating it every event would bury the log without telling anyone
-// anything new.
-func (h *routeAttributionHealth) observe(route string, resolved bool) (bool, int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.resolved == nil {
-		h.resolved = map[string]bool{}
-		h.absent = map[string]int{}
-		h.warned = map[string]bool{}
-	}
-	if resolved {
-		h.resolved[route] = true
-		delete(h.absent, route)
-		return false, 0
-	}
-	h.absent[route]++
-	streak := h.absent[route]
-	if h.resolved[route] || h.warned[route] || streak < attributionUnresolvedWarnThreshold {
-		return false, streak
-	}
-	h.warned[route] = true
-	return true, streak
-}
-
 type attributionResolver struct {
 	lookup AttributionLookup
 	grace  time.Duration
 	log    logr.Logger
-	health routeAttributionHealth
+	health *attribution.RouteHealth
 }
 
 // NewAuthorResolver builds the conservative author resolver over the attribution
 // index. grace bounds the per-event wait for a late fact; a zero grace disables
 // waiting (single lookup). A matched actor — human or service account — is always
 // named by its own username.
+//
+// health is the process-wide route registry the audit ingress publishes into; nil is accepted
+// (every method is nil-safe) and only costs the never-resolves warning.
 func NewAuthorResolver(
 	lookup AttributionLookup,
 	grace time.Duration,
 	log logr.Logger,
+	health *attribution.RouteHealth,
 ) AuthorResolver {
-	return &attributionResolver{lookup: lookup, grace: grace, log: log}
+	return &attributionResolver{lookup: lookup, grace: grace, log: log, health: health}
 }
 
 func (r *attributionResolver) ResolveAuthor(
@@ -206,7 +165,12 @@ func (r *attributionResolver) ResolveAuthor(
 	if resolution.Result != queue.AttributionAbsent {
 		ui, outcome, result := r.userInfoForResolution(resolution)
 		recordAttributionResolution(ctx, query, result, resolution.ActorKind(), time.Since(start))
-		r.health.observe(query.AuditRoute, outcome == git.AttributionResolved)
+		// A fact MATCHED, so the route is alive — which is the only thing the never-resolves warning
+		// is about. That holds even when the fact named nobody: an authorless fact is a different
+		// problem with a different fix, and feeding it to the route warning would both print the
+		// wrong diagnosis ("no facts have ever arrived") and silently burn the route's one warning,
+		// since reaching the threshold latches it whether or not the caller logs.
+		r.health.ObserveResolution(query.AuditRoute, true)
 		return ui, outcome
 	}
 	recordAttributionResolution(ctx, query, queue.AttributionAbsent, queue.ActorKindNone, time.Since(start))
@@ -292,7 +256,7 @@ func attributionEventKind(query AuthorQuery) string {
 // route no API server posts under, which is otherwise invisible: mirroring stays correct and only
 // the commit author is lost. The message names the fix rather than the symptom.
 func (r *attributionResolver) warnIfRouteNeverResolves(auditRoute string, gvr schema.GroupVersionResource) {
-	warn, streak := r.health.observe(auditRoute, false)
+	warn, streak := r.health.ObserveResolution(auditRoute, false)
 	if !warn {
 		return
 	}

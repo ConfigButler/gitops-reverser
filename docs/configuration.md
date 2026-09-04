@@ -316,6 +316,62 @@ referenced Secret instead. `qps` and `burst` optionally tune a remote provider's
 `ClusterProvider` conditions validate its configuration, while the consuming `GitTarget` reports the
 live source reachability and stream state.
 
+### Audit route and `AuditFactsReceived`
+
+`spec.attribution.auditRoute` is the route this cluster's attribution facts arrive on: the `<name>`
+segment the apiserver's audit webhook URL ends in, `/audit-webhook/<name>`. It defaults to the
+provider's own `metadata.name`, and it is what partitions the facts, so two providers carrying the
+same route read one cluster's facts and two carrying different routes can never cross-credit an
+author.
+
+An apiserver takes one audit webhook backend and therefore posts under one route. A second
+`ClusterProvider` naming the same cluster must be pointed at that route:
+
+```yaml
+spec:
+  attribution:
+    auditRoute: default
+```
+
+The `AuditFactsReceived` condition reports whether that route has ever delivered, with a default
+`FACTS` printer column:
+
+```console
+$ kubectl get clusterprovider
+NAME               READY   REASON      FACTS     AGE
+default            True    Succeeded   True      31m
+srcns-delegating   True    Succeeded   Unknown   4m
+```
+
+- `True` / `Received`: a fact has arrived, and the message carries when the first one did.
+- `Unknown`: none ever has, so every commit mirrored through this provider is authored
+  `unknown (attribution unresolved)`. Three silences look identical on the object and need three
+  different fixes, so the **reason** says which one it is:
+
+| Reason | What was observed | Where to look |
+|---|---|---|
+| `TransportUnavailable` | the last append to the fact transport failed | the transport itself, named in the message: with `--author-attribution-transport=redis` (the default) the Redis/Valkey at `--redis-addr`, and with `memory` the operator's logs. No route can be judged while this holds: every route looks silent for the same reason |
+| `NoAuditDelivery` | no audit request has ever reached this operator, on any route | the API server's audit webhook backend and its connectivity to the operator. This provider's route is not at fault |
+| `RouteUnused` | audit is arriving and no fact has ever been published for this route | this provider's `spec.attribution.auditRoute` first, then the audit policy: a policy whose level or verbs leave nothing attributable produces no fact even when the route is correct |
+
+The status stays `Unknown` for all three. A failing transport is a fault in the pipeline, not in
+this provider, and turning it into a per-object `False` would flip every not-yet-latched
+`ClusterProvider` at once: one outage, many verdicts. The reason carries the diagnosis instead.
+
+It is a **one-way latch** for a given route: once `True` it stays `True`, across controller restarts
+and regardless of how long the route stays quiet afterward. Silence *after* proof is a quiet
+cluster; silence *before* it is inconclusive rather than a verdict, which is why the status is
+`Unknown` and the reason above says which of the three cases it is. The latch separates the two
+without a timer, so there is no `False` state and no grace window.
+
+The latch is keyed to the route it was earned on, recorded in `status.auditRoute`. Because
+`spec.attribution.auditRoute` is mutable, repointing a provider at a different route starts the
+condition over: proof that one route delivered says nothing about another.
+
+The condition is **not part of `Ready`**: a provider reading a route nobody posts to mirrors
+perfectly and loses only the commit author. It is absent entirely when the operator runs with
+`--author-attribution=false`.
+
 ### Creating and managing the `default` provider
 
 The operator **never creates a `ClusterProvider`**, and never re-creates one you delete. If a
