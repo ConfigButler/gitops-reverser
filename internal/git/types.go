@@ -90,8 +90,8 @@ const (
 	// DefaultReconcileCommitMessageTemplate names the synced type, so the otherwise
 	// indistinguishable per-type reconciles one GitTarget produces are self-describing. Plural
 	// resource alone for readability; add {{.APIVersion}} when plural collisions matter. The
-	// {{if}} guards fall back to "reconciled N resources" for a whole-target reconcile, so the
-	// subject never degrades to an identity-less "reconciled N ".
+	// {{if}} guards fall back to "chore: reconcile N resources" for a whole-target reconcile, so
+	// the subject never degrades to an identity-less "chore: reconcile N ".
 	DefaultReconcileCommitMessageTemplate = "chore: reconcile {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
 		"{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"

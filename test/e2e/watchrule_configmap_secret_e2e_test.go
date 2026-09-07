@@ -559,8 +559,8 @@ spec:
 			msg := string(commitMsg)
 			g.Expect(msg).To(ContainSubstring("[CREATE]"),
 				"Latest commit message should include operation [CREATE]")
-			g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", configMapName)),
-				"Latest commit message should include resource path")
+			g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s/%s", testNs, configMapName)),
+				"Latest commit message should include the namespaced resource path")
 
 			gitLogCmd = exec.Command("git", "log", "-1", "--pretty=%an")
 			gitLogCmd.Dir = watchRuleRepo.CheckoutDir
@@ -776,7 +776,7 @@ spec:
 			// The latest commit touching the file's path must be the DELETE event — assert it
 			// directly instead of scanning the last few commits for the substring.
 			By("verifying the latest commit for the path is a DELETE")
-			g.Expect(latestCommitSubjectForPath(g, watchRuleRepo.CheckoutDir, expectedRelativePath)).
+			g.Expect(latestCommitMessageForPath(g, watchRuleRepo.CheckoutDir, expectedRelativePath)).
 				To(ContainSubstring("[DELETE]"), "latest commit for %s should be a [DELETE]", expectedRelativePath)
 		}
 		// 60s (vs the 30s default) tolerates a busier shared controller under

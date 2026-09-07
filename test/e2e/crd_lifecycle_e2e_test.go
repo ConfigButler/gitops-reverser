@@ -584,7 +584,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
 
 			By("verifying the latest commit for the path is a DELETE")
-			g.Expect(latestCommitSubjectForPath(g, crdLifecycleRepo.CheckoutDir, relPath)).
+			g.Expect(latestCommitMessageForPath(g, crdLifecycleRepo.CheckoutDir, relPath)).
 				To(ContainSubstring("[DELETE]"), "latest commit for %s should be a [DELETE]", relPath)
 		}
 		Eventually(verifyFileDeleted).Should(Succeed())
@@ -651,7 +651,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
 
 			By("verifying the latest commit for the path is a DELETE")
-			g.Expect(latestCommitSubjectForPath(g, crdLifecycleRepo.CheckoutDir, crdRelPath)).
+			g.Expect(latestCommitMessageForPath(g, crdLifecycleRepo.CheckoutDir, crdRelPath)).
 				To(ContainSubstring("[DELETE]"), "latest commit for %s should be a [DELETE]", crdRelPath)
 		}
 		Eventually(verifyFileDeleted, "60s", "1s").Should(Succeed())
