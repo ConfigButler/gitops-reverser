@@ -124,32 +124,47 @@ func (m *Manager) clearWatchTypeGaugeSource() {
 	telemetry.SetGaugeSource(telemetry.GaugeWatchTypes, nil)
 }
 
-// watchTypeSamples reads each declared GitTarget's stream summary at scrape time.
+// watchTypeSamples reads each declared GitTarget's stream readiness at scrape time.
+//
+// It reads RESIDENT state only, and that is a correctness requirement rather than an optimisation.
+// The obvious implementation calls StreamSummaryForGitTarget, which calls watchedTypeTableForGitDest,
+// which calls refreshWatchedTypeTables -- a discovery-backed re-resolution of every cluster's type
+// registry, taken on the Prometheus SCRAPE goroutine, once per target per scrape. On a wildcard rule
+// resolving 58 types that starved the replaying streams of the locks they needed and left the
+// GitTarget reporting 0/58 running until the e2e spec timed out. gauges.go says a source must not
+// block; this is what it costs when one does.
+//
+// So: published tables, published stream states, no refresh. Whatever the last resolution produced
+// is what the scrape reports, which is the honest answer for a gauge anyway.
 //
 // streamSummaryCounts guarantees Total == Ready + Replaying + Blocked, so the three samples
 // partition the target's resolved types and nothing is double-counted or lost.
 func (m *Manager) watchTypeSamples() []telemetry.GaugeSample {
-	m.ensureWatchedTypeStore()
-	m.watchedTypes.mu.Lock()
-	dests := make([]types.ResourceReference, 0, len(m.watchedTypes.tables))
-	for _, table := range m.watchedTypes.tables {
-		dests = append(dests, table.GitDest)
-	}
-	m.watchedTypes.mu.Unlock()
+	tables := m.residentWatchedTypeTables()
 
 	// Three samples per target: streaming, replaying, blocked.
 	const statesPerTarget = 3
-	samples := make([]telemetry.GaugeSample, 0, len(dests)*statesPerTarget)
-	for _, dest := range dests {
-		summary := m.StreamSummaryForGitTarget(dest)
-		for state, count := range map[string]int{
-			"streaming": summary.Ready,
-			"replaying": summary.Replaying,
-			"blocked":   summary.Blocked,
+	samples := make([]telemetry.GaugeSample, 0, len(tables)*statesPerTarget)
+	for _, table := range tables {
+		specs := targetWatchSpecs(table)
+		summary := m.streamSummaryForExpectedKeys(
+			table.GitDest,
+			cellsForWatchKeys(sortedTargetWatchSpecKeys(specs)),
+			streamDisplayNamesForTable(table),
+		)
+		// A fixed order, not a map range: the samples are what a scrape reads, and an exporter's
+		// output should not permute between scrapes for no reason.
+		for _, s := range []struct {
+			state string
+			count int
+		}{
+			{"streaming", summary.Ready},
+			{"replaying", summary.Replaying},
+			{"blocked", summary.Blocked},
 		} {
 			samples = append(samples, telemetry.GaugeSample{
-				Value: int64(count),
-				Attrs: append(gitTargetIdentityAttrs(dest), attribute.String("state", state)),
+				Value: int64(s.count),
+				Attrs: append(gitTargetIdentityAttrs(table.GitDest), attribute.String("state", s.state)),
 			})
 		}
 	}
@@ -166,9 +181,6 @@ func (m *Manager) ensureWatchedTypeStore() {
 	})
 }
 
-// watchedTypeTableForGitDest returns the resident table for a GitTarget, refreshing the
-// tables first. The bool reports whether the GitTarget currently has a table (i.e. any
-// rules at all); a target whose rules resolve to nothing still returns an empty table.
 func (m *Manager) watchedTypeTableForGitDest(gitDest types.ResourceReference) (WatchedTypeTable, bool) {
 	m.refreshWatchedTypeTables()
 	m.watchedTypes.mu.Lock()

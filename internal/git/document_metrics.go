@@ -46,7 +46,15 @@ const (
 // rather than absent: an unlabelled series is still a truthful count, and inventing a placeholder
 // would make one look like a real target.
 func recordDocument(ctx context.Context, event Event, outcome string) {
-	recordDocumentCount(ctx, placementTargetForEvents([]Event{event}), event, outcome, 1)
+	if telemetry.GitDocumentsTotal == nil {
+		return
+	}
+	// The identity is read off the event directly rather than through placementTargetForEvents,
+	// which would allocate a one-element slice per document. This runs once per document in a
+	// resync, which for a wildcard target is thousands per pass.
+	recordDocumentCount(ctx,
+		placementTarget{namespace: event.GitTargetNamespace, name: event.GitTargetName},
+		event, outcome, 1)
 }
 
 // recordDocumentCount counts n documents under one outcome, for the paths that decide in bulk.

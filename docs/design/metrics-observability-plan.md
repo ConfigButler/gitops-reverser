@@ -160,8 +160,8 @@ Carried forward from the previous revision, and still right:
    labels stay prefixed (`gittarget_*`, `provider_*`) to survive a `honor_labels=false` pod scrape.
 5. **Degradation is loud.** Running in a degraded shape is a visible state, not a silent one.
 
-Six new ones. The first three are what makes the flow drawable; the last two are what keeps a gauge
-honest during an incident:
+Seven new ones. The first three are what makes the flow drawable; the last three are what keeps a
+gauge honest during an incident, and cheap enough not to cause one:
 
 1. **One boundary, one counter, one bounded `outcome`: when the unit is the same.** Where a
    population divides, it divides *inside* one counter on a label named `outcome`. Two counters over
@@ -189,7 +189,15 @@ honest during an incident:
    becomes an OpenTelemetry *observable* gauge whose callback reads the live state when Prometheus
    asks. A gauge published from inside a work loop reports the loop's last healthy moment for as
    long as the loop is stuck, which is precisely backwards (§2.5).
-6. **"How long" is exported as a timestamp, not as an age.** An age has to be recomputed to stay
+6. **A gauge source reads published state and computes nothing.** The callback runs on the scrape
+   goroutine, so anything it triggers competes with the work it is measuring. This is not a
+   theoretical hazard: the first `watch_types` source called `StreamSummaryForGitTarget`, which
+   calls `refreshWatchedTypeTables`, a discovery-backed rebuild of every cluster's type registry,
+   once per target per scrape. Against a wildcard rule resolving 58 types it starved the replaying
+   streams and the GitTarget sat at `0/58 streams running` until an e2e spec timed out. A gauge that
+   reports the last published resolution is both cheaper and more honest than one that resolves its
+   own.
+7. **"How long" is exported as a timestamp, not as an age.** An age has to be recomputed to stay
    true; a timestamp is true forever once written, and `time() - <gauge>` does the arithmetic in
    PromQL. This is
    [Prometheus's own instrumentation advice](https://prometheus.io/docs/practices/instrumentation/#timestamps-not-time-since),
