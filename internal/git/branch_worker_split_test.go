@@ -1024,7 +1024,7 @@ func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *te
 	}})
 	require.Len(t, loop.pendingWrites, 2,
 		"deferred event commits during cooldown are retained as local commits, not lost")
-	loop.syncQueueDepthMetric()
+	loop.syncUnpushedWorkFlag()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:             []Event{configMapEvent("snapshot-only", "reconciler", "")},

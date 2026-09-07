@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -316,10 +317,13 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	m.ctx = ctx
 	m.mu.Unlock()
+	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, m.queueDepthSamples)
 	m.Log.Info("WorkerManager started")
 
 	<-ctx.Done()
 
+	// Clear the source before the workers go, so the callback cannot outlive them.
+	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, nil)
 	m.Log.Info("WorkerManager shutting down")
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -333,6 +337,31 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	m.workers = make(map[BranchKey]*BranchWorker)
 	m.Log.Info("WorkerManager stopped")
 	return nil
+}
+
+// queueDepthSamples is the git_queue_depth source: one sample per live worker, read when
+// Prometheus scrapes.
+//
+// It takes m.mu only, and only to copy the worker pointers out; each worker's own depth is two
+// atomic loads. That matters because the callback runs inside the metric SDK's collection path: a
+// source that waited on the lock a wedged worker holds across its slow work would reintroduce the
+// staleness the observable gauge exists to remove.
+func (m *WorkerManager) queueDepthSamples() []telemetry.GaugeSample {
+	m.mu.RLock()
+	workers := make([]*BranchWorker, 0, len(m.workers))
+	for _, worker := range m.workers {
+		workers = append(workers, worker)
+	}
+	m.mu.RUnlock()
+
+	samples := make([]telemetry.GaugeSample, 0, len(workers))
+	for _, worker := range workers {
+		samples = append(samples, telemetry.GaugeSample{
+			Value: worker.queueDepth(),
+			Attrs: worker.providerAttrs(),
+		})
+	}
+	return samples
 }
 
 // NeedLeaderElection ensures only the elected leader manages workers.

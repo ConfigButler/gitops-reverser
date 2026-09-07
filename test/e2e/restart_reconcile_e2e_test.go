@@ -162,7 +162,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		// cannot prove this — once Prometheus marks the old pod's series stale, the
 		// new pod's first increment can bring the cross-pod sum back to the old
 		// total rather than above it, so `> baseline` could never pass.
-		// branch_worker_queue_depth returning to 0 then confirms that submission
+		// git_queue_depth returning to 0 then confirms that submission
 		// has been committed and pushed — the exact moment any destructive commit
 		// would have landed — instead of guessing with a fixed sleep.
 		By("waiting for the new pod to complete its post-restart reconcile")
@@ -180,7 +180,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		By("waiting for the branch worker queue to drain")
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
-				`sum(gitopsreverser_branch_worker_queue_depth`+
+				`sum(gitopsreverser_git_queue_depth`+
 					`{provider_namespace=%q,provider_name=%q,branch="main",pod=%q}) or vector(0)`,
 				testNs, providerName, newControllerPod,
 			),

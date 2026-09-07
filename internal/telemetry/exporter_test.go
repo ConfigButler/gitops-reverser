@@ -34,7 +34,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, ObjectsWrittenTotal)
 	assert.NotNil(t, CommitsTotal)
 	assert.NotNil(t, ResyncSweepDeletesTotal)
-	assert.NotNil(t, BranchWorkerQueueDepth)
+	assert.NotNil(t, GitPushesTotal)
 	assert.NotNil(t, TargetReconcileCompletedTotal)
 	assert.NotNil(t, AuditEventListDurationSeconds)
 	assert.NotNil(t, AuditEventListDurationSeconds)

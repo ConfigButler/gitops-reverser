@@ -29,12 +29,18 @@ var (
 	// It had an exact twin, GitOperationsTotal, incremented with the same value four lines away:
 	// two names for one number. The twin is gone.
 	ObjectsWrittenTotal metric.Int64Counter
-	// CommitsTotal counts commit batches CREATED locally, labelled by the recording
+	// CommitsTotal counts commit batches that REACHED THE REMOTE, labelled by the recording
 	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity plus
 	// message_source. Live, snapshot and resync paths all feed this one counter;
 	// message_source (commit_request / live / reconcile) is what tells them apart. It counts
 	// commits that USED a request-supplied message, not CommitRequests: a request omitting
 	// spec.message renders through liveTemplate and counts as live.
+	//
+	// It is recorded on a successful push, not on local commit creation. Recorded at creation it
+	// claimed a commit the remote might never take, so a dead remote and a healthy one produced the
+	// same graph — the product's headline metric climbing while nothing reached Git. Counting at
+	// the terminal success is also the only place the accounting is right exactly once: a push
+	// cycle that hits a moved remote REBUILDS its commits and pushes again.
 	CommitsTotal metric.Int64Counter
 	// ResyncSweepDeletesTotal counts managed documents deleted by mark-and-sweep
 	// resyncs, labelled by the swept resource {group, version, resource}.
@@ -103,17 +109,32 @@ var (
 	// useful long-term for spotting excessive reconciles via increase(...[5m]);
 	// treat the name/labels as a public observability contract.
 	TargetReconcileCompletedTotal metric.Int64Counter
-	// BranchWorkerQueueDepth gauges pending work for a single branch worker:
-	// accepted-but-not-yet-handled items (queued or actively being processed)
-	// plus any committed-but-not-yet-pushed work the worker is still holding. It
-	// reads 0 only when the worker has fully drained (every accepted item handled
-	// and nothing retained for replay), so it never reports drained while a
-	// commit/push is still in flight. Labelled by {provider_namespace,
-	// provider_name, branch}; the namespace/name keys are prefixed to avoid the
-	// reserved Prometheus pod-scrape target labels (see
-	// TargetReconcileCompletedTotal). Load-bearing for the restart-reconcile e2e
-	// spec's drain wait; treat the name/labels as a public observability contract.
-	BranchWorkerQueueDepth metric.Int64Gauge
+
+	// GitPushesTotal counts push CYCLES at their terminal end, labelled by {provider_namespace,
+	// provider_name, branch, outcome} where outcome is `pushed` or `failed`. A cycle that exhausts
+	// its replay retries was previously a log line and nothing else: the mirror stops advancing and
+	// every other metric reads healthy, because commits are still being created locally.
+	GitPushesTotal metric.Int64Counter
+	// GitPushRetriesTotal counts replay rounds inside a push cycle, labelled by
+	// {provider_namespace, provider_name, branch, reason} where reason is `remote_moved` (the
+	// remote branch moved, so the pending writes are rebuilt on the new head and re-pushed) or
+	// `error`. A retry is not a terminal outcome, which is why it is its own counter rather than a
+	// third value on GitPushesTotal; rate(retries)/rate(pushes) is the contention signal.
+	GitPushRetriesTotal metric.Int64Counter
+	// GitPushDurationSeconds records one push cycle's wall time, labelled by
+	// {provider_namespace, provider_name, branch}. Retries are inside the measurement on purpose:
+	// what an operator wants is how long it took the mirror to accept the work, not how fast one
+	// attempt was.
+	GitPushDurationSeconds metric.Float64Histogram
+	// GitQueueDropsTotal counts work the branch worker threw away because its queue was full,
+	// labelled by {provider_namespace, provider_name, branch, kind} where kind is `write`,
+	// `attach` or `resync`. Every increment is lost work: a write is recovered only by the next
+	// resync, and until then the mirror is behind for that object with no other trace.
+	//
+	// The queue-depth gauge said the queue was deep. Nothing said anything had been dropped, which
+	// is the one thing an operator needs to know, and a saturating queue is exactly when it
+	// happens.
+	GitQueueDropsTotal metric.Int64Counter
 
 	// ResyncBackgroundFailuresTotal counts rule-change resyncs whose apply failed or
 	// timed out at the worker AFTER being enqueued. Delivery is marked on enqueue (the
@@ -212,16 +233,11 @@ var (
 	WatchedTypes metric.Int64Gauge
 
 	// The watch-plane owner is a queue, and a queue that grows silently is what makes a stall
-	// hard to see. These six are the queue's instrument panel; see
-	// docs/design/watch-manager-ownership.md.
+	// hard to see. These are the queue's instrument panel; see
+	// docs/design/watch-manager-ownership.md. Its two gauges — dirty depth and the timestamp the
+	// oldest dirty target went dirty — are OBSERVABLE and live in gauges.go, because a gauge this
+	// loop pushes stops moving exactly when the loop stops.
 
-	// WatchPlanDirtyTargets gauges how many GitTargets the owner currently owes a plan pass.
-	// It is saturation depth: a number that climbs and does not come back down.
-	WatchPlanDirtyTargets metric.Int64Gauge
-	// WatchPlanOldestDirtyAgeSeconds gauges how long the longest-waiting dirty GitTarget has
-	// been dirty. It is the single most useful operational number here: it goes up and stays
-	// up exactly when something is stuck, whether the queue is deep or holds one wedged target.
-	WatchPlanOldestDirtyAgeSeconds metric.Int64Gauge
 	// WatchPlanPassesTotal counts plan passes by {outcome, gittarget_namespace,
 	// gittarget_name}, where outcome is completed, failed, or timed_out. It separates "not
 	// running" from "running and failing", and timed_out from a real error because the two have
@@ -331,6 +347,9 @@ func registerCounters() error {
 	counters := []cSpec{
 		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
 		{"gitopsreverser_commits_total", &CommitsTotal},
+		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
+		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
+		{"gitopsreverser_git_queue_drops_total", &GitQueueDropsTotal},
 		{"gitopsreverser_resync_sweep_deletes_total", &ResyncSweepDeletesTotal},
 		{"gitopsreverser_prune_retained_documents_total", &PruneRetainedDocumentsTotal},
 		{"gitopsreverser_placements_total", &PlacementsTotal},
@@ -378,7 +397,11 @@ func registerHistograms() error {
 	// watchPlanPassBuckets span one target's plan pass: in-memory replanning (sub-millisecond)
 	// up through a first observation of a cluster and on to the per-target deadline.
 	watchPlanPassBuckets := []float64{0.0005, 0.001, 0.005, 0.025, 0.1, 0.5, 1, 5, 15, 30}
+	// gitPushBuckets span a push to a healthy nearby remote (tens of milliseconds) up through a
+	// contended one that replays, and on to a remote that is timing out.
+	gitPushBuckets := []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 	hists := []hSpec{
+		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds, gitPushBuckets},
 		{
 			"gitopsreverser_watch_plan_pass_duration_seconds",
 			&WatchPlanPassDurationSeconds,
@@ -411,13 +434,14 @@ func registerHistograms() error {
 }
 
 func registerGauges() error {
+	// Synchronous gauges: each is stamped by the event it describes, so there is no loop between
+	// the state and the value and nothing for a callback to improve. The follower timestamp is the
+	// worked example — it SHOULD stop advancing when the follower wedges, because that is the
+	// signal.
 	gauges := []gSpec{
+		{"gitopsreverser_watched_types", &WatchedTypes},
 		{"gitopsreverser_api_catalog_resources", &APICatalogResources},
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
-		{"gitopsreverser_watched_types", &WatchedTypes},
-		{"gitopsreverser_watch_plan_dirty_targets", &WatchPlanDirtyTargets},
-		{"gitopsreverser_watch_plan_oldest_dirty_age_seconds", &WatchPlanOldestDirtyAgeSeconds},
-		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 		{"gitopsreverser_attribution_fact_index_entries", &AttributionFactIndexEntries},
 		{
 			"gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds",
@@ -431,6 +455,33 @@ func registerGauges() error {
 			return err
 		}
 		*s.dest = v
+	}
+	return registerObservableGauges()
+}
+
+// registerObservableGauges creates the gauges whose value is READ at scrape time from a source a
+// producer installs with SetGaugeSource. See gauges.go for why these in particular cannot be
+// pushed: every one of them measures saturation of a loop, so publishing from inside that loop
+// freezes the value during the stall it exists to report.
+func registerObservableGauges() error {
+	observable := []struct {
+		name   string
+		source string
+	}{
+		{"gitopsreverser_git_queue_depth", GaugeGitQueueDepth},
+		{"gitopsreverser_watch_plan_dirty_targets", GaugeWatchPlanDirtyTargets},
+		{
+			"gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds",
+			GaugeWatchPlanOldestDirtySince,
+		},
+	}
+	for _, o := range observable {
+		if _, err := otelMeter.Int64ObservableGauge(
+			o.name,
+			metric.WithInt64Callback(observeGauge(o.source)),
+		); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -356,6 +356,12 @@ func (m *Manager) DeclareStatusForGitTarget(gitDest types.ResourceReference) Dec
 func (m *Manager) runOwnerLoop(ctx context.Context, log logr.Logger) {
 	t := m.triggers()
 
+	// The queue's two gauges read this loop's state when Prometheus scrapes rather than being
+	// published by it. A loop that has stopped turning is exactly what they exist to report, so a
+	// value this loop pushes is a value that stops moving at the worst moment.
+	m.installDirtySetGaugeSources()
+	defer m.clearDirtySetGaugeSources()
+
 	// The floor. Nothing else in this loop is periodic; every other pass is driven by a trigger.
 	periodic := time.NewTicker(periodicReconcileInterval)
 	defer periodic.Stop()
@@ -404,7 +410,6 @@ func (m *Manager) runOwnerLoop(ctx context.Context, log logr.Logger) {
 func (m *Manager) ownerTurn(ctx context.Context, log logr.Logger) time.Duration {
 	m.applyPendingTeardowns(log)
 	m.refreshSharedSnapshotsIfDue(ctx, log)
-	m.publishDirtySetDepth()
 
 	// One target per turn, always the one that has been ready longest. A pass is pure in-memory
 	// work — every network call the watch plane makes is in the shared refresh above, which runs
