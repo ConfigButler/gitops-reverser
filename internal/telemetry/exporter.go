@@ -37,13 +37,12 @@ var (
 	//                    only numeric trace a suppressed drop leaves: it produces no plan action,
 	//                    no commit and no ResyncStats entry. Non-zero is configured behaviour,
 	//                    never a fault.
+	//   refused        — the writer declined to place it, so it is NOT in the mirror.
+	//                    placement_refusals_total carries the reason.
 	//
-	// It replaces three counters over one population. objects_written_total (and its exact twin
-	// git_operations_total) incremented by the number of INPUT EVENTS in a flush, which is neither
-	// a document count nor a Git-operation count: a flush of one event that rewrites six files
-	// counted one, and events that deleted or changed nothing counted the same as events that
-	// wrote. resync_sweep_deletes_total counted only the sweep path, so a steady-state watch delete
-	// was invisible; prune_retained_documents_total was its retention twin under a third name.
+	// Tallied on the write batch and published after a successful flush, under the batch's
+	// GitTarget: a resync can apply every document and then abort on a precondition, writing
+	// nothing at all.
 	GitDocumentsTotal metric.Int64Counter
 	// GitCommitsTotal counts commit batches that REACHED THE REMOTE, labelled by the recording
 	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity plus
@@ -238,13 +237,12 @@ var (
 	// change; it never carries object state. Liveness = sum(...) > 0; the e2e invariant gates on
 	// category="error" == 0.
 	AuditEventsTotal metric.Int64Counter
-	// AuditEventListDurationSeconds records how long the webhook takes to answer an EventList
-	// request, labelled by bounded outcome (processed/empty/decode_error/process_error).
+	// AuditEventListDurationSeconds times every request at /audit-webhook, labelled by bounded
+	// outcome: bad_method, bad_path and bare_endpoint_disabled for requests refused at the door,
+	// then processed, empty, decode_error and process_error.
 	//
-	// Its _count series IS the request counter: a histogram ships its own observation count, so the
-	// separate AuditEventListsTotal it used to sit beside published the identical numbers under a
-	// second name. The per-item counter that sat beside it went too — audit_events_total counts the
-	// same event items once each, with group/version/resource/verb on them.
+	// Its _count series IS the request counter — a histogram ships its own observation count — so
+	// there is no separate one. The per-event census is AuditEventsTotal.
 	AuditEventListDurationSeconds metric.Float64Histogram
 	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes, labelled by
 	// {tier, actor_kind, group, version, resource}. tier names WHICH evidence answered

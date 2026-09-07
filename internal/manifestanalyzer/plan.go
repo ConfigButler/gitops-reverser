@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -33,10 +34,11 @@ type Plan struct {
 	// the policy is deliberately keeping". Purely informational: it is a count, not an
 	// action, and it never reaches the commit path.
 	RetainedOrphans int
-	// RetainedOrphansByType breaks the same population down by resource type. A bare total is not
-	// actionable — "12 documents retained" names nothing an operator can go and look at — and the
-	// type is what a retention metric has to carry to be worth publishing.
-	RetainedOrphansByType map[types.ResourceIdentifier]int
+	// RetainedOrphansByType breaks the same population down by resource TYPE. A bare total names
+	// nothing an operator can go and look at. Keyed by the type alone, never by object identity:
+	// the consumers publish group/version/resource, so per-object keys would be one map entry per
+	// document for a series they all share.
+	RetainedOrphansByType map[schema.GroupVersionResource]int
 }
 
 // PlanActionKind enumerates what a single action does. The seven kinds are the
@@ -297,7 +299,7 @@ type planBuilder struct {
 	// retained counts the in-scope managed drops sweep suppressed, surfaced as
 	// Plan.RetainedOrphans, and retainedByType breaks that count down by resource type.
 	retained       int
-	retainedByType map[types.ResourceIdentifier]int
+	retainedByType map[schema.GroupVersionResource]int
 }
 
 // planDesired classifies one desired resource against the store and appends its
@@ -430,9 +432,12 @@ func (b *planBuilder) planGitOnly(dm *DocumentModel) {
 		// list, its ordering, or the commit. Counting it is the only trace it leaves.
 		b.retained++
 		if b.retainedByType == nil {
-			b.retainedByType = map[types.ResourceIdentifier]int{}
+			b.retainedByType = map[schema.GroupVersionResource]int{}
 		}
-		b.retainedByType[resourceOf(dm)]++
+		id := resourceOf(dm)
+		b.retainedByType[schema.GroupVersionResource{
+			Group: id.Group, Version: id.Version, Resource: id.Resource,
+		}]++
 		return
 	}
 	b.actions = append(b.actions, PlanAction{

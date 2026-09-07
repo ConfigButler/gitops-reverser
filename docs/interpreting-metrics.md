@@ -82,12 +82,13 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 | `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | Time to `initial-events-end`: what a `410` storm charges. |
 | `watch_recovery_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `resource`, `mode` | One per completed recovery. `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. No `version`: a recovery covers a cell. |
 | `watch_types` | gauge | `gittarget_namespace`, `gittarget_name`, `state` | Types this target resolves, by `streaming` / `replaying` / `blocked`. `sum` is the resolved total. |
-| `git_documents_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The write-boundary census, per **document**. `outcome` is `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained`. |
+| `git_documents_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The write-boundary census, per **document**. `outcome` is `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained` / `refused`. |
 | `git_commits_total` | counter | `provider_namespace`, `provider_name`, `branch`, `author_kind`, `message_source` | Commit batches that **reached the remote**. |
 | `git_pushes_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per push cycle: `pushed` or `failed`. |
 | `git_push_retries_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
 | `git_push_duration_seconds` | histogram | `provider_namespace`, `provider_name`, `branch` | One cycle end to end, retries included. |
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync`. Every increment is lost work. |
+| `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
 | `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document at a resolved path. |
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined. Every increment is a resource **absent** from the mirror. |
@@ -101,10 +102,10 @@ red trains people to ignore it. Four classes:
 
 | Class | Values | Read as |
 | --- | --- | --- |
-| **expected** | `routed`, `unchanged`, `operation_filtered`, `bookmark`, `shutdown`, `written`, `deleted_live`, `deleted_sweep`, `retained`, `cached` | the pipeline working |
+| **expected** | `routed`, `unchanged`, `operation_filtered`, `bookmark`, `shutdown`, `written`, `deleted_live`, `deleted_sweep`, `retained`, `cached` | the pipeline working. `unchanged` is a document considered and found identical; `refused` is a document the writer declined to place, which is loss |
 | **degraded** | `author_kind="unresolved"`, `mode="list_fallback"`, weak attribution tiers | working, on weaker evidence |
 | **recoverable** | `git_pushes_total{outcome="failed"}` — the writes are retained and retried | alert on it **sustained with no successes**, never on one occurrence |
-| **loss** | `route_failed`, any `git_queue_drops_total`, `placement_refusals_total` | an observed change that did not reach Git |
+| **loss** | `route_failed`, any `git_queue_drops_total`, any `git_commit_failures_total`, `placement_refusals_total`, `git_documents_total{outcome="refused"}` | an observed change that did not reach Git |
 
 `route_failed` and a queue drop **overlap**: a full worker queue is one of the ways a route fails, so
 one dropped event increments both. They are two views of one event, and summing them double-counts.
@@ -132,35 +133,31 @@ sum by (provider_namespace, provider_name, branch) (
   rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0
 ```
 
-**Is work being thrown away?** This should be flat zero. It used to be a log line and nothing else:
+**Is work being thrown away?** Both should be flat zero, and both used to be log lines and nothing
+else. A queue drop is a saturated worker; a commit failure takes a whole window with it, and
+`reason="refused"` will not clear until someone fixes the Git path:
 
 ```promql
 sum by (kind) (rate(gitopsreverser_git_queue_drops_total[5m]))
+sum by (kind, reason) (rate(gitopsreverser_git_commit_failures_total[5m]))
 ```
 
-**Are streams saturated?** A stream is single-threaded, so time it spends handling one event is
-time nothing else on that stream is being read.
-
-Read this as **aggregate busy-seconds per second, per type** — not as a per-stream ratio. The
-histogram is labelled by type, and one type can be watched by several streams (one per namespace),
-so ten lightly loaded streams also sum to `1`. A value near the number of streams for that type is
-saturation; a value near `1` with ten streams is 10% each:
+**How busy is a type's ingestion?** A stream is single-threaded, so time it spends handling one
+event is time nothing else on that stream is being read. This is **aggregate busy-seconds per
+second, per type**:
 
 ```promql
 sum by (group, version, resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))
 ```
 
-Divide by the stream count if you want the ratio. Where a type is watched cluster-wide (the common
-case) there is one stream, and the aggregate *is* the ratio:
+It is not a per-stream ratio and cannot be turned into one. The histogram is labelled by type, and
+one type may be watched by several streams (one per namespace) whose measurements share those
+labels, so the individual streams are not recoverable from the exported series. Read it as "this
+type's ingestion is spending N seconds of work per second": a value near 1 means at least one stream
+is close to saturated, and a value comfortably below 1 means none of them is.
 
-```promql
-sum by (group, version, resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))
-  / on (group, version, resource) group_left count by (group, version, resource) (
-      gitopsreverser_watch_event_handling_seconds_count)
-```
-
-The per-stream number is deliberately not published: it would need the namespace on the histogram,
-which multiplies the widest family in the system by every watched namespace.
+Publishing the per-stream number would need the namespace on the widest histogram in the system,
+which is not worth it for a signal this one already answers.
 
 **Is watch stable, and what are rebuilds costing?**
 

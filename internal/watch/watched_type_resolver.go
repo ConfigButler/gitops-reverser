@@ -103,18 +103,12 @@ func (m *Manager) refreshWatchedTypeTables() {
 	m.watchedTypes.mu.Unlock()
 }
 
-// installWatchTypeGaugeSource publishes the per-GitTarget type counts, split by stream readiness,
-// as a SCRAPE-TIME source.
+// installWatchTypeGaugeSource publishes each GitTarget's resolved type count, split by stream
+// readiness, as a scrape-time source.
 //
-// It replaces a pushed `watched_types` gauge that carried a bare count and had to zero out a
-// departed GitTarget by hand, because a pushed gauge latches its last value forever. A callback has
-// nothing to latch: a target that is gone simply produces no sample.
-//
-// The `state` split is what makes the gauge answer both questions the old one blurred. Summing it
-// gives the resolved-type count the old gauge published — the CONFIGURATION view — and
-// `state="blocked"` is exactly the difference between a type this GitTarget resolves and a type it
-// is actually watching. The name is `watch_types`, not `watch_streams`: this aggregates by resource
-// TYPE, and one type may be watched by several streams across namespaces.
+// Summing the states gives the target's resolved-type count; `state="blocked"` is the difference
+// between a type it resolves and one it is actually watching. Named for TYPES, not streams: it
+// aggregates by resource type, and one type may be watched by several streams across namespaces.
 func (m *Manager) installWatchTypeGaugeSource() {
 	telemetry.SetGaugeSource(telemetry.GaugeWatchTypes, m.watchTypeSamples)
 }
@@ -126,19 +120,12 @@ func (m *Manager) clearWatchTypeGaugeSource() {
 
 // watchTypeSamples reads each declared GitTarget's stream readiness at scrape time.
 //
-// It reads RESIDENT state only, and that is a correctness requirement rather than an optimisation.
-// The obvious implementation calls StreamSummaryForGitTarget, which calls watchedTypeTableForGitDest,
-// which calls refreshWatchedTypeTables -- a discovery-backed re-resolution of every cluster's type
-// registry, taken on the Prometheus SCRAPE goroutine, once per target per scrape. On a wildcard rule
-// resolving 58 types that starved the replaying streams of the locks they needed and left the
-// GitTarget reporting 0/58 running until the e2e spec timed out. gauges.go says a source must not
-// block; this is what it costs when one does.
-//
-// So: published tables, published stream states, no refresh. Whatever the last resolution produced
-// is what the scrape reports, which is the honest answer for a gauge anyway.
+// RESIDENT state only: published tables and published stream states, never a refresh. Calling
+// StreamSummaryForGitTarget here would reach refreshWatchedTypeTables and re-resolve every
+// cluster's type registry on the scrape goroutine, competing with the streams being measured.
 //
 // streamSummaryCounts guarantees Total == Ready + Replaying + Blocked, so the three samples
-// partition the target's resolved types and nothing is double-counted or lost.
+// partition the target's resolved types.
 func (m *Manager) watchTypeSamples() []telemetry.GaugeSample {
 	tables := m.residentWatchedTypeTables()
 

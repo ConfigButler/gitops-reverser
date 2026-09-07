@@ -10,24 +10,15 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// Gauges here are OBSERVABLE: their value is read when Prometheus scrapes, not pushed from the
-// loop that owns the state.
+// Gauges here are OBSERVABLE: their value is read when Prometheus scrapes, not pushed from the loop
+// that owns the state.
 //
-// The distinction is not stylistic. Both saturation gauges used to be pushed, and both went stale
-// during exactly the incident they exist to detect:
-//
-//   - branch_worker_queue_depth was republished at the BOTTOM of each worker-loop iteration. From
-//     idle, fifty items could enqueue with the gauge still reading 0 because nothing had published
-//     yet; the loop would then wake and block inside one item's handling, and the gauge stayed 0
-//     for as long as that took. It converged to 0 correctly on drain, and also started at 0 and
-//     did not move while work piled up.
-//   - watch_plan_oldest_dirty_age_seconds was republished once per owner-loop turn, so a pass that
-//     wedged stopped the turn and froze the age at whatever it held when the loop stopped moving.
-//
-// A callback cannot go stale that way: there is no loop between the state and the scrape. The
-// companion rule is that "how long" is exported as a TIMESTAMP rather than an age, so the value
-// stays true without anyone recomputing it and PromQL does the arithmetic with time() - <gauge>.
-// See https://prometheus.io/docs/practices/instrumentation/#timestamps-not-time-since.
+// A gauge pushed from inside a work loop reports the loop's last healthy moment for as long as the
+// loop is stuck, which is backwards for anything measuring saturation. The companion rule is that
+// "how long" is exported as a TIMESTAMP rather than an age, so the value stays true with nobody
+// recomputing it and PromQL does the arithmetic with time() - <gauge>. See
+// https://prometheus.io/docs/practices/instrumentation/#timestamps-not-time-since and, for the two
+// incidents behind these rules, docs/design/metrics-observability-plan.md §2.5.
 
 // GaugeSample is one observation: a value and the labels it is published under.
 type GaugeSample struct {
@@ -35,10 +26,11 @@ type GaugeSample struct {
 	Attrs []attribute.KeyValue
 }
 
-// GaugeSource produces every sample for one observable gauge, at scrape time. It must not block:
-// it runs inside the metric SDK's collection path, so a source that takes a lock the measured loop
-// holds across its slow work would reintroduce the staleness this file exists to remove. Read
-// atomics and short-lived snapshots, never the work loop's own mutex.
+// GaugeSource produces every sample for one observable gauge, at scrape time.
+//
+// It must read published state and compute nothing. It runs inside the metric SDK's collection
+// path, so a source that resolves, refreshes, or waits on a lock the measured loop holds competes
+// with the work it is measuring. Read atomics and short-lived snapshots.
 type GaugeSource func() []GaugeSample
 
 // Names for the observable gauges a producer can install a source for. They are the instrument

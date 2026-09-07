@@ -542,7 +542,7 @@ Alerts, as rules rather than sketches this time:
 | Fact-store errors | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | fact appends are failing |
 | Follower wedged | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)` for 10m | attribution degrading cluster-wide; **both arms are required**, because the gauge does not exist until the first successful read |
 | Watch plane stuck | `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120` for 5m | a GitTarget cannot be planned. Written against the timestamp, because the age metric it replaces froze during exactly this condition (§2.5) |
-| Head-of-line | `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m])) > 0.8` | a type's streams are busy more than 80% of one stream's wall time. It is an AGGREGATE over the type's streams, not a per-stream ratio: ten lightly loaded streams also sum to 1, so the threshold scales with the stream count. Publishing the per-stream number would need the namespace on the widest histogram in the system |
+| Head-of-line | `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m])) > 0.8` | a type's ingestion is spending 0.8s of work per second. It is an AGGREGATE and cannot be turned into a per-stream ratio: several streams of one type share these labels, so their identities are not recoverable from the exported series |
 | Degraded API surface | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | a broken APIService is hiding types |
 | Encryption failing | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected |
 
@@ -655,13 +655,25 @@ recorded rather than quietly absorbed:
 | a refusal is not a no-op | `documentRefused`, split out of `unchanged` |
 | `unknown_route` names a rejection that cannot happen | `bare_endpoint_disabled` (§2.9) |
 | the dirty-target alert compares a timestamp to a duration | `time() - <gauge> > 120` |
-| the saturation query is aggregate, not per-stream | said plainly, with the ratio form beside it |
+| the saturation query is aggregate, not per-stream | the invalid ratio form is **deleted**; the metric is described as aggregate processing time |
+| two bookkeeping holes feed the pushed-commit count | the atomic path retains its committed batch; a resync execution resets `Committed` |
+| a window build failure escapes the new counter | `buildGroupedPendingWrite`'s error exit records one |
+| the per-type tallies key on object identity | keyed by GVR, so one type is one map entry and one series |
+| the comments are harder to read than the code | trimmed to the current contract; the history stays here and in `git log` |
+| the tests assert helpers, not paths | the census tests drive a real resync and a real aborted flush; the resync-reset test drives `executeResyncPendingWrite` twice and fails without the fix |
 
-The pattern across all three reviews is worth naming, because it is the thing to watch for in the
-next one: **the first draft of a metric is usually right about what to count and wrong about where
-to count it.** Duplicates and missing stages are easy to see and were found immediately. Recording
+The pattern across the reviews is worth naming, because it is the thing to watch for in the next
+one: **the first draft of a metric is usually right about what to count and wrong about where to
+count it.** Duplicates and missing stages are easy to see and were found immediately. Recording
 boundaries are invisible until someone traces a call path, and every one of them produced a number
 that looked completely reasonable.
+
+One more habit came out of the last round, and it is about this document rather than the code. The
+first instinct on being corrected was to write the correction into the comment beside the fix, which
+left the source recounting review rounds and abandoned designs to every future reader. **The
+narrative belongs here; the contract belongs beside the code.** A comment should say what the
+current thing does and what it costs to get wrong, in the fewest words that survive being read by
+someone who has never seen this file.
 
 ## 10. Non-goals, and the traps this shape invites
 

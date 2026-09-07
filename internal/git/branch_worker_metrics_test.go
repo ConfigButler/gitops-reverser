@@ -7,11 +7,13 @@ import (
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -355,13 +357,11 @@ func TestCommitsTotal_OnlyCountedWhenThePushLands(t *testing.T) {
 	assert.Equal(t, int64(3), commits)
 }
 
-// A commit that a conflict replay DISCARDED must not be counted either, and this is the reason the
-// count is read off the writes at push time rather than held from commit time.
+// A commit the replay DISCARDED must not be counted, and this is why the count is read off the
+// writes at push time rather than held from commit time.
 //
-// A replay rebuilds the pending writes on the new remote head. A write whose change another writer
-// has already applied produces no replacement commit: executePendingWrites leaves its SHA zero. A
-// tally held from the original commit would still publish it, reporting a commit the remote never
-// took under a metric whose whole contract is that it did.
+// executePendingWrites stamps CommitSHA in place. A replay that finds nothing left to do for a
+// write leaves its SHA zero, so reading the slice after the push counts exactly what survived.
 func TestCommitsTotal_ExcludesCommitsDiscardedByReplay(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -379,6 +379,45 @@ func TestCommitsTotal_ExcludesCommitsDiscardedByReplay(t *testing.T) {
 	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
 	require.True(t, ok)
 	assert.Equal(t, int64(1), commits, "only the commit that survived the replay is on the remote")
+}
+
+// A resync write carries its commit through a SHARED pointer that survives a conflict replay, so
+// each execution has to reset it. A replay that finds nothing left to do returns early, and a stale
+// true would count a commit the replay never made.
+func TestExecuteResyncPendingWrite_ResetsCommittedWhenNothingChanges(t *testing.T) {
+	repo, err := gogit.PlainInit(t.TempDir(), false)
+	require.NoError(t, err)
+	require.NoError(t, PinExplicitSigningPolicy(repo))
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	w := &BranchWorker{
+		contentWriter: newContentWriter(itypes.SensitiveResourcePolicy{}),
+		mapper:        configMapMapper(),
+		Log:           logr.Discard(),
+		ctx:           t.Context(),
+	}
+
+	committed := false
+	pendingWrite := PendingWrite{
+		Kind:      PendingWriteResync,
+		Desired:   []manifestanalyzer.DesiredResource{desiredCM("keep", "blue")},
+		Committed: &committed,
+	}
+
+	// First execution writes and commits.
+	commits, err := w.executeResyncPendingWrite(t.Context(), repo, worktree, pendingWrite)
+	require.NoError(t, err)
+	require.Equal(t, 1, commits)
+	require.True(t, committed, "the first execution committed")
+
+	// Second execution is the replay shape: the worktree already holds the desired state, so
+	// nothing changes and no commit is made. The flag must come back down.
+	commits, err = w.executeResyncPendingWrite(t.Context(), repo, worktree, pendingWrite)
+	require.NoError(t, err)
+	require.Equal(t, 0, commits)
+	assert.False(t, committed,
+		"a replay that made no commit must not leave the write claiming one")
 }
 
 // A push cycle ends exactly once, with a duration, whichever way it ended. Without this the only

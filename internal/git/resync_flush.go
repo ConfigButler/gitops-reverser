@@ -253,6 +253,13 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
+	// Reset before applying. Committed is a pointer shared with the caller and survives a conflict
+	// replay, which re-executes this write against the rebased worktree: a replay that finds
+	// nothing left to do returns early below, and a stale true would count a commit it never made.
+	if pendingWrite.Committed != nil {
+		*pendingWrite.Committed = false
+	}
+
 	stats, anyChanges, err := w.applyResyncToWorktree(
 		ctx, worktree, base, target, pendingWrite.Desired, pendingWrite.Scope,
 	)
@@ -468,6 +475,7 @@ func (wb *writeBatch) applyResyncPlan(
 	// so there is no action to observe here. Carrying it on the stats is what lets it leave the
 	// writer at all.
 	stats.Retained = plan.RetainedOrphans
+	wb.tallyPruneRetention(plan)
 	wb.tallyPruneRetention(plan)
 	return stats, nil
 }

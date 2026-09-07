@@ -572,12 +572,8 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 // loop is holding retained unpushed work. It reads 0 only on a full drain, so a drain gate cannot
 // be satisfied mid-push.
 //
-// It is READ by the git_queue_depth observable gauge at scrape time rather than pushed from the
-// loop. Pushed, it was republished at the bottom of each loop iteration, which meant it reported 0
-// through exactly the stall it exists to detect: from idle, fifty items could enqueue with nothing
-// having published yet, and the loop would then block inside one item's handling with the gauge
-// still reading 0. Both fields are atomics, so the callback takes no lock the loop could be holding
-// across its slow work.
+// Read by the git_queue_depth observable gauge at scrape time. Both fields are atomics, so the
+// callback takes no lock the loop could be holding across its slow work.
 func (w *BranchWorker) queueDepth() int64 {
 	depth := w.inflightItems.Load()
 	if w.hasUnpushedWork.Load() {
@@ -837,11 +833,8 @@ func (l *branchWorkerEventLoop) run() {
 // syncUnpushedWorkFlag refreshes the worker's retained-work flag from the loop's authoritative
 // state. Called once per loop iteration; the loop goroutine is the only writer of hasUnpushedWork.
 //
-// It no longer publishes the gauge, and that is the fix rather than a tidy-up: the gauge is now
-// read at scrape time from queueDepth(), so a loop wedged inside one item's handling can no longer
-// leave a stale depth published behind it. What the loop still owes the metric is this flag, which
-// only the loop can know — whether a window is open or writes are retained — and an atomic read of
-// it costs the scrape nothing.
+// The flag is all the loop owes the depth gauge: queueDepth() reads it and inflightItems at scrape
+// time, so nothing here publishes a value that could go stale while the loop is busy.
 func (l *branchWorkerEventLoop) syncUnpushedWorkFlag() {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
 }
@@ -978,7 +971,10 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		return
 	}
 
-	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
+	// Retain the batch, not the original write: executePendingWrites stamps CommitSHA into the
+	// slice it is given, and the retained write is what the push counts from.
+	batch := []PendingWrite{*pendingWrite}
+	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
 		// A refused write plan is surfaced as a GitTarget status transition rather than
 		// logged as a write fault; nothing was committed either way, so the request is
 		// dropped in both cases.
@@ -992,8 +988,8 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		return
 	}
 
-	l.pendingWrites = append(l.pendingWrites, *pendingWrite)
-	l.pendingWritesBytes += pendingWrite.ByteSize
+	l.pendingWrites = append(l.pendingWrites, batch[0])
+	l.pendingWritesBytes += batch[0].ByteSize
 	l.maybeSchedulePush()
 }
 
@@ -1084,6 +1080,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
+		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 		l.w.Log.Error(err, "Failed to build pending write; dropping open window",
 			"reason", string(reason),
 			"windowAuthor", windowAuthor,
@@ -1605,16 +1602,12 @@ type commitLabels struct {
 	messageSource string
 }
 
-// publishCommitsForPush counts the commits a successful push just put on the remote, by
+// publishCommitsForPush counts the commits a successful push put on the remote, by
 // {author_kind, message_source}.
 //
-// It reads the pending writes AS THEY STAND after the push, which is the whole point. An earlier
-// version tallied at local commit creation and held the numbers until a push landed; that was right
-// about the timing and wrong about the population, because a conflict replay REBUILDS the pending
-// writes on the new remote head and a write whose change another writer already applied produces no
-// replacement commit at all. The held tally still published it. Reading the writes after the replay
-// counts exactly what survived: executePendingWrites stamps each write's CommitSHA in place, and a
-// write that produced no commit has a zero SHA and is not counted.
+// It reads the pending writes as they stand after the push. executePendingWrites stamps each
+// write's CommitSHA in place, so a write a conflict replay rebuilt to nothing has a zero SHA and is
+// not counted: this is the commits that reached the remote, not the ones that were created.
 func (w *BranchWorker) publishCommitsForPush(pendingWrites []PendingWrite) {
 	if telemetry.GitCommitsTotal == nil {
 		return
@@ -1685,10 +1678,11 @@ func (w *BranchWorker) providerAttrs(extra ...attribute.KeyValue) []attribute.Ke
 	}, extra...)
 }
 
-// recordCommitFailure counts one window or request that died between routing and pushing.
+// recordCommitFailure counts one window or request that died between routing and pushing: its
+// events are lost until the next resync re-derives them.
 //
-// `refused` and `error` are separated because they need different people: a refusal is a Git path a
-// human has to fix and will not clear on its own, while an error may be transient. Both are loss.
+// `refused` and `error` need different people. A refusal is a Git path a human has to fix and will
+// not clear on its own; an error may be transient.
 func (w *BranchWorker) recordCommitFailure(kind, reason string) {
 	if telemetry.GitCommitFailuresTotal == nil {
 		return
@@ -1705,10 +1699,8 @@ func (w *BranchWorker) recordCommitFailure(kind, reason string) {
 
 // recordQueueDrop counts one item the queue was too full to accept.
 //
-// Every increment is work thrown away. A live write is recovered only by the next resync, and until
-// then the mirror is behind for that object; an attach is re-sent by the controller's next poll.
-// The depth gauge could always say the queue was deep, and nothing said anything had been dropped,
-// which is the part an operator has to know.
+// Every increment is work thrown away: a live write is recovered only by the next resync, and an
+// attach by the controller's next poll.
 func (w *BranchWorker) recordQueueDrop(kind string) {
 	if telemetry.GitQueueDropsTotal == nil {
 		return
