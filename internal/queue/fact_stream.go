@@ -12,12 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // Defaults for the attribution fact transport. They are shared by both implementations so a
@@ -216,10 +212,7 @@ func recordFactStreamDecodeError(
 	id string,
 	err error,
 ) {
-	if telemetry.AttributionFactStreamDecodeErrorsTotal != nil {
-		telemetry.AttributionFactStreamDecodeErrorsTotal.Add(ctx, 1,
-			metric.WithAttributes(attribute.String("transport", string(transport))))
-	}
+	recordFactLoss(ctx, factLossUndecodable)
 	logf.Log.WithName("attribution-fact-stream").Error(err,
 		"attribution fact stream entry could not be decoded; it is skipped and its facts are lost, so "+
 			"the commits that needed them are authored unresolved",

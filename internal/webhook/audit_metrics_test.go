@@ -18,8 +18,6 @@ import (
 var errAuditTest = errors.New("fact store down")
 
 const (
-	eventListMetric         = "gitopsreverser_audit_eventlists_total"
-	eventListEventsMetric   = "gitopsreverser_audit_eventlist_events_total"
 	eventListDurationMetric = "gitopsreverser_audit_eventlist_duration_seconds"
 	auditEventsMetric       = "gitopsreverser_audit_events_total"
 )
@@ -35,50 +33,45 @@ const subresourceExecEvent = `{"kind":"Event","level":"RequestResponse","auditID
 	`"objectRef":{"resource":"pods","namespace":"default","name":"p","apiVersion":"v1","subresource":"exec"},` +
 	`"responseStatus":{"code":101}}`
 
-// TestServeHTTP_EventListIngressMetrics asserts the three EventList-boundary
-// metrics across the four outcome labels. The event-item counter has no sample
-// for decode_error, since the item count is only known after a successful decode.
+// TestServeHTTP_EventListIngressMetrics asserts the EventList request boundary across the four
+// outcome labels.
+//
+// One instrument covers it: the histogram's own _count series IS the request counter, which is why
+// the separate audit_eventlists_total it used to sit beside was removed rather than kept in step.
+// The per-item counter went with it — audit_events_total counts the same items once each, with the
+// type and verb on them, and TestServeHTTP_AcceptedEventQueuedOutcome below asserts that census.
 func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 	tests := []struct {
-		name            string
-		body            string
-		recorderErr     bool
-		wantOutcome     string
-		wantStatus      int
-		wantEventSample bool
-		wantEventCount  int64
+		name        string
+		body        string
+		recorderErr bool
+		wantOutcome string
+		wantStatus  int
 	}{
 		{
-			name:            "processed",
-			body:            eventListBody(acceptedCreateEvent),
-			wantOutcome:     "processed",
-			wantStatus:      http.StatusOK,
-			wantEventSample: true,
-			wantEventCount:  1,
+			name:        "processed",
+			body:        eventListBody(acceptedCreateEvent),
+			wantOutcome: "processed",
+			wantStatus:  http.StatusOK,
 		},
 		{
-			name:            "empty event list",
-			body:            eventListBody(),
-			wantOutcome:     "empty",
-			wantStatus:      http.StatusOK,
-			wantEventSample: true,
-			wantEventCount:  0,
+			name:        "empty event list",
+			body:        eventListBody(),
+			wantOutcome: "empty",
+			wantStatus:  http.StatusOK,
 		},
 		{
-			name:            "decode error",
-			body:            "not json",
-			wantOutcome:     "decode_error",
-			wantStatus:      http.StatusBadRequest,
-			wantEventSample: false,
+			name:        "decode error",
+			body:        "not json",
+			wantOutcome: "decode_error",
+			wantStatus:  http.StatusBadRequest,
 		},
 		{
-			name:            "process error",
-			body:            eventListBody(processErrorEvent),
-			recorderErr:     true,
-			wantOutcome:     "process_error",
-			wantStatus:      http.StatusInternalServerError,
-			wantEventSample: true,
-			wantEventCount:  1,
+			name:        "process error",
+			body:        eventListBody(processErrorEvent),
+			recorderErr: true,
+			wantOutcome: "process_error",
+			wantStatus:  http.StatusInternalServerError,
 		},
 	}
 
@@ -99,21 +92,12 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 
 			match := map[string]string{"outcome": tt.wantOutcome}
 
-			requests, ok := telemetry.CollectInt64Sum(reader, eventListMetric, match)
-			require.True(t, ok, "%s should have a sample for %v", eventListMetric, match)
-			assert.Equal(t, int64(1), requests)
-
+			// _count is the request counter. Asserting it here is what makes the removal of the
+			// separate counter safe: the number an operator reads is still published, under the
+			// series a histogram ships for free.
 			durCount, ok := telemetry.CollectHistogramCount(reader, eventListDurationMetric, match)
 			require.True(t, ok, "%s should have a sample for %v", eventListDurationMetric, match)
 			assert.Equal(t, uint64(1), durCount)
-
-			events, ok := telemetry.CollectInt64Sum(reader, eventListEventsMetric, match)
-			if tt.wantEventSample {
-				require.True(t, ok, "%s should have a sample for %v", eventListEventsMetric, match)
-				assert.Equal(t, tt.wantEventCount, events)
-			} else {
-				assert.False(t, ok, "decode_error must not produce an event-item sample")
-			}
 		})
 	}
 }

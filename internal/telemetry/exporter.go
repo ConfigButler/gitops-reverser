@@ -24,11 +24,12 @@ import (
 var (
 	otelMeter metric.Meter
 
-	// GitOperationsTotal counts git operations performed by branch workers.
-	GitOperationsTotal metric.Int64Counter
 	// ObjectsWrittenTotal counts objects that resulted in file writes.
+	//
+	// It had an exact twin, GitOperationsTotal, incremented with the same value four lines away:
+	// two names for one number. The twin is gone.
 	ObjectsWrittenTotal metric.Int64Counter
-	// CommitsTotal counts commit batches pushed to git, labelled by the recording
+	// CommitsTotal counts commit batches CREATED locally, labelled by the recording
 	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity plus
 	// message_source. Live, snapshot and resync paths all feed this one counter;
 	// message_source (commit_request / live / reconcile) is what tells them apart. It counts
@@ -49,7 +50,7 @@ var (
 	// PlacementsTotal counts new-file placements resolved for a resource with no document in
 	// Git yet — the only case placement runs for — labelled by {source, disposition,
 	// gittarget_namespace, gittarget_name, group, version, resource}. source is which
-	// mechanism chose the path (declared / kustomize_root / canonical) and disposition is what
+	// mechanism chose the path (by_type / default / kustomize_root / canonical) and disposition is what
 	// it did with it (new_file / appended).
 	//
 	// It exists because sibling inference was deleted: a
@@ -130,14 +131,13 @@ var (
 	// change; it never carries object state. Liveness = sum(...) > 0; the e2e invariant gates on
 	// category="error" == 0.
 	AuditEventsTotal metric.Int64Counter
-	// AuditEventListsTotal counts inbound audit EventList requests at the webhook boundary,
-	// labelled by bounded outcome (processed/empty/decode_error/process_error).
-	AuditEventListsTotal metric.Int64Counter
-	// AuditEventListEventsTotal counts decoded audit event items delivered in EventLists,
-	// labelled by the same bounded outcome.
-	AuditEventListEventsTotal metric.Int64Counter
-	// AuditEventListDurationSeconds records how long the webhook takes to answer an
-	// EventList request, labelled by outcome.
+	// AuditEventListDurationSeconds records how long the webhook takes to answer an EventList
+	// request, labelled by bounded outcome (processed/empty/decode_error/process_error).
+	//
+	// Its _count series IS the request counter: a histogram ships its own observation count, so the
+	// separate AuditEventListsTotal it used to sit beside published the identical numbers under a
+	// second name. The per-item counter that sat beside it went too — audit_events_total counts the
+	// same event items once each, with group/version/resource/verb on them.
 	AuditEventListDurationSeconds metric.Float64Histogram
 	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes, labelled by
 	// {tier, actor_kind, group, version, resource}. tier names WHICH evidence answered
@@ -161,24 +161,28 @@ var (
 	// every scope and match structure. Read against the eviction counter it says whether the caps
 	// are binding.
 	AttributionFactIndexEntries metric.Int64Gauge
-	// AttributionFactIndexEvictionsTotal counts facts dropped from the in-memory fact index because
-	// it was full, labelled by bounded reason (per_type/total). An attribution lost to a full index
-	// has to look different from one that was never published, or a burst is silently absorbed.
-	AttributionFactIndexEvictionsTotal metric.Int64Counter
+	// AttributionFactsLostTotal counts facts that will never join a watch event, labelled by
+	// bounded reason:
+	//
+	//   index_full_per_type / index_full_total — dropped from the bounded in-memory index because
+	//   it was full. An attribution lost to a full index has to look different from one that was
+	//   never published, or a burst is silently absorbed. This is also the removal pointer's only
+	//   horizon: every other index entry expires on the fact TTL.
+	//   stream_trimmed — the fact stream was trimmed past this process's follower. Facts in the gap
+	//   are gone for good, and it is the one loss a log transport can see at all.
+	//   undecodable — the follower could not decode an entry, so it skipped it and passed its
+	//   position. Unlike a trim gap this is not detectable after the fact, and unlike a publish
+	//   failure the API server does not retry it: the loss path with no other symptom.
+	//
+	// One counter rather than three because all three mean the same thing to an operator, they were
+	// already drawn on one dashboard panel, and one alert should cover them. The stream and the
+	// transport stay on the log line at each site, where the detail was always kept.
+	AttributionFactsLostTotal metric.Int64Counter
 	// AttributionCollectionWithoutUIDSetTotal counts collection facts published without the uid set
 	// the precise join would have used, labelled by bounded reason (uid_cap/no_uids). The scope
 	// fallback is already correct, so this says how often the precise path was available — not that
 	// anything broke.
 	AttributionCollectionWithoutUIDSetTotal metric.Int64Counter
-	// AttributionFactStreamGapsTotal counts occasions a fact stream was trimmed past this process's
-	// follower, labelled by stream. Every gap is facts lost for good, and it is the one loss a log
-	// transport can see at all.
-	AttributionFactStreamGapsTotal metric.Int64Counter
-	// AttributionFactStreamDecodeErrorsTotal counts fact-stream entries the follower could not
-	// decode, labelled by transport. Such an entry is skipped and its position passed, so the facts
-	// it carried are lost — and unlike a trim gap the loss leaves no other trace, which is why this
-	// is the loss path that most needed a counter.
-	AttributionFactStreamDecodeErrorsTotal metric.Int64Counter
 	// AttributionFactFollowerErrorsTotal counts fact-follower read failures, labelled by transport.
 	// The follower retries with a backoff rather than returning, so the errors are otherwise only a
 	// log line.
@@ -203,8 +207,6 @@ var (
 	APICatalogRefreshTotal metric.Int64Counter
 	// APICatalogRefreshDurationSeconds records the wall time of one catalog refresh.
 	APICatalogRefreshDurationSeconds metric.Float64Histogram
-	// APICatalogGeneration gauges the current APIResourceCatalog generation.
-	APICatalogGeneration metric.Int64Gauge
 	// WatchedTypes gauges the number of watched types per GitTarget, labelled by
 	// gittarget_namespace and gittarget_name.
 	WatchedTypes metric.Int64Gauge
@@ -228,24 +230,27 @@ var (
 	// WatchPlanPassDurationSeconds records the wall time of one plan pass. It is the input to
 	// choosing the per-target deadline.
 	WatchPlanPassDurationSeconds metric.Float64Histogram
-	// WatchPlanTriggersTotal counts triggers by {reason}: declare, rule_change, api_surface,
-	// source_namespace, periodic. It shows which source is noisy.
+	// WatchPlanTriggersTotal counts triggers by {reason, coalesced}. reason is declare,
+	// rule_change, shared_refresh or periodic, and shows which source is noisy. coalesced is
+	// "true" when the trigger landed on a GitTarget that was ALREADY dirty, which is the proof
+	// that the silence window does what it claims: one `kubectl apply` of a GitTarget and four
+	// WatchRules should show four coalesced triggers and one pass.
+	//
+	// coalesced is a label rather than the second counter it used to be, so the ratio is one
+	// metric's business instead of a division across two.
 	WatchPlanTriggersTotal metric.Int64Counter
-	// WatchPlanTriggersCoalescedTotal counts triggers that landed on a GitTarget that was
-	// already dirty. It is the proof that the silence window does what it claims: one
-	// `kubectl apply` of a GitTarget and four WatchRules should show four of these and one pass.
-	WatchPlanTriggersCoalescedTotal metric.Int64Counter
 
-	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
-	SecretEncryptionAttemptsTotal metric.Int64Counter
-	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
-	SecretEncryptionSuccessTotal metric.Int64Counter
-	// SecretEncryptionFailuresTotal counts failed Secret encryptions.
-	SecretEncryptionFailuresTotal metric.Int64Counter
-	// SecretEncryptionCacheHitsTotal counts cache hits for encrypted Secret content.
-	SecretEncryptionCacheHitsTotal metric.Int64Counter
-	// SecretEncryptionMarkerSkipsTotal counts marker-based skips that reused cached Secret content.
-	SecretEncryptionMarkerSkipsTotal metric.Int64Counter
+	// SecretEncryptionsTotal counts Secret encryption decisions, labelled by bounded outcome:
+	// "encrypted" (the encryptor ran and produced ciphertext), "failed" (it ran and errored, and
+	// the write is rejected), or "cached" (already-encrypted content was reused because the
+	// sensitive marker was unchanged).
+	//
+	// It replaces five counters over two populations. attempts was incremented immediately before
+	// Encrypt, so it was exactly success + failures; and cache_hits and marker_skips were
+	// incremented on consecutive lines of the same branch, on every path, so they could never
+	// differ. The documented "cache effectiveness" ratio was cache_hits / attempts, which divided
+	// over disjoint populations and could exceed 1 — with one counter it is a share of one total.
+	SecretEncryptionsTotal metric.Int64Counter
 )
 
 // InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
@@ -324,7 +329,6 @@ func registerInstruments() error {
 
 func registerCounters() error {
 	counters := []cSpec{
-		{"gitopsreverser_git_operations_total", &GitOperationsTotal},
 		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
 		{"gitopsreverser_commits_total", &CommitsTotal},
 		{"gitopsreverser_resync_sweep_deletes_total", &ResyncSweepDeletesTotal},
@@ -338,30 +342,18 @@ func registerCounters() error {
 		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
 		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
-		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
-		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
 		{"gitopsreverser_attribution_resolutions_total", &AttributionResolutionsTotal},
 		{"gitopsreverser_attribution_facts_total", &AttributionFactsTotal},
-		{"gitopsreverser_attribution_fact_index_evictions_total", &AttributionFactIndexEvictionsTotal},
-		{"gitopsreverser_attribution_fact_stream_gaps_total", &AttributionFactStreamGapsTotal},
+		{"gitopsreverser_attribution_facts_lost_total", &AttributionFactsLostTotal},
 		{
 			"gitopsreverser_attribution_collection_without_uidset_total",
 			&AttributionCollectionWithoutUIDSetTotal,
 		},
-		{
-			"gitopsreverser_attribution_fact_stream_decode_errors_total",
-			&AttributionFactStreamDecodeErrorsTotal,
-		},
 		{"gitopsreverser_attribution_fact_follower_errors_total", &AttributionFactFollowerErrorsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
+		{"gitopsreverser_secret_encryptions_total", &SecretEncryptionsTotal},
 		{"gitopsreverser_watch_plan_passes_total", &WatchPlanPassesTotal},
 		{"gitopsreverser_watch_plan_triggers_total", &WatchPlanTriggersTotal},
-		{"gitopsreverser_watch_plan_triggers_coalesced_total", &WatchPlanTriggersCoalescedTotal},
-		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
-		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
-		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},
-		{"gitopsreverser_secret_encryption_cache_hits_total", &SecretEncryptionCacheHitsTotal},
-		{"gitopsreverser_secret_encryption_marker_skips_total", &SecretEncryptionMarkerSkipsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
@@ -422,7 +414,6 @@ func registerGauges() error {
 	gauges := []gSpec{
 		{"gitopsreverser_api_catalog_resources", &APICatalogResources},
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
-		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
 		{"gitopsreverser_watch_plan_dirty_targets", &WatchPlanDirtyTargets},
 		{"gitopsreverser_watch_plan_oldest_dirty_age_seconds", &WatchPlanOldestDirtyAgeSeconds},

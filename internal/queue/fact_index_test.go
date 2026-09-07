@@ -286,8 +286,8 @@ func TestFactIndex_PerTypeCapEvictsOldestFirstAndCountsIt(t *testing.T) {
 	require.Equal(t, "second", harness.resolve(objectQuery("prod-eu-1", "", "2", true)).Fact.Author)
 	harness.absent(objectQuery("prod-eu-1", "", "1", true))
 
-	evicted, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_index_evictions_total",
-		map[string]string{"reason": evictionReasonPerType})
+	evicted, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_facts_lost_total",
+		map[string]string{"reason": factLossIndexFullPerType})
 	require.True(t, ok, "an eviction must be counted, never silently absorbed")
 	require.Equal(t, int64(1), evicted)
 }
@@ -315,8 +315,8 @@ func TestFactIndex_TotalCapEvictsFromTheLargestType(t *testing.T) {
 	harness.absent(objectQuery("prod-eu-1", "", "1", true))
 	require.Equal(t, 2, harness.index.Len())
 
-	evicted, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_index_evictions_total",
-		map[string]string{"reason": evictionReasonTotal})
+	evicted, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_facts_lost_total",
+		map[string]string{"reason": factLossIndexFullTotal})
 	require.True(t, ok)
 	require.Equal(t, int64(1), evicted)
 }
@@ -650,8 +650,10 @@ func TestFactIndex_TrimGapIsCountedAndNamed(t *testing.T) {
 
 	index.reportGaps(t.Context(), []FactStreamGap{{Key: key, Cursor: "1-0", FirstSurviving: "9-0"}})
 
-	gaps, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_stream_gaps_total",
-		map[string]string{"stream": key.String()})
+	// The stream name is on the log line, not the label: the three loss paths share one counter
+	// and one bounded reason, because they are one thing to an operator and want one alert.
+	gaps, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_facts_lost_total",
+		map[string]string{"reason": factLossStreamTrimmed})
 	require.True(t, ok)
 	require.Equal(t, int64(1), gaps)
 }

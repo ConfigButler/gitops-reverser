@@ -1541,9 +1541,6 @@ func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, 
 		eventCount += len(pendingWrite.Events)
 	}
 
-	if telemetry.GitOperationsTotal != nil {
-		telemetry.GitOperationsTotal.Add(w.ctx, int64(eventCount))
-	}
 	if telemetry.CommitsTotal != nil {
 		w.recordCommitsByAuthorKind(pendingWrites, commitsCreated)
 	}

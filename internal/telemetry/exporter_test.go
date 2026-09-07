@@ -30,14 +30,13 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 
 	// Verify representative metrics across counters, histograms, and gauges
 	// are initialized.
-	assert.NotNil(t, GitOperationsTotal)
+	assert.NotNil(t, ObjectsWrittenTotal)
 	assert.NotNil(t, ObjectsWrittenTotal)
 	assert.NotNil(t, CommitsTotal)
 	assert.NotNil(t, ResyncSweepDeletesTotal)
 	assert.NotNil(t, BranchWorkerQueueDepth)
 	assert.NotNil(t, TargetReconcileCompletedTotal)
-	assert.NotNil(t, AuditEventListsTotal)
-	assert.NotNil(t, AuditEventListEventsTotal)
+	assert.NotNil(t, AuditEventListDurationSeconds)
 	assert.NotNil(t, AuditEventListDurationSeconds)
 	assert.NotNil(t, AuditEventsTotal)
 	assert.NotNil(t, AttributionResolutionsTotal)
@@ -45,7 +44,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, AttributionResolutionWaitSeconds)
 	assert.NotNil(t, AttributionFactIndexEntries)
 	assert.NotNil(t, AttributionCollectionWithoutUIDSetTotal)
-	assert.NotNil(t, AttributionFactStreamDecodeErrorsTotal)
+	assert.NotNil(t, AttributionFactsLostTotal)
 	assert.NotNil(t, AttributionFactFollowerErrorsTotal)
 	assert.NotNil(t, AttributionFactFollowerLastSuccessTimestampSeconds)
 	assert.NotNil(t, AttributionTransportInfo)
@@ -53,7 +52,6 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, APICatalogGroupVersions)
 	assert.NotNil(t, APICatalogRefreshTotal)
 	assert.NotNil(t, APICatalogRefreshDurationSeconds)
-	assert.NotNil(t, APICatalogGeneration)
 
 	err = shutdownFunc(ctx)
 	require.NoError(t, err)
@@ -71,15 +69,9 @@ func TestMetricsInitialization(t *testing.T) {
 	}()
 
 	// Test that all metrics can be used without panicking.
-	t.Run("GitOperationsTotal", func(t *testing.T) {
+	t.Run("ObjectsWrittenTotal", func(t *testing.T) {
 		assert.NotPanics(t, func() {
-			GitOperationsTotal.Add(ctx, 1)
-		})
-	})
-
-	t.Run("AuditEventListsTotal", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			AuditEventListsTotal.Add(ctx, 1)
+			ObjectsWrittenTotal.Add(ctx, 1)
 		})
 	})
 
@@ -98,12 +90,6 @@ func TestMetricsInitialization(t *testing.T) {
 	t.Run("APICatalogResources", func(t *testing.T) {
 		assert.NotPanics(t, func() {
 			APICatalogResources.Record(ctx, 42)
-		})
-	})
-
-	t.Run("APICatalogGeneration", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			APICatalogGeneration.Record(ctx, 7)
 		})
 	})
 
@@ -134,8 +120,6 @@ func TestAuditPipelineMetricUsage(t *testing.T) {
 
 	// Simulate the audit ingestion pipeline emitting metrics at each stage.
 	assert.NotPanics(t, func() {
-		AuditEventListsTotal.Add(ctx, 1)
-		AuditEventListEventsTotal.Add(ctx, 5)
 		AuditEventListDurationSeconds.Record(ctx, 0.12)
 		AuditEventsTotal.Add(ctx, 5, metricAttrs("outcome", "queued"))
 		AuditEventsTotal.Add(ctx, 1, metricAttrs("outcome", "dry_run"))
@@ -161,7 +145,6 @@ func TestAPICatalogMetricUsage(t *testing.T) {
 		APICatalogGroupVersions.Record(ctx, 0)
 		APICatalogRefreshTotal.Add(ctx, 1)
 		APICatalogRefreshDurationSeconds.Record(ctx, 0.03)
-		APICatalogGeneration.Record(ctx, 12)
 	})
 }
 
@@ -181,7 +164,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	go func() {
 		defer func() { done <- true }()
 		for range 100 {
-			AuditEventListsTotal.Add(ctx, 1)
+			SecretEncryptionsTotal.Add(ctx, 1, metricAttrs("outcome", "encrypted"))
 		}
 	}()
 
@@ -195,7 +178,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	go func() {
 		defer func() { done <- true }()
 		for i := range 100 {
-			GitOperationsTotal.Add(ctx, 1)
+			ObjectsWrittenTotal.Add(ctx, 1)
 			AuditEventListDurationSeconds.Record(ctx, float64(i)*0.01)
 		}
 	}()
@@ -230,15 +213,15 @@ func TestHistogramMetricBehavior(t *testing.T) {
 
 func TestMetricsErrorHandling(t *testing.T) {
 	// Document behavior when metrics are not initialized.
-	original := GitOperationsTotal
-	GitOperationsTotal = nil
-	defer func() { GitOperationsTotal = original }()
+	original := ObjectsWrittenTotal
+	ObjectsWrittenTotal = nil
+	defer func() { ObjectsWrittenTotal = original }()
 
 	ctx := context.Background()
 
 	t.Run("NilMetrics", func(t *testing.T) {
 		assert.Panics(t, func() {
-			GitOperationsTotal.Add(ctx, 1)
+			ObjectsWrittenTotal.Add(ctx, 1)
 		})
 	})
 }
@@ -265,7 +248,7 @@ func TestMetricsAfterShutdown(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotPanics(t, func() {
-		GitOperationsTotal.Add(ctx, 1)
+		ObjectsWrittenTotal.Add(ctx, 1)
 	})
 
 	err = shutdownFunc(ctx)
@@ -273,7 +256,7 @@ func TestMetricsAfterShutdown(t *testing.T) {
 
 	// Metrics still work after shutdown (they just are not exported).
 	assert.NotPanics(t, func() {
-		GitOperationsTotal.Add(ctx, 1)
+		ObjectsWrittenTotal.Add(ctx, 1)
 	})
 }
 
@@ -359,7 +342,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 	assert.NotNil(t, shutdownFunc)
 
 	assert.NotPanics(t, func() {
-		GitOperationsTotal.Add(ctx, 1)
+		ObjectsWrittenTotal.Add(ctx, 1)
 		AuditEventListDurationSeconds.Record(ctx, 1.0)
 		AuditEventsTotal.Add(ctx, 1, metricAttrs("outcome", "queued"))
 		APICatalogResources.Record(ctx, 1)

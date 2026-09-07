@@ -87,18 +87,19 @@ func isDeadlineExceeded(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
 }
 
-// recordTriggerLocked counts one trigger by the reason that produced it, and counts the ones the
-// silence window absorbed. Together they prove the debounce is doing what it claims and show
-// which source is noisy. The triggers mutex is held; both instruments are synchronous counters
-// with no callback, so neither can re-enter it.
+// recordTriggerLocked counts one trigger by the reason that produced it and whether the silence
+// window absorbed it. Together they prove the debounce is doing what it claims and show which
+// source is noisy; coalesced is a label rather than the second counter it used to be, so the
+// coalescing ratio is one metric's business instead of a division across two. The triggers mutex is
+// held; the instrument is a synchronous counter with no callback, so it cannot re-enter it.
 func recordTriggerLocked(reason string, coalesced bool) {
-	if telemetry.WatchPlanTriggersTotal != nil {
-		telemetry.WatchPlanTriggersTotal.Add(context.Background(), 1,
-			metric.WithAttributes(attribute.String("reason", reason)))
+	if telemetry.WatchPlanTriggersTotal == nil {
+		return
 	}
-	if coalesced && telemetry.WatchPlanTriggersCoalescedTotal != nil {
-		telemetry.WatchPlanTriggersCoalescedTotal.Add(context.Background(), 1)
-	}
+	telemetry.WatchPlanTriggersTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("reason", reason),
+		attribute.Bool("coalesced", coalesced),
+	))
 }
 
 // publishDirtySetDepth records how deep the dirty set is and how long its oldest entry has been

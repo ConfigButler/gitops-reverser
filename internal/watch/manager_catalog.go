@@ -5,7 +5,6 @@ package watch
 import (
 	"context"
 	"fmt"
-	"math"
 	"sort"
 	"sync"
 	"time"
@@ -255,13 +254,6 @@ func recordCatalogStats(ctx context.Context, stats CatalogStats) {
 			metric.WithAttributes(attribute.String("state", "trusted")))
 		telemetry.APICatalogGroupVersions.Record(ctx, int64(stats.DegradedGroupVersions),
 			metric.WithAttributes(attribute.String("state", "degraded")))
-	}
-	if telemetry.APICatalogGeneration != nil {
-		generation := stats.Generation
-		if generation > math.MaxInt64 {
-			generation = math.MaxInt64
-		}
-		telemetry.APICatalogGeneration.Record(ctx, int64(generation))
 	}
 }
 
