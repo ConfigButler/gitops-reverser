@@ -151,21 +151,23 @@ spec:
                     properties:
                       eventTemplate:
                         description: |-
-                          EventTemplate is a Go text/template string for the commit message of a commit that changes
-                          exactly ONE document. Which template renders a commit follows how many documents it changes,
-                          not the window setting: a "0s" window makes every commit single-document, but a window that
-                          closes around a single change renders through this template too. Note that repeated edits to
-                          one resource inside a window coalesce by destination path, so ten updates to one ConfigMap
-                          are ONE changed document and render here, not through GroupTemplate. With a non-zero window,
-                          set GroupTemplate as well: both shapes occur.
+                          EventTemplate is a Go text/template string for the commit message of a commit whose window
+                          retained exactly ONE resource entry. Selection counts retained entries, one per distinct
+                          destination path, not the window setting and not how many documents actually change: a "0s"
+                          window makes every commit single-entry, but a window that closes around a single change
+                          renders through this template too. Repeated edits to one resource coalesce, so ten updates to
+                          one ConfigMap are ONE entry and render here. With a non-zero window, set GroupTemplate as
+                          well: both shapes occur.
                           Available variables: Operation, Group, Version, Resource, Namespace, Name,
                           APIVersion, Username, GitTarget.
                         type: string
                       groupTemplate:
                         description: |-
-                          GroupTemplate is a Go text/template string for the commit message of a commit that changes TWO
-                          OR MORE documents (one commit per (author, gitTarget) group produced by the batching
-                          pipeline). A group that changed only one document renders through EventTemplate instead.
+                          GroupTemplate is a Go text/template string for the commit message of a commit whose window
+                          retained TWO OR MORE resource entries (one commit per (author, gitTarget) group produced by
+                          the batching pipeline). A window that retained one entry renders through EventTemplate
+                          instead. Entries are counted before the write decides what differs, so an entry already
+                          matching Git still counts toward this template being chosen.
                           Available variables: Author, GitTarget, Count, Operations (map of
                           CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
                           Resource, Namespace, Name}).

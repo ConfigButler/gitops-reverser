@@ -521,22 +521,25 @@ write rather than stopping the mirror.
 
 #### Commit message templates
 
-There are three templates. **Which one renders a commit is decided by how many documents that commit
-changes, not by the window setting:**
+There are three templates. **Which one renders a commit is decided by how many resource entries the
+commit window retained** (one per distinct destination path), not by the window setting:
 
-- `spec.commit.message.eventTemplate`: a commit that changes exactly **one** document.
-- `spec.commit.message.groupTemplate`: a commit that changes **two or more**.
+- `spec.commit.message.eventTemplate`: a commit whose window retained exactly **one** entry.
+- `spec.commit.message.groupTemplate`: a commit whose window retained **two or more**.
 - `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
   path; one commit per synced type).
 
-Two consequences are easy to get wrong, and both follow from the window coalescing by destination
-path before anything is rendered:
+"Retained entries" is the precise unit, and it is neither of the two things it is easily read as:
 
 - **A `0s` window is not the only way to reach `eventTemplate`.** A window that closes around a
   single change renders through it too, which is most edits a human makes by hand.
-- **"One document" is not "one action".** Repeated edits to the same resource inside one window
-  collapse to a single entry, last write wins. Ten updates to one ConfigMap are one changed
-  document, so they render through `eventTemplate`, and `groupTemplate` never sees them.
+- **An entry is not an action.** Repeated edits to one resource inside a window collapse to a single
+  entry, last write wins. Ten updates to one ConfigMap are one retained entry, so they render
+  through `eventTemplate` and `groupTemplate` never sees them.
+- **An entry is not a changed document either.** Selection counts entries before the write decides
+  what actually differs, so an entry whose content already matches Git still counts. Two retained
+  entries of which only one differs render through `groupTemplate`, even though the commit changes
+  one file.
 
 So with a non-zero window you want **both** `eventTemplate` and `groupTemplate` set. Setting only
 one leaves the other shape rendering through the built-in wording, and both shapes occur in normal
@@ -829,19 +832,24 @@ you change `spec.placement` afterwards. Placement governs the first write and no
 a description of current behavior rather than a promise: a deliberate migration that moves documents
 in a new commit is a coherent feature and is not ruled out.
 
-To re-place a document by hand today, remove it and let the mirror write it again:
+To re-place a document by hand today, get it out of the folder and let the mirror write it again.
+The writer rebuilds its identity index from the current scan of the folder, so a resource with no
+document there is placed as new, under the current policy.
+
+**Check `spec.prune.mode` first.** The route below deletes the cluster object and relies on the
+mirror removing its document, which needs `OnEvent` (the default) or `Always`. Under `Never` the
+mirror removes nothing, so step 2 never completes and you would be left waiting on a deletion that
+is not coming.
 
 1. Delete the object in the cluster.
 2. **Wait until the deletion is committed and pushed** and the document is gone from the branch.
-3. Recreate the object. The new write has no document to update, so it goes through the current
+3. Recreate the object. It now has no document to update, so the write goes through the current
    placement policy.
 
-Step 2 is not a formality. Delete and recreate inside one commit window, by the same author,
-coalesce by destination path into a single entry, so the pair cancels out: the deletion never
-reaches Git, the document is still there, and the recreated object is updated in place at the old
-location. From the outside this looks exactly like placement being ignored. Deleting the file in
-Git alone does not work either, since the next reconcile restores it at the path the object's
-document identity already resolves to.
+Step 2 is not a formality. A delete and a recreate inside one commit window, by the same author,
+coalesce by destination path into a single retained entry, so the pair cancels out: the deletion
+never reaches Git, the document is still there, and the recreated object is updated in place at its
+old location. From the outside that looks exactly like placement being ignored.
 
 #### How a path is chosen (the resolution ladder)
 
