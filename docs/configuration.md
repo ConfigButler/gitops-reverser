@@ -521,14 +521,29 @@ write rather than stopping the mirror.
 
 #### Commit message templates
 
-There are three templates, one per commit shape:
+There are three templates. **Which one renders a commit is decided by how many resource entries the
+commit window retained** (one per distinct destination path), not by the window setting:
 
-- `spec.commit.message.eventTemplate`: per-event commits (only used when `spec.commit.window` is
-  `0s`).
-- `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
-  common case).
+- `spec.commit.message.eventTemplate`: a commit whose window retained exactly **one** entry.
+- `spec.commit.message.groupTemplate`: a commit whose window retained **two or more**.
 - `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
   path; one commit per synced type).
+
+"Retained entries" is the precise unit, and it is neither of the two things it is easily read as:
+
+- **A `0s` window is not the only way to reach `eventTemplate`.** A window that closes around a
+  single change renders through it too, which is most edits a human makes by hand.
+- **An entry is not an action.** Repeated edits to one resource inside a window collapse to a single
+  entry, last write wins. Ten updates to one ConfigMap are one retained entry, so they render
+  through `eventTemplate` and `groupTemplate` never sees them.
+- **An entry is not a changed document either.** Selection counts entries before the write decides
+  what actually differs, so an entry whose content already matches Git still counts. Two retained
+  entries of which only one differs render through `groupTemplate`, even though the commit changes
+  one file.
+
+So with a non-zero window you want **both** `eventTemplate` and `groupTemplate` set. Setting only
+one leaves the other shape rendering through the built-in wording, and both shapes occur in normal
+operation.
 
 ```yaml
 spec:
@@ -810,6 +825,31 @@ Placement decides the file path for a resource that has **no document in Git yet
 exists, updates and deletes always edit it in place at its current location (found by manifest identity,
 not path), so changing placement never moves an existing file; it only affects resources created after
 the change.
+
+**There is no re-layout operation today.** The practical consequence is worth stating plainly: a
+folder laid out under an older policy keeps that layout for as long as its documents live, however
+you change `spec.placement` afterwards. Placement governs the first write and nothing else. This is
+a description of current behavior rather than a promise: a deliberate migration that moves documents
+in a new commit is a coherent feature and is not ruled out.
+
+To re-place a document by hand today, get it out of the folder and let the mirror write it again.
+The writer rebuilds its identity index from the current scan of the folder, so a resource with no
+document there is placed as new, under the current policy.
+
+**Check `spec.prune.mode` first.** The route below deletes the cluster object and relies on the
+mirror removing its document, which needs `OnEvent` (the default) or `Always`. Under `Never` the
+mirror removes nothing, so step 2 never completes and you would be left waiting on a deletion that
+is not coming.
+
+1. Delete the object in the cluster.
+2. **Wait until the deletion is committed and pushed** and the document is gone from the branch.
+3. Recreate the object. It now has no document to update, so the write goes through the current
+   placement policy.
+
+Step 2 is not a formality. A delete and a recreate inside one commit window, by the same author,
+coalesce by destination path into a single retained entry, so the pair cancels out: the deletion
+never reaches Git, the document is still there, and the recreated object is updated in place at its
+old location. From the outside that looks exactly like placement being ignored.
 
 #### How a path is chosen (the resolution ladder)
 
@@ -1451,6 +1491,20 @@ When attribution is enabled, these flags tune the join:
 
 - `--author-attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
   matching watch event to join it.
+
+  **Inside that window a fact can name a later write by a different identity. This is a known
+  limitation of the weakest join tier, not a desired property.** The join tries the strongest
+  evidence first, and its floor is a `(namespace, name)` tier that is last-writer-wins and bounded
+  only by this TTL. A write that misses the exact tier can settle for that floor. So an out-of-band
+  change, such as a hand-run `kubectl` command against a mirrored object, leaves a fact that a
+  later write to the same name can match while the TTL still holds it, and that commit is then
+  attributed to whoever made the out-of-band change. It clears itself once the fact expires.
+
+  The floor exists because some writes carry nothing stronger: an aggregated-API write's audit
+  record holds a name and neither a uid nor a resourceVersion, and removing the tier would leave
+  that whole class unattributed. Narrowing the TTL narrows the exposure, at the cost of losing
+  actors whose audit delivery is slow. The full ranking is in
+  [`spec/attribution.md`](spec/attribution.md).
 - `--author-attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
   watch event ships authored by the `attribution-unresolved` sentinel. Note the delivery floor: the
   apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
