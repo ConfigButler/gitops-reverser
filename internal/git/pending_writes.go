@@ -300,17 +300,6 @@ func targetForBase(
 	return ResolvedTargetMetadata{}, false
 }
 
-// MessageKind is derived from the pending write's shape.
-func (p PendingWrite) MessageKind() CommitMessageKind {
-	if p.Kind == PendingWriteAtomic || p.Kind == PendingWriteResync {
-		return CommitMessageReconcile
-	}
-	if len(p.Events) == 1 {
-		return CommitMessagePerEvent
-	}
-	return CommitMessageGrouped
-}
-
 // Author returns the grouped commit author username for commit-shaped pending
 // writes. It is the stable identity used for window coalescing and the grouped
 // commit message; see AuthorUserInfo for the full signing identity.

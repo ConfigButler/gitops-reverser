@@ -14,8 +14,8 @@ spec:
   commit:
     window: "5s"
     # message:
-    #   eventTemplate: "audit: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-    #   reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
+    #   liveTemplate: "audit: {{range .Resources}}[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}{{end}}"
+    #   reconcileTemplate: "chore: reconcile {{.Count}} {{.Resource}}"
   encryption:
     provider: sops
     age:

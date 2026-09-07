@@ -4,10 +4,8 @@ package git
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -56,44 +54,34 @@ func (p PendingWrite) path() string {
 }
 
 func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
-	when := time.Now()
-
-	// An explicit literal message (e.g. from a CommitRequest's spec.message)
-	// is used verbatim, bypassing the configured templates.
-	if message := strings.TrimSpace(p.CommitMessage); message != "" {
-		return p.CommitMessage, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	}
-
-	switch p.MessageKind() {
-	case CommitMessagePerEvent:
-		if len(p.Events) != 1 {
-			return "", nil, errors.New("per-event pending write requires exactly one event")
-		}
-		message, err := renderEventCommitMessage(p.Events[0], p.CommitConfig)
-		if err != nil {
-			return "", nil, err
-		}
-		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	case CommitMessageReconcile:
-		message, err := renderReconcileCommitMessageFromEvents(
-			p.Events,
-			p.CommitMessage,
-			p.Target().Name,
-			p.CommitConfig,
-		)
-		if err != nil {
-			return "", nil, err
-		}
-		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	case CommitMessageGrouped:
-		message, err := renderGroupCommitMessage(p, p.CommitConfig)
-		if err != nil {
-			return "", nil, err
-		}
-		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
+	var message string
+	var err error
+	source := "live"
+	switch {
+	case p.Kind == PendingWriteResync:
+		// The resync path renders the target's reconcile template itself and hands the result
+		// over as the message. It is generated text, not a request's literal override, so the
+		// CommitRequest literal contract does not bind it: an operator's reconcile template may
+		// legitimately be long or contain a tab.
+		source = "reconcile"
+		message = p.CommitMessage
+	case p.CommitMessage != "":
+		source = "literal"
+		message = p.CommitMessage
+		err = ValidateLiteralCommitMessage(message)
+	case p.Kind == PendingWriteAtomic:
+		source = "reconcile"
+		message, err = renderReconcileCommitMessageFromEvents(p.Events, p.Target().Name, p.CommitConfig)
+	case p.Kind == PendingWriteCommit:
+		message, err = renderLiveCommitMessage(p, p.CommitConfig)
 	default:
-		return "", nil, fmt.Errorf("unsupported commit message kind %q", p.MessageKind())
+		err = fmt.Errorf("unsupported pending write kind %q", p.Kind)
 	}
+	if err != nil {
+		return "", nil, err
+	}
+	log.Log.V(1).Info("Selected commit message", "source", source)
+	return message, commitOptionsFor(p, p.CommitConfig, p.Signer, time.Now()), nil
 }
 
 func (w *BranchWorker) executePendingWrite(
@@ -147,8 +135,6 @@ func (w *BranchWorker) executePendingWrite(
 
 	log.FromContext(ctx).Info(
 		"git commit created",
-		"messageKind",
-		pendingWrite.MessageKind(),
 		"events",
 		len(pendingWrite.Events),
 		"message",

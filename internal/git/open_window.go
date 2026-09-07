@@ -100,23 +100,25 @@ func windowPathKey(e Event, writer eventContentWriter) string {
 	return filePath
 }
 
-// buildGroupedCommitMessageData produces the template context for a grouped
+// buildLiveCommitMessageData produces the template context for a grouped
 // commit unit. Operations are counted by Operation tag; Resources is the
 // deduplicated list of resource refs in arrival order.
-func buildGroupedCommitMessageData(author, gitTarget string, events []Event) GroupedCommitMessageData {
+func buildLiveCommitMessageData(author, gitTarget string, events []Event) LiveCommitMessageData {
 	operations := make(map[string]int, groupedCommitOperationKinds)
 	resources := make([]ResourceRef, 0, len(events))
 	for _, e := range events {
 		operations[e.Operation]++
 		resources = append(resources, ResourceRef{
-			Group:     e.Identifier.Group,
-			Version:   e.Identifier.Version,
-			Resource:  e.Identifier.Resource,
-			Namespace: e.Identifier.Namespace,
-			Name:      e.Identifier.Name,
+			Operation:  e.Operation,
+			APIVersion: buildAPIVersion(e.Identifier.Group, e.Identifier.Version),
+			Group:      e.Identifier.Group,
+			Version:    e.Identifier.Version,
+			Resource:   e.Identifier.Resource,
+			Namespace:  e.Identifier.Namespace,
+			Name:       e.Identifier.Name,
 		})
 	}
-	return GroupedCommitMessageData{
+	return LiveCommitMessageData{
 		Author:     author,
 		GitTarget:  gitTarget,
 		Count:      len(events),

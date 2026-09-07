@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,10 +99,9 @@ func TestGenerateFilePath_AdditionalSensitiveResourceUsesSOPSPath(t *testing.T) 
 	assert.Equal(t, "tenant-a/core.cozystack.io/tenantsecrets/registry.sops.yaml", path)
 }
 
-func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
+func TestExecutor_GroupedSingleEvent_UsesLiveTemplate(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.EventTemplate = "event: {{.Name}} by {{.Username}}"
-	config.Message.GroupTemplate = "group: {{.Author}} changed {{.Count}}"
+	config.Message.LiveTemplate = "group: {{.Author}} changed {{.Count}}"
 
 	pendingWrite := PendingWrite{
 		Kind:         PendingWriteCommit,
@@ -111,15 +111,14 @@ func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
 
 	message, options, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
-	assert.Equal(t, "event: api by alice", message)
+	assert.Equal(t, "group: alice changed 1", message)
 	assert.Equal(t, "alice", options.Author.Name)
 	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 }
 
-func TestExecutor_GroupedMultiEvent_UsesGroupTemplate(t *testing.T) {
+func TestExecutor_GroupedMultiEvent_UsesLiveTemplate(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.EventTemplate = "event: {{.Name}}"
-	config.Message.GroupTemplate = "group: {{.Author}} {{.Count}} {{.GitTarget}}"
+	config.Message.LiveTemplate = "group: {{.Author}} {{.Count}} {{.GitTarget}}"
 
 	pendingWrite := PendingWrite{
 		Kind: PendingWriteCommit,
@@ -226,4 +225,31 @@ func TestExecutor_AppliesEncryptionFromPendingWrite_NotFromWorker(t *testing.T) 
 
 	expectedScope := secretEncryptionCacheScope(filepath.Join(repoPath, "team-secrets"), cfg)
 	assert.Equal(t, expectedScope, worker.contentWriter.encryptionScope)
+}
+
+// A resync renders the target's reconcile template and hands the result over as the pending
+// write's message. That generated text is not a CommitRequest literal override, so the request
+// contract's length and control-character limits must not reject an operator's own template.
+func TestCommitMetadata_ResyncRenderedMessageIsNotHeldToTheLiteralRequestContract(t *testing.T) {
+	longMessage := "chore: reconcile " + strings.Repeat("x", 1200)
+
+	for name, rendered := range map[string]string{
+		"longer than a request message may be": longMessage,
+		"carrying a tab":                       "chore: reconcile\n\n\tindented detail",
+	} {
+		t.Run(name, func(t *testing.T) {
+			pendingWrite := PendingWrite{
+				Kind:               PendingWriteResync,
+				GitTargetName:      "team-a",
+				GitTargetNamespace: "default",
+				CommitConfig:       ResolveCommitConfig(nil),
+				CommitMessage:      rendered,
+			}
+
+			message, options, err := pendingWrite.commitMetadata()
+			require.NoError(t, err)
+			assert.Equal(t, rendered, message)
+			assert.NotNil(t, options)
+		})
+	}
 }

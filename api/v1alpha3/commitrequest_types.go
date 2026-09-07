@@ -21,25 +21,24 @@ type CommitRequestSpec struct {
 	GitTargetRef meta.LocalObjectReference `json:"gitTargetRef"`
 
 	// Message is an optional commit message for the finalized commit. When
-	// omitted, the generated grouped-commit message is used.
+	// omitted, the target's liveTemplate is used. Template-like text remains literal.
 	//
 	// When present it is limited to 1-1024 Unicode characters and used
 	// verbatim as the commit message. Newlines are allowed so a subject and
 	// body can be supplied; all other ASCII control characters (including tab
-	// and carriage return) are rejected.
+	// and carriage return) are rejected. Whitespace-only messages are rejected.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:Pattern=`^[^\x00-\x09\x0B-\x1F\x7F]*$`
+	// +kubebuilder:validation:XValidation:rule="self.matches(r'[^\\s\\x{0085}\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}]')",message="message must contain a non-whitespace character"
 	Message string `json:"message,omitempty"`
 
-	// CloseDelaySeconds optionally delays closing the open commit window for this
-	// many seconds after the CommitRequest attaches to a matching open window, acting as
-	// an extra collect window: matching changes that arrive in the meantime still join
-	// that window and are included in the resulting commit. Omitted or 0 closes the
-	// window as soon as the CommitRequest attaches. The window can still be closed
-	// earlier by another author's change or by the provider's commit window timer,
-	// exactly as without a CommitRequest.
+	// CloseDelaySeconds sets the finalize deadline from the worker's first receipt.
+	// Time waiting for a matching window consumes this delay; repeated receipt keeps the deadline.
+	// Normal flush triggers can close an attached window early, carrying its message.
+	// A request claims at most one open window and cannot rename a finalized commit.
+	// Omitted or 0 requests immediate finalization. A delay does not reserve a transaction.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=300

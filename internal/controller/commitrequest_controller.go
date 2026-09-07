@@ -152,6 +152,14 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// The schema rejects an invalid literal message at admission, so a rejection here names an
+	// object the schema could not have seen: one stored before the rule landed. It is terminal
+	// rather than retried, because CommitRequest.spec is immutable and no apply can repair it.
+	if err := git.ValidateLiteralCommitMessage(commitRequest.Spec.Message); err != nil {
+		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err, attribution)
+		return ctrl.Result{}, nil
+	}
+
 	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute
 	// (no controller-side delay — the worker anchors the grace at attribution,
 	// close-delay contract) and poll the outcome.
@@ -163,25 +171,11 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Attribution:        attribution.gitOutcome(),
 		GitTargetName:      commitRequest.Spec.GitTargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
-		Message:            capCommitRequestMessage(commitRequest.Spec.Message),
+		Message:            commitRequest.Spec.Message,
 		CloseDelaySeconds:  commitRequest.Spec.CloseDelaySeconds,
 	})
 	if serviceErr != nil || !resolved {
-		if serviceErr != nil {
-			log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
-				"name", req.NamespacedName, "err", serviceErr.Error())
-		}
-		if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestResolveTimeout {
-			if err := r.recordCloseDelayWait(ctx, commitRequest, attribution); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
-		}
-		log.Info("CommitRequest did not resolve within the safety window; failing closed",
-			"name", req.NamespacedName)
-		r.writeTerminalStatus(ctx, log, commitRequest,
-			git.FinalizeResult{}, errors.New(resolveTimeoutMessage), attribution)
-		return ctrl.Result{}, nil
+		return r.awaitAttachOutcome(ctx, log, req, commitRequest, attribution, serviceErr)
 	}
 
 	if result.Err != nil {
@@ -189,6 +183,37 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			"gitTarget", commitRequest.Spec.GitTargetRef.Name, "name", req.NamespacedName)
 	}
 	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution)
+	return ctrl.Result{}, nil
+}
+
+// awaitAttachOutcome handles an attach that has not produced an outcome yet: it keeps polling
+// while the request is inside its safety window, and fails closed once that window is spent. A
+// service error is a not-yet-serviceable worker, so it polls on the same terms.
+func (r *CommitRequestReconciler) awaitAttachOutcome(
+	ctx context.Context,
+	log logr.Logger,
+	req ctrl.Request,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	serviceErr error,
+) (ctrl.Result, error) {
+	if serviceErr != nil {
+		log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
+			"name", req.NamespacedName, "err", serviceErr.Error())
+	}
+
+	if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestResolveTimeout {
+		if err := r.recordCloseDelayWait(ctx, commitRequest, attribution); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
+	}
+
+	log.Info("CommitRequest did not resolve within the safety window; failing closed",
+		"name", req.NamespacedName)
+	r.writeTerminalStatus(ctx, log, commitRequest,
+		git.FinalizeResult{}, errors.New(resolveTimeoutMessage), attribution)
+
 	return ctrl.Result{}, nil
 }
 

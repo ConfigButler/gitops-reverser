@@ -87,19 +87,19 @@ const (
 	DefaultCommitterName = "GitOps Reverser"
 	// DefaultCommitterEmail matches the default operator email in Git history.
 	DefaultCommitterEmail = "noreply@configbutler.ai"
-	// DefaultEventCommitMessageTemplate reproduces the current per-event commit message shape.
-	DefaultEventCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
 	// DefaultReconcileCommitMessageTemplate names the synced type, so the otherwise
 	// indistinguishable per-type reconciles one GitTarget produces are self-describing. Plural
 	// resource alone for readability; add {{.APIVersion}} when plural collisions matter. The
 	// {{if}} guards fall back to "reconciled N resources" for a whole-target reconcile, so the
 	// subject never degrades to an identity-less "reconciled N ".
-	DefaultReconcileCommitMessageTemplate = "reconciled {{.Count}} " +
+	DefaultReconcileCommitMessageTemplate = "chore: reconcile {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
 		"{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
-	// DefaultGroupCommitMessageTemplate is the default message shape for
-	// finalized commit-window commits that contain multiple events.
-	DefaultGroupCommitMessageTemplate = "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+	// DefaultLiveCommitMessageTemplate describes retained input resources.
+	DefaultLiveCommitMessageTemplate = "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}\n\n" +
+		"{{range .Resources -}}" +
+		"- [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}\n" +
+		"{{end -}}"
 
 	resourceRefStringPartCap = 5
 )
@@ -300,15 +300,6 @@ type PendingWrite struct {
 	// produced no commit (no diff).
 	CommitSHA plumbing.Hash
 }
-
-// CommitMessageKind determines which message/authorship path the executor uses.
-type CommitMessageKind string
-
-const (
-	CommitMessagePerEvent  CommitMessageKind = "event"
-	CommitMessageReconcile CommitMessageKind = "reconcile"
-	CommitMessageGrouped   CommitMessageKind = "group"
-)
 
 // WorkItem is the unit of work in the BranchWorker queue. Exactly one of
 // Request, Attach, or Resync is set.
@@ -578,29 +569,15 @@ type CommitterConfig struct {
 	Email string
 }
 
-// CommitMessageConfig contains the resolved per-event, reconcile, and grouped templates.
+// CommitMessageConfig contains the resolved live and reconcile templates.
 type CommitMessageConfig struct {
-	EventTemplate     string
+	LiveTemplate      string
 	ReconcileTemplate string
-	GroupTemplate     string
-}
-
-// CommitMessageData is the template context for per-event commit messages.
-type CommitMessageData struct {
-	Operation  string
-	Group      string
-	Version    string
-	Resource   string
-	Namespace  string
-	Name       string
-	APIVersion string
-	Username   string
-	GitTarget  string
 }
 
 // ReconcileCommitMessageData is the template context for reconcile commit messages.
 //
-// Group, Version, Resource and APIVersion mirror the per-event CommitMessageData fields, and are
+// Group, Version, Resource and APIVersion describe the reconciled type, and are
 // populated only for a per-type reconcile. Revision is the resourceVersion the desired set was
 // pinned to. Any template referencing these must render cleanly when absent; the default guards
 // both with {{if}}.
@@ -618,13 +595,15 @@ type ReconcileCommitMessageData struct {
 }
 
 // ResourceRef is the lightweight resource identifier emitted to grouped commit
-// templates via GroupedCommitMessageData.Resources.
+// templates via LiveCommitMessageData.Resources.
 type ResourceRef struct {
-	Group     string
-	Version   string
-	Resource  string
-	Namespace string
-	Name      string
+	Operation  string
+	APIVersion string
+	Group      string
+	Version    string
+	Resource   string
+	Namespace  string
+	Name       string
 }
 
 // String renders the ref as group/version/resource[/namespace]/name.
@@ -650,17 +629,17 @@ func (r ResourceRef) String() string {
 	return strings.Join(parts, "/")
 }
 
-// GroupedCommitMessageData is the template context for grouped commit
+// LiveCommitMessageData is the template context for grouped commit
 // messages. Each grouped commit covers exactly one (author, gitTarget) tuple
 // (see docs/spec/commit-window-refactor.md).
-type GroupedCommitMessageData struct {
+type LiveCommitMessageData struct {
 	// Author is the verbatim event.UserInfo.Username for the group.
 	Author string
 	// GitTarget is the single target this commit is bound to.
 	GitTarget string
-	// Count is the number of distinct resources committed.
+	// Count is the number of retained resource entries before comparison with Git.
 	Count int
-	// Operations counts events by operation kind (CREATE/UPDATE/DELETE).
+	// Operations counts retained entries by operation kind (CREATE/UPDATE/DELETE).
 	Operations map[string]int
 	// Resources is the per-resource list, deduplicated by file path so the
 	// final state is what's being committed.
@@ -680,9 +659,8 @@ func ResolveCommitConfig(spec *v1alpha3.CommitSpec) CommitConfig {
 			Email: DefaultCommitterEmail,
 		},
 		Message: CommitMessageConfig{
-			EventTemplate:     DefaultEventCommitMessageTemplate,
+			LiveTemplate:      DefaultLiveCommitMessageTemplate,
 			ReconcileTemplate: DefaultReconcileCommitMessageTemplate,
-			GroupTemplate:     DefaultGroupCommitMessageTemplate,
 		},
 	}
 
@@ -709,14 +687,11 @@ func (c CommitConfig) WithTargetMessage(spec *v1alpha3.CommitMessageSpec) Commit
 	if spec == nil {
 		return c
 	}
-	if eventTemplate := strings.TrimSpace(spec.EventTemplate); eventTemplate != "" {
-		c.Message.EventTemplate = eventTemplate
+	if liveTemplate := strings.TrimSpace(spec.LiveTemplate); liveTemplate != "" {
+		c.Message.LiveTemplate = liveTemplate
 	}
 	if reconcileTemplate := strings.TrimSpace(spec.ReconcileTemplate); reconcileTemplate != "" {
 		c.Message.ReconcileTemplate = reconcileTemplate
-	}
-	if groupTemplate := strings.TrimSpace(spec.GroupTemplate); groupTemplate != "" {
-		c.Message.GroupTemplate = groupTemplate
 	}
 	return c
 }

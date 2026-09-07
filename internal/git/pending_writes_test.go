@@ -135,21 +135,11 @@ func TestPendingWriteCommit_DerivesMetadata(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, CommitMessageGrouped, pendingWrite.MessageKind())
 	assert.Equal(t, "alice", pendingWrite.Author())
 	assert.Equal(t, "team-a", pendingWrite.Target().Name)
 	require.Len(t, pendingWrite.Events, 2)
 	assert.Equal(t, "b", pendingWrite.Events[0].Identifier.Name)
 	assert.Equal(t, "c", pendingWrite.Events[1].Identifier.Name)
-}
-
-func TestPendingWriteCommit_SingleEventDerivesPerEvent(t *testing.T) {
-	pendingWrite := PendingWrite{
-		Kind:   PendingWriteCommit,
-		Events: []Event{makeEvent("alice", "a")},
-	}
-
-	assert.Equal(t, CommitMessagePerEvent, pendingWrite.MessageKind())
 }
 
 func TestPendingWriteAtomic_DerivesBatchMetadata(t *testing.T) {
@@ -168,7 +158,6 @@ func TestPendingWriteAtomic_DerivesBatchMetadata(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, CommitMessageReconcile, pendingWrite.MessageKind())
 	assert.Empty(t, pendingWrite.Author())
 	assert.Equal(t, "explicit batch message", pendingWrite.CommitMessage)
 	assert.Equal(t, "team-a", pendingWrite.Target().Name)
@@ -226,8 +215,8 @@ func TestExecutor_PendingWrites_PreservesArrivalOrder(t *testing.T) {
 	first, err := second.Parent(0)
 	require.NoError(t, err)
 
-	assert.Equal(t, "[UPDATE] v1/configmaps/c", second.Message)
-	assert.Equal(t, "[UPDATE] v1/configmaps/a", first.Message)
+	assert.Equal(t, expectSingleLiveMessage("UPDATE", "v1", "configmaps", "default", "c"), second.Message)
+	assert.Equal(t, expectSingleLiveMessage("UPDATE", "v1", "configmaps", "default", "a"), first.Message)
 }
 
 // TestPlacementPolicyForBase_RootTargetMatchesSanitizedBase pins the fix for a root

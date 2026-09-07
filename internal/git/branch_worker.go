@@ -1043,18 +1043,13 @@ func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
 	return l.finalizeOpenWindowWithReason(windowFinalizeReasonUnspecified)
 }
 
-func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) bool {
-	return l.finalizeOpenWindowWithMessage(reason, "")
-}
-
-// finalizeOpenWindowWithMessage closes the live event window into one retained pending write and
-// creates the local commit. Message precedence: explicit override, then the attached
-// CommitRequest's, then the generated grouped message.
+// finalizeOpenWindowWithReason closes the live event window into one retained pending write and
+// creates the local commit. The attached CommitRequest message overrides the live template.
 //
 // On failure the window is DROPPED rather than retried: the repo is unreachable or the events are
 // unrecoverable, and retrying the same broken state every cycle helps nobody. A claiming
 // CommitRequest is then resolved Failed.
-func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinalizeReason, message string) bool {
+func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) bool {
 	if l.openWindow == nil {
 		return false
 	}
@@ -1065,12 +1060,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	targetName, targetNamespace := l.openWindow.GitTarget, l.openWindow.GitTargetNamespace
 	windowTarget := targetNamespace + "/" + targetName
 	pendingCR := l.openWindow.pendingCR
-	// Message precedence (§6.4.2): explicit override, else the attached
-	// CommitRequest message, else the generated grouped-commit message (empty).
-	effectiveMessage := message
-	if effectiveMessage == "" {
-		effectiveMessage = l.openWindow.pendingMessage
-	}
+	effectiveMessage := l.openWindow.pendingMessage
 	if !l.w.normalWritesAllowed(targetName, targetNamespace) {
 		l.w.Log.V(1).Info("Discarding open window while render fidelity is not established",
 			"reason", string(reason), "gitTarget", targetNamespace+"/"+targetName)
@@ -1085,7 +1075,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 		"events", len(events),
 		"windowBytes", l.windowBytes,
 		"pendingWrites", len(l.pendingWrites),
-		"messageOverride", message != "",
+		"messageOverride", effectiveMessage != "",
 		"attachedCR", pendingCR != nil)
 
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)

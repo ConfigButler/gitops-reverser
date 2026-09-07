@@ -304,7 +304,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 
 		customName := "E2E Bot"
 		customEmail := "e2e-bot@example.com"
-		customTemplate := "e2e: {{.Operation}} {{.Resource}}/{{.Name}}"
+		customTemplate := "e2e: {{range .Resources}}{{.Operation}} {{.Resource}}/{{.Name}}{{end}}"
 
 		DeferCleanup(func() {
 			if skipCleanupBecauseResourcesArePreserved(
@@ -336,7 +336,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 
 		By("creating a GitTarget with the per-event message template")
 		createValidatedGitTargetWithCommitMessage(destName, testNs, providerName, commitPath,
-			gitTargetCommitOptions{EventTemplate: customTemplate})
+			gitTargetCommitOptions{LiveTemplate: customTemplate})
 
 		watchRuleData := struct {
 			Name            string
@@ -463,7 +463,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(latestErr).NotTo(HaveOccurred())
 			g.Expect(latestHash).NotTo(BeEmpty(), "expected a commit in %s", commitPath)
 
-			subject, subjectErr := gitRun(signingRepo.CheckoutDir, "show", "-s", "--format=%s", latestHash)
+			subject, subjectErr := gitRun(signingRepo.CheckoutDir, "show", "-s", "--format=%B", latestHash)
 			g.Expect(subjectErr).NotTo(HaveOccurred())
 			subject = strings.TrimSpace(subject)
 			g.Expect(subject).To(HavePrefix("e2e-reconcile:"),
@@ -471,7 +471,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(subject).NotTo(HavePrefix("["),
 				"expected latest commit in %s not to use the per-event template", commitPath)
 
-			logOutput, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPath)
+			logOutput, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%B", "--", commitPath)
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(logOutput).NotTo(ContainSubstring("["),
 				"expected reconcile path %s not to contain per-event template subjects", commitPath)
@@ -567,9 +567,9 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			"app.kubernetes.io/part-of=signing-overlap", "--overwrite")
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, signingRepo.CheckoutDir)
-			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathA)
+			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%B", "--", commitPathA)
 			g.Expect(logErr).NotTo(HaveOccurred())
-			g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/probe-a"),
+			g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/"+testNs+"/probe-a"),
 				"target A's per-event tail must be live before B joins\n%s",
 				recentCommitDiagnostics(signingRepo.CheckoutDir, commitPathA))
 		}).Should(Succeed())
@@ -604,7 +604,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 					"overlap %s must be present under path B\n%s",
 					n, commitDiagnostics)
 			}
-			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathB)
+			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%B", "--", commitPathB)
 			g.Expect(logErr).NotTo(HaveOccurred())
 			// A seed object name can only reach a commit SUBJECT through the per-event template
 			// ("[CREATE] .../seed-cm-…"); the reconcile template names the TYPE, never an object. So
@@ -621,10 +621,10 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "failed to create live-b configmaps")
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, signingRepo.CheckoutDir)
-			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathB)
+			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%B", "--", commitPathB)
 			g.Expect(logErr).NotTo(HaveOccurred())
 			for _, n := range liveNames {
-				g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/"+n),
+				g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/"+testNs+"/"+n),
 					"a post-StreamsRunning create must reach path B as a live per-event commit\n%s",
 					recentCommitDiagnostics(signingRepo.CheckoutDir, commitPathB))
 			}

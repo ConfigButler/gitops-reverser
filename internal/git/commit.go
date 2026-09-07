@@ -18,38 +18,14 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func renderEventCommitMessage(event Event, config CommitConfig) (string, error) {
-	return renderCommitTemplate(
-		"event",
-		config.Message.EventTemplate,
-		CommitMessageData{
-			Operation:  event.Operation,
-			Group:      event.Identifier.Group,
-			Version:    event.Identifier.Version,
-			Resource:   event.Identifier.Resource,
-			Namespace:  event.Identifier.Namespace,
-			Name:       event.Identifier.Name,
-			APIVersion: buildAPIVersion(event.Identifier.Group, event.Identifier.Version),
-			Username:   event.UserInfo.Username,
-			GitTarget:  event.GitTargetName,
-		},
-	)
-}
-
 // renderReconcileCommitMessageFromEvents renders the reconcile commit message for the
 // events-based atomic path from the provider's ReconcileTemplate. It carries no single
-// type or revision, so those template fields stay empty (the default guards them). An
-// explicit override (a literal CommitRequest message) is used verbatim.
+// type or revision, so those template fields stay empty (the default guards them). Literal overrides are resolved by the caller.
 func renderReconcileCommitMessageFromEvents(
 	events []Event,
-	override string,
 	gitTarget string,
 	config CommitConfig,
 ) (string, error) {
-	if strings.TrimSpace(override) != "" {
-		return override, nil
-	}
-
 	return renderCommitTemplate(
 		"reconcile",
 		config.Message.ReconcileTemplate,
@@ -89,11 +65,11 @@ func renderReconcileCommitMessage(
 	return renderCommitTemplate("reconcile", config.Message.ReconcileTemplate, data)
 }
 
-func renderGroupCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
+func renderLiveCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
 	return renderCommitTemplate(
-		"group",
-		config.Message.GroupTemplate,
-		buildGroupedCommitMessageData(pendingWrite.Author(), pendingWrite.Target().Name, pendingWrite.Events),
+		"live",
+		config.Message.LiveTemplate,
+		buildLiveCommitMessageData(pendingWrite.Author(), pendingWrite.Target().Name, pendingWrite.Events),
 	)
 }
 
@@ -133,13 +109,8 @@ func ValidateCommitConfig(config CommitConfig) error {
 		GitTargetName: "example-target",
 	}
 
-	if _, err := renderEventCommitMessage(sampleEvent, config); err != nil {
-		return err
-	}
-
 	if _, err := renderReconcileCommitMessageFromEvents(
 		[]Event{sampleEvent},
-		"",
 		"example-target",
 		config,
 	); err != nil {
@@ -159,11 +130,20 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
-	if _, err := renderGroupCommitMessage(PendingWrite{
-		Kind:   PendingWriteCommit,
-		Events: []Event{sampleEvent},
-	}, config); err != nil {
-		return err
+	for _, author := range []string{"template-validator", ""} {
+		var events []Event
+		for _, operation := range []string{"CREATE", "UPDATE", "DELETE"} {
+			event := sampleEvent
+			event.UserInfo.Username = author
+			event.Operation = operation
+			event.Identifier.Name = operation
+			events = append(events, event)
+			if _, err := renderLiveCommitMessage(PendingWrite{
+				Kind: PendingWriteCommit, Events: events,
+			}, config); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil

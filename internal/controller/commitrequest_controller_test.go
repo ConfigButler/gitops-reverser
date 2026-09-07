@@ -99,3 +99,50 @@ var _ = Describe("CommitRequest controller", func() {
 		}, 2*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 })
+
+// The whitespace-only rejection is a CEL rule on spec.message. A rule that fails to compile is
+// rejected only when the CRD is installed, and a rule that compiles but matches nothing simply
+// never rejects anything, so it is pinned against a real API server rather than only through the
+// controller's Go validator.
+var _ = Describe("CommitRequest message schema", func() {
+	const namespace = "default"
+
+	newRequest := func(message string) *configbutleraiv1alpha3.CommitRequest {
+		return &configbutleraiv1alpha3.CommitRequest{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "message-schema-",
+				Namespace:    namespace,
+			},
+			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+				GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
+				Message:      message,
+			},
+		}
+	}
+
+	DescribeTable("rejects a message that carries no non-whitespace character",
+		func(message string) {
+			err := k8sClient.Create(ctx, newRequest(message))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("non-whitespace"))
+		},
+		Entry("a single space", " "),
+		Entry("spaces and newlines", "  \n \n  "),
+		Entry("a no-break space", "\u00a0"),
+		Entry("an ideographic space", "\u3000"),
+		Entry("a next line character", "\u0085"),
+		Entry("an en quad", "\u2000"),
+		Entry("a narrow no-break space", "\u202f"),
+	)
+
+	DescribeTable("accepts a message carrying real text",
+		func(message string) {
+			Expect(k8sClient.Create(ctx, newRequest(message))).To(Succeed())
+		},
+		Entry("a plain subject", "fix(api): correct the service port"),
+		Entry("a subject and body", "fix(api): correct the port\n\nRoute traffic to the container port."),
+		Entry("surrounding whitespace around real text", "  spaced  "),
+		Entry("template-like text stays literal", "{{.Author}} changed the port"),
+		Entry("non-ASCII text", "fix: träge Antwortzeiten"),
+	)
+})

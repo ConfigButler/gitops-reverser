@@ -383,11 +383,19 @@ func TestPushPendingCommits_ReplayPreservesPendingWriteCommitOrder(t *testing.T)
 	require.Len(t, replayed, len(pendingWrites))
 
 	assert.Equal(t, "alice", replayed[0].Author.Name)
-	assert.Equal(t, "[CREATE] v1/configmaps/alice-first", replayed[0].Message)
+	assert.Equal(
+		t,
+		expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "alice-first"),
+		replayed[0].Message,
+	)
 	assert.Equal(t, "bob", replayed[1].Author.Name)
-	assert.Equal(t, "[CREATE] v1/configmaps/bob-second", replayed[1].Message)
+	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "bob-second"), replayed[1].Message)
 	assert.Equal(t, "alice", replayed[2].Author.Name)
-	assert.Equal(t, "[CREATE] v1/configmaps/alice-third", replayed[2].Message)
+	assert.Equal(
+		t,
+		expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "alice-third"),
+		replayed[2].Message,
+	)
 	assert.True(t, worker.pushCycleRootHash.IsZero())
 }
 
@@ -676,7 +684,11 @@ func TestBranchWorker_AtomicAndGroupedInterleaved_PreservesArrivalOrder(t *testi
 	headCommit, err := serverRepo.CommitObject(headRef.Hash())
 	require.NoError(t, err)
 	require.Len(t, headCommit.ParentHashes, 1)
-	assert.Equal(t, "[CREATE] v1/configmaps/grouped-third", headCommit.Message)
+	assert.Equal(
+		t,
+		expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "grouped-third"),
+		headCommit.Message,
+	)
 
 	atomicCommit, err := serverRepo.CommitObject(headCommit.ParentHashes[0])
 	require.NoError(t, err)
@@ -686,7 +698,11 @@ func TestBranchWorker_AtomicAndGroupedInterleaved_PreservesArrivalOrder(t *testi
 	firstCommit, err := serverRepo.CommitObject(atomicCommit.ParentHashes[0])
 	require.NoError(t, err)
 	require.Len(t, firstCommit.ParentHashes, 1)
-	assert.Equal(t, "[CREATE] v1/configmaps/grouped-first", firstCommit.Message)
+	assert.Equal(
+		t,
+		expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "grouped-first"),
+		firstCommit.Message,
+	)
 }
 
 func TestBranchWorker_Replay_DropsUnitsThatBecomeNoOpAgainstNewRemoteTree(t *testing.T) {
@@ -1024,9 +1040,9 @@ func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *te
 	require.NoError(t, err)
 	commits := commitsAfterHash(t, serverRepo, finalRef.Hash(), initialHash)
 	require.Len(t, commits, 3)
-	assert.Equal(t, "[CREATE] v1/configmaps/live-a", commits[0].Message)
-	assert.Equal(t, "[CREATE] v1/configmaps/live-b", commits[1].Message)
-	assert.Equal(t, "reconciled 1 resources", commits[2].Message)
+	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "live-a"), commits[0].Message)
+	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "live-b"), commits[1].Message)
+	assert.Equal(t, "chore: reconcile 1 resources", commits[2].Message)
 
 	loop.stopTimers()
 }
@@ -1101,8 +1117,8 @@ func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 	require.NoError(t, err)
 	commits := commitsAfterHash(t, serverRepo, finalRef.Hash(), initialHash)
 	require.Len(t, commits, 2)
-	assert.Equal(t, "[CREATE] v1/configmaps/drop-me", commits[0].Message)
-	assert.Equal(t, "reconciled 2 resources (last resourceVersion: 42)", commits[1].Message,
+	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "configmaps", "default", "drop-me"), commits[0].Message)
+	assert.Equal(t, "chore: reconcile 2 resources (last resourceVersion: 42)", commits[1].Message,
 		"the resync commit counts the create and the managed drop and pins the revision")
 
 	loop.stopTimers()

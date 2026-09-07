@@ -40,6 +40,12 @@ func validateCommitConfig(target *configbutleraiv1alpha3.GitTarget) (bool, strin
 		}
 	}
 
+	if message := target.Spec.Commit.Message; message != nil {
+		if message.EventTemplate != "" || message.GroupTemplate != "" {
+			return false, "spec.commit.message.eventTemplate and groupTemplate are retired; migrate to liveTemplate"
+		}
+	}
+
 	config := gitpkg.ResolveCommitConfig(nil).WithTargetMessage(target.Spec.Commit.Message)
 	if err := gitpkg.ValidateCommitConfig(config); err != nil {
 		return false, fmt.Sprintf("invalid spec.commit.message: %v", err)

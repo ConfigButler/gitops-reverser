@@ -89,6 +89,11 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 
 ## What is being decided now — [`design/`](design/)
 
+[`commit-message-refactor.md`](design/commit-message-refactor.md) proposes one live-change template
+and preserves literal `CommitRequest` messages. Its
+[configuration checklist](design/configuration-review.md) defines the remaining operator-guide
+corrections.
+
 [`gittarget-configuration-freshness.md`](design/gittarget-configuration-freshness.md) is
 **deferred, kept as a decision record** rather than an active proposal. It works out what a
 target-level desired/applied configuration identity would have to be, and why it is not worth

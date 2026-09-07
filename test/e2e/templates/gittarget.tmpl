@@ -10,10 +10,10 @@ spec:
   path: {{ .Path }}
   commit:
     window: "{{ .CommitWindow }}"
-{{- if or .EventTemplate .ReconcileTemplate }}
+{{- if or .LiveTemplate .ReconcileTemplate }}
     message:
-{{- if .EventTemplate }}
-      eventTemplate: "{{ .EventTemplate }}"
+{{- if .LiveTemplate }}
+      liveTemplate: "{{ .LiveTemplate }}"
 {{- end }}
 {{- if .ReconcileTemplate }}
       reconcileTemplate: "{{ .ReconcileTemplate }}"

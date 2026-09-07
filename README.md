@@ -31,6 +31,11 @@ Want proof? See this
 [example commit](https://github.com/ConfigButler/example-audit/commit/800a51e5a8edcccbc85c94d5fef7ef7cc8381b7b)
 in [ConfigButler/example-audit](https://github.com/ConfigButler/example-audit).
 
+Live commit messages use `GitTarget.spec.commit.message.liveTemplate` for every window size.
+An attached `CommitRequest.spec.message` overrides it literally; snapshots use `reconcileTemplate`.
+See [configuration](docs/configuration.md#commit-message-templates) and the
+[breaking template migration](docs/UPGRADING.md#one-live-commit-message-template).
+
 ## What it does
 
 - Reconciles existing Kubernetes API state into Git: the repo reflects the exact current state.

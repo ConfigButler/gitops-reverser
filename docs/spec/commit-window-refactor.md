@@ -146,17 +146,13 @@ planner-time regrouping pass.
 
 ## Messages And Authorship
 
-There are three message kinds:
+Message precedence is a non-empty literal override, then `commit.message.liveTemplate` for live
+windows or `commit.message.reconcileTemplate` for atomic snapshots and resyncs. Every live window
+uses the same context, including singleton and `0s` windows. Literal text never changes authorship.
+Resolved templates and literal overrides travel with pending writes through retries and conflict
+replay, so editing a target does not change an already finalized write's message configuration.
 
-- Per-event: one event, event author, `commit.message.eventTemplate`.
-- Grouped: multiple events from one grouped author/target, grouped author,
-  `commit.message.groupTemplate`.
-- Snapshot: atomic reconcile write, operator author, `commit.message.snapshotTemplate`.
-
-A grouped unit with one event intentionally falls back to the per-event message
-kind. This keeps `commit.window=0` and one-event finalized windows readable.
-
-The grouped template receives `GroupedCommitMessageData`:
+The live template receives `LiveCommitMessageData`:
 
 - `Author`
 - `GitTarget`
