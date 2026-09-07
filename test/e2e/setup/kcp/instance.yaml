@@ -8,7 +8,7 @@
 # clusters/<hash>, and the operator-issued serving cert carries that name as a SAN, so the
 # GitTarget's kubeconfig verifies TLS with the real kcp CA (no insecure-skip-tls-verify).
 #
-# No audit stream and no per-workspace OIDC here (unlike the gitops-api reference): the
+# No audit stream and no per-workspace OIDC here (unlike the reference deployment): the
 # reverser mirrors a workspace by WATCHING it, and the e2e mints an admin-derived kubeconfig
 # per workspace rather than using Dex. So the WorkspaceAuthentication feature gate, the audit
 # ConfigMap/Secret, and the WorkspaceType/WorkspaceAuthenticationConfiguration are all omitted.
