@@ -1552,26 +1552,41 @@ func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, 
 	}
 }
 
+// commitLabels is the {author_kind, message_source} pair one commit is counted under.
+type commitLabels struct {
+	authorKind    string
+	messageSource string
+}
+
 func (w *BranchWorker) recordCommitsByAuthorKind(pendingWrites []PendingWrite, commitsCreated int) {
-	counts := map[string]int64{}
+	counts := map[commitLabels]int64{}
 	for _, pendingWrite := range pendingWrites {
 		if !pendingWrite.createdCommit() {
 			continue
 		}
-		counts[pendingWrite.authorKind()]++
+		counts[commitLabels{
+			authorKind:    pendingWrite.authorKind(),
+			messageSource: pendingWrite.messageSource(),
+		}]++
 	}
 	if len(counts) == 0 && commitsCreated > 0 {
-		counts[authorKindCommitter] = int64(commitsCreated)
+		// Commits were created but no pending write claims them, so neither label can be read
+		// from a write. Fall back to the same committer identity the author label already uses.
+		counts[commitLabels{
+			authorKind:    authorKindCommitter,
+			messageSource: messageSourceReconcile,
+		}] = int64(commitsCreated)
 	}
-	for authorKind, count := range counts {
+	for labels, count := range counts {
 		// Label by the recording BranchWorker's own identity {provider_namespace,
-		// provider_name, branch} plus author_kind. The prefixed key names avoid the
-		// reserved Prometheus pod-scrape labels `namespace`/`name`.
+		// provider_name, branch} plus author_kind and message_source. The prefixed key names
+		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`.
 		telemetry.CommitsTotal.Add(w.ctx, count, metric.WithAttributes(
 			attribute.String("provider_namespace", w.GitProviderNamespace),
 			attribute.String("provider_name", w.GitProviderRef),
 			attribute.String("branch", w.Branch),
-			attribute.String("author_kind", authorKind),
+			attribute.String("author_kind", labels.authorKind),
+			attribute.String("message_source", labels.messageSource),
 		))
 	}
 }

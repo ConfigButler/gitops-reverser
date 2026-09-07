@@ -328,6 +328,18 @@ const (
 	authorKindUnresolved = "unresolved"
 )
 
+// Commit message sources, reported as the commits_total `message_source` label.
+const (
+	// messageSourceLiteral is a message supplied verbatim by a CommitRequest: a person or a
+	// system named this change themselves rather than accepting the generated wording.
+	messageSourceLiteral = "literal"
+	// messageSourceLive is a live window rendered through the target's liveTemplate.
+	messageSourceLive = "live"
+	// messageSourceReconcile is an atomic snapshot or a resync rendered through
+	// reconcileTemplate.
+	messageSourceReconcile = "reconcile"
+)
+
 // AttributionOutcome returns the attribution outcome for commit-shaped pending writes. It
 // mirrors AuthorUserInfo: the window is single-author, so the first event's outcome describes
 // the whole write. Atomic and empty writes never attempt attribution.

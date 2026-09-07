@@ -100,7 +100,8 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 	message, err := renderSingleLiveCommitMessage(
 		event,
 		ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-			LiveTemplate: "audit({{.GitTarget}}): {{.Author}} {{range .Resources}}{{.Operation}} {{.Namespace}}/{{.Name}}{{end}}",
+			LiveTemplate: "audit({{.GitTarget}}): {{.Author}} " +
+				"{{range .Resources}}{{.Operation}} {{.Namespace}}/{{.Name}}{{end}}",
 		}),
 	)
 	require.NoError(t, err)

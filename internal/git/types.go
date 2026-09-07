@@ -629,9 +629,9 @@ func (r ResourceRef) String() string {
 	return strings.Join(parts, "/")
 }
 
-// LiveCommitMessageData is the template context for grouped commit
-// messages. Each grouped commit covers exactly one (author, gitTarget) tuple
-// (see docs/spec/commit-window-refactor.md).
+// LiveCommitMessageData is the template context for every live commit message, whatever the
+// window retained: one resource, many, or a 0s window. Each live commit covers exactly one
+// (author, gitTarget) tuple (see docs/spec/commit-window-refactor.md).
 type LiveCommitMessageData struct {
 	// Author is the verbatim event.UserInfo.Username for the group.
 	Author string

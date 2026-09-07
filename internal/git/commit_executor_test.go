@@ -253,3 +253,59 @@ func TestCommitMetadata_ResyncRenderedMessageIsNotHeldToTheLiteralRequestContrac
 		})
 	}
 }
+
+// messageSource is the commits_total `message_source` label AND the switch commitMetadata
+// renders by, so the two can never disagree about a given write. This pins that agreement
+// rather than the label alone.
+func TestMessageSource_MatchesTheMessageActuallyRendered(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		write   PendingWrite
+		want    string
+		message string
+	}{
+		{
+			name:  "a live window renders the live template",
+			write: PendingWrite{Kind: PendingWriteCommit, Events: []Event{makeEvent("alice", "api")}},
+			want:  messageSourceLive,
+		},
+		{
+			name: "an attached request message is literal",
+			write: PendingWrite{
+				Kind:          PendingWriteCommit,
+				Events:        []Event{makeEvent("alice", "api")},
+				CommitMessage: "fix(api): correct the port",
+			},
+			want:    messageSourceLiteral,
+			message: "fix(api): correct the port",
+		},
+		{
+			name:  "an atomic snapshot is reconcile",
+			write: PendingWrite{Kind: PendingWriteAtomic, Events: []Event{makeEvent("alice", "api")}},
+			want:  messageSourceReconcile,
+		},
+		{
+			// A resync arrives pre-rendered, so it must not be mistaken for a literal override.
+			name:    "a pre-rendered resync is reconcile, not literal",
+			write:   PendingWrite{Kind: PendingWriteResync, CommitMessage: "chore: reconcile 3 configmaps"},
+			want:    messageSourceReconcile,
+			message: "chore: reconcile 3 configmaps",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			write := tc.write
+			write.GitTargetName = "team-a"
+			write.GitTargetNamespace = "default"
+			write.CommitConfig = ResolveCommitConfig(nil)
+
+			assert.Equal(t, tc.want, write.messageSource())
+
+			message, _, err := write.commitMetadata()
+			require.NoError(t, err)
+			if tc.message != "" {
+				assert.Equal(t, tc.message, message)
+			}
+			assert.NotEmpty(t, message)
+		})
+	}
+}

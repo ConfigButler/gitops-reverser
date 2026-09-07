@@ -105,9 +105,9 @@ func TestLiveMessageMigration_StoredValuesAndRemoval(t *testing.T) {
 			)
 			require.NoError(t, applyIgnoringUnknownFields(ctx, c, obj))
 		} else {
-			patch := []byte(
-				`{"spec":{"commit":{"message":{"eventTemplate":null,"groupTemplate":null,"liveTemplate":"chore: sync {{.Count}}"}}}}`,
-			)
+			patch := []byte(`{"spec":{"commit":{"message":{` +
+				`"eventTemplate":null,"groupTemplate":null,` +
+				`"liveTemplate":"chore: sync {{.Count}}"}}}}`)
 			require.NoError(t, c.Patch(ctx, &target, client.RawPatch(types.MergePatchType, patch),
 				&client.PatchOptions{Raw: &metav1.PatchOptions{FieldValidation: "Ignore"}}))
 		}

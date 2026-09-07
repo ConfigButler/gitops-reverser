@@ -53,24 +53,38 @@ func (p PendingWrite) path() string {
 	return ""
 }
 
+// messageSource names where this write's commit message comes from. It is the single
+// definition of that precedence: commitMetadata renders by it, and commits_total is
+// labelled by it, so the metric can never disagree with the message actually written.
+//
+// A resync is reconcile-sourced even though it arrives as a pre-rendered message: the resync
+// path renders the target's reconcile template itself and hands the result over. That is
+// generated text, not a request's literal override, so the CommitRequest literal contract does
+// not bind it — an operator's reconcile template may legitimately be long or contain a tab.
+func (p PendingWrite) messageSource() string {
+	switch {
+	case p.Kind == PendingWriteResync:
+		return messageSourceReconcile
+	case p.CommitMessage != "":
+		return messageSourceLiteral
+	case p.Kind == PendingWriteAtomic:
+		return messageSourceReconcile
+	default:
+		return messageSourceLive
+	}
+}
+
 func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 	var message string
 	var err error
-	source := "live"
+	source := p.messageSource()
 	switch {
 	case p.Kind == PendingWriteResync:
-		// The resync path renders the target's reconcile template itself and hands the result
-		// over as the message. It is generated text, not a request's literal override, so the
-		// CommitRequest literal contract does not bind it: an operator's reconcile template may
-		// legitimately be long or contain a tab.
-		source = "reconcile"
 		message = p.CommitMessage
 	case p.CommitMessage != "":
-		source = "literal"
 		message = p.CommitMessage
 		err = ValidateLiteralCommitMessage(message)
 	case p.Kind == PendingWriteAtomic:
-		source = "reconcile"
 		message, err = renderReconcileCommitMessageFromEvents(p.Events, p.Target().Name, p.CommitConfig)
 	case p.Kind == PendingWriteCommit:
 		message, err = renderLiveCommitMessage(p, p.CommitConfig)

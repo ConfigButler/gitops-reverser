@@ -20,7 +20,8 @@ import (
 
 // renderReconcileCommitMessageFromEvents renders the reconcile commit message for the
 // events-based atomic path from the provider's ReconcileTemplate. It carries no single
-// type or revision, so those template fields stay empty (the default guards them). Literal overrides are resolved by the caller.
+// type or revision, so those template fields stay empty (the default guards them). Literal
+// overrides are resolved by the caller.
 func renderReconcileCommitMessageFromEvents(
 	events []Event,
 	gitTarget string,
