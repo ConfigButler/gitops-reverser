@@ -52,6 +52,7 @@ var (
 	restCfg   *rest.Config
 )
 
+// TestMain bootstraps the shared envtest environment the wiring tests run against.
 func TestMain(m *testing.M) {
 	os.Exit(run(m))
 }
@@ -218,10 +219,10 @@ func awaitMirroredReady(
 	t.Fatalf("GitTargetReady never reached %q within %s (last seen %q)", want, budget, last)
 }
 
-// TestWatchRuleFollowsGitTargetStatusOnlyRecovery is the regression test for a rule whose mirrored
+// TestWatchRule_FollowsGitTargetStatusOnlyRecovery is the regression test for a rule whose mirrored
 // GitTargetReady lagged its target by a full requeue. It fails if the GitTarget watch stops
 // reacting to a status-only readiness move.
-func TestWatchRuleFollowsGitTargetStatusOnlyRecovery(t *testing.T) {
+func TestWatchRule_FollowsGitTargetStatusOnlyRecovery(t *testing.T) {
 	ctx := context.Background()
 	startManager(t, func(m manager.Manager) error {
 		return (&controller.WatchRuleReconciler{
@@ -255,9 +256,9 @@ func TestWatchRuleFollowsGitTargetStatusOnlyRecovery(t *testing.T) {
 	}, metav1.ConditionTrue, propagationBudget)
 }
 
-// TestClusterWatchRuleFollowsGitTargetStatusOnlyRecovery is the same regression for the
+// TestClusterWatchRule_FollowsGitTargetStatusOnlyRecovery is the same regression for the
 // cluster-scoped rule, which carried the identical wiring.
-func TestClusterWatchRuleFollowsGitTargetStatusOnlyRecovery(t *testing.T) {
+func TestClusterWatchRule_FollowsGitTargetStatusOnlyRecovery(t *testing.T) {
 	ctx := context.Background()
 	startManager(t, func(m manager.Manager) error {
 		return (&controller.ClusterWatchRuleReconciler{

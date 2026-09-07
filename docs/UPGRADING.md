@@ -676,11 +676,11 @@ different one the namespace is now written explicitly — omitting it would have
 kustomize and rendered a different object than the one being mirrored. This also now applies to a path
 you declared, which previously wrote a `namespace:` line the rest of that folder omits.
 
-## 0.41.1 — the Go floor moved (patch release; breaking for module consumers)
+## 0.41.1 — the Go floor rises for module consumers (patch release; breaking for module consumers)
 
-The `go` directive in `go.mod` moved from `1.26.5` to `1.27.0` in `v0.41.1`, a release whose
-changelog entry reads only *"let's release some security updates"*. It has moved again since. The
-directive in [`go.mod`](../go.mod) is always the source of truth; the README carries the current
+`v0.41.1` raises the `go` directive in `go.mod` from `1.26.5` to `1.27.0`, in a release whose
+changelog entry reads only *"let's release some security updates"*. The floor rises again after it.
+The directive in [`go.mod`](../go.mod) is always the source of truth; the README carries the current
 floor.
 
 **If you run the image, this does not affect you.** The toolchain is baked into the build.
