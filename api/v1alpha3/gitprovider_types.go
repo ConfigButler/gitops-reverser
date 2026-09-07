@@ -174,8 +174,11 @@ type CommitterSpec struct {
 // GitTarget.spec.commit.message; the identically-shaped GitProvider.spec.commit.message is
 // retained only to reject a manifest that still sets it there.
 type CommitMessageSpec struct {
-	// EventTemplate is a Go text/template string for per-event commit messages
-	// (used when spec.commit.window is "0s"; one event per commit).
+	// EventTemplate is a Go text/template string for the commit message of a commit carrying
+	// exactly ONE event. Which template renders a commit follows the commit's shape, not the
+	// window setting: a "0s" window makes every commit single-event, but a commit window that
+	// closes around a single change renders through this template too. With a non-zero window,
+	// set GroupTemplate as well — both shapes occur.
 	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
 	// APIVersion, Username, GitTarget.
 	// +optional
@@ -191,9 +194,9 @@ type CommitMessageSpec struct {
 	// +optional
 	ReconcileTemplate string `json:"reconcileTemplate,omitempty"`
 
-	// GroupTemplate is a Go text/template string for grouped commit messages
-	// (the commit-window path; one commit per (author, gitTarget) group
-	// produced by the batching pipeline).
+	// GroupTemplate is a Go text/template string for the commit message of a commit carrying TWO
+	// OR MORE events (one commit per (author, gitTarget) group produced by the batching
+	// pipeline). A group that closed around a single event renders through EventTemplate instead.
 	// Available variables: Author, GitTarget, Count, Operations (map of
 	// CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
 	// Resource, Namespace, Name}).

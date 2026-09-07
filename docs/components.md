@@ -132,7 +132,7 @@ Optional, and deliberately unable to affect *what* is written. It only names the
 | Component | Path | Role |
 |---|---|---|
 | Audit ingress | [`internal/webhook/audit_handler.go`](../internal/webhook/audit_handler.go) | receives kube-apiserver audit events on `/audit-webhook/<route>` and publishes a minimal fact |
-| Fact transport | [`internal/queue/fact_stream.go`](../internal/queue/fact_stream.go) | Redis Streams by default, an in-process ring with `--author-attribution-transport=memory` |
+| Fact transport | [`internal/queue/fact_stream.go`](../internal/queue/fact_stream.go) | Redis Streams by default, an in-process ring with `--author-attribution-transport=memory` (which frees attribution from Redis, but not the watch resume cursors) |
 | Fact index and follower | [`internal/queue/fact_index.go`](../internal/queue/fact_index.go) | a bounded, TTL'd in-process index, followed per type while at least one watch needs it |
 | Author resolver | [`internal/watch/author_resolver.go`](../internal/watch/author_resolver.go) | joins a watch event to a fact within a bounded grace window |
 | Command author store | [`internal/queue/command_author_store.go`](../internal/queue/command_author_store.go) | the `CommitRequest` submitter captured at admission |

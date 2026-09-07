@@ -132,6 +132,10 @@ Early-stage software; CRDs and behavior may still change.
 - Tested against Kubernetes `1.37` at the API level (envtest) and `1.36` end-to-end (k3s, which has
   no stable `1.37` release yet); other versions may work but are not in the matrix.
 - Runtime behavior is deterministic: no AI or heuristic mutation at runtime.
+- **Minimum Go for module consumers: `1.27.1`.** Running the image needs no Go at all, but anything
+  importing this repo as a module (`pkg/manifestanalyzer`, for example) is bound by the `go`
+  directive in [`go.mod`](go.mod), which is the source of truth. That floor can move in any release,
+  including a patch release; when it does, the release notes say so.
 
 Good fit for pilots, lab clusters, brownfield discovery, and design partners who can tolerate change.
 Production use should follow an environment-specific review.

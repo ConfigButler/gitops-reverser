@@ -656,6 +656,11 @@ travel:
 | `redis` (default) | Redis Streams, per type, with a retention window a restarting process replays | any install; **required** for more than one replica |
 | `memory` | an in-process ring | single replica, no Redis; every fact is lost on restart, by design |
 
+`memory` removes *attribution's* need for Redis. It does not on its own remove the install's:
+`--redis-addr` also holds each `GitTarget`'s watch resume cursors, independently of attribution. So
+dropping the Valkey StatefulSet as well means every watch cold-replays on restart instead of
+resuming, across every target.
+
 | Endpoint | Role |
 |---|---|
 | `/audit-webhook/<audit-route>` | One audit route's stream; some ClusterProvider must carry that route |

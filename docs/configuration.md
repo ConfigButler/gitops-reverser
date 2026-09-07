@@ -521,14 +521,20 @@ write rather than stopping the mirror.
 
 #### Commit message templates
 
-There are three templates, one per commit shape:
+There are three templates, one per commit shape. **Which one renders a commit is decided by the
+shape of that commit, not by the window setting:**
 
-- `spec.commit.message.eventTemplate`: per-event commits (only used when `spec.commit.window` is
-  `0s`).
-- `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
-  common case).
+- `spec.commit.message.eventTemplate`: a commit carrying exactly one event. A `0s` window makes
+  every commit this shape, but it is not the only way to get one. A commit window that closes around
+  a single change renders through this template too, which is most edits a human makes by hand.
+- `spec.commit.message.groupTemplate`: a commit carrying two or more events, which is what a burst
+  inside the commit window produces.
 - `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
   path; one commit per synced type).
+
+So with a non-zero window you probably want **both** `eventTemplate` and `groupTemplate` set.
+Setting only one leaves the other shape rendering through the built-in wording, and both shapes
+occur in normal operation.
 
 ```yaml
 spec:
@@ -810,6 +816,18 @@ Placement decides the file path for a resource that has **no document in Git yet
 exists, updates and deletes always edit it in place at its current location (found by manifest identity,
 not path), so changing placement never moves an existing file; it only affects resources created after
 the change.
+
+**This is the permanent contract, not a gap waiting to be closed.** The operator never relocates a
+document it did not create, because moving a file is indistinguishable in Git from deleting one and
+writing another, and doing that on your behalf would rewrite history you may have built tooling or
+review habits around. The practical consequence is worth stating plainly: a folder laid out under an
+older policy keeps that layout for as long as its documents live, however you change `spec.placement`
+afterwards. There is no re-layout operation; treat the layout a folder already has as given.
+
+To re-place a document deliberately, remove it and let the mirror write it again: delete the object
+in the cluster (the mirror removes the document), then recreate it, and the new write goes through
+the current placement policy. Deleting the file in Git alone is not enough, since the next reconcile
+restores it at the path the object's document identity already resolves to.
 
 #### How a path is chosen (the resolution ladder)
 
@@ -1451,6 +1469,15 @@ When attribution is enabled, these flags tune the join:
 
 - `--author-attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
   matching watch event to join it.
+
+  **Inside that window a fact can name a later write by a different identity, on purpose.** The join
+  tries the strongest evidence first, and its floor is a `(namespace, name)` tier that is
+  last-writer-wins and bounded only by this TTL. So an out-of-band write, such as a hand-run
+  `kubectl` command against a mirrored object, leaves a fact that a subsequent write to the same
+  name can match while the TTL still holds it, and that later commit is attributed to whoever made
+  the out-of-band change. It clears itself once the fact expires. A shorter TTL narrows the window
+  at the cost of losing actors whose audit delivery is slow. The full ranking and the reasoning
+  behind the floor are in [`spec/attribution.md`](spec/attribution.md).
 - `--author-attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
   watch event ships authored by the `attribution-unresolved` sentinel. Note the delivery floor: the
   apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
