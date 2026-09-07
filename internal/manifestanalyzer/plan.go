@@ -33,6 +33,10 @@ type Plan struct {
 	// the policy is deliberately keeping". Purely informational: it is a count, not an
 	// action, and it never reaches the commit path.
 	RetainedOrphans int
+	// RetainedOrphansByType breaks the same population down by resource type. A bare total is not
+	// actionable — "12 documents retained" names nothing an operator can go and look at — and the
+	// type is what a retention metric has to carry to be worth publishing.
+	RetainedOrphansByType map[types.ResourceIdentifier]int
 }
 
 // PlanActionKind enumerates what a single action does. The seven kinds are the
@@ -259,7 +263,12 @@ func BuildScopedPlan(
 	}
 
 	sortActions(b.actions)
-	return Plan{Actions: b.actions, Diagnostics: b.diags, RetainedOrphans: b.retained}
+	return Plan{
+		Actions:               b.actions,
+		Diagnostics:           b.diags,
+		RetainedOrphans:       b.retained,
+		RetainedOrphansByType: b.retainedByType,
+	}
 }
 
 // planBuilder accumulates a plan's actions and diagnostics while BuildPlan walks
@@ -286,8 +295,9 @@ type planBuilder struct {
 	// sweep answers "may I delete the ones that are".
 	sweep SweepMode
 	// retained counts the in-scope managed drops sweep suppressed, surfaced as
-	// Plan.RetainedOrphans.
-	retained int
+	// Plan.RetainedOrphans, and retainedByType breaks that count down by resource type.
+	retained       int
+	retainedByType map[types.ResourceIdentifier]int
 }
 
 // planDesired classifies one desired resource against the store and appends its
@@ -419,6 +429,10 @@ func (b *planBuilder) planGitOnly(dm *DocumentModel) {
 		// at all — not planned and then filtered — so it cannot reach the plan's action
 		// list, its ordering, or the commit. Counting it is the only trace it leaves.
 		b.retained++
+		if b.retainedByType == nil {
+			b.retainedByType = map[types.ResourceIdentifier]int{}
+		}
+		b.retainedByType[resourceOf(dm)]++
 		return
 	}
 	b.actions = append(b.actions, PlanAction{

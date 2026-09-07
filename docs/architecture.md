@@ -1340,8 +1340,10 @@ as one funnel and its loss paths as one selector:
 **Authorship**, when `--author-attribution` is on:
 
 - **Ingress.** `gitopsreverser_audit_eventlist_duration_seconds{outcome}` times every request at
-  `/audit-webhook`, rejections included (`bad_method`, `bad_path`, `unknown_route`), and its
-  `_count` series is the request counter.
+  `/audit-webhook`, rejections included (`bad_method`, `bad_path`, `bare_endpoint_disabled`), and
+  its `_count` series is the request counter. A named route is never rejected (it is a partition
+  name, not a claim about an object), so the only route-shaped rejection is the bare endpoint with
+  no annotation key configured.
 - **Per-event census.** `gitopsreverser_audit_events_total{outcome,category,group,version,resource,verb}`
   gives one terminal outcome per audit event; `category="error"` must stay zero.
 - **Fact pipeline.** `_attribution_facts_total{op}`, `_attribution_fact_index_entries`,
@@ -1382,10 +1384,13 @@ Current limitations:
   so short reconnects resume a normal watch from that cursor. Kubernetes does not guarantee replay from an
   arbitrary resourceVersion, so if the apiserver has expired the cursor (`410 Gone`) recovery falls back to
   `sendInitialEvents` replay or LIST + mark-and-sweep.
-- **Watch-ingestion metrics are not yet emitted.** The attribution join is instrumented, but per-type
-  watch volume, restarts, replay cost, recovery mode, and shard queue delay are not, so a stalled or
-  thrashing watch is visible only in logs and in its downstream effects (see
-  [Observability](#observability)).
+- **Watch queue DELAY is not measurable.** Per-type watch volume, session ends, replay cost and
+  recovery mode are all emitted now (see [Observability](#observability)), and
+  `watch_event_handling_seconds` reports how long a stream was busy. How long an event *waited*
+  before being picked up is a different number, and measuring it needs an arrival timestamp stamped
+  before the blocking consumer, and the events arrive on a client-go watch channel this process does
+  not fill, so there is nowhere honest to stamp one. Occupancy is the available proxy: a stream that
+  is busy is a stream nothing else is being read from.
 - **The in-process attribution transport is single-replica.** `--author-attribution-transport=memory`
   is refused with more than one replica, and it loses every unjoined fact on restart by design; a
   multi-replica install must use the Redis transport.

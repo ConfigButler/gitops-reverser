@@ -184,6 +184,18 @@ var (
 	// restart-reconcile e2e spec; treat the name and labels as a public observability contract.
 	WatchRecoveryTotal metric.Int64Counter
 
+	// GitCommitFailuresTotal counts work that was routed to a worker and then died before it
+	// could ever be pushed, labelled by {provider_namespace, provider_name, branch, kind, reason}.
+	// kind is `window` (an ordinary live commit window) or `atomic` (a snapshot/resync request);
+	// reason is `refused` (the acceptance gate or a write-boundary precondition rejected the plan,
+	// which needs a human to fix the Git path) or `error` (a write fault).
+	//
+	// This was the largest remaining hole. A commit failure drops the whole window — the events are
+	// already lost to the failed flush — and it happens AFTER routing and BEFORE pushing, so
+	// neither GitQueueDropsTotal nor GitPushesTotal sees it. The mirror silently falls behind for
+	// every object in that window until the next resync re-derives them, and until now the only
+	// trace was a log line (or, for a refusal, a GitTarget condition nobody is alerting on).
+	GitCommitFailuresTotal metric.Int64Counter
 	// GitPushesTotal counts push CYCLES at their terminal end, labelled by {provider_namespace,
 	// provider_name, branch, outcome} where outcome is `pushed` or `failed`. A cycle that exhausts
 	// its replay retries was previously a log line and nothing else: the mirror stops advancing and
@@ -430,6 +442,7 @@ func registerCounters() error {
 	counters := []cSpec{
 		{"gitopsreverser_git_documents_total", &GitDocumentsTotal},
 		{"gitopsreverser_git_commits_total", &GitCommitsTotal},
+		{"gitopsreverser_git_commit_failures_total", &GitCommitFailuresTotal},
 		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
 		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
 		{"gitopsreverser_git_queue_drops_total", &GitQueueDropsTotal},

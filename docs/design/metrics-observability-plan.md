@@ -91,6 +91,13 @@ has three places that break it. Each is a log line and nothing else.
 - **A route failure at the watch boundary is a `V(1)` log.** `routeLiveTargetWatchEvent` logs
   *"target watch route failed"* ([target_watch.go](../../internal/watch/target_watch.go)) and the
   event is gone until the next resync.
+- **A failed commit drops its whole window, and this was the largest hole.**
+  `finalizeOpenWindowWithReason` logs *"Commit failed; dropping open window"* and discards every
+  event in it; the atomic path does the same for a snapshot request. It happens AFTER routing and
+  BEFORE pushing, so neither the queue-drop counter nor the push counter can see it, and the mirror
+  falls behind for every object in that window until a resync re-derives them. A refusal at least
+  moves a GitTarget condition, but a condition is not a rate, and the transient write fault moves
+  nothing at all. `git_commit_failures_total{kind,reason}` closes it.
 
 ### 2.5 Gauges that go stale during the incident they exist to detect
 
@@ -120,7 +127,7 @@ ingress metrics as an apiserver posting nothing at all: none.
 
 That is the most likely audit misconfiguration there is, and it was the one shape the ingress metric
 could not show. The fix is three bounded rejection outcomes: `bad_method`, `bad_path`,
-`unknown_route`: on the instrument that already exists, and a timer that starts before the first
+`bare_endpoint_disabled`: on the instrument that already exists, and a timer that starts before the first
 gate rather than after the last one.
 
 ### 2.7 Discovery is blind to every cluster but the local one
@@ -133,7 +140,36 @@ config-plane split a `GitTarget` can mirror a remote source cluster through `spe
 degraded `APIService` there produces **no signal at all** while `api_catalog_group_versions` sits
 reassuringly at zero degraded. The label is the fix, not the guard.
 
-### 2.8 The flow cannot be drawn, and it is not close
+### 2.8 Recording boundaries: where a counter fires matters as much as what it counts
+
+Instrumenting the stages exposed a second class of defect, and it is the one that survives review
+longest because the metric exists and looks plausible. Six recording sites were wrong about *when*:
+
+| Site | Fired | Should fire |
+|---|---|---|
+| `git_commits_total` | at local commit creation | on a successful push, from the writes that SURVIVED the replay: a conflict replay rebuilds them, and a write another writer already applied produces no replacement commit |
+| `git_documents_total` | as each document was applied into a buffer | after flush, since a resync can apply everything and then abort on a precondition, writing nothing |
+| `watch_event_handling_seconds` | in `processLiveTargetWatchEvent` | at `routeLiveTargetWatchEvent`, because a COLD-started watch streams through `handleTargetWatchSessionEvent` instead and reported no occupancy at all |
+| `watch_recovery_total{mode="list_fallback"}` | when the fallback was chosen | when it completed, since the counter is documented as completed recoveries and the LIST after it can still fail |
+| `watch_sessions_ended_total{reason="expired"}` | at the outer session end | where the expiry is detected, because the wrapper swallows the sentinel and falls through to a replay |
+| `git_documents_total{outcome}` for a refusal | as `unchanged` | as `refused`, because a Secret the writer DECLINED to place is not a document it found identical |
+
+None of these is a missing metric. Each is a metric that answers confidently and wrongly, which is
+the failure mode this whole plan exists to remove, arriving through the back door.
+
+### 2.9 Two labels that were not what they said
+
+- **The resync census had no GitTarget.** `recordDocument` read identity off the event, and the
+  resync path builds its events without target fields, so every production snapshot write and every
+  sweep delete filed under empty labels. An empty label set is worse than none: it looks like a real
+  series. The batch already carries the target; it just was not being asked.
+- **`unknown_route` named a rejection that cannot happen.** `resolveRoute` accepts any named route
+  as-is, deliberately, because a route is a partition name rather than a claim about an object.
+  The only route-shaped rejection is the bare `/audit-webhook` with no annotation key, so the value
+  is now `bare_endpoint_disabled`. [configuration.md](../configuration.md) said the opposite and is
+  corrected with it.
+
+### 2.10 The flow cannot be drawn, and it is not close
 
 Watch ingestion has **no instrument at all**. So the funnel an operator would want:
 
@@ -160,8 +196,8 @@ Carried forward from the previous revision, and still right:
    labels stay prefixed (`gittarget_*`, `provider_*`) to survive a `honor_labels=false` pod scrape.
 5. **Degradation is loud.** Running in a degraded shape is a visible state, not a silent one.
 
-Seven new ones. The first three are what makes the flow drawable; the last three are what keeps a
-gauge honest during an incident, and cheap enough not to cause one:
+Eight new ones. The first three are what makes the flow drawable; the next three keep a gauge honest
+during an incident and cheap enough not to cause one; the last two are about where a call goes:
 
 1. **One boundary, one counter, one bounded `outcome`: when the unit is the same.** Where a
    population divides, it divides *inside* one counter on a label named `outcome`. Two counters over
@@ -197,7 +233,13 @@ gauge honest during an incident, and cheap enough not to cause one:
    streams and the GitTarget sat at `0/58 streams running` until an e2e spec timed out. A gauge that
    reports the last published resolution is both cheaper and more honest than one that resolves its
    own.
-7. **"How long" is exported as a timestamp, not as an age.** An age has to be recomputed to stay
+7. **A counter fires where the thing it names actually happened.** Not where it was decided, not
+   where it was attempted, and not where it was convenient. §2.8 lists six sites that had this
+   wrong, and every one of them produced a confident, plausible, incorrect number: work counted as
+   committed that a replay discarded, documents counted as written by a flush that aborted, a
+   recovery counted before it recovered. This is the harder half of "one boundary, one counter":
+   picking the boundary is easy, and putting the call at it is where the mistakes live.
+8. **"How long" is exported as a timestamp, not as an age.** An age has to be recomputed to stay
    true; a timestamp is true forever once written, and `time() - <gauge>` does the arithmetic in
    PromQL. This is
    [Prometheus's own instrumentation advice](https://prometheus.io/docs/practices/instrumentation/#timestamps-not-time-since),
@@ -279,7 +321,7 @@ of this plan carried; the contract itself lives in
 
 | Question | Signal |
 |---|---|
-| Are audit requests arriving, and are they being accepted at the door? | `audit_eventlist_duration_seconds_count{outcome}`: including the `bad_method` / `bad_path` / `unknown_route` rejections §2.6 adds |
+| Are audit requests arriving, and are they being accepted at the door? | `audit_eventlist_duration_seconds_count{outcome}`: including the `bad_method` / `bad_path` / `bare_endpoint_disabled` rejections §2.6 adds |
 | Which events are accepted, filtered, or unusable? | `audit_events_total{category, outcome, group, version, resource, verb}` |
 | Did accepted events actually produce facts? | the same counter's `queued`, `write_error` and `no_attribution_fact` outcomes |
 | Is the transport being consumed healthily? | `_fact_follower_errors_total`, `_fact_follower_last_success_timestamp_seconds`, `_fact_index_entries`, and the three loss counters |
@@ -383,6 +425,7 @@ on the caps rather than as a count of lost joins.
 | `watch_event_handling_seconds` | histogram | `group`, `version`, `resource` | how long a stream was **busy** on one event, attribution wait included. It is deliberately not the queue delay it was first drafted as: measuring the wait needs an arrival timestamp stamped before the blocking consumer, and the events arrive on a client-go watch channel this process does not fill, so there is nowhere honest to stamp one: timing after the dequeue would name a wait it never observed. Occupancy answers the same question from the other side, because a stream that is busy is a stream nothing else is being read from: `rate(_sum[5m])` approaching 1 means events are queueing behind it. This is the failure that broke a `CommitRequest` e2e spec |
 | `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `reason`: `expired` (the cursor fell out of history, forcing a full rebuild), `error`, or `stopped` (the plan retired the stream: routine). Watch stability and `410` pressure |
 | `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | the cost of a replay, which is what a `410` storm charges |
+| `git_commit_failures_total` | counter | `provider_*`, `branch`, `kind`, `reason` | the largest remaining hole (§2.4). `kind`: `window` / `atomic`; `reason`: `refused` (a Git path a human must fix, which will not clear on its own) / `error`. Every increment is a window's worth of events lost until the next resync |
 | `git_queue_drops_total` | counter | `provider_*`, `branch`, `kind` | §2.4's first silent drop. `kind`: `write` / `attach` / `resync`. It **overlaps** `watch_events_total{outcome="route_failed"}`: a full queue is one of the ways a route fails, so one dropped event increments both. Two views of one event, never two events |
 | `git_pushes_total` | counter | `provider_*`, `branch`, `outcome` | §2.4's second. `outcome`: `pushed` / `failed`, counted once per push cycle at its terminal end. `failed` is **recoverable**, not loss: the writes are retained and a later push carries them, which is why the alert on it needs the second arm in §7 |
 | `git_push_retries_total` | counter | `provider_*`, `branch`, `reason` | `reason`: `remote_moved` / `error`. A replay round is not a terminal outcome, so it is its own counter rather than a third `outcome` value. `rate(retries) / rate(pushes)` is the contention signal |
@@ -402,7 +445,7 @@ different question than `outcome`); `audit_events_total`; `attribution_resolutio
 Changed elsewhere in this document, and listed here only so the inventory is complete:
 
 - `audit_eventlist_duration_seconds` **keeps its name and gains three `outcome` values**
-  (`bad_method`, `bad_path`, `unknown_route`, §2.6). Its `_count` series is now the only request
+  (`bad_method`, `bad_path`, `bare_endpoint_disabled`, §2.6). Its `_count` series is now the only request
   counter, so it is load-bearing rather than incidental. An earlier draft left it falling between
   the deletion table and this list, which is how a metric gets removed by accident.
 - `api_catalog_*` keep their names and gain `source_cluster` (§5.3).
@@ -493,13 +536,13 @@ Alerts, as rules rather than sketches this time:
 | Mirror stopped | `sum by (provider_namespace,provider_name,branch) (rate(gitopsreverser_git_pushes_total{outcome="failed"}[15m])) > 0 unless sum by (provider_namespace,provider_name,branch) (rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0`, for 15m | this branch is failing to push AND landing nothing. The `unless` arm is required: a failed push retains its writes and is retried, so an occasional failure beside successful ones is contention, not an outage, and paging on any failure trains people to ignore it |
 | Work dropped | `rate(gitopsreverser_git_queue_drops_total[5m]) > 0` | the queue is saturated and writes are on the floor |
 | Ingest loss | `rate(gitopsreverser_watch_events_total{outcome="route_failed"}[10m]) > 0` | observed changes are not reaching the writer. Often the same events as the row above, seen from the other end |
-| Audit misdirected | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_path\|unknown_route"}[15m]) > 0` | an apiserver is posting audit somewhere this operator will not read it (§2.6) |
+| Audit misdirected | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_path\|bare_endpoint_disabled"}[15m]) > 0` | an apiserver is posting audit somewhere this operator will not read it (§2.6) |
 | Fact loss | `rate(gitopsreverser_attribution_fact_stream_gaps_total[10m]) > 0 or rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | facts are gone for good. Two series in an `or`, never a sum: one counts occurrences and the other entries (§5.2) |
 | Index under pressure | `rate(gitopsreverser_attribution_fact_index_evictions_total[15m]) > 0` sustained | the caps are binding. Separate from fact loss because an evicted fact may already have been matched |
 | Fact-store errors | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | fact appends are failing |
 | Follower wedged | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)` for 10m | attribution degrading cluster-wide; **both arms are required**, because the gauge does not exist until the first successful read |
 | Watch plane stuck | `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120` for 5m | a GitTarget cannot be planned. Written against the timestamp, because the age metric it replaces froze during exactly this condition (§2.5) |
-| Head-of-line | `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m])) > 0.8` | a stream is busy more than 80% of wall time, so events are queueing behind it |
+| Head-of-line | `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m])) > 0.8` | a type's streams are busy more than 80% of one stream's wall time. It is an AGGREGATE over the type's streams, not a per-stream ratio: ten lightly loaded streams also sum to 1, so the threshold scales with the stream count. Publishing the per-stream number would need the namespace on the widest histogram in the system |
 | Degraded API surface | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | a broken APIService is hiding types |
 | Encryption failing | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected |
 
@@ -604,6 +647,21 @@ recorded rather than quietly absorbed:
 | queue delay needs an arrival timestamp that does not exist | `watch_event_handling_seconds`, occupancy instead |
 | the loss rule unions labels it never normalizes | §4.4 rewritten, and it is a union, not a total |
 | the cardinality section is an estimate | §7.1 says so |
+| a gauge source that resolves starves what it measures | principle 6, after it timed out an e2e spec |
+| six counters fire at the wrong moment | §2.8, and principle 7 |
+| local commit failures are the largest remaining gap | `git_commit_failures_total` |
+| the resync census files under empty GitTarget labels | labels now come from the batch (§2.9) |
+| retained documents lack the advertised type breakdown | `Plan.RetainedOrphansByType` carries it |
+| a refusal is not a no-op | `documentRefused`, split out of `unchanged` |
+| `unknown_route` names a rejection that cannot happen | `bare_endpoint_disabled` (§2.9) |
+| the dirty-target alert compares a timestamp to a duration | `time() - <gauge> > 120` |
+| the saturation query is aggregate, not per-stream | said plainly, with the ratio form beside it |
+
+The pattern across all three reviews is worth naming, because it is the thing to watch for in the
+next one: **the first draft of a metric is usually right about what to count and wrong about where
+to count it.** Duplicates and missing stages are easy to see and were found immediately. Recording
+boundaries are invisible until someone traces a call path, and every one of them produced a number
+that looked completely reasonable.
 
 ## 10. Non-goals, and the traps this shape invites
 

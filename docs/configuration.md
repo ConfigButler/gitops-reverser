@@ -761,14 +761,23 @@ $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
   produced under, and the only place a `GitTarget` that predates `spec.prune` shows one at all.
 - A throttled log line names the target, its path, and the scope (one per target folder per 10
   minutes; the full detail is at `-v1`).
-- `gitopsreverser_prune_retained_documents_total`, labeled by `gittarget_namespace`,
-  `gittarget_name`, and `prune_mode`.
+- `gitopsreverser_git_documents_total{outcome="retained"}`, labeled by `gittarget_namespace`,
+  `gittarget_name`, and the resource type (`group`, `version`, `resource`). The type is what makes a
+  retention actionable: a bare total names nothing to go and look at. It shares one counter with the
+  writer's other document outcomes because they are one population (every document the writer
+  decided about), so a dashboard reads them as one stacked series.
 
 `status.retention` covers the resync sweep only. Under `Never` a suppressed source DELETE is not
 counted, so a `Never` target can report `0` while still declining to mirror deletes.
 
 The count is refreshed when a resync runs, so it lags a change in the cluster until the next one.
-Read `observedTime` before treating a `0` as live.
+
+`observedTime` dates the last **change** to this roll-up, not the last scan: a resync that
+re-reports the same count does not restamp it. So a timestamp well in the past means the retention
+has been stable, not that measuring stopped: the same reading `status.placement.resolvedAtRevision`
+asks for. The reason is the same too: a field that moves without its subject moving is a status
+write with nothing to say, and it defeats the no-op write suppression the other fields rely on. For
+"is this still being measured", read the metric's rate rather than the timestamp.
 
 `spec.prune` is mutable (unlike `gitProviderRef`, `branch`, and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists

@@ -566,6 +566,11 @@ func (m *Manager) targetWatchReplayAndStream(
 			return err
 		}
 		cursorExpired = true
+		// The resume session opened a watch, streamed, and ended on an expired cursor. Recorded
+		// HERE because the wrapper swallows the sentinel and falls through to a fresh replay, so
+		// the outer session-end recording never sees it — and `expired` is the reason that matters
+		// most, since it is the one that forces a full rebuild of the type.
+		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndedExpired)
 		m.markTargetStreamState(
 			gitDest,
 			stream.key.Cell(),
@@ -603,7 +608,6 @@ func (m *Manager) targetWatchReplayAndStream(
 		if watchListUnsupported(err) {
 			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
 				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
-			m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeListFallback)
 			return m.targetWatchListAndStream(ctx, log, gitDest, stream)
 		}
 		if ctx.Err() != nil {
@@ -761,6 +765,11 @@ func (m *Manager) targetWatchListAndStream(
 	if err := m.recordTargetWatchCursor(ctx, gitDest, stream.key, revision); err != nil {
 		return err
 	}
+	// Recorded HERE, not where the fallback was chosen. watch_recovery_total counts recoveries that
+	// COMPLETED — a target whose state has been rebuilt and is now streaming — so incrementing it
+	// at the decision would have counted an attempt that may still fail on the LIST below, under a
+	// metric documented as completions.
+	m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeListFallback)
 	log.Info("target watch list fallback complete",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
 		"count", len(desired), "resourceVersion", revision)
@@ -960,11 +969,7 @@ func (m *Manager) processLiveTargetWatchEvent(
 		// fresh replay (overwriting the stale cursor); no explicit delete needed.
 		return errTargetWatchExpired
 	}
-	// Time the whole of routing, attribution wait included. A stream is single-threaded, so time
-	// spent here is time nothing else on it is being read — which is the head-of-line signal.
-	started := time.Now()
 	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, stream, ev)
-	recordWatchEventHandling(ctx, stream.key.GVR, started)
 	if err != nil {
 		return err
 	}
@@ -978,6 +983,16 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	stream targetWatchStream,
 	ev watch.Event,
 ) (string, error) {
+	// Timed HERE, at the routing boundary itself, because there are two callers and only one of
+	// them used to be timed. processLiveTargetWatchEvent handles a reconnect's live session, but a
+	// COLD-started watch stays in its first session after initial-events-end and streams through
+	// handleTargetWatchSessionEvent instead — so the ordinary case of a freshly started watch
+	// reported no occupancy at all. A stream is single-threaded, so time spent in this function is
+	// time nothing else on that stream is being read, which is the whole signal.
+	defer func(started time.Time) {
+		recordWatchEventHandling(ctx, stream.key.GVR, started)
+	}(time.Now())
+
 	rv := targetWatchEventResourceVersion(ev)
 	switch ev.Type {
 	case watch.Bookmark:

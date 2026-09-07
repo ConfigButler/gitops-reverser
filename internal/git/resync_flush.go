@@ -457,7 +457,7 @@ func (wb *writeBatch) applyResyncPlan(
 		if action.Kind == manifestanalyzer.PlanDropOrphan {
 			if wb.dropDocument(action.Ref.FilePath, action.Identity) {
 				stats.Deleted++
-				recordDocument(ctx, Event{Identifier: action.Resource}, documentDeletedSweep)
+				wb.tallyDocument(action.Resource, documentDeletedSweep)
 			}
 		}
 	}
@@ -468,6 +468,7 @@ func (wb *writeBatch) applyResyncPlan(
 	// so there is no action to observe here. Carrying it on the stats is what lets it leave the
 	// writer at all.
 	stats.Retained = plan.RetainedOrphans
+	wb.tallyPruneRetention(plan)
 	return stats, nil
 }
 
@@ -501,7 +502,6 @@ func (w *BranchWorker) reportRetainedOrphans(
 		return
 	}
 	gitTarget := target.Namespace + "/" + target.Name
-	recordPruneRetention(ctx, target, plan.RetainedOrphans)
 	logger := log.FromContext(ctx).WithValues(
 		"retained", plan.RetainedOrphans, "pruneMode", string(target.PruneMode),
 		"gitTarget", gitTarget, "path", base, "scope", scope.String())
@@ -543,10 +543,14 @@ func (w *BranchWorker) shouldLogRetention(key string) bool {
 // of the document, and the target's own spec (and its RetentionConverged condition) answers "under
 // what policy" without multiplying the series. The per-path, per-scope and per-document detail
 // stays in the log line, as it always did.
-func recordPruneRetention(ctx context.Context, target ResolvedTargetMetadata, retained int) {
-	recordDocumentCount(ctx,
-		placementTarget{namespace: target.Namespace, name: target.Name},
-		Event{}, documentRetained, int64(retained))
+func (wb *writeBatch) tallyPruneRetention(plan manifestanalyzer.Plan) {
+	// Per RESOURCE TYPE. A suppressed drop emits no plan action at all, so the breakdown has to
+	// come from the planner, which is why Plan carries RetainedOrphansByType beside the total: the
+	// type is the only thing that makes a retention actionable, and "12 documents retained" names
+	// nothing an operator can go and look at.
+	for id, count := range plan.RetainedOrphansByType {
+		wb.tallyDocumentCount(id, documentRetained, count)
+	}
 }
 
 // dropDocument removes the managed document for id from filePath, re-deriving its

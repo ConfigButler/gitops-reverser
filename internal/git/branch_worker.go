@@ -159,13 +159,6 @@ type BranchWorker struct {
 	// work the channel length alone cannot see.
 	hasUnpushedWork atomic.Bool
 
-	// committedTally accrues the {author_kind, message_source} counts of commits created locally
-	// and not yet pushed. It is flushed to CommitsTotal by publishCommittedTally on a successful
-	// push, so the counter only ever names commits that reached the remote. Touched from the loop
-	// goroutine alone (commitPendingWrites and pushPendingCommits are both called from it), which
-	// is why it needs no lock of its own.
-	committedTally map[commitLabels]int64
-
 	// inflightItems counts work items accepted onto eventQueue but not yet fully
 	// handled. It is incremented before the channel send (so it can never lag the
 	// loop's receive) and decremented only after handleQueueItem returns. Using
@@ -980,6 +973,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 
 	pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, request)
 	if err != nil {
+		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 		l.w.Log.Error(err, "Failed to build atomic pending write", "events", len(request.Events))
 		return
 	}
@@ -989,7 +983,10 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		// logged as a write fault; nothing was committed either way, so the request is
 		// dropped in both cases.
 		name, namespace := atomicRefusalTarget(request)
-		if !l.w.reportPathRefusal(err, name, namespace) {
+		if l.w.reportPathRefusal(err, name, namespace) {
+			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
+		} else {
+			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
 		}
 		return
@@ -1111,7 +1108,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// GitPathAccepted=False instead of being logged as a transient write fault. The
 		// window is dropped either way — the events are already lost to the failed flush,
 		// and the next resync re-derives them.
-		if !l.w.reportPathRefusal(err, targetName, targetNamespace) {
+		if l.w.reportPathRefusal(err, targetName, targetNamespace) {
+			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
+		} else {
+			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",
 				"reason", string(reason),
 				"windowAuthor", windowAuthor,
@@ -1321,7 +1321,6 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		return nil
 	}
 
-	w.recordPendingWritesMetrics(pendingWrites, commitsCreated)
 	w.firsts.commit.Do(func() {
 		w.Log.Info("First commit written to local repository",
 			"branch", w.Branch,
@@ -1353,8 +1352,9 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 	}
 	w.recordPushOutcome(outcome, started)
 	if err == nil {
-		// The commits are on the remote now, which is the only place they can honestly be counted.
-		w.publishCommittedTally()
+		// The commits are on the remote now, which is the only place they can honestly be counted,
+		// and pendingWrites reflect whatever the final replay produced.
+		w.publishCommitsForPush(pendingWrites)
 	}
 	return err
 }
@@ -1565,13 +1565,6 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 	return baseBranch, baseHash, nil
 }
 
-// recordPendingWritesMetrics accrues what a flush produced. Documents are counted at the write
-// boundary itself (see document_metrics.go), not here from the input event count, which is what the
-// two counters this used to feed got wrong.
-func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, commitsCreated int) {
-	w.tallyCommits(pendingWrites, commitsCreated)
-}
-
 // Push cycle outcomes and retry reasons.
 //
 // A push CYCLE is one call to pushPendingCommits, replay retries included, and it ends exactly
@@ -1583,6 +1576,20 @@ const (
 	pushOutcomeFailed = "failed"
 
 	pushRetryRemoteMoved = "remote_moved"
+)
+
+// Commit-failure kinds and reasons. A failure here is work that was accepted, routed, and then
+// died before it could reach the remote: the window is dropped and its events are gone until the
+// next resync re-derives them.
+const (
+	commitFailureKindWindow = "window"
+	commitFailureKindAtomic = "atomic"
+
+	// commitFailureRefused is a plan the acceptance gate or a write-boundary precondition
+	// rejected. It is also surfaced as a GitTarget condition, but a condition is not a rate.
+	commitFailureRefused = "refused"
+	// commitFailureError is any other write fault.
+	commitFailureError = "error"
 )
 
 // Queue-drop kinds. The set covers every item that can be refused by a full queue.
@@ -1598,14 +1605,20 @@ type commitLabels struct {
 	messageSource string
 }
 
-// tallyCommits accrues the {author_kind, message_source} counts of commits just created LOCALLY.
-// Nothing is published here: the counter is flushed by publishCommittedTally when a push succeeds.
+// publishCommitsForPush counts the commits a successful push just put on the remote, by
+// {author_kind, message_source}.
 //
-// A commit that is never pushed is not a commit anyone can read, and publishing at creation made a
-// dead remote and a healthy one produce the same graph. Holding the tally instead also keeps the
-// accounting right across the replay path: a push cycle that finds a moved remote REBUILDS these
-// same commits and pushes again, and the tally is unchanged by that, so the work is counted once.
-func (w *BranchWorker) tallyCommits(pendingWrites []PendingWrite, commitsCreated int) {
+// It reads the pending writes AS THEY STAND after the push, which is the whole point. An earlier
+// version tallied at local commit creation and held the numbers until a push landed; that was right
+// about the timing and wrong about the population, because a conflict replay REBUILDS the pending
+// writes on the new remote head and a write whose change another writer already applied produces no
+// replacement commit at all. The held tally still published it. Reading the writes after the replay
+// counts exactly what survived: executePendingWrites stamps each write's CommitSHA in place, and a
+// write that produced no commit has a zero SHA and is not counted.
+func (w *BranchWorker) publishCommitsForPush(pendingWrites []PendingWrite) {
+	if telemetry.GitCommitsTotal == nil {
+		return
+	}
 	counts := map[commitLabels]int64{}
 	for _, pendingWrite := range pendingWrites {
 		if !pendingWrite.createdCommit() {
@@ -1616,43 +1629,15 @@ func (w *BranchWorker) tallyCommits(pendingWrites []PendingWrite, commitsCreated
 			messageSource: pendingWrite.messageSource(),
 		}]++
 	}
-	if len(counts) == 0 && commitsCreated > 0 {
-		// Commits were created but no pending write claims them, so neither label can be read
-		// from a write. Fall back to the same committer identity the author label already uses.
-		counts[commitLabels{
-			authorKind:    authorKindCommitter,
-			messageSource: messageSourceReconcile,
-		}] = int64(commitsCreated)
-	}
-	if w.committedTally == nil {
-		w.committedTally = map[commitLabels]int64{}
-	}
 	for labels, count := range counts {
-		w.committedTally[labels] += count
-	}
-}
-
-// publishCommittedTally counts every commit held since the last successful push, now that they are
-// on the remote, and clears the tally. A push that fails leaves it standing, so those commits are
-// counted by whichever later push finally lands them.
-func (w *BranchWorker) publishCommittedTally() {
-	if telemetry.GitCommitsTotal == nil {
-		w.committedTally = nil
-		return
-	}
-	for labels, count := range w.committedTally {
 		// Label by the recording BranchWorker's own identity {provider_namespace,
 		// provider_name, branch} plus author_kind and message_source. The prefixed key names
 		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`.
-		telemetry.GitCommitsTotal.Add(w.ctx, count, metric.WithAttributes(
-			attribute.String("provider_namespace", w.GitProviderNamespace),
-			attribute.String("provider_name", w.GitProviderRef),
-			attribute.String("branch", w.Branch),
+		telemetry.GitCommitsTotal.Add(w.ctx, count, metric.WithAttributes(w.providerAttrs(
 			attribute.String("author_kind", labels.authorKind),
 			attribute.String("message_source", labels.messageSource),
-		))
+		)...))
 	}
-	w.committedTally = nil
 }
 
 // recordPushOutcome closes out one push cycle: its terminal outcome and its wall time.
@@ -1698,6 +1683,24 @@ func (w *BranchWorker) providerAttrs(extra ...attribute.KeyValue) []attribute.Ke
 		attribute.String("provider_name", w.GitProviderRef),
 		attribute.String("branch", w.Branch),
 	}, extra...)
+}
+
+// recordCommitFailure counts one window or request that died between routing and pushing.
+//
+// `refused` and `error` are separated because they need different people: a refusal is a Git path a
+// human has to fix and will not clear on its own, while an error may be transient. Both are loss.
+func (w *BranchWorker) recordCommitFailure(kind, reason string) {
+	if telemetry.GitCommitFailuresTotal == nil {
+		return
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	telemetry.GitCommitFailuresTotal.Add(ctx, 1, metric.WithAttributes(w.providerAttrs(
+		attribute.String("kind", kind),
+		attribute.String("reason", reason),
+	)...))
 }
 
 // recordQueueDrop counts one item the queue was too full to accept.

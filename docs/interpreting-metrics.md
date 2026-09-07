@@ -138,12 +138,29 @@ sum by (provider_namespace, provider_name, branch) (
 sum by (kind) (rate(gitopsreverser_git_queue_drops_total[5m]))
 ```
 
-**Is a stream saturated?** A stream is single-threaded, so time spent handling one event is time
-nothing else on it is being read. Approaching 1 means events are queueing behind it:
+**Are streams saturated?** A stream is single-threaded, so time it spends handling one event is
+time nothing else on that stream is being read.
+
+Read this as **aggregate busy-seconds per second, per type** — not as a per-stream ratio. The
+histogram is labelled by type, and one type can be watched by several streams (one per namespace),
+so ten lightly loaded streams also sum to `1`. A value near the number of streams for that type is
+saturation; a value near `1` with ten streams is 10% each:
 
 ```promql
 sum by (group, version, resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))
 ```
+
+Divide by the stream count if you want the ratio. Where a type is watched cluster-wide (the common
+case) there is one stream, and the aggregate *is* the ratio:
+
+```promql
+sum by (group, version, resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))
+  / on (group, version, resource) group_left count by (group, version, resource) (
+      gitopsreverser_watch_event_handling_seconds_count)
+```
+
+The per-stream number is deliberately not published: it would need the namespace on the histogram,
+which multiplies the widest family in the system by every watched namespace.
 
 **Is watch stable, and what are rebuilds costing?**
 
@@ -350,11 +367,16 @@ was removed, along with the per-item counter beside it (`audit_events_total` cou
 once each, with the type and verb on them).
 
 `outcome` is bounded and covers the door as well as the batch: `bad_method`, `bad_path`,
-`unknown_route`, `processed`, `empty`, `decode_error`, `process_error`. The first three are the
-important addition. A request refused for its method, its path, or a route no `ClusterProvider`
-claims used to return before any instrument was touched, so an apiserver posting audit to the wrong
-place looked exactly like an apiserver posting nothing — the most likely audit misconfiguration
-there is, and the one shape this metric could not show.
+`bare_endpoint_disabled`, `processed`, `empty`, `decode_error`, `process_error`. The first three are
+the important addition: a request refused before decoding used to return before any instrument was
+touched, so an apiserver posting audit to a path this operator does not serve looked exactly like an
+apiserver posting nothing.
+
+`bare_endpoint_disabled` is named for what it covers, and it is **not** "a route no
+`ClusterProvider` claims". A named `/audit-webhook/<route>` is accepted as-is, deliberately: a route
+is a partition name, not a claim about an object, and refusing unknown ones dropped audit batches in
+flight while a provider was being recreated. The only route-shaped rejection is the bare
+`/audit-webhook` endpoint when `--audit-route-annotation-key` is unset.
 
 ```promql
 sum by (outcome) (rate(gitopsreverser_audit_eventlist_duration_seconds_count[5m]))
@@ -684,12 +706,12 @@ window (hard cap ~10 s). Design:
 [watch-manager-ownership.md](design/watch-manager-ownership.md).
 
 That loop is a queue, and a queue that grows silently is exactly how a stall gets missed. These
-six make it legible.
+five make it legible.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
 | `watch_plan_dirty_targets` | gauge | — |
-| `watch_plan_oldest_dirty_age_seconds` | gauge | — |
+| `watch_plan_oldest_dirty_since_timestamp_seconds` | gauge | — |
 | `watch_plan_passes_total` | counter | `outcome` (`completed`/`failed`/`timed_out`), `gittarget_namespace`, `gittarget_name` |
 | `watch_plan_pass_duration_seconds` | histogram | — |
 | `watch_plan_triggers_total` | counter | `reason` (`declare`/`rule_change`/`shared_refresh`/`periodic`), `coalesced` |
@@ -782,12 +804,12 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | --- | --- |
 | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | Attribution fact-store writes are failing — check Redis. |
 | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to `/audit-webhook`. |
-| `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_path\|unknown_route"}[15m]) > 0` | An apiserver is posting audit somewhere this operator will not read it. |
+| `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_method\|bad_path\|bare_endpoint_disabled"}[15m]) > 0` | An apiserver is posting audit to a path this operator does not serve. |
 | `rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | A schema or version mismatch on the fact stream; facts are being skipped and lost. |
 | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. Both arms are needed — see below. |
 | `rate(gitopsreverser_git_resync_failures_total[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
 | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | Part of the API surface is hidden behind a broken APIService. |
-| `gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120`, `for: 5m` | A GitTarget cannot be planned — its source cluster or catalog is unreachable — and its mirror is not converging. |
+| `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120`, `for: 5m` | A GitTarget cannot be planned — its source cluster or catalog is unreachable — and its mirror is not converging. The `time() -` is not optional: the gauge is a Unix timestamp, so a bare `> 120` is true of every instant since 1970 and would fire on ordinary planning. |
 | `rate(gitopsreverser_watch_plan_passes_total{outcome="timed_out"}[15m]) > 0` sustained | Plan passes are hitting their per-target deadline; the target stays dirty and installs nothing. |
 | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected by the encryption path. |
 | `rate(gitopsreverser_git_queue_drops_total[5m]) > 0` | The queue saturated and work was thrown away. |

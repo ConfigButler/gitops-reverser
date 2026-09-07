@@ -44,7 +44,7 @@ this is an observability change, and no mirror behaves differently because of it
   invisible. **Existing queries now sum across clusters**: add `{source_cluster="default"}` to keep
   the old scope.
 - `audit_eventlist_duration_seconds` gains three `outcome` values — `bad_method`, `bad_path`,
-  `unknown_route` — for requests refused before decoding. An apiserver posting to the wrong path
+  `bare_endpoint_disabled` — for requests refused before decoding. An apiserver posting to the wrong path
   used to look exactly like an apiserver posting nothing.
 - `watch_plan_triggers_total` gains `coalesced`.
 
@@ -53,9 +53,15 @@ this is an observability change, and no mirror behaves differently because of it
 `watch_events_total{gittarget_*,group,version,resource,outcome}` is the ingest census, and the stage
 that had no instrument at all. Alongside it: `watch_event_handling_seconds`,
 `watch_sessions_ended_total{reason}`, `watch_replay_duration_seconds`,
-`git_pushes_total{outcome}`, `git_push_retries_total{reason}`, `git_push_duration_seconds`, and
-`git_queue_drops_total{kind}` — the last of which counts work a full queue threw away, which used to
-be a log line and nothing else.
+`git_pushes_total{outcome}`, `git_push_retries_total{reason}` and `git_push_duration_seconds`.
+
+Two of them count work that used to disappear with only a log line:
+
+- `git_queue_drops_total{kind}` — a full worker queue threw the item away.
+- `git_commit_failures_total{kind,reason}` — a commit failed and its whole window was dropped. This
+  happens after routing and before pushing, so no other counter could see it; the mirror falls
+  behind for every object in that window until a resync re-derives them. `reason="refused"` is a Git
+  path a human has to fix and will not clear on its own.
 
 ### `GitTarget.status.lastPushTime` is gone
 

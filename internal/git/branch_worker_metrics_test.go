@@ -17,12 +17,13 @@ import (
 )
 
 const (
-	commitsTotalMetric = "gitopsreverser_git_commits_total"
-	queueDepthMetric   = "gitopsreverser_git_queue_depth"
-	queueDropsMetric   = "gitopsreverser_git_queue_drops_total"
-	pushesTotalMetric  = "gitopsreverser_git_pushes_total"
-	pushRetriesMetric  = "gitopsreverser_git_push_retries_total"
-	pushDurationMetric = "gitopsreverser_git_push_duration_seconds"
+	commitsTotalMetric   = "gitopsreverser_git_commits_total"
+	queueDepthMetric     = "gitopsreverser_git_queue_depth"
+	queueDropsMetric     = "gitopsreverser_git_queue_drops_total"
+	pushesTotalMetric    = "gitopsreverser_git_pushes_total"
+	pushRetriesMetric    = "gitopsreverser_git_push_retries_total"
+	pushDurationMetric   = "gitopsreverser_git_push_duration_seconds"
+	commitFailuresMetric = "gitopsreverser_git_commit_failures_total"
 )
 
 func newMetricsTestWorker() *BranchWorker {
@@ -46,12 +47,11 @@ func workerLabels() map[string]string {
 	}
 }
 
-// commitAndPush models one full cycle: commits are created locally (tallied) and then land on the
-// remote (flushed). Every commits_total assertion goes through it, because that IS the contract
-// now — a commit is counted when it reaches the remote, never when it is created.
-func commitAndPush(w *BranchWorker, writes []PendingWrite, commitsCreated int) {
-	w.recordPendingWritesMetrics(writes, commitsCreated)
-	w.publishCommittedTally()
+// commitAndPush models the moment a push lands: the counts are read off the pending writes AS THEY
+// STAND, which is the contract — a commit is counted when it reaches the remote, from whatever
+// survived the final replay, never from what was created locally.
+func commitAndPush(w *BranchWorker, writes []PendingWrite, _ int) {
+	w.publishCommitsForPush(writes)
 }
 
 // commits_total must be labelled with the recording worker's identity
@@ -63,7 +63,7 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) 
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	commitAndPush(w, nil, 2)
+	commitAndPush(w, committerWrites(2), 2)
 
 	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
 	require.True(t, ok, "expected a commits_total sample labelled by the worker identity")
@@ -78,7 +78,7 @@ func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testin
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	commitAndPush(w, nil, 1)
+	commitAndPush(w, committerWrites(1), 1)
 
 	otherNamespace := workerLabels()
 	otherNamespace["provider_namespace"] = "other-suite-ns"
@@ -129,6 +129,17 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByAuthorKind(t *testing.T) {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+// committerWrites builds n resync writes that each produced a commit. A resync write claims its
+// commit through Committed rather than a SHA, and carries no per-event author, so it is the
+// committer/reconcile pair.
+func committerWrites(n int) []PendingWrite {
+	writes := make([]PendingWrite, 0, n)
+	for range n {
+		writes = append(writes, PendingWrite{Kind: PendingWriteResync, Committed: boolPtr(true)})
+	}
+	return writes
 }
 
 // queueDepth must report 0 for a freshly drained worker: empty queue and no retained unpushed
@@ -322,51 +333,52 @@ func TestRecordPendingWritesMetrics_MessageSourceSplitsOneAuthorKind(t *testing.
 
 // A commit that never reaches the remote must not be counted.
 //
-// This is the defect the tally exists to fix: commits_total was recorded at local commit creation
-// while the doc comment claimed it counted pushed commits, so a dead remote and a healthy one drew
-// the same graph — the product's headline metric climbing while nothing arrived in Git.
-func TestCommitsTotal_NotPublishedUntilThePushLands(t *testing.T) {
+// commits_total used to be recorded at local commit creation while claiming to count pushed
+// commits, so a dead remote and a healthy one drew the same graph: the product's headline metric
+// climbing while nothing arrived in Git.
+func TestCommitsTotal_OnlyCountedWhenThePushLands(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordPendingWritesMetrics(nil, 3)
+	writes := committerWrites(3)
 
+	// The commits exist locally and the push failed. Nothing is published.
+	w.recordPushOutcome(pushOutcomeFailed, time.Now())
 	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
 	require.False(t, ok, "a locally created commit must not be counted before it reaches the remote")
 
-	w.publishCommittedTally()
+	w.publishCommitsForPush(writes)
 
 	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
 	require.True(t, ok)
 	assert.Equal(t, int64(3), commits)
 }
 
-// A failed push holds its tally, so the commits it was carrying are counted by whichever later push
-// finally lands them — once, not twice, and never zero.
-func TestCommitsTotal_HeldTallyIsPublishedByTheNextSuccessfulPush(t *testing.T) {
+// A commit that a conflict replay DISCARDED must not be counted either, and this is the reason the
+// count is read off the writes at push time rather than held from commit time.
+//
+// A replay rebuilds the pending writes on the new remote head. A write whose change another writer
+// has already applied produces no replacement commit: executePendingWrites leaves its SHA zero. A
+// tally held from the original commit would still publish it, reporting a commit the remote never
+// took under a metric whose whole contract is that it did.
+func TestCommitsTotal_ExcludesCommitsDiscardedByReplay(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordPendingWritesMetrics(nil, 2)
-	// The push failed: nothing published, and the tally stands.
-	w.recordPushOutcome(pushOutcomeFailed, time.Now())
-	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
-	require.False(t, ok)
+	writes := []PendingWrite{
+		{Kind: PendingWriteCommit, Events: []Event{{UserInfo: UserInfo{Username: "alice"}}},
+			CommitSHA: plumbing.NewHash("1111111111111111111111111111111111111111")},
+		// The replay produced nothing for this one: the remote already had the change.
+		{Kind: PendingWriteCommit, Events: []Event{{UserInfo: UserInfo{Username: "alice"}}}},
+	}
 
-	// More work is committed locally behind it, then a push lands the lot.
-	w.recordPendingWritesMetrics(nil, 1)
-	w.publishCommittedTally()
+	w.publishCommitsForPush(writes)
 
 	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
 	require.True(t, ok)
-	assert.Equal(t, int64(3), commits, "every commit the successful push carried is counted exactly once")
-
-	// And the tally does not replay on the next push.
-	w.publishCommittedTally()
-	commits, _ = telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
-	assert.Equal(t, int64(3), commits)
+	assert.Equal(t, int64(1), commits, "only the commit that survived the replay is on the remote")
 }
 
 // A push cycle ends exactly once, with a duration, whichever way it ended. Without this the only
@@ -400,4 +412,35 @@ func TestRecordPushOutcome_CountsTheCycleAndItsDuration(t *testing.T) {
 	durations, ok := telemetry.CollectHistogramCount(reader, pushDurationMetric, workerLabels())
 	require.True(t, ok)
 	assert.Equal(t, uint64(2), durations, "both cycles are timed, however they ended")
+}
+
+// A commit that fails takes its whole window with it, and that has to be countable.
+//
+// This was the largest remaining hole in the pipeline census. The failure happens AFTER routing and
+// BEFORE pushing, so neither git_queue_drops_total nor git_pushes_total sees it: the mirror falls
+// behind for every object in the window until the next resync re-derives them, and the only trace
+// was a log line, or for a refusal a GitTarget condition nobody alerts on.
+func TestRecordCommitFailure_SeparatesRefusalFromWriteFault(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
+	w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
+
+	refused := workerLabels()
+	refused["kind"] = commitFailureKindWindow
+	refused["reason"] = commitFailureRefused
+	count, ok := telemetry.CollectInt64Sum(reader, commitFailuresMetric, refused)
+	require.True(t, ok, "a refused window must be counted")
+	assert.Equal(t, int64(1), count)
+
+	// The two reasons need different people: a refusal is a Git path a human has to fix and will
+	// not clear on its own, while an error may be transient. Folding them would hide that.
+	faulted := workerLabels()
+	faulted["kind"] = commitFailureKindAtomic
+	faulted["reason"] = commitFailureError
+	count, ok = telemetry.CollectInt64Sum(reader, commitFailuresMetric, faulted)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count)
 }

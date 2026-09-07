@@ -113,19 +113,22 @@ func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 // EventList request-boundary outcome labels. They stay bounded — no path, remote address, or
 // status-code dimension — so the ingress metric set is small.
 //
-// The first three are REJECTIONS, and they were the ingress gap: a request refused for its method,
-// its path, or an unknown route returned before any instrument was touched, so a misconfigured
-// audit endpoint — the apiserver posting to the wrong path, or to a route no ClusterProvider
-// claims — looked exactly like an apiserver posting nothing at all. That is the single most likely
-// audit misconfiguration there is, and it was the one shape the ingress metric could not show.
+// The first three are REJECTIONS, and they were the ingress gap: a request refused before decoding
+// returned before any instrument was touched, so an apiserver posting to a path this operator does
+// not serve looked exactly like an apiserver posting nothing at all.
+//
+// bare_endpoint_disabled is named for what it actually covers, which is NOT "a route no
+// ClusterProvider claims": resolveRoute accepts any named route as-is, deliberately, because a
+// route is a partition name rather than a claim about an object. The only route rejection that
+// exists is the bare /audit-webhook endpoint when no annotation key is configured.
 const (
-	outcomeBadMethod    = "bad_method"
-	outcomeBadPath      = "bad_path"
-	outcomeUnknownRoute = "unknown_route"
-	outcomeProcessed    = "processed"
-	outcomeEmpty        = "empty"
-	outcomeDecodeError  = "decode_error"
-	outcomeProcessError = "process_error"
+	outcomeBadMethod            = "bad_method"
+	outcomeBadPath              = "bad_path"
+	outcomeBareEndpointDisabled = "bare_endpoint_disabled"
+	outcomeProcessed            = "processed"
+	outcomeEmpty                = "empty"
+	outcomeDecodeError          = "decode_error"
+	outcomeProcessError         = "process_error"
 )
 
 // ServeHTTP implements http.Handler for audit event processing.
@@ -151,7 +154,7 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	route, ok := h.resolveRoute(w, r)
 	if !ok {
-		h.recordEventListRequest(ctx, outcomeUnknownRoute, time.Since(start))
+		h.recordEventListRequest(ctx, outcomeBareEndpointDisabled, time.Since(start))
 		return
 	}
 
