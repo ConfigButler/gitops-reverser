@@ -4,10 +4,8 @@ package git
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -55,45 +53,93 @@ func (p PendingWrite) path() string {
 	return ""
 }
 
-func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
-	when := time.Now()
+// messageResolution is the single decision about where one write's commit message comes from.
+// commitMetadata renders by it and commits_total is labelled by it, so the metric cannot report a
+// source the renderer did not use.
+type messageResolution int
 
-	// An explicit literal message (e.g. from a CommitRequest's spec.message)
-	// is used verbatim, bypassing the configured templates.
-	if message := strings.TrimSpace(p.CommitMessage); message != "" {
-		return p.CommitMessage, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	}
+const (
+	// messageResolutionUnsupported is a write whose kind has no message path at all.
+	messageResolutionUnsupported messageResolution = iota
+	// messageResolutionPreRendered is a resync, which renders the target's reconcile template
+	// itself and hands the result over as the write's message. That is generated text, not a
+	// request's override, so the CommitRequest literal contract does not bind it: an operator's
+	// reconcile template may legitimately be long or contain a tab.
+	messageResolutionPreRendered
+	// messageResolutionRequest is a message a CommitRequest supplied, used verbatim.
+	messageResolutionRequest
+	// messageResolutionReconcileTemplate renders reconcileTemplate from the write's events.
+	messageResolutionReconcileTemplate
+	// messageResolutionLiveTemplate renders liveTemplate for a live window.
+	messageResolutionLiveTemplate
+)
 
-	switch p.MessageKind() {
-	case CommitMessagePerEvent:
-		if len(p.Events) != 1 {
-			return "", nil, errors.New("per-event pending write requires exactly one event")
-		}
-		message, err := renderEventCommitMessage(p.Events[0], p.CommitConfig)
-		if err != nil {
-			return "", nil, err
-		}
-		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	case CommitMessageReconcile:
-		message, err := renderReconcileCommitMessageFromEvents(
-			p.Events,
-			p.CommitMessage,
-			p.Target().Name,
-			p.CommitConfig,
-		)
-		if err != nil {
-			return "", nil, err
-		}
-		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	case CommitMessageGrouped:
-		message, err := renderGroupCommitMessage(p, p.CommitConfig)
-		if err != nil {
-			return "", nil, err
-		}
-		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
+// resolveMessage classifies where this write's message comes from. It states the precedence
+// once; every caller reads the result rather than re-testing the conditions.
+func (p PendingWrite) resolveMessage() messageResolution {
+	switch {
+	case p.Kind == PendingWriteResync:
+		return messageResolutionPreRendered
+	case p.CommitMessage != "":
+		return messageResolutionRequest
+	case p.Kind == PendingWriteAtomic:
+		return messageResolutionReconcileTemplate
+	case p.Kind == PendingWriteCommit:
+		return messageResolutionLiveTemplate
 	default:
-		return "", nil, fmt.Errorf("unsupported commit message kind %q", p.MessageKind())
+		return messageResolutionUnsupported
 	}
+}
+
+// label is the commits_total `message_source` value for this resolution. A resync and an atomic
+// snapshot are both reported as reconcile: they differ in how the text is produced, not in where
+// an operator would say the message came from.
+func (r messageResolution) label() string {
+	switch r {
+	case messageResolutionRequest:
+		return messageSourceCommitRequest
+	case messageResolutionPreRendered, messageResolutionReconcileTemplate:
+		return messageSourceReconcile
+	case messageResolutionLiveTemplate:
+		return messageSourceLive
+	case messageResolutionUnsupported:
+		// An unsupported kind fails to render, so it creates no commit and never reaches the
+		// counter. Name it rather than folding it into a real source if that ever changes.
+		return messageSourceUnknown
+	default:
+		return messageSourceUnknown
+	}
+}
+
+// messageSource is the commits_total `message_source` label for this write.
+func (p PendingWrite) messageSource() string {
+	return p.resolveMessage().label()
+}
+
+func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
+	var message string
+	var err error
+	resolution := p.resolveMessage()
+	switch resolution {
+	case messageResolutionPreRendered:
+		message = p.CommitMessage
+	case messageResolutionRequest:
+		message = p.CommitMessage
+		err = ValidateLiteralCommitMessage(message)
+	case messageResolutionReconcileTemplate:
+		message, err = renderReconcileCommitMessageFromEvents(p.Events, p.Target().Name, p.CommitConfig)
+	case messageResolutionLiveTemplate:
+		message, err = renderLiveCommitMessage(p, p.CommitConfig)
+	case messageResolutionUnsupported:
+		err = fmt.Errorf("unsupported pending write kind %q", p.Kind)
+	default:
+		err = fmt.Errorf("unsupported pending write kind %q", p.Kind)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	log.Log.V(1).Info("Selected commit message", "source", resolution.label())
+	return message, commitOptionsFor(p, p.CommitConfig, p.Signer, time.Now()), nil
 }
 
 func (w *BranchWorker) executePendingWrite(
@@ -147,8 +193,6 @@ func (w *BranchWorker) executePendingWrite(
 
 	log.FromContext(ctx).Info(
 		"git commit created",
-		"messageKind",
-		pendingWrite.MessageKind(),
 		"events",
 		len(pendingWrite.Events),
 		"message",

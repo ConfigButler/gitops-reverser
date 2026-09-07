@@ -24,9 +24,20 @@ coupled. A request with no named submitter can attach to either a configured-aut
 window, but never to a named actor’s window. A request with a named submitter can attach only to that
 actor’s named window. Therefore one user’s request never finalizes another user’s work.
 
-On its first attach, the worker sets the deadline to receipt plus `closeDelaySeconds`. Repeated reconciles
-are idempotent and keep that first deadline. The delay lets a `kubectl apply` bundle whose `CommitRequest`
-arrives before its resource mutations collect into the same window.
+On its first receipt, the worker sets the deadline to receipt plus `closeDelaySeconds`. Repeated reconciles
+are idempotent and keep that first deadline. Time spent waiting for a matching window consumes the delay.
+Normal flush triggers can close an attached window early, carrying its message. Each request claims
+at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
+provides no ordering guarantee; use a non-zero window for custom save messages. The delay does not
+reserve a transaction. Competing requests keep the earliest-finalize-deadline selection policy.
+
+`spec.message` is literal, including template-like text and surrounding spaces. Omission uses
+`GitTarget.spec.commit.message.liveTemplate`. A present value accepts 1–1024 Unicode characters;
+newline is allowed, other ASCII controls and whitespace-only text are rejected. Validation never
+truncates accepted text. A no-op still creates no commit. The message does not change Git identities.
+
+Automation stops on `Ready=True` or `Stalled=True`. Require `Pushed=True` and `status.sha` when a
+pushed commit is required; `Ready=True` also includes successful no-commit outcomes.
 
 ## Authorship
 

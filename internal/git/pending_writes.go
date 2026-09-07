@@ -300,17 +300,6 @@ func targetForBase(
 	return ResolvedTargetMetadata{}, false
 }
 
-// MessageKind is derived from the pending write's shape.
-func (p PendingWrite) MessageKind() CommitMessageKind {
-	if p.Kind == PendingWriteAtomic || p.Kind == PendingWriteResync {
-		return CommitMessageReconcile
-	}
-	if len(p.Events) == 1 {
-		return CommitMessagePerEvent
-	}
-	return CommitMessageGrouped
-}
-
 // Author returns the grouped commit author username for commit-shaped pending
 // writes. It is the stable identity used for window coalescing and the grouped
 // commit message; see AuthorUserInfo for the full signing identity.
@@ -337,6 +326,24 @@ const (
 	// from a named one in dashboards, so a degrading attribution path would read as an
 	// improving one. See docs/interpreting-metrics.md.
 	authorKindUnresolved = "unresolved"
+)
+
+// Commit message sources, reported as the commits_total `message_source` label. Each names
+// where the message came from, so they read as one set alongside each other.
+const (
+	// messageSourceCommitRequest is a message a CommitRequest supplied and that was used
+	// verbatim. It counts commits that USED such a message, not CommitRequests: a request
+	// omitting spec.message takes the target's liveTemplate and counts as live.
+	messageSourceCommitRequest = "commit_request"
+	// messageSourceLive is a live window rendered through the target's liveTemplate.
+	messageSourceLive = "live"
+	// messageSourceReconcile is an atomic snapshot or a resync rendered through
+	// reconcileTemplate.
+	messageSourceReconcile = "reconcile"
+	// messageSourceUnknown is a write with no message path. It cannot reach the counter today
+	// (such a write fails to render and creates no commit) and exists so that it could never be
+	// silently counted as one of the real sources.
+	messageSourceUnknown = "unknown"
 )
 
 // AttributionOutcome returns the attribution outcome for commit-shaped pending writes. It

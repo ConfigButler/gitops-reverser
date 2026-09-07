@@ -241,11 +241,11 @@ func TestPendingCommitRequest_StillScopedToOneGitTarget(t *testing.T) {
 // and force user templates to special-case a value they never had to handle.
 func TestRenderEventCommitMessage_UnresolvedUsernameStaysEmptyInTemplates(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.EventTemplate = "{{.Operation}} by {{.Username}}"
+	config.Message.LiveTemplate = "{{range .Resources}}{{.Operation}}{{end}} by {{.Author}}"
 
 	// The production shape: attachAuthor sets UserInfo only when the outcome is resolved.
 	event := attributedEvent("", AttributionUnresolved)
-	message, err := renderEventCommitMessage(event, config)
+	message, err := renderSingleLiveCommitMessage(event, config)
 
 	require.NoError(t, err)
 	assert.Equal(t, "CREATE by ", message,

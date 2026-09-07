@@ -90,7 +90,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
 					Window: ptr.To("30s"),
 					Message: &configbutleraiv1alpha3.CommitMessageSpec{
-						GroupTemplate: "chore(mirror): {{ .Count }}",
+						LiveTemplate: "chore(mirror): {{ .Count }}",
 					},
 				},
 			},
@@ -103,7 +103,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 			types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, &storedTarget)).To(Succeed())
 		Expect(storedTarget.Spec.Commit).NotTo(BeNil(), "spec.commit must round-trip, not be pruned")
 		Expect(*storedTarget.Spec.Commit.Window).To(Equal("30s"))
-		Expect(storedTarget.Spec.Commit.Message.GroupTemplate).To(Equal("chore(mirror): {{ .Count }}"))
+		Expect(storedTarget.Spec.Commit.Message.LiveTemplate).To(Equal("chore(mirror): {{ .Count }}"))
 	})
 
 	It("accepts a ClusterWatchRule that omits scope, defaulting it to Cluster", func() {

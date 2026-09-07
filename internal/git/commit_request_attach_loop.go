@@ -108,24 +108,24 @@ func (l *branchWorkerEventLoop) serviceCommitRequests() {
 	l.rearmAttachTimer()
 }
 
-// attachWaitingCommitRequests binds the oldest waiting same-author request to the
+// attachWaitingCommitRequests binds the waiting same-author request with the earliest finalize deadline to the
 // open window when it is unclaimed. A window carries at most one request; a second
 // waits for the next window.
 func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	if l.openWindow == nil || l.openWindow.pendingCR != nil {
 		return
 	}
-	var oldest *pendingCommitRequest
+	var earliest *pendingCommitRequest
 	for _, pcr := range l.pendingCRs {
 		if pcr.attached || !pcr.matchesWindow(l.openWindow) {
 			continue
 		}
-		if oldest == nil || pcr.finalizeAt.Before(oldest.finalizeAt) {
-			oldest = pcr
+		if earliest == nil || pcr.finalizeAt.Before(earliest.finalizeAt) {
+			earliest = pcr
 		}
 	}
-	if oldest != nil {
-		l.attachToOpenWindow(oldest)
+	if earliest != nil {
+		l.attachToOpenWindow(earliest)
 	}
 }
 
@@ -157,7 +157,7 @@ func (l *branchWorkerEventLoop) processDueCommitRequests() {
 			continue
 		}
 		if l.openWindow != nil && l.openWindow.pendingCR != nil && *l.openWindow.pendingCR == id {
-			// The attached window's grace elapsed: finalize it. finalizeOpenWindowWithMessage
+			// The attached window's grace elapsed: finalize it. finalizeOpenWindowWithReason
 			// resolves the request from the window's pendingCR; push so the commit lands.
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonFinalizeSignal)
 			l.maybeSchedulePush()

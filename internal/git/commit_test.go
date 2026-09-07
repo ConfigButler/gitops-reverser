@@ -3,6 +3,7 @@
 package git
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -20,9 +21,8 @@ func TestResolveCommitConfig_Defaults(t *testing.T) {
 
 	assert.Equal(t, DefaultCommitterName, config.Committer.Name)
 	assert.Equal(t, DefaultCommitterEmail, config.Committer.Email)
-	assert.Equal(t, DefaultEventCommitMessageTemplate, config.Message.EventTemplate)
 	assert.Equal(t, DefaultReconcileCommitMessageTemplate, config.Message.ReconcileTemplate)
-	assert.Equal(t, DefaultGroupCommitMessageTemplate, config.Message.GroupTemplate)
+	assert.Equal(t, DefaultLiveCommitMessageTemplate, config.Message.LiveTemplate)
 }
 
 // The committer comes from the GitProvider (the identity that talks to the remote) and the
@@ -35,27 +35,24 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 			Email: "audit@example.com",
 		},
 	}).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-		EventTemplate:     "audit: {{.Operation}} {{.Name}}",
 		ReconcileTemplate: "reconcile: {{.Count}} {{.GitTarget}}",
-		GroupTemplate:     "grouped: {{.Author}} {{.Count}}",
+		LiveTemplate:      "grouped: {{.Author}} {{.Count}}",
 	})
 
 	assert.Equal(t, "Audit Bot", config.Committer.Name)
 	assert.Equal(t, "audit@example.com", config.Committer.Email)
-	assert.Equal(t, "audit: {{.Operation}} {{.Name}}", config.Message.EventTemplate)
 	assert.Equal(t, "reconcile: {{.Count}} {{.GitTarget}}", config.Message.ReconcileTemplate)
-	assert.Equal(t, "grouped: {{.Author}} {{.Count}}", config.Message.GroupTemplate)
+	assert.Equal(t, "grouped: {{.Author}} {{.Count}}", config.Message.LiveTemplate)
 }
 
 // A GitTarget that sets only ONE template leaves the other two at their built-in defaults, so
 // moving the field did not turn a partial override into a total one.
 func TestWithTargetMessage_PartialOverrideKeepsDefaults(t *testing.T) {
 	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-		GroupTemplate: "grouped: {{.Author}}",
+		LiveTemplate: "grouped: {{.Author}}",
 	})
 
-	assert.Equal(t, "grouped: {{.Author}}", config.Message.GroupTemplate)
-	assert.Equal(t, DefaultEventCommitMessageTemplate, config.Message.EventTemplate)
+	assert.Equal(t, "grouped: {{.Author}}", config.Message.LiveTemplate)
 	assert.Equal(t, DefaultReconcileCommitMessageTemplate, config.Message.ReconcileTemplate)
 }
 
@@ -68,22 +65,22 @@ func TestWithTargetMessage_NilKeepsEverything(t *testing.T) {
 
 func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
 	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-		EventTemplate: "{{.Operation",
+		LiveTemplate: "{{.Operation",
 	})
 
 	err := ValidateCommitConfig(config)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse event commit template")
+	assert.Contains(t, err.Error(), "parse live commit template")
 }
 
-func TestValidateCommitConfig_InvalidGroupTemplate(t *testing.T) {
+func TestValidateCommitConfig_InvalidLiveTemplate(t *testing.T) {
 	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-		GroupTemplate: "{{.Author",
+		LiveTemplate: "{{.Author",
 	})
 
 	err := ValidateCommitConfig(config)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse group commit template")
+	assert.Contains(t, err.Error(), "parse live commit template")
 }
 
 func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
@@ -100,10 +97,11 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 		GitTargetName: "platform",
 	}
 
-	message, err := renderEventCommitMessage(
+	message, err := renderSingleLiveCommitMessage(
 		event,
 		ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-			EventTemplate: "audit({{.GitTarget}}): {{.Username}} {{.Operation}} {{.Namespace}}/{{.Name}}",
+			LiveTemplate: "audit({{.GitTarget}}): {{.Author}} " +
+				"{{range .Resources}}{{.Operation}} {{.Namespace}}/{{.Name}}{{end}}",
 		}),
 	)
 	require.NoError(t, err)
@@ -115,12 +113,11 @@ func TestRenderReconcileCommitMessageFromEvents_DefaultTemplate(t *testing.T) {
 	// type-less subject with no resourceVersion suffix.
 	message, err := renderReconcileCommitMessageFromEvents(
 		[]Event{{Operation: "CREATE"}, {Operation: "DELETE"}},
-		"",
 		"demo",
 		ResolveCommitConfig(nil),
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "reconciled 2 resources", message)
+	assert.Equal(t, "chore: reconcile 2 resources", message)
 }
 
 func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(t *testing.T) {
@@ -136,7 +133,7 @@ func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(
 			count:    1,
 			gvr:      schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
 			revision: "1331",
-			expected: "reconciled 1 configmaps (last resourceVersion: 1331)",
+			expected: "chore: reconcile 1 configmaps (last resourceVersion: 1331)",
 		},
 		{
 			name:  "grouped type names the plural resource and revision",
@@ -147,14 +144,14 @@ func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(
 				Resource: "rolebindings",
 			},
 			revision: "2980",
-			expected: "reconciled 4 rolebindings (last resourceVersion: 2980)",
+			expected: "chore: reconcile 4 rolebindings (last resourceVersion: 2980)",
 		},
 		{
 			name:     "empty revision (pure sweep) drops the resourceVersion suffix",
 			count:    0,
 			gvr:      schema.GroupVersionResource{Version: "v1", Resource: "secrets"},
 			revision: "",
-			expected: "reconciled 0 secrets",
+			expected: "chore: reconcile 0 secrets",
 		},
 	}
 	for _, tc := range cases {
@@ -173,7 +170,7 @@ func TestRenderReconcileCommitMessage_NilScopeRendersCleanly(t *testing.T) {
 	// the type-less subject rather than emit an empty "/" token.
 	message, err := renderReconcileCommitMessage(6, "demo", nil, "", ResolveCommitConfig(nil))
 	require.NoError(t, err)
-	assert.Equal(t, "reconciled 6 resources", message)
+	assert.Equal(t, "chore: reconcile 6 resources", message)
 }
 
 func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t *testing.T) {
@@ -225,7 +222,7 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 		GitTargetNamespace: "default",
 	}}
 
-	message, err := renderGroupCommitMessage(PendingWrite{
+	message, err := renderLiveCommitMessage(PendingWrite{
 		Kind:   PendingWriteCommit,
 		Events: events,
 		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
@@ -235,7 +232,7 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 			},
 		},
 	}, ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-		GroupTemplate: "grouped({{.GitTarget}}): {{.Author}} changed {{.Count}} resource(s)",
+		LiveTemplate: "grouped({{.GitTarget}}): {{.Author}} changed {{.Count}} resource(s)",
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "grouped(platform): alice changed 1 resource(s)", message)
@@ -343,9 +340,9 @@ func TestCommitOptionsFor_UnusableOIDCFieldsFallBackToUsername(t *testing.T) {
 func TestRenderEventCommitMessage_CreateOperation(t *testing.T) {
 	event := newCommitTestEvent("pods", "default", "test-pod", "CREATE", "john.doe@example.com")
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
-	assert.Equal(t, "[CREATE] v1/pods/test-pod", message)
+	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "pods", "default", "test-pod"), message)
 }
 
 func TestRenderEventCommitMessage_UpdateOperation(t *testing.T) {
@@ -358,18 +355,18 @@ func TestRenderEventCommitMessage_UpdateOperation(t *testing.T) {
 	)
 	event.Path = "prod-repo"
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
-	assert.Equal(t, "[UPDATE] v1/services/my-service", message)
+	assert.Equal(t, expectSingleLiveMessage("UPDATE", "v1", "services", "production", "my-service"), message)
 }
 
 func TestRenderEventCommitMessage_DeleteOperation(t *testing.T) {
 	event := newCommitTestEvent("configmaps", "staging", "old-config", "DELETE", "admin")
 	event.Path = "staging-repo"
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
-	assert.Equal(t, "[DELETE] v1/configmaps/old-config", message)
+	assert.Equal(t, expectSingleLiveMessage("DELETE", "v1", "configmaps", "staging", "old-config"), message)
 }
 
 func TestRenderEventCommitMessage_ClusterScopedResource(t *testing.T) {
@@ -391,25 +388,29 @@ func TestRenderEventCommitMessage_ClusterScopedResource(t *testing.T) {
 		Path:      "cluster-repo",
 	}
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
-	assert.Equal(t, "[CREATE] v1/namespaces/my-namespace", message)
+	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "namespaces", "", "my-namespace"), message)
 }
 
 func TestRenderEventCommitMessage_EmptyUsername(t *testing.T) {
 	event := newCommitTestEvent("pods", "default", "test-pod", "CREATE", "")
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
-	assert.Equal(t, "[CREATE] v1/pods/test-pod", message)
+	assert.Equal(t, expectSingleLiveMessage("CREATE", "v1", "pods", "default", "test-pod"), message)
 }
 
 func TestRenderEventCommitMessage_SpecialCharactersInNames(t *testing.T) {
 	event := newCommitTestEvent("pods", "test-ns_with_underscores", "test-pod.with.dots", "UPDATE", "user@domain.com")
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
-	assert.Equal(t, "[UPDATE] v1/pods/test-pod.with.dots", message)
+	assert.Equal(
+		t,
+		expectSingleLiveMessage("UPDATE", "v1", "pods", "test-ns_with_underscores", "test-pod.with.dots"),
+		message,
+	)
 }
 
 func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
@@ -435,11 +436,15 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 	}
 
 	filePath := identifier.ToGitPath()
-	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	commitMessage, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 
 	assert.Equal(t, "integration-test/pods/integration-test-pod.yaml", filePath)
-	assert.Equal(t, "[CREATE] v1/pods/integration-test-pod", commitMessage)
+	assert.Equal(
+		t,
+		expectSingleLiveMessage("CREATE", "v1", "pods", "integration-test", "integration-test-pod"),
+		commitMessage,
+	)
 	assert.Contains(t, filePath, "integration-test-pod")
 	assert.Contains(t, commitMessage, "integration-test-pod")
 	assert.Contains(t, filePath, "integration-test")
@@ -467,9 +472,9 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 				UserInfo:  UserInfo{Username: "test-user"},
 			}
 
-			message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+			message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 			require.NoError(t, err)
-			assert.Equal(t, "["+op+"] v1/testkinds/test-resource", message)
+			assert.Equal(t, expectSingleLiveMessage(op, "v1", "testkinds", "test-ns", "test-resource"), message)
 		})
 	}
 }
@@ -477,10 +482,10 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
 	event := newCommitTestEvent("configmaps", "default", "test-configmap", "DELETE", "admin")
 
-	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	commitMessage, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 	assert.Contains(t, commitMessage, "[DELETE]")
-	assert.Contains(t, commitMessage, "configmaps/test-configmap")
+	assert.Contains(t, commitMessage, "v1/configmaps/default/test-configmap")
 }
 
 func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
@@ -490,20 +495,30 @@ func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 		objName   string
 		expected  string
 	}{
-		{name: "CREATE operation", operation: "CREATE", objName: "new-pod", expected: "[CREATE] v1/pods/new-pod"},
+		{
+			name:      "CREATE operation",
+			operation: "CREATE",
+			objName:   "new-pod",
+			expected:  "[CREATE] v1/pods/default/new-pod",
+		},
 		{
 			name:      "UPDATE operation",
 			operation: "UPDATE",
 			objName:   "existing-pod",
-			expected:  "[UPDATE] v1/pods/existing-pod",
+			expected:  "[UPDATE] v1/pods/default/existing-pod",
 		},
-		{name: "DELETE operation", operation: "DELETE", objName: "old-pod", expected: "[DELETE] v1/pods/old-pod"},
+		{
+			name:      "DELETE operation",
+			operation: "DELETE",
+			objName:   "old-pod",
+			expected:  "[DELETE] v1/pods/default/old-pod",
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			event := newCommitTestEvent("pods", "default", tc.objName, tc.operation, "test-user")
-			message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+			message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 			require.NoError(t, err)
 			assert.Contains(t, message, tc.expected)
 		})
@@ -523,21 +538,21 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 			namespace: "staging",
 			resource:  "configmaps",
 			username:  "developer",
-			expected:  "[DELETE] v1/configmaps/app-config",
+			expected:  expectSingleLiveMessage("DELETE", "v1", "configmaps", "staging", "app-config"),
 		},
 		{
 			name:      "db-secret",
 			namespace: "production",
 			resource:  "secrets",
 			username:  "admin",
-			expected:  "[DELETE] v1/secrets/db-secret",
+			expected:  expectSingleLiveMessage("DELETE", "v1", "secrets", "production", "db-secret"),
 		},
 		{
 			name:      "web-deployment",
 			namespace: "default",
 			resource:  "deployments",
 			username:  "system:serviceaccount:kube-system:deployment-controller",
-			expected:  "[DELETE] apps/v1/deployments/web-deployment",
+			expected:  expectSingleLiveMessage("DELETE", "apps/v1", "deployments", "default", "web-deployment"),
 		},
 	}
 
@@ -565,7 +580,7 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 				UserInfo:  UserInfo{Username: tc.username},
 			}
 
-			message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+			message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, message)
 		})
@@ -594,11 +609,11 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 	}
 
 	filePath := identifier.ToGitPath()
-	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	commitMessage, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 
 	assert.Equal(t, "_cluster/namespaces/test-namespace.yaml", filePath)
-	assert.Equal(t, "[DELETE] v1/namespaces/test-namespace", commitMessage)
+	assert.Equal(t, expectSingleLiveMessage("DELETE", "v1", "namespaces", "", "test-namespace"), commitMessage)
 }
 
 func TestBatchOperations_MultipleDeletes(t *testing.T) {
@@ -619,7 +634,7 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 	}
 
 	for i, event := range events {
-		message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+		message, err := renderSingleLiveCommitMessage(event, ResolveCommitConfig(nil))
 		require.NoError(t, err)
 		assert.Contains(t, message, "[DELETE]")
 		assert.Contains(t, message, resources[i].name)
@@ -646,4 +661,20 @@ func newCommitTestEvent(resource, namespace, name, operation, username string) E
 		Operation: operation,
 		UserInfo:  UserInfo{Username: username},
 	}
+}
+
+// renderSingleLiveCommitMessage exercises singleton inputs through the production live renderer.
+func renderSingleLiveCommitMessage(event Event, config CommitConfig) (string, error) {
+	return renderLiveCommitMessage(PendingWrite{Kind: PendingWriteCommit, Events: []Event{event}}, config)
+}
+
+// expectSingleLiveMessage builds the message the default live template renders for one retained
+// resource: a "chore: sync 1 resource" subject and one body line per entry.
+func expectSingleLiveMessage(operation, apiVersion, resource, namespace, name string) string {
+	location := name
+	if namespace != "" {
+		location = namespace + "/" + name
+	}
+
+	return fmt.Sprintf("chore: sync 1 resource\n\n- [%s] %s/%s/%s\n", operation, apiVersion, resource, location)
 }

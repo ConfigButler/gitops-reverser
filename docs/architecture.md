@@ -309,7 +309,7 @@ Key fields:
   chosen explicitly).
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
 - `spec.commit.window`: rolling silence window for this target's grouped commits, defaulting to `5s`.
-- `spec.commit.message`: `eventTemplate` / `reconcileTemplate` / `groupTemplate` Go templates.
+- `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
 
 `spec.commit` describes the folder, not the connection, so two `GitTarget`s sharing one `GitProvider`
 may batch and phrase their commits differently. A branch worker serves a `(provider, branch)` pair and

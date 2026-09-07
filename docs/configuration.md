@@ -502,8 +502,11 @@ spec:
   commit:
     window: "5s"
     message:
-      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+      liveTemplate: "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}"
 ```
+
+Configure [automatic messages](#commit-message-templates), submit a [save message](#commitrequest),
+and interpret its [conditions](#commitrequest).
 
 #### The commit window (`spec.commit.window`)
 
@@ -512,8 +515,10 @@ every event; when it has been silent for the configured duration, the buffered e
 author are written as one commit. The default is `5s`. Setting `0s` opts into per-event commits in
 the steady-state.
 
-A burst (`kubectl apply -k`, `helm upgrade`, an ArgoCD sync wave) becomes one commit per author with
-a summary subject; isolated edits still produce one commit each.
+One branch worker holds one live window, bound to an author and target. Interleaved authors or
+targets split a burst. Atomic writes, buffer limits, shutdown, and request finalization can close
+the inactivity window early. Push cooldown is independent: `0s` does not promise an immediate
+remote push. See the [complete trigger rules](spec/commit-window-refactor.md).
 
 An unparseable or negative value is rejected on the object (`Validated=False`, reason
 `InvalidConfig`). A value already stored before that check falls back to the `5s` default at the
@@ -521,104 +526,56 @@ write rather than stopping the mirror.
 
 #### Commit message templates
 
-There are three templates. **Which one renders a commit is decided by how many resource entries the
-commit window retained** (one per distinct destination path), not by the window setting:
+`liveTemplate` formats every live window, including one retained entry and `0s` windows.
+`reconcileTemplate` formats atomic snapshots and resyncs. Invalid templates report
+`Validated=False` with reason `InvalidConfig`; validation exercises singleton and mixed-operation
+windows, empty authors, and scoped and whole-target snapshots through the production renderer.
+Sample execution cannot prove every possible conditional branch valid.
 
-- `spec.commit.message.eventTemplate`: a commit whose window retained exactly **one** entry.
-- `spec.commit.message.groupTemplate`: a commit whose window retained **two or more**.
-- `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
-  path; one commit per synced type).
+| Input, in precedence order | Message source |
+|---|---|
+| Non-empty literal override, including an attached [save request](#commitrequest) | Exact supplied text |
+| Live window of any size | `liveTemplate` |
+| Atomic snapshot or resync | `reconcileTemplate` |
 
-"Retained entries" is the precise unit, and it is neither of the two things it is easily read as:
-
-- **A `0s` window is not the only way to reach `eventTemplate`.** A window that closes around a
-  single change renders through it too, which is most edits a human makes by hand.
-- **An entry is not an action.** Repeated edits to one resource inside a window collapse to a single
-  entry, last write wins. Ten updates to one ConfigMap are one retained entry, so they render
-  through `eventTemplate` and `groupTemplate` never sees them.
-- **An entry is not a changed document either.** Selection counts entries before the write decides
-  what actually differs, so an entry whose content already matches Git still counts. Two retained
-  entries of which only one differs render through `groupTemplate`, even though the commit changes
-  one file.
-
-So with a non-zero window you want **both** `eventTemplate` and `groupTemplate` set. Setting only
-one leaves the other shape rendering through the built-in wording, and both shapes occur in normal
-operation.
+The default live template produces a Conventional Commits subject and one retained entry per body line:
 
 ```yaml
 spec:
   commit:
     message:
-      eventTemplate: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
-      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
+      liveTemplate: |-
+        chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}
+
+        {{range .Resources -}}
+        - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}
+        {{end -}}
+      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
 ```
 
-`eventTemplate` can use:
+| Template | Fields |
+|---|---|
+| `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources` |
+| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Namespace`, `Name`, `APIVersion` |
+| `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `Revision` |
 
-- `Operation`
-- `Group`
-- `Version`
-- `Resource`
-- `Namespace`
-- `Name`
-- `APIVersion`
-- `Username`
-- `GitTarget`
+Live `Count` counts retained entries after window coalescing, before the writer compares them with
+Git. Repeated edits to one resource collapse to one entry, with the last operation retained.
+`Operations` counts those retained `CREATE`, `UPDATE`, and `DELETE` entries; `Resources` preserves
+first-seen order. An entry already matching Git still counts, and several entries may share a file.
+The count can exceed the number of changed resources. A no-op creates no commit, even with a literal
+message. Printing a resource entry directly keeps its `group/version/resource[/namespace]/name` form.
 
-`Username` is empty whenever no actor was named, both in configured-author mode and when
-attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
-**author header** and deliberately does not reach templates or message bodies, so a template
-rendering `{{.Username}}` never has to special-case it. Use `git log` (or
-`author_kind="unresolved"`) to tell the two apart.
+`Author` is the raw window username and is empty when no actor is named. It does not use an OIDC
+display name or the `attribution-unresolved` Git author sentinel. The sentinel appears only in the
+Git author header when attribution ran without resolving an actor. Messages never change authorship.
 
-`groupTemplate` can use:
+Reconcile type fields name the synced type; `Namespace` names a namespace-scoped snapshot.
+Whole-target snapshots leave those fields empty. `Revision` is the snapshot's resourceVersion and
+can be absent, including a pure sweep. Guard optional values as in the example.
 
-- `Author`
-- `GitTarget`
-- `Count`
-- `Operations` (map of `CREATE`/`UPDATE`/`DELETE` counts)
-- `Resources` (slice of `{Group, Version, Resource, Namespace, Name}`)
-
-`reconcileTemplate` can use:
-
-- `Count`
-- `GitTarget`
-- `Group`
-- `Version`
-- `Resource`
-- `APIVersion`
-- `Revision`
-
-`Group`/`Version`/`Resource`/`APIVersion` name the synced type for a per-type reconcile and
-`Revision` is the cluster `resourceVersion` the reconcile was pinned to. The default,
-`reconciled {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}`,
-renders e.g. `reconciled 6 secrets (last resourceVersion: 1331)`. The type and revision fields are
-empty for a whole-target reconcile or a pure sweep, so guard a template that references them
-(the default uses `{{if .Resource}}` / `{{if .Revision}}`) to avoid an identity-less subject.
-
-Examples:
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-```
-
-```yaml
-spec:
-  commit:
-    message:
-      eventTemplate: "[{{.Operation}}] {{.Resource}}/{{.Name}} ({{.Username}})"
-```
-
-```yaml
-spec:
-  commit:
-    message:
-      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}@{{.Revision}}"
-```
+`eventTemplate` and `groupTemplate` are retired and rejected. Follow the
+[upgrade instructions](UPGRADING.md#one-live-commit-message-template) to migrate existing templates.
 
 ### Seeing what a target will do, before it does it
 
@@ -1256,7 +1213,8 @@ spec:
 ```
 
 `"*"` is one cluster-wide list and one cluster-wide watch per matched type, not one of each per
-namespace, so its cost does not grow with the cluster. It is bounded by the source credential's RBAC
+namespace. Connection count is bounded per matched type, but object count, traffic, and memory
+still grow with the cluster. Access is bounded by the source credential's RBAC
 and by nothing else, which is why it is refused outright while `allowAnySourceNamespace` is false.
 
 A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates: each rule
@@ -1353,9 +1311,9 @@ for the request's author instead of waiting for `GitTarget.spec.commit.window`.
 The important fields are:
 
 - `spec.gitTargetRef.name`: target whose open window should be finalized
-- `spec.message`: optional verbatim commit message
-- `spec.closeDelaySeconds`: optional 0-300 second delay before the open window is closed, after the
-  request author is known, an extra collect window
+- `spec.message`: optional literal commit message, preserved verbatim
+- `spec.closeDelaySeconds`: optional 0–300 second deadline offset from the worker's first receipt,
+  including time waiting for a matching window; repeated registration keeps the original deadline
 
 Example:
 
@@ -1368,15 +1326,33 @@ metadata:
 spec:
   gitTargetRef:
     name: example-target
-  message: "save default/example-target"
+  message: |-
+    fix(api): correct the service port
+
+    Route traffic to the port exposed by the API container.
   closeDelaySeconds: 2
 ```
 
 The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
 
+A present message accepts 1–1024 Unicode characters, including newline. All other ASCII control
+characters, including tab, carriage return, and DEL, are rejected, as is whitespace-only text.
+Accepted surrounding spaces are preserved. Braces such as `{{.Author}}` remain literal; omission
+uses [the live template](#commit-message-templates). A rejected request leaves automatic mirroring
+available. The submitter chooses any semantic prefix; free-form messages are accepted.
+
+A request attaches to at most one matching open window. Normal flush triggers may close it early;
+its message travels with that window. It cannot rename a finalized commit, including a local commit
+waiting for push. Applying resources and a request together gives no ordering guarantee between
+controllers and watch streams. Use a non-zero commit window when custom save messages matter:
+`0s` leaves little opportunity to attach, and a request delay does not reserve a transaction or
+extend every normal flush timer. See the [request contract](spec/commitrequest-design.md).
+
 Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
-`kubectl get commitrequest` surfaces `Ready`, `AuthorAttributed`, and `Pushed`; `kubectl wait
---for=condition=Ready` blocks until the request settles:
+`kubectl get commitrequest` surfaces `Ready`, `AuthorAttributed`, and `Pushed`. Automation must stop
+on either `Ready=True` or `Stalled=True`; `kubectl wait --for=condition=Ready` alone keeps waiting on
+terminal failures. `Ready=True` includes successful no-commit outcomes. Require `Pushed=True` and
+`status.sha` for evidence that the request produced a pushed commit:
 
 - **Ready** (summary): `True` once the request reached a non-error terminal outcome. The `Ready`
   condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.sha` set),

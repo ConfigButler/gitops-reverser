@@ -7,7 +7,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
@@ -572,24 +571,6 @@ func TestCommitRequestIsTerminal(t *testing.T) {
 	assert.True(t, commitRequestIsTerminal(stalled))
 }
 
-func TestCapCommitRequestMessage(t *testing.T) {
-	short := "save the world"
-	assert.Equal(t, short, capCommitRequestMessage(short))
-
-	long := strings.Repeat("ü", commitRequestMessageMaxBytes) // 2 bytes per rune
-	capped := capCommitRequestMessage(long)
-	assert.LessOrEqual(t, len(capped), commitRequestMessageMaxBytes)
-	assert.True(t, utf8.ValidString(capped), "the cap must not split a multi-byte rune")
-}
-
-func TestTruncateUTF8(t *testing.T) {
-	assert.Equal(t, "abc", truncateUTF8("abc", 10))
-	assert.Equal(t, "ab", truncateUTF8("abc", 2))
-	// "é" is 2 bytes; truncating at 3 bytes must drop the split rune.
-	assert.Equal(t, "aé", truncateUTF8("aéé", 3))
-	assert.True(t, utf8.ValidString(truncateUTF8(strings.Repeat("世", 100), 7)))
-}
-
 // A CommitRequest stored before spec.targetRef became spec.gitTargetRef serves an EMPTY name after
 // the upgrade prunes it, and its spec is immutable, so no apply can put the name back. The
 // reconciler must say that once and stop, rather than retry a "get GitTarget" that names the empty
@@ -635,4 +616,35 @@ func TestCommitRequestReconciler_PrunedGitTargetRefIsTerminal(t *testing.T) {
 	assert.Equal(t, crReasonGitTargetRefPruned, stalled.Reason)
 	assert.Contains(t, stalled.Message, "delete it and create a new one",
 		"the message must name the only repair there is, because the spec is immutable")
+}
+
+func TestCommitRequestReconciler_LiteralValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, message string
+		valid         bool
+	}{
+		{"unicode", strings.Repeat("ü", 1024), true},
+		{"literal", "  fix: {{.Author}}\n\nbody  ", true},
+		{"whitespace", " \n ", false},
+		{"oversize", strings.Repeat("ü", 1025), false},
+		{"control", "bad\tmessage", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := newCommitRequest(tc.name)
+			cr.Spec.Message = tc.message
+			c := newCommitRequestClient(t, nil, cr)
+			finalizer := &fakeFinalizer{}
+			r := &CommitRequestReconciler{Client: c, Finalizer: finalizer}
+			reconcileCommitRequest(t, r, cr.Name)
+			if tc.valid {
+				require.Len(t, finalizer.calls, 1)
+				assert.Equal(t, tc.message, finalizer.calls[0].Message)
+			} else {
+				require.Empty(t, finalizer.calls)
+				var got configv1alpha3.CommitRequest
+				require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(cr), &got))
+				assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeStalled))
+			}
+		})
+	}
 }

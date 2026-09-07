@@ -7,6 +7,37 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## One live commit message template
+
+This is a breaking minor-release change. `GitTarget.spec.commit.message.liveTemplate` replaces
+`eventTemplate` and `groupTemplate` for every live window. The legacy fields remain in the schema
+for one migration release so clients, including `fieldValidation: Ignore` clients, receive migration
+errors instead of silently losing configuration. Stored legacy values report `Validated=False`;
+status updates remain available. They have no runtime fallback.
+
+Before upgrading, inventory stored targets and the manifests your generators emit:
+
+```bash
+kubectl get gittargets -A -o json | jq '.items[] | select(.spec.commit.message.eventTemplate != null or .spec.commit.message.groupTemplate != null) | {namespace: .metadata.namespace, name: .metadata.name, message: .spec.commit.message}'
+```
+
+Copy a group-only template to `liveTemplate`. Move event resource fields into `range .Resources`
+and replace outer `Username` with `Author`. Combine distinct singleton and grouped wording with a
+`Count` conditional. Remove both legacy fields in the same apply or patch that sets `liveTemplate`.
+Update generator output too. Keep `reconcileTemplate`, window duration, and literal request messages.
+Verify the installed CRD serves `liveTemplate` before applying replacement manifests; an older schema
+can prune it. Confirm targets return to `Validated=True` after migration.
+
+The default live subject is `chore: sync N resource(s)` with singular agreement and one retained
+resource per body line, including singleton commits. Reconcile defaults use `chore: reconcile`.
+Counts describe retained input before comparison with Git. See the
+[configuration reference](configuration.md#commit-message-templates).
+
+CommitRequest messages reject whitespace-only text and preserve all accepted Unicode and surrounding
+spaces. The 1024-character bound is no longer a byte truncation. A request deadline starts at the
+worker's first receipt, including time waiting for a window. Stop automation on `Stalled=True` as well
+as `Ready=True`; require `Pushed=True` and `status.sha` for proof of a pushed commit.
+
 ## Safe upgrade order for the GitTarget API changes
 
 Fields are **removed outright** in this release, across five kinds. There is no shim, no
@@ -378,7 +409,7 @@ the old meaning, or split the panel to get the new one.
 
 `GitProvider.spec.push.commitWindow` and `GitProvider.spec.commit.message` are now
 `GitTarget.spec.commit.window` and `GitTarget.spec.commit.message`. The message shape is unchanged:
-the same `eventTemplate`, `reconcileTemplate` and `groupTemplate`, with the same variables.
+`liveTemplate` and `reconcileTemplate`. See [template migration](#one-live-commit-message-template).
 
 `GitProvider` is the connection — a URL, a credential, the branches it will accept. How a folder's
 writes are batched and how those commits are phrased describe the folder, and two `GitTarget`s
@@ -413,7 +444,7 @@ spec:
   commit:
     window: "5s"
     message:
-      groupTemplate: "{{ .Author }} on {{ .GitTarget }}: {{ .Count }} resource(s)"
+      liveTemplate: "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}"
 ```
 
 A `GitTarget` that sets no `spec.commit` batches over a 5s rolling silence window and uses the

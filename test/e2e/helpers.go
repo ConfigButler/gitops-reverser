@@ -234,7 +234,7 @@ func createGitTargetWithEncryptionOptions(
 // here used to be set on the GitProvider.
 type gitTargetCommitOptions struct {
 	Window            string
-	EventTemplate     string
+	LiveTemplate      string
 	ReconcileTemplate string
 }
 
@@ -260,7 +260,7 @@ func createGitTargetWithOptions(
 		EncryptionSecretName string
 		GenerateWhenMissing  bool
 		CommitWindow         string
-		EventTemplate        string
+		LiveTemplate         string
 		ReconcileTemplate    string
 	}{
 		Name:                 name,
@@ -271,7 +271,7 @@ func createGitTargetWithOptions(
 		EncryptionSecretName: encryptionSecretName,
 		GenerateWhenMissing:  generateWhenMissing,
 		CommitWindow:         commit.Window,
-		EventTemplate:        commit.EventTemplate,
+		LiveTemplate:         commit.LiveTemplate,
 		ReconcileTemplate:    commit.ReconcileTemplate,
 	}
 

@@ -95,14 +95,14 @@ func recentCommitDiagnostics(checkoutDir, pathspec string) string {
 	return "recent commits:\n" + out
 }
 
-// latestCommitSubjectForPath returns the subject (first line of the message) of the most recent
-// commit that touched relPath. With the StreamsRunning gate in place the latest commit for a path is
-// deterministic, so specs assert against it directly instead of scanning a window of recent commits
-// for a substring.
-func latestCommitSubjectForPath(g Gomega, checkoutDir, relPath string) string {
+// latestCommitMessageForPath returns the FULL message (subject and body) of the most recent
+// commit that touched relPath. The live template puts the subject's resource count first and
+// one "[OP] apiVersion/resource/namespace/name" line per retained entry in the body, so a spec
+// asserting an operation or a resource path must read the body, not just the subject.
+func latestCommitMessageForPath(g Gomega, checkoutDir, relPath string) string {
 	GinkgoHelper()
 
-	out, err := gitRun(checkoutDir, "log", "-1", "--format=%s", "--", relPath)
+	out, err := gitRun(checkoutDir, "log", "-1", "--format=%B", "--", relPath)
 	g.Expect(err).NotTo(HaveOccurred(), "git log failed for %q: %s", relPath, out)
 	return strings.TrimSpace(out)
 }

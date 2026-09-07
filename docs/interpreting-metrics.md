@@ -75,7 +75,7 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 
 | Metric | Type | Labels | Notes |
 | --- | --- | --- | --- |
-| `commits_total` | counter | `provider_namespace`, `provider_name`, `branch`, `author_kind` | Commit batches pushed. Both the per-event and backfill-resync paths feed this one counter. |
+| `commits_total` | counter | `provider_namespace`, `provider_name`, `branch`, `author_kind`, `message_source` | Commit batches pushed. Live, snapshot and resync paths all feed this counter; `message_source` tells them apart. |
 | `git_operations_total` | counter | — | Events that produced Git work in a flush. |
 | `objects_written_total` | counter | — | Objects that resulted in a file write in a flush. |
 | `resync_sweep_deletes_total` | counter | `group`, `version`, `resource` | Managed documents deleted by mark-and-sweep resyncs. Steady-state watch deletes do not increment this. |
@@ -88,7 +88,7 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 | `watched_types` | gauge | `gittarget_namespace`, `gittarget_name` | How many concrete types a GitTarget currently watches. |
 
 `commits_total` carries the **`BranchWorker`'s**
-`{provider_namespace, provider_name, branch, author_kind}` identity, not a GitTarget: one worker can
+`{provider_namespace, provider_name, branch, author_kind, message_source}` identity, not a GitTarget: one worker can
 serve several GitTargets sharing a provider+branch, coalescing their writes into one commit batch, so
 the worker is the honest attribution unit. `author_kind` is `user`, `serviceaccount`, `committer`, or `unresolved`;
 reconcile/resync commits and configured-author mode use `committer`.
@@ -104,6 +104,30 @@ or delivery path needs investigation. The namespace/name keys are
 `honor_labels=false` overwrites a bare `namespace` attribute with the scraping pod's namespace,
 so a per-provider `namespace` selector would silently match nothing. The same reasoning applies to
 `target_reconcile_completed_total` and `branch_worker_queue_depth`.
+
+`message_source` says where each commit's message came from: `commit_request` is text a
+`CommitRequest` supplied and that was used verbatim, `live` is a live window rendered through the
+target's `liveTemplate`, and `reconcile` is a snapshot or resync rendered through
+`reconcileTemplate`. It is read from the same decision that renders the message, so it cannot
+report a source the renderer did not use.
+
+`commit_request` counts commits that USED a request-supplied message, **not** CommitRequests. A
+request that omits `spec.message` takes the target's `liveTemplate`, so it counts as `live` — a
+low `commit_request` share does not by itself mean requests are failing.
+
+**How much of the history is people naming their own changes?**
+
+```promql
+sum by (message_source) (rate(gitopsreverser_commits_total[15m]))
+```
+
+A `commit_request` share that falls to zero after a rollout **may** mean save requests stopped
+reaching an open window — but omitted messages, saves that were no-ops, and pushes that never
+landed all read the same way here, because none of them produce a commit carrying a request
+message. Confirm against the requests themselves before changing the window: a request that
+attached reports `Ready=True`, one that produced a pushed commit also reports `Pushed=True` with
+`status.sha`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
+without their message reaching a commit is the window worth tuning against `closeDelaySeconds`.
 
 **Commit rate per provider/branch:**
 

@@ -3,19 +3,12 @@
 package controller
 
 import (
-	"unicode/utf8"
-
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
-
-// commitRequestMessageMaxBytes caps the commit message length defensively;
-// the CRD already validates length, this guards against oversized input
-// arriving by any other path.
-const commitRequestMessageMaxBytes = 1024
 
 // CommitRequest condition reasons (CamelCase tokens surfaced on status.conditions).
 const (
@@ -101,8 +94,7 @@ func setCommitRequestCondition(
 // terminates: WaitingForCloseDelay — author settled, attached to the worker, waiting
 // out the close delay before the window closes and the commit is made and pushed.
 const (
-	closeDelayMessage = "attached to the open commit window; waiting out the close delay " +
-		"before the commit is made and pushed"
+	closeDelayMessage  = "registered with the worker; waiting for a matching window, finalization, or push"
 	pushPendingMessage = "the commit has not been pushed yet"
 )
 
@@ -244,28 +236,4 @@ func commitRequestReadyReason(cr *configv1alpha3.CommitRequest) (string, string)
 		return c.Reason, c.Message
 	}
 	return "", ""
-}
-
-// capCommitRequestMessage caps a user-supplied commit message at a defensive
-// byte length. CRD validation already rejects control characters and bounds
-// the length in Unicode characters, so the accepted message is used verbatim;
-// this cap only guards against an object that somehow bypassed validation.
-func capCommitRequestMessage(message string) string {
-	if len(message) > commitRequestMessageMaxBytes {
-		return truncateUTF8(message, commitRequestMessageMaxBytes)
-	}
-	return message
-}
-
-// truncateUTF8 returns the longest prefix of s that fits within maxBytes
-// without splitting a multi-byte rune.
-func truncateUTF8(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	truncated := s[:maxBytes]
-	for len(truncated) > 0 && !utf8.ValidString(truncated) {
-		truncated = truncated[:len(truncated)-1]
-	}
-	return truncated
 }

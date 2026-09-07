@@ -180,7 +180,7 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(hash).NotTo(BeEmpty(), "expected a git commit for %s", repoPath)
 
-			subject, err := gitRun(repo.CheckoutDir, "show", "-s", "--format=%s", hash)
+			subject, err := gitRun(repo.CheckoutDir, "show", "-s", "--format=%B", hash)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(subject).To(ContainSubstring(expectedOperation))
 			g.Expect(subject).To(ContainSubstring("flunders"))
@@ -248,9 +248,9 @@ spec:
 			subjects := commitSubjectsForPath(g, repo.CheckoutDir, repoPath, 3)
 			g.Expect(subjects).To(HaveLen(3),
 				"flunder path history should be exactly create+update+delete, got %v", subjects)
-			g.Expect(subjects[0]).To(ContainSubstring("[DELETE]"))
-			g.Expect(subjects[1]).To(ContainSubstring("[UPDATE]"))
-			g.Expect(subjects[2]).To(ContainSubstring("[CREATE]"))
+			g.Expect(subjects[0]).To(Equal("chore: sync 1 resource"))
+			g.Expect(subjects[1]).To(Equal("chore: sync 1 resource"))
+			g.Expect(subjects[2]).To(Equal("chore: sync 1 resource"))
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 })

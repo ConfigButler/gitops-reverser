@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,10 +99,9 @@ func TestGenerateFilePath_AdditionalSensitiveResourceUsesSOPSPath(t *testing.T) 
 	assert.Equal(t, "tenant-a/core.cozystack.io/tenantsecrets/registry.sops.yaml", path)
 }
 
-func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
+func TestExecutor_GroupedSingleEvent_UsesLiveTemplate(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.EventTemplate = "event: {{.Name}} by {{.Username}}"
-	config.Message.GroupTemplate = "group: {{.Author}} changed {{.Count}}"
+	config.Message.LiveTemplate = "group: {{.Author}} changed {{.Count}}"
 
 	pendingWrite := PendingWrite{
 		Kind:         PendingWriteCommit,
@@ -111,15 +111,14 @@ func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
 
 	message, options, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
-	assert.Equal(t, "event: api by alice", message)
+	assert.Equal(t, "group: alice changed 1", message)
 	assert.Equal(t, "alice", options.Author.Name)
 	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 }
 
-func TestExecutor_GroupedMultiEvent_UsesGroupTemplate(t *testing.T) {
+func TestExecutor_GroupedMultiEvent_UsesLiveTemplate(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.EventTemplate = "event: {{.Name}}"
-	config.Message.GroupTemplate = "group: {{.Author}} {{.Count}} {{.GitTarget}}"
+	config.Message.LiveTemplate = "group: {{.Author}} {{.Count}} {{.GitTarget}}"
 
 	pendingWrite := PendingWrite{
 		Kind: PendingWriteCommit,
@@ -226,4 +225,87 @@ func TestExecutor_AppliesEncryptionFromPendingWrite_NotFromWorker(t *testing.T) 
 
 	expectedScope := secretEncryptionCacheScope(filepath.Join(repoPath, "team-secrets"), cfg)
 	assert.Equal(t, expectedScope, worker.contentWriter.encryptionScope)
+}
+
+// A resync renders the target's reconcile template and hands the result over as the pending
+// write's message. That generated text is not a CommitRequest literal override, so the request
+// contract's length and control-character limits must not reject an operator's own template.
+func TestCommitMetadata_ResyncRenderedMessageIsNotHeldToTheLiteralRequestContract(t *testing.T) {
+	longMessage := "chore: reconcile " + strings.Repeat("x", 1200)
+
+	for name, rendered := range map[string]string{
+		"longer than a request message may be": longMessage,
+		"carrying a tab":                       "chore: reconcile\n\n\tindented detail",
+	} {
+		t.Run(name, func(t *testing.T) {
+			pendingWrite := PendingWrite{
+				Kind:               PendingWriteResync,
+				GitTargetName:      "team-a",
+				GitTargetNamespace: "default",
+				CommitConfig:       ResolveCommitConfig(nil),
+				CommitMessage:      rendered,
+			}
+
+			message, options, err := pendingWrite.commitMetadata()
+			require.NoError(t, err)
+			assert.Equal(t, rendered, message)
+			assert.NotNil(t, options)
+		})
+	}
+}
+
+// messageSource is the commits_total `message_source` label AND the switch commitMetadata
+// renders by, so the two can never disagree about a given write. This pins that agreement
+// rather than the label alone.
+func TestMessageSource_MatchesTheMessageActuallyRendered(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		write   PendingWrite
+		want    string
+		message string
+	}{
+		{
+			name:  "a live window renders the live template",
+			write: PendingWrite{Kind: PendingWriteCommit, Events: []Event{makeEvent("alice", "api")}},
+			want:  messageSourceLive,
+		},
+		{
+			name: "an attached request message is commit_request",
+			write: PendingWrite{
+				Kind:          PendingWriteCommit,
+				Events:        []Event{makeEvent("alice", "api")},
+				CommitMessage: "fix(api): correct the port",
+			},
+			want:    messageSourceCommitRequest,
+			message: "fix(api): correct the port",
+		},
+		{
+			name:  "an atomic snapshot is reconcile",
+			write: PendingWrite{Kind: PendingWriteAtomic, Events: []Event{makeEvent("alice", "api")}},
+			want:  messageSourceReconcile,
+		},
+		{
+			// A resync arrives pre-rendered, so it must not be mistaken for a literal override.
+			name:    "a pre-rendered resync is reconcile, not literal",
+			write:   PendingWrite{Kind: PendingWriteResync, CommitMessage: "chore: reconcile 3 configmaps"},
+			want:    messageSourceReconcile,
+			message: "chore: reconcile 3 configmaps",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			write := tc.write
+			write.GitTargetName = "team-a"
+			write.GitTargetNamespace = "default"
+			write.CommitConfig = ResolveCommitConfig(nil)
+
+			assert.Equal(t, tc.want, write.messageSource())
+
+			message, _, err := write.commitMetadata()
+			require.NoError(t, err)
+			if tc.message != "" {
+				assert.Equal(t, tc.message, message)
+			}
+			assert.NotEmpty(t, message)
+		})
+	}
 }

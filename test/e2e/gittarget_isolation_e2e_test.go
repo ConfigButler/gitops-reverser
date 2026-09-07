@@ -14,7 +14,7 @@ import (
 // This spec is the e2e regression for GitTarget isolation on rule changes (see
 // docs/spec/gittarget-isolation-on-rule-change.md). The original symptom was a
 // parallel-run flake: one GitTarget's ConfigMap event commit ("[CREATE] ...")
-// was replaced by a reconcile commit ("reconciled N <type>") because an
+// was replaced by a reconcile commit ("chore: reconcile N <type>") because an
 // unrelated spec changed a *different* target's rules at the same time, dragging
 // every target into rule-change reconcile mode.
 //
@@ -114,12 +114,12 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 			assertEventCommit := func(g Gomega) {
 				pullLatestRepoState(g, isoRepo.CheckoutDir)
 
-				msg := lastCommitMessageForPath(g, isoRepo.CheckoutDir, relPath)
+				msg := latestCommitMessageForPath(g, isoRepo.CheckoutDir, relPath)
 				g.Expect(msg).To(ContainSubstring("[CREATE]"),
 					"target A's commit for %s must be a [CREATE] event commit", cmName)
-				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", cmName)),
-					"target A's commit message must name the resource path")
-				g.Expect(msg).NotTo(ContainSubstring("reconciled"),
+				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s/%s", testNs, cmName)),
+					"target A's commit message must name the namespaced resource path")
+				g.Expect(msg).NotTo(ContainSubstring("chore: reconcile"),
 					"target A must not enter reconcile mode because of target B's unrelated rule change "+
 						"(GitTarget isolation — see docs/spec/gittarget-isolation-on-rule-change.md)")
 			}
@@ -162,13 +162,4 @@ func applyIsolationConfigMap(name, namespace string) {
 		namespace,
 		"--as=jane@acme.com",
 	)).To(Succeed(), "failed to apply isolation ConfigMap %q", name)
-}
-
-// lastCommitMessageForPath returns the body of the most recent commit that
-// touched the given repo-relative path. Scoping by path keeps each GitTarget's
-// history unambiguous even when several targets share one repo.
-func lastCommitMessageForPath(g Gomega, checkoutDir, relPath string) string {
-	out, err := gitRun(checkoutDir, "log", "-1", "--pretty=%B", "--", relPath)
-	g.Expect(err).NotTo(HaveOccurred(), "git log failed: %s", out)
-	return out
 }

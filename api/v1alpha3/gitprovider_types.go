@@ -173,37 +173,29 @@ type CommitterSpec struct {
 // CommitMessageSpec configures commit message formatting. It is set on
 // GitTarget.spec.commit.message; the identically-shaped GitProvider.spec.commit.message is
 // retained only to reject a manifest that still sets it there.
+// +kubebuilder:validation:XValidation:rule="!has(self.eventTemplate)",message="eventTemplate is retired; migrate to liveTemplate"
+// +kubebuilder:validation:XValidation:rule="!has(self.groupTemplate)",message="groupTemplate is retired; migrate to liveTemplate"
 type CommitMessageSpec struct {
-	// EventTemplate is a Go text/template string for the commit message of a commit whose window
-	// retained exactly ONE resource entry. Selection counts retained entries, one per distinct
-	// destination path, not the window setting and not how many documents actually change: a "0s"
-	// window makes every commit single-entry, but a window that closes around a single change
-	// renders through this template too. Repeated edits to one resource coalesce, so ten updates to
-	// one ConfigMap are ONE entry and render here. With a non-zero window, set GroupTemplate as
-	// well: both shapes occur.
-	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
-	// APIVersion, Username, GitTarget.
+	// LiveTemplate formats every live window, including one resource and a 0s window.
+	// Fields: Author (raw username, possibly empty), GitTarget, Count, Operations, Resources.
+	// Count is retained input entries after coalescing, before comparison with Git.
+	// Resources exposes Operation, Group, Version, Resource, Namespace, Name, and APIVersion.
+	// A literal CommitRequest message overrides this template without changing authorship.
 	// +optional
-	EventTemplate string `json:"eventTemplate,omitempty"`
+	LiveTemplate string `json:"liveTemplate,omitempty"`
 
-	// ReconcileTemplate is a Go text/template string for reconcile commit messages
-	// (the mark-and-sweep reconcile path; one commit per synced type).
-	// Available variables: Count, GitTarget, Group, Version, Resource, APIVersion, Revision.
-	// Group/Version/Resource/APIVersion name the synced type for a per-type reconcile and
-	// Revision is the cluster resourceVersion the reconcile was pinned to; both are empty
-	// for a whole-target reconcile or a pure sweep, so a template referencing them must
-	// render cleanly when they are absent (the default guards them with {{if}}).
+	// ReconcileTemplate formats atomic snapshots and resyncs.
+	// Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, Revision.
+	// Type and Namespace fields are empty for whole-target snapshots. Revision can be empty.
+	// Guard optional fields so the message remains meaningful for every snapshot scope.
 	// +optional
 	ReconcileTemplate string `json:"reconcileTemplate,omitempty"`
 
-	// GroupTemplate is a Go text/template string for the commit message of a commit whose window
-	// retained TWO OR MORE resource entries (one commit per (author, gitTarget) group produced by
-	// the batching pipeline). A window that retained one entry renders through EventTemplate
-	// instead. Entries are counted before the write decides what differs, so an entry already
-	// matching Git still counts toward this template being chosen.
-	// Available variables: Author, GitTarget, Count, Operations (map of
-	// CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
-	// Resource, Namespace, Name}).
+	// EventTemplate is retired. Remove it and migrate resource fields into liveTemplate's Resources.
+	// +optional
+	EventTemplate string `json:"eventTemplate,omitempty"`
+
+	// GroupTemplate is retired. Remove it and copy its value to liveTemplate.
 	// +optional
 	GroupTemplate string `json:"groupTemplate,omitempty"`
 }

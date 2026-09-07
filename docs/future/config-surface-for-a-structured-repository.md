@@ -290,7 +290,7 @@ spec:
     commitWindow: "0s"                      # every RBAC change is its own commit
   commit:
     message:
-      groupTemplate: "rbac: {{.Author}} changed {{.Count}} object(s)"
+      liveTemplate: "rbac: {{.Author}} changed {{.Count}} object(s)"
 ```
 
 ### C2. `base` + `overlays` — the folder-choice problem

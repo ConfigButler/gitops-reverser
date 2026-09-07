@@ -242,3 +242,82 @@ func TestHandleShutdown_DrainsBufferedAttach(t *testing.T) {
 	assert.Equal(t, int64(0), w.inflightItems.Load(),
 		"a buffered attach must be drained from the inflight count on shutdown")
 }
+
+// The message_source label is what separates a commit a person named through a CommitRequest from
+// automatic mirroring, so it is asserted on the COLLECTED samples rather than only on
+// messageSource(): a label that never reaches the exporter is not observable.
+func TestRecordPendingWritesMetrics_LabelsCommitsByMessageSource(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordPendingWritesMetrics([]PendingWrite{
+		{
+			Kind:      PendingWriteCommit,
+			Events:    []Event{{UserInfo: UserInfo{Username: "alice"}}},
+			CommitSHA: plumbing.NewHash("1111111111111111111111111111111111111111"),
+		},
+		{
+			Kind:          PendingWriteCommit,
+			Events:        []Event{{UserInfo: UserInfo{Username: "alice"}}},
+			CommitMessage: "fix(api): correct the service port",
+			CommitSHA:     plumbing.NewHash("2222222222222222222222222222222222222222"),
+		},
+		{
+			Kind:      PendingWriteResync,
+			Committed: boolPtr(true),
+		},
+	}, 3)
+
+	for source, want := range map[string]int64{
+		messageSourceLive:          1,
+		messageSourceCommitRequest: 1,
+		messageSourceReconcile:     1,
+	} {
+		labels := queueDepthLabels()
+		labels["message_source"] = source
+		count, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
+		require.True(t, ok, "expected a commits_total sample for message_source=%q", source)
+		assert.Equal(t, want, count, "commits_total for message_source=%q", source)
+	}
+}
+
+// The first two writes above share author_kind=user, so author_kind alone cannot separate them.
+// This pins that the two labels are independent: a dashboard splitting one author's commits by
+// message source must not see them collapsed into a single series.
+func TestRecordPendingWritesMetrics_MessageSourceSplitsOneAuthorKind(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordPendingWritesMetrics([]PendingWrite{
+		{
+			Kind:      PendingWriteCommit,
+			Events:    []Event{{UserInfo: UserInfo{Username: "alice"}}},
+			CommitSHA: plumbing.NewHash("3333333333333333333333333333333333333333"),
+		},
+		{
+			Kind:          PendingWriteCommit,
+			Events:        []Event{{UserInfo: UserInfo{Username: "alice"}}},
+			CommitMessage: "fix(api): correct the service port",
+			CommitSHA:     plumbing.NewHash("4444444444444444444444444444444444444444"),
+		},
+	}, 2)
+
+	labels := queueDepthLabels()
+	labels["author_kind"] = authorKindUser
+
+	total, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
+	require.True(t, ok)
+	assert.Equal(t, int64(2), total, "both commits share author_kind=user")
+
+	labels["message_source"] = messageSourceLive
+	live, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), live)
+
+	labels["message_source"] = messageSourceCommitRequest
+	request, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), request)
+}

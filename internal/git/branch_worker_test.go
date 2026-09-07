@@ -739,7 +739,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitterAndTargetMessage
 	target.Spec.Path = "clusters/dev"
 	target.Spec.Commit = &configv1alpha3.GitTargetCommitSpec{
 		Message: &configv1alpha3.CommitMessageSpec{
-			EventTemplate: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+			LiveTemplate: "audit: {{.Author}} {{range .Resources}}{{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}{{end}}",
 		},
 	}
 	require.NoError(t, k8sClient.Create(ctx, target))
