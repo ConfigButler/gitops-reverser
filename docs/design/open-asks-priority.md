@@ -38,7 +38,7 @@
 > than smoothed over: the ordering rule below is still the argument, and the deviation from it is
 > a fact about the last week, not a revision of the rule.
 >
-> Three backlogs are open at once and they overlap: the gitops-api consumer asks (revision 11,
+> Three backlogs are open at once and they overlap: the downstream consumer asks (revision 11,
 > 2026-07-28, which is the revision that filed #23), the API-surface block left unbuilt by the
 > status and configuration-model review — now sequenced in
 > [`gittarget-api-wave.md`](gittarget-api-wave.md) — and the config-surface proposal in
@@ -61,7 +61,7 @@ Four tests, applied in order. They are what produced the queue in
    misconfiguration that mirrors perfectly and authors every commit `unknown` outranks
    everything, because nothing surfaces it until the commits already exist.
 2. **Does it get cheaper by being done now?** Every spec-field change is free while we are
-   `v1alpha3` and the consumer count is one. gitops-api pins us three ways (image, Go module,
+   `v1alpha3` and the consumer count is one. That consumer pins us three ways (image, Go module,
    `require` line), so the breaking wave costs one coordinated bump today and N tomorrow.
 3. **Is a deletion available instead of a switch?** A feature that needs an off-switch is a
    feature with a design problem. Removing it is smaller than the enum that guards it, and it
@@ -251,16 +251,16 @@ and is not independently schedulable.
 
 | # | Ask | Source | Tier | Tracked |
 |---|---|---|---|---|
-| ~~15~~ | ~~A declared `auditRoute` with zero facts must say so~~ **SHIPPED** as the latched `AuditFactsReceived` condition and `FACTS` column on `ClusterProvider` | gitops-api | — | — |
+| ~~15~~ | ~~A declared `auditRoute` with zero facts must say so~~ **SHIPPED** as the latched `AuditFactsReceived` condition and `FACTS` column on `ClusterProvider` | consumer | — | — |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
 | F9 | The `scope: Namespaced` status-write envtest | maintainer review | **1** | outside the wave, and **gates its planning**: the answer decides whether the narrowed enum can be kept ([`gittarget-api-wave.md`](gittarget-api-wave.md)) |
 | ~~n/a~~ | ~~A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path~~ **SHIPPED** in 0.42.1 | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | — | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), [#319](https://github.com/ConfigButler/gitops-reverser/pull/319) |
 | n/a | `useKustomize` and `serializeNamespace`: the two things a path template cannot say (`spec.layout` was reversed) | [`../layout/model.md`](../layout/model.md) | **2** | [#322](https://github.com/ConfigButler/gitops-reverser/issues/322), **not** breaking, so not the wave |
 | F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see [`gittarget-api-wave.md`](gittarget-api-wave.md)) | maintainer review | **2** | wave |
-| 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
+| 5 | `CommitRequest.spec.author`, SAR-guarded | consumer (#220) | **2** | wave |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
 | ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` already stops the writes, and `mode` buys only a declared posture over a pause | config surface | — | [`gittarget-api-wave.md`](gittarget-api-wave.md) |
-| 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **refused** | the destination stays immutable; a folder moves by delete-and-recreate |
+| 6 | Movable destination via `status.observedDestination` | consumer (#220) | **refused** | the destination stays immutable; a folder moves by delete-and-recreate |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
 | B2 | `GitTarget.status.placement` (was `status.layout`) | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
@@ -268,7 +268,7 @@ and is not independently schedulable.
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** | — |
 | n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`../spec/attribution.md`](../spec/attribution.md#what-the-shape-driven-rules-reach-and-what-they-do-not) | **3** | — |
 | n/a | Entry-size ceiling and per-type stream count under a few hundred watched types | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **3** | — |
-| 10 | Namespace-aware sibling inference *as asked* | gitops-api | **declined — answered by the deletion, SHIPPED** | — |
+| 10 | Namespace-aware sibling inference *as asked* | consumer | **declined — answered by the deletion, SHIPPED** | — |
 | B3 | `spec.placement.mode` enum | config surface | **declined** | — |
 
 **Two entries moved up in this sweep.** F9 is Tier 1 because it is not merely one envtest: until it
@@ -623,7 +623,7 @@ defects.
    **Done**: the ladder is documented as three steps, the kustomize-root fallback keeps its section
    and gained the namespace-match rule, and P1–P10 are annotated one by one with which are retired by
    the deletion and which (P7, P9, P10) are facts about the code that remains.
-4. Telling the gitops-api team which two of their asks we are answering differently, before they
+4. Telling the consumer team which two of their asks we are answering differently, before they
    build against the shapes they proposed — and that **#23 is fixed**, that the fix has a name
    (`delete_sticky` on `attribution_resolutions_total{tier}`) they can assert on, and that the
    reproduction they offered was not needed because their own report matched a corpus scenario we

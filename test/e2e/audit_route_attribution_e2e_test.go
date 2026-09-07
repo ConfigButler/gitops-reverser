@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This spec pins the bug the gitops-api team reported: every object mirrored through a DEDICATED
+// This spec pins the bug a downstream consumer reported: every object mirrored through a DEDICATED
 // in-cluster ClusterProvider committed as "unknown (attribution unresolved)", while the same actor's
 // writes through "default" attributed correctly.
 //
