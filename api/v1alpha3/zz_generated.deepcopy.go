@@ -838,10 +838,6 @@ func (in *GitTargetStatus) DeepCopyInto(out *GitTargetStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
-	if in.LastPushTime != nil {
-		in, out := &in.LastPushTime, &out.LastPushTime
-		*out = (*in).DeepCopy()
-	}
 	if in.Streams != nil {
 		in, out := &in.Streams, &out.Streams
 		*out = new(GitTargetStreamsStatus)

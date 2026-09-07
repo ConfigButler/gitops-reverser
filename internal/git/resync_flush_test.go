@@ -155,8 +155,14 @@ func TestResync_DropsManagedResourceAbsentFromCluster(t *testing.T) {
 	_, dropErr := os.Stat(dropFull)
 	assert.True(t, os.IsNotExist(dropErr), "the orphaned resource's file is deleted")
 
-	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_resync_sweep_deletes_total",
-		map[string]string{"group": "", "version": "v1", "resource": "configmaps"})
+	// The sweep arm of the write-boundary census. It shares one counter with written, deleted_live
+	// and unchanged because they are one population — every document this writer decided about —
+	// so a dashboard reads them as one stacked series instead of four unrelated numbers.
+	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_git_documents_total",
+		map[string]string{
+			"group": "", "version": "v1", "resource": "configmaps",
+			"outcome": documentDeletedSweep,
+		})
 	require.True(t, ok)
 	assert.Equal(t, int64(1), count)
 }

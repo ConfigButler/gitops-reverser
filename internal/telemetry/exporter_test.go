@@ -30,12 +30,12 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 
 	// Verify representative metrics across counters, histograms, and gauges
 	// are initialized.
-	assert.NotNil(t, ObjectsWrittenTotal)
-	assert.NotNil(t, ObjectsWrittenTotal)
-	assert.NotNil(t, CommitsTotal)
-	assert.NotNil(t, ResyncSweepDeletesTotal)
+	assert.NotNil(t, GitDocumentsTotal)
+	assert.NotNil(t, GitDocumentsTotal)
+	assert.NotNil(t, GitCommitsTotal)
+	assert.NotNil(t, GitPushRetriesTotal)
 	assert.NotNil(t, GitPushesTotal)
-	assert.NotNil(t, TargetReconcileCompletedTotal)
+	assert.NotNil(t, WatchRecoveryTotal)
 	assert.NotNil(t, AuditEventListDurationSeconds)
 	assert.NotNil(t, AuditEventListDurationSeconds)
 	assert.NotNil(t, AuditEventsTotal)
@@ -44,7 +44,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, AttributionResolutionWaitSeconds)
 	assert.NotNil(t, AttributionFactIndexEntries)
 	assert.NotNil(t, AttributionCollectionWithoutUIDSetTotal)
-	assert.NotNil(t, AttributionFactsLostTotal)
+	assert.NotNil(t, AttributionFactStreamDecodeErrorsTotal)
 	assert.NotNil(t, AttributionFactFollowerErrorsTotal)
 	assert.NotNil(t, AttributionFactFollowerLastSuccessTimestampSeconds)
 	assert.NotNil(t, AttributionTransportInfo)
@@ -69,9 +69,9 @@ func TestMetricsInitialization(t *testing.T) {
 	}()
 
 	// Test that all metrics can be used without panicking.
-	t.Run("ObjectsWrittenTotal", func(t *testing.T) {
+	t.Run("GitDocumentsTotal", func(t *testing.T) {
 		assert.NotPanics(t, func() {
-			ObjectsWrittenTotal.Add(ctx, 1)
+			GitDocumentsTotal.Add(ctx, 1)
 		})
 	})
 
@@ -178,7 +178,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	go func() {
 		defer func() { done <- true }()
 		for i := range 100 {
-			ObjectsWrittenTotal.Add(ctx, 1)
+			GitDocumentsTotal.Add(ctx, 1)
 			AuditEventListDurationSeconds.Record(ctx, float64(i)*0.01)
 		}
 	}()
@@ -213,15 +213,15 @@ func TestHistogramMetricBehavior(t *testing.T) {
 
 func TestMetricsErrorHandling(t *testing.T) {
 	// Document behavior when metrics are not initialized.
-	original := ObjectsWrittenTotal
-	ObjectsWrittenTotal = nil
-	defer func() { ObjectsWrittenTotal = original }()
+	original := GitDocumentsTotal
+	GitDocumentsTotal = nil
+	defer func() { GitDocumentsTotal = original }()
 
 	ctx := context.Background()
 
 	t.Run("NilMetrics", func(t *testing.T) {
 		assert.Panics(t, func() {
-			ObjectsWrittenTotal.Add(ctx, 1)
+			GitDocumentsTotal.Add(ctx, 1)
 		})
 	})
 }
@@ -248,7 +248,7 @@ func TestMetricsAfterShutdown(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotPanics(t, func() {
-		ObjectsWrittenTotal.Add(ctx, 1)
+		GitDocumentsTotal.Add(ctx, 1)
 	})
 
 	err = shutdownFunc(ctx)
@@ -256,7 +256,7 @@ func TestMetricsAfterShutdown(t *testing.T) {
 
 	// Metrics still work after shutdown (they just are not exported).
 	assert.NotPanics(t, func() {
-		ObjectsWrittenTotal.Add(ctx, 1)
+		GitDocumentsTotal.Add(ctx, 1)
 	})
 }
 
@@ -342,7 +342,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 	assert.NotNil(t, shutdownFunc)
 
 	assert.NotPanics(t, func() {
-		ObjectsWrittenTotal.Add(ctx, 1)
+		GitDocumentsTotal.Add(ctx, 1)
 		AuditEventListDurationSeconds.Record(ctx, 1.0)
 		AuditEventsTotal.Add(ctx, 1, metricAttrs("outcome", "queued"))
 		APICatalogResources.Record(ctx, 1)

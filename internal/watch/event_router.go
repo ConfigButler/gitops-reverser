@@ -261,7 +261,7 @@ func (r *EventRouter) drainScopedResync(
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
 		// e2e gate reads (a sweep is excluded; it is a removal, not a steady-state reconcile).
 		if kind == "reconcile" && r.WatchManager != nil {
-			r.WatchManager.recordTargetReconcileCompleted(gitDest, "type_reconcile")
+			r.WatchManager.recordWatchRecovery(gitDest, cell.Group, cell.Resource, recoveryModeTypeReconcile)
 		}
 	case <-time.After(resyncSignalTimeout):
 		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "cell", cell.String())

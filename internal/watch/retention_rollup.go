@@ -123,9 +123,24 @@ func (m *Manager) MarkTargetRetention(
 		scope.reportedRevision = revision
 		state.scopes[cell] = scope
 		state.mode = mode.OrDefault()
-		state.observed = time.Now()
 		s.retention[gitDest.Key()] = state
-		return !priorReported || state.total() != priorTotal || state.mode != priorMode
+		changed := !priorReported || state.total() != priorTotal || state.mode != priorMode
+		// The observation time advances ONLY when the observation itself moved.
+		//
+		// Restamping it on every accepted report — including the routine re-reports that change
+		// nothing an operator sees — made the roll-up defeat the no-op status-write suppression the
+		// controller depends on: the count and the mode would be identical, the timestamp would not,
+		// so the NEXT reconcile for any reason at all computed a non-empty patch and wrote status.
+		// A field that moves without its subject moving is a status write with nothing to say.
+		//
+		// It therefore dates the RESULT, not the last scan, exactly as status.placement's
+		// resolvedAtRevision does and for the same reason. A timestamp well in the past means the
+		// retention has been stable, not that measuring stopped.
+		if changed {
+			state.observed = time.Now()
+			s.retention[gitDest.Key()] = state
+		}
+		return changed
 	})
 	if dropped != "" {
 		m.Log.WithName("retention").Info(

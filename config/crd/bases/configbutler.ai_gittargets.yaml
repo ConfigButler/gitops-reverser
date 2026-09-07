@@ -472,11 +472,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              lastPushTime:
-                description: LastPushTime is the timestamp of the last successful
-                  push.
-                format: date-time
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.
@@ -566,8 +561,15 @@ spec:
                     type: string
                   observedTime:
                     description: |-
-                      ObservedTime is when this roll-up was last computed. A retention that begins just after a
-                      reconcile is not visible until the next one, so read this before treating a zero as live.
+                      ObservedTime is when this roll-up last CHANGED, not when it was last computed. A resync that
+                      re-reports the same count does not restamp it, so a timestamp well in the past means the
+                      retention has been stable rather than that measuring stopped — the same reading
+                      placement.resolvedAtRevision asks for, and for the same reason: a field that moves without
+                      its subject moving is a status write with nothing to say, and it defeats the no-op write
+                      suppression every other field here relies on.
+
+                      A retention that begins just after a reconcile is not visible until the next one, so read
+                      this before treating a zero as live.
                     format: date-time
                     type: string
                   retainedDocuments:

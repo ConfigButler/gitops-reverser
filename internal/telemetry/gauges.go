@@ -45,7 +45,7 @@ type GaugeSource func() []GaugeSample
 // names with the prefix stripped, so a reader grepping the exported metric finds the source too.
 const (
 	GaugeGitQueueDepth               = "git_queue_depth"
-	GaugeWatchStreams                = "watch_streams"
+	GaugeWatchTypes                  = "watch_types"
 	GaugeWatchPlanDirtyTargets       = "watch_plan_dirty_targets"
 	GaugeWatchPlanOldestDirtySince   = "watch_plan_oldest_dirty_since_timestamp_seconds"
 	GaugeAttributionFactIndexEntries = "attribution_fact_index_entries"

@@ -110,9 +110,18 @@ func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 	}, nil
 }
 
-// EventList request-boundary outcome labels. They stay bounded — no path,
-// remote address, or status-code dimension — so the ingress metric set is small.
+// EventList request-boundary outcome labels. They stay bounded — no path, remote address, or
+// status-code dimension — so the ingress metric set is small.
+//
+// The first three are REJECTIONS, and they were the ingress gap: a request refused for its method,
+// its path, or an unknown route returned before any instrument was touched, so a misconfigured
+// audit endpoint — the apiserver posting to the wrong path, or to a route no ClusterProvider
+// claims — looked exactly like an apiserver posting nothing at all. That is the single most likely
+// audit misconfiguration there is, and it was the one shape the ingress metric could not show.
 const (
+	outcomeBadMethod    = "bad_method"
+	outcomeBadPath      = "bad_path"
+	outcomeUnknownRoute = "unknown_route"
 	outcomeProcessed    = "processed"
 	outcomeEmpty        = "empty"
 	outcomeDecodeError  = "decode_error"
@@ -120,26 +129,32 @@ const (
 )
 
 // ServeHTTP implements http.Handler for audit event processing.
+//
+// Every return path records an outcome, rejections included. The timer starts before the first
+// gate so a rejected request is measured the same way an accepted one is.
 func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := logf.Log.WithName("audit-handler")
+	start := time.Now()
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		h.recordEventListRequest(ctx, outcomeBadMethod, time.Since(start))
 		return
 	}
 
 	if err := validateAuditWebhookPath(r.URL.Path); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.recordEventListRequest(ctx, outcomeBadPath, time.Since(start))
 		return
 	}
 
 	route, ok := h.resolveRoute(w, r)
 	if !ok {
+		h.recordEventListRequest(ctx, outcomeUnknownRoute, time.Since(start))
 		return
 	}
 
-	start := time.Now()
 	result := h.serveEventListRequest(ctx, route, w, r, log)
 	h.recordEventListRequest(ctx, result, time.Since(start))
 }

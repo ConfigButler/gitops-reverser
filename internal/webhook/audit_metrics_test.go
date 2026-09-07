@@ -186,3 +186,52 @@ func TestServeHTTP_NonScaleSubresourceDropped(t *testing.T) {
 	require.True(t, ok, "expected a non_scale_subresource outcome sample for pods/exec")
 	assert.Equal(t, int64(1), exec)
 }
+
+// A request refused at the door must still be counted.
+//
+// This was the ingress gap: method, path and route rejections returned BEFORE any instrument was
+// touched, so an apiserver posting audit to the wrong path — or under a route no ClusterProvider
+// claims, which is the likeliest audit misconfiguration there is — produced exactly the same
+// ingress metrics as an apiserver posting nothing at all.
+func TestServeHTTP_RejectedRequestsAreCounted(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		wantOutcome string
+		wantStatus  int
+	}{
+		{
+			name:        "wrong method",
+			method:      http.MethodGet,
+			path:        defaultRoute,
+			wantOutcome: outcomeBadMethod,
+			wantStatus:  http.StatusMethodNotAllowed,
+		},
+		{
+			name:        "wrong path",
+			method:      http.MethodPost,
+			path:        "/not-the-audit-webhook",
+			wantOutcome: outcomeBadPath,
+			wantStatus:  http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader, err := telemetry.InitTestExporter()
+			require.NoError(t, err)
+
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: &fakeFactSink{}}))
+			require.NoError(t, err)
+
+			w := serveBody(t, handler, tt.method, tt.path, eventListBody(acceptedCreateEvent))
+			assert.Equal(t, tt.wantStatus, w.Code)
+
+			count, ok := telemetry.CollectHistogramCount(reader, eventListDurationMetric,
+				map[string]string{"outcome": tt.wantOutcome})
+			require.True(t, ok, "a refused request must still reach the ingress metric")
+			assert.Equal(t, uint64(1), count)
+		})
+	}
+}

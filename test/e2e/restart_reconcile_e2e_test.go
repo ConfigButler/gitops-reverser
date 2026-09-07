@@ -168,7 +168,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		By("waiting for the new pod to complete its post-restart reconcile")
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
-				`sum(gitopsreverser_target_reconcile_completed_total`+
+				`sum(gitopsreverser_watch_recovery_total`+
 					`{gittarget_namespace=%q,gittarget_name=%q,pod=%q}) or vector(0)`,
 				testNs, gitTargetName, newControllerPod,
 			),

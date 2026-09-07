@@ -258,20 +258,25 @@ func (m *Manager) NeedLeaderElection() bool {
 	return true
 }
 
-// recordTargetReconcileCompleted increments the per-GitTarget recovery counter once a
-// per-type reconcile has been applied, or a cursor-backed watch resume has been established,
-// tagged with the trigger that drove the pass. On a controller restart the new pod's counter
-// starts at 0, so a per-pod `{pod="<new>"} > 0` reading shows the new pod completed its own
-// recovery. No-op until the counter is registered.
-func (m *Manager) recordTargetReconcileCompleted(gitDest types.ResourceReference, trigger string) {
-	if telemetry.TargetReconcileCompletedTotal == nil {
+// recordWatchRecovery counts one completed watch recovery for a GitTarget, under the MODE that
+// recovered it: a cursor resume, an applied per-type reconcile, a full replay, or a list fallback.
+//
+// On a controller restart the new pod's counter starts at 0, so a per-pod `{pod="<new>"} > 0`
+// reading shows the new pod completed its own recovery. It was called
+// recordTargetReconcileCompleted with a `trigger` label whose documented value the code never
+// emitted; the name described the caller rather than the event. No-op until the counter is
+// registered.
+func (m *Manager) recordWatchRecovery(
+	gitDest types.ResourceReference,
+	group, resource string,
+	mode string,
+) {
+	if telemetry.WatchRecoveryTotal == nil {
 		return
 	}
-	telemetry.TargetReconcileCompletedTotal.Add(context.Background(), 1, metric.WithAttributes(
-		attribute.String("gittarget_namespace", gitDest.Namespace),
-		attribute.String("gittarget_name", gitDest.Name),
-		attribute.String("trigger", trigger),
-	))
+	attrs := append(gitTargetIdentityAttrs(gitDest), groupResourceAttrs(group, resource)...)
+	attrs = append(attrs, attribute.String("mode", mode))
+	telemetry.WatchRecoveryTotal.Add(context.Background(), 1, metric.WithAttributes(attrs...))
 }
 
 // SetupWithManager is a placeholder to enable kubebuilder RBAC marker scanning.

@@ -264,10 +264,6 @@ type GitTargetStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// LastPushTime is the timestamp of the last successful push.
-	// +optional
-	LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
-
 	// Streams is the bounded data-plane roll-up over this GitTarget's tracked types.
 	// Counts, never a per-type list, so it stays bounded however many types are watched.
 	// +optional
@@ -409,8 +405,15 @@ type GitTargetRetentionStatus struct {
 	// converged. An ABSENT retention block means something different: no resync has reported yet.
 	RetainedDocuments int32 `json:"retainedDocuments"`
 
-	// ObservedTime is when this roll-up was last computed. A retention that begins just after a
-	// reconcile is not visible until the next one, so read this before treating a zero as live.
+	// ObservedTime is when this roll-up last CHANGED, not when it was last computed. A resync that
+	// re-reports the same count does not restamp it, so a timestamp well in the past means the
+	// retention has been stable rather than that measuring stopped — the same reading
+	// placement.resolvedAtRevision asks for, and for the same reason: a field that moves without
+	// its subject moving is a status write with nothing to say, and it defeats the no-op write
+	// suppression every other field here relies on.
+	//
+	// A retention that begins just after a reconcile is not visible until the next one, so read
+	// this before treating a zero as live.
 	// +optional
 	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }

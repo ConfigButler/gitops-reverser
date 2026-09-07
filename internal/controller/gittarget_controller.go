@@ -823,7 +823,6 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 		}
 	}
 	if !branchAllowed {
-		target.Status.LastPushTime = nil
 		msg := fmt.Sprintf(
 			"Branch '%s' does not match any pattern in allowedBranches list %v of GitProvider '%s/%s'",
 			target.Spec.Branch,

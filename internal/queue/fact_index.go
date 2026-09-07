@@ -57,16 +57,12 @@ const (
 	deleteCollectionVerb = "deletecollection"
 )
 
-// The bounded reasons on the fact-loss counter that this package raises. Every value here names a
-// fact that will never join a watch event; a stream trim and an undecodable entry are the other two
-// and are raised beside the transport that saw them.
+// evictionReasonPerType and evictionReasonTotal are the bounded reasons on the eviction counter.
 // They are separate because they mean different things to an operator: per-type says one type is
 // hotter than its share, total says the whole index is under pressure.
 const (
-	factLossIndexFullPerType = "index_full_per_type"
-	factLossIndexFullTotal   = "index_full_total"
-	factLossStreamTrimmed    = "stream_trimmed"
-	factLossUndecodable      = "undecodable"
+	evictionReasonPerType = "per_type"
+	evictionReasonTotal   = "total"
 )
 
 // factOpWritten and factOpMatched are the bounded ops on the fact lifecycle counter: one fact
@@ -590,7 +586,7 @@ func (i *FactIndex) enforceCaps(ctx context.Context, scope factScope, facts *sco
 			break
 		}
 		i.total--
-		recordFactLoss(ctx, factLossIndexFullPerType)
+		recordFactIndexEviction(ctx, evictionReasonPerType)
 	}
 	if facts.empty() {
 		delete(i.scopes, scope)
@@ -616,7 +612,7 @@ func (i *FactIndex) evictFromLargestScope(ctx context.Context) bool {
 		return false
 	}
 	i.total--
-	recordFactLoss(ctx, factLossIndexFullTotal)
+	recordFactIndexEviction(ctx, evictionReasonTotal)
 	if largest.empty() {
 		delete(i.scopes, largestScope)
 	}
@@ -629,7 +625,10 @@ func (i *FactIndex) evictFromLargestScope(ctx context.Context) bool {
 // positions rather than fire-and-forget publish and subscribe.
 func (i *FactIndex) reportGaps(ctx context.Context, gaps []FactStreamGap) {
 	for _, gap := range gaps {
-		recordFactLoss(ctx, factLossStreamTrimmed)
+		if telemetry.AttributionFactStreamGapsTotal != nil {
+			telemetry.AttributionFactStreamGapsTotal.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("stream", gap.Key.String())))
+		}
 		i.log.Info("attribution fact stream was trimmed past this follower; the facts in the gap are "+
 			"lost and the commits that needed them are authored unresolved",
 			"stream", gap.Key.String(), "cursor", gap.Cursor, "firstSurviving", gap.FirstSurviving)
@@ -733,16 +732,16 @@ func recordFollowerSuccess(ctx context.Context) {
 	telemetry.AttributionFactFollowerLastSuccessTimestampSeconds.Record(ctx, time.Now().Unix())
 }
 
-// recordFactLoss counts one fact that will never join a watch event, under its bounded reason.
+// recordFactIndexEviction counts one evicted FACT under its bounded reason.
 //
-// The three losses share a counter because they are one thing to an operator: a fact was published
-// and no commit will ever carry its author. They used to be three counters that were always read on
-// one dashboard panel and wanted one alert. The stream and the transport stay on the log line at
-// each site, which is where that detail was always kept.
-func recordFactLoss(ctx context.Context, reason string) {
-	if telemetry.AttributionFactsLostTotal == nil {
+// It stays its own counter rather than joining the stream-gap and decode-error counters under a
+// shared "facts lost" name: this one knows exactly how many facts it dropped, and those two cannot.
+// Combining units that differ produces a number in no unit at all; combining the SERIES on a panel
+// or in an alert is a recording rule's job.
+func recordFactIndexEviction(ctx context.Context, reason string) {
+	if telemetry.AttributionFactIndexEvictionsTotal == nil {
 		return
 	}
-	telemetry.AttributionFactsLostTotal.Add(ctx, 1,
+	telemetry.AttributionFactIndexEvictionsTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("reason", reason)))
 }

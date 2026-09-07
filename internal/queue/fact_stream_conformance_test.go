@@ -251,8 +251,8 @@ func TestFactStreamConformance_ARefusedEntryIsSkippedAndCounted(t *testing.T) {
 					require.Equal(t, []string{"alice", "bob"}, factAuthors(entries))
 
 					decodeErrors, found := telemetry.CollectInt64Sum(reader,
-						"gitopsreverser_attribution_facts_lost_total",
-						map[string]string{"reason": factLossUndecodable})
+						"gitopsreverser_attribution_fact_stream_decode_errors_total",
+						map[string]string{"transport": string(transport.TransportKind())})
 					require.True(t, found, "a refused entry must be counted; it has no other symptom")
 					require.Equal(t, int64(1), decodeErrors)
 				})

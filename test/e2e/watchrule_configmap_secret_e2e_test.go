@@ -492,7 +492,7 @@ spec:
 		Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
 
 		By("waiting for controller reconciliation of ConfigMap event")
-		// Progress gate: assert a commit landed via gitopsreverser_commits_total scoped
+		// Progress gate: assert a commit landed via gitopsreverser_git_commits_total scoped
 		// to this suite's GitProvider namespace, instead of scraping operator logs. The
 		// authoritative per-object check is the file-existence assertion below.
 		waitForCommitInNamespace(testNs)

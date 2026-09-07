@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	commitsTotalMetric = "gitopsreverser_commits_total"
+	commitsTotalMetric = "gitopsreverser_git_commits_total"
 	queueDepthMetric   = "gitopsreverser_git_queue_depth"
 	queueDropsMetric   = "gitopsreverser_git_queue_drops_total"
 	pushesTotalMetric  = "gitopsreverser_git_pushes_total"

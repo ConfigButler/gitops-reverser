@@ -10,8 +10,6 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -19,8 +17,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
-	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // handleResyncRequest applies one revision-pinned resync in order on the worker goroutine, or —
@@ -461,7 +457,7 @@ func (wb *writeBatch) applyResyncPlan(
 		if action.Kind == manifestanalyzer.PlanDropOrphan {
 			if wb.dropDocument(action.Ref.FilePath, action.Identity) {
 				stats.Deleted++
-				recordResyncSweepDelete(ctx, action.Resource)
+				recordDocument(ctx, Event{Identifier: action.Resource}, documentDeletedSweep)
 			}
 		}
 	}
@@ -537,36 +533,20 @@ func (w *BranchWorker) shouldLogRetention(key string) bool {
 	return true
 }
 
-// recordPruneRetention counts documents a prune policy kept, labelled by the GitTarget that kept
-// them and the mode it kept them under — "which target is retaining, and why" is the operational
-// question, and a counter that cannot name the target only answers it for a single-target
-// deployment. It is the retention twin of ResyncSweepDeletesTotal.
+// recordPruneRetention counts documents a prune policy kept, under the GitTarget that kept them.
 //
-// Cardinality is bounded by the number of GitTargets, not by resources: the per-path, per-scope and
-// per-document detail deliberately stays in the log line. The label names follow the convention
-// TargetReconcileCompletedTotal already sets — gittarget_namespace / gittarget_name rather than the
-// reserved namespace / name, because a pod scrape with honor_labels=false overwrites a metric's
-// `namespace` attribute with the scraping pod's own and silently breaks any per-target selector.
+// It is the retention arm of the write-boundary census, so it shares GitDocumentsTotal with the
+// written and deleted arms rather than being a counter of its own: they are one population — every
+// document this writer decided about — and a dashboard reads them as one stacked series.
+//
+// The effective spec.prune.mode is deliberately NOT a label. It is a property of the GitTarget, not
+// of the document, and the target's own spec (and its RetentionConverged condition) answers "under
+// what policy" without multiplying the series. The per-path, per-scope and per-document detail
+// stays in the log line, as it always did.
 func recordPruneRetention(ctx context.Context, target ResolvedTargetMetadata, retained int) {
-	if telemetry.PruneRetainedDocumentsTotal == nil {
-		return
-	}
-	telemetry.PruneRetainedDocumentsTotal.Add(ctx, int64(retained), metric.WithAttributes(
-		attribute.String("prune_mode", string(target.PruneMode)),
-		attribute.String("gittarget_namespace", target.Namespace),
-		attribute.String("gittarget_name", target.Name),
-	))
-}
-
-func recordResyncSweepDelete(ctx context.Context, resource types.ResourceIdentifier) {
-	if telemetry.ResyncSweepDeletesTotal == nil {
-		return
-	}
-	telemetry.ResyncSweepDeletesTotal.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("group", resource.Group),
-		attribute.String("version", resource.Version),
-		attribute.String("resource", resource.Resource),
-	))
+	recordDocumentCount(ctx,
+		placementTarget{namespace: target.Namespace, name: target.Name},
+		Event{}, documentRetained, int64(retained))
 }
 
 // dropDocument removes the managed document for id from filePath, re-deriving its

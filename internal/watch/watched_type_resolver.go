@@ -3,7 +3,6 @@
 package watch
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -97,41 +95,65 @@ func (m *Manager) refreshWatchedTypeTables() {
 	tables := m.resolveWatchedTypeTables()
 
 	m.watchedTypes.mu.Lock()
-	previous := m.watchedTypes.tables
 	m.watchedTypes.tables = tables
 	m.watchedTypes.registriesFP = registriesFP
 	m.watchedTypes.rulesFP = fingerprint
 	m.watchedTypes.clusterFP = clusterFP
 	m.watchedTypes.resolved = true
 	m.watchedTypes.mu.Unlock()
-
-	recordWatchedTypeMetrics(previous, tables)
 }
 
-// recordWatchedTypeMetrics publishes the per-GitTarget watched-type count gauge after a
-// re-resolution. A GitTarget present before but gone now is zeroed so its series does
-// not linger.
-func recordWatchedTypeMetrics(previous, current map[string]WatchedTypeTable) {
-	if telemetry.WatchedTypes == nil {
-		return
+// installWatchTypeGaugeSource publishes the per-GitTarget type counts, split by stream readiness,
+// as a SCRAPE-TIME source.
+//
+// It replaces a pushed `watched_types` gauge that carried a bare count and had to zero out a
+// departed GitTarget by hand, because a pushed gauge latches its last value forever. A callback has
+// nothing to latch: a target that is gone simply produces no sample.
+//
+// The `state` split is what makes the gauge answer both questions the old one blurred. Summing it
+// gives the resolved-type count the old gauge published — the CONFIGURATION view — and
+// `state="blocked"` is exactly the difference between a type this GitTarget resolves and a type it
+// is actually watching. The name is `watch_types`, not `watch_streams`: this aggregates by resource
+// TYPE, and one type may be watched by several streams across namespaces.
+func (m *Manager) installWatchTypeGaugeSource() {
+	telemetry.SetGaugeSource(telemetry.GaugeWatchTypes, m.watchTypeSamples)
+}
+
+// clearWatchTypeGaugeSource removes the callback so it cannot outlive the manager.
+func (m *Manager) clearWatchTypeGaugeSource() {
+	telemetry.SetGaugeSource(telemetry.GaugeWatchTypes, nil)
+}
+
+// watchTypeSamples reads each declared GitTarget's stream summary at scrape time.
+//
+// streamSummaryCounts guarantees Total == Ready + Replaying + Blocked, so the three samples
+// partition the target's resolved types and nothing is double-counted or lost.
+func (m *Manager) watchTypeSamples() []telemetry.GaugeSample {
+	m.ensureWatchedTypeStore()
+	m.watchedTypes.mu.Lock()
+	dests := make([]types.ResourceReference, 0, len(m.watchedTypes.tables))
+	for _, table := range m.watchedTypes.tables {
+		dests = append(dests, table.GitDest)
 	}
-	ctx := context.Background()
-	for _, table := range current {
-		telemetry.WatchedTypes.Record(ctx, int64(len(table.Types)), gitTargetAttrs(table.GitDest))
-	}
-	for key, table := range previous {
-		if _, ok := current[key]; ok {
-			continue
+	m.watchedTypes.mu.Unlock()
+
+	// Three samples per target: streaming, replaying, blocked.
+	const statesPerTarget = 3
+	samples := make([]telemetry.GaugeSample, 0, len(dests)*statesPerTarget)
+	for _, dest := range dests {
+		summary := m.StreamSummaryForGitTarget(dest)
+		for state, count := range map[string]int{
+			"streaming": summary.Ready,
+			"replaying": summary.Replaying,
+			"blocked":   summary.Blocked,
+		} {
+			samples = append(samples, telemetry.GaugeSample{
+				Value: int64(count),
+				Attrs: append(gitTargetIdentityAttrs(dest), attribute.String("state", state)),
+			})
 		}
-		telemetry.WatchedTypes.Record(ctx, 0, gitTargetAttrs(table.GitDest))
 	}
-}
-
-func gitTargetAttrs(gitDest types.ResourceReference) metric.MeasurementOption {
-	return metric.WithAttributes(
-		attribute.String("gittarget_namespace", gitDest.Namespace),
-		attribute.String("gittarget_name", gitDest.Name),
-	)
+	return samples
 }
 
 // ensureWatchedTypeStore lazily initialises the resident store so a zero-value

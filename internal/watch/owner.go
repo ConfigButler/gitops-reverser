@@ -361,6 +361,8 @@ func (m *Manager) runOwnerLoop(ctx context.Context, log logr.Logger) {
 	// value this loop pushes is a value that stops moving at the worst moment.
 	m.installDirtySetGaugeSources()
 	defer m.clearDirtySetGaugeSources()
+	m.installWatchTypeGaugeSource()
+	defer m.clearWatchTypeGaugeSource()
 
 	// The floor. Nothing else in this loop is periodic; every other pass is driven by a trigger.
 	periodic := time.NewTicker(periodicReconcileInterval)

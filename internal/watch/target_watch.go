@@ -513,6 +513,7 @@ func (m *Manager) runTargetWatch(
 	for ctx.Err() == nil {
 		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, resumeFromCursor)
 		resumeFromCursor = true
+		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndReason(ctx, err))
 		if ctx.Err() != nil {
 			return
 		}
@@ -596,11 +597,13 @@ func (m *Manager) targetWatchReplayAndStream(
 		"target watch replay in progress",
 	)
 	replaying := true
+	replayStarted := time.Now()
 	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, stream.key.Namespace, opts)
 	if err != nil {
 		if watchListUnsupported(err) {
 			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
 				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
+			m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeListFallback)
 			return m.targetWatchListAndStream(ctx, log, gitDest, stream)
 		}
 		if ctx.Err() != nil {
@@ -617,12 +620,30 @@ func (m *Manager) targetWatchReplayAndStream(
 	}
 	defer w.Stop()
 
+	return m.pumpTargetWatchSession(ctx, log, gitDest, stream, w.ResultChan(), replaying, replayStarted)
+}
+
+// pumpTargetWatchSession drains one open session, folding replay events and then streaming live
+// ones, until the channel closes or the context ends.
+//
+// Split out of targetWatchReplayAndStream so the open-and-fall-back logic above and the drain here
+// are each readable on their own; the replay-completion measurement lives here because this is
+// where initial-events-end is observed.
+func (m *Manager) pumpTargetWatchSession(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	stream targetWatchStream,
+	events <-chan watch.Event,
+	replaying bool,
+	replayStarted time.Time,
+) error {
 	var replay []manifestanalyzer.DesiredResource
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case ev, ok := <-w.ResultChan():
+		case ev, ok := <-events:
 			if !ok {
 				return targetWatchClosedErr(ctx)
 			}
@@ -631,6 +652,12 @@ func (m *Manager) targetWatchReplayAndStream(
 			)
 			if err != nil {
 				return err
+			}
+			if replaying && !nextReplaying {
+				// initial-events-end. This is what a 410 storm charges: the cost of every rebuild
+				// it forces, which no other instrument can see.
+				recordWatchReplayDuration(ctx, stream.key.GVR, replayStarted)
+				m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeReplay)
 			}
 			replaying = nextReplaying
 		}
@@ -679,7 +706,7 @@ func (m *Manager) targetWatchResumeAndStream(
 		StreamReasonAllStreamsReady,
 		"target watch resumed from durable cursor",
 	)
-	m.recordTargetReconcileCompleted(gitDest, "cursor_resume")
+	m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeCursorResume)
 	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, stream, w.ResultChan())
 }
 
@@ -933,7 +960,11 @@ func (m *Manager) processLiveTargetWatchEvent(
 		// fresh replay (overwriting the stale cursor); no explicit delete needed.
 		return errTargetWatchExpired
 	}
+	// Time the whole of routing, attribution wait included. A stream is single-threaded, so time
+	// spent here is time nothing else on it is being read — which is the head-of-line signal.
+	started := time.Now()
 	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, stream, ev)
+	recordWatchEventHandling(ctx, stream.key.GVR, started)
 	if err != nil {
 		return err
 	}
@@ -950,16 +981,19 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	rv := targetWatchEventResourceVersion(ev)
 	switch ev.Type {
 	case watch.Bookmark:
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeBookmark)
 		return rv, nil
 	case watch.Added, watch.Modified, watch.Deleted:
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeNotObject)
 			log.V(1).Info("target watch non-unstructured event skipped",
 				"gvr", stream.key.GVR.String(), "type", string(ev.Type))
 			return rv, nil
 		}
 		op := operationForLiveTargetWatchEvent(ev.Type, u)
 		if !stream.ops.Match(op) {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeOperationFiltered)
 			return rv, nil
 		}
 		event := targetWatchGitEvent(stream.key.GVR, u, op)
@@ -975,6 +1009,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		// is dropped), so routing it would split an open commit window on the author
 		// flip. CREATE/DELETE always route and refresh/clear the dedup cache.
 		if m.skipUnchangedLiveUpdate(gitDest, stream.key.GVR, u, &event, op) {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeUnchanged)
 			log.V(1).Info("target watch skipped unchanged update (no git content change)",
 				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
 				"resource", event.Identifier.String())
@@ -985,14 +1020,20 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		// an event was waiting for its author must not enqueue on the way out.
 		select {
 		case <-ctx.Done():
+			// The stream was cancelled while this event waited for its author. Counted, because a
+			// census with an unrecorded exit is not a census: the totals would quietly stop adding
+			// up. It is not loss — a restart replays and resyncs this object.
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeShutdown)
 			return rv, nil
 		default:
 		}
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeRouteFailed)
 			log.V(1).Info("target watch route failed",
 				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "err", err.Error())
 			return rv, err
 		}
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeRouted)
 		return rv, nil
 	case watch.Error:
 		return rv, fmt.Errorf("target watch error for %s: %v", stream.key.GVR.String(), ev.Object)

@@ -331,6 +331,18 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // existing document is placed by createNew. It returns what it did to the bytes
 // (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
+	outcome, err := wb.upsert(ctx, event)
+	if err == nil {
+		// Counted here rather than at either caller: the live path reaches this through applyEvent
+		// and the resync path calls it directly, so this is the one place both are covered exactly
+		// once.
+		recordDocument(ctx, event, documentOutcomeForUpsert(outcome))
+	}
+	return outcome, err
+}
+
+// upsert is applyUpsert's body, split out so the census above wraps every return path.
+func (wb *writeBatch) upsert(ctx context.Context, event Event) (upsertOutcome, error) {
 	id, ok := manifestIdentity(event.Object)
 	if !ok {
 		return wb.createNew(ctx, event)
@@ -1271,6 +1283,7 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	if len(wb.kustomizationsListing(target.filePath)) > 0 {
 		wb.putToKustomize = true
 	}
+	recordDocument(ctx, event, documentDeletedLive)
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if !res.FileEmpty {
 		buf.current = res.Content

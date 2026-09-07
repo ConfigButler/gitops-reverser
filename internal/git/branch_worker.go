@@ -1565,16 +1565,11 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 	return baseBranch, baseHash, nil
 }
 
+// recordPendingWritesMetrics accrues what a flush produced. Documents are counted at the write
+// boundary itself (see document_metrics.go), not here from the input event count, which is what the
+// two counters this used to feed got wrong.
 func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, commitsCreated int) {
-	eventCount := 0
-	for _, pendingWrite := range pendingWrites {
-		eventCount += len(pendingWrite.Events)
-	}
-
 	w.tallyCommits(pendingWrites, commitsCreated)
-	if telemetry.ObjectsWrittenTotal != nil {
-		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(eventCount))
-	}
 }
 
 // Push cycle outcomes and retry reasons.
@@ -1641,7 +1636,7 @@ func (w *BranchWorker) tallyCommits(pendingWrites []PendingWrite, commitsCreated
 // on the remote, and clears the tally. A push that fails leaves it standing, so those commits are
 // counted by whichever later push finally lands them.
 func (w *BranchWorker) publishCommittedTally() {
-	if telemetry.CommitsTotal == nil {
+	if telemetry.GitCommitsTotal == nil {
 		w.committedTally = nil
 		return
 	}
@@ -1649,7 +1644,7 @@ func (w *BranchWorker) publishCommittedTally() {
 		// Label by the recording BranchWorker's own identity {provider_namespace,
 		// provider_name, branch} plus author_kind and message_source. The prefixed key names
 		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`.
-		telemetry.CommitsTotal.Add(w.ctx, count, metric.WithAttributes(
+		telemetry.GitCommitsTotal.Add(w.ctx, count, metric.WithAttributes(
 			attribute.String("provider_namespace", w.GitProviderNamespace),
 			attribute.String("provider_name", w.GitProviderRef),
 			attribute.String("branch", w.Branch),
