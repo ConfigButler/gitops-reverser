@@ -389,16 +389,19 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
 		// matches what GitProvider and ClusterProvider already do.
 		For(&configbutleraiv1alpha3.ClusterWatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		// GenerationChangedPredicate keeps these watches reacting to a freshly
-		// applied or spec-changed dependency while ignoring the status-only
-		// updates the controllers write themselves — without it every GitTarget
-		// or GitProvider heartbeat would re-list and re-enqueue all
-		// ClusterWatchRules.
+		// This rule MIRRORS the GitTarget's readiness into its own GitTargetReady, so the watch has
+		// to see the status-only update that carries a heal — GenerationChangedPredicate would drop
+		// exactly that. gitTargetReadyProjectionChanged fires on a spec change or on a move in the
+		// mirrored verdict, and on nothing else.
 		Watches(
 			&configbutleraiv1alpha3.GitTarget{},
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
+		// Nothing of the GitProvider's STATUS is mirrored here, so GenerationChangedPredicate is
+		// right on this edge: it reacts to a freshly applied or spec-changed provider while ignoring
+		// the status-only updates its controller writes itself — without it every GitProvider
+		// heartbeat would re-list and re-enqueue all ClusterWatchRules.
 		Watches(
 			&configbutleraiv1alpha3.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToClusterWatchRules),
@@ -408,7 +411,8 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// namespace stops the GitTarget (which does watch ClusterProvider) but leaves this rule's
 		// compiled entry resident until the next periodic reconcile, so the admission gate would
 		// converge on a ~10m delay instead of on the event. The GitTarget's own status flip cannot
-		// carry it: that is a status-only update, which GenerationChangedPredicate above drops.
+		// be relied on to carry it: the edge above re-enqueues only on a move in the MIRRORED
+		// readiness, and a revocation need not move it.
 		Watches(
 			&configbutleraiv1alpha3.ClusterProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToClusterWatchRules),

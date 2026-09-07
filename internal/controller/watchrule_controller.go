@@ -282,25 +282,30 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
 		// matches what GitProvider and ClusterProvider already do.
 		For(&configbutleraiv1alpha3.WatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		// GenerationChangedPredicate keeps these watches reacting to a freshly
-		// applied or spec-changed dependency while ignoring the status-only
-		// updates the controllers write themselves — without it every GitTarget
-		// or GitProvider heartbeat would re-list and re-enqueue all WatchRules.
+		// This rule MIRRORS the GitTarget's readiness into its own GitTargetReady, so the watch has
+		// to see the status-only update that carries a heal — GenerationChangedPredicate would drop
+		// exactly that. gitTargetReadyProjectionChanged fires on a spec change or on a move in the
+		// mirrored verdict, and on nothing else.
 		Watches(
 			&configbutleraiv1alpha3.GitTarget{},
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(gitTargetReadyProjectionChanged()),
 		).
+		// Nothing of the GitProvider's STATUS is mirrored here, so GenerationChangedPredicate is
+		// right on this edge: it reacts to a freshly applied or spec-changed provider while ignoring
+		// the status-only updates its controller writes itself — without it every GitProvider
+		// heartbeat would re-list and re-enqueue all WatchRules.
 		Watches(
 			&configbutleraiv1alpha3.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		// React to a ClusterProvider's allowAnySourceNamespace (or accessFrom)
-		// changing. The GitTarget->WatchRules edge above CANNOT carry this: a ClusterProvider change
-		// reaches the GitTarget as a STATUS update, which GenerationChangedPredicate deliberately
-		// drops. Without this mapper, flipping the delegation flag would leave every affected
-		// WatchRule un-reconciled until its periodic requeue — so a REVOCATION would take minutes.
+		// changing. The GitTarget->WatchRules edge above still cannot be relied on to carry this: a
+		// ClusterProvider change reaches the GitTarget as a status update that need not move the
+		// GitTarget's readiness at all, and only a readiness move re-enqueues the rules. Without
+		// this mapper, flipping the delegation flag would leave every affected WatchRule
+		// un-reconciled until its periodic requeue — so a REVOCATION would take minutes.
 		Watches(
 			&configbutleraiv1alpha3.ClusterProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToWatchRules),
