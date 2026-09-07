@@ -105,18 +105,29 @@ or delivery path needs investigation. The namespace/name keys are
 so a per-provider `namespace` selector would silently match nothing. The same reasoning applies to
 `target_reconcile_completed_total` and `branch_worker_queue_depth`.
 
-`message_source` says where each commit's message came from: `literal` is text a `CommitRequest`
-supplied verbatim, `live` is a live window rendered through the target's `liveTemplate`, and
-`reconcile` is a snapshot or resync rendered through `reconcileTemplate`. It is read from the same
-decision that renders the message, so it cannot disagree with what was written.
+`message_source` says where each commit's message came from: `commit_request` is text a
+`CommitRequest` supplied and that was used verbatim, `live` is a live window rendered through the
+target's `liveTemplate`, and `reconcile` is a snapshot or resync rendered through
+`reconcileTemplate`. It is read from the same decision that renders the message, so it cannot
+report a source the renderer did not use.
 
-**How much of the history is people naming their own changes?** A `literal` share that falls to zero
-after a rollout means save requests stopped reaching an open window — check the commit window
-against `closeDelaySeconds`:
+`commit_request` counts commits that USED a request-supplied message, **not** CommitRequests. A
+request that omits `spec.message` takes the target's `liveTemplate`, so it counts as `live` — a
+low `commit_request` share does not by itself mean requests are failing.
+
+**How much of the history is people naming their own changes?**
 
 ```promql
 sum by (message_source) (rate(gitopsreverser_commits_total[15m]))
 ```
+
+A `commit_request` share that falls to zero after a rollout **may** mean save requests stopped
+reaching an open window — but omitted messages, saves that were no-ops, and pushes that never
+landed all read the same way here, because none of them produce a commit carrying a request
+message. Confirm against the requests themselves before changing the window: a request that
+attached reports `Ready=True`, one that produced a pushed commit also reports `Pushed=True` with
+`status.sha`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
+without their message reaching a commit is the window worth tuning against `closeDelaySeconds`.
 
 **Commit rate per provider/branch:**
 

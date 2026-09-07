@@ -328,16 +328,22 @@ const (
 	authorKindUnresolved = "unresolved"
 )
 
-// Commit message sources, reported as the commits_total `message_source` label.
+// Commit message sources, reported as the commits_total `message_source` label. Each names
+// where the message came from, so they read as one set alongside each other.
 const (
-	// messageSourceLiteral is a message supplied verbatim by a CommitRequest: a person or a
-	// system named this change themselves rather than accepting the generated wording.
-	messageSourceLiteral = "literal"
+	// messageSourceCommitRequest is a message a CommitRequest supplied and that was used
+	// verbatim. It counts commits that USED such a message, not CommitRequests: a request
+	// omitting spec.message takes the target's liveTemplate and counts as live.
+	messageSourceCommitRequest = "commit_request"
 	// messageSourceLive is a live window rendered through the target's liveTemplate.
 	messageSourceLive = "live"
 	// messageSourceReconcile is an atomic snapshot or a resync rendered through
 	// reconcileTemplate.
 	messageSourceReconcile = "reconcile"
+	// messageSourceUnknown is a write with no message path. It cannot reach the counter today
+	// (such a write fails to render and creates no commit) and exists so that it could never be
+	// silently counted as one of the real sources.
+	messageSourceUnknown = "unknown"
 )
 
 // AttributionOutcome returns the attribution outcome for commit-shaped pending writes. It

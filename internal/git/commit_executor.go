@@ -53,48 +53,92 @@ func (p PendingWrite) path() string {
 	return ""
 }
 
-// messageSource names where this write's commit message comes from. It is the single
-// definition of that precedence: commitMetadata renders by it, and commits_total is
-// labelled by it, so the metric can never disagree with the message actually written.
-//
-// A resync is reconcile-sourced even though it arrives as a pre-rendered message: the resync
-// path renders the target's reconcile template itself and hands the result over. That is
-// generated text, not a request's literal override, so the CommitRequest literal contract does
-// not bind it — an operator's reconcile template may legitimately be long or contain a tab.
-func (p PendingWrite) messageSource() string {
+// messageResolution is the single decision about where one write's commit message comes from.
+// commitMetadata renders by it and commits_total is labelled by it, so the metric cannot report a
+// source the renderer did not use.
+type messageResolution int
+
+const (
+	// messageResolutionUnsupported is a write whose kind has no message path at all.
+	messageResolutionUnsupported messageResolution = iota
+	// messageResolutionPreRendered is a resync, which renders the target's reconcile template
+	// itself and hands the result over as the write's message. That is generated text, not a
+	// request's override, so the CommitRequest literal contract does not bind it: an operator's
+	// reconcile template may legitimately be long or contain a tab.
+	messageResolutionPreRendered
+	// messageResolutionRequest is a message a CommitRequest supplied, used verbatim.
+	messageResolutionRequest
+	// messageResolutionReconcileTemplate renders reconcileTemplate from the write's events.
+	messageResolutionReconcileTemplate
+	// messageResolutionLiveTemplate renders liveTemplate for a live window.
+	messageResolutionLiveTemplate
+)
+
+// resolveMessage classifies where this write's message comes from. It states the precedence
+// once; every caller reads the result rather than re-testing the conditions.
+func (p PendingWrite) resolveMessage() messageResolution {
 	switch {
 	case p.Kind == PendingWriteResync:
-		return messageSourceReconcile
+		return messageResolutionPreRendered
 	case p.CommitMessage != "":
-		return messageSourceLiteral
+		return messageResolutionRequest
 	case p.Kind == PendingWriteAtomic:
-		return messageSourceReconcile
+		return messageResolutionReconcileTemplate
+	case p.Kind == PendingWriteCommit:
+		return messageResolutionLiveTemplate
 	default:
-		return messageSourceLive
+		return messageResolutionUnsupported
 	}
+}
+
+// label is the commits_total `message_source` value for this resolution. A resync and an atomic
+// snapshot are both reported as reconcile: they differ in how the text is produced, not in where
+// an operator would say the message came from.
+func (r messageResolution) label() string {
+	switch r {
+	case messageResolutionRequest:
+		return messageSourceCommitRequest
+	case messageResolutionPreRendered, messageResolutionReconcileTemplate:
+		return messageSourceReconcile
+	case messageResolutionLiveTemplate:
+		return messageSourceLive
+	case messageResolutionUnsupported:
+		// An unsupported kind fails to render, so it creates no commit and never reaches the
+		// counter. Name it rather than folding it into a real source if that ever changes.
+		return messageSourceUnknown
+	default:
+		return messageSourceUnknown
+	}
+}
+
+// messageSource is the commits_total `message_source` label for this write.
+func (p PendingWrite) messageSource() string {
+	return p.resolveMessage().label()
 }
 
 func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 	var message string
 	var err error
-	source := p.messageSource()
-	switch {
-	case p.Kind == PendingWriteResync:
+	resolution := p.resolveMessage()
+	switch resolution {
+	case messageResolutionPreRendered:
 		message = p.CommitMessage
-	case p.CommitMessage != "":
+	case messageResolutionRequest:
 		message = p.CommitMessage
 		err = ValidateLiteralCommitMessage(message)
-	case p.Kind == PendingWriteAtomic:
+	case messageResolutionReconcileTemplate:
 		message, err = renderReconcileCommitMessageFromEvents(p.Events, p.Target().Name, p.CommitConfig)
-	case p.Kind == PendingWriteCommit:
+	case messageResolutionLiveTemplate:
 		message, err = renderLiveCommitMessage(p, p.CommitConfig)
+	case messageResolutionUnsupported:
+		err = fmt.Errorf("unsupported pending write kind %q", p.Kind)
 	default:
 		err = fmt.Errorf("unsupported pending write kind %q", p.Kind)
 	}
 	if err != nil {
 		return "", nil, err
 	}
-	log.Log.V(1).Info("Selected commit message", "source", source)
+	log.Log.V(1).Info("Selected commit message", "source", resolution.label())
 	return message, commitOptionsFor(p, p.CommitConfig, p.Signer, time.Now()), nil
 }
 

@@ -270,13 +270,13 @@ func TestMessageSource_MatchesTheMessageActuallyRendered(t *testing.T) {
 			want:  messageSourceLive,
 		},
 		{
-			name: "an attached request message is literal",
+			name: "an attached request message is commit_request",
 			write: PendingWrite{
 				Kind:          PendingWriteCommit,
 				Events:        []Event{makeEvent("alice", "api")},
 				CommitMessage: "fix(api): correct the port",
 			},
-			want:    messageSourceLiteral,
+			want:    messageSourceCommitRequest,
 			message: "fix(api): correct the port",
 		},
 		{

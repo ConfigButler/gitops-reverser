@@ -31,7 +31,9 @@ var (
 	// CommitsTotal counts commit batches pushed to git, labelled by the recording
 	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity plus
 	// message_source. Live, snapshot and resync paths all feed this one counter;
-	// message_source (literal / live / reconcile) is what tells them apart.
+	// message_source (commit_request / live / reconcile) is what tells them apart. It counts
+	// commits that USED a request-supplied message, not CommitRequests: a request omitting
+	// spec.message renders through liveTemplate and counts as live.
 	CommitsTotal metric.Int64Counter
 	// ResyncSweepDeletesTotal counts managed documents deleted by mark-and-sweep
 	// resyncs, labelled by the swept resource {group, version, resource}.
