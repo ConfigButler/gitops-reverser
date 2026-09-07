@@ -559,7 +559,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"appends to Redis streams, \"memory\" to an in-process ring. Redis is the production choice and "+
 			"the only one that survives a restart or reaches a second replica; memory is for the single-pod "+
 			"install where running a Valkey StatefulSet to name commit authors is out of proportion, and it "+
-			"is refused with more than one replica. With \"memory\", --redis-addr may be empty.")
+			"is refused with more than one replica. With \"memory\", --redis-addr may be empty -- but note "+
+			"that this does not by itself let you drop Redis: --redis-addr also holds each GitTarget's watch "+
+			"resume cursors, independently of attribution, so an empty address additionally means every "+
+			"watch cold-replays on restart instead of resuming.")
 	fs.DurationVar(&cfg.attributionFactTTL, "author-attribution-ttl", queue.DefaultAttributionFactTTL,
 		"How long an attribution fact is retained waiting for the matching watch event to join it. It "+
 			"bounds stream retention and the in-memory index together, and doubles as the replay horizon a "+
