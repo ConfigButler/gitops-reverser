@@ -174,11 +174,13 @@ type CommitterSpec struct {
 // GitTarget.spec.commit.message; the identically-shaped GitProvider.spec.commit.message is
 // retained only to reject a manifest that still sets it there.
 type CommitMessageSpec struct {
-	// EventTemplate is a Go text/template string for the commit message of a commit carrying
-	// exactly ONE event. Which template renders a commit follows the commit's shape, not the
-	// window setting: a "0s" window makes every commit single-event, but a commit window that
-	// closes around a single change renders through this template too. With a non-zero window,
-	// set GroupTemplate as well — both shapes occur.
+	// EventTemplate is a Go text/template string for the commit message of a commit that changes
+	// exactly ONE document. Which template renders a commit follows how many documents it changes,
+	// not the window setting: a "0s" window makes every commit single-document, but a window that
+	// closes around a single change renders through this template too. Note that repeated edits to
+	// one resource inside a window coalesce by destination path, so ten updates to one ConfigMap
+	// are ONE changed document and render here, not through GroupTemplate. With a non-zero window,
+	// set GroupTemplate as well: both shapes occur.
 	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
 	// APIVersion, Username, GitTarget.
 	// +optional
@@ -194,9 +196,9 @@ type CommitMessageSpec struct {
 	// +optional
 	ReconcileTemplate string `json:"reconcileTemplate,omitempty"`
 
-	// GroupTemplate is a Go text/template string for the commit message of a commit carrying TWO
-	// OR MORE events (one commit per (author, gitTarget) group produced by the batching
-	// pipeline). A group that closed around a single event renders through EventTemplate instead.
+	// GroupTemplate is a Go text/template string for the commit message of a commit that changes TWO
+	// OR MORE documents (one commit per (author, gitTarget) group produced by the batching
+	// pipeline). A group that changed only one document renders through EventTemplate instead.
 	// Available variables: Author, GitTarget, Count, Operations (map of
 	// CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
 	// Resource, Namespace, Name}).

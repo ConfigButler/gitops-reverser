@@ -146,6 +146,15 @@ Either way the inventory is step 1 rather than a footnote, because a pruned valu
 from the API. The two removal strategies are priced in
 [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md).
 
+**A pruned value still has no in-band signal, and that is an open gap rather than a settled
+position.** `ClusterWatchRule.spec.rules[].scope` was retained for a release as a loud rejection
+before being deleted, precisely because deleting a field outright is the silent option. That
+treatment was not extended to the value-carrying deletions in this release
+(`allowedSourceNamespaces`, `push.commitWindow`, `commit.message`), so for those the inventory and
+your own tests are the whole safety net. Extending retain-and-reject to value-carrying deletions, or
+publishing a condition or event on an object applied with a field the CRD no longer serves, is
+deferred, not declined.
+
 ### If a controller writes your CRs
 
 Every step above assumes you apply manifests by hand. If your `GitProvider`/`GitTarget`/`WatchRule`
