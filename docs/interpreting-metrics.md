@@ -116,7 +116,7 @@ This is the only family carrying object names, and
 nowhere else. These objects are configuration — bounded by how many someone wrote — where the
 resources being mirrored are data, unbounded, and never a label. `CommitRequest` is excluded on the
 same reasoning: one is created per save, so it is data-shaped, and its state is read from
-`git_commits_total{message_source="commit_request"}` and from the object's own conditions.
+`commit_requests_total` in aggregate and from the object's own conditions individually.
 
 **Which configuration objects are not Ready?** The panel to start from:
 
@@ -202,6 +202,8 @@ boundary, the commit, the push. Background:
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync`. Every increment is lost work. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
+| `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name` | Always 1. The **join** between the GitTarget-labelled half of the pipeline and the branch-labelled half. Published per configured GitTarget, whether or not its worker runs. |
+| `commit_requests_total` | counter | `outcome` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. See the counting note below. |
 | `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document at a resolved path. |
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined. Every increment is a resource **absent** from the mirror. |
 | `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | `added` / `no_change` / `failed`. |
@@ -252,6 +254,39 @@ unless
 sum by (provider_namespace, provider_name, branch) (
   rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0
 ```
+
+**Which GitTargets does that branch serve?** The push-side instruments are labelled by
+`{provider_namespace, provider_name, branch}` because one BranchWorker serves a (GitProvider,
+branch) that several GitTargets can share. `git_branch_targets` is the join that names them:
+
+```promql
+sum by (provider_namespace, provider_name, branch) (
+  rate(gitopsreverser_git_pushes_total{outcome="failed"}[5m])
+)
+  * on(provider_namespace, provider_name, branch)
+  group_right
+  gitopsreverser_git_branch_targets
+```
+
+`group_right`, not `group_left`: the mapping is the many side (one series per GitTarget), and the
+modifier goes on the side with the higher cardinality. `group_left` here works only while exactly
+one GitTarget uses the branch and fails the moment a second one does.
+
+**Read the result as "potentially affected", never as "behind".** The join says which GitTargets
+write to a branch and nothing about whether any of them had pending work. Two limits follow:
+
+- A branch with **no push series at all** drops out of the multiplication, so the target whose
+  worker never ran — the one most worth seeing — is the one this query cannot show. Query the
+  mapping against `gitopsreverser_git_queue_depth` for that:
+
+  ```promql
+  gitopsreverser_git_branch_targets
+    unless on(provider_namespace, provider_name, branch) gitopsreverser_git_queue_depth
+  ```
+
+- `spec.suspend` stops the write and nothing else, so a suspended target keeps its worker, its
+  branch and its series while making no commits by design. Nothing here separates suspended from
+  stuck; `resource_condition` does.
 
 **How contended is the branch?** A retry is a replay round *inside* a cycle, not a terminal
 outcome, which is why it is its own counter rather than a third value on `git_pushes_total`. The
@@ -339,6 +374,21 @@ message. Confirm against the requests themselves before changing the window: a r
 attached reports `Ready=True`, one that produced a pushed commit also reports `Pushed=True` with
 `status.sha`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
 without their message reaching a commit is the window worth tuning against `closeDelaySeconds`.
+
+`commit_requests_total` answers the same question in aggregate, which per-object conditions cannot:
+
+```promql
+sum by (outcome) (rate(gitopsreverser_commit_requests_total[15m]))
+```
+
+`window_mismatch` is the value to watch. It is the case where the commit is still made, pushed and
+correct while carrying a **generated** message instead of the sentence its author typed, so nothing
+else in this document goes red for it.
+
+**What one increment means.** One terminal DECISION, recorded outside the status-write retry loop.
+That is not one per `CommitRequest`: a terminal status that never persisted is re-decided when the
+request is redelivered, and a restart re-reconciles anything non-terminal. Read rates and ratios
+from it rather than exact request counts.
 
 **Commit rate per provider/branch:**
 

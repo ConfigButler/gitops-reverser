@@ -46,6 +46,11 @@ const (
 	// keyed by config object, so deleting the key ends the series at the next scrape — where a
 	// pushed gauge would latch its last value and report a deleted object as unready forever.
 	GaugeResourceCondition = "resource_condition"
+	// GaugeGitBranchTargets is observable for the same reason as GaugeResourceCondition, and is
+	// the other member of that pair: it publishes a mapping keyed by GitTarget, so a deleted
+	// target's join series ends at the next scrape rather than attributing a live branch's
+	// failures to an object that is gone. See branch_targets.go.
+	GaugeGitBranchTargets = "git_branch_targets"
 )
 
 var (

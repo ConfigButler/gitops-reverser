@@ -254,6 +254,12 @@ func (r *CommitRequestReconciler) refusePrunedGitTargetRef(
 		return false, nil
 	}
 
+	// This path reaches a terminal state without going through writeTerminalStatus, so it carries
+	// its own increment. It is rare and migration-only, which is exactly the kind of terminal
+	// state that must not be missing from the counter. Note the status write below is returned for
+	// requeue, so a failing write re-decides and increments again: see the instrument's doc
+	// comment on what one increment means.
+	recordCommitRequestOutcome(ctx, crOutcomeFailed)
 	failCommitRequest(commitRequest, crReasonGitTargetRefPruned,
 		"spec.gitTargetRef is empty: this request was created before spec.targetRef was renamed, "+
 			"and its value was pruned by the upgrade. A CommitRequest spec is immutable, so this "+
@@ -367,6 +373,11 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 	if reader == nil {
 		reader = r.Client
 	}
+
+	// Once, here, and deliberately not inside the loop below: result and finalizeErr are inputs
+	// that do not change across attempts, so this is the point the outcome is settled. Recording
+	// per attempt would over-count every request that hit a conflict.
+	recordCommitRequestOutcome(ctx, commitRequestOutcome(result, finalizeErr))
 
 	current := commitRequest
 	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
