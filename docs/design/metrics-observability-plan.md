@@ -552,10 +552,13 @@ one alert-rule file. Built **after** the families exist, never against a name st
 - **Row 0, Flow.** The §4.2 funnel as five stat panels left to right, then one timeseries of all
   five rates on shared axes. This is the "events moving through the system" panel and it is the
   reason the stage counters share a vocabulary.
-- **Row 1, Loss paths.** One table driven by `gitopsreverser:exceptions:rate5m{stage,reason}`
-  (§4.3), sorted descending, plus a single stat of its sum. Empty is healthy and legible as such.
-- **Row 2, Ingest.** Events by type and outcome, queue delay p95, session ends by reason, replay
-  p95, recovery mode mix, `watch_streams` by state.
+- **Row 1, Loss paths.** One table driven by `gitopsreverser:loss:rate5m{stage,reason}`
+  (§4.4), sorted descending, plus a single stat of its sum. Empty is healthy and legible as such.
+- **Row 2, Ingest.** Events by type and outcome, stream occupancy
+  (`watch_event_handling_seconds`, NOT queue delay — §2.10 and the Known gaps section of
+  interpreting-metrics.md say why the wait itself cannot be measured), session ends by reason,
+  replay p95, recovery mode mix, `watch_types` by state, and `watch_streams_open` by source
+  cluster.
 - **Row 3, Git.** Commits by `author_kind` and `message_source`, push latency p95, push outcome mix,
   queue depth, documents written/deleted/retained, placement `source` mix.
 - **Row 4, Audit and attribution: the marquee.** The second ingestion path gets a full row, one
@@ -649,8 +652,8 @@ first, so nothing new is built beside a duplicate.
    [owner_observability.go](../../internal/watch/owner_observability.go).
 3. **The ingest stage, the audit door, and the clusters discovery forgot.** The three bounded
    rejection outcomes on the audit ingress histogram (§2.6) ship here. `watch_events_total`,
-   `watch_event_queue_seconds`, `watch_sessions_ended_total`, `watch_replay_duration_seconds`,
-   `watch_recovery_total`, `watch_streams`, the §5.3 write-family collapse into
+   `watch_event_handling_seconds`, `watch_sessions_ended_total`, `watch_replay_duration_seconds`,
+   `watch_recovery_total`, `watch_types`, the §5.3 write-family collapse into
    `git_documents_total`, and the `source_cluster` label that takes the `isLocal()` guards off the
    catalog metrics. Sites:
    [target_watch.go](../../internal/watch/target_watch.go),
@@ -727,7 +730,9 @@ someone who has never seen this file.
   replay-complete boundary to exist), the stream-scaling set (needs `behind` redefined as real lag,
   since exported as-is it would invite an alert on every ordinary burst), fact-shape distribution (needs a
   taxonomy distinct from the tier ladder, since a fact with a UID *and* an RV is filed under both),
-  `resolvers_waiting` (needs `watch_event_queue_seconds` to prove insufficient first), and
+  `resolvers_waiting` (needs `watch_event_handling_seconds` to prove insufficient first — the
+  occupancy histogram that shipped in place of the queue-delay one this line used to name, which
+  cannot be measured honestly from this side of a client-go watch channel), and
   `fact_index_expired_total`.
 - **Do not reintroduce the retired body-join metrics** (`audit_join_*`, `audit_official_gate_wait`,
   `parked` / `shallow_dropped`) or the v1 keyspace's `exact_deletecollection_item`. They belong to
