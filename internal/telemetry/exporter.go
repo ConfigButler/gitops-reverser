@@ -368,6 +368,24 @@ var (
 	SecretEncryptionsTotal metric.Int64Counter
 )
 
+// cardinalityLimit caps the data points ONE instrument may publish per collection. Past it the SDK
+// collapses the rest into a single otel.metric.overflow=true point, losing the labels that identify
+// them — a metric that reads plausible and names nothing.
+//
+// The SDK's own default is 2000, which three families exceed at the install size
+// docs/design/metrics-observability-plan.md §7.1 models: watch_events_total (3,600),
+// git_documents_total (3,000) and placements_total (4,800 ceiling). This is roughly 3x the largest
+// of those, so an install several times the model still names its objects instead of truncating
+// them. It is PER INSTRUMENT and says nothing about the process total, which is the sum over every
+// instrument; §7.1 owns that estimate. For a histogram it is more conservative than it looks, since
+// one data point exports bucket count + 2 series — which is why §7.1 keeps histogram label sets
+// small rather than relying on this.
+//
+// Raised rather than removed, so an unbounded label set overflows visibly instead of growing
+// without bound. Overflow is only a signal if someone watches for it: alert on
+// otel_metric_overflow="true".
+const cardinalityLimit = 15000
+
 // InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
 func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	fmt.Println("Initializing OTLP exporter")
@@ -382,7 +400,10 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	}
 
 	// Create a meter provider with the Prometheus exporter.
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(exporter),
+		sdkmetric.WithCardinalityLimit(cardinalityLimit),
+	)
 	otel.SetMeterProvider(provider)
 
 	// Get the meter from the new provider.
@@ -403,7 +424,10 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 // It returns the reader to collect from.
 func InitTestExporter() (*sdkmetric.ManualReader, error) {
 	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(reader),
+		sdkmetric.WithCardinalityLimit(cardinalityLimit),
+	)
 	otel.SetMeterProvider(provider)
 	otelMeter = provider.Meter("gitops-reverser")
 	if err := registerInstruments(); err != nil {

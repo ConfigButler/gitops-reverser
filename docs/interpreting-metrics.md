@@ -94,6 +94,15 @@ So every query below compares `== 1`; a selector without it matches the two zero
 alternative shape — one series whose *value* encodes the status — cannot be selected on and cannot
 be aggregated, and `count by (status)` over it means nothing.
 
+**`reason` is part of the series identity.** A condition that changes reason changes series, so any
+aggregation *over time* has to remove it first — otherwise a transition looks like one series ending
+and another starting:
+
+```promql
+avg_over_time(sum without (reason) (
+  gitopsreverser_resource_condition{type="Ready", status="False"})[1h:1m])
+```
+
 **`Unknown` is published, never omitted.** An object that has not been reconciled yet is in a
 state, and an absent series is indistinguishable from an operator that is not running.
 
@@ -971,6 +980,7 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | `gitopsreverser_git_queue_depth` rising and not draining | A branch worker is backing up against a stalled remote. |
 | `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, `for: 15m` | A declared object has not been accepted. The `== 1` is not optional: each condition publishes one series per status, so the selector alone matches the two zeroes too. |
 | `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | Permanently wedged: `Stalled` is the kstatus "nothing will retry" signal, so this needs a human and will not clear on its own. `reason` names the gate. |
+| any `gitopsreverser_*` series with `otel_metric_overflow="true"` | A metric family exceeded its per-instrument cardinality cap, so the labels identifying those series are gone and every query over that family is under-reporting. Raise the cap or cut a label. |
 | `sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types) == 0`, `for: 10m` | A GitTarget's rules resolve to no watchable type — a typo in `resources:`, or a type the default watch policy excludes. It mirrors nothing while looking healthy everywhere else. The 10 minutes let a freshly declared target settle. |
 
 ---

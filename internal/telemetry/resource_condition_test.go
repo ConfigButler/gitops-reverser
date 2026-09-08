@@ -3,6 +3,7 @@
 package telemetry
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -157,4 +158,37 @@ func TestResourceCondition_EmptyUpdateIsNotADelete(t *testing.T) {
 	value, ok := conditionSeries(t, reader, "kept", "Ready", "True")
 	require.True(t, ok)
 	assert.Equal(t, int64(1), value)
+}
+
+// Every configuration object must stay identifiable past the SDK's default cardinality limit.
+//
+// The pinned SDK caps ONE instrument at 2000 data points per collection by default and collapses
+// the rest into a single otel.metric.overflow=true point, losing the labels that name them. This
+// metric emits nine series per object, so the default binds at ~222 objects — and a condition
+// metric that cannot say WHICH object is unready answers nothing. exporter.go raises the limit to
+// the whole-process budget; this is the test that notices if that is ever dropped.
+func TestResourceCondition_ObjectsStayIdentifiablePastTheDefaultLimit(t *testing.T) {
+	reader, err := InitTestExporter()
+	require.NoError(t, err)
+
+	const objects = 300 // 300 x 3 conditions x 3 statuses = 2,700 series, well past the 2,000 default
+	for i := range objects {
+		name := fmt.Sprintf("target-%03d", i)
+		defer ForgetResourceConditions("GitTarget", "team-a", name)
+		RecordResourceConditions("GitTarget", "team-a", name, []ResourceConditionState{
+			{Type: "Ready", Status: "False", Reason: "ValidationFailed"},
+			{Type: "Reconciling", Status: "False", Reason: "ValidationFailed"},
+			{Type: "Stalled", Status: "True", Reason: "ValidationFailed"},
+		})
+	}
+
+	// The last object written is the one an overflow would have swallowed.
+	value, ok := conditionSeries(t, reader, fmt.Sprintf("target-%03d", objects-1), "Ready", "False")
+	require.True(t, ok, "the last object must still publish its own series, not an overflow bucket")
+	assert.Equal(t, int64(1), value)
+
+	_, overflowed := CollectInt64Sum(reader, resourceConditionMetric, map[string]string{
+		"otel.metric.overflow": "true",
+	})
+	assert.False(t, overflowed, "no series may be collapsed into the overflow bucket")
 }

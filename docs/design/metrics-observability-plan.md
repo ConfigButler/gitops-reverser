@@ -627,6 +627,17 @@ install for this product.
 | `resource_condition` | 60 config objects × 3 condition types × 3 statuses = **540** | the one family keyed on object identity, and the only one bounded by how many objects a human wrote rather than by what the cluster contains — see the identity rule below |
 | everything else | low hundreds | |
 
+That budget is per process. There is a second, per-INSTRUMENT limit that is easy to miss: the
+OpenTelemetry SDK caps one instrument at 2,000 data points per collection by default and collapses
+the rest into a single `otel.metric.overflow=true` point, discarding the labels that identify them.
+Three families above exceed 2,000 in this very model install, so `exporter.go` sets the cap
+explicitly at 15,000 — roughly 3x the largest designed family, which leaves headroom for an install
+several times this model. That is a per-instrument allowance and **not** a process total: the sum
+over every instrument is much larger, and for a histogram each data point becomes bucket count + 2
+exported series. The cap is raised rather than removed so an unbounded label set overflows visibly,
+and it is a backstop rather than a target — the numbers in this table, not the cap, are what keep
+the surface small.
+
 Call it **under 15,000 series**, comfortable for a single Prometheus. Two rules keep it there:
 
 - **A histogram's label set costs 15× a counter's.** Put a dimension on the counter beside it, not on
@@ -639,12 +650,15 @@ Call it **under 15,000 series**, comfortable for a single Prometheus. Two rules 
 
   The operator's own configuration objects are the other case, and the rule reads the other way for
   them. `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider` and `ClusterProvider` are
-  written by a human: their number is bounded by how many someone declared — 60 in the model
-  install above — and it does not move with cluster load, tenant activity, or how much is being
-  mirrored. Naming them is what makes *which* one is unready answerable, which is the whole content
-  of a configuration-state signal; a config metric that cannot name the object it is about reports
-  that something is wrong and nothing else. `resource_condition` carries `resource_name` and
-  `resource_namespace` for exactly that reason, and nothing else may.
+  declared rather than observed: their number is bounded by how many exist — 60 in the model
+  install above — and it does not move with cluster traffic or with how much is being mirrored.
+  That bound is not "however many a human typed": a platform can generate one per tenant, so plan
+  for thousands rather than dozens. At nine series each that is still a single family's worth, and
+  still orders of magnitude below the watched population. Naming them is what makes *which* one is
+  unready answerable, which is the whole content of a configuration-state signal; a config metric
+  that cannot name the object it is about reports that something is wrong and nothing else.
+  `resource_condition` carries `resource_name` and `resource_namespace` for exactly that reason,
+  and nothing else may.
 
   Flux draws the same line from the same reasoning: `gotk_reconcile_condition` carries `name` and
   `namespace` because Flux CRs are configuration, and Flux publishes nothing per *reconciled*
