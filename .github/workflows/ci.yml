@@ -525,15 +525,17 @@ jobs:
                 fi
               done
 
-              # The four docs tasks are exempt on purpose, and all for one reason: none
+              # The five docs tasks are exempt on purpose, and all for one reason: none
               # of them carries `sources:` (see Taskfile-build.yml). Their real input is
-              # "every tracked .md" (plus .go, .yml and .sh for lint-doc-links) — which
-              # Task cannot express: an unrooted `**` glob walks external-sources/ and has
+              # "every tracked file" — every .md for lint-markdown and lint-prose, plus
+              # .go, .yml and .sh for lint-doc-links and lint-metric-names — which Task
+              # cannot express: an unrooted `**` glob walks external-sources/ and has
               # OOMed the host, and a hand-maintained file list silently drifts out of
               # sync with what the checkers scan. A stale "up to date" means the check
-              # never runs. All three tools together cost a few seconds over the whole
-              # tree, so they always run. lint-docs itself is the aggregate and has no
-              # cmds of its own.
+              # never runs, and lint-metric-names exists precisely because a check that
+              # does not run reads as a confident zero. All four tools together cost a few
+              # seconds over the whole tree, so they always run. lint-docs itself is the
+              # aggregate and has no cmds of its own.
               #
               # Adding a task to `task lint` without `sources:` and without adding it
               # here fails this step. That is deliberate: it forces the choice to be made
@@ -542,7 +544,7 @@ jobs:
               # awk, not `grep -qv`: the CI image ships ugrep as grep, whose -q -v returns
               # 1 even when -c reports a selected line. That would make this assertion
               # silently pass whatever it was handed.
-              exempt="lint-docs|lint-doc-links|lint-markdown|lint-prose"
+              exempt="lint-docs|lint-doc-links|lint-markdown|lint-prose|lint-metric-names"
               uncached="$(awk -v ex="^task: \\\\[(${exempt})\\\\]" "/^task: \\[/ && \$0 !~ ex" "${cache_log}")"
               if [ -n "${uncached}" ]; then
                 echo "Expected second task lint dry-run to be fully cached apart from the docs tasks, but these would run:" >&2
