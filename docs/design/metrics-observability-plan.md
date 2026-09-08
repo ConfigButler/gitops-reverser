@@ -496,9 +496,44 @@ rather than the last scan: exactly what `status.placement.resolvedAtRevision` al
 the same reason. The doc comment now says so, so a timestamp well in the past reads as "stable", not
 as "measuring stopped".
 
-`retainedDocuments`, `mode`, and the whole of `status.streams` are **unchanged**.
+The field is also **renamed** `observedTime` → `lastChangedTime`. It behaved this way as soon as the
+restamping stopped, but the old name invited clients to read it as a freshness signal, and a
+behavioral change under an unchanged name is the kind a consumer discovers in production. The
+rename makes the break visible. `retainedDocuments`, `mode`, and the whole of `status.streams` are
+**unchanged**.
 
-### 6.3 Left open: does `status.streams` earn its place?
+### 6.3 `lastPushTime` and a branch-head SHA: removed, and why re-adding them is a design question
+
+`lastPushTime` was removed because it was never written, not because a Git-writing controller has no
+business exposing one. Flux's `ImageUpdateAutomation` publishes `lastPushTime` **and**
+`lastPushCommit`, and that is a reasonable shape for a controller that writes to Git. The earlier
+framing here was wrong to imply otherwise.
+
+The reason this project should not simply re-add them is **rate class, not principle**:
+
+| | `ImageUpdateAutomation` | `GitTarget` |
+|---|---|---|
+| What triggers a push | `spec.interval`, typically minutes | a commit window closing: `DefaultCommitWindow` is **5 seconds** |
+| So a per-push status field is written | on the reconcile cadence, bounded by configuration | on data-plane throughput, bounded by nothing |
+
+The same field name is a bounded observation there and an unbounded one here. That is exactly the
+distinction [spec/status-conditions-guide.md](../spec/status-conditions-guide.md) asks a proposed
+field to pass, and it is why the Flux precedent does not transfer as-is.
+
+**The SHA question is already answered better elsewhere.** "Did my change reach Git, and as what
+commit?" is `CommitRequest.status.sha` with `Pushed=True`: per request, terminal, never rewritten,
+and tied to the specific change the user asked about. A branch-head SHA on `GitTarget` would answer
+a vaguer question worse: by the time it is read it names whatever was pushed last, which may be
+somebody else's change.
+
+**What is genuinely missing is a different field.** "Is this GitTarget still pushing at all?" is
+metrics-only today, and an operator with `kubectl` and no Prometheus cannot ask it. That is a real
+gap. The bounded shape for it is a **condition**, whose `lastTransitionTime` moves only when the
+answer changes, rather than a timestamp written per push. Designing that is worth doing on its own
+evidence; bolting a per-push timestamp on is not the same thing and would re-introduce the churn
+§6.2 just removed.
+
+### 6.4 Left open: does `status.streams` earn its place?
 
 Not answered here, and deliberately not bundled into a metrics PR. The honest open questions are
 whether `summary` should exist at all (it restates `ready` and `total`, which its own doc comment

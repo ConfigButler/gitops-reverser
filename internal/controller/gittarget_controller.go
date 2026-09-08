@@ -1144,11 +1144,11 @@ func gitTargetRetentionStatus(summary watch.RetentionSummary) *configbutleraiv1a
 	if !summary.Reported {
 		return nil
 	}
-	observed := metav1.NewTime(summary.ObservedTime)
+	changed := metav1.NewTime(summary.LastChangedTime)
 	return &configbutleraiv1alpha3.GitTargetRetentionStatus{
 		Mode:              summary.Mode,
 		RetainedDocuments: clampIntToInt32(summary.RetainedDocuments),
-		ObservedTime:      &observed,
+		LastChangedTime:   &changed,
 	}
 }
 

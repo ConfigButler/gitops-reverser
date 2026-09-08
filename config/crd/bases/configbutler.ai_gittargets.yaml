@@ -553,24 +553,19 @@ spec:
                   to mirror deletes. It is informational either way — retention is the configured behavior,
                   never a fault, and no condition changes state because of it.
                 properties:
+                  lastChangedTime:
+                    description: |-
+                      LastChangedTime records when the reported retention count or effective prune mode last
+                      changed. It does NOT indicate when retention was last evaluated: a resync that re-reports the
+                      same count leaves it untouched, so an old timestamp is equally consistent with stable
+                      retention and with nothing having measured it since.
+                    format: date-time
+                    type: string
                   mode:
                     description: |-
                       Mode is the EFFECTIVE spec.prune.mode this roll-up was produced under. It is reported here
                       rather than left to be read from the spec because a GitTarget that predates spec.prune has
                       no stored value at all, so the spec alone cannot explain why documents are being kept.
-                    type: string
-                  observedTime:
-                    description: |-
-                      ObservedTime is when this roll-up last CHANGED, not when it was last computed. A resync that
-                      re-reports the same count does not restamp it, so a timestamp well in the past means the
-                      retention has been stable rather than that measuring stopped — the same reading
-                      placement.resolvedAtRevision asks for, and for the same reason: a field that moves without
-                      its subject moving is a status write with nothing to say, and it defeats the no-op write
-                      suppression every other field here relies on.
-
-                      A retention that begins just after a reconcile is not visible until the next one, so read
-                      this before treating a zero as live.
-                    format: date-time
                     type: string
                   retainedDocuments:
                     description: |-

@@ -43,7 +43,7 @@ func TestRetentionRollup_SumsEveryScope(t *testing.T) {
 	assert.True(t, summary.Reported)
 	assert.Equal(t, 5, summary.RetainedDocuments)
 	assert.Equal(t, v1alpha3.PruneOnEvent, summary.Mode)
-	assert.False(t, summary.ObservedTime.IsZero())
+	assert.False(t, summary.LastChangedTime.IsZero())
 }
 
 // TestRetentionRollup_ZeroIsRecordedAsActivelyAsAnyOtherCount is the likeliest regression in this

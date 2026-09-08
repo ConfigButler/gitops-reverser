@@ -215,7 +215,7 @@ func TestGitTargetRetentionStatus_AbsentAndZeroMeanDifferentThings(t *testing.T)
 
 	converged := gitTargetRetentionStatus(watch.RetentionSummary{
 		Reported: true, Mode: configbutleraiv1alpha3.PruneAlways,
-		ObservedTime: time.Date(2026, 7, 21, 13, 20, 0, 0, time.UTC),
+		LastChangedTime: time.Date(2026, 7, 21, 13, 20, 0, 0, time.UTC),
 	})
 	require.NotNil(t, converged, "a reported zero is a report")
 	assert.Zero(t, converged.RetainedDocuments)
@@ -228,13 +228,13 @@ func TestGitTargetRetentionStatus_ReportsTheEffectiveMode(t *testing.T) {
 	observed := time.Date(2026, 7, 21, 13, 20, 0, 0, time.UTC)
 
 	projected := gitTargetRetentionStatus(watch.RetentionSummary{
-		Reported: true, Mode: configbutleraiv1alpha3.PruneOnEvent, RetainedDocuments: 3, ObservedTime: observed,
+		Reported: true, Mode: configbutleraiv1alpha3.PruneOnEvent, RetainedDocuments: 3, LastChangedTime: observed,
 	})
 
 	require.NotNil(t, projected)
 	assert.Equal(t, int32(3), projected.RetainedDocuments)
 	assert.Equal(t, configbutleraiv1alpha3.PruneOnEvent, projected.Mode)
-	assert.Equal(t, observed, projected.ObservedTime.Time)
+	assert.Equal(t, observed, projected.LastChangedTime.Time)
 }
 
 // TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack is the regression guard for Failure A.

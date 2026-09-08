@@ -752,7 +752,7 @@ none of them is a failure: retention is the configured outcome, so no condition 
 
 ```console
 $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
-{"mode":"OnEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
+{"mode":"OnEvent","retainedDocuments":3,"lastChangedTime":"2026-07-21T13:20:00Z"}
 ```
 
 - `status.retention.retainedDocuments` is how many managed documents a converged mirror would not
@@ -772,16 +772,16 @@ counted, so a `Never` target can report `0` while still declining to mirror dele
 
 The count is refreshed when a resync runs, so it lags a change in the cluster until the next one.
 
-`observedTime` dates the last **change** to this roll-up, not the last scan: a resync that re-reports
-the same count does not restamp it, the way `status.placement.resolvedAtRevision` does not. So an old
-timestamp means the retention has been stable **or** that nothing has measured it since, and the
-field cannot tell you which.
+`lastChangedTime` records when the count or the effective mode last **changed**. It is not a
+freshness signal and must not be read as one: a resync that re-reports the same numbers leaves it
+untouched, so an old timestamp is equally consistent with stable retention and with nothing having
+measured it since. The field is named for what it does.
 
-Nothing else answers that question either, so do not go looking. A rising
+For "are resyncs still running", read `gitopsreverser_git_resync_failures_total` and
+`gitopsreverser_watch_recovery_total`. A rising
 `gitopsreverser_git_documents_total{outcome="retained"}` is positive evidence that retention was
-evaluated and found something; a flat one is produced equally by a healthy resync retaining nothing
-and by a resync that stopped running. Use `gitopsreverser_git_resync_failures_total` and
-`gitopsreverser_watch_recovery_total` to ask whether resyncs are happening at all.
+evaluated and found something, but a flat one proves nothing: a healthy resync retaining zero
+produces no increment either.
 
 `spec.prune` is mutable (unlike `gitProviderRef`, `branch`, and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists

@@ -63,10 +63,25 @@ Two of them count work that used to disappear with only a log line:
   behind for every object in that window until a resync re-derives them. `reason="refused"` is a Git
   path a human has to fix and will not clear on its own.
 
-### `GitTarget.status.lastPushTime` is gone
+### `GitTarget.status` loses one field and renames another
 
-It was declared and never written: the only assignment in the tree set it to `nil`. Anything reading
-it was reading an absence.
+**`lastPushTime` is removed.** It was declared and never written — the only assignment in the tree
+set it to `nil` — so anything reading it was reading an absence. This is a schema break with no
+behavioral change, because there was no behaviour.
+
+To be clear about what this is *not*: a `lastPushTime` is a perfectly ordinary field for a
+Git-writing controller, and Flux's `ImageUpdateAutomation` exposes both `lastPushTime` and
+`lastPushCommit`. It is removed here because it never worked, not because the idea is wrong. See
+[`design/metrics-observability-plan.md`](design/metrics-observability-plan.md) for why re-adding it
+is a separate design question rather than a fix.
+
+**`status.retention.observedTime` becomes `status.retention.lastChangedTime`**, and the rename is
+the point: the field advances only when the retained count or the effective prune mode changes, not
+when retention is evaluated. It always behaved that way after the status-write fix; the old name
+invited clients to read it as a freshness signal, which it is not and never was. An old timestamp is
+equally consistent with stable retention and with nothing having measured it since — use
+`gitopsreverser_git_resync_failures_total` and `gitopsreverser_watch_recovery_total` for that
+question.
 
 The full reasoning is in
 [`design/metrics-observability-plan.md`](design/metrics-observability-plan.md), and the operator's

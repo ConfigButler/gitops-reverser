@@ -405,17 +405,12 @@ type GitTargetRetentionStatus struct {
 	// converged. An ABSENT retention block means something different: no resync has reported yet.
 	RetainedDocuments int32 `json:"retainedDocuments"`
 
-	// ObservedTime is when this roll-up last CHANGED, not when it was last computed. A resync that
-	// re-reports the same count does not restamp it, so a timestamp well in the past means the
-	// retention has been stable rather than that measuring stopped — the same reading
-	// placement.resolvedAtRevision asks for, and for the same reason: a field that moves without
-	// its subject moving is a status write with nothing to say, and it defeats the no-op write
-	// suppression every other field here relies on.
-	//
-	// A retention that begins just after a reconcile is not visible until the next one, so read
-	// this before treating a zero as live.
+	// LastChangedTime records when the reported retention count or effective prune mode last
+	// changed. It does NOT indicate when retention was last evaluated: a resync that re-reports the
+	// same count leaves it untouched, so an old timestamp is equally consistent with stable
+	// retention and with nothing having measured it since.
 	// +optional
-	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
+	LastChangedTime *metav1.Time `json:"lastChangedTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

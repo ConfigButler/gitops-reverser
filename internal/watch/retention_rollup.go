@@ -30,9 +30,10 @@ type RetentionSummary struct {
 	Mode v1alpha3.PruneMode
 	// RetainedDocuments is the sum over the target's currently tracked scopes.
 	RetainedDocuments int
-	// ObservedTime is when the most recent contributing resync reported. It is stamped in the same
-	// mutation that sets a scope's reported flag, so it is non-zero whenever Reported is true.
-	ObservedTime time.Time
+	// LastChangedTime is when this roll-up last changed. It advances only in the mutation that
+	// moves the published count or mode, never on a re-report of the same numbers, so it dates the
+	// RESULT rather than the last scan. Non-zero whenever Reported is true.
+	LastChangedTime time.Time
 }
 
 // targetRetentionScope is one cell's count, stamped with the stream revision that produced it.
@@ -208,7 +209,7 @@ func (m *Manager) RetentionForGitTarget(gitDest types.ResourceReference) Retenti
 		Reported:          true,
 		Mode:              state.mode,
 		RetainedDocuments: state.total(),
-		ObservedTime:      state.observed,
+		LastChangedTime:   state.observed,
 	}
 }
 
