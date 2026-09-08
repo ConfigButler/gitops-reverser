@@ -18,6 +18,14 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// The wildcard-expansion spec is the one place the shared 90s condition budget does not fit: it
+// waits for every followable type in the cluster to open a watch and fold its initial-events
+// replay. Sized for a cold apiserver, since Ginkgo may run this spec first.
+const (
+	wildcardExpansionTimeout = "240s"
+	wildcardExpansionWait    = 240 * time.Second
+)
+
 var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ordered, func() {
 	var (
 		testNs        string
@@ -148,7 +156,17 @@ spec:
 		_, err = kubectlRunWithStdin(testNs, watchRuleManifest, "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply wildcard WatchRule")
 
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
+		// A wildcard rule resolves EVERY followable type in the cluster — 58 of them on the e2e
+		// cluster, once Flux, cert-manager and the monitoring CRDs are installed — and each one
+		// opens a watch and folds a `sendInitialEvents` replay before it reports Streaming. The
+		// shared 90s default is sized for a rule resolving one or two types, so this spec was the
+		// one place it did not fit: run first against a cold apiserver it times out reliably, and
+		// later in a warmed suite it passes, which is why it flaked with spec ordering rather than
+		// with any change. The assertion here is that the wildcard EXPANDS correctly, not that 58
+		// cold replays finish inside a budget set for two.
+		verifyResourceCondition(
+			"watchrule", watchRuleName, testNs, "Ready", "True", "Succeeded", "", wildcardExpansionTimeout,
+		)
 		Eventually(func(g Gomega) {
 			output, getErr := kubectlRunInNamespace(
 				testNs,
@@ -163,7 +181,7 @@ spec:
 			// followable types in the cluster (a non-zero count).
 			g.Expect(output).To(ContainSubstring("watching "))
 			g.Expect(output).NotTo(ContainSubstring("watching 0 resource type(s)"))
-		}, 90*time.Second, 2*time.Second).Should(Succeed())
+		}, wildcardExpansionWait, 2*time.Second).Should(Succeed())
 
 		By("verifying the initial wildcard reconcile committed core and custom resources")
 		expectedConfigMap := filepath.Join(
