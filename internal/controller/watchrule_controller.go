@@ -96,8 +96,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"target", watchRule.Spec.GitTargetRef,
 		"generation", watchRule.Generation,
 		"resourceVersion", watchRule.ResourceVersion)
-	st := beginStatus(r.Client, r.Recorder, &watchRule, &watchRule.Status.Conditions)
-	watchRule.Status.ObservedGeneration = watchRule.Generation
+	st := beginStatus(r.Client, r.Recorder, &watchRule)
 
 	// Seed the axis conditions as not-yet-evaluated. There is deliberately no placeholder write of
 	// the Ready/Reconciling/Stalled trio here: every path below ends in exactly one applyReadiness,

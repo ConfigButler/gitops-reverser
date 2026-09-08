@@ -425,7 +425,7 @@ func TestGitProviderConditions(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.reason, func(t *testing.T) {
-			st := beginStatus(nil, nil, gitProvider, &gitProvider.Status.Conditions)
+			st := beginStatus(nil, nil, gitProvider)
 			st.set(ConditionTypeReady, tc.status, tc.reason, tc.message)
 
 			if len(gitProvider.Status.Conditions) == 0 {

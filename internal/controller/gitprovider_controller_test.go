@@ -220,7 +220,7 @@ var _ = Describe("GitProvider Controller", func() {
 					Conditions: []metav1.Condition{},
 				},
 			}
-			st = beginStatus(k8sClient, nil, gitProvider, &gitProvider.Status.Conditions)
+			st = beginStatus(k8sClient, nil, gitProvider)
 		})
 
 		It("should set initial checking condition", func() {

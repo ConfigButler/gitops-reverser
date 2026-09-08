@@ -37,6 +37,12 @@ const (
 // conditionMetricKind names the kind an object publishes under, or "" for one that is not on the
 // surface. The type switch is the surface: a kind that is not listed cannot reach the metric, so
 // the exclusion above is structural rather than a rule someone has to remember.
+//
+// Which is why the kind does NOT come off statusObject, the accessor interface the status session
+// takes. That interface is about writing a status, and anything can be given the two methods it
+// asks for; hanging the kind on it would turn this list into an implication — implement the
+// accessors over in api/v1alpha3 and you are on the metric — and CommitRequest would arrive here by
+// a route nobody reviewing that file would see.
 func conditionMetricKind(obj client.Object) string {
 	switch obj.(type) {
 	case *configbutleraiv1alpha3.GitTarget:

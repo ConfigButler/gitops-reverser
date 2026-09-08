@@ -75,26 +75,24 @@ func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 	tests := []struct {
 		name    string
 		commit  func(context.Context, *reconcileStatus, *readiness) (ctrl.Result, error)
-		newRule func() (client.Object, *[]metav1.Condition)
+		newRule func() statusObject
 	}{
 		{
 			name:   "WatchRule",
 			commit: (&WatchRuleReconciler{}).commitRule,
-			newRule: func() (client.Object, *[]metav1.Condition) {
-				rule := &configbutleraiv1alpha3.WatchRule{
+			newRule: func() statusObject {
+				return &configbutleraiv1alpha3.WatchRule{
 					ObjectMeta: metav1.ObjectMeta{Name: "rule", Namespace: "tenant-acme", ResourceVersion: "1"},
 				}
-				return rule, &rule.Status.Conditions
 			},
 		},
 		{
 			name:   "ClusterWatchRule",
 			commit: (&ClusterWatchRuleReconciler{}).commitRule,
-			newRule: func() (client.Object, *[]metav1.Condition) {
-				rule := &configbutleraiv1alpha3.ClusterWatchRule{
+			newRule: func() statusObject {
+				return &configbutleraiv1alpha3.ClusterWatchRule{
 					ObjectMeta: metav1.ObjectMeta{Name: "rule", ResourceVersion: "1"},
 				}
-				return rule, &rule.Status.Conditions
 			},
 		},
 	}
@@ -107,18 +105,18 @@ func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 				return rd
 			}
 
-			rule, conditions := tc.newRule()
+			rule := tc.newRule()
 			landed := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rule).
 				WithStatusSubresource(rule).Build()
-			result, err := tc.commit(context.Background(), beginStatus(landed, nil, rule, conditions), converging())
+			result, err := tc.commit(context.Background(), beginStatus(landed, nil, rule), converging())
 			require.NoError(t, err)
 			assert.Equal(t, RequeueStreamSettleInterval, result.RequeueAfter,
 				"a converging rule that published its status keeps the stream-settle loop")
 
-			rule, conditions = tc.newRule()
+			rule = tc.newRule()
 			lost := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rule).
 				WithInterceptorFuncs(conflict).Build()
-			result, err = tc.commit(context.Background(), beginStatus(lost, nil, rule, conditions), converging())
+			result, err = tc.commit(context.Background(), beginStatus(lost, nil, rule), converging())
 			require.NoError(t, err)
 			assert.Equal(t, RequeueWriteLostInterval, result.RequeueAfter,
 				"a converging rule whose status never landed must come back promptly, not on the settle loop")

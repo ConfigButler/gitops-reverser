@@ -57,7 +57,7 @@ func TestPublishConditionMetrics_PublishesWhenTheStatusPatchIsANoOp(t *testing.T
 
 	// A nil client is safe precisely because this reconcile writes nothing: if commit() ever got as
 	// far as the patch, this test would panic rather than pass for the wrong reason.
-	st := beginStatus(nil, nil, target, &target.Status.Conditions)
+	st := beginStatus(nil, nil, target)
 	require.NoError(t, st.commit(context.Background()))
 
 	value, ok := conditionGaugeValue(t, reader, conditionKindGitTarget, "settled", ConditionTypeReady, "True")
@@ -76,7 +76,7 @@ func TestPublishConditionMetrics_SynthesizesUnknown(t *testing.T) {
 	rule := &configbutleraiv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "fresh", Namespace: conditionTestNamespace, ResourceVersion: "1"},
 	}
-	st := beginStatus(nil, nil, rule, &rule.Status.Conditions)
+	st := beginStatus(nil, nil, rule)
 	require.NoError(t, st.commit(context.Background()))
 
 	for _, conditionType := range []string{ConditionTypeReady, ConditionTypeReconciling, ConditionTypeStalled} {
@@ -102,14 +102,14 @@ func TestPublishConditionMetrics_ForgetsAnObjectThatIsGoing(t *testing.T) {
 			},
 		},
 	}
-	st := beginStatus(nil, nil, target, &target.Status.Conditions)
+	st := beginStatus(nil, nil, target)
 	require.NoError(t, st.commit(context.Background()))
 	_, ok := conditionGaugeValue(t, reader, conditionKindGitTarget, "doomed", ConditionTypeReady, "True")
 	require.True(t, ok)
 
 	deleting := metav1.Now()
 	target.DeletionTimestamp = &deleting
-	st = beginStatus(nil, nil, target, &target.Status.Conditions)
+	st = beginStatus(nil, nil, target)
 	require.NoError(t, st.commit(context.Background()))
 
 	_, ok = conditionGaugeValue(t, reader, conditionKindGitTarget, "doomed", ConditionTypeReady, "True")

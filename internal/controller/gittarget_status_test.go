@@ -150,7 +150,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			target := &configbutleraiv1alpha3.GitTarget{}
-			st := beginStatus(nil, nil, target, &target.Status.Conditions)
+			st := beginStatus(nil, nil, target)
 			observed := dataPlaneObservation{
 				streams: tt.streams,
 				axes: gitTargetAxes{
@@ -194,7 +194,7 @@ func unstructuredConditions(conditions []metav1.Condition) []map[string]interfac
 // data plane is ever evaluated.
 func TestGitTargetStall_PublishesTerminalTrio(t *testing.T) {
 	target := &configbutleraiv1alpha3.GitTarget{}
-	st := beginStatus(nil, nil, target, &target.Status.Conditions)
+	st := beginStatus(nil, nil, target)
 
 	rd := newGitTargetReadiness()
 	rd.stalled(GitTargetReadyReasonValidationFailed, "Validated gate failed: ProviderNotFound")
@@ -266,7 +266,7 @@ func TestStatusCommit_LostRaceIsRecordedSoTheCallerComesBack(t *testing.T) {
 			},
 		}).Build()
 
-	st := beginStatus(conflicting, nil, target, &target.Status.Conditions)
+	st := beginStatus(conflicting, nil, target)
 	st.set(GitTargetConditionReady, metav1.ConditionTrue, ReasonSucceeded, "converged")
 
 	require.NoError(t, st.commit(context.Background()),
@@ -307,7 +307,7 @@ func TestStall_LostWriteComesBackPromptly(t *testing.T) {
 		}).Build()
 
 	reconciler := &GitTargetReconciler{Client: conflicting}
-	st := beginStatus(conflicting, nil, target, &target.Status.Conditions)
+	st := beginStatus(conflicting, nil, target)
 
 	result, err := reconciler.stall(context.Background(), st, blockedGate{
 		reason:  GitTargetReadyReasonValidationFailed,
@@ -332,7 +332,7 @@ func TestStall_KeepsItsGateCadenceWhenTheWriteLands(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).WithStatusSubresource(target).Build()
 
 	reconciler := &GitTargetReconciler{Client: c}
-	st := beginStatus(c, nil, target, &target.Status.Conditions)
+	st := beginStatus(c, nil, target)
 
 	result, err := reconciler.stall(context.Background(), st, blockedGate{
 		reason:  GitTargetReadyReasonValidationFailed,
@@ -355,7 +355,7 @@ func TestStatusCommit_SuccessfulWriteIsNotFlaggedAsLost(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).
 		WithStatusSubresource(target).Build()
 
-	st := beginStatus(c, nil, target, &target.Status.Conditions)
+	st := beginStatus(c, nil, target)
 	st.set(GitTargetConditionReady, metav1.ConditionTrue, ReasonSucceeded, "converged")
 
 	require.NoError(t, st.commit(context.Background()))
