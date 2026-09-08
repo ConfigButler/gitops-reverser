@@ -1612,6 +1612,10 @@ func (w *BranchWorker) publishCommitsForPush(pendingWrites []PendingWrite) {
 	if telemetry.GitCommitsTotal == nil {
 		return
 	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	counts := map[commitLabels]int64{}
 	for _, pendingWrite := range pendingWrites {
 		if !pendingWrite.createdCommit() {
@@ -1626,7 +1630,7 @@ func (w *BranchWorker) publishCommitsForPush(pendingWrites []PendingWrite) {
 		// Label by the recording BranchWorker's own identity {provider_namespace,
 		// provider_name, branch} plus author_kind and message_source. The prefixed key names
 		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`.
-		telemetry.GitCommitsTotal.Add(w.ctx, count, metric.WithAttributes(w.providerAttrs(
+		telemetry.GitCommitsTotal.Add(ctx, count, metric.WithAttributes(w.providerAttrs(
 			attribute.String("author_kind", labels.authorKind),
 			attribute.String("message_source", labels.messageSource),
 		)...))

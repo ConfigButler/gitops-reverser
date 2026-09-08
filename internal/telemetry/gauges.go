@@ -36,14 +36,11 @@ type GaugeSource func() []GaugeSample
 // Names for the observable gauges a producer can install a source for. They are the instrument
 // names with the prefix stripped, so a reader grepping the exported metric finds the source too.
 const (
-	GaugeGitQueueDepth               = "git_queue_depth"
-	GaugeWatchTypes                  = "watch_types"
-	GaugeWatchStreamsOpen            = "watch_streams_open"
-	GaugeWatchPlanDirtyTargets       = "watch_plan_dirty_targets"
-	GaugeWatchPlanOldestDirtySince   = "watch_plan_oldest_dirty_since_timestamp_seconds"
-	GaugeAttributionFactIndexEntries = "attribution_fact_index_entries"
-	GaugeAPICatalogResources         = "api_catalog_resources"
-	GaugeAPICatalogGroupVersions     = "api_catalog_group_versions"
+	GaugeGitQueueDepth             = "git_queue_depth"
+	GaugeWatchTypes                = "watch_types"
+	GaugeWatchStreamsOpen          = "watch_streams_open"
+	GaugeWatchPlanDirtyTargets     = "watch_plan_dirty_targets"
+	GaugeWatchPlanOldestDirtySince = "watch_plan_oldest_dirty_since_timestamp_seconds"
 )
 
 var (

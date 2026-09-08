@@ -113,7 +113,8 @@ func (m *Manager) refreshRemoteCatalogsConcurrently(ctx context.Context, remotes
 }
 
 // refreshClusterCatalog refreshes ONE cluster's discovery-backed catalog and republishes its
-// type registry — the per-cluster body of what used to be a single manager-wide refresh. The
+// type registry — the per-cluster body of what used to be a single manager-wide refresh.
+//
 // The catalog metrics carry a source_cluster label and are recorded for EVERY cluster. They used
 // to be local-only, guarded by isLocal(), because they carried no cluster label and a remote's
 // stats would have overwritten the local series — which meant a degraded APIService on a remote
