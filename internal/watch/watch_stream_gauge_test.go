@@ -86,7 +86,13 @@ func TestOpenWatchGauge_ReleaseIsIdempotent(t *testing.T) {
 	assert.Equal(t, int64(1), value, "a repeated release must not consume another session's count")
 }
 
-// The series is per source cluster, which is the axis the question is asked on.
+// The series is per source cluster, which is the axis the question is asked on: a platform team
+// running several source clusters needs to know which one's API server is carrying the watches.
+//
+// Two GitTargets on two DIFFERENT clusters, and each series selected BY source_cluster. An earlier
+// version of this test used two GitTargets that both resolved to the config plane and filtered on
+// gittarget_name, so it passed whether or not source_cluster was on the metric at all — a test that
+// asserted its own title rather than the behaviour.
 func TestOpenWatchGauge_SeparatesSourceClusters(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -95,12 +101,27 @@ func TestOpenWatchGauge_SeparatesSourceClusters(t *testing.T) {
 	m.installOpenWatchGaugeSource()
 	defer m.clearOpenWatchGaugeSource()
 
-	defer m.trackOpenWatch(types.NewResourceReference("target-a", "ns-a"))()
-	defer m.trackOpenWatch(types.NewResourceReference("target-b", "ns-b"))()
+	remote := types.NewResourceReference("target-remote", "ns-a")
+	local := types.NewResourceReference("target-local", "ns-b")
+	m.rememberGitTargetCluster(remote, "prod-eu-1")
 
-	value, ok := telemetry.CollectInt64Sum(reader, openStreamsMetric, map[string]string{
-		"gittarget_name": "target-a",
-	})
+	defer m.trackOpenWatch(remote)()
+	defer m.trackOpenWatch(remote)()
+	defer m.trackOpenWatch(local)()
+
+	value, ok := telemetry.CollectInt64Sum(reader, openStreamsMetric,
+		map[string]string{"source_cluster": "prod-eu-1"})
+	require.True(t, ok, "the remote cluster's sessions must be selectable by source_cluster")
+	assert.Equal(t, int64(2), value)
+
+	// The local cluster carries its own id like any other, so there is no unlabelled series.
+	value, ok = telemetry.CollectInt64Sum(reader, openStreamsMetric,
+		map[string]string{"source_cluster": configPlaneClusterID})
 	require.True(t, ok)
 	assert.Equal(t, int64(1), value)
+
+	// And a cluster nothing watches publishes nothing, rather than a zero that reads as connected.
+	_, ok = telemetry.CollectInt64Sum(reader, openStreamsMetric,
+		map[string]string{"source_cluster": "prod-us-1"})
+	assert.False(t, ok, "a source cluster with no open sessions must not publish a series")
 }

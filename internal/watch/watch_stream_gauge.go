@@ -85,6 +85,7 @@ func (m *Manager) openWatchSamples() []telemetry.GaugeSample {
 			Value: int64(count),
 			Attrs: []attribute.KeyValue{
 				attribute.String("source_cluster", key.sourceCluster),
+
 				attribute.String("gittarget_namespace", key.namespace),
 				attribute.String("gittarget_name", key.name),
 			},

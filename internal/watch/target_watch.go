@@ -622,9 +622,12 @@ func (m *Manager) targetWatchReplayAndStream(
 		)
 		return fmt.Errorf("open target watch %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
+	// One open session against the source cluster, for as long as this watch lives. Deferred
+	// BEFORE w.Stop() so it runs after it: defers are LIFO, and releasing the count first would
+	// let a scrape in that window report fewer sessions than the API server is still holding.
+	release := m.trackOpenWatch(gitDest)
+	defer release()
 	defer w.Stop()
-	// One open session against the source cluster, for as long as this watch lives.
-	defer m.trackOpenWatch(gitDest)()
 
 	return m.pumpTargetWatchSession(ctx, log, gitDest, stream, w.ResultChan(), replaying, replayStarted)
 }
@@ -700,9 +703,12 @@ func (m *Manager) targetWatchResumeAndStream(
 		return fmt.Errorf("open target watch %s/%q from cursor %q: %w",
 			stream.key.GVR.String(), stream.key.Namespace, cursor, err)
 	}
+	// One open session against the source cluster, for as long as this watch lives. Deferred
+	// BEFORE w.Stop() so it runs after it: defers are LIFO, and releasing the count first would
+	// let a scrape in that window report fewer sessions than the API server is still holding.
+	release := m.trackOpenWatch(gitDest)
+	defer release()
 	defer w.Stop()
-	// One open session against the source cluster, for as long as this watch lives.
-	defer m.trackOpenWatch(gitDest)()
 
 	log.V(1).Info("target watch resumed from cursor",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
@@ -742,9 +748,12 @@ func (m *Manager) targetWatchListAndStream(
 		return fmt.Errorf("open target watch %s/%q for list fallback: %w",
 			stream.key.GVR.String(), stream.key.Namespace, err)
 	}
+	// One open session against the source cluster, for as long as this watch lives. Deferred
+	// BEFORE w.Stop() so it runs after it: defers are LIFO, and releasing the count first would
+	// let a scrape in that window report fewer sessions than the API server is still holding.
+	release := m.trackOpenWatch(gitDest)
+	defer release()
 	defer w.Stop()
-	// One open session against the source cluster, for as long as this watch lives.
-	defer m.trackOpenWatch(gitDest)()
 
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
 	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)

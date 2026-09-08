@@ -200,7 +200,12 @@ spec:
 			g.Expect(configMapErr).NotTo(HaveOccurred(), "ConfigMap file must exist at %s", expectedConfigMap)
 			_, orderErr := os.Stat(expectedOrder)
 			g.Expect(orderErr).NotTo(HaveOccurred(), "IceCreamOrder file must exist at %s", expectedOrder)
-		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+			// Same budget as the readiness gate above, and for the same reason. Ready=True means
+			// each stream QUEUED its replay resync, not that the worker applied it: the stream is
+			// marked Streaming as soon as enqueueReplayResync returns. So this assertion waits on
+			// 58 streams' worth of resyncs draining through one branch worker, which is the same
+			// workload the default was never sized for.
+		}, wildcardExpansionWait, 3*time.Second).Should(Succeed())
 
 		By("cleaning up wildcard test resources")
 		_, _ = kubectlRunInNamespace(
