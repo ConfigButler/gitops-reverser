@@ -3,7 +3,10 @@
 package controller
 
 import (
+	"context"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
@@ -129,4 +132,29 @@ func gitTargetReadyReasonIsStalled(reason string) bool {
 	default:
 		return false
 	}
+}
+
+// commitRule writes the trio, persists the status, and picks the requeue cadence from the same
+// verdict, so the cadence can never disagree with what status says.
+//
+// Only a CONVERGING rule takes the fast loop; a stalled one falls back to RequeueSteadyInterval,
+// which is a backstop rather than the mechanism. What actually clears a stall — a ClusterProvider
+// policy change, a source-cluster Namespace label change, an edit to the rule — has a watch edge
+// registered in SetupWithManager, so the rule is woken by an event long before the steady tick;
+// polling it faster would find nothing.
+//
+// It is one function for both rule kinds. It was two identical methods, neither of which used its
+// receiver, and the pairing of a cadence with a verdict is exactly the decision that must not be
+// allowed to differ between them: the whole point of deriving it from the readiness is that one
+// rule kind cannot end up polling on a schedule its own status contradicts.
+func commitRule(ctx context.Context, st *reconcileStatus, rd *readiness) (ctrl.Result, error) {
+	st.applyReadiness(rd)
+	if err := st.commit(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+	cadence := RequeueSteadyInterval
+	if rd.converging() {
+		cadence = RequeueStreamSettleInterval
+	}
+	return ctrl.Result{RequeueAfter: st.requeueAfter(cadence)}, nil
 }

@@ -38,8 +38,15 @@ type CompiledRule struct {
 	ResourceRules []CompiledResourceRule
 }
 
-// CompiledResourceRule represents a single resource matching rule with all its filters.
-type CompiledResourceRule struct {
+// compiledSelector is the TYPE filter both rule kinds compile to: the operations, groups, versions
+// and resource plurals an item selects, with nothing about where the object lives.
+//
+// It is one type because the answer has to be one answer. The namespaced and cluster-scoped rules
+// carried byte-identical copies of all four checks, so a fix to how a wildcard or a subresource
+// pattern is read landed on one kind and silently not the other — and the two kinds are routed by
+// different call paths, so nothing failed loudly when they disagreed. Scope is the only axis the
+// two rules genuinely differ on, and it stays outside: see CompiledResourceRule.SourceNamespaces.
+type compiledSelector struct {
 	// Operations specifies which operations trigger this rule.
 	Operations []configv1alpha3.OperationType
 	// APIGroups specifies which API groups this rule matches.
@@ -48,6 +55,27 @@ type CompiledResourceRule struct {
 	APIVersions []string
 	// Resources specifies which resource types this rule matches.
 	Resources []string
+}
+
+// clone returns a selector sharing no backing array with the receiver.
+//
+// The store hands compiled rules to callers and takes them from a CR it does not own, so every
+// crossing of that boundary copies. Struct assignment is not enough: it duplicates four slice
+// HEADERS, leaving the store's rule and the caller's snapshot writing through to the same arrays —
+// and a caller writing there reaches store state behind the mutex entirely. An empty slice clones
+// to nil, which every reader here already treats as "match all", exactly as before.
+func (s *compiledSelector) clone() compiledSelector {
+	return compiledSelector{
+		Operations:  append([]configv1alpha3.OperationType(nil), s.Operations...),
+		APIGroups:   append([]string(nil), s.APIGroups...),
+		APIVersions: append([]string(nil), s.APIVersions...),
+		Resources:   append([]string(nil), s.Resources...),
+	}
+}
+
+// CompiledResourceRule represents a single resource matching rule with all its filters.
+type CompiledResourceRule struct {
+	compiledSelector
 
 	// SourceNamespaces is this item's RESOLVED source-namespace set IN THE SOURCE CLUSTER —
 	// spec.rules[i].sourceNamespace fully expanded to concrete names at compile time. Neither a
@@ -93,14 +121,7 @@ type CompiledClusterRule struct {
 // a scope field here would let a pruned or absent value widen a stream, which is the failure the
 // narrowing exists to prevent.
 type CompiledClusterResourceRule struct {
-	// Operations specifies which operations trigger this rule.
-	Operations []configv1alpha3.OperationType
-	// APIGroups specifies which API groups this rule matches.
-	APIGroups []string
-	// APIVersions specifies which API versions this rule matches.
-	APIVersions []string
-	// Resources specifies which resource types this rule matches.
-	Resources []string
+	compiledSelector
 }
 
 // RuleStore holds the in-memory representation of all active watch rules.
@@ -175,11 +196,14 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 		if i < len(sourceNamespaces) {
 			namespaces = append([]string(nil), sourceNamespaces[i]...)
 		}
+		selector := compiledSelector{
+			Operations:  r.Operations,
+			APIGroups:   r.APIGroups,
+			APIVersions: r.APIVersions,
+			Resources:   r.Resources,
+		}
 		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
-			Operations:       r.Operations,
-			APIGroups:        r.APIGroups,
-			APIVersions:      r.APIVersions,
-			Resources:        r.Resources,
+			compiledSelector: selector.clone(),
 			SourceNamespaces: namespaces,
 		})
 	}
@@ -242,11 +266,14 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	}
 
 	for _, r := range rule.Spec.Rules {
-		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
+		selector := compiledSelector{
 			Operations:  r.Operations,
 			APIGroups:   r.APIGroups,
 			APIVersions: r.APIVersions,
 			Resources:   r.Resources,
+		}
+		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
+			compiledSelector: selector.clone(),
 		})
 	}
 
@@ -375,7 +402,7 @@ func (s *RuleStore) clusterRuleMatches(
 		return false
 	}
 	for _, rule := range clusterRule.Rules {
-		if rule.matchesCluster(resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matchesType(resourcePlural, operation, apiGroup, apiVersion) {
 			return true
 		}
 	}
@@ -418,23 +445,7 @@ func (r *CompiledResourceRule) matches(
 		return false
 	}
 
-	// Match operations (empty = match all)
-	if !r.matchesOperations(operation) {
-		return false
-	}
-
-	// Match API groups (empty = match all)
-	if !r.matchesAPIGroups(apiGroup) {
-		return false
-	}
-
-	// Match API versions (empty = match all)
-	if !r.matchesAPIVersions(apiVersion) {
-		return false
-	}
-
-	// Match resource plural (required)
-	return r.resourceMatches(resourcePlural)
+	return r.matchesType(resourcePlural, operation, apiGroup, apiVersion)
 }
 
 // matchesSourceNamespace checks the event's namespace against this item's RESOLVED set. An event
@@ -457,13 +468,33 @@ func (r *CompiledResourceRule) matchesSourceNamespace(eventNamespace string) boo
 	return false
 }
 
+// matchesType answers the whole type filter: operations, group, version, resource plural. An empty
+// list means "match all" on every axis except the resource plural, which is required.
+func (s *compiledSelector) matchesType(
+	resourcePlural string,
+	operation configv1alpha3.OperationType,
+	apiGroup string,
+	apiVersion string,
+) bool {
+	if !s.matchesOperations(operation) {
+		return false
+	}
+	if !matchesAny(s.APIGroups, apiGroup) {
+		return false
+	}
+	if !matchesAny(s.APIVersions, apiVersion) {
+		return false
+	}
+	return s.resourceMatches(resourcePlural)
+}
+
 // matchesOperations checks if the operation matches any in the rule.
-func (r *CompiledResourceRule) matchesOperations(operation configv1alpha3.OperationType) bool {
-	if len(r.Operations) == 0 {
+func (s *compiledSelector) matchesOperations(operation configv1alpha3.OperationType) bool {
+	if len(s.Operations) == 0 {
 		return true // Empty = match all
 	}
 
-	for _, op := range r.Operations {
+	for _, op := range s.Operations {
 		if op == configv1alpha3.OperationAll || op == operation {
 			return true
 		}
@@ -471,28 +502,15 @@ func (r *CompiledResourceRule) matchesOperations(operation configv1alpha3.Operat
 	return false
 }
 
-// matchesAPIGroups checks if the API group matches any in the rule.
-func (r *CompiledResourceRule) matchesAPIGroups(apiGroup string) bool {
-	if len(r.APIGroups) == 0 {
+// matchesAny is the group and version test, which are the same test: an empty list matches all, and
+// "*" is the only wildcard either axis accepts.
+func matchesAny(patterns []string, value string) bool {
+	if len(patterns) == 0 {
 		return true // Empty = match all
 	}
 
-	for _, group := range r.APIGroups {
-		if group == "*" || group == apiGroup {
-			return true
-		}
-	}
-	return false
-}
-
-// matchesAPIVersions checks if the API version matches any in the rule.
-func (r *CompiledResourceRule) matchesAPIVersions(apiVersion string) bool {
-	if len(r.APIVersions) == 0 {
-		return true // Empty = match all
-	}
-
-	for _, version := range r.APIVersions {
-		if version == "*" || version == apiVersion {
+	for _, pattern := range patterns {
+		if pattern == "*" || pattern == value {
 			return true
 		}
 	}
@@ -500,9 +518,9 @@ func (r *CompiledResourceRule) matchesAPIVersions(apiVersion string) bool {
 }
 
 // resourceMatches checks if the resource plural matches any of the rule patterns.
-func (r *CompiledResourceRule) resourceMatches(resourcePlural string) bool {
-	for _, ruleResource := range r.Resources {
-		if r.singleResourceMatches(ruleResource, resourcePlural) {
+func (s *compiledSelector) resourceMatches(resourcePlural string) bool {
+	for _, ruleResource := range s.Resources {
+		if singleResourceMatches(ruleResource, resourcePlural) {
 			return true
 		}
 	}
@@ -519,110 +537,7 @@ func (r *CompiledResourceRule) resourceMatches(resourcePlural string) bool {
 // Does NOT support:
 //   - Prefix wildcards: "pod*" (removed per enhancement plan)
 //   - Suffix wildcards: "*.example.com" (removed per enhancement plan)
-func (r *CompiledResourceRule) singleResourceMatches(ruleResource, resourcePlural string) bool {
-	if ruleResource == "" {
-		return false
-	}
-
-	// Match wildcard for all resources
-	if ruleResource == "*" {
-		return true
-	}
-
-	// Exact match (case-insensitive)
-	if strings.EqualFold(ruleResource, resourcePlural) {
-		return true
-	}
-
-	// Subresource wildcard: "pods/*" matches "pods/log", "pods/status", etc.
-	if strings.HasSuffix(ruleResource, "/*") {
-		prefix := ruleResource[:len(ruleResource)-2] // Remove "/*"
-		return strings.HasPrefix(strings.ToLower(resourcePlural), strings.ToLower(prefix)+"/")
-	}
-
-	return false
-}
-
-// matchesCluster checks if a cluster resource rule matches the given filters.
-func (r *CompiledClusterResourceRule) matchesCluster(
-	resourcePlural string,
-	operation configv1alpha3.OperationType,
-	apiGroup string,
-	apiVersion string,
-) bool {
-	// Match operations (empty = match all)
-	if !r.matchesOperations(operation) {
-		return false
-	}
-
-	// Match API groups (empty = match all)
-	if !r.matchesAPIGroups(apiGroup) {
-		return false
-	}
-
-	// Match API versions (empty = match all)
-	if !r.matchesAPIVersions(apiVersion) {
-		return false
-	}
-
-	// Match resource plural (required)
-	return r.resourceMatches(resourcePlural)
-}
-
-// matchesOperations checks if the operation matches any in the rule.
-func (r *CompiledClusterResourceRule) matchesOperations(operation configv1alpha3.OperationType) bool {
-	if len(r.Operations) == 0 {
-		return true // Empty = match all
-	}
-
-	for _, op := range r.Operations {
-		if op == configv1alpha3.OperationAll || op == operation {
-			return true
-		}
-	}
-	return false
-}
-
-// matchesAPIGroups checks if the API group matches any in the rule.
-func (r *CompiledClusterResourceRule) matchesAPIGroups(apiGroup string) bool {
-	if len(r.APIGroups) == 0 {
-		return true // Empty = match all
-	}
-
-	for _, group := range r.APIGroups {
-		if group == "*" || group == apiGroup {
-			return true
-		}
-	}
-	return false
-}
-
-// matchesAPIVersions checks if the API version matches any in the rule.
-func (r *CompiledClusterResourceRule) matchesAPIVersions(apiVersion string) bool {
-	if len(r.APIVersions) == 0 {
-		return true // Empty = match all
-	}
-
-	for _, version := range r.APIVersions {
-		if version == "*" || version == apiVersion {
-			return true
-		}
-	}
-	return false
-}
-
-// resourceMatches checks if the resource plural matches any of the rule patterns.
-func (r *CompiledClusterResourceRule) resourceMatches(resourcePlural string) bool {
-	for _, ruleResource := range r.Resources {
-		if r.singleResourceMatches(ruleResource, resourcePlural) {
-			return true
-		}
-	}
-	return false
-}
-
-// singleResourceMatches checks if a single rule pattern matches the given resource plural.
-func (r *CompiledClusterResourceRule) singleResourceMatches(ruleResource, resourcePlural string) bool {
+func singleResourceMatches(ruleResource, resourcePlural string) bool {
 	if ruleResource == "" {
 		return false
 	}
@@ -679,6 +594,7 @@ func deepCopyCompiledRule(in CompiledRule) CompiledRule {
 		cp.ResourceRules = make([]CompiledResourceRule, len(in.ResourceRules))
 		copy(cp.ResourceRules, in.ResourceRules)
 		for i := range cp.ResourceRules {
+			cp.ResourceRules[i].compiledSelector = in.ResourceRules[i].clone()
 			cp.ResourceRules[i].SourceNamespaces =
 				append([]string(nil), in.ResourceRules[i].SourceNamespaces...)
 		}
@@ -692,6 +608,9 @@ func deepCopyCompiledClusterRule(in CompiledClusterRule) CompiledClusterRule {
 	if len(in.Rules) > 0 {
 		cp.Rules = make([]CompiledClusterResourceRule, len(in.Rules))
 		copy(cp.Rules, in.Rules)
+		for i := range cp.Rules {
+			cp.Rules[i].compiledSelector = in.Rules[i].clone()
+		}
 	}
 	return cp
 }

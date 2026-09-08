@@ -634,7 +634,8 @@ func TestGetMatchingClusterRules(t *testing.T) {
 	}
 }
 
-// TestResourceMatching verifies different resource matching patterns.
+// TestResourceMatching verifies different resource matching patterns. It covers both rule kinds:
+// the pattern test is one function, shared through compiledSelector.
 func TestResourceMatching(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -657,11 +658,7 @@ func TestResourceMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rule := CompiledResourceRule{
-				Resources: []string{tt.ruleResource},
-			}
-
-			result := rule.singleResourceMatches(tt.ruleResource, tt.resourcePlural)
+			result := singleResourceMatches(tt.ruleResource, tt.resourcePlural)
 			if result != tt.shouldMatch {
 				t.Errorf("Expected match=%v for pattern '%s' against '%s', got %v",
 					tt.shouldMatch, tt.ruleResource, tt.resourcePlural, result)
@@ -670,7 +667,7 @@ func TestResourceMatching(t *testing.T) {
 	}
 }
 
-// TestOperationMatching verifies operation matching logic.
+// TestOperationMatching verifies operation matching logic, for both rule kinds at once.
 func TestOperationMatching(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -713,11 +710,9 @@ func TestOperationMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rule := CompiledResourceRule{
-				Operations: tt.ruleOperations,
-			}
+			selector := compiledSelector{Operations: tt.ruleOperations}
 
-			result := rule.matchesOperations(tt.operation)
+			result := selector.matchesOperations(tt.operation)
 			if result != tt.shouldMatch {
 				t.Errorf("Expected match=%v, got %v", tt.shouldMatch, result)
 			}
@@ -725,7 +720,7 @@ func TestOperationMatching(t *testing.T) {
 	}
 }
 
-// TestAPIGroupMatching verifies API group matching.
+// TestAPIGroupMatching verifies API group matching, for both rule kinds at once.
 func TestAPIGroupMatching(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -744,11 +739,7 @@ func TestAPIGroupMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rule := CompiledResourceRule{
-				APIGroups: tt.ruleGroups,
-			}
-
-			result := rule.matchesAPIGroups(tt.apiGroup)
+			result := matchesAny(tt.ruleGroups, tt.apiGroup)
 			if result != tt.shouldMatch {
 				t.Errorf("Expected match=%v, got %v", tt.shouldMatch, result)
 			}
@@ -756,7 +747,8 @@ func TestAPIGroupMatching(t *testing.T) {
 	}
 }
 
-// TestAPIVersionMatching verifies API version matching.
+// TestAPIVersionMatching verifies API version matching. Groups and versions run the same test, so
+// this and TestAPIGroupMatching are two corpora over one function.
 func TestAPIVersionMatching(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -773,11 +765,7 @@ func TestAPIVersionMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rule := CompiledResourceRule{
-				APIVersions: tt.ruleVersions,
-			}
-
-			result := rule.matchesAPIVersions(tt.apiVersion)
+			result := matchesAny(tt.ruleVersions, tt.apiVersion)
 			if result != tt.shouldMatch {
 				t.Errorf("Expected match=%v, got %v", tt.shouldMatch, result)
 			}
@@ -1161,5 +1149,269 @@ func TestGetMatchingRules_WildcardItemMatchesEveryResolvedNamespace(t *testing.T
 		obj, "configmaps", configv1alpha3.OperationCreate, "", "v1", false); len(got) != 0 {
 		t.Fatalf("a wildcard resolves to the ADMITTED set only; the rule's own namespace is not "+
 			"implicitly included, got %d matches", len(got))
+	}
+}
+
+// TestSharedSelector_RoutesAlikeThroughBothEntryPoints is the regression the extraction exists to
+// prevent. Each rule kind used to carry its own copy of the four type-filter checks, and the two
+// are reached over different call paths — a WatchRule through CompiledRule.matches, which layers
+// the namespace gate on top, and a ClusterWatchRule through clusterRuleMatches, which does not — so
+// a divergence produced no failure anywhere: a wildcard or subresource pattern honoured for one
+// kind and quietly ignored for the other.
+//
+// It therefore routes ONE selector through both public entry points rather than calling the shared
+// method twice, which post-extraction could only ever agree with itself. The last case is the axis
+// on which the two kinds legitimately differ, and shows it stayed outside the shared selector.
+func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
+	t.Parallel()
+
+	operations := []configv1alpha3.OperationType{configv1alpha3.OperationCreate}
+	store := NewStore()
+
+	watchRule := configv1alpha3.WatchRule{
+		Spec: configv1alpha3.WatchRuleSpec{
+			Rules: []configv1alpha3.ResourceRule{{
+				Operations:  operations,
+				APIGroups:   []string{"apps"},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"deployments"},
+			}},
+		},
+	}
+	watchRule.Name = "rule"
+	watchRule.Namespace = "tenant-acme"
+	store.AddOrUpdateWatchRule(watchRule, ownNamespaceScope(watchRule), "target", "tenant-acme",
+		"provider", "tenant-acme", "main", "clusters")
+
+	// The same selector on the cluster-scoped kind. A ClusterWatchRule may legally name a
+	// namespaced plural (see TestGetMatchingClusterRules); what bounds it is the OBJECT's scope.
+	clusterRule := configv1alpha3.ClusterWatchRule{
+		Spec: configv1alpha3.ClusterWatchRuleSpec{
+			Rules: []configv1alpha3.ClusterResourceRule{{
+				Operations:  operations,
+				APIGroups:   []string{"apps"},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"deployments"},
+			}},
+		},
+	}
+	clusterRule.Name = "cluster-rule"
+	store.AddOrUpdateClusterWatchRule(clusterRule, "target", "tenant-acme", "provider", "tenant-acme",
+		"main", "clusters")
+
+	inScope := &unstructured.Unstructured{}
+	inScope.SetNamespace("tenant-acme")
+	foreign := &unstructured.Unstructured{}
+	foreign.SetNamespace("tenant-other")
+
+	probes := []struct {
+		name      string
+		object    *unstructured.Unstructured
+		resource  string
+		operation configv1alpha3.OperationType
+		group     string
+		version   string
+		want      bool
+		// clusterWant differs only where scope, not the selector, decides.
+		clusterWant *bool
+	}{
+		{name: "exact hit", object: inScope, resource: "deployments",
+			operation: configv1alpha3.OperationCreate, group: "apps", version: "v1", want: true},
+		{name: "operation not selected", object: inScope, resource: "deployments",
+			operation: configv1alpha3.OperationDelete, group: "apps", version: "v1", want: false},
+		{name: "wrong group", object: inScope, resource: "deployments",
+			operation: configv1alpha3.OperationCreate, group: "batch", version: "v1", want: false},
+		{name: "wrong version", object: inScope, resource: "deployments",
+			operation: configv1alpha3.OperationCreate, group: "apps", version: "v2", want: false},
+		{name: "wrong resource", object: inScope, resource: "statefulsets",
+			operation: configv1alpha3.OperationCreate, group: "apps", version: "v1", want: false},
+		{name: "unauthorized namespace", object: foreign, resource: "deployments",
+			operation: configv1alpha3.OperationCreate, group: "apps", version: "v1",
+			want: false, clusterWant: ptr(true)},
+	}
+
+	for _, probe := range probes {
+		t.Run(probe.name, func(t *testing.T) {
+			t.Parallel()
+
+			namespaced := store.GetMatchingRules(
+				probe.object, probe.resource, probe.operation, probe.group, probe.version, false)
+			if got := len(namespaced) == 1; got != probe.want {
+				t.Errorf("WatchRule routing: want match=%v, got %v", probe.want, got)
+			}
+
+			// The cluster path is probed with isClusterScoped=true, since that is the only way a
+			// ClusterWatchRule ever matches; every other axis is the shared selector's answer.
+			wantCluster := probe.want
+			if probe.clusterWant != nil {
+				wantCluster = *probe.clusterWant
+			}
+			cluster := store.GetMatchingClusterRules(
+				probe.resource, probe.operation, probe.group, probe.version, true, nil)
+			if got := len(cluster) == 1; got != wantCluster {
+				t.Errorf("ClusterWatchRule routing: want match=%v, got %v", wantCluster, got)
+			}
+		})
+	}
+}
+
+// ptr is a local helper for the one probe whose two kinds legitimately disagree.
+func ptr[T any](v T) *T { return &v }
+
+// TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied pins the source-namespace slice,
+// which the store has always copied per item rather than by struct assignment. A copy that silently
+// became shallow would hand every caller a slice aliasing the stored rule.
+func TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	rule := configv1alpha3.WatchRule{
+		Spec: configv1alpha3.WatchRuleSpec{
+			Rules: []configv1alpha3.ResourceRule{{Resources: []string{"pods"}}},
+		},
+	}
+	rule.Name = "rule"
+	rule.Namespace = "tenant-acme"
+	store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "target", "tenant-acme", "provider", "tenant-acme",
+		"main", "clusters")
+
+	snapshot := store.SnapshotWatchRules()
+	if len(snapshot) != 1 || len(snapshot[0].ResourceRules) != 1 {
+		t.Fatalf("expected one compiled item, got %#v", snapshot)
+	}
+	snapshot[0].ResourceRules[0].SourceNamespaces[0] = "mutated-by-caller"
+
+	again := store.SnapshotWatchRules()
+	if got := again[0].ResourceRules[0].SourceNamespaces[0]; got != "tenant-acme" {
+		t.Errorf("a caller mutating its snapshot reached the stored rule: got %q", got)
+	}
+}
+
+// TestStore_OwnsItsSelectorSlices covers the two boundaries a compiled selector crosses, on both
+// rule kinds and all four of its slices.
+//
+// Struct assignment copies slice HEADERS, so before the selector owned its arrays the store shared
+// them in both directions: with the CR it was compiled from, and with every snapshot it handed out.
+// Either aliasing lets a write outside the store change what the store matches on, with no lock
+// held and no reconcile — a rule silently starts or stops selecting a type. Snapshot* documents the
+// opposite: callers may freely modify what they get back.
+func TestStore_OwnsItsSelectorSlices(t *testing.T) {
+	t.Parallel()
+
+	// selectorOf reads the four slices back off whichever kind the case compiled, so one table can
+	// assert the same property for both.
+	type selectors struct {
+		operations  []configv1alpha3.OperationType
+		apiGroups   []string
+		apiVersions []string
+		resources   []string
+	}
+
+	tests := []struct {
+		name string
+		// install compiles a rule whose selector slices the test still holds a reference to, and
+		// returns those slices for mutation plus a reader for the store's own copy.
+		install func(store *RuleStore) (mutate func(), stored func() selectors)
+	}{
+		{
+			name: "WatchRule",
+			install: func(store *RuleStore) (func(), func() selectors) {
+				item := configv1alpha3.ResourceRule{
+					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
+					APIGroups:   []string{"apps"},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"deployments"},
+				}
+				rule := configv1alpha3.WatchRule{
+					Spec: configv1alpha3.WatchRuleSpec{Rules: []configv1alpha3.ResourceRule{item}},
+				}
+				rule.Name = "rule"
+				rule.Namespace = "tenant-acme"
+				store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "target", "tenant-acme",
+					"provider", "tenant-acme", "main", "clusters")
+
+				return func() {
+						item.Operations[0] = configv1alpha3.OperationDelete
+						item.APIGroups[0] = "batch"
+						item.APIVersions[0] = "v2"
+						item.Resources[0] = "statefulsets"
+					}, func() selectors {
+						snap := store.SnapshotWatchRules()[0].ResourceRules[0]
+						return selectors{snap.Operations, snap.APIGroups, snap.APIVersions, snap.Resources}
+					}
+			},
+		},
+		{
+			name: "ClusterWatchRule",
+			install: func(store *RuleStore) (func(), func() selectors) {
+				item := configv1alpha3.ClusterResourceRule{
+					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
+					APIGroups:   []string{"apps"},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"deployments"},
+				}
+				rule := configv1alpha3.ClusterWatchRule{
+					Spec: configv1alpha3.ClusterWatchRuleSpec{
+						Rules: []configv1alpha3.ClusterResourceRule{item},
+					},
+				}
+				rule.Name = "cluster-rule"
+				store.AddOrUpdateClusterWatchRule(rule, "target", "tenant-acme", "provider",
+					"tenant-acme", "main", "clusters")
+
+				return func() {
+						item.Operations[0] = configv1alpha3.OperationDelete
+						item.APIGroups[0] = "batch"
+						item.APIVersions[0] = "v2"
+						item.Resources[0] = "statefulsets"
+					}, func() selectors {
+						snap := store.SnapshotClusterWatchRules()[0].Rules[0]
+						return selectors{snap.Operations, snap.APIGroups, snap.APIVersions, snap.Resources}
+					}
+			},
+		},
+	}
+
+	want := selectors{
+		operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
+		apiGroups:   []string{"apps"},
+		apiVersions: []string{"v1"},
+		resources:   []string{"deployments"},
+	}
+	assertSelectors := func(t *testing.T, boundary string, got selectors) {
+		t.Helper()
+		if got.operations[0] != want.operations[0] {
+			t.Errorf("%s: operations reached the store: %v", boundary, got.operations)
+		}
+		if got.apiGroups[0] != want.apiGroups[0] {
+			t.Errorf("%s: apiGroups reached the store: %v", boundary, got.apiGroups)
+		}
+		if got.apiVersions[0] != want.apiVersions[0] {
+			t.Errorf("%s: apiVersions reached the store: %v", boundary, got.apiVersions)
+		}
+		if got.resources[0] != want.resources[0] {
+			t.Errorf("%s: resources reached the store: %v", boundary, got.resources)
+		}
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := NewStore()
+			mutateSource, stored := tc.install(store)
+
+			// Boundary one: the CR the rule was compiled from is still mutable by its owner.
+			mutateSource()
+			assertSelectors(t, "compiled-from CR", stored())
+
+			// Boundary two: a snapshot the store handed out, which callers may freely modify.
+			snapshot := stored()
+			snapshot.operations[0] = configv1alpha3.OperationDelete
+			snapshot.apiGroups[0] = "batch"
+			snapshot.apiVersions[0] = "v2"
+			snapshot.resources[0] = "statefulsets"
+			assertSelectors(t, "returned snapshot", stored())
+		})
 	}
 }
