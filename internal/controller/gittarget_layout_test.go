@@ -28,7 +28,7 @@ func layoutTestTarget() *configbutleraiv1alpha3.GitTarget {
 func publishForTest(t *testing.T, report git.LayoutReport, scanned bool) *configbutleraiv1alpha3.GitTarget {
 	t.Helper()
 	target := layoutTestTarget()
-	st := beginStatus(nil, nil, target, &target.Status.Conditions)
+	st := beginStatus(nil, nil, target)
 	publishLayout(st, target, report, scanned)
 	return target
 }

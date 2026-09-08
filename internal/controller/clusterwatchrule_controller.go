@@ -112,8 +112,7 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		"target", clusterRule.Spec.GitTargetRef,
 		"generation", clusterRule.Generation,
 		"resourceVersion", clusterRule.ResourceVersion)
-	st := beginStatus(r.Client, r.Recorder, &clusterRule, &clusterRule.Status.Conditions)
-	clusterRule.Status.ObservedGeneration = clusterRule.Generation
+	st := beginStatus(r.Client, r.Recorder, &clusterRule)
 
 	// Seed the axis conditions as not-yet-evaluated. There is deliberately no placeholder write of
 	// the Ready/Reconciling/Stalled trio here: every path below ends in exactly one applyReadiness.

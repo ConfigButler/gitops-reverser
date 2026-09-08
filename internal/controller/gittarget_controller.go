@@ -164,8 +164,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.handleFetchError(err, log, req.NamespacedName)
 	}
 
-	st := beginStatus(r.Client, r.Recorder, &target, &target.Status.Conditions)
-	target.Status.ObservedGeneration = target.Generation
+	st := beginStatus(r.Client, r.Recorder, &target)
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 
 	// Ahead of every gate, so a target held unready still shows what its folder resolved to. That

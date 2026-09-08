@@ -165,8 +165,7 @@ func (r *ClusterProviderReconciler) reconcileClusterProvider(
 		"inCluster", provider.IsInCluster(),
 		"generation", provider.Generation)
 
-	st := beginStatus(r.Client, r.Recorder, provider, &provider.Status.Conditions)
-	provider.Status.ObservedGeneration = provider.Generation
+	st := beginStatus(r.Client, r.Recorder, provider)
 
 	valid, reason, message, err := r.validateProviderKubeConfig(ctx, provider)
 	if err != nil {

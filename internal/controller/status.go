@@ -106,15 +106,38 @@ func (s *reconcileStatus) requeueAfter(cadence time.Duration) time.Duration {
 	return cadence
 }
 
+// statusObject is what a status session needs from the object it writes: the two fields every
+// status in api/v1alpha3 carries, reachable without knowing which kind is in hand.
+//
+// It exists so beginStatus can stamp observedGeneration itself. That line used to sit at each of
+// the five call sites, one identical copy per controller, and a controller that forgets it
+// publishes a status kstatus reads as Current for a spec nobody looked at — the same failure the
+// read-modify-write pattern above had. Reaching the conditions through the object rather than
+// beside it falls out of the same accessor, and removes the second way to get a session wrong:
+// handing it one object's conditions and another object's metadata.
+//
+// It carries no kind name, on purpose. conditionMetricKind resolves that from its own list,
+// because CommitRequest is excluded from the condition metric and an interface anything could
+// implement is not a place to keep an exclusion. See resource_condition_metrics.go.
+type statusObject interface {
+	client.Object
+
+	// SetObservedGeneration records the generation this object's status describes.
+	SetObservedGeneration(generation int64)
+	// StatusConditions returns the condition set to write through.
+	StatusConditions() *[]metav1.Condition
+}
+
 // beginStatus opens the status session. Call it once, immediately after the object is read and
 // before any condition is written.
-func beginStatus(
-	c client.Client,
-	recorder record.EventRecorder,
-	object client.Object,
-	conditions *[]metav1.Condition,
-) *reconcileStatus {
+//
+// The generation is stamped here, AFTER before is captured and ahead of every set(): capturing the
+// snapshot first is what leaves the stamp visible to the patch, so an object whose only status
+// change is a new observedGeneration still gets written rather than falling into commit()'s no-op.
+func beginStatus(c client.Client, recorder record.EventRecorder, object statusObject) *reconcileStatus {
 	before, _ := object.DeepCopyObject().(client.Object)
+	object.SetObservedGeneration(object.GetGeneration())
+	conditions := object.StatusConditions()
 	return &reconcileStatus{
 		client:           c,
 		recorder:         recorder,

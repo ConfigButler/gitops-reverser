@@ -326,7 +326,7 @@ func TestReconcileStatusCommit_DeletedObject(t *testing.T) {
 		WithStatusSubresource(&configbutleraiv1alpha3.ClusterProvider{}).
 		Build()
 	provider := clusterProviderWithKubeConfig("gone", "", "")
-	st := beginStatus(cl, nil, provider, &provider.Status.Conditions)
+	st := beginStatus(cl, nil, provider)
 	st.set(ConditionTypeReady, metav1.ConditionTrue, ReasonSucceeded, "gone but written")
 
 	// The object was never created, so the patch returns NotFound -> treated as done, no error.

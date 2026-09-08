@@ -100,8 +100,7 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"generation", gitProvider.Generation,
 		"resourceVersion", gitProvider.ResourceVersion)
 
-	st := beginStatus(r.Client, r.Recorder, gitProvider, &gitProvider.Status.Conditions)
-	gitProvider.Status.ObservedGeneration = gitProvider.Generation
+	st := beginStatus(r.Client, r.Recorder, gitProvider)
 	rd := newReadiness(
 		fmt.Sprintf("Repository connectivity validated for %s", gitProvider.Spec.URL),
 		"GitProvider is not stalled",
