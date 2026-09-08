@@ -139,10 +139,10 @@ func (r *EventRouter) ServiceCommitRequest(
 // timed out at the worker, so the failure is observable even though delivery was already
 // marked on enqueue. No-op until the counter is registered.
 func (r *EventRouter) recordBackgroundResyncFailure(gitDest types.ResourceReference) {
-	if telemetry.ResyncBackgroundFailuresTotal == nil {
+	if telemetry.GitResyncFailuresTotal == nil {
 		return
 	}
-	telemetry.ResyncBackgroundFailuresTotal.Add(context.Background(), 1, metric.WithAttributes(
+	telemetry.GitResyncFailuresTotal.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("gittarget_namespace", gitDest.Namespace),
 		attribute.String("gittarget_name", gitDest.Name),
 	))
@@ -261,7 +261,7 @@ func (r *EventRouter) drainScopedResync(
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
 		// e2e gate reads (a sweep is excluded; it is a removal, not a steady-state reconcile).
 		if kind == "reconcile" && r.WatchManager != nil {
-			r.WatchManager.recordTargetReconcileCompleted(gitDest, "type_reconcile")
+			r.WatchManager.recordWatchRecovery(gitDest, cell.Group, cell.Resource, recoveryModeTypeReconcile)
 		}
 	case <-time.After(resyncSignalTimeout):
 		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "cell", cell.String())

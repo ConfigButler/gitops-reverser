@@ -158,18 +158,25 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		// Phase 3 drain signals replace a 75 s blind wait. The reconcile counter
 		// is scoped to the new pod via its `pod` target label: a counter resets to
 		// 0 on a fresh pod, so `{pod="<new>"} > 0` proves the new pod completed its
-		// own post-restart reconcile. A sum() over a pre-restart baseline
+		// own post-restart reconcile.
+		//
+		// mode="type_reconcile" is load-bearing. watch_recovery_total counts every recovery path,
+		// and `replay` increments at initial-events-end — BEFORE the replay's resync has been
+		// applied. An unscoped `> 0` would therefore pass as soon as the new pod finished reading,
+		// not when it finished writing, which is the moment this spec exists to wait for. Only
+		// type_reconcile is recorded after the resync applies on the branch worker. A sum() over a pre-restart baseline
 		// cannot prove this — once Prometheus marks the old pod's series stale, the
 		// new pod's first increment can bring the cross-pod sum back to the old
 		// total rather than above it, so `> baseline` could never pass.
-		// branch_worker_queue_depth returning to 0 then confirms that submission
+		// git_queue_depth returning to 0 then confirms that submission
 		// has been committed and pushed — the exact moment any destructive commit
 		// would have landed — instead of guessing with a fixed sleep.
 		By("waiting for the new pod to complete its post-restart reconcile")
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
-				`sum(gitopsreverser_target_reconcile_completed_total`+
-					`{gittarget_namespace=%q,gittarget_name=%q,pod=%q}) or vector(0)`,
+				`sum(gitopsreverser_watch_recovery_total`+
+					`{gittarget_namespace=%q,gittarget_name=%q,pod=%q,mode="type_reconcile"}) `+
+					`or vector(0)`,
 				testNs, gitTargetName, newControllerPod,
 			),
 			func(v float64) bool { return v > 0 },
@@ -180,7 +187,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		By("waiting for the branch worker queue to drain")
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
-				`sum(gitopsreverser_branch_worker_queue_depth`+
+				`sum(gitopsreverser_git_queue_depth`+
 					`{provider_namespace=%q,provider_name=%q,branch="main",pod=%q}) or vector(0)`,
 				testNs, providerName, newControllerPod,
 			),

@@ -294,12 +294,10 @@ at a time.
 The current condition carries one representative `(field, token)` in its message; the per-write
 refusal retains the file path as well. Scope reduction and the parsed-field walk are deterministic,
 but the first diverging document in one scope follows API replay order, so the representative is not
-a stable cross-run API. It is a sibling of the planned
-`FullyReflected` condition in
-[unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md): `FullyReflected`
-says *everything you edited was expressed*;
-`RenderMatchesLive` says *our render matches what is running, so we can be trusted at all* — the more
-fundamental of the two. It is recomputable when the watch manager begins a new epoch; steady-state
+a stable cross-run API. [Git write preflight](../git-write-preflight.md) adds admission
+rejection while retaining target errors for failures discovered after persistence. It introduces
+no `FullyReflected` condition. `RenderMatchesLive` reports whether the modeled render matches
+running values. It is recomputable when the watch manager begins a new epoch; steady-state
 write refusals can close it, but cannot clear it.
 
 This is exactly what the reverted structural check was reaching for and could not have — a folder-level

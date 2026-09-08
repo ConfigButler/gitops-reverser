@@ -513,6 +513,7 @@ func (m *Manager) runTargetWatch(
 	for ctx.Err() == nil {
 		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, resumeFromCursor)
 		resumeFromCursor = true
+		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndReason(ctx, err))
 		if ctx.Err() != nil {
 			return
 		}
@@ -565,6 +566,11 @@ func (m *Manager) targetWatchReplayAndStream(
 			return err
 		}
 		cursorExpired = true
+		// The resume session opened a watch, streamed, and ended on an expired cursor. Recorded
+		// HERE because the wrapper swallows the sentinel and falls through to a fresh replay, so
+		// the outer session-end recording never sees it — and `expired` is the reason that matters
+		// most, since it is the one that forces a full rebuild of the type.
+		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndedExpired)
 		m.markTargetStreamState(
 			gitDest,
 			stream.key.Cell(),
@@ -596,6 +602,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		"target watch replay in progress",
 	)
 	replaying := true
+	replayStarted := time.Now()
 	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, stream.key.Namespace, opts)
 	if err != nil {
 		if watchListUnsupported(err) {
@@ -615,14 +622,37 @@ func (m *Manager) targetWatchReplayAndStream(
 		)
 		return fmt.Errorf("open target watch %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
+	// One open session against the source cluster, for as long as this watch lives. Deferred
+	// BEFORE w.Stop() so it runs after it: defers are LIFO, and releasing the count first would
+	// let a scrape in that window report fewer sessions than the API server is still holding.
+	release := m.trackOpenWatch(gitDest)
+	defer release()
 	defer w.Stop()
 
+	return m.pumpTargetWatchSession(ctx, log, gitDest, stream, w.ResultChan(), replaying, replayStarted)
+}
+
+// pumpTargetWatchSession drains one open session, folding replay events and then streaming live
+// ones, until the channel closes or the context ends.
+//
+// Split out of targetWatchReplayAndStream so the open-and-fall-back logic above and the drain here
+// are each readable on their own; the replay-completion measurement lives here because this is
+// where initial-events-end is observed.
+func (m *Manager) pumpTargetWatchSession(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	stream targetWatchStream,
+	events <-chan watch.Event,
+	replaying bool,
+	replayStarted time.Time,
+) error {
 	var replay []manifestanalyzer.DesiredResource
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case ev, ok := <-w.ResultChan():
+		case ev, ok := <-events:
 			if !ok {
 				return targetWatchClosedErr(ctx)
 			}
@@ -631,6 +661,12 @@ func (m *Manager) targetWatchReplayAndStream(
 			)
 			if err != nil {
 				return err
+			}
+			if replaying && !nextReplaying {
+				// initial-events-end. This is what a 410 storm charges: the cost of every rebuild
+				// it forces, which no other instrument can see.
+				recordWatchReplayDuration(ctx, stream.key.GVR, replayStarted)
+				m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeReplay)
 			}
 			replaying = nextReplaying
 		}
@@ -667,6 +703,11 @@ func (m *Manager) targetWatchResumeAndStream(
 		return fmt.Errorf("open target watch %s/%q from cursor %q: %w",
 			stream.key.GVR.String(), stream.key.Namespace, cursor, err)
 	}
+	// One open session against the source cluster, for as long as this watch lives. Deferred
+	// BEFORE w.Stop() so it runs after it: defers are LIFO, and releasing the count first would
+	// let a scrape in that window report fewer sessions than the API server is still holding.
+	release := m.trackOpenWatch(gitDest)
+	defer release()
 	defer w.Stop()
 
 	log.V(1).Info("target watch resumed from cursor",
@@ -679,7 +720,7 @@ func (m *Manager) targetWatchResumeAndStream(
 		StreamReasonAllStreamsReady,
 		"target watch resumed from durable cursor",
 	)
-	m.recordTargetReconcileCompleted(gitDest, "cursor_resume")
+	m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeCursorResume)
 	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, stream, w.ResultChan())
 }
 
@@ -707,6 +748,11 @@ func (m *Manager) targetWatchListAndStream(
 		return fmt.Errorf("open target watch %s/%q for list fallback: %w",
 			stream.key.GVR.String(), stream.key.Namespace, err)
 	}
+	// One open session against the source cluster, for as long as this watch lives. Deferred
+	// BEFORE w.Stop() so it runs after it: defers are LIFO, and releasing the count first would
+	// let a scrape in that window report fewer sessions than the API server is still holding.
+	release := m.trackOpenWatch(gitDest)
+	defer release()
 	defer w.Stop()
 
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
@@ -734,6 +780,11 @@ func (m *Manager) targetWatchListAndStream(
 	if err := m.recordTargetWatchCursor(ctx, gitDest, stream.key, revision); err != nil {
 		return err
 	}
+	// Recorded HERE, not where the fallback was chosen. watch_recovery_total counts recoveries that
+	// COMPLETED — a target whose state has been rebuilt and is now streaming — so incrementing it
+	// at the decision would have counted an attempt that may still fail on the LIST below, under a
+	// metric documented as completions.
+	m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeListFallback)
 	log.Info("target watch list fallback complete",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
 		"count", len(desired), "resourceVersion", revision)
@@ -927,12 +978,8 @@ func (m *Manager) processLiveTargetWatchEvent(
 	stream targetWatchStream,
 	ev watch.Event,
 ) error {
-	if targetWatchExpired(ev) {
-		// The cursor's resourceVersion fell out of watch history. Reconnecting drops
-		// to the cursor-resume path, which gets the same "expired" and rebuilds from a
-		// fresh replay (overwriting the stale cursor); no explicit delete needed.
-		return errTargetWatchExpired
-	}
+	// No expired-cursor check here: routeLiveTargetWatchEvent owns it, so both callers classify a
+	// 410 the same way. See the comment at that check.
 	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, stream, ev)
 	if err != nil {
 		return err
@@ -947,19 +994,49 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	stream targetWatchStream,
 	ev watch.Event,
 ) (string, error) {
+	// Timed HERE, at the routing boundary itself, because there are two callers and only one of
+	// them used to be timed. processLiveTargetWatchEvent handles a reconnect's live session, but a
+	// COLD-started watch stays in its first session after initial-events-end and streams through
+	// handleTargetWatchSessionEvent instead — so the ordinary case of a freshly started watch
+	// reported no occupancy at all. A stream is single-threaded, so time spent in this function is
+	// time nothing else on that stream is being read, which is the whole signal.
+	defer func(started time.Time) {
+		recordWatchEventHandling(ctx, stream.key.GVR, started)
+	}(time.Now())
+
 	rv := targetWatchEventResourceVersion(ev)
+
+	// The expired-cursor check lives HERE, at the shared boundary, for the same reason the
+	// occupancy timer above does: there are two callers and only one of them used to make it.
+	// processLiveTargetWatchEvent checked before routing; handleTargetWatchSessionEvent's live arm
+	// called straight in. So a mid-stream 410 on a COLD-started watch — the ordinary case, since a
+	// fresh watch stays in its first session after initial-events-end — fell through to the
+	// watch.Error arm below and ended the session as `error` rather than `expired`. The reconnect
+	// still recorded `expired` at open, so the signal was not lost; what it cost was a spurious
+	// `error` on every 410, and `error` is the reason an operator reads as "something is actually
+	// broken" while `expired` is documented as routine watch-history pressure.
+	if targetWatchExpired(ev) {
+		// The cursor's resourceVersion fell out of watch history. Reconnecting drops to the
+		// cursor-resume path, which gets the same "expired" and rebuilds from a fresh replay
+		// (overwriting the stale cursor); no explicit delete needed.
+		return rv, errTargetWatchExpired
+	}
+
 	switch ev.Type {
 	case watch.Bookmark:
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeBookmark)
 		return rv, nil
 	case watch.Added, watch.Modified, watch.Deleted:
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeNotObject)
 			log.V(1).Info("target watch non-unstructured event skipped",
 				"gvr", stream.key.GVR.String(), "type", string(ev.Type))
 			return rv, nil
 		}
 		op := operationForLiveTargetWatchEvent(ev.Type, u)
 		if !stream.ops.Match(op) {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeOperationFiltered)
 			return rv, nil
 		}
 		event := targetWatchGitEvent(stream.key.GVR, u, op)
@@ -975,6 +1052,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		// is dropped), so routing it would split an open commit window on the author
 		// flip. CREATE/DELETE always route and refresh/clear the dedup cache.
 		if m.skipUnchangedLiveUpdate(gitDest, stream.key.GVR, u, &event, op) {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeUnchanged)
 			log.V(1).Info("target watch skipped unchanged update (no git content change)",
 				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
 				"resource", event.Identifier.String())
@@ -985,18 +1063,35 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		// an event was waiting for its author must not enqueue on the way out.
 		select {
 		case <-ctx.Done():
+			// The stream was cancelled while this event waited for its author. Counted, because a
+			// census with an unrecorded exit is not a census: the totals would quietly stop adding
+			// up. It is not loss — a restart replays and resyncs this object.
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeShutdown)
 			return rv, nil
 		default:
 		}
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
+			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeRouteFailed)
 			log.V(1).Info("target watch route failed",
 				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "err", err.Error())
 			return rv, err
 		}
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeRouted)
 		return rv, nil
 	case watch.Error:
+		// Counted, for the reason the shutdown arm is: a census with an unrecorded exit is not a
+		// census, and the totals quietly stop adding up. This arm is reachable only for a
+		// watch.Error that is NOT an expired cursor — those are classified above and never get
+		// here — so anything landing on it is a genuinely anomalous frame from the API server
+		// rather than the routine watch-history pressure a 410 represents. DEGRADED, not loss:
+		// the session ends and the reconnect replays, so no observed change is dropped.
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeStreamError)
 		return rv, fmt.Errorf("target watch error for %s: %v", stream.key.GVR.String(), ev.Object)
 	default:
+		// Unreachable against client-go's watch.EventType set, which the four arms above exhaust.
+		// Counted under the same outcome rather than left silent: if a future event type appears,
+		// the census says so instead of the totals simply failing to add up.
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeStreamError)
 		return rv, nil
 	}
 }

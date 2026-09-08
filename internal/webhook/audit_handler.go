@@ -110,38 +110,56 @@ func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 	}, nil
 }
 
-// EventList request-boundary outcome labels. They stay bounded — no path,
-// remote address, or status-code dimension — so the ingress metric set is small.
+// EventList request-boundary outcome labels. They stay bounded — no path, remote address, or
+// status-code dimension — so the ingress metric set is small.
+//
+// The first three are REJECTIONS, and they were the ingress gap: a request refused before decoding
+// returned before any instrument was touched, so an apiserver posting to a path this operator does
+// not serve looked exactly like an apiserver posting nothing at all.
+//
+// bare_endpoint_disabled is named for what it actually covers, which is NOT "a route no
+// ClusterProvider claims": resolveRoute accepts any named route as-is, deliberately, because a
+// route is a partition name rather than a claim about an object. The only route rejection that
+// exists is the bare /audit-webhook endpoint when no annotation key is configured.
 const (
-	outcomeProcessed    = "processed"
-	outcomeEmpty        = "empty"
-	outcomeDecodeError  = "decode_error"
-	outcomeProcessError = "process_error"
+	outcomeBadMethod            = "bad_method"
+	outcomeBadPath              = "bad_path"
+	outcomeBareEndpointDisabled = "bare_endpoint_disabled"
+	outcomeProcessed            = "processed"
+	outcomeEmpty                = "empty"
+	outcomeDecodeError          = "decode_error"
+	outcomeProcessError         = "process_error"
 )
 
 // ServeHTTP implements http.Handler for audit event processing.
+//
+// Every return path records an outcome, rejections included. The timer starts before the first
+// gate so a rejected request is measured the same way an accepted one is.
 func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	log := logf.Log.WithName("audit-handler")
+	start := time.Now()
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		h.recordEventListRequest(ctx, outcomeBadMethod, time.Since(start))
 		return
 	}
 
 	if err := validateAuditWebhookPath(r.URL.Path); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.recordEventListRequest(ctx, outcomeBadPath, time.Since(start))
 		return
 	}
 
 	route, ok := h.resolveRoute(w, r)
 	if !ok {
+		h.recordEventListRequest(ctx, outcomeBareEndpointDisabled, time.Since(start))
 		return
 	}
 
-	start := time.Now()
-	result, eventCount := h.serveEventListRequest(ctx, route, w, r, log)
-	h.recordEventListRequest(ctx, result, eventCount, time.Since(start))
+	result := h.serveEventListRequest(ctx, route, w, r, log)
+	h.recordEventListRequest(ctx, result, time.Since(start))
 }
 
 // resolveRoute maps an already-syntactically-valid path to the route its events belong to. It
@@ -193,29 +211,30 @@ func auditRouteForPath(path string) (string, bool) {
 	return segment, true
 }
 
-// serveEventListRequest decodes and processes one EventList request, returning the
-// bounded outcome and the number of decoded event items for the ingress metrics.
+// serveEventListRequest decodes and processes one EventList request, returning the bounded outcome
+// for the ingress histogram. The per-item census is audit_events_total, which counts each decoded
+// event once with its type and verb on it, so no item count is returned here.
 func (h *AuditHandler) serveEventListRequest(
 	ctx context.Context,
 	route auditRoute,
 	w http.ResponseWriter,
 	r *http.Request,
 	log logr.Logger,
-) (string, int) {
+) string {
 	reqLog := log.WithValues("remoteAddr", r.RemoteAddr, "path", r.URL.Path)
 
 	eventListV1, err := h.decodeEventList(r)
 	if err != nil {
 		reqLog.Error(err, "Failed to decode audit event list")
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return outcomeDecodeError, 0
+		return outcomeDecodeError
 	}
 
 	eventCount := len(eventListV1.Items)
 	if eventCount == 0 {
 		reqLog.Info("Received empty audit event list", "eventCount", 0, "processingOutcome", "empty")
 		h.writeResponse(w, reqLog, "Empty event list processed")
-		return outcomeEmpty, 0
+		return outcomeEmpty
 	}
 
 	// Recorded before the batch is processed: the apiserver reaching us at all is what this
@@ -228,12 +247,12 @@ func (h *AuditHandler) serveEventListRequest(
 	if err := h.processEvents(ctx, route, eventListV1.Items); err != nil {
 		reqLog.Error(err, "Failed to process audit events")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return outcomeProcessError, eventCount
+		return outcomeProcessError
 	}
 	reqLog.V(1).Info("Processed audit request", "eventCount", eventCount, "processingOutcome", "success")
 
 	h.writeResponse(w, reqLog, "Audit event processed")
-	return outcomeProcessed, eventCount
+	return outcomeProcessed
 }
 
 // writeResponse writes a 200 OK body, logging any write failure.
@@ -244,25 +263,18 @@ func (h *AuditHandler) writeResponse(w http.ResponseWriter, log logr.Logger, bod
 	}
 }
 
-// recordEventListRequest emits the three EventList ingress-boundary metrics.
-// The event-item counter has no sample for decode_error, since item count is
-// only known after a successful decode.
-func (h *AuditHandler) recordEventListRequest(
-	ctx context.Context,
-	result string,
-	eventCount int,
-	elapsed time.Duration,
-) {
-	attrs := metric.WithAttributes(attribute.String("outcome", result))
-	if telemetry.AuditEventListsTotal != nil {
-		telemetry.AuditEventListsTotal.Add(ctx, 1, attrs)
+// recordEventListRequest times one EventList request at the ingress boundary.
+//
+// One instrument, where there were three. The histogram's own _count series is the request counter
+// the separate AuditEventListsTotal used to publish under a second name, and the per-item counter
+// beside it counted the same event items that audit_events_total counts once each — with
+// group/version/resource/verb on them, which the coarse counter never carried.
+func (h *AuditHandler) recordEventListRequest(ctx context.Context, result string, elapsed time.Duration) {
+	if telemetry.AuditEventListDurationSeconds == nil {
+		return
 	}
-	if telemetry.AuditEventListDurationSeconds != nil {
-		telemetry.AuditEventListDurationSeconds.Record(ctx, elapsed.Seconds(), attrs)
-	}
-	if result != outcomeDecodeError && telemetry.AuditEventListEventsTotal != nil {
-		telemetry.AuditEventListEventsTotal.Add(ctx, int64(eventCount), attrs)
-	}
+	telemetry.AuditEventListDurationSeconds.Record(ctx, elapsed.Seconds(),
+		metric.WithAttributes(attribute.String("outcome", result)))
 }
 
 // decodeEventList reads and decodes the audit event list from the request.

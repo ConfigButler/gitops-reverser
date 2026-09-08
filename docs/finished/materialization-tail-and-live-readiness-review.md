@@ -1,10 +1,10 @@
 # Materialization, the freshness tail, and GitTarget liveness — review + plan
 
-> **SUPERSEDED — moved to `finished/` 2026-06.** A dated `poc/redis-copy` branch review. Its
-> metric names predate the June 2026 metrics cleanup — many referenced here (`audit_join_*`,
-> `audit_event_quality_total`, `materialization_*`, `git_push_duration_seconds`,
-> `rebase_retries_total`, `repo_branch_*`, …) have since been removed. For the live metric set
-> see [`../interpreting-metrics.md`](../interpreting-metrics.md). Kept for historical context.
+> **SUPERSEDED — moved to `finished/` 2026-06.** A dated `poc/redis-copy` branch review. Its metric
+> inventory has been removed rather than corrected (see §6): the names predate two cleanups and
+> almost none survive. For the live metric set see
+> [`../interpreting-metrics.md`](../interpreting-metrics.md). Kept for the materialization and
+> freshness-tail analysis, which still reads true.
 
 Status: review / proposal · Branch: `poc/redis-copy` · Date: 2026-06-12
 
@@ -475,92 +475,18 @@ so they exercise the watch path instead of hanging; (4) an e2e assertion against
 Suggested order: Rec 4 (self-contained, unblocks tests) → Rec 1 (deferred-until-idle heal +
 re-enable re-anchor healing) → Recs 2/3 → Rec 6.
 
----
+------
 
 ## 6. Metrics exposed today (reference)
 
-Every instrument is an OpenTelemetry metric bridged to Prometheus via
-`internal/telemetry/exporter.go` under the `gitops-reverser` meter; names are prefixed
-`gitopsreverser_`. Note: instruments are registered with a **name only** — no
-`WithDescription` or `WithUnit` is set, so `/metrics` carries no HELP/UNIT metadata. Adding
-those is a cheap, separate observability improvement.
+**Removed.** This section carried a full inventory of the instrument set as it stood in June 2026.
+Almost none of those names survive: the June cleanup removed some, and the September 2026 rebuild
+renamed or merged most of the rest. A stale inventory in a superseded document is worse than no
+inventory, because it is what a grep for a metric name finds first.
 
-### Git / commit pipeline (`internal/git`)
+The live set is [`../interpreting-metrics.md`](../interpreting-metrics.md); the reasoning behind its
+shape is [`../design/metrics-observability-plan.md`](../design/metrics-observability-plan.md).
 
-| Metric | Type | Notable labels |
-| --- | --- | --- |
-| `gitopsreverser_git_operations_total` | counter | |
-| `gitopsreverser_git_push_duration_seconds` | histogram | |
-| `gitopsreverser_objects_scanned_total` | counter | |
-| `gitopsreverser_objects_written_total` | counter | |
-| `gitopsreverser_files_deleted_total` | counter | |
-| `gitopsreverser_commits_total` | counter | |
-| `gitopsreverser_commit_bytes_total` | counter | |
-| `gitopsreverser_rebase_retries_total` | counter | |
-| `gitopsreverser_ownership_conflicts_total` | counter | |
-| `gitopsreverser_lease_acquire_failures_total` | counter | |
-| `gitopsreverser_marker_conflicts_total` | counter | |
-| `gitopsreverser_branch_worker_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` |
-| `gitopsreverser_repo_branch_active_workers` | up-down counter | |
-| `gitopsreverser_repo_branch_queue_depth` | up-down counter | |
-
-### Reconcile / materialization (`internal/watch`, `internal/typeset`)
-
-| Metric | Type | Notable labels |
-| --- | --- | --- |
-| `gitopsreverser_target_reconcile_completed_total` | counter | `gittarget_namespace`, `gittarget_name`, `trigger` |
-| `gitopsreverser_resync_background_failures_total` | counter | `gittarget_namespace`, `gittarget_name` |
-| `gitopsreverser_type_lifecycle_reconcile_total` | counter | `gittarget_namespace`, `gittarget_name` |
-| `gitopsreverser_type_lifecycle_sweep_total` | counter | `gittarget_namespace`, `gittarget_name` |
-| `gitopsreverser_materialization_sync_events_total` | counter | `kind` (SyncRequested / SyncStarted / TypeSynced / SyncFailed / Released) |
-| `gitopsreverser_materialization_type_phase` | gauge | `phase` (Dormant / Requested / Syncing / Synced / Resyncing / Failing) |
-| `gitopsreverser_materialization_claimed_types` | gauge | |
-| `gitopsreverser_materialization_claimed_unfollowable` | gauge | |
-| `gitopsreverser_watched_types` | gauge | |
-| `gitopsreverser_watch_duplicates_skipped_total` | counter | |
-
-### Audit ingestion (`internal/webhook`, `internal/queue`)
-
-| Metric | Type |
-| --- | --- |
-| `gitopsreverser_audit_events_received_total` | counter |
-| `gitopsreverser_audit_event_quality_total` | counter |
-| `gitopsreverser_audit_join_parked_total` | counter |
-| `gitopsreverser_audit_join_emitted_total` | counter |
-| `gitopsreverser_audit_shallow_dropped_total` | counter |
-| `gitopsreverser_audit_eventlists_total` | counter |
-| `gitopsreverser_audit_eventlist_events_total` | counter |
-| `gitopsreverser_audit_join_skew_seconds` | histogram |
-| `gitopsreverser_audit_official_gate_wait_seconds` | histogram |
-| `gitopsreverser_audit_eventlist_duration_seconds` | histogram |
-
-### API discovery / catalog (`internal/watch`)
-
-| Metric | Type |
-| --- | --- |
-| `gitopsreverser_api_catalog_resources` | gauge |
-| `gitopsreverser_api_catalog_group_versions` | gauge |
-| `gitopsreverser_api_catalog_generation` | gauge |
-| `gitopsreverser_api_catalog_refresh_total` | counter |
-| `gitopsreverser_api_catalog_refresh_duration_seconds` | histogram |
-
-### Secret encryption (`internal/git`)
-
-| Metric | Type |
-| --- | --- |
-| `gitopsreverser_secret_encryption_attempts_total` | counter |
-| `gitopsreverser_secret_encryption_success_total` | counter |
-| `gitopsreverser_secret_encryption_failures_total` | counter |
-| `gitopsreverser_secret_encryption_cache_hits_total` | counter |
-| `gitopsreverser_secret_encryption_marker_skips_total` | counter |
-
-### Gaps in the metrics surface (relative to this review)
-
-- **No description / unit metadata** on any instrument (names only).
-- **No materialization latency** — there is a phase *gauge* and an event *counter*, but
-  nothing measures how long a type takes to go `Requested → Synced`, which is exactly the
-  "time to live" the Rec 4 phase would make observable. A `…_materialization_sync_duration_seconds`
-  histogram would pair naturally with the `Live` phase.
-- **No per-GitTarget liveness gauge** — the roll-up lives only on the CR status; a
-  `…_gittarget_synced_types` / `…_gittarget_claimed_types` gauge would let dashboards alert on
-  "stuck initializing" without scraping CRs.
+The one observation here that outlived its table: instruments are registered with a **name only** —
+no `WithDescription` or `WithUnit` — so `/metrics` carries no HELP or UNIT metadata. That is still
+true, and still a cheap separate improvement.

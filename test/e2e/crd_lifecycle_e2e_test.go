@@ -270,7 +270,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("waiting for controller reconciliation of CRD instance event")
 		// A commit is the progress signal here; the authoritative per-instance check
-		// is the file-existence assertion below. gitopsreverser_commits_total counts
+		// is the file-existence assertion below. gitopsreverser_git_commits_total counts
 		// both commit paths (per-event and backfill resync), so this single metric
 		// replaces the prior Or() of two operator-log substrings, and the
 		// provider_namespace label scopes it to this suite's GitProvider.

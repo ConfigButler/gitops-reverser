@@ -70,7 +70,7 @@ func applyResyncViaWorktree(
 		context.Background(),
 		worktree,
 		"",
-		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways, Namespace: "apps", Name: "acme"},
 		desired,
 		nil,
 	)
@@ -155,8 +155,19 @@ func TestResync_DropsManagedResourceAbsentFromCluster(t *testing.T) {
 	_, dropErr := os.Stat(dropFull)
 	assert.True(t, os.IsNotExist(dropErr), "the orphaned resource's file is deleted")
 
-	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_resync_sweep_deletes_total",
-		map[string]string{"group": "", "version": "v1", "resource": "configmaps"})
+	// The sweep arm of the write-boundary census. It shares one counter with written, deleted_live
+	// and unchanged because they are one population — every document this writer decided about —
+	// so a dashboard reads them as one stacked series instead of four unrelated numbers.
+	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_git_documents_total",
+		map[string]string{
+			"group": "", "version": "v1", "resource": "configmaps",
+			"outcome": documentDeletedSweep,
+			// From the BATCH's target, not the event. The resync path builds its events without
+			// target fields, so reading identity off the event filed every production snapshot
+			// write and every sweep delete under empty labels — worse than no labels, because an
+			// empty series looks like a real one.
+			"gittarget_namespace": "apps", "gittarget_name": "acme",
+		})
 	require.True(t, ok)
 	assert.Equal(t, int64(1), count)
 }

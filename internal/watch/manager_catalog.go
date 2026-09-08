@@ -5,7 +5,6 @@ package watch
 import (
 	"context"
 	"fmt"
-	"math"
 	"sort"
 	"sync"
 	"time"
@@ -114,11 +113,14 @@ func (m *Manager) refreshRemoteCatalogsConcurrently(ctx context.Context, remotes
 }
 
 // refreshClusterCatalog refreshes ONE cluster's discovery-backed catalog and republishes its
-// type registry — the per-cluster body of what used to be a single manager-wide refresh. The
-// refresh metrics and the API-surface trigger informers stay local-cluster only: the metrics
-// carry no cluster label, and the trigger informers (a "refresh sooner than the 30s tick"
-// latency optimization) run against the config plane, so a remote cluster's catalog freshness
-// rides the periodic refresh instead.
+// type registry — the per-cluster body of what used to be a single manager-wide refresh.
+//
+// The catalog metrics carry a source_cluster label and are recorded for EVERY cluster. They used
+// to be local-only, guarded by isLocal(), because they carried no cluster label and a remote's
+// stats would have overwritten the local series — which meant a degraded APIService on a remote
+// source cluster produced no signal at all. The API-surface trigger informers are still
+// local-cluster only: they are a "refresh sooner than the 30s tick" latency optimization that runs
+// against the config plane, so a remote cluster's catalog freshness rides the periodic refresh.
 func (m *Manager) refreshClusterCatalog(ctx context.Context, cc *clusterContext) error {
 	disco, err := m.clusterDiscovery(ctx, cc.id)
 	if err != nil {
@@ -126,9 +128,7 @@ func (m *Manager) refreshClusterCatalog(ctx context.Context, cc *clusterContext)
 	}
 	start := time.Now()
 	changed, refreshErr := cc.catalog.Refresh(disco)
-	if cc.isLocal() {
-		recordCatalogRefresh(ctx, changed, refreshErr, time.Since(start))
-	}
+	recordCatalogRefresh(ctx, cc.id, changed, refreshErr, time.Since(start))
 	if refreshErr != nil {
 		return refreshErr
 	}
@@ -136,9 +136,7 @@ func (m *Manager) refreshClusterCatalog(ctx context.Context, cc *clusterContext)
 	// line can report how many served types are followable.
 	m.refreshClusterTypeRegistry(cc)
 	stats := cc.catalog.Stats()
-	if cc.isLocal() {
-		recordCatalogStats(ctx, stats)
-	}
+	recordCatalogStats(ctx, cc.id, stats)
 	m.logCatalogTransitions(cc, stats)
 	if cc.isLocal() {
 		// The fresh scan is the only source of truth for which trigger resources this API
@@ -221,11 +219,28 @@ const (
 	catalogRefreshError     = "error"
 )
 
+// Every catalog instrument carries source_cluster, and that label is the reason the isLocal()
+// guards came off.
+//
+// The guards were correct when there was one cluster: the metrics carried no cluster label, so
+// publishing a remote's stats under them would have overwritten the local cluster's series. Since
+// the config-plane split a GitTarget can mirror a remote source cluster through spec.kubeConfig,
+// and a degraded APIService THERE produced no signal at all — api_catalog_group_versions sat
+// reassuringly at zero degraded while part of that cluster's API surface was invisible. The label
+// is the fix; the guard was the bug.
+
+// clusterAttrs names the source cluster a catalog observation belongs to. The local cluster carries
+// its own id like any other, so there is no unlabelled series and no special case to remember.
+func clusterAttrs(clusterID string, extra ...attribute.KeyValue) []attribute.KeyValue {
+	return append([]attribute.KeyValue{attribute.String("source_cluster", clusterID)}, extra...)
+}
+
 // recordCatalogRefresh emits the api_catalog_refresh_total counter and the
-// api_catalog_refresh_duration_seconds histogram for one refresh.
-func recordCatalogRefresh(ctx context.Context, changed bool, err error, elapsed time.Duration) {
+// api_catalog_refresh_duration_seconds histogram for one cluster's refresh.
+func recordCatalogRefresh(ctx context.Context, clusterID string, changed bool, err error, elapsed time.Duration) {
 	if telemetry.APICatalogRefreshDurationSeconds != nil {
-		telemetry.APICatalogRefreshDurationSeconds.Record(ctx, elapsed.Seconds())
+		telemetry.APICatalogRefreshDurationSeconds.Record(ctx, elapsed.Seconds(),
+			metric.WithAttributes(clusterAttrs(clusterID)...))
 	}
 	if telemetry.APICatalogRefreshTotal == nil {
 		return
@@ -237,31 +252,25 @@ func recordCatalogRefresh(ctx context.Context, changed bool, err error, elapsed 
 	case changed:
 		outcome = catalogRefreshChanged
 	}
-	telemetry.APICatalogRefreshTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+	telemetry.APICatalogRefreshTotal.Add(ctx, 1,
+		metric.WithAttributes(clusterAttrs(clusterID, attribute.String("outcome", outcome))...))
 }
 
-// recordCatalogStats sets the api_catalog_resources, api_catalog_group_versions,
-// and api_catalog_generation gauges after a successful refresh. Gauges are
-// idempotent, so overwriting them on every refresh is correct.
-func recordCatalogStats(ctx context.Context, stats CatalogStats) {
+// recordCatalogStats sets the api_catalog_resources and api_catalog_group_versions gauges for one
+// cluster after a successful refresh. Gauges are idempotent, so overwriting them on every refresh
+// is correct.
+func recordCatalogStats(ctx context.Context, clusterID string, stats CatalogStats) {
 	if telemetry.APICatalogResources != nil {
 		telemetry.APICatalogResources.Record(ctx, int64(stats.AllowedResources),
-			metric.WithAttributes(attribute.String("state", "allowed")))
+			metric.WithAttributes(clusterAttrs(clusterID, attribute.String("state", "allowed"))...))
 		telemetry.APICatalogResources.Record(ctx, int64(stats.ExcludedResources),
-			metric.WithAttributes(attribute.String("state", "excluded")))
+			metric.WithAttributes(clusterAttrs(clusterID, attribute.String("state", "excluded"))...))
 	}
 	if telemetry.APICatalogGroupVersions != nil {
 		telemetry.APICatalogGroupVersions.Record(ctx, int64(stats.TrustedGroupVersions),
-			metric.WithAttributes(attribute.String("state", "trusted")))
+			metric.WithAttributes(clusterAttrs(clusterID, attribute.String("state", "trusted"))...))
 		telemetry.APICatalogGroupVersions.Record(ctx, int64(stats.DegradedGroupVersions),
-			metric.WithAttributes(attribute.String("state", "degraded")))
-	}
-	if telemetry.APICatalogGeneration != nil {
-		generation := stats.Generation
-		if generation > math.MaxInt64 {
-			generation = math.MaxInt64
-		}
-		telemetry.APICatalogGeneration.Record(ctx, int64(generation))
+			metric.WithAttributes(clusterAttrs(clusterID, attribute.String("state", "degraded"))...))
 	}
 }
 

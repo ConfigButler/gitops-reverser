@@ -489,6 +489,13 @@ The most useful status fields are:
 
 Use conditions for automation.
 
+The kstatus trio is also on Prometheus, so the same answer is alertable without a kubeconfig:
+`gitopsreverser_resource_condition{kind="GitTarget", type="Ready", status="False"} == 1` names every
+target that has not been accepted, and `reason` says which gate refused. The metric covers `Ready`,
+`Reconciling` and `Stalled` for every object on this page except `CommitRequest`; the per-kind axis
+conditions above stay on the object, where `kubectl describe` reads them. See
+[interpreting-metrics.md](interpreting-metrics.md#configuration-state).
+
 ### `GitTarget.spec.commit`: how writes become commits
 
 `spec.commit` says how this target's writes are batched into commits and how those commits are
@@ -752,7 +759,7 @@ none of them is a failure: retention is the configured outcome, so no condition 
 
 ```console
 $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
-{"mode":"OnEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
+{"mode":"OnEvent","retainedDocuments":3,"lastChangedTime":"2026-07-21T13:20:00Z"}
 ```
 
 - `status.retention.retainedDocuments` is how many managed documents a converged mirror would not
@@ -761,14 +768,27 @@ $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
   produced under, and the only place a `GitTarget` that predates `spec.prune` shows one at all.
 - A throttled log line names the target, its path, and the scope (one per target folder per 10
   minutes; the full detail is at `-v1`).
-- `gitopsreverser_prune_retained_documents_total`, labeled by `gittarget_namespace`,
-  `gittarget_name`, and `prune_mode`.
+- `gitopsreverser_git_documents_total{outcome="retained"}`, labeled by `gittarget_namespace`,
+  `gittarget_name`, and the resource type (`group`, `version`, `resource`). The type is what makes a
+  retention actionable: a bare total names nothing to go and look at. It shares one counter with the
+  writer's other document outcomes because they are one population (every document the writer
+  decided about), so a dashboard reads them as one stacked series.
 
 `status.retention` covers the resync sweep only. Under `Never` a suppressed source DELETE is not
 counted, so a `Never` target can report `0` while still declining to mirror deletes.
 
 The count is refreshed when a resync runs, so it lags a change in the cluster until the next one.
-Read `observedTime` before treating a `0` as live.
+
+`lastChangedTime` records when the count or the effective mode last **changed**. It is not a
+freshness signal and must not be read as one: a resync that re-reports the same numbers leaves it
+untouched, so an old timestamp is equally consistent with stable retention and with nothing having
+measured it since. The field is named for what it does.
+
+For "are resyncs still running", read `gitopsreverser_git_resync_failures_total` and
+`gitopsreverser_watch_recovery_total`. A rising
+`gitopsreverser_git_documents_total{outcome="retained"}` is positive evidence that retention was
+evaluated and found something, but a flat one proves nothing: a healthy resync retaining zero
+produces no increment either.
 
 `spec.prune` is mutable (unlike `gitProviderRef`, `branch`, and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists
@@ -1381,8 +1401,12 @@ TTL'd in-memory index, and attaches the commit author to each watch event by mat
 bounded grace window. Redis also stores per-watch resume cursors, so short reconnects can resume a
 normal watch from the last processed resourceVersion when the apiserver can still serve that history.
 
-Named ingress is currently authenticated to the shared audit CA and gated on the provider name existing;
-it does **not** yet bind a particular client certificate to that provider. Do not use one shared audit
+Named ingress is authenticated to the shared audit CA. It is **not** gated on a `ClusterProvider`
+carrying that route, and deliberately so: a route is a partition name, not a claim about an object,
+and refusing unknown routes dropped audit batches in flight while a provider was being created or
+recreated, which the API server does not retry after a 404. A fact filed under a route nobody reads
+costs one key that expires on the fact TTL. Ingress also does **not** yet bind a particular client
+certificate to a provider. Do not use one shared audit
 client credential to attribute several independently administered source clusters. A deployment that
 needs that boundary should keep sources isolated until provider-bound ingress authentication is shipped.
 
@@ -1407,7 +1431,7 @@ value; it defaults to the provider's own name.
 
 | Situation | Result |
 |---|---|
-| A request reaches `/audit-webhook` while `auditRouteAnnotationKey` is unset | The whole request is rejected with **400**. The bare endpoint is not enabled, so a producer posting to it is misconfigured. |
+| A request reaches `/audit-webhook` while `auditRouteAnnotationKey` is unset | The whole request is rejected with **400**. The bare endpoint is not enabled, so a producer posting to it is misconfigured. This is the one route-shaped rejection there is, and it is counted as `gitopsreverser_audit_eventlist_duration_seconds_count{outcome="bare_endpoint_disabled"}`. |
 | An event carries no annotation | That **event** is rejected: it produces no attribution fact and is never credited to a fallback route. The request still returns 200, so correctly-annotated events in the same batch are kept. |
 
 An annotation naming a route no `ClusterProvider` has declared is **not** rejected. The route is a

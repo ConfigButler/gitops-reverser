@@ -22,6 +22,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -1143,4 +1144,85 @@ func TestRouteLiveTargetWatchEvent_ACancelledStreamStopsEnqueuing(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, "12", rv, "the cursor still advances; only the enqueue is dropped")
 	assert.Empty(t, enqueuer.events)
+}
+
+// A 410 must classify as an expired cursor at the ROUTING BOUNDARY, not only on the path that
+// happened to pre-check for it.
+//
+// There are two callers of routeLiveTargetWatchEvent and only one of them used to make this check.
+// processLiveTargetWatchEvent checked before routing; handleTargetWatchSessionEvent's live arm
+// called straight in — and that is the ORDINARY case, because a cold-started watch stays in its
+// first session after initial-events-end. So a mid-stream 410 on a freshly started watch fell
+// through to the watch.Error arm, ended the session as `error` instead of `expired`, and put a
+// spurious error on the one label an operator reads as "something is actually broken".
+func TestRouteLiveTargetWatchEvent_ClassifiesExpiredCursorAtTheBoundary(t *testing.T) {
+	manager := &Manager{}
+
+	for _, tc := range []struct {
+		name   string
+		status *metav1.Status
+	}{
+		{"by reason", &metav1.Status{Reason: metav1.StatusReasonExpired, Message: "too old resource version"}},
+		{"by code", &metav1.Status{Code: 410, Message: "too old resource version"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader, err := telemetry.InitTestExporter()
+			require.NoError(t, err)
+
+			_, routeErr := manager.routeLiveTargetWatchEvent(
+				context.Background(),
+				logr.Discard(),
+				types.NewResourceReference("target", "default"),
+				testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+				watch.Event{Type: watch.Error, Object: tc.status},
+			)
+
+			require.ErrorIs(t, routeErr, errTargetWatchExpired,
+				"a 410 must surface as the expired sentinel so the session ends with reason=expired")
+			assert.Equal(t, sessionEndedExpired, sessionEndReason(context.Background(), routeErr))
+
+			// An expired cursor is a session end, not an ingest outcome: it carried no object and
+			// nothing was observed, so it must not appear in the per-event census at all.
+			_, found := telemetry.CollectInt64Sum(reader, watchEventsMetric,
+				map[string]string{
+					"gittarget_namespace": "default", "gittarget_name": "target",
+					"group": "", "version": "v1", "resource": "configmaps",
+					"outcome": watchOutcomeStreamError,
+				})
+			assert.False(t, found, "a 410 must not be counted as a stream error")
+		})
+	}
+}
+
+// Every other error frame IS counted. The shutdown arm was added on the argument that a census with
+// an unrecorded exit is not a census — the totals quietly stop adding up — and this arm returned
+// without counting for the same reason it should have.
+func TestRouteLiveTargetWatchEvent_CountsNonExpiredErrorFrames(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	manager := &Manager{}
+
+	_, routeErr := manager.routeLiveTargetWatchEvent(
+		context.Background(),
+		logr.Discard(),
+		types.NewResourceReference("target", "default"),
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+		watch.Event{Type: watch.Error, Object: &metav1.Status{
+			Reason: metav1.StatusReasonInternalError, Message: "boom",
+		}},
+	)
+
+	require.Error(t, routeErr)
+	require.NotErrorIs(t, routeErr, errTargetWatchExpired)
+	assert.Equal(t, sessionEndedError, sessionEndReason(context.Background(), routeErr),
+		"a non-410 error frame is a real error, not watch-history pressure")
+
+	count, found := telemetry.CollectInt64Sum(reader, watchEventsMetric,
+		map[string]string{
+			"gittarget_namespace": "default", "gittarget_name": "target",
+			"group": "", "version": "v1", "resource": "configmaps",
+			"outcome": watchOutcomeStreamError,
+		})
+	require.True(t, found, "an error frame must appear in the ingest census")
+	assert.Equal(t, int64(1), count)
 }

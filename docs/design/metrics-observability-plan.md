@@ -1,531 +1,806 @@
-# Metrics & Audit Observability — improvement plan
+# Metrics, status, and the shape of the pipeline
 
-> **partly built**. Index: [`../INDEX.md`](../INDEX.md)
+> **built.** Phases 1-4 shipped 2026-09; only the dashboard and alert rules (Phase 5) are open. It
+> stays in `design/` because Go source cites it by path as the rationale for what the code does.
+> It **replaces** the previous revision of this file wholesale; the old text is in `git log`.
+> Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: PLAN — revised 2026-07-29, reconciled to the code after the attribution fact-stream
-> switchover. **Architecture-led**: [architecture.md](../architecture.md) is the spine; every metric
-> below maps to a stage in [Common Flows](../architecture.md#common-flows). The live baseline and the
-> documentation bar come from [interpreting-metrics.md](../interpreting-metrics.md). This doc is the
-> single canonical metrics plan — it supersedes the per-feature metric notes now in `finished/`, and
-> it now **absorbs** the attribution surface that was designed in a separate proposal, since
-> consolidated into [the attribution spec](../spec/attribution.md#what-is-observable). This document
-> owns the plan; that one owns the shipped surface.
+> This is the single canonical metrics document for *why the surface has this shape*. The live
+> instrument list, label vocabularies and queries are
+> [interpreting-metrics.md](../interpreting-metrics.md), which is the one place they are maintained;
+> [architecture.md](../architecture.md) is the spine and
+> [spec/status-conditions-guide.md](../spec/status-conditions-guide.md) owns the status half.
 
-## 1. Why now
+## 1. The three questions this answers
 
-The product is one sentence: **watch events arrive, and they are processed into commits.** Everything
-worth measuring is either a stage of that pipeline, or a way an event can be lost, delayed, or
-attributed to the wrong actor on the way through.
+1. **Do the metrics carry logical names, and do they measure the right things?** Mostly the second,
+   often not the first. Six instruments are exact duplicates of another series, three names claim
+   something the recording site does not do, and three instrument doc comments name label values
+   that no longer exist.
+2. **Can an operator see events moving through the system, and see the exceptions?** No. The
+   ingestion half of the pipeline emits nothing at all, the push (the stage that puts an object in
+   Git) emits nothing, and the two places the operator *drops work on the floor* are log lines
+   with no counter. There is no shared vocabulary that would let a funnel be drawn even if the
+   stages existed.
+3. **Is status counting things it should not?** Yes, in three places, and one of them is a field
+   that has never been written at all.
 
-The June 2026 cleanup left a surface that was honest but **lopsided**: it covered the *edges* (Git
-write, discovery catalog, Secret encryption) and was dark in the middle. Since then the attribution
-stage has been rebuilt and instrumented — the fact keyspace became a per-type fact **stream** that
-the watch side follows into an in-process index
-([attribution-fact-stream.md](../finished/attribution-fact-stream.md)) — so the middle is no longer
-uniformly dark. What is left is a sharper, smaller list:
+The answer to all three is one change: **one boundary, one counter, one bounded `outcome`**, applied
+along both paths an object's mirror depends on, plus the removal of everything that says the same
+thing twice. It happens to end with slightly fewer instruments than today, but **the count is not
+the goal and must never be used as one**: a counter that survives because merging it would have
+been convenient is a counter that lies about its unit, and §5.2 records where an earlier draft of
+this plan did exactly that.
 
-- **Watch ingestion** is the source of object state
-  ([architecture.md → State Ingestion](../architecture.md#state-ingestion-and-not-losing-deletes))
-  and still has **no direct metrics at all**. It is now the biggest hole by a wide margin.
-- **The delay between an event arriving and being processed** is unmeasured, and it is a proven
-  failure mode rather than a theoretical one: a slow resolution head-of-line blocks its shard, which
-  is what broke a CommitRequest e2e spec (see
-  [the attribution spec → the wait](../spec/attribution.md#the-wait)).
-- **Attribution was instrumented but mislabelled**, and Phase 1 has now fixed it: `result` crammed a
-  tier and an actor kind into one label, `weak` covered two different kinds of evidence, and the wait
-  histogram could not tell a write from a removal — exactly the distinction the removal-wait design
-  turns on. The attribution loss paths that were silent (an undecodable stream entry, a wedged
-  follower, an accepted event that produces no fact) are counted too.
+## 2. What the audit found
 
-### The questions the metrics must answer
+Every claim below was read out of the code, not inferred.
 
-- Is the operator turning cluster changes into commits right now? (liveness)
-- Are watch events arriving, and are they being processed promptly, or queueing? (ingestion health)
-- Is audit arriving, is it good, and is it actually putting real names on commits? (the audit lens)
-- When attribution *doesn't* land, why — no audit, weak evidence, an unfollowed type, a lost fact?
-  (degradation)
-- Is any object state being lost or stalled? (correctness / backpressure)
+### 2.1 Exact duplicates: the same series published twice
 
-### Breaking changes are cheap right now, and will not stay cheap
+| Duplicate | Evidence |
+|---|---|
+| `git_operations_total` and `objects_written_total` | Both `Add(w.ctx, int64(eventCount))` with the same value and no labels, four lines apart in `recordPendingWritesMetrics` ([branch_worker.go](../../internal/git/branch_worker.go)). Two names, one number. |
+| `secret_encryption_cache_hits_total` and `secret_encryption_marker_skips_total` | Incremented on consecutive lines of `cachedEncryptedContent` ([content_writer.go](../../internal/git/content_writer.go)), on every path, unconditionally. They can never differ. |
+| `secret_encryption_attempts_total` | Incremented immediately before `Encrypt`, so it is exactly `success + failures`. Three counters describe two outcomes. |
+| `audit_eventlists_total{outcome}` | Recorded at the same site, with the same attribute set, as `audit_eventlist_duration_seconds{outcome}`, whose `_count` series **is** that counter. A histogram already ships its own observation count. |
+| `audit_eventlist_events_total{outcome}` | Counts decoded event items; `audit_events_total` counts the same items once each, with `group`/`version`/`resource`/`verb`/`outcome` on them. The coarse counter is the fine one summed. |
+| `status.streams.summary` | Restates `ready` and `total` as `"3/4"`, which its own doc comment admits the API conventions rule out. |
 
-**Nothing consumes these metrics yet.** No dashboard ships, no alert rules ship, and no user has been
-told to build against the current label names. The cost of renaming a label today is one
-[`UPGRADING.md`](../UPGRADING.md) entry; the cost after a release with a published dashboard is a
-migration for every consumer. This release has already broken the `result` label anyway — the
-`deletecollection` rework removed `exact_deletecollection_item` and added `deletecollection_body_uid`,
-`deletecollection_scope`, and `name` — so finishing the job costs the same single migration, and deferring
-it costs a second one later on a label that will have been wrong twice.
+### 2.2 Names that describe something the code does not do
 
-So this plan takes the label breaks now, deliberately, and writes them down. It does not take them
-quietly.
+- **`commits_total` says "pushed" and counts "committed".** The doc comment reads *"counts commit
+  batches pushed to git"*; the recording site is `commitPendingWrites`, which runs before
+  `pushPendingCommits` and is never re-run when a push is retried. During a total remote outage the
+  product's headline metric keeps climbing while nothing reaches Git. It is a real number; it is
+  not the one its name promises, and there is no metric for the one that matters.
+- **`git_operations_total` and `objects_written_total` both count events in a flush**, not Git
+  operations and not documents written. A flush of one event that rewrites six files counts one.
+- **`target_reconcile_completed_total`** counts a completed **watch recovery**: a cursor resume or
+  an applied per-type reconcile. Nothing about it is specific to a "target reconcile", and the name
+  is why its `trigger` label was documented wrongly (below).
 
-## 2. Principles
+### 2.3 Label drift: instrument comments naming values that do not exist
+
+[exporter.go](../../internal/telemetry/exporter.go) is the first thing a reader opens, and three of
+its comments are stale:
+
+| Instrument | Comment says | Code emits |
+|---|---|---|
+| `PlacementsTotal` | `declared / kustomize_root / canonical` | `by_type` / `default` / `kustomize_root` / `canonical` |
+| `TargetReconcileCompletedTotal` | `trigger` is `rule_change` | `cursor_resume`, `type_reconcile` |
+| `WatchPlanTriggersTotal` | `declare, rule_change, api_surface, source_namespace, periodic` | `declare`, `rule_change`, `shared_refresh`, `periodic` |
+
+[interpreting-metrics.md](../interpreting-metrics.md) is right in two of these three cases, which is
+the wrong way round: the source of truth should be beside the code.
+
+One documented **query** is wrong for the same reason. "Cache effectiveness" is given as
+`cache_hits / attempts`, but the cache is consulted before `attempts` is incremented and returns
+early on a hit, so the two counters are over disjoint populations and the ratio can exceed 1.
+
+### 2.4 Exceptions with no counter: the silent drops
+
+The previous revision of this plan set the rule (*"every silent drop gets a counter"*) and the code
+has three places that break it. Each is a log line and nothing else.
+
+- **A full branch-worker queue drops the write.** `enqueueRequest` logs *"Event queue full, request
+  dropped"* and returns false ([branch_worker.go](../../internal/git/branch_worker.go)). `EnqueueAttach`
+  does the same for a `CommitRequest` attach. `branch_worker_queue_depth` shows the queue was deep;
+  nothing anywhere says work was thrown away. A storm is exactly when this fires.
+- **A push that fails every retry is invisible.** `pushPendingCommits` gives up after three attempts
+  and `pushPending` logs *"Push failed; pending writes retained for retry"*. No counter, no latency
+  histogram, no conflict count. The mirror stops advancing and every metric reads healthy.
+- **A route failure at the watch boundary is a `V(1)` log.** `routeLiveTargetWatchEvent` logs
+  *"target watch route failed"* ([target_watch.go](../../internal/watch/target_watch.go)) and the
+  event is gone until the next resync.
+- **A failed commit drops its whole window, and this was the largest hole.**
+  `finalizeOpenWindowWithReason` logs *"Commit failed; dropping open window"* and discards every
+  event in it; the atomic path does the same for a snapshot request. It happens AFTER routing and
+  BEFORE pushing, so neither the queue-drop counter nor the push counter can see it, and the mirror
+  falls behind for every object in that window until a resync re-derives them. A refusal at least
+  moves a GitTarget condition, but a condition is not a rate, and the transient write fault moves
+  nothing at all. `git_commit_failures_total{kind,reason}` closes it.
+
+### 2.5 Gauges that go stale during the incident they exist to detect
+
+Both saturation gauges are **pushed from inside the loop they measure**, so the loop stalling is
+exactly what stops them being republished.
+
+- **`branch_worker_queue_depth` reads 0 through the first stall.** `syncQueueDepthMetric` runs at the
+  *bottom* of each loop iteration ([branch_worker.go](../../internal/git/branch_worker.go)). From
+  idle: fifty items enqueue and the gauge is still 0 because nothing has published; the loop then
+  wakes and blocks inside `handleQueueItem`, and the gauge stays 0 for as long as that takes. The
+  comment's claim that "the gauge converges to 0 once every accepted item has been handled" is true
+  and beside the point, because it also *starts* at 0 and does not move while work piles up.
+- **`watch_plan_oldest_dirty_age_seconds` freezes at the value it held when the loop hung.**
+  `publishDirtySetDepth` is called once per owner-loop turn
+  ([owner_observability.go](../../internal/watch/owner_observability.go)). A pass that wedges stops
+  the turn, so the age the alert is written against stops advancing at the moment it becomes
+  interesting.
+
+The fix is the same for both, and it is a rule rather than a patch: see principle 6 in §3.
+
+### 2.6 A misconfigured audit endpoint looks exactly like a silent one
+
+`ServeHTTP` refuses a request for its method, its path, or an unknown route and returns **before**
+any instrument is touched ([audit_handler.go](../../internal/webhook/audit_handler.go)). So an
+apiserver posting to the wrong path, or under a route no `ClusterProvider` claims, produces the same
+ingress metrics as an apiserver posting nothing at all: none.
+
+That is the most likely audit misconfiguration there is, and it was the one shape the ingress metric
+could not show. The fix is three bounded rejection outcomes: `bad_method`, `bad_path`,
+`bare_endpoint_disabled`: on the instrument that already exists, and a timer that starts before the first
+gate rather than after the last one.
+
+### 2.7 Discovery is blind to every cluster but the local one
+
+`refreshClusterCatalog` guards both `recordCatalogRefresh` and `recordCatalogStats` with
+`if cc.isLocal()` ([manager_catalog.go](../../internal/watch/manager_catalog.go)), and the comment
+says why: the metrics carry no cluster label, so publishing a remote cluster's stats under them
+would overwrite the local cluster's series. That was correct when there was one cluster. Since the
+config-plane split a `GitTarget` can mirror a remote source cluster through `spec.kubeConfig`, and a
+degraded `APIService` there produces **no signal at all** while `api_catalog_group_versions` sits
+reassuringly at zero degraded. The label is the fix, not the guard.
+
+### 2.8 Recording boundaries: where a counter fires matters as much as what it counts
+
+Instrumenting the stages exposed a second class of defect, and it is the one that survives review
+longest because the metric exists and looks plausible. Six recording sites were wrong about *when*:
+
+| Site | Fired | Should fire |
+|---|---|---|
+| `git_commits_total` | at local commit creation | on a successful push, from the writes that SURVIVED the replay: a conflict replay rebuilds them, and a write another writer already applied produces no replacement commit |
+| `git_documents_total` | as each document was applied into a buffer | after flush, since a resync can apply everything and then abort on a precondition, writing nothing |
+| `watch_event_handling_seconds` | in `processLiveTargetWatchEvent` | at `routeLiveTargetWatchEvent`, because a COLD-started watch streams through `handleTargetWatchSessionEvent` instead and reported no occupancy at all |
+| `watch_recovery_total{mode="list_fallback"}` | when the fallback was chosen | when it completed, since the counter is documented as completed recoveries and the LIST after it can still fail |
+| `watch_sessions_ended_total{reason="expired"}` | at the outer session end | where the expiry is detected, because the wrapper swallows the sentinel and falls through to a replay |
+| `git_documents_total{outcome}` for a refusal | as `unchanged` | as `refused`, because a Secret the writer DECLINED to place is not a document it found identical |
+
+None of these is a missing metric. Each is a metric that answers confidently and wrongly, which is
+the failure mode this whole plan exists to remove, arriving through the back door.
+
+### 2.9 Two labels that were not what they said
+
+- **The resync census had no GitTarget.** `recordDocument` read identity off the event, and the
+  resync path builds its events without target fields, so every production snapshot write and every
+  sweep delete filed under empty labels. An empty label set is worse than none: it looks like a real
+  series. The batch already carries the target; it just was not being asked.
+- **`unknown_route` named a rejection that cannot happen.** `resolveRoute` accepts any named route
+  as-is, deliberately, because a route is a partition name rather than a claim about an object.
+  The only route-shaped rejection is the bare `/audit-webhook` with no annotation key, so the value
+  is now `bare_endpoint_disabled`. [configuration.md](../configuration.md) said the opposite and is
+  corrected with it.
+
+### 2.10 The flow cannot be drawn, and it is not close
+
+Watch ingestion has **no instrument at all**. So the funnel an operator would want:
+
+```text
+watch events seen -> filtered -> routed -> documents written -> commits -> pushed
+```
+
+This is measurable only at the third-to-last step onward, and even there `objects_written_total` counts
+the wrong unit and `commits_total` counts a stage earlier than it claims. There is also no shared
+convention: `outcome`, `reason`, `trigger`, `source`, `disposition`, `op`, `mode`, `state` and
+`category` all name "what happened to this thing" on different instruments, so no single query can
+ask "show me everything that did not make it".
+
+## 3. Principles
+
+Carried forward from the previous revision, and still right:
 
 1. **Architecture is the spine.** Every metric maps to a named stage of
-   [Common Flows](../architecture.md#common-flows). No metric exists without a stage.
-2. **Watch is the source of truth → instrument it first.** It currently has the least coverage and
-   the most risk.
-3. **Audit is optional attribution, never correctness.** Metrics measure attribution *coverage and
-   quality*; the invariant "a missing/late fact changes the author, never the state"
-   ([architecture.md → Optional Attribution](../architecture.md#optional-attribution)) must be
-   *visible*, not just asserted.
-4. **Every metric has a recording site and an interpretation.** The thing we deleted in June —
-   defined-but-never-recorded instruments — must never come back. A metric ships with its
-   [interpreting-metrics.md](../interpreting-metrics.md) row (what it measures, one query, what a bad
-   value looks like) in the *same* change.
-5. **Every silent drop gets a counter.** If the pipeline discards, skips, or ages out an event or a
-   fact, that population is counted where the decision is made. A path that loses data with no
-   symptom is the failure mode this plan exists to remove.
-6. **Label discipline.** Bounded cardinality only: `group`/`version`/`resource` (tens of
-   claimed-and-followable types, not thousands), `verb` (~5), bounded `scope`
-   (`namespace`/`cluster`), and frozen enum labels (`outcome`, `tier`, `actor_kind`, `reason`).
-   **Never** put an object's `name`/`namespace` in a label. Identity labels stay prefixed
-   (`provider_*`, `gittarget_*`) to survive a `honor_labels=false` pod scrape — see the note in
-   [exporter.go](../../internal/telemetry/exporter.go).
-7. **Degradation is loud.** Unresolved attribution, a wedged fact follower, `410` rebuilds, LIST
-   fallback — each has a metric, so running in a degraded shape is a visible state, not a silent one.
-8. **A metric answers a question a reader can act on.** A number nobody can act on is a number that
-   gets alerted on wrongly; `streams_behind` in §5.4 is the worked example.
+   [Common flows](../architecture.md#common-flows).
+2. **Every metric has a recording site and an interpretation**, both in the same change, or it does
+   not merge.
+3. **Every silent drop gets a counter**, at the point the decision is made.
+4. **Label discipline.** Bounded cardinality only. Never an object's name or namespace. Identity
+   labels stay prefixed (`gittarget_*`, `provider_*`) to survive a `honor_labels=false` pod scrape.
+5. **Degradation is loud.** Running in a degraded shape is a visible state, not a silent one.
 
-## 3. Current state (the map)
+Eight new ones. The first three are what makes the flow drawable; the next three keep a gauge honest
+during an incident and cheap enough not to cause one; the last two are about where a call goes:
 
-The live instrument set is [`exporter.go`](../../internal/telemetry/exporter.go); the reader's guide
-to it is [interpreting-metrics.md](../interpreting-metrics.md).
+1. **One boundary, one counter, one bounded `outcome`: when the unit is the same.** Where a
+   population divides, it divides *inside* one counter on a label named `outcome`. Two counters over
+   the same population is the defect §2.1 keeps finding. The qualifier is load-bearing and was
+   learned the hard way: **things counted in different units must never share a counter**, however
+   often they are read together. §5.2 is the worked example.
+2. **`outcome` values are classified, not ranked.** A frozen enum, and each value belongs to one of
+   four classes:
 
-| Pipeline stage (architecture.md) | Live metrics today | Coverage |
-|---|---|---|
-| Discovery & catalog | `api_catalog_resources`, `_group_versions`, `_refresh_total`, `_refresh_duration_seconds`, `_generation` | ✅ good |
-| **Watch ingestion** | — | ❌ **none** |
-| **Shard queue / processing delay** | — | ❌ **none** |
-| **Relevance filter** | — | ❌ **none** |
-| Audit ingress | `audit_eventlists_total`, `_eventlist_events_total`, `_eventlist_duration_seconds`, `audit_events_total{outcome,category,group,version,resource,verb}` | ✅ good |
-| Attribution publish & join | `attribution_resolutions_total{tier,actor_kind,…}`, `attribution_resolution_wait_seconds{tier,event_kind,…}`, `attribution_facts_total{op}`, `attribution_fact_index_entries`, `_index_evictions_total{reason}`, `_stream_gaps_total{stream}`, `_stream_decode_errors_total{transport}`, `_fact_follower_errors_total{transport}`, `_fact_follower_last_success_timestamp_seconds`, `_collection_without_uidset_total{reason}`, `attribution_transport_info{transport}` | ✅ good (Phase 1 shipped) |
-| Git write | `commits_total{provider_*,branch,author_kind}`, `git_operations_total`, `objects_written_total`, `prune_retained_documents_total`, `branch_worker_queue_depth`, `resync_sweep_deletes_total` | 🟡 no push latency / conflict |
-| New-file placement | `placements_total{source,disposition,gittarget_*,group,version,resource}`, `placement_refusals_total{reason,…}`, `placement_kustomization_entries_total{outcome,gittarget_*}` | ✅ good — shipped with the Option C deletion |
-| Control plane / reconcile | `target_reconcile_completed_total`, `resync_background_failures_total`, `watched_types` | ✅ good |
-| Secret encryption | `secret_encryption_{attempts,success,failures,cache_hits,marker_skips}_total` | ✅ good |
+   | Class | Means | Belongs on the exceptions panel? |
+   |---|---|---|
+   | **expected** | the pipeline working: `routed`, `unchanged`, `operation_filtered`, `cached`, `retained`, `deleted_*` | no |
+   | **degraded** | it worked, on weaker evidence or in a fallback shape: `name` and `deletecollection_scope` tiers, `list_fallback` recovery, `unresolved` authorship | no, but a trend panel |
+   | **recoverable** | it failed and will be retried: a failed push holding its writes, a resync that will re-run | only as a rate, never as a loss total |
+   | **loss** | an observed change that did not reach Git and nothing will retry: `route_failed`, a queue drop, a placement refusal, a trimmed fact | yes |
 
-Two rows changed meaning since the last revision of this plan, and any query written against the
-old text is wrong:
+   An earlier draft said each counter has "exactly one healthy value". That is false of most of
+   them: `unchanged`, `retained` and `cached` are the writer doing its job.
+3. **`outcome` is the universal word.** `reason`, `trigger`, `op`, `state`, `mode`, `disposition`,
+   `source` and `category` survive only where they answer a *different* question than "how did this
+   end". `source` and `disposition` on placement do; `trigger` on a recovery counter does not.
+4. **A metric counts throughput; status states a condition.** The two overlap more than a slogan
+   allows: see §6, which is deliberately the most cautious section here.
+5. **A gauge is read at scrape time, never pushed from the loop it measures.** Every gauge here
+   becomes an OpenTelemetry *observable* gauge whose callback reads the live state when Prometheus
+   asks. A gauge published from inside a work loop reports the loop's last healthy moment for as
+   long as the loop is stuck, which is precisely backwards (§2.5).
+6. **A gauge source reads published state and computes nothing.** The callback runs on the scrape
+   goroutine, so anything it triggers competes with the work it is measuring. This is not a
+   theoretical hazard: the first `watch_types` source called `StreamSummaryForGitTarget`, which
+   calls `refreshWatchedTypeTables`, a discovery-backed rebuild of every cluster's type registry,
+   once per target per scrape. Against a wildcard rule resolving 58 types it starved the replaying
+   streams and the GitTarget sat at `0/58 streams running` until an e2e spec timed out. A gauge that
+   reports the last published resolution is both cheaper and more honest than one that resolves its
+   own.
+7. **A counter fires where the thing it names actually happened.** Not where it was decided, not
+   where it was attempted, and not where it was convenient. §2.8 lists six sites that had this
+   wrong, and every one of them produced a confident, plausible, incorrect number: work counted as
+   committed that a replay discarded, documents counted as written by a flush that aborted, a
+   recovery counted before it recovered. This is the harder half of "one boundary, one counter":
+   picking the boundary is easy, and putting the call at it is where the mistakes live.
+8. **"How long" is exported as a timestamp, not as an age.** An age has to be recomputed to stay
+   true; a timestamp is true forever once written, and `time() - <gauge>` does the arithmetic in
+   PromQL. This is
+   [Prometheus's own instrumentation advice](https://prometheus.io/docs/practices/instrumentation/#timestamps-not-time-since),
+   and `attribution_fact_follower_last_success_timestamp_seconds` already follows it. So does the
+   dirty-set gauge after this plan.
 
-| The old plan said | The code does |
-|---|---|
-| `result` includes `conflict` and `expired` | neither value ever existed; `result` itself is now gone, replaced by `tier` plus `actor_kind` (§4.4) |
-| `attribution_fact_events_total{op}` includes `expired_unmatched` and `late` | `op` is `written` or `matched`, and nothing else |
-| `attribution_fact_index_size` is "facts parked in **Redis**" | the index is in **process memory**; Redis (or an in-process ring) carries the fact *stream*, not the index |
+## 4. The model: two paths, joining at the resolver
 
-## 4. Target metric model — by pipeline stage
+The product has **two** ingestion paths, not one. Watch carries object state; audit carries the
+author's name. They never call each other and meet only at the resolver, where a watch event asks
+the fact index who did this. Treating audit as a lens on the watch pipeline, which an earlier
+draft of this section did, loses the half of the surface that is already best instrumented and the
+questions that are specific to it.
 
-New watch metrics use the shape sketched in
-[watch-first-ingestion-architecture.md → Metrics](../finished/watch-first-ingestion-architecture.md),
-modernized to the live audit convention: separate `group`, `version`, and `resource` labels instead
-of a packed `gvr` string. Keep `version` even though it adds series — Git paths and audit metrics
-already treat version as part of resource identity, and a served-version migration should be visible
-rather than silently folded into the old series.
+### 4.1 The two paths, with the metric on every edge
 
-### 4.1 Watch ingestion (new — the biggest hole)
-
-| Metric | Type | Labels | Answers |
-|---|---|---|---|
-| `watch_events_total` | counter | `group`, `version`, `resource`, `scope`, `type` (added/modified/deleted/bookmark), `outcome` (applied/filtered/dropped) | watch volume and where events go |
-| `watch_restarts_total` | counter | `group`, `version`, `resource`, `scope`, `reason` (`410_gone`/`disconnect`/`rule_change`) | watch stability / `410` pressure |
-| `watch_replay_seconds` | histogram | `group`, `version`, `resource`, `scope` | time to `initial-events-end` — resume cost |
-| `watch_replay_objects` | histogram | `group`, `version`, `resource`, `scope` | replay size (how much state is re-walked) |
-| `watch_recovery_total` | counter | `group`, `version`, `resource`, `mode` (`cursor_resume`/`replay`/`list_fallback`) | which recovery path fires — cursor effectiveness vs aggregated-API fallback |
-| `watch_active` | gauge | `group`, `version`, `resource`, `scope` | open watch goroutines vs claimed set |
-
-`watch_active` needs bookkeeping, not just a recording call. Count bookmarks at the session receive
-point, before `targetWatchEventResourceVersion` swallows them into cursor progress.
-
-### 4.2 Processing delay — the head-of-line signal (new)
-
-| Metric | Type | Labels | Answers |
-|---|---|---|---|
-| `watch_event_queue_seconds` | histogram | `group`, `version`, `resource` | how long an event waited between arriving on its shard and being picked up |
-
-This is the failure that broke an e2e spec, and nothing measures it. It was not a slow resolution: it
-was the delay a slow resolution imposed on the events queued *behind* it on the same single-threaded
-shard. The wait histogram in §4.4 times each resolution in isolation; the ten-second window delay was
-only visible by correlating two log lines by hand.
-
-It is also the pressure signal that makes a separate "resolvers currently blocked" gauge unnecessary
-for now — see the deferred list in §5.5.
-
-### 4.3 Relevance filter (new)
-
-| Metric | Type | Labels | Answers |
-|---|---|---|---|
-| `watch_events_filtered_total` | counter | `group`, `version`, `resource`, `reason` (`sanitized_noop`/`status_only`/`not_followable`/`duplicate`) | is the product-side filter behaving, or masking real changes? |
-
-The reason set is the target shape, not a claim that one chokepoint exists today. The phase that
-builds it first locates or consolidates the scattered filter decisions on the watch-to-Git path, then
-records the metric at the smallest honest boundary.
-
-### 4.4 Attribution / audit — **the centerpiece** (§5 expands this)
-
-| Metric | Type | Labels | State |
-|---|---|---|---|
-| `audit_events_total` | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` | ✅ shipped — `no_attribution_fact` added in the `dropped` category |
-| `audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds` | counter/hist | `outcome` | live, unchanged |
-| `attribution_resolutions_total` | counter | **`tier`**, **`actor_kind`**, `group`, `version`, `resource` | ✅ shipped — `result` is gone; `tier` gained `delete_sticky`, and the two collection values are named for the `deletecollection` verb |
-| `attribution_resolution_wait_seconds` | histogram | **`tier`**, **`event_kind`**, `group`, `version`, `resource` | ✅ shipped — relabelled and split by write/removal |
-| `attribution_facts_total` | counter | `op` (`written`/`matched`) | ✅ shipped — renamed from `attribution_fact_events_total` |
-| `attribution_fact_index_entries` | gauge | — | ✅ shipped — renamed from `attribution_fact_index_size` |
-| `attribution_fact_index_evictions_total` | counter | `reason` (`per_type`/`total`) | live, unchanged — and now the removal pointer's only horizon |
-| `attribution_fact_stream_gaps_total` | counter | `stream` | live, unchanged |
-| `attribution_collection_without_uidset_total` | counter | `reason` (`uid_cap`/`no_uids`) | ✅ shipped — renamed from `attribution_collection_degraded_total` |
-| `attribution_fact_stream_decode_errors_total` | counter | `transport` | ✅ shipped — the one loss path that had no symptom at all |
-| `attribution_fact_follower_errors_total` | counter | `transport` | ✅ shipped |
-| `attribution_fact_follower_last_success_timestamp_seconds` | gauge | — | ✅ shipped — distinguishes "erroring but progressing" from "has read nothing in ten minutes" |
-| `attribution_transport_info` | gauge (always 1) | `transport` (`redis`/`memory`) | ✅ shipped — interpretive metadata; changes how every metric above reads |
-| `commits_total` | counter | `provider_*`, `branch`, `author_kind` | live, unchanged — the bottom line |
-
-### 4.5 Git write (new additions to a covered stage)
-
-| Metric | Type | Labels | Answers |
-|---|---|---|---|
-| `git_push_duration_seconds` | histogram | `provider_*`, `branch` | push latency (re-added with a recording site and doc row) |
-| `git_push_conflicts_total` | counter | `provider_*`, `branch` | non-fast-forward → fetch/reset/replay retries ([PushAtomic](../../internal/git/git_atomic_push.go) detects a moved remote; [BranchWorker](../../internal/git/branch_worker.go) fetches, rebuilds, and retries) |
-| `placements_total` | counter | `source`, `disposition`, `gittarget_*`, `group`, `version`, `resource` | ✅ shipped — "why did this file land here?", and which (target, type) needs a `placement.byType` line (`source="canonical"`) |
-| `placement_refusals_total` | counter | `reason`, `gittarget_*`, `group`, `version`, `resource` | ✅ shipped — which resources are **not** in the mirror, and why. Replaces a log line plus `ResyncStats.PlacementSkipped` |
-| `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_*` | ✅ shipped — `failed` is a file committed outside every render: in Git, looks mirrored, applied by nothing |
-
-**Note on `placements_total`, since this plan argued the other way.** An earlier revision of the
-priority queue said to argue *against* leading with a `placement_fell_back_total`, because "it happened
-somewhere" is not actionable. That objection was to the **labels**, not to the counter: with the
-GitTarget and the type key on it, one series reads directly as the `byType` line that is missing. The
-per-resource detail (path, name) deliberately stays in the log line.
-
-### 4.6 Catalog, reconcile, secrets
-
-Keep as-is (✅ above). One small add:
-`watch_set_changes_total{gittarget_namespace,gittarget_name,op=open/close}` to see watch churn when
-rules/CRDs change (pairs with `target_reconcile_completed_total{trigger=rule_change}`).
-
-## 5. Deep dive: audit & attribution observability
-
-This is the subsystem to keep glass-box, and it is the one that changed most. The model is now two
-halves that never call each other, meeting only through the keys a fact was filed under
-([the attribution spec](../spec/attribution.md)):
-
-```text
-kube-apiserver --POST--> /audit-webhook --gate--> append one entry per type to the fact stream
-                                                            |  (Redis Streams, or an in-process ring)
-                                                            v
-                                                     fact follower --> in-process index (bounded, TTL'd)
-                                                            |
-watch event --> resolver registers waiter keys, looks once, --+
-                sleeps up to --author-attribution-grace
-                                                            |
-                            evidence found -> named actor ; else -> unknown (attribution unresolved)
+```mermaid
+flowchart TB
+    subgraph WATCHPATH["Object state: internal/watch"]
+        W["watch session"] -->|"watch_events_total"| R["routeLiveTargetWatchEvent"]
+        WS["session ends"] -.->|"watch_sessions_ended_total{reason}<br/>watch_replay_duration_seconds"| W
+        R -->|"outcome=unchanged / operation_filtered / not_object"| DROPF(["filtered: expected"])
+        R -->|"outcome=route_failed"| DROPR(["LOSS: until the next resync"])
+    end
+    subgraph AUDITPATH["Authorship (optional): internal/webhook + internal/queue"]
+        A["POST /audit-webhook"] -->|"audit_eventlist_duration_seconds{outcome}"| AG["accept gate"]
+        AG -->|"audit_events_total{category,outcome}"| AF["fact publication"]
+        AF -->|"attribution_facts_total{op=written}"| AS[("fact stream")]
+        AS -->|"follower"| AI[("in-process index")]
+        AS -.->|"_fact_stream_gaps_total<br/>_fact_stream_decode_errors_total"| ALOSS(["LOSS: facts gone"])
+        AI -.->|"_fact_index_evictions_total"| ALOSS
+    end
+    R -->|"outcome=routed"| RES["author resolver"]
+    AI -->|"attribution_resolutions_total{tier,actor_kind}<br/>_resolution_wait_seconds{tier,event_kind}"| RES
+    subgraph GITPATH["Git: internal/git"]
+        RES --> Q["worker queue"]
+        Q -->|"git_queue_drops_total{kind}"| DROPQ(["LOSS: queue full"])
+        Q -->|"git_documents_total{outcome}"| F["files on disk"]
+        F -->|"placement_refusals_total{reason}"| DROPP(["LOSS: not mirrored"])
+        F --> C["local commits"]
+        C -->|"git_pushes_total{outcome=pushed}<br/>git_commits_total"| G[("remote branch")]
+        C -->|"outcome=failed, writes retained"| RETRY(["recoverable: retried"])
+    end
 ```
 
-Four lenses, each a dashboard question.
+The watch path decides whether an object reaches Git. The audit path decides only **whose name is on
+it**: a missing or late fact changes the author, never the state. That invariant is why the two are
+drawn apart, and why an audit outage is never a mirror outage.
 
-### 5.1 Is audit arriving and well-formed?
+### 4.2 The object-state stages
 
-`audit_eventlists_total{outcome}` (delivery), `audit_eventlist_duration_seconds` (latency),
-`audit_events_total{category}` (per-event fate; `error` must be 0). This is the ingress half, and it
-is already complete.
+| Stage | Counter | Expected values | Loss |
+|---|---|---|---|
+| 1 Ingest | `watch_events_total` | `routed`, `unchanged`, `operation_filtered`, `bookmark`, `shutdown` | `route_failed` |
+| 2 Queue | `git_queue_drops_total` | (no increment) | every increment |
+| 3 Write | `git_documents_total` | `written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained` | `placement_refusals_total`, beside it |
+| 4 Commit | `git_commits_total` | all: recorded on a successful push, so it cannot claim a commit the remote never took |: |
+| 5 Push | `git_pushes_total` | `pushed` | `failed` is **recoverable**, not loss: the writes are retained and retried |
 
-One value was missing from it, and Phase 1 added it.
-[`internal/audit/outcome`](../../internal/audit/outcome/outcome.go) is the single bounded vocabulary
-for what ingestion did with one event, and an event that is accepted but yields **no attribution
-fact** had no terminal value there — it was counted `queued`, which claimed an append that was never
-owed. `no_attribution_fact` in the `Dropped` category (not `Error`, so the e2e invariant is intact)
-counts that population at the point where the decision is made, while the event's type and verb are
-still on the label set. That is where the aggregated-API create shows up: it is rejected before
-publication, so no fact-side counter can ever see it.
+The funnel is four lines of PromQL:
 
-### 5.2 Is the evidence good enough to name an actor?
-
-`attribution_resolutions_total` is the heart, and its label was wrong.
-
-`result` had seven values and two of them were one tier seen twice:
-
-```text
-exact_user  exact_serviceaccount  weak  collection_uid  collection_scope  name  absent
+```promql
+sum(rate(gitopsreverser_watch_events_total{outcome="routed"}[5m]))
+sum(rate(gitopsreverser_git_documents_total{outcome="written"}[5m]))
+sum(rate(gitopsreverser_git_commits_total[5m]))
+sum(rate(gitopsreverser_git_pushes_total{outcome="pushed"}[5m]))
 ```
 
-`exact` is the only tier that also encodes *who* the actor was, so counting exact resolutions means
-summing two series, and the actor kind cannot be asked of any other tier — there is no way to learn
-how many `name` or `collection_uid` resolutions named a service account. Meanwhile `commits_total`
-already carries `author_kind` with `user`, `serviceaccount`, `committer`, and `unresolved`, so the
-two metrics disagreed about the shape of one distinction.
+The stages count different units on purpose (an event is not a document, and a document is not a
+commit), so this is a funnel, never a subtraction. §10 says so again, because it is the mistake this
+shape invites.
 
-**Shipped:**
+### 4.3 The authorship questions
 
-| Label | Values |
+Audit gets its own row and its own questions, because they are not answerable from the object-state
+stages at all. This restores, in the shape the shipped code has, the deep dive an earlier revision
+of this plan carried; the contract itself lives in
+[spec/attribution.md](../spec/attribution.md#what-is-observable).
+
+| Question | Signal |
 |---|---|
-| `tier` | `exact`, `latest`, `resource_version`, `name`, `delete_sticky`, `deletecollection_body_uid`, `deletecollection_scope`, `absent` |
-| `actor_kind` | `user`, `serviceaccount`, `none` |
+| Are audit requests arriving, and are they being accepted at the door? | `audit_eventlist_duration_seconds_count{outcome}`: including the `bad_method` / `bad_path` / `bare_endpoint_disabled` rejections §2.6 adds |
+| Which events are accepted, filtered, or unusable? | `audit_events_total{category, outcome, group, version, resource, verb}` |
+| Did accepted events actually produce facts? | the same counter's `queued`, `write_error` and `no_attribution_fact` outcomes |
+| Is the transport being consumed healthily? | `_fact_follower_errors_total`, `_fact_follower_last_success_timestamp_seconds`, `_fact_index_entries`, and the three loss counters |
+| Did the evidence name an actor, and how good was it? | `attribution_resolutions_total{tier, actor_kind}`, `_resolution_wait_seconds{tier, event_kind}` |
+| Did a real name reach Git? | `git_commits_total{author_kind}`: `unresolved` is the one to watch |
 
-`weak` split at the same time. It covered both a `latest` (uid) match and the rv-only
-escape hatch, which are different evidence: the object's own last write, against a fact that carried
-a resourceVersion and no uid. The removal path turns on `latest` specifically, and the measurement
-that found the window race had to *infer* "these were `latest` matches held as fallbacks" from a wait
-distribution, because the label could not say it.
+### 4.4 One selector for the loss paths
 
-The tier ladder itself, strongest first, is documented in
-[the attribution spec → the tiers](../spec/attribution.md#the-tiers-strongest-first);
-the operator-facing reading of each value is in
-[interpreting-metrics.md](../interpreting-metrics.md#audit-attribution-optional).
+The loss values are shaped so that a **recording rule** can union them into one series with two
+labels, which is what makes the exceptions panel and the paging alert one expression each. The rule
+normalizes every source label into `reason`, because a panel grouping by four different label names
+is not one panel:
 
-**Match coverage** is the share of resolutions that named an actor rather than producing the explicit
-unresolved author. It is `tier != "absent"` — *not* `tier =~ "exact.*"`, which would read the
-collection and name tiers as misses.
+```promql
+# gitopsreverser:loss:rate5m{stage,reason}
+  label_replace(label_replace(
+    sum by (outcome) (rate(gitopsreverser_watch_events_total{outcome="route_failed"}[5m])),
+    "reason", "$1", "outcome", "(.*)"), "stage", "ingest", "", "")
+or label_replace(label_replace(
+    sum by (kind) (rate(gitopsreverser_git_queue_drops_total[5m])),
+    "reason", "$1", "kind", "(.*)"), "stage", "queue", "", "")
+or label_replace(
+    sum by (reason) (rate(gitopsreverser_placement_refusals_total[5m])),
+    "stage", "write", "", "")
+or label_replace(label_replace(
+    sum by (transport) (rate(gitopsreverser_attribution_fact_stream_decode_errors_total[5m])),
+    "reason", "undecodable_entry", "transport", "(.*)"), "stage", "attribution", "", "")
+```
 
-### 5.3 How long did it wait, and for what kind of event?
+**It is a union, not a total.** `route_failed` and a queue drop can describe the same event, because
+a full worker queue is one of the ways a route fails, so summing the series double-counts. Read it as "the
+loss paths that are active right now, and how hot each is", which is the question an operator has,
+and never as a count of lost objects. The attribution arm carries entries, not facts (§5.2), so it
+is never added to anything either; it is on the panel because it belongs to the same shift.
 
-`attribution_resolution_wait_seconds` carries `event_kind` (`write` / `removal`). `ExactCapable`
-splits every query into a write or a removal, and the wait design differs completely between them: a
-removal holds a fallback and keeps waiting for evidence about the deletion, a write does not. The
-histogram used to put an absent write and an absent removal in one series, and the removal wait is
-the number anyone tuning `--author-attribution-grace` actually needs.
+## 5. The instrument set, before and after
 
-Splitting wait time by outcome is what turned the window race from a mystery into a measurement:
-the uid-latest tier at a 6.7 s mean against the exact tier at 0.18 s said immediately that removals
-were sitting out their grace, which no aggregate mean would have shown. `event_kind` makes that
-reading direct instead of inferred.
+Names lose their prefix `gitopsreverser_` in these tables only. The instrument count barely moves.
+It is not the point, and §5.2 is where treating it as the point produced a wrong metric.
 
-### 5.4 Is the fact pipeline itself healthy?
+### 5.1 Deleted (nothing replaces them)
 
-The publish side, the transport, and the follower are three places a fact can be lost. All three are
-counted now; the last two were added in Phase 1.
-
-- **Decode errors — the sharpest gap.** Both transports did the same thing with an entry they cannot
-  decode: `continue`, then advance the cursor past it. No log, no metric, no retry. A malformed or
-  future-schema entry was discarded and the follower moved on as though it had read it.
-  `attribution_fact_stream_decode_errors_total` (plus a log line) is the whole fix, and it was first
-  in line because it is the one loss path with **no symptom at all**: unlike a trim gap it is not
-  detectable after the fact, and unlike a publish failure the API server does not retry it.
-- **Follower health.** When the follower fails, `Run` logs and retries with a backoff. Nothing
-  counted it. A follower that is flapping, or wedged and retrying forever, degrades attribution to
-  committer-authored across the board, with a rising unresolved rate as the only symptom and nothing
-  pointing at the cause. The **timestamp matters more than the counter**: a counter says errors are
-  happening; only `..._last_success_timestamp_seconds` distinguishes "erroring occasionally while
-  making progress" from "has not read anything in ten minutes", and only the second is an outage.
-- **Transport identity.** `attribution_transport_info{transport}` is an info gauge, value always 1.
-  It is interpretive metadata rather than a signal: the two transports have different failure modes,
-  and the same symptom means different things under each. A burst of unresolved commits after a
-  restart is *expected* under the in-memory transport, which loses every fact on restart by design,
-  and is a *bug* under Redis. Reading any other metric here without knowing which transport is in
-  force is reading it without knowing the contract.
-- **Already live and worth keeping:** `attribution_fact_stream_gaps_total{stream}` (facts lost for
-  good to a trim — should be zero), `attribution_fact_index_evictions_total{reason}` (the caps are
-  binding), and `attribution_collection_without_uidset_total{reason}` (the precise collection join
-  was unavailable, so the resolution fell to the scope tier).
-
-One live signal is **not** ready to be exported. `behind` on a followed stream is set when the last
-read filled its entry budget, meaning more was waiting when the read returned. It is the precondition
-for trim-gap detection, not a measure of how far behind the follower is — a stream one entry behind
-and a stream a thousand entries behind carry the same value. Exported as `streams_behind` it would
-invite an alert on a condition that occurs during any ordinary burst. It needs redefining as real lag
-before it can carry that meaning.
-
-### 5.5 Deferred, and what has to be true first
-
-| Deferred | Precondition |
+| Instrument | Why |
 |---|---|
-| `fact_index_replay_seconds` | a replay-complete boundary and a readiness barrier exist at all — the follower runs continuously, streams join the subscription set as watches start, and nothing gates serving on a warm index, so a duration recorded today would measure an arbitrary window |
-| the stream-scaling set (followed-stream count, per-stream read cost, lag) | the followed-stream count is large enough to be in question, and `behind` is redefined as real lag |
-| fact-shape distribution (`uid_rv`/`uid_only`/`rv_only`/`name_only`/`collection`) | a shape taxonomy distinct from the tier taxonomy. Counting facts *by tier* is invalid: a fact with a uid **and** an rv is filed under both `exact` and `latest`, so tiers do not partition facts |
-| `resolvers_waiting` | queue delay (§4.2) proves insufficient, **and** it is incremented around the blocking `select` alone — `Await` registers *before* its first lookup on purpose, so a gauge at registration counts resolutions in flight rather than resolvers blocked |
-| `fact_index_expired_total` | wanted when tuning the TTL or the caps; low risk, low urgency |
+| `git_operations_total` | identical to `objects_written_total` (§2.1) |
+| `audit_eventlists_total` | identical to `audit_eventlist_duration_seconds_count` |
+| `audit_eventlist_events_total` | `audit_events_total` is the same population with better labels |
+| `api_catalog_generation` | an internal counter with no operator action attached; `api_catalog_refresh_total{outcome="changed"}` is the same information, actionable |
+| `watch_plan_triggers_coalesced_total` | becomes a `coalesced` label on `watch_plan_triggers_total`, so the ratio stops being a cross-metric query |
 
-What an earlier draft of this surface got wrong, and why each mistake was invisible, is recorded in
-`git log` on the proposal that has since been folded into
-[the attribution spec](../spec/attribution.md#what-is-observable); the three things that surface
-deliberately cannot answer are listed there.
+### 5.2 Merged (many into one), and one merge that was wrong
 
-## 6. The reference dashboard
-
-Grafana, one dashboard, top-down. The **Audit & Attribution** row is the marquee. PromQL is given so
-a panel is copy-pasteable. The attribution queries below are against the shipped Phase 1 labels; the
-watch and push families they sit beside are not emitted yet.
-
-**Row 0 — SLO header (stat panels):**
-
-- Commit rate: `sum(rate(gitopsreverser_commits_total[5m]))`
-- Audit errors (must be 0): `sum(rate(gitopsreverser_audit_events_total{category="error"}[5m]))`
-- Attribution match coverage %:
-  `sum(rate(gitopsreverser_attribution_resolutions_total{tier!="absent"}[5m])) / sum(rate(gitopsreverser_attribution_resolutions_total[5m]))`
-- Push latency p95: `histogram_quantile(0.95, sum by (le)(rate(gitopsreverser_git_push_duration_seconds_bucket[5m])))`
-- Max worker queue depth: `max(gitopsreverser_branch_worker_queue_depth)`
-- Transport in force: `gitopsreverser_attribution_transport_info` (a legend, not a threshold)
-
-**Row 1 — AUDIT & ATTRIBUTION (marquee):**
-
-- *Live audit stream by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_audit_events_total[1m]))`
-- *Audit outcome mix* (stacked): `sum by (category,outcome)(rate(gitopsreverser_audit_events_total[5m]))`
-- *Attribution coverage by type* (timeseries):
-
-  ```promql
-  sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{tier!="absent"}[5m]))
-    / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))
-  ```
-
-- *Evidence mix* (stacked): `sum by (tier)(rate(gitopsreverser_attribution_resolutions_total[5m]))` —
-  a shift from `exact` toward `collection_scope` or `name` is a quality regression even while
-  coverage holds flat.
-- *Actor mix* (pie): `sum by (actor_kind)(rate(gitopsreverser_attribution_resolutions_total[15m]))`
-- *Commit author mix* (pie/stacked): `sum by (author_kind)(rate(gitopsreverser_commits_total[15m]))`
-- *Removal wait p95* (timeseries) with an `--author-attribution-grace` threshold line — the panel the
-  grace window is tuned from:
-
-  ```promql
-  histogram_quantile(0.95, sum by (le,tier)(
-    rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{event_kind="removal"}[5m])))
-  ```
-
-- *Fact pipeline health* (timeseries): `sum by (op)(rate(gitopsreverser_attribution_facts_total[5m]))`,
-  alongside `gitopsreverser_attribution_fact_index_entries`
-- *Fact loss* (timeseries, should be flat zero):
-  `sum(rate(gitopsreverser_attribution_fact_stream_gaps_total[5m]))`,
-  `sum(rate(gitopsreverser_attribution_fact_stream_decode_errors_total[5m]))`,
-  `sum by (reason)(rate(gitopsreverser_attribution_fact_index_evictions_total[5m]))`
-- *Follower liveness* (stat): `time() - gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds`
-- *Top dropped audit outcomes* (table): `topk(10, sum by (resource,verb,outcome)(rate(gitopsreverser_audit_events_total{category="dropped"}[5m])))`
-
-**Row 2 — WATCH INGESTION:**
-
-- Events/sec by type: `sum by (group,version,resource,type)(rate(gitopsreverser_watch_events_total[5m]))`
-- Queue delay p95 — the head-of-line panel:
-  `histogram_quantile(0.95, sum by (le,group,version,resource)(rate(gitopsreverser_watch_event_queue_seconds_bucket[5m])))`
-- Restarts / `410` pressure: `sum by (group,version,resource,reason)(rate(gitopsreverser_watch_restarts_total[15m]))`
-- Replay p95: `histogram_quantile(0.95, sum by (le,group,version,resource)(rate(gitopsreverser_watch_replay_seconds_bucket[5m])))`
-- Recovery mode mix (cursor vs replay vs list): `sum by (mode)(rate(gitopsreverser_watch_recovery_total[15m]))`
-- Active watches vs claimed: `sum(gitopsreverser_watch_active)` vs `sum(gitopsreverser_watched_types)`
-
-**Row 3 — GIT WRITE:**
-
-- Commit rate by provider/branch, push latency p95, conflict-retry ratio
-  (`rate(git_push_conflicts_total)/rate(commits_total)`), queue depth, objects written, resync sweep
-  deletes: `sum by (group,version,resource)(rate(gitopsreverser_resync_sweep_deletes_total[1h]))`.
-
-**Row 4 — DISCOVERY / SECRETS:**
-
-- Allowed resources, degraded group/versions (`> 0` red), refresh outcome mix, encryption failure rate.
-
-> The dashboard ships as JSON under `docs/dashboards/` (or the chart) so it is versioned with the
-> code. It is built after the §4.4 relabel lands, so it is never written against a name that is
-> already scheduled to change.
-
-## 7. Cardinality & cost
-
-- `group`/`version`/`resource` is bounded by **claimed ∩ followable** types (tens), `verb` ~5,
-  `scope` is a bounded enum (`namespace`/`cluster`), and all other labels are frozen enums (`tier` 7,
-  `actor_kind` 3, `event_kind` 2, `outcome` ~11, `category` 3, `author_kind` 4, `mode` 3). Worst case
-  is a few thousand series total — comfortable for Prometheus.
-- The one place to watch is `attribution_resolution_wait_seconds`, which is a histogram carrying
-  `tier` × `event_kind` × the type triple. It already carries the type triple today; `event_kind`
-  doubles it at most, and removals and writes rarely both occur for every tier.
-- **No object identity in labels** (no `name`/`namespace` of watched objects) — that is the only
-  thing that would blow up cardinality, and principle 6 forbids it.
-- Histograms reuse shared bucket sets (sub-second→minutes), as today.
-
-## 8. Alerts / SLOs
-
-| Alert | Expression (sketch) | Meaning |
+| Merged away | Into | Notes |
 |---|---|---|
-| Audit fact-store errors | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | fact appends are failing — check the transport |
-| Fact stream loss | `rate(gitopsreverser_attribution_fact_stream_gaps_total[10m]) > 0` | the stream was trimmed past this process's position; those facts are gone |
-| Undecodable fact entries | `rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | a schema or version mismatch on the stream; facts are being skipped |
-| Fact follower wedged | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | attribution is degrading to committer-authored cluster-wide |
-| Attribution coverage drop | coverage (`tier!="absent"`) `< 0.5` for 30m while audit is flowing | facts stopped matching watch events |
-| Grace window saturating | `attribution_resolution_wait_seconds{tier="absent",event_kind="removal"}` p95 → `--author-attribution-grace` | removals are sitting out the full grace; raise grace, or skip the wait for never-attributed types |
-| Shard queue delay | `watch_event_queue_seconds` p95 approaching the grace window | head-of-line blocking; events are queued behind slow resolutions |
-| Watch restart storm | `rate(watch_restarts_total{reason="410_gone"}[15m])` spike | RV churn / compaction pressure |
-| List fallback in use | `rate(watch_recovery_total{mode="list_fallback"}[1h]) > 0` | an aggregated API isn't honoring streaming list |
-| Worker backing up | `branch_worker_queue_depth` rising, not draining | stalled remote |
-| Degraded API surface | `api_catalog_group_versions{state="degraded"} > 0` | broken APIService |
+| `secret_encryption_{attempts,success,failures,cache_hits,marker_skips}_total` | `secret_encryptions_total{outcome}` | `outcome`: `encrypted` / `failed` / `cached`, all counting **one document's encryption decision**. `attempts` was incremented immediately before `Encrypt`, so it was exactly `success + failures`; `cache_hits` and `marker_skips` were incremented on consecutive lines of one branch, on every path, so they could never differ. This also fixes the documented "cache effectiveness" ratio, which divided two counters over disjoint populations and could exceed 1 |
 
-The follower row needs both arms, and the second is the one that is easy to leave out. The gauge is
-not emitted until the follower's first successful read, so `time() - <gauge>` returns **no series**
-for a follower that has been wedged since startup — a transport unreachable at boot, which is
-precisely the outage the metric exists for. The `unless` arm fires on the gauge's ABSENCE while
-`attribution_transport_info` says a follower is running, and `for: 10m` keeps an ordinary restart's
-gap from tripping it. Stamping the gauge at start instead would remove the arm at the cost of
-claiming a success that never happened, which is worse: it reads as health for the first ten minutes
-of every outage.
+**And one that was proposed here and is wrong.** An earlier revision of this plan folded
+`attribution_fact_index_evictions_total`, `_fact_stream_gaps_total` and
+`_fact_stream_decode_errors_total` into a single `attribution_facts_lost_total{reason}`, on the
+argument that all three mean "attribution that will never happen", that they were already drawn on
+one panel, and that they wanted one alert. The first three statements are true. The conclusion does
+not follow, because **the three do not count the same thing**:
 
-Note the first row's metric: `write_error` is a value on `gitopsreverser_audit_events_total`, which
-is **per event**. The `audit_eventlist_*` families are request-level and carry a different outcome
-set; an alert written against `audit_eventlist_*{outcome="write_error"}` reports zero forever, which
-is the worst failure mode a monitoring change can have.
+| Counter | Counts | Facts lost |
+|---|---|---|
+| an eviction | one **fact** | exactly one |
+| a trim gap | one **occurrence** | unknown: the entries are gone, so nobody can say how many |
+| a decode error | one **entry**, and [an entry carries a whole audit batch's facts](../../internal/queue/fact_stream.go) | unknown, and at least one |
 
-## 9. Implementation phases
+Their sum is a number in no unit at all, published under a name that asserts a unit. That is the
+same class of defect as `commits_total` claiming to count pushed commits (§2.2), arrived at from the
+opposite direction: the first was carelessness, this one was tidiness. **A metric's name has to be
+true about what it counts before it is convenient.**
 
-Phases 1-3 each ship: recording sites → unit tests (manual-reader assertions) →
-`interpreting-metrics.md` rows, validated per
-[AGENTS.md](../../AGENTS.md) (`fmt`→`generate`→`manifests`→`vet`→`lint`→`test`→`test-e2e`, e2e
-sequential). **No metric merges without its doc row.** The dashboard JSON and the alert RULES are
-Phase 4 for one reason: a panel or an alert written against a family that is still being designed is
-a query nobody re-checks once it stops matching. The alert *sketches* in §8 are the specification
-those rules are written from, not shipped rules.
+So all three stay, with their own names and their own labels (`stream` on the gap counter,
+`transport` on the decode counter: both of which the merge would have thrown away). Reading them
+together is a *panel's* job and alerting on them together is a *recording rule's*; neither needs the
+data model to lie. One further correction while they are here: an eviction does **not** prove the
+fact went unused (a fact may have been matched already and then evicted), so it reads as pressure
+on the caps rather than as a count of lost joins.
 
-0. **Attribution join — done.** Structured resolver result, `attribution_resolutions_total`,
-   `attribution_resolution_wait_seconds`, `attribution_fact_events_total`,
-   `attribution_fact_index_size`, `_index_evictions_total`, `_stream_gaps_total`,
-   `_collection_degraded_total`, and the `commits_total{author_kind}` label change all ship today.
-   Sites: [author_resolver.go](../../internal/watch/author_resolver.go),
-   [fact_index.go](../../internal/queue/fact_index.go),
-   [author_fact.go](../../internal/queue/author_fact.go),
-   [branch_worker.go](../../internal/git/branch_worker.go).
-1. **Attribution surface correction + the silent loss paths — done.** The §4.4 relabel (`tier` +
-   `actor_kind`, `weak` → `latest` / `resource_version`, `event_kind` on the wait histogram), the
-   four renames, `no_attribution_fact` on `audit_events_total`, the stream decode-error counter, the
-   follower error counter and last-success gauge, and `attribution_transport_info` all ship, each
-   with its recording site, a manual-reader unit test, and its
-   [interpreting-metrics.md](../interpreting-metrics.md) row. The label break is written up in
-   [`UPGRADING.md`](../UPGRADING.md). `AttributionResult` in
-   [author_fact.go](../../internal/queue/author_fact.go) is the tier vocabulary — the split lives in
-   the enum, not at the metric boundary, so the resolver names the tier it actually took. Sites:
-   [author_resolver.go](../../internal/watch/author_resolver.go),
-   [fact_index.go](../../internal/queue/fact_index.go),
-   [fact_stream.go](../../internal/queue/fact_stream.go),
-   [outcome.go](../../internal/audit/outcome/outcome.go),
-   [audit_handler.go](../../internal/webhook/audit_handler.go).
-2. **Watch ingestion + queue delay.** `watch_events_total`, `watch_restarts_total`,
-   `watch_replay_seconds`, `watch_replay_objects`, `watch_recovery_total`, `watch_active`, and
-   `watch_event_queue_seconds`. Sites:
+### 5.3 Renamed, and in three cases re-scoped
+
+| Today | After | Change beyond the name |
+|---|---|---|
+| `objects_written_total`, `resync_sweep_deletes_total`, `prune_retained_documents_total` | `git_documents_total{gittarget_*,group,version,resource,outcome}` | one counter at the writer boundary. `outcome`: `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained`. It counts **documents**, not events in a flush, and it closes two gaps at once: the steady-state delete path was never counted, and a document the writer diffed to a no-op was invisible. Three counters over one population become one, which is what principle 1 asks for |
+| `commits_total` | `git_commits_total` | same labels, but **recorded on successful push** rather than on local commit creation. A push that never lands now counts nothing, which is the correction §2.2 asks for; the retry loop rebuilds commits, so counting at the terminal success is also the only place the accounting is right exactly once |
+| `branch_worker_queue_depth` | `git_queue_depth` | same labels, but an **observable** gauge whose callback reads `inflightItems` plus the retained-work flag at scrape time, so it can no longer read 0 through a stall (§2.5) |
+| `resync_background_failures_total` | `git_resync_failures_total` | same labels |
+| `target_reconcile_completed_total{trigger}` | `watch_recovery_total{gittarget_*,group,version,resource,mode}` | `mode`: `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. Says what it measures, gains the two recovery modes that were never counted, and merges with the `watch_recovery_total` the previous revision had planned separately |
+| `watched_types` | `watch_types{gittarget_*,state}` | `state`: `streaming` / `replaying` / `blocked`, as an observable gauge. **Not** `watch_streams`: `streamSummaryCounts` aggregates by resource TYPE, not by watch connection: one type can be watched by several streams across namespaces: so `watch_streams` would have been another name that describes something the code does not do, in a plan whose whole subject is that. It guarantees `Total == Ready + Replaying + Blocked`, so `sum by (gittarget_name)` is the resolved-type count the old gauge published and `state="blocked"` is exactly the difference between "resolved in config" and "actually running" |
+| `watch_plan_oldest_dirty_age_seconds` | `watch_plan_oldest_dirty_since_timestamp_seconds` | an observable gauge holding the Unix time the oldest dirty target went dirty. Read it as `time() - <gauge>`. An age has to be recomputed by the loop that is stuck; a timestamp does not (§2.5, principle 5) |
+| `api_catalog_resources`, `_group_versions`, `_refresh_total`, `_refresh_duration_seconds` | the same names, plus a `source_cluster` label | and the `if cc.isLocal()` guards come off, so a remote source cluster's degraded API surface is finally visible (§2.6) |
+| `attribution_resolution_wait_seconds{tier,event_kind,group,version,resource}` | `attribution_resolution_wait_seconds{tier,event_kind}` | the type triple comes **off the histogram**. A histogram multiplies its label set by its bucket count, so this is the widest family in the system; the question it answers: "is the grace window paying for itself": is a per-tier question, and per-type attribution coverage stays available on `attribution_resolutions_total`, which is a counter and cheap. Deferred, not in this PR: it is a break with no defect behind it |
+
+### 5.4 Added
+
+| Instrument | Type | Labels | Closes |
+|---|---|---|---|
+| `watch_streams_open` | gauge | `source_cluster`, `gittarget_*` | the watch SESSIONS held against a source cluster, which is the load an API server actually sees. `watch_types` counts types, and one type across three namespaces is three sessions, so the two answer different people's questions and neither substitutes for the other. Counted at the open and close of a session and read at scrape time, so a failed connection attempt and a stream in reconnect backoff are both absent rather than counted as held |
+| `watch_events_total` | counter | `gittarget_*`, `group`, `version`, `resource`, `outcome` | the whole ingest stage. One recording site: `routeLiveTargetWatchEvent` is a single switch carrying every terminal branch, so this is one honest boundary, not a scattering. It carries the GitTarget because "which tenant stopped receiving events" is the question, and **not** the watch event type (`added`/`modified`/`deleted`): that halves the series budget, and the written-versus-deleted split is answered better at the writer by `git_documents_total{outcome}` |
+| `watch_event_handling_seconds` | histogram | `group`, `version`, `resource` | how long a stream was **busy** on one event, attribution wait included. It is deliberately not the queue delay it was first drafted as: measuring the wait needs an arrival timestamp stamped before the blocking consumer, and the events arrive on a client-go watch channel this process does not fill, so there is nowhere honest to stamp one: timing after the dequeue would name a wait it never observed. Occupancy answers the same question from the other side, because a stream that is busy is a stream nothing else is being read from: `rate(_sum[5m])` approaching 1 means events are queueing behind it. This is the failure that broke a `CommitRequest` e2e spec |
+| `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `reason`: `expired` (the cursor fell out of history, forcing a full rebuild), `error`, or `stopped` (the plan retired the stream: routine). Watch stability and `410` pressure |
+| `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | the cost of a replay, which is what a `410` storm charges |
+| `git_commit_failures_total` | counter | `provider_*`, `branch`, `kind`, `reason` | the largest remaining hole (§2.4). `kind`: `window` / `atomic`; `reason`: `refused` (a Git path a human must fix, which will not clear on its own) / `error`. Every increment is a window's worth of events lost until the next resync |
+| `git_queue_drops_total` | counter | `provider_*`, `branch`, `kind` | §2.4's first silent drop. `kind`: `write` / `attach` / `resync`. It **overlaps** `watch_events_total{outcome="route_failed"}`: a full queue is one of the ways a route fails, so one dropped event increments both. Two views of one event, never two events |
+| `git_pushes_total` | counter | `provider_*`, `branch`, `outcome` | §2.4's second. `outcome`: `pushed` / `failed`, counted once per push cycle at its terminal end. `failed` is **recoverable**, not loss: the writes are retained and a later push carries them, which is why the alert on it needs the second arm in §7 |
+| `git_push_retries_total` | counter | `provider_*`, `branch`, `reason` | `reason`: `remote_moved` / `error`. A replay round is not a terminal outcome, so it is its own counter rather than a third `outcome` value. `rate(retries) / rate(pushes)` is the contention signal |
+| `git_push_duration_seconds` | histogram | `provider_*`, `branch` | push latency, re-added **with** a recording site this time |
+| `resource_condition` | gauge | `kind`, `resource_namespace`, `resource_name`, `type`, `status`, `reason` | *was my configuration accepted* — the question every other instrument here leaves unanswered. Three series per (object, condition), one per status, exactly one of them `1`: status as a LABEL is what makes `{status="False"} == 1` a selector and `count by (kind, status)` a rollup, neither of which works on a gauge whose VALUE encodes the status. `Unknown` is synthesized for an object that carries no such condition yet, because "not reconciled" is a state and not an absence. One recording site: `reconcileStatus.commit()`, which all five config controllers already use |
+
+`resource_condition` is the one place principle 4 needs stating rather than applying. A metric
+counts throughput and a status states a condition — but the condition is only readable by something
+holding a kubeconfig, and "a `GitTarget` has been `Ready=False` for a day" is as serious as a stalled
+push while only one of the two can page anybody. The metric does not restate the status API or
+compete with it: it publishes the CURRENT value of a condition the object still owns, so the alert
+fires from Prometheus and the diagnosis is still `kubectl describe`. `reason` is on the series for
+that reason, since it is what turns a count panel into a first guess.
+
+Its delete path is the part that has to be right. Flux shipped `gotk_reconcile_condition` in 2021
+and added deletion in 2023; for two years a deleted object reported `Ready=False` forever and the
+alert never cleared, which is worse than no gauge because it trains people to ignore the panel. This
+one publishes from a map keyed by object, and a deleted object's key is dropped — so the series
+stops rather than latching.
+
+### 5.5 Kept unchanged
+
+Untouched, name and labels: `placements_total`, `placement_refusals_total`,
+`placement_kustomization_entries_total` (recent, well-labeled, and `source`/`disposition` answer a
+different question than `outcome`); `audit_events_total`; `attribution_resolutions_total`,
+`_facts_total`, `_fact_index_entries`, `_fact_index_evictions_total`, `_fact_stream_gaps_total`,
+`_fact_stream_decode_errors_total`, `_fact_follower_errors_total`,
+`_fact_follower_last_success_timestamp_seconds`, `_transport_info`,
+`_collection_without_uidset_total`; `watch_plan_dirty_targets`, `_passes_total`,
+`_pass_duration_seconds`.
+
+Changed elsewhere in this document, and listed here only so the inventory is complete:
+
+- `audit_eventlist_duration_seconds` **keeps its name and gains three `outcome` values**
+  (`bad_method`, `bad_path`, `bare_endpoint_disabled`, §2.6). Its `_count` series is now the only request
+  counter, so it is load-bearing rather than incidental. An earlier draft left it falling between
+  the deletion table and this list, which is how a metric gets removed by accident.
+- `api_catalog_*` keep their names and gain `source_cluster` (§5.3).
+- `watch_plan_triggers_total` keeps its name and gains `coalesced` (§5.1).
+- `watch_plan_oldest_dirty_age_seconds` is renamed and re-shaped (§5.3).
+- `attribution_resolution_wait_seconds` keeps its name; the label trim is deferred (§5.3).
+
+## 6. Status: one defect fixed, one field deleted, and a question left open
+
+An earlier revision of this section proposed removing `status.streams` and `status.retention`
+outright under the slogan *a count in status is a metric that has escaped*. **That slogan is
+wrong**, and the proposal is withdrawn. Three objections defeat it, and each is worth stating
+because each would have cost information:
+
+- **A current count is not a metric.** `3/4 types ready` is present-tense API state, the kind of
+  thing kstatus-style readiness is made of. `git_documents_total{outcome="retained"}` is
+  *cumulative*, so it can never answer "how many documents is this target retaining right now": the
+  question `status.retention.retainedDocuments` exists for. A counter is not a substitute for a
+  gauge-shaped fact, and proposing one as a replacement was a category error.
+- **Moving a changing number into a condition message does not stop the churn.** A message that
+  reads "3/4 streams running" is rewritten when the ratio moves, exactly as the field was. The
+  status write is the same write.
+- **The rate rule in [spec/status-conditions-guide.md](../spec/status-conditions-guide.md) is
+  right, and these fields mostly pass it.** Stream readiness moves on watch transitions, not on
+  throughput. What failed the rule was one field, below.
+
+So this PR does two narrow, defensible things and leaves the rest to be argued on its own evidence.
+
+### 6.1 `status.lastPushTime`: delete it
+
+Declared on `GitTargetStatus`, and the only assignment anywhere in the tree is
+`target.Status.LastPushTime = nil`. It has never been published. Every reader that has ever checked
+it read its absence as "nothing pushed yet". This is not a design change; it is removing a field
+that does not exist in practice.
+
+### 6.2 `status.retention.observedTime`: stop restamping it
+
+This is the one real defect. It was set to `time.Now()` on **every accepted resync report**,
+including the routine re-reports that change nothing an operator sees. The count and the mode would
+be identical and the timestamp would not, so the next reconcile for any reason at all computed a
+non-empty patch and wrote status. A field that moves without its subject moving is a status write
+with nothing to say, and it defeated the no-op write suppression every other field here relies on.
+
+Fixed by advancing it only when the roll-up itself changed, which makes it date the **result**
+rather than the last scan: exactly what `status.placement.resolvedAtRevision` already does, and for
+the same reason. The doc comment now says so, so a timestamp well in the past reads as "stable", not
+as "measuring stopped".
+
+The field is also **renamed** `observedTime` → `lastChangedTime`. It behaved this way as soon as the
+restamping stopped, but the old name invited clients to read it as a freshness signal, and a
+behavioral change under an unchanged name is the kind a consumer discovers in production. The
+rename makes the break visible. `retainedDocuments`, `mode`, and the whole of `status.streams` are
+**unchanged**.
+
+### 6.3 `lastPushTime` and a branch-head SHA: removed, and why re-adding them is a design question
+
+`lastPushTime` was removed because it was never written, not because a Git-writing controller has no
+business exposing one. Flux's `ImageUpdateAutomation` publishes `lastPushTime` **and**
+`lastPushCommit`, and that is a reasonable shape for a controller that writes to Git. The earlier
+framing here was wrong to imply otherwise.
+
+The reason this project should not simply re-add them is **rate class, not principle**:
+
+| | `ImageUpdateAutomation` | `GitTarget` |
+|---|---|---|
+| What triggers a push | `spec.interval`, typically minutes | a commit window closing: `DefaultCommitWindow` is **5 seconds** |
+| So a per-push status field is written | on the reconcile cadence, bounded by configuration | on data-plane throughput, bounded by nothing |
+
+The same field name is a bounded observation there and an unbounded one here. That is exactly the
+distinction [spec/status-conditions-guide.md](../spec/status-conditions-guide.md) asks a proposed
+field to pass, and it is why the Flux precedent does not transfer as-is.
+
+**The SHA question is already answered better elsewhere.** "Did my change reach Git, and as what
+commit?" is `CommitRequest.status.sha` with `Pushed=True`: per request, terminal, never rewritten,
+and tied to the specific change the user asked about. A branch-head SHA on `GitTarget` would answer
+a vaguer question worse: by the time it is read it names whatever was pushed last, which may be
+somebody else's change.
+
+**What is genuinely missing is a different field.** "Is this GitTarget still pushing at all?" is
+metrics-only today, and an operator with `kubectl` and no Prometheus cannot ask it. That is a real
+gap. The bounded shape for it is a **condition**, whose `lastTransitionTime` moves only when the
+answer changes, rather than a timestamp written per push. Designing that is worth doing on its own
+evidence; bolting a per-push timestamp on is not the same thing and would re-introduce the churn
+§6.2 just removed.
+
+### 6.4 Left open: does `status.streams` earn its place?
+
+Not answered here, and deliberately not bundled into a metrics PR. The honest open questions are
+whether `summary` should exist at all (it restates `ready` and `total`, which its own doc comment
+admits the API conventions rule out), whether the `Streams` printer column reads better as a ratio
+or as the `StreamsRunning` reason, and whether the 10-second `RequeueStreamSettleInterval`: whose
+constant comment says the fast loop exists *"so this keeps `status.streams` fresh while watches
+converge"* is paying for the counts or for the conditions. Those are API-design questions with API
+consumers on the other side of them, and they deserve their own change with their own evidence.
+
+## 7. The dashboard, and what ships with it
+
+One Grafana dashboard, versioned in the repo at `docs/dashboards/`, plus one recording-rule file and
+one alert-rule file. Built **after** the families exist, never against a name still being designed.
+
+- **Row 0, Flow.** The §4.2 funnel as five stat panels left to right, then one timeseries of all
+  five rates on shared axes. This is the "events moving through the system" panel and it is the
+  reason the stage counters share a vocabulary.
+- **Row 1, Loss paths.** One table driven by `gitopsreverser:loss:rate5m{stage,reason}`
+  (§4.4), sorted descending, plus a single stat of its sum. Empty is healthy and legible as such.
+- **Row 2, Ingest.** Events by type and outcome, stream occupancy
+  (`watch_event_handling_seconds`, NOT queue delay — §2.10 and the Known gaps section of
+  interpreting-metrics.md say why the wait itself cannot be measured), session ends by reason,
+  replay p95, recovery mode mix, `watch_types` by state, and `watch_streams_open` by source
+  cluster.
+- **Row 3, Git.** Commits by `author_kind` and `message_source`, push latency p95, push outcome mix,
+  queue depth, documents written/deleted/retained, placement `source` mix.
+- **Row 4, Audit and attribution: the marquee.** The second ingestion path gets a full row, one
+  panel per question in §4.3: ingress outcome mix (rejections included), the per-event census by
+  category and outcome, `no_attribution_fact` by type, coverage (`tier!="absent"`), evidence mix by
+  `tier`, actor mix, removal wait p95 against the `--author-attribution-grace` line, fact pipeline
+  health (`op` mix beside index occupancy), the three loss counters **as three series, never
+  summed**, follower liveness as `time() - <last-success gauge>`, and the transport legend.
+- **Row 5, Discovery and secrets.** Allowed resources, degraded group/versions, refresh outcome mix,
+  `secret_encryptions_total{outcome}`.
+- **Row 6, Configuration state.** The one row that is not about flow:
+  `count by (kind, status) (resource_condition{type="Ready"} == 1)` as the fleet rollup, a table of
+  `resource_condition{type="Ready", status="False"} == 1` naming the objects and their `reason`, and
+  a stat of `{type="Stalled", status="True"}`. Every panel compares `== 1`, because each condition
+  publishes one series per status and a bare selector matches the two zeroes as well.
+
+Alerts, as rules rather than sketches this time:
+
+| Alert | Expression | Meaning |
+|---|---|---|
+| Mirror stopped | `sum by (provider_namespace,provider_name,branch) (rate(gitopsreverser_git_pushes_total{outcome="failed"}[15m])) > 0 unless sum by (provider_namespace,provider_name,branch) (rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0`, for 15m | this branch is failing to push AND landing nothing. The `unless` arm is required: a failed push retains its writes and is retried, so an occasional failure beside successful ones is contention, not an outage, and paging on any failure trains people to ignore it |
+| Work dropped | `rate(gitopsreverser_git_queue_drops_total[5m]) > 0` | the queue is saturated and writes are on the floor |
+| Ingest loss | `rate(gitopsreverser_watch_events_total{outcome="route_failed"}[10m]) > 0` | observed changes are not reaching the writer. Often the same events as the row above, seen from the other end |
+| Audit misdirected | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_path\|bare_endpoint_disabled"}[15m]) > 0` | an apiserver is posting audit somewhere this operator will not read it (§2.6) |
+| Fact loss | `rate(gitopsreverser_attribution_fact_stream_gaps_total[10m]) > 0 or rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | facts are gone for good. Two series in an `or`, never a sum: one counts occurrences and the other entries (§5.2) |
+| Index under pressure | `rate(gitopsreverser_attribution_fact_index_evictions_total[15m]) > 0` sustained | the caps are binding. Separate from fact loss because an evicted fact may already have been matched |
+| Fact-store errors | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | fact appends are failing |
+| Follower wedged | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)` for 10m | attribution degrading cluster-wide; **both arms are required**, because the gauge does not exist until the first successful read |
+| Watch plane stuck | `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120` for 5m | a GitTarget cannot be planned. Written against the timestamp, because the age metric it replaces froze during exactly this condition (§2.5) |
+| Head-of-line | a sustained rise in `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))` | a type's ingestion is doing more work per second. It is aggregate processing seconds per second and answers no per-stream question: one stream at 100% and ten at 10% both total 1, so no fixed threshold means anything. Trend and cross-type comparison only |
+| Degraded API surface | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | a broken APIService is hiding types |
+| Encryption failing | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected |
+| Configuration not accepted | `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, for 15m | a declared object has not been accepted. The `== 1` is load-bearing, not decoration: the selector alone also matches the two zero-valued companion series |
+| Configuration wedged | `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | kstatus Stalled means nothing will retry. It needs a human, and `reason` says which gate refused |
+| Rules match nothing | `sum by (gittarget_namespace,gittarget_name) (gitopsreverser_watch_types) == 0`, for 10m | a GitTarget resolves no watchable type, so it mirrors nothing while every flow panel reads healthy: a pipeline with no input has nothing to report |
+
+## 7.1 Cardinality budget
+
+Structure alone is not a budget. What follows is an **estimate under stated assumptions, not a
+measurement**: the real numbers should be read off `/metrics` on a loaded install before any of it
+is treated as a limit. Take a fleet of **20 GitTargets** watching **30 types**, which is a large
+install for this product.
+
+| Family | Series | Note |
+|---|---|---|
+| `watch_events_total` | 20 × 30 × 6 outcomes = **3,600** | the largest counter, and the reason the event `type` label was dropped |
+| `git_documents_total` | 20 × 30 × 5 outcomes = **3,000** | |
+| `attribution_resolutions_total` | 30 × 8 tiers × 3 actor kinds = **720** | |
+| `attribution_resolution_wait_seconds` | 8 tiers × 2 kinds × (13 buckets + `_sum` + `_count`) = **240** | **7,200** before the §5.3 trim. A histogram multiplies by its bucket count *plus two*, so this row moves whenever the bucket boundaries are re-tuned: which is the trap, and the reason bucket sets are declared in one place in `exporter.go` |
+| `placements_total` | 20 × 30 × 4 sources × 2 dispositions = **4,800** ceiling | far sparser in practice, and the ceiling is the wrong intuition: placement runs only for a resource with no document in Git yet, so a series appears when a (target, type, source, disposition) combination is first used and most combinations never are |
+| `resource_condition` | 60 config objects × 3 condition types × 3 statuses = **540** | the one family keyed on object identity, and the only one bounded by how many objects a human wrote rather than by what the cluster contains — see the identity rule below |
+| everything else | low hundreds | |
+
+That budget is per process. There is a second, per-INSTRUMENT limit that is easy to miss: the
+OpenTelemetry SDK caps one instrument at 2,000 data points per collection by default and collapses
+the rest into a single `otel.metric.overflow=true` point, discarding the labels that identify them.
+Three families above exceed 2,000 in this very model install, so `exporter.go` sets the cap
+explicitly at 15,000 — roughly 3x the largest designed family, which leaves headroom for an install
+several times this model. That is a per-instrument allowance and **not** a process total: the sum
+over every instrument is much larger, and for a histogram each data point becomes bucket count + 2
+exported series. The cap is raised rather than removed so an unbounded label set overflows visibly,
+and it is a backstop rather than a target — the numbers in this table, not the cap, are what keep
+the surface small.
+
+Call it **under 15,000 series**, comfortable for a single Prometheus. Two rules keep it there:
+
+- **A histogram's label set costs 15× a counter's.** Put a dimension on the counter beside it, not on
+  the histogram, unless the distribution differs along that dimension.
+- **Never an UNBOUNDED object identity.** No `name`, `namespace` or `uid` of a *watched* object, and
+  no author or commit SHA, on any label, ever. Those are the only things here that are unbounded
+  rather than merely large: watched objects are data — thousands to millions of them, created by
+  anyone with access to the source cluster, and a label on them is a series this operator does not
+  control the count of. An author or a commit SHA is worse still, being unbounded in *time* as well.
+
+  The operator's own configuration objects are the other case, and the rule reads the other way for
+  them. `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider` and `ClusterProvider` are
+  declared rather than observed: their number is bounded by how many exist — 60 in the model
+  install above — and it does not move with cluster traffic or with how much is being mirrored.
+  That bound is not "however many a human typed": a platform can generate one per tenant, so plan
+  for thousands rather than dozens. At nine series each that is still a single family's worth, and
+  still orders of magnitude below the watched population. Naming them is what makes *which* one is
+  unready answerable, which is the whole content of a configuration-state signal; a config metric
+  that cannot name the object it is about reports that something is wrong and nothing else.
+  `resource_condition` carries `resource_name` and `resource_namespace` for exactly that reason,
+  and nothing else may.
+
+  Flux draws the same line from the same reasoning: `gotk_reconcile_condition` carries `name` and
+  `namespace` because Flux CRs are configuration, and Flux publishes nothing per *reconciled*
+  object.
+
+## 8. Migration
+
+Breaking changes are still cheap: no dashboard ships today, no alert rules ship, and no consumer has
+been told to build against these names. This plan spends that budget once.
+
+- [`UPGRADING.md`](../UPGRADING.md) gets one table of old name to new name covering every row of §5.1
+  to §5.3, written in the present tense per this repo's rule for that file, and one section for the
+  three status removals with the condition that replaces each.
+- The API change is `v1alpha3` field removals plus one new condition type; `task manifests`
+  regenerates the CRDs and the printer columns change with them.
+- e2e reads seven metric names today: `audit_events_total`, `attribution_resolutions_total` and
+  `attribution_resolution_wait_seconds` are unchanged; `commits_total`,
+  `target_reconcile_completed_total` and `branch_worker_queue_depth` are renamed; and
+  `audit_eventlists_total` is deleted. `test/e2e/helpers.go` and the restart-reconcile spec move in
+  the same PR. The restart-reconcile gate becomes
+  `sum by (pod) (increase(gitopsreverser_watch_recovery_total[10m]))`, which is the same query
+  against the honest name.
+- [architecture.md → Observability](../architecture.md#observability) and
+  [interpreting-metrics.md](../interpreting-metrics.md) are rewritten around the five stages. The
+  "Known gaps" section shrinks to what is still deferred (§10).
+
+## 9. Phases
+
+Each phase ships recording sites, manual-reader unit tests, and its
+[interpreting-metrics.md](../interpreting-metrics.md) rows together. Validated per
+[AGENTS.md](../../AGENTS.md): `fmt` → `generate` → `manifests` → `vet` → `lint` → `test` → `test-e2e`,
+e2e sequential. **No metric merges without its doc row.** The order is deliberate: the deletions come
+first, so nothing new is built beside a duplicate.
+
+1. **Subtract.** §5.1 and §5.2: delete the five duplicates and merge the five secret counters into
+   one. Fix the three stale comments in §2.3 and the broken cache-effectiveness query. No new
+   capability. The attribution loss counters are **not** merged: see §5.2 for the unit error that
+   would have been.
+2. **The exceptions and the honest gauges.** `git_queue_drops_total`, `git_pushes_total`,
+   `git_push_retries_total`, `git_push_duration_seconds`, moving `git_commits_total` to the push
+   site, converting every gauge to an observable callback, and turning the dirty-set age into a
+   timestamp. Two data-loss paths and one stalled-mirror path stop being log lines, and the two
+   saturation gauges stop lying during a stall. Sites:
+   [branch_worker.go](../../internal/git/branch_worker.go),
+   [owner_observability.go](../../internal/watch/owner_observability.go).
+3. **The ingest stage, the audit door, and the clusters discovery forgot.** The three bounded
+   rejection outcomes on the audit ingress histogram (§2.6) ship here. `watch_events_total`,
+   `watch_event_handling_seconds`, `watch_sessions_ended_total`, `watch_replay_duration_seconds`,
+   `watch_recovery_total`, `watch_types`, the §5.3 write-family collapse into
+   `git_documents_total`, and the `source_cluster` label that takes the `isLocal()` guards off the
+   catalog metrics. Sites:
    [target_watch.go](../../internal/watch/target_watch.go),
-   [manager.go](../../internal/watch/manager.go). Ship Row 2.
-3. **Relevance filter + git push health.** `watch_events_filtered_total`,
-   `git_push_duration_seconds`, `git_push_conflicts_total`. Sites: the filter decision points on the
-   watch-to-Git path, [git_atomic_push.go](../../internal/git/git_atomic_push.go), and
-   [branch_worker.go](../../internal/git/branch_worker.go). Ship Row 3.
-4. **Dashboard, alert rules, and adaptive grace.** Ship the Grafana JSON and the alert rules, and use
-   per-type coverage to skip the grace wait for types audit never covers — no point delaying a watch
-   event for a fact that never comes. The metric is the prerequisite; the optimization follows it.
+   [event_router.go](../../internal/watch/event_router.go),
+   [manager_catalog.go](../../internal/watch/manager_catalog.go),
+   [branch_worker.go](../../internal/git/branch_worker.go).
+4. **Status.** §6, now narrow: delete the never-written `lastPushTime`, and stop `observedTime`
+   restamping on every report. `status.streams` and `retainedDocuments` stay; §6.3 records what is
+   still open about them and why it is not a metrics change.
+5. **The picture.** The dashboard JSON, the recording rule, and the alert rules, all under
+   `docs/dashboards/`, written last against names that have stopped moving.
 
-## 10. Non-goals / risks
+Phases 1, 2 and 4 are independent of each other. Phase 5 depends on 1 to 3.
 
-- **Not** cross-pod HA aggregation — single active replica today
-  ([architecture.md → Operational Boundaries](../architecture.md#operational-boundaries)); metrics are
-  per-pod and that's fine. The fact stream is per-replica-followed by design, so a follower gauge is
-  a per-pod statement, not a cluster one.
-- **Not** per-mutation history — watch collapses to current state across gaps; metrics count
+**Credit, and what review changed.** Two independent reviews of the same question ran alongside
+this plan. That they converged on the duplicates, the push accounting and the missing ingest stage
+is the strongest evidence here that the list is right. What they *changed* matters more, and is
+recorded rather than quietly absorbed:
+
+| From review | Effect |
+|---|---|
+| queue depth and dirty age go stale during the stall they detect | §2.5, and the observable-gauge rule (principle 5) |
+| discovery is local-cluster only | §2.7 |
+| `commits_total` should count at publication | §5.3, and the tally that keeps the accounting right across replay |
+| the write family is one population with one `outcome` | `git_documents_total` |
+| audit is a parallel path, not a lens on the watch pipeline | §4 rewritten around two paths; §4.3 restores its questions |
+| the three fact-loss counters are in different units | §5.2: the merge is **withdrawn** |
+| "exactly one healthy outcome" is too restrictive | principle 2, four classes |
+| a cumulative counter cannot replace a current count | §6 cut back to one deletion and one fix |
+| rejected audit requests return before instrumentation | §2.6 |
+| `watch_streams` names something the code does not do | `watch_types` |
+| queue delay needs an arrival timestamp that does not exist | `watch_event_handling_seconds`, occupancy instead |
+| the loss rule unions labels it never normalizes | §4.4 rewritten, and it is a union, not a total |
+| the cardinality section is an estimate | §7.1 says so |
+| a gauge source that resolves starves what it measures | principle 6, after it timed out an e2e spec |
+| six counters fire at the wrong moment | §2.8, and principle 7 |
+| local commit failures are the largest remaining gap | `git_commit_failures_total` |
+| the resync census files under empty GitTarget labels | labels now come from the batch (§2.9) |
+| retained documents lack the advertised type breakdown | `Plan.RetainedOrphansByType` carries it |
+| a refusal is not a no-op | `documentRefused`, split out of `unchanged` |
+| `unknown_route` names a rejection that cannot happen | `bare_endpoint_disabled` (§2.9) |
+| the dirty-target alert compares a timestamp to a duration | `time() - <gauge> > 120` |
+| the saturation query is aggregate, not per-stream | the invalid ratio form is **deleted**; the metric is described as aggregate processing time |
+| two bookkeeping holes feed the pushed-commit count | the atomic path retains its committed batch; a resync execution resets `Committed` |
+| a window build failure escapes the new counter | `buildGroupedPendingWrite`'s error exit records one |
+| the per-type tallies key on object identity | keyed by GVR, so one type is one map entry and one series |
+| the comments are harder to read than the code | trimmed to the current contract; the history stays here and in `git log` |
+| the tests assert helpers, not paths | the census tests drive a real resync and a real aborted flush; the resync-reset test drives `executeResyncPendingWrite` twice and fails without the fix |
+
+The pattern across the reviews is worth naming, because it is the thing to watch for in the next
+one: **the first draft of a metric is usually right about what to count and wrong about where to
+count it.** Duplicates and missing stages are easy to see and were found immediately. Recording
+boundaries are invisible until someone traces a call path, and every one of them produced a number
+that looked completely reasonable.
+
+One more habit came out of the last round, and it is about this document rather than the code. The
+first instinct on being corrected was to write the correction into the comment beside the fix, which
+left the source recounting review rounds and abandoned designs to every future reader. **The
+narrative belongs here; the contract belongs beside the code.** A comment should say what the
+current thing does and what it costs to get wrong, in the fewest words that survive being read by
+someone who has never seen this file.
+
+## 10. Non-goals, and the traps this shape invites
+
+- **Do not subtract across stages.** The funnel counts events, then documents, then commits, then
+  pushes. One event can write six documents; one commit can carry a hundred. A panel that subtracts
+  two stages is reporting a number that means nothing.
+- **Do not subtract `attribution_facts_total{op}` either.** `written` counts every type; `matched`
+  counts only the streams this process follows, and a restart re-files the retention window.
+- **Not cross-pod aggregation.** One active replica; metrics are per-pod and that is correct.
+- **Not per-mutation history.** Watch collapses to current state across gaps; metrics count
   observations, not mutations.
-- RV-based "watch lag" (how far behind the apiserver a watch is) is attractive but hard to compute
-  honestly across types; deferred, not in scope.
-- Do **not** reintroduce the retired body-join metrics (`audit_join_*`, `audit_official_gate_wait`,
-  `parked`/`shallow_dropped` outcomes) or the v1 keyspace's `exact_deletecollection_item` — they
-  belong to architectures that no longer exist.
-- Do **not** subtract counters across populations. `written` minus `matched` is not delivery loss:
-  `written` counts every fact appended for every type, while the follower files only facts on streams
-  **this process follows**, and a restart re-reads the retention window and files the same facts
-  again. Two counters over different populations do not subtract; delivery loss is measured where
-  delivery happens, which is what §5.4 does.
+- **Still deferred**, with the precondition each needs: `fact_index_replay_seconds` (needs a
+  replay-complete boundary to exist), the stream-scaling set (needs `behind` redefined as real lag,
+  since exported as-is it would invite an alert on every ordinary burst), fact-shape distribution (needs a
+  taxonomy distinct from the tier ladder, since a fact with a UID *and* an RV is filed under both),
+  `resolvers_waiting` (needs `watch_event_handling_seconds` to prove insufficient first — the
+  occupancy histogram that shipped in place of the queue-delay one this line used to name, which
+  cannot be measured honestly from this side of a client-go watch channel), and
+  `fact_index_expired_total`.
+- **Do not reintroduce the retired body-join metrics** (`audit_join_*`, `audit_official_gate_wait`,
+  `parked` / `shallow_dropped`) or the v1 keyspace's `exact_deletecollection_item`. They belong to
+  architectures that no longer exist.
 
 ## References
 
-- [architecture.md](../architecture.md) — leading source of truth (esp. *Common Flows*,
-  *Optional Attribution*, *State Ingestion*, *Observability*).
-- [interpreting-metrics.md](../interpreting-metrics.md) — the live baseline + the per-metric doc bar.
-- [spec/attribution.md](../spec/attribution.md) — the shipped attribution surface behind §4.4 and
-  §5, how the two halves work, and the tier ladder the `tier` label names.
-- [attribution-fact-stream.md](../finished/attribution-fact-stream.md) — the shipped transport, the
-  in-process index, and the follower these metrics watch.
-- [watch-first-ingestion-architecture.md](../finished/watch-first-ingestion-architecture.md) — the
-  watch-first ingestion design and the earlier metric sketch §4.1 modernizes.
+- [architecture.md](../architecture.md): the spine, especially *Common flows*, *State ingestion*,
+  *Optional attribution*, *Git write architecture*, and *Observability*.
+- [interpreting-metrics.md](../interpreting-metrics.md): the live baseline and the per-metric
+  documentation bar every new row has to clear.
+- [spec/status-conditions-guide.md](../spec/status-conditions-guide.md): the status half, and the
+  document §6 corrects.
+- [spec/attribution.md](../spec/attribution.md): the shipped attribution surface, which this plan
+  leaves alone apart from the loss-path merge.
+- [watch-manager-ownership.md](watch-manager-ownership.md): the owner loop the `watch_plan_*`
+  family instruments.

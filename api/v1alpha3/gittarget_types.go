@@ -264,10 +264,6 @@ type GitTargetStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// LastPushTime is the timestamp of the last successful push.
-	// +optional
-	LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
-
 	// Streams is the bounded data-plane roll-up over this GitTarget's tracked types.
 	// Counts, never a per-type list, so it stays bounded however many types are watched.
 	// +optional
@@ -409,10 +405,12 @@ type GitTargetRetentionStatus struct {
 	// converged. An ABSENT retention block means something different: no resync has reported yet.
 	RetainedDocuments int32 `json:"retainedDocuments"`
 
-	// ObservedTime is when this roll-up was last computed. A retention that begins just after a
-	// reconcile is not visible until the next one, so read this before treating a zero as live.
+	// LastChangedTime records when the reported retention count or effective prune mode last
+	// changed. It does NOT indicate when retention was last evaluated: a resync that re-reports the
+	// same count leaves it untouched, so an old timestamp is equally consistent with stable
+	// retention and with nothing having measured it since.
 	// +optional
-	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
+	LastChangedTime *metav1.Time `json:"lastChangedTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

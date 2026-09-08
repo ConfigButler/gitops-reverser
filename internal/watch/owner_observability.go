@@ -87,46 +87,65 @@ func isDeadlineExceeded(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
 }
 
-// recordTriggerLocked counts one trigger by the reason that produced it, and counts the ones the
-// silence window absorbed. Together they prove the debounce is doing what it claims and show
-// which source is noisy. The triggers mutex is held; both instruments are synchronous counters
-// with no callback, so neither can re-enter it.
+// recordTriggerLocked counts one trigger by the reason that produced it and whether the silence
+// window absorbed it. Together they prove the debounce is doing what it claims and show which
+// source is noisy; coalesced is a label rather than the second counter it used to be, so the
+// coalescing ratio is one metric's business instead of a division across two. The triggers mutex is
+// held; the instrument is a synchronous counter with no callback, so it cannot re-enter it.
 func recordTriggerLocked(reason string, coalesced bool) {
-	if telemetry.WatchPlanTriggersTotal != nil {
-		telemetry.WatchPlanTriggersTotal.Add(context.Background(), 1,
-			metric.WithAttributes(attribute.String("reason", reason)))
-	}
-	if coalesced && telemetry.WatchPlanTriggersCoalescedTotal != nil {
-		telemetry.WatchPlanTriggersCoalescedTotal.Add(context.Background(), 1)
-	}
-}
-
-// publishDirtySetDepth records how deep the dirty set is and how long its oldest entry has been
-// waiting, once per loop turn.
-func (m *Manager) publishDirtySetDepth() {
-	if telemetry.WatchPlanDirtyTargets == nil && telemetry.WatchPlanOldestDirtyAgeSeconds == nil {
+	if telemetry.WatchPlanTriggersTotal == nil {
 		return
 	}
-	count, oldest := m.dirtySetDepth()
-	ctx := context.Background()
-	if telemetry.WatchPlanDirtyTargets != nil {
-		telemetry.WatchPlanDirtyTargets.Record(ctx, int64(count))
-	}
-	if telemetry.WatchPlanOldestDirtyAgeSeconds != nil {
-		telemetry.WatchPlanOldestDirtyAgeSeconds.Record(ctx, int64(oldest.Seconds()))
-	}
+	telemetry.WatchPlanTriggersTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("reason", reason),
+		attribute.Bool("coalesced", coalesced),
+	))
 }
 
-// dirtySetDepth returns how many targets are dirty and how long the oldest has been so.
-func (m *Manager) dirtySetDepth() (int, time.Duration) {
+// installDirtySetGaugeSources publishes the owner queue's two gauges as SCRAPE-TIME sources.
+//
+// They used to be pushed once per owner-loop turn, which meant the age froze at whatever it held
+// when the loop stopped turning — and a loop that has stopped turning is precisely what the age is
+// there to report. A pass wedged on an unreachable source cluster produced a flat line where the
+// alert expected a climb.
+//
+// The depth is published as a count and the wait as a TIMESTAMP rather than an age. A timestamp
+// stays true with nobody recomputing it, and the query does the arithmetic:
+// time() - watch_plan_oldest_dirty_since_timestamp_seconds. No dirty target means no series, which
+// reads as "nothing waiting" and is the honest answer.
+func (m *Manager) installDirtySetGaugeSources() {
+	telemetry.SetGaugeSource(telemetry.GaugeWatchPlanDirtyTargets, func() []telemetry.GaugeSample {
+		count, _ := m.dirtySetDepth()
+		return []telemetry.GaugeSample{{Value: int64(count)}}
+	})
+	telemetry.SetGaugeSource(telemetry.GaugeWatchPlanOldestDirtySince, func() []telemetry.GaugeSample {
+		_, oldestSince := m.dirtySetDepth()
+		if oldestSince.IsZero() {
+			return nil
+		}
+		return []telemetry.GaugeSample{{Value: oldestSince.Unix()}}
+	})
+}
+
+// clearDirtySetGaugeSources removes the callbacks, so they cannot outlive the manager.
+func (m *Manager) clearDirtySetGaugeSources() {
+	telemetry.SetGaugeSource(telemetry.GaugeWatchPlanDirtyTargets, nil)
+	telemetry.SetGaugeSource(telemetry.GaugeWatchPlanOldestDirtySince, nil)
+}
+
+// dirtySetDepth returns how many targets are dirty and WHEN the oldest of them went dirty. The
+// zero time means none are.
+//
+// It returns the instant rather than an elapsed duration because that is what the gauge exports;
+// callers wanting an age subtract it themselves, which the heartbeat log does.
+func (m *Manager) dirtySetDepth() (int, time.Time) {
 	t := m.triggers()
-	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	oldest := time.Duration(0)
+	var oldest time.Time
 	for _, entry := range t.dirty {
-		if age := now.Sub(entry.firstDirty); age > oldest {
-			oldest = age
+		if oldest.IsZero() || entry.firstDirty.Before(oldest) {
+			oldest = entry.firstDirty
 		}
 	}
 	return len(t.dirty), oldest
@@ -135,7 +154,11 @@ func (m *Manager) dirtySetDepth() (int, time.Duration) {
 // logOwnerHeartbeat makes the loop's liveness observable in logs and tests, and carries the same
 // two numbers the metrics do so a log-only install is not blind to a stuck queue.
 func (m *Manager) logOwnerHeartbeat(log logr.Logger) {
-	count, oldest := m.dirtySetDepth()
+	count, oldestSince := m.dirtySetDepth()
+	oldest := time.Duration(0)
+	if !oldestSince.IsZero() {
+		oldest = time.Since(oldestSince)
+	}
 	log.V(1).Info("watch plane owner heartbeat", "dirtyTargets", count, "oldestDirtyAge", oldest.String())
 }
 

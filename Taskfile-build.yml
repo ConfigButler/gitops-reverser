@@ -217,13 +217,14 @@ tasks:
       - lint-docs
 
   lint-docs:
-    desc: All documentation checks — references, markdown structure, and prose
-    # The three docs linters do not overlap and each is bad at the others' job, so
-    # they stay three tasks and this aggregates them. See docs/design/docs-linting.md.
+    desc: All documentation checks — references, markdown structure, prose, and metric names
+    # The four checks do not overlap and each is bad at the others' job, so they stay
+    # four tasks and this aggregates them. See docs/design/docs-linting.md.
     #
-    #   lint-doc-links  references resolve, including doc paths inside Go comments
-    #   lint-markdown   markdown structure: fences, headings, lists, blank lines
-    #   lint-prose      English against docs/style-guide.md
+    #   lint-doc-links    references resolve, including doc paths inside Go comments
+    #   lint-markdown     markdown structure: fences, headings, lists, blank lines
+    #   lint-prose        English against docs/style-guide.md
+    #   lint-metric-names every gitopsreverser_ metric named in the tree is registered
     #
     # This kept the name `lint-docs` because AGENTS.md, docs/style-guide.md, and the
     # CI cache assertion all name it. It is now a superset of what it used to do, so
@@ -232,6 +233,7 @@ tasks:
       - lint-doc-links
       - lint-markdown
       - lint-prose
+      - lint-metric-names
 
   lint-doc-links:
     desc: Check that every doc reference resolves — markdown links, and docs/**.md cited in Go comments
@@ -258,6 +260,20 @@ tasks:
     # The whole check takes ~0.2s. That is not worth a cache that can be wrong.
     cmds:
       - go run ./hack/doccheck
+
+  lint-metric-names:
+    desc: Check that every gitopsreverser_ metric named anywhere in the tree is actually registered
+    # A renamed metric leaves its callers behind silently: operational queries are written
+    # `... or vector(0)`, so a dead name reads as a confident zero rather than an error.
+    # That is how `hack/attribution-diagnostics.sh` came to report "audit events INGESTED
+    # by us = 0" on a healthy cluster after the metric surface was rebuilt.
+    #
+    # Deliberately un-fingerprinted, for the same reason as lint-doc-links: the real input
+    # is "every git-tracked file", which Task cannot express without an unrooted glob, and
+    # an unrooted '**' walk over external-sources/ has OOM'd the host here before.
+    # The check takes ~0.3s.
+    cmds:
+      - ./hack/metricnames.sh
 
   lint-markdown:
     desc: 'Markdown structure (markdownlint-cli2), over every tracked file. DOCS_SCOPE=gated narrows it'

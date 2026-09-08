@@ -160,8 +160,10 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 			"Should have received audit events from kube-apiserver")
 
 		By("verifying the EventList ingress metric counts processed requests")
+		// The histogram's own _count series IS the request counter; the separate
+		// audit_eventlists_total that used to publish the same numbers was removed.
 		waitForMetricWithTimeout(
-			"sum(gitopsreverser_audit_eventlists_total{outcome='processed'}) or vector(0)",
+			"sum(gitopsreverser_audit_eventlist_duration_seconds_count{outcome='processed'}) or vector(0)",
 			func(v float64) bool { return v > 0 },
 			"EventList ingress requests should be counted with outcome=processed", 2*time.Minute,
 		)

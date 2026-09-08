@@ -3,7 +3,6 @@
 package watch
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -97,41 +95,73 @@ func (m *Manager) refreshWatchedTypeTables() {
 	tables := m.resolveWatchedTypeTables()
 
 	m.watchedTypes.mu.Lock()
-	previous := m.watchedTypes.tables
 	m.watchedTypes.tables = tables
 	m.watchedTypes.registriesFP = registriesFP
 	m.watchedTypes.rulesFP = fingerprint
 	m.watchedTypes.clusterFP = clusterFP
 	m.watchedTypes.resolved = true
 	m.watchedTypes.mu.Unlock()
-
-	recordWatchedTypeMetrics(previous, tables)
 }
 
-// recordWatchedTypeMetrics publishes the per-GitTarget watched-type count gauge after a
-// re-resolution. A GitTarget present before but gone now is zeroed so its series does
-// not linger.
-func recordWatchedTypeMetrics(previous, current map[string]WatchedTypeTable) {
-	if telemetry.WatchedTypes == nil {
-		return
-	}
-	ctx := context.Background()
-	for _, table := range current {
-		telemetry.WatchedTypes.Record(ctx, int64(len(table.Types)), gitTargetAttrs(table.GitDest))
-	}
-	for key, table := range previous {
-		if _, ok := current[key]; ok {
-			continue
+// installWatchTypeGaugeSource publishes each GitTarget's resolved type count, split by stream
+// readiness, as a scrape-time source.
+//
+// Summing the states gives the target's resolved-type count; `state="blocked"` is the difference
+// between a type it resolves and one it is actually watching. Named for TYPES, not streams: it
+// aggregates by resource type, and one type may be watched by several streams across namespaces —
+// watch_streams_open counts those.
+//
+// It carries source_cluster so a fleet can be read per cluster, the same axis watch_streams_open
+// and the catalog metrics use.
+func (m *Manager) installWatchTypeGaugeSource() {
+	telemetry.SetGaugeSource(telemetry.GaugeWatchTypes, m.watchTypeSamples)
+}
+
+// clearWatchTypeGaugeSource removes the callback so it cannot outlive the manager.
+func (m *Manager) clearWatchTypeGaugeSource() {
+	telemetry.SetGaugeSource(telemetry.GaugeWatchTypes, nil)
+}
+
+// watchTypeSamples reads each declared GitTarget's stream readiness at scrape time.
+//
+// RESIDENT state only: published tables and published stream states, never a refresh. Calling
+// StreamSummaryForGitTarget here would reach refreshWatchedTypeTables and re-resolve every
+// cluster's type registry on the scrape goroutine, competing with the streams being measured.
+//
+// streamSummaryCounts guarantees Total == Ready + Replaying + Blocked, so the three samples
+// partition the target's resolved types.
+func (m *Manager) watchTypeSamples() []telemetry.GaugeSample {
+	tables := m.residentWatchedTypeTables()
+
+	// Three samples per target: streaming, replaying, blocked.
+	const statesPerTarget = 3
+	samples := make([]telemetry.GaugeSample, 0, len(tables)*statesPerTarget)
+	for _, table := range tables {
+		specs := targetWatchSpecs(table)
+		summary := m.streamSummaryForExpectedKeys(
+			table.GitDest,
+			cellsForWatchKeys(sortedTargetWatchSpecKeys(specs)),
+			streamDisplayNamesForTable(table),
+		)
+		// A fixed order, not a map range: the samples are what a scrape reads, and an exporter's
+		// output should not permute between scrapes for no reason.
+		for _, s := range []struct {
+			state string
+			count int
+		}{
+			{"streaming", summary.Ready},
+			{"replaying", summary.Replaying},
+			{"blocked", summary.Blocked},
+		} {
+			samples = append(samples, telemetry.GaugeSample{
+				Value: int64(s.count),
+				Attrs: append(gitTargetIdentityAttrs(table.GitDest),
+					attribute.String("source_cluster", m.clusterIDForGitTarget(table.GitDest)),
+					attribute.String("state", s.state)),
+			})
 		}
-		telemetry.WatchedTypes.Record(ctx, 0, gitTargetAttrs(table.GitDest))
 	}
-}
-
-func gitTargetAttrs(gitDest types.ResourceReference) metric.MeasurementOption {
-	return metric.WithAttributes(
-		attribute.String("gittarget_namespace", gitDest.Namespace),
-		attribute.String("gittarget_name", gitDest.Name),
-	)
+	return samples
 }
 
 // ensureWatchedTypeStore lazily initialises the resident store so a zero-value
@@ -144,9 +174,6 @@ func (m *Manager) ensureWatchedTypeStore() {
 	})
 }
 
-// watchedTypeTableForGitDest returns the resident table for a GitTarget, refreshing the
-// tables first. The bool reports whether the GitTarget currently has a table (i.e. any
-// rules at all); a target whose rules resolve to nothing still returns an empty table.
 func (m *Manager) watchedTypeTableForGitDest(gitDest types.ResourceReference) (WatchedTypeTable, bool) {
 	m.refreshWatchedTypeTables()
 	m.watchedTypes.mu.Lock()

@@ -7,7 +7,7 @@
 > [README.md](README.md),
 > [kustomize-support-boundary.md](kustomize-support-boundary.md),
 > [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md),
-> [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md),
+> [Git write preflight](../git-write-preflight.md),
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
 > the layout corpus at [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/)
 

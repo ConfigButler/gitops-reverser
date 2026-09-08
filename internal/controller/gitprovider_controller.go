@@ -24,6 +24,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // GitProviderReconciler reconciles a GitProvider object.
@@ -69,6 +70,10 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err := r.Get(ctx, req.NamespacedName, &gitProvider); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("GitProvider not found, was likely deleted", "namespacedName", req.NamespacedName)
+			// The object is gone, so its condition series must stop rather than latch its last
+			// value: a gauge that keeps reporting Ready=False for a deleted object is a permanent
+			// false positive that trains people to ignore the panel.
+			telemetry.ForgetResourceConditions(conditionKindGitProvider, req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "unable to fetch GitProvider", "namespacedName", req.NamespacedName)

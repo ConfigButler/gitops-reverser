@@ -732,7 +732,12 @@ func recordFollowerSuccess(ctx context.Context) {
 	telemetry.AttributionFactFollowerLastSuccessTimestampSeconds.Record(ctx, time.Now().Unix())
 }
 
-// recordFactIndexEviction counts one evicted entry under its bounded reason.
+// recordFactIndexEviction counts one evicted FACT under its bounded reason.
+//
+// It stays its own counter rather than joining the stream-gap and decode-error counters under a
+// shared "facts lost" name: this one knows exactly how many facts it dropped, and those two cannot.
+// Combining units that differ produces a number in no unit at all; combining the SERIES on a panel
+// or in an alert is a recording rule's job.
 func recordFactIndexEviction(ctx context.Context, reason string) {
 	if telemetry.AttributionFactIndexEvictionsTotal == nil {
 		return

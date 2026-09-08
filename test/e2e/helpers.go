@@ -130,7 +130,7 @@ func ensurePrometheusClient() {
 	}
 }
 
-// waitForCommitInNamespace blocks until gitopsreverser_commits_total reports at least
+// waitForCommitInNamespace blocks until gitopsreverser_git_commits_total reports at least
 // one commit for a BranchWorker whose GitProvider lives in providerNamespace. Because
 // each e2e suite creates its GitProvider in a unique namespace (testNamespaceFor), this
 // isolates the calling spec's commits from any other spec committing in parallel — the
@@ -140,7 +140,7 @@ func ensurePrometheusClient() {
 func waitForCommitInNamespace(providerNamespace string) {
 	ensurePrometheusClient()
 	query := fmt.Sprintf(
-		`sum(gitopsreverser_commits_total{provider_namespace=%q}) or vector(0)`,
+		`sum(gitopsreverser_git_commits_total{provider_namespace=%q}) or vector(0)`,
 		providerNamespace,
 	)
 	waitForMetricWithTimeout(

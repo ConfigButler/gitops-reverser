@@ -83,8 +83,10 @@ distinguishes those planned gates from the permanent construct boundary.
 - [Values-content architecture](values-content-architecture.md) — why a values file is a
   Git content surface rather than a field to copy into an `Application` or `HelmRelease`, and
   the staged design for safely editing it.
-- [Admission consent](admission-consent.md), [unreflectable edits](unreflectable-edits-and-write-gating.md),
-  and [reconcile trigger](orchestrator-reconcile-trigger.md) — write-gating decisions.
+- [Git write preflight](../git-write-preflight.md): onboarding refusal and all-target admission
+  checks, with target errors for late failures. This replaces the per-edit accounting proposal.
+- [Admission consent](admission-consent.md) and [reconcile trigger](orchestrator-reconcile-trigger.md):
+  deferred extensions; preflight does not promise automatic rollback.
 - Historical implementation records: [image/replica edit-through](finished/images-and-replicas-edit-through.md)
   and [higher-level KRM support](finished/higher-level-krm-documents.md).
 - [Fixture corpus](../../../test/fixtures/gitops-layouts/) — executable evidence; its

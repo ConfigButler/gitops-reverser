@@ -1309,44 +1309,74 @@ commit is committer-authored.
 - **Source**: [internal/telemetry/exporter.go](../internal/telemetry/exporter.go)
 
 Metrics are exported over OTLP / the metrics server. The reader's guide to every live family, with
-copy-pasteable PromQL, is [interpreting-metrics.md](interpreting-metrics.md).
+copy-pasteable PromQL, is [interpreting-metrics.md](interpreting-metrics.md); the design behind the
+current shape is [metrics-observability-plan.md](design/metrics-observability-plan.md).
 
-The pipeline is one sentence: watch events arrive and are processed into commits. The coverage
-follows those stages:
+There are **two** ingestion paths, and the metrics follow that split. Watch carries object state and
+decides whether an object reaches Git. Audit carries only the author's name: a missing or late fact
+changes the author, never the state. They meet at the resolver and nowhere else.
 
-- **Audit ingress.** `gitopsreverser_audit_events_total{outcome,category,group,version,resource,verb}`
-  gives one terminal outcome per audit event (`queued`, `stage`, `read_only_or_unknown_verb`,
-  `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource`,
-  `no_attribution_fact`, `write_error`), and `gitopsreverser_audit_eventlists_total` /
-  `_eventlist_events_total` / `_eventlist_duration_seconds` `{outcome}` cover the `/audit-webhook`
-  request boundary.
-- **Attribution join.**
-  `gitopsreverser_attribution_resolutions_total{tier,actor_kind,group,version,resource}` says which
-  tier of evidence named the author and who it named, per type;
-  `_resolution_wait_seconds{tier,event_kind,…}` says how long the grace wait cost, split by write and
-  removal. Splitting the wait by tier is what turned a head-of-line stall from a mystery into a
-  measurement, and `event_kind` is what the removal wait (the number the grace is tuned from) is
-  read through. Match coverage is `tier!="absent"`.
-- **Fact pipeline.** `_attribution_facts_total{op}` (`written`/`matched`, not subtractable),
-  `_attribution_fact_index_entries`, `_attribution_fact_index_evictions_total{reason}`,
-  `_attribution_fact_stream_gaps_total{stream}` (facts lost for good to a trim; should be zero),
-  `_attribution_fact_stream_decode_errors_total{transport}` (an entry skipped because it could not be
-  decoded: the loss path with no other symptom), `_attribution_fact_follower_errors_total{transport}`
-  with `_attribution_fact_follower_last_success_timestamp_seconds` (a wedged follower degrades
-  attribution cluster-wide), `_attribution_transport_info{transport}`, and
-  `_attribution_collection_without_uidset_total{reason}`.
-- **Git write and reconcile.** `gitopsreverser_commits_total{provider_*,branch,author_kind}` is the
-  bottom line: `unresolved` means attribution ran and could not name an actor. Alongside it,
-  `_branch_worker_queue_depth`, `_objects_written_total`, `_resync_sweep_deletes_total`,
-  `gitopsreverser_target_reconcile_completed_total{gittarget_*}` (read by the restart-reconcile
-  guarantee), and resync/background-apply failure counters so a silently-recovered fault stays visible.
-- **Discovery and encryption.** The API resource catalog and Secret-encryption families.
+**Object state, stage by stage.** Every stage counts with a bounded `outcome`, so the pipeline reads
+as one funnel and its loss paths as one selector:
 
-**Watch ingestion itself is not instrumented.** Per-type event volume, restarts and `410` rebuilds,
-replay cost, recovery mode, and the delay between an event arriving on a shard and being processed are
-all designed in the [metrics observability plan](design/metrics-observability-plan.md) and **not yet
-emitted**. The attribution half of that plan (the label taxonomy and the silent loss paths) has
-shipped; the migration for the label break is in [UPGRADING.md](UPGRADING.md).
+- **Ingest.** `gitopsreverser_watch_events_total{gittarget_*,group,version,resource,outcome}` counts
+  every delivered watch event exactly once, at `routeLiveTargetWatchEvent`, the single switch
+  carrying every terminal branch. `outcome` separates the pipeline working (`routed`, `unchanged`,
+  `operation_filtered`, `bookmark`) from loss (`route_failed`). Beside it,
+  `_watch_event_handling_seconds` (stream occupancy, the head-of-line signal),
+  `_watch_sessions_ended_total{reason}` and `_watch_replay_duration_seconds` (`410` pressure and
+  what a rebuild costs), `_watch_recovery_total{mode}`, and `_watch_types{state}`.
+- **Queue.** `gitopsreverser_git_queue_drops_total{kind}` counts work a full worker queue threw
+  away, and `_git_queue_depth` is read at scrape time rather than published by the worker loop.
+- **Write.** `gitopsreverser_git_documents_total{gittarget_*,group,version,resource,outcome}` is the
+  per-document census (`written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained`), with
+  `_placements_total`, `_placement_refusals_total` and `_placement_kustomization_entries_total`
+  answering where a new document landed and which resources were refused.
+- **Commit and push.** `gitopsreverser_git_commits_total{provider_*,branch,author_kind,message_source}`
+  counts commits that **reached the remote**, and `_git_pushes_total{outcome}`,
+  `_git_push_retries_total{reason}` and `_git_push_duration_seconds` cover the cycle that puts them
+  there. `author_kind="unresolved"` means attribution ran and could not name an actor.
+
+**Authorship**, when `--author-attribution` is on:
+
+- **Ingress.** `gitopsreverser_audit_eventlist_duration_seconds{outcome}` times every request at
+  `/audit-webhook`, rejections included (`bad_method`, `bad_path`, `bare_endpoint_disabled`), and
+  its `_count` series is the request counter. A named route is never rejected (it is a partition
+  name, not a claim about an object), so the only route-shaped rejection is the bare endpoint with
+  no annotation key configured.
+- **Per-event census.** `gitopsreverser_audit_events_total{outcome,category,group,version,resource,verb}`
+  gives one terminal outcome per audit event; `category="error"` must stay zero.
+- **Fact pipeline.** `_attribution_facts_total{op}`, `_attribution_fact_index_entries`,
+  `_attribution_fact_index_evictions_total{reason}`, `_attribution_fact_stream_gaps_total{stream}`,
+  `_attribution_fact_stream_decode_errors_total{transport}`,
+  `_attribution_fact_follower_errors_total` with `_..._last_success_timestamp_seconds`, and
+  `_attribution_transport_info{transport}`. The three loss counters are deliberately **not** one
+  metric: an eviction counts a fact, a trim gap counts an occurrence, and a decode error counts an
+  entry carrying a whole batch, so their sum would be in no unit at all.
+- **The join.** `_attribution_resolutions_total{tier,actor_kind,group,version,resource}` says which
+  evidence named the author and who it named; `_resolution_wait_seconds{tier,event_kind}` says what
+  the grace wait cost, split by write and removal.
+
+**Discovery** (`api_catalog_*`) carries a `source_cluster` label and is recorded for every source
+cluster, so a degraded `APIService` on a remote cluster is visible. **Secret encryption** is one
+counter, `_secret_encryptions_total{outcome}`.
+
+**Configuration state** is the one family that is not about flow.
+`gitopsreverser_resource_condition{kind,resource_namespace,resource_name,type,status,reason}`
+publishes the kstatus trio of every object a human declared (`GitTarget`, `WatchRule`,
+`ClusterWatchRule`, `GitProvider`, `ClusterProvider`) as one series per possible status, of which
+exactly one is `1`. It is recorded at `reconcileStatus.commit()`, the single status choke point all
+five controllers use, and the object's entry is dropped when the object goes: a condition series
+that outlives its object reports `Ready=False` forever and never clears. It is the only family
+carrying object names, which §7.1 of the plan permits for configuration objects and nothing else.
+
+Gauges here are **observable**: their value is read when Prometheus scrapes, not pushed from the
+loop they measure, because a gauge published from inside a work loop reports the loop's last healthy
+moment for as long as the loop is stuck. For the same reason "how long has this been waiting" is
+exported as a timestamp (`watch_plan_oldest_dirty_since_timestamp_seconds`) and read as
+`time() - <gauge>`.
+
+The migration for the names that changed is in [UPGRADING.md](UPGRADING.md).
 See [Operational Boundaries](#operational-boundaries).
 
 ***
@@ -1363,10 +1393,13 @@ Current limitations:
   so short reconnects resume a normal watch from that cursor. Kubernetes does not guarantee replay from an
   arbitrary resourceVersion, so if the apiserver has expired the cursor (`410 Gone`) recovery falls back to
   `sendInitialEvents` replay or LIST + mark-and-sweep.
-- **Watch-ingestion metrics are not yet emitted.** The attribution join is instrumented, but per-type
-  watch volume, restarts, replay cost, recovery mode, and shard queue delay are not, so a stalled or
-  thrashing watch is visible only in logs and in its downstream effects (see
-  [Observability](#observability)).
+- **Watch queue DELAY is not measurable.** Per-type watch volume, session ends, replay cost and
+  recovery mode are all emitted now (see [Observability](#observability)), and
+  `watch_event_handling_seconds` reports how long a stream was busy. How long an event *waited*
+  before being picked up is a different number, and measuring it needs an arrival timestamp stamped
+  before the blocking consumer, and the events arrive on a client-go watch channel this process does
+  not fill, so there is nowhere honest to stamp one. Occupancy is the available proxy: a stream that
+  is busy is a stream nothing else is being read from.
 - **The in-process attribution transport is single-replica.** `--author-attribution-transport=memory`
   is refused with more than one replica, and it loses every unjoined fact on restart by design; a
   multi-replica install must use the Redis transport.

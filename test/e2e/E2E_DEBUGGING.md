@@ -92,15 +92,25 @@ up{job="gitops-reverser"}
 count(up{job="gitops-reverser"})
 ```
 
-### Webhook Events
+### Ingest and the audit door
+
+The watch manager is leader-elected, so object-state metrics come from the leader pod only. A
+follower reporting nothing here is correct, not a fault — use the `pod` label to tell them apart
+rather than expecting both to move.
 
 ```promql
-# Total webhook events across all pods
-sum(gitopsreverser_events_received_total)
+# Watch events reaching the pipeline, by terminal outcome
+sum by (outcome) (gitopsreverser_watch_events_total)
 
-# Events by leader vs follower
-gitopsreverser_events_received_total{role="leader"}
-gitopsreverser_events_received_total{role!="leader"}
+# Which pod is actually ingesting (i.e. which one holds the lease). A rate, not the
+# total: a former leader keeps the higher cumulative count long after it stopped.
+sum by (pod) (rate(gitopsreverser_watch_events_total[5m]))
+
+# Audit requests at /audit-webhook - the histogram's _count IS the request counter
+sum by (outcome) (gitopsreverser_audit_eventlist_duration_seconds_count)
+
+# Audit events decoded from those requests
+sum by (category) (gitopsreverser_audit_events_total)
 ```
 
 ### Resource Metrics

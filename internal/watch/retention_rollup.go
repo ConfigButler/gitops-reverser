@@ -30,9 +30,10 @@ type RetentionSummary struct {
 	Mode v1alpha3.PruneMode
 	// RetainedDocuments is the sum over the target's currently tracked scopes.
 	RetainedDocuments int
-	// ObservedTime is when the most recent contributing resync reported. It is stamped in the same
-	// mutation that sets a scope's reported flag, so it is non-zero whenever Reported is true.
-	ObservedTime time.Time
+	// LastChangedTime is when this roll-up last changed. It advances only in the mutation that
+	// moves the published count or mode, never on a re-report of the same numbers, so it dates the
+	// RESULT rather than the last scan. Non-zero whenever Reported is true.
+	LastChangedTime time.Time
 }
 
 // targetRetentionScope is one cell's count, stamped with the stream revision that produced it.
@@ -101,8 +102,8 @@ func (m *Manager) MarkTargetRetention(
 	// converged one.
 	var dropped string
 	var installed uint64
-	var remeasured bool
-	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
+	var remeasured, changed bool
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		state := s.retention[gitDest.Key()]
 		scope, selected := state.scopes[cell]
 		if !selected {
@@ -118,14 +119,36 @@ func (m *Manager) MarkTargetRetention(
 		// them, and enqueueing for it would make every watch-set replacement reconcile twice.
 		priorTotal, priorMode, priorReported := state.total(), state.mode, state.anyReported()
 		remeasured = scope.reported && scope.reportedRevision != revision
+		// The revision marker moves whenever a NEW stream incarnation reports, whether or not the
+		// number moved. It has to be persisted either way: mutateWatchPlane discards the clone when
+		// this returns false, so an unchanged re-measurement used to drop the marker and see itself
+		// as a fresh re-measurement again on the next report, re-emitting the Info log below every
+		// time. It is persisted, and it does NOT enqueue a reconcile: nothing an operator reads has
+		// moved.
+		revisionAdvanced := scope.reportedRevision != revision
 		scope.retained = retained
 		scope.reported = true
 		scope.reportedRevision = revision
 		state.scopes[cell] = scope
 		state.mode = mode.OrDefault()
-		state.observed = time.Now()
 		s.retention[gitDest.Key()] = state
-		return !priorReported || state.total() != priorTotal || state.mode != priorMode
+		changed = !priorReported || state.total() != priorTotal || state.mode != priorMode
+		// The observation time advances ONLY when the observation itself moved.
+		//
+		// Restamping it on every accepted report — including the routine re-reports that change
+		// nothing an operator sees — made the roll-up defeat the no-op status-write suppression the
+		// controller depends on: the count and the mode would be identical, the timestamp would not,
+		// so the NEXT reconcile for any reason at all computed a non-empty patch and wrote status.
+		// A field that moves without its subject moving is a status write with nothing to say.
+		//
+		// It therefore dates the RESULT, not the last scan, exactly as status.placement's
+		// resolvedAtRevision does and for the same reason. A timestamp well in the past means the
+		// retention has been stable, not that measuring stopped.
+		if changed {
+			state.observed = time.Now()
+			s.retention[gitDest.Key()] = state
+		}
+		return changed || revisionAdvanced
 	})
 	if dropped != "" {
 		m.Log.WithName("retention").Info(
@@ -193,7 +216,7 @@ func (m *Manager) RetentionForGitTarget(gitDest types.ResourceReference) Retenti
 		Reported:          true,
 		Mode:              state.mode,
 		RetainedDocuments: state.total(),
-		ObservedTime:      state.observed,
+		LastChangedTime:   state.observed,
 	}
 }
 

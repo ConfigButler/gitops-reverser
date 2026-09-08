@@ -472,11 +472,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              lastPushTime:
-                description: LastPushTime is the timestamp of the last successful
-                  push.
-                format: date-time
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.
@@ -558,17 +553,19 @@ spec:
                   to mirror deletes. It is informational either way — retention is the configured behavior,
                   never a fault, and no condition changes state because of it.
                 properties:
+                  lastChangedTime:
+                    description: |-
+                      LastChangedTime records when the reported retention count or effective prune mode last
+                      changed. It does NOT indicate when retention was last evaluated: a resync that re-reports the
+                      same count leaves it untouched, so an old timestamp is equally consistent with stable
+                      retention and with nothing having measured it since.
+                    format: date-time
+                    type: string
                   mode:
                     description: |-
                       Mode is the EFFECTIVE spec.prune.mode this roll-up was produced under. It is reported here
                       rather than left to be read from the spec because a GitTarget that predates spec.prune has
                       no stored value at all, so the spec alone cannot explain why documents are being kept.
-                    type: string
-                  observedTime:
-                    description: |-
-                      ObservedTime is when this roll-up was last computed. A retention that begins just after a
-                      reconcile is not visible until the next one, so read this before treating a zero as live.
-                    format: date-time
                     type: string
                   retainedDocuments:
                     description: |-

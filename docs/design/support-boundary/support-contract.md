@@ -152,6 +152,6 @@ we can store — and is argued in
 | [resource-capability-model.md](resource-capability-model.md) | what may I do to *this document* (schema conformance, visibility, write unit) |
 | [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md) | SOPS: describe the ciphertext, never read it |
 | [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md) | why neither needs a new kind, and the derived-object gate |
-| [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) | what happens to an edit with no legal destination |
+| [Git write preflight](../git-write-preflight.md) | what happens to an edit with no legal destination |
 | [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md) | reporting all of this over a whole repository |
 | [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/) | the corpus of real-world shapes every verdict is checked against |

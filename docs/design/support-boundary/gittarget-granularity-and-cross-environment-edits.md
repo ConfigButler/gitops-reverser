@@ -12,7 +12,7 @@
 > [README.md](README.md),
 > [kustomize-support-boundary.md](kustomize-support-boundary.md)
 > (§4 invariant, §5 overlay model),
-> [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md),
+> [Git write preflight](../git-write-preflight.md),
 > [../gitpath-foreign-content-stringency.md](../../spec/gitpath-foreign-content-stringency.md)
 
 ## Purpose
@@ -42,16 +42,11 @@ These are decided; they frame the forks but are not reopened here.
   **L2** — within the reachable graph, never write a file consumed by more than
   one render root (fan-in = 1). Both *were* only emergent; the hardening made
   them explicit write-plan preconditions, checked before any byte is written.
-- **The admission webhook is a fail-open accelerator, not a correctness layer.**
-  It rejects unsavable edits at `kubectl apply` time for immediate,
-  *atomic* feedback, but it is opt-in, never used on a cluster the operator
-  merely mirrors, and `failurePolicy: Ignore`. Correctness rests entirely on
-  the L1/L2 write-plan preconditions
-  below: with the webhook off, a write that would leave the jail or touch shared
-  context is still refused before any byte is written. The Tier-2 unreflected-set
-  accounting ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md))
-  is **designed but unbuilt**; it adds per-edit *reporting* on top, and is not
-  what keeps the base safe.
+- **Admission preflight is opt-in and requires every involved target to pass.**
+  The proposed gate rejects unpublishable edits before persistence and fails closed
+  for covered editing requests. L1/L2 and render checks still run at publication.
+  Late refusals fail the affected target; no per-edit residue accounting is planned.
+  [Git write preflight](../git-write-preflight.md) owns this consolidated decision.
 - **Floating / external sources split by *who renders*.**
   - *An external control plane renders it* — Flux `Kustomization`, Argo CD
     `Application`, Flux `HelmRelease`, KRO. These are opaque **intent** KRM to
@@ -105,11 +100,9 @@ flowchart TD
 Note the granularity of that refusal, because it is the thing most easily
 misread. A violation aborts the **entire flush**, not just the offending edit:
 nothing is committed, and the failure is recorded **once, on the GitTarget**, not
-per-edit. There is no per-edit record of the dropped change today — the
-`FullyReflected` condition and the unreflected set are designed
-([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md))
-and **not built**. Wherever this doc says an edit is "unreflected," read it as
-*the designed future behavior*; what ships today is the hard refusal above.
+per-edit. The consolidated [Git write preflight](../git-write-preflight.md)
+design retains that target-error model and adds rejection before persistence.
+There is no planned `FullyReflected` condition or per-edit residue store.
 
 - **L1 is a filesystem fact.** Cheap (`filepath.Rel` prefix test), robust, and
   independent of how well we model the render graph. It is what makes "the base
@@ -159,11 +152,9 @@ the folder's render graph, so every subsequent edit that touches the shared file
 will hit it too. Recovery is left to the resync path — once a human fixes the
 layout, the next successful per-type resync clears `GitPathAccepted` back to
 true. A live write never clears it, because a live write that happens to avoid
-the offending file proves nothing about the rest of the subtree. When the Tier-2
-per-edit unreflected-set accounting
-([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md))
-exists, the *individual dropped edit* belongs there; the target-level condition
-still belongs here.
+the offending file proves nothing about the rest of the subtree.
+[Git write preflight](../git-write-preflight.md) retains this recovery requirement
+for failures caused by stale admission state or invalid direct Git commits.
 
 L1 stays *defense-in-depth*: planned write paths are base-relative by
 construction today, so the check should never fire — but it is the invariant the
@@ -307,7 +298,7 @@ need L2**: a `GitTarget` should
 be a **write partition**. Even with a perfect L2, one target spanning
 test/acceptance/production muddies four things a per-overlay target keeps clean —
 authorization (RBAC per namespace), audit (who changed which environment), status
-(per-environment `Ready`, and the planned per-edit `FullyReflected`), and review
+(per-environment readiness and target errors), and review
 (one branch's changes are one environment). "Manage the app as one thing" is a
 *grouping* concern for the layer above — an aggregate/app concept a tool built on
 the operator can add over N targets — not a reason to make the operator's write
@@ -421,13 +412,10 @@ Fixed action set, acting in `podinfo-test` unless noted, assuming the shipped
 overlay-local documents and declared image/replica entries are current runtime
 behaviour; the remaining rows describe the planned model.
 
-"Unreflected" here means the *designed* Tier-2 outcome: recorded in the
-unreflected set, `FullyReflected=False`, and reverted wherever something
-re-applies the folder's render
-([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
-None of that is built. Until it is, an edit with no legal destination either
-never matches a source document (nothing happens) or trips a write-boundary
-precondition and is refused outright (§1).
+[Git write preflight](../git-write-preflight.md#walkthrough-expected-behavior-and-current-evidence)
+owns the current example walkthrough. Unsupported covered edits are rejected before
+persistence under the proposed gate. Failures discovered afterward refuse the flush
+and put the affected target into error. The former per-edit accounting model is dropped.
 
 ### Common to all options
 
@@ -436,7 +424,7 @@ precondition and is refused outright (§1).
 | `kubectl set image deploy/podinfo podinfo=…:6.6.1` | `images:` entry in `overlays/test/kustomization.yaml` |
 | `kubectl scale deploy/podinfo --replicas=5` | `replicas:` entry in `overlays/test/kustomization.yaml` |
 | `kubectl apply -f new-cronjob.yaml` (test-only) | new `overlays/test/cronjob.yaml` + `resources:` entry |
-| edit an env var on the **base-owned** Deployment | **unreflected** (no destination until overlay patch authoring exists); webhook rejects at apply time if enabled |
+| edit an env var on the **base-owned** Deployment | **refused** (no destination until overlay field patch authoring exists); proposed admission rejects before persistence |
 | edit a `HelmRelease` chart version `6.0.0 → 6.1.0` (floating range or pinned) | in-place edit of the `HelmRelease` document — **accepted** (control plane renders it) |
 | a `kustomization.yaml` gains `resources: [github.com/org/repo//base?ref=main]` | **folder refused** (`GitPathAccepted=False`) — we render kustomize; a remote/floating source is non-invertible |
 
@@ -505,10 +493,9 @@ The write stays inside `spec.path` (L1 holds), the shared file is never touched
 base is loaded, so the overlay entry wins. `replicas:` behaves the same way.
 Field-level edits that no override entry can express (an env var, a resource
 limit) have no such destination — they are the overlay-patch case, which is not
-supported today. Today they are
-simply refused when they reach a write-boundary precondition; the honest per-edit
-report of *what was dropped* is the unbuilt Tier-2 accounting
-([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
+supported today. They are refused at the write boundary and fail the target.
+[Git write preflight](../git-write-preflight.md) adds rejection at admission while
+retaining target errors for failures discovered after persistence.
 
 **The cost: the divergence is invisible.** After that write, `test` is pinned to
 `9.9.9` and no longer tracks whatever `base` says. A later bump of the base image
@@ -522,7 +509,7 @@ Two shapes are worth distinguishing:
 | Shape | What happened | Notable? |
 |---|---|---|
 | **Override updated** | an `images:` entry already existed for this image; the operator changed `newTag` | no — the overlay already diverged; the user is editing their own pin |
-| **Override created** | no entry existed; the overlay rendered the base value, and the operator pins it | **planned** — entry creation needs the pending write-path correction |
+| **Override created** | no entry existed; the overlay rendered the base value, and the operator pins it | **shipped**; the notification described below remains proposed |
 
 **Proposal (not built).** On the *create* transition, surface the
 divergence at the point it becomes true. Three candidate surfaces, cheapest
@@ -536,10 +523,10 @@ first, and they are not exclusive:
    divergence is visible to `kubectl describe` and to anything watching events.
 3. **Status** — rejected as the primary surface. A `GitTarget` condition is
    target-scoped and level-triggered; divergence is per-resource and per-edit, so
-   it would either flap or accumulate unbounded. The **unreflected-set
-   accounting** in
-   [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)
-   is the right home for anything per-edit and durable, once it exists.
+   it would either flap or accumulate unbounded. Keep a successful divergence
+   notification separate from the target errors specified by
+   [Git write preflight](../git-write-preflight.md). That design adds no per-edit
+   residue accounting.
 
 Note the deliberate asymmetry with §1: a *refused* write is an error the user
 must fix, so it fails the GitTarget. A *divergent* write is a correct write whose

@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -30,9 +31,14 @@ type WorkerManager struct {
 	branchBufferMaxBytes int64
 	sensitiveResources   types.SensitiveResourcePolicy
 
-	mu      sync.RWMutex
-	workers map[BranchKey]*BranchWorker
-	ctx     context.Context
+	mu sync.RWMutex
+	// lifecycleMu serialises creating and stopping workers, so one BranchKey never has two live
+	// workers: they share an on-disk clone keyed by remote URL. It is separate from mu so a
+	// shutdown never blocks readers of the map, one of which is the queue-depth gauge source on
+	// the scrape goroutine. Take it BEFORE mu, never the other way round.
+	lifecycleMu sync.Mutex
+	workers     map[BranchKey]*BranchWorker
+	ctx         context.Context
 	// mapper is the GVK->GVR resolver injected into every worker so store scans build a
 	// resource-identity inventory. It is set once at startup (SetMapper) before any
 	// worker is created; a nil mapper keeps workers structure-only. It is the LOCAL cluster's
@@ -170,6 +176,11 @@ func (m *WorkerManager) EnsureWorker(
 	providerName, providerNamespace string,
 	branch string,
 ) error {
+	// Held across the whole check-and-create so a replacement cannot start while the worker it
+	// replaces is still stopping; they would share a clone.
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -218,16 +229,23 @@ func (m *WorkerManager) UnregisterTarget(
 	providerName, providerNamespace string,
 	branch string,
 ) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := BranchKey{
 		RepoNamespace: providerNamespace,
 		RepoName:      providerName,
 		Branch:        branch,
 	}
 
+	// lifecycleMu is held across the Stop so EnsureWorker cannot start a replacement while this
+	// worker is still draining. m.mu is only held to detach: queueDepthSamples reads it on the
+	// scrape goroutine, so holding THAT across Stop() stalls collection instead of reporting it.
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	m.mu.Lock()
 	worker, exists := m.workers[key]
+	delete(m.workers, key)
+	m.mu.Unlock()
+
 	if !exists {
 		return nil
 	}
@@ -236,7 +254,6 @@ func (m *WorkerManager) UnregisterTarget(
 	// since WorkerManager handles all lifecycle decisions
 	m.Log.Info("Unregistering target, destroying worker", "key", key.String())
 	worker.Stop()
-	delete(m.workers, key)
 
 	return nil
 }
@@ -264,8 +281,7 @@ func (m *WorkerManager) GetWorkerForTarget(
 // ReconcileWorkers checks active GitTargets and cleans up orphaned workers.
 // This ensures workers are removed when their GitTargets are deleted.
 func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// The List and the Stops stay outside m.mu, for the reason in UnregisterTarget.
 
 	// Get all GitTargets
 	var targetList configv1alpha3.GitTargetList
@@ -292,17 +308,29 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 		neededWorkers[key] = true
 	}
 
-	// Cleanup orphaned workers
+	// Detach the orphans under m.mu; stop them after releasing it, with lifecycleMu held so no
+	// replacement starts while one is draining.
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	m.mu.Lock()
+	orphans := make(map[BranchKey]*BranchWorker)
 	for key, worker := range m.workers {
 		if !neededWorkers[key] {
-			m.Log.Info("Cleaning up orphaned worker", "key", key.String())
-			worker.Stop()
+			orphans[key] = worker
 			delete(m.workers, key)
 		}
 	}
+	remaining := len(m.workers)
+	m.mu.Unlock()
+
+	for key, worker := range orphans {
+		m.Log.Info("Cleaning up orphaned worker", "key", key.String())
+		worker.Stop()
+	}
 
 	m.Log.V(1).Info("Worker reconciliation complete",
-		"activeWorkers", len(m.workers),
+		"activeWorkers", remaining,
 		"neededWorkers", len(neededWorkers))
 
 	return nil
@@ -316,23 +344,54 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	m.ctx = ctx
 	m.mu.Unlock()
+	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, m.queueDepthSamples)
 	m.Log.Info("WorkerManager started")
 
 	<-ctx.Done()
 
+	// Clear the source before the workers go, so the callback cannot outlive them.
+	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, nil)
 	m.Log.Info("WorkerManager shutting down")
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	workers := m.workers
+	m.workers = make(map[BranchKey]*BranchWorker)
+	m.mu.Unlock()
 
 	// Stop all workers gracefully
-	for key, worker := range m.workers {
+	for key, worker := range workers {
 		m.Log.Info("Stopping worker for shutdown", "key", key.String())
 		worker.Stop()
 	}
-
-	m.workers = make(map[BranchKey]*BranchWorker)
 	m.Log.Info("WorkerManager stopped")
 	return nil
+}
+
+// queueDepthSamples is the git_queue_depth source: one sample per live worker, read when
+// Prometheus scrapes.
+//
+// It takes m.mu only, and only to copy the worker pointers out; each worker's own depth is two
+// atomic loads. That matters because the callback runs inside the metric SDK's collection path: a
+// source that waited on the lock a wedged worker holds across its slow work would reintroduce the
+// staleness the observable gauge exists to remove.
+func (m *WorkerManager) queueDepthSamples() []telemetry.GaugeSample {
+	m.mu.RLock()
+	workers := make([]*BranchWorker, 0, len(m.workers))
+	for _, worker := range m.workers {
+		workers = append(workers, worker)
+	}
+	m.mu.RUnlock()
+
+	samples := make([]telemetry.GaugeSample, 0, len(workers))
+	for _, worker := range workers {
+		samples = append(samples, telemetry.GaugeSample{
+			Value: worker.queueDepth(),
+			Attrs: worker.providerAttrs(),
+		})
+	}
+	return samples
 }
 
 // NeedLeaderElection ensures only the elected leader manages workers.

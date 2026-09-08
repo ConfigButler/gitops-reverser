@@ -7,6 +7,109 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## The metric surface is rebuilt around the pipeline (breaking for dashboards and alerts)
+
+Every metric name below carries the `gitopsreverser_` prefix. Nothing else in the operator changes:
+this is an observability change, and no mirror behaves differently because of it.
+
+### Renamed
+
+| Was | Is | Note |
+|---|---|---|
+| `commits_total` | `git_commits_total` | and it now counts commits that **reached the remote**. It was recorded at local commit creation while claiming to count pushed commits, so a dead remote and a healthy one drew the same graph. A query that expects the old timing sees commits appear on the push rather than on the commit; a branch that cannot push now reports zero, which is the point |
+| `branch_worker_queue_depth` | `git_queue_depth` | same labels, and read at scrape time rather than published by the worker loop, so it no longer reports 0 while a stalled loop holds work |
+| `objects_written_total`, `resync_sweep_deletes_total`, `prune_retained_documents_total` | `git_documents_total{outcome}` | one counter over one population. `outcome` is `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained`. The old counters measured input EVENTS in a flush, not documents, so the numbers change as well as the names |
+| `resync_background_failures_total` | `git_resync_failures_total` | same labels |
+| `target_reconcile_completed_total{trigger}` | `watch_recovery_total{mode}` | `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. The old `trigger` label documented a value (`rule_change`) the code never emitted. It carries `group` and `resource` but no `version`: a recovery covers a cell, which has no served version |
+| `watched_types` | `watch_types{state}` | `state` is `streaming` / `replaying` / `blocked`; `sum by (gittarget_name)` is the old value, and `state="blocked"` is the difference between resolved and running |
+| `watch_plan_oldest_dirty_age_seconds` | `watch_plan_oldest_dirty_since_timestamp_seconds` | a Unix timestamp, so read it as `time() - <gauge>`. The age froze during exactly the stall it was there to report, because the loop that publishes it was the loop that was stuck |
+| `secret_encryption_{attempts,success,failures,cache_hits,marker_skips}_total` | `secret_encryptions_total{outcome}` | `outcome` is `encrypted` / `failed` / `cached`. The old `cache_hits / attempts` "cache effectiveness" ratio divided over disjoint populations and could exceed 1; use `sum by (outcome) (rate(...))` |
+
+### Removed
+
+| Removed | Use instead |
+|---|---|
+| `git_operations_total` | `git_documents_total` — it was an exact duplicate of `objects_written_total`, incremented with the same value four lines away |
+| `audit_eventlists_total{outcome}` | `audit_eventlist_duration_seconds_count{outcome}` — a histogram ships its own observation count, so this counter published the same numbers under a second name |
+| `audit_eventlist_events_total{outcome}` | `audit_events_total` — it counts the same event items once each, with `group`/`version`/`resource`/`verb` on them |
+| `api_catalog_generation` | `api_catalog_refresh_total{outcome="changed"}` |
+| `watch_plan_triggers_coalesced_total` | `watch_plan_triggers_total{coalesced="true"}` — a label, so the coalescing ratio is one metric's business |
+
+### New labels on metrics that kept their names
+
+- `api_catalog_resources`, `api_catalog_group_versions`, `api_catalog_refresh_total` and
+  `api_catalog_refresh_duration_seconds` gain **`source_cluster`**, and are now recorded for every
+  source cluster rather than only the local one. A `GitTarget` mirroring a remote cluster through
+  `spec.kubeConfig` used to produce no catalog signal at all, so a degraded `APIService` there was
+  invisible. **Existing queries now sum across clusters**: add `{source_cluster="default"}` to keep
+  the old scope.
+- `audit_eventlist_duration_seconds` gains three `outcome` values — `bad_method`, `bad_path`,
+  `bare_endpoint_disabled` — for requests refused before decoding. An apiserver posting to the wrong path
+  used to look exactly like an apiserver posting nothing.
+- `watch_plan_triggers_total` gains `coalesced`.
+- `watch_types` gains **`source_cluster`**, so type counts and session counts read on the same axis.
+  Existing queries now sum across clusters; add `{source_cluster="default"}` to keep the old scope.
+
+### New
+
+`watch_events_total{gittarget_*,group,version,resource,outcome}` is the ingest census, and the stage
+that had no instrument at all. Alongside it: `watch_event_handling_seconds`,
+`watch_sessions_ended_total{reason}`, `watch_replay_duration_seconds`,
+`git_pushes_total{outcome}`, `git_push_retries_total{reason}` and `git_push_duration_seconds`.
+
+`watch_streams_open{source_cluster,gittarget_*}` answers the question a cluster admin asks before
+installing this operator: how many watch connections will it hold against my API server?
+`watch_types` cannot, because a GitTarget watching one type across three namespaces resolves **one
+type** and opens **three watches**.
+
+Two of them count work that used to disappear with only a log line:
+
+- `git_queue_drops_total{kind}` — a full worker queue threw the item away.
+- `git_commit_failures_total{kind,reason}` — a commit failed and its whole window was dropped. This
+  happens after routing and before pushing, so no other counter could see it; the mirror falls
+  behind for every object in that window until a resync re-derives them. `reason="refused"` is a Git
+  path a human has to fix and will not clear on its own.
+
+`resource_condition{kind,resource_namespace,resource_name,type,status,reason}` is the configuration
+state, and the question the rest of the surface leaves unanswered: not *is the pipeline flowing* but
+*was my configuration accepted*. It publishes the kstatus trio — `Ready`, `Reconciling`, `Stalled` —
+of every `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider` and `ClusterProvider`, as one
+series per possible status of which exactly one is `1`, so alerts compare `== 1`:
+
+```promql
+gitopsreverser_resource_condition{type="Ready", status="False"} == 1
+```
+
+Conditions used to be readable only with a kubeconfig, so a target held at `Ready=False` could page
+nobody. `Unknown` is published rather than omitted, because "not reconciled yet" is a state; a
+deleted object stops publishing rather than reporting its last value forever. `CommitRequest` is not
+on it — one is created per save, so a series per object would churn continuously; read
+`git_commits_total{message_source="commit_request"}` and the object's own conditions instead.
+
+### `GitTarget.status` loses one field and renames another
+
+**`lastPushTime` is removed.** It was declared and never written — the only assignment in the tree
+set it to `nil` — so anything reading it was reading an absence. This is a schema break with no
+behavioral change, because there was no behaviour.
+
+To be clear about what this is *not*: a `lastPushTime` is a perfectly ordinary field for a
+Git-writing controller, and Flux's `ImageUpdateAutomation` exposes both `lastPushTime` and
+`lastPushCommit`. It is removed here because it never worked, not because the idea is wrong. See
+[`design/metrics-observability-plan.md`](design/metrics-observability-plan.md) for why re-adding it
+is a separate design question rather than a fix.
+
+**`status.retention.observedTime` becomes `status.retention.lastChangedTime`**, and the rename is
+the point: the field advances only when the retained count or the effective prune mode changes, not
+when retention is evaluated. It always behaved that way after the status-write fix; the old name
+invited clients to read it as a freshness signal, which it is not and never was. An old timestamp is
+equally consistent with stable retention and with nothing having measured it since — use
+`gitopsreverser_git_resync_failures_total` and `gitopsreverser_watch_recovery_total` for that
+question.
+
+The full reasoning is in
+[`design/metrics-observability-plan.md`](design/metrics-observability-plan.md), and the operator's
+guide to every live metric is [`interpreting-metrics.md`](interpreting-metrics.md).
+
 ## One live commit message template
 
 This is a breaking minor-release change. `GitTarget.spec.commit.message.liveTemplate` replaces

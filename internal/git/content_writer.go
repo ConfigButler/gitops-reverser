@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -117,19 +120,12 @@ func (w *contentWriter) encryptSensitiveContent(ctx context.Context, event Event
 		return nil, errors.New("secret encryption is required but no encryptor is configured")
 	}
 
-	if telemetry.SecretEncryptionAttemptsTotal != nil {
-		telemetry.SecretEncryptionAttemptsTotal.Add(ctx, 1)
-	}
 	encrypted, err := encryptor.Encrypt(ctx, plain, ResourceMeta(meta))
 	if err != nil {
-		if telemetry.SecretEncryptionFailuresTotal != nil {
-			telemetry.SecretEncryptionFailuresTotal.Add(ctx, 1)
-		}
+		recordSecretEncryption(ctx, secretEncryptionFailed)
 		return nil, fmt.Errorf("secret encryption failed: %w", err)
 	}
-	if telemetry.SecretEncryptionSuccessTotal != nil {
-		telemetry.SecretEncryptionSuccessTotal.Add(ctx, 1)
-	}
+	recordSecretEncryption(ctx, secretEncryptionEncrypted)
 
 	w.mu.Lock()
 	w.encryptedCache[cacheKey] = append([]byte(nil), encrypted...)
@@ -152,12 +148,7 @@ func (w *contentWriter) cachedEncryptedContent(
 	if !ok {
 		return nil, false
 	}
-	if telemetry.SecretEncryptionMarkerSkipsTotal != nil {
-		telemetry.SecretEncryptionMarkerSkipsTotal.Add(ctx, 1)
-	}
-	if telemetry.SecretEncryptionCacheHitsTotal != nil {
-		telemetry.SecretEncryptionCacheHitsTotal.Add(ctx, 1)
-	}
+	recordSecretEncryption(ctx, secretEncryptionCached)
 	return append([]byte(nil), cached...), true
 }
 
@@ -172,4 +163,27 @@ func buildResourceMeta(event Event) resourceMeta {
 	meta.ResourceVersion = event.Object.GetResourceVersion()
 	meta.Generation = event.Object.GetGeneration()
 	return meta
+}
+
+// Secret encryption outcome label values. The set partitions every decision the encryption path
+// makes about one document: it ran and produced ciphertext, it ran and failed, or it did not run
+// because unchanged content was reused.
+const (
+	secretEncryptionEncrypted = "encrypted"
+	secretEncryptionFailed    = "failed"
+	secretEncryptionCached    = "cached"
+)
+
+// recordSecretEncryption counts one encryption decision.
+//
+// One counter with an outcome label, where there used to be five counters over two populations:
+// `attempts` was incremented immediately before Encrypt and so was exactly success + failures, and
+// `cache_hits` and `marker_skips` were incremented on consecutive lines of one branch and could
+// never differ. A share of one total is also the ratio the old "cache effectiveness" query was
+// reaching for, which divided two counters over disjoint populations.
+func recordSecretEncryption(ctx context.Context, outcome string) {
+	if telemetry.SecretEncryptionsTotal == nil {
+		return
+	}
+	telemetry.SecretEncryptionsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
 }

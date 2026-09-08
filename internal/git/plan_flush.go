@@ -130,6 +130,10 @@ type writeBatch struct {
 	// it off the events, the resync path from the request — and is empty for the CLI and for
 	// tests, where the counters are simply unlabelled.
 	target placementTarget
+	// documents is the write-boundary census for this batch, tallied as documents are decided and
+	// published by flush once the bytes are actually on disk. See document_metrics.go for why it
+	// is not published at the decision site.
+	documents map[documentKey]int64
 	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to the folder's one kustomize root and then the canonical path.
@@ -331,6 +335,18 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // existing document is placed by createNew. It returns what it did to the bytes
 // (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
+	outcome, err := wb.upsert(ctx, event)
+	if err == nil {
+		// Tallied here rather than at either caller: the live path reaches this through applyEvent
+		// and the resync path calls it directly, so this is the one place both are covered exactly
+		// once. Published by flush, never here — see document_metrics.go.
+		wb.tallyDocument(event.Identifier, documentOutcomeForUpsert(outcome))
+	}
+	return outcome, err
+}
+
+// upsert is applyUpsert's body, split out so the census above wraps every return path.
+func (wb *writeBatch) upsert(ctx context.Context, event Event) (upsertOutcome, error) {
 	id, ok := manifestIdentity(event.Object)
 	if !ok {
 		return wb.createNew(ctx, event)
@@ -1271,6 +1287,7 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	if len(wb.kustomizationsListing(target.filePath)) > 0 {
 		wb.putToKustomize = true
 	}
+	wb.tallyDocument(event.Identifier, documentDeletedLive)
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if !res.FileEmpty {
 		buf.current = res.Content
@@ -1525,6 +1542,9 @@ func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root,
 			changed = true
 		}
 	}
+	// The bytes are on disk. Only now is the census true: a batch that aborted on a precondition
+	// above, or failed mid-write, publishes nothing.
+	wb.publishDocumentTally(ctx)
 	return changed, nil
 }
 

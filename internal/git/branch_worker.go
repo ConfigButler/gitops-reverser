@@ -154,7 +154,7 @@ type BranchWorker struct {
 
 	// hasUnpushedWork mirrors whether the event loop is currently holding a live
 	// open window or any committed-but-not-yet-pushed pending writes. The event
-	// loop is the only writer and, via syncQueueDepthMetric, the only reader; the
+	// loop is the only writer and, via syncUnpushedWorkFlag, the only reader; the
 	// atomic guards the store/load and lets the depth gauge account for retained
 	// work the channel length alone cannot see.
 	hasUnpushedWork atomic.Bool
@@ -359,12 +359,13 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
 			"closeDelaySeconds", req.CloseDelaySeconds,
 			"messageOverride", req.Message != "")
-		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
-		// the loop republishes on every received item, so the gauge converges
-		// without an enqueue-side write that could latch a stale value.
+		// Nothing publishes depth here: the gauge reads inflightItems at scrape
+		// time, so an enqueue is visible to the next scrape whether or not the
+		// loop has woken to notice it.
 	default:
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
+		w.recordQueueDrop(queueDropAttach)
 		w.Log.Error(nil, "Event queue full, CommitRequest attach dropped (controller will re-send)")
 	}
 }
@@ -437,6 +438,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.inflightItems.Add(-1)
 		delete(w.pendingResyncs, key)
 		w.pendingResyncsMu.Unlock()
+		w.recordQueueDrop(queueDropResync)
 		w.Log.Error(nil, "Event queue full, resync request dropped",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
 			"sourceCell", sourceCellForLog(request.SourceCell))
@@ -546,13 +548,14 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName,
 			"sourceCell", sourceCellForLog(request.sourceCell()))
-		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
-		// the loop republishes on every received item, so the gauge converges
-		// without an enqueue-side write that could latch a stale value.
+		// Nothing publishes depth here: the gauge reads inflightItems at scrape
+		// time, so an enqueue is visible to the next scrape whether or not the
+		// loop has woken to notice it.
 		return true
 	default:
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
+		w.recordQueueDrop(queueDropWrite)
 		// Name the producing cell on a drop. A saturated queue is diagnosed from what was
 		// dropped and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
 		// one may be one CELL of one GitTarget.
@@ -565,27 +568,18 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	}
 }
 
-// recordQueueDepth publishes this worker's pending-work depth: accepted-but-unhandled items plus
-// one when the loop holds retained unpushed work. It reads 0 only on a full drain, so a drain gate
-// cannot be satisfied mid-push. Called only from the loop goroutine, so the last-writer-wins gauge
-// can never latch a stale depth from an enqueue goroutine racing the drain.
-func (w *BranchWorker) recordQueueDepth() {
-	if telemetry.BranchWorkerQueueDepth == nil {
-		return
-	}
+// queueDepth reports this worker's pending work: accepted-but-unhandled items plus one when the
+// loop is holding retained unpushed work. It reads 0 only on a full drain, so a drain gate cannot
+// be satisfied mid-push.
+//
+// Read by the git_queue_depth observable gauge at scrape time. Both fields are atomics, so the
+// callback takes no lock the loop could be holding across its slow work.
+func (w *BranchWorker) queueDepth() int64 {
 	depth := w.inflightItems.Load()
 	if w.hasUnpushedWork.Load() {
 		depth++
 	}
-	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	telemetry.BranchWorkerQueueDepth.Record(ctx, depth, metric.WithAttributes(
-		attribute.String("provider_namespace", w.GitProviderNamespace),
-		attribute.String("provider_name", w.GitProviderRef),
-		attribute.String("branch", w.Branch),
-	))
+	return depth
 }
 
 // EnsurePathBootstrapped prepares bootstrap templates locally for a path.
@@ -799,20 +793,17 @@ func newBranchWorkerEventLoop(w *BranchWorker, defaultCommitWindow time.Duration
 func (l *branchWorkerEventLoop) run() {
 	defer l.stopTimers()
 
-	l.syncQueueDepthMetric()
+	l.syncUnpushedWorkFlag()
 	for {
 		commitC, pushC, attachC := l.timerChannels()
 		select {
 		case <-l.w.ctx.Done():
 			l.handleShutdown()
-			l.syncQueueDepthMetric()
+			l.syncUnpushedWorkFlag()
 			return
 		case item := <-l.w.eventQueue:
 			l.handleQueueItem(item)
-			// Decrement only after the item is fully handled; the post-handling
-			// open-window/pending-writes state is captured by syncQueueDepthMetric
-			// below, so there is no window where depth drops to 0 prematurely.
-			l.w.inflightItems.Add(-1)
+			l.releaseHandledItem()
 		case <-commitC:
 			l.commitTimer = nil
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonTimer)
@@ -832,18 +823,27 @@ func (l *branchWorkerEventLoop) run() {
 		// finalized it (a silence timeout, a CommitRequest finalize). A no-op while a window
 		// is still open or nothing is parked.
 		l.applyDeferredHeals()
-		l.syncQueueDepthMetric()
+		l.syncUnpushedWorkFlag()
 	}
 }
 
-// syncQueueDepthMetric refreshes the worker's unpushed-work flag from the loop's
-// authoritative state and republishes the depth gauge. Called once per loop
-// iteration (the loop goroutine is the only writer of hasUnpushedWork), so the
-// gauge converges to 0 once every accepted item has been handled (inflightItems
-// == 0) and nothing is retained (no open window, no pending writes).
-func (l *branchWorkerEventLoop) syncQueueDepthMetric() {
+// syncUnpushedWorkFlag refreshes the worker's retained-work flag from the loop's authoritative
+// state. Called once per loop iteration; the loop goroutine is the only writer of hasUnpushedWork.
+//
+// The flag is all the loop owes the depth gauge: queueDepth() reads it and inflightItems at scrape
+// time, so nothing here publishes a value that could go stale while the loop is busy.
+// releaseHandledItem releases one handled item from the in-flight count.
+//
+// The order is the contract: queueDepth() reads the in-flight count and the retained-work flag
+// together, so publishing the flag second lets both read empty while a window is open, and a scrape
+// landing there reports a drained queue for a worker that has work.
+func (l *branchWorkerEventLoop) releaseHandledItem() {
+	l.syncUnpushedWorkFlag()
+	l.w.inflightItems.Add(-1)
+}
+
+func (l *branchWorkerEventLoop) syncUnpushedWorkFlag() {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
-	l.w.recordQueueDepth()
 }
 
 func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time, <-chan time.Time) {
@@ -973,23 +973,30 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 
 	pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, request)
 	if err != nil {
+		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 		l.w.Log.Error(err, "Failed to build atomic pending write", "events", len(request.Events))
 		return
 	}
 
-	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
+	// Retain the batch, not the original write: executePendingWrites stamps CommitSHA into the
+	// slice it is given, and the retained write is what the push counts from.
+	batch := []PendingWrite{*pendingWrite}
+	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
 		// A refused write plan is surfaced as a GitTarget status transition rather than
 		// logged as a write fault; nothing was committed either way, so the request is
 		// dropped in both cases.
 		name, namespace := atomicRefusalTarget(request)
-		if !l.w.reportPathRefusal(err, name, namespace) {
+		if l.w.reportPathRefusal(err, name, namespace) {
+			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
+		} else {
+			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
 		}
 		return
 	}
 
-	l.pendingWrites = append(l.pendingWrites, *pendingWrite)
-	l.pendingWritesBytes += pendingWrite.ByteSize
+	l.pendingWrites = append(l.pendingWrites, batch[0])
+	l.pendingWritesBytes += batch[0].ByteSize
 	l.maybeSchedulePush()
 }
 
@@ -1080,6 +1087,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
+		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 		l.w.Log.Error(err, "Failed to build pending write; dropping open window",
 			"reason", string(reason),
 			"windowAuthor", windowAuthor,
@@ -1104,7 +1112,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// GitPathAccepted=False instead of being logged as a transient write fault. The
 		// window is dropped either way — the events are already lost to the failed flush,
 		// and the next resync re-derives them.
-		if !l.w.reportPathRefusal(err, targetName, targetNamespace) {
+		if l.w.reportPathRefusal(err, targetName, targetNamespace) {
+			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
+		} else {
+			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",
 				"reason", string(reason),
 				"windowAuthor", windowAuthor,
@@ -1314,7 +1325,6 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		return nil
 	}
 
-	w.recordPendingWritesMetrics(pendingWrites, commitsCreated)
 	w.firsts.commit.Do(func() {
 		w.Log.Info("First commit written to local repository",
 			"branch", w.Branch,
@@ -1335,6 +1345,27 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 		return nil
 	}
 
+	// One cycle, one terminal outcome, timed end to end. Closing the measurement HERE rather than
+	// at each return inside the cycle is what makes "exactly once" structural: a return path added
+	// to runPushCycle later cannot forget to record, and cannot record twice.
+	started := time.Now()
+	err := w.runPushCycle(pendingWrites)
+	outcome := pushOutcomePushed
+	if err != nil {
+		outcome = pushOutcomeFailed
+	}
+	w.recordPushOutcome(outcome, started)
+	if err == nil {
+		// The commits are on the remote now, which is the only place they can honestly be counted,
+		// and pendingWrites reflect whatever the final replay produced.
+		w.publishCommitsForPush(pendingWrites)
+	}
+	return err
+}
+
+// runPushCycle is the push itself: try, and on a rejection caused by a moved remote, sync, rebuild
+// the pending writes on the new head, and try again. The caller owns repoMu and the measurement.
+func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
 		return fmt.Errorf("get GitProvider: %w", err)
@@ -1380,8 +1411,11 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 			return err
 		}
 		if remoteHash == rootHash {
+			// The remote has not moved, so the rejection was not contention and replaying would
+			// hit the same wall.
 			return err
 		}
+		w.recordPushRetry(pushRetryRemoteMoved)
 
 		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 		if syncErr != nil {
@@ -1535,22 +1569,39 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 	return baseBranch, baseHash, nil
 }
 
-func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, commitsCreated int) {
-	eventCount := 0
-	for _, pendingWrite := range pendingWrites {
-		eventCount += len(pendingWrite.Events)
-	}
+// Push cycle outcomes and retry reasons.
+//
+// A push CYCLE is one call to pushPendingCommits, replay retries included, and it ends exactly
+// once: `pushed` when the remote took the work, `failed` when it did not. A retry is not an
+// outcome, which is why it is counted separately — a cycle that replays twice and succeeds is one
+// `pushed` and two retries, and rate(retries)/rate(pushes) is the contention signal.
+const (
+	pushOutcomePushed = "pushed"
+	pushOutcomeFailed = "failed"
 
-	if telemetry.GitOperationsTotal != nil {
-		telemetry.GitOperationsTotal.Add(w.ctx, int64(eventCount))
-	}
-	if telemetry.CommitsTotal != nil {
-		w.recordCommitsByAuthorKind(pendingWrites, commitsCreated)
-	}
-	if telemetry.ObjectsWrittenTotal != nil {
-		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(eventCount))
-	}
-}
+	pushRetryRemoteMoved = "remote_moved"
+)
+
+// Commit-failure kinds and reasons. A failure here is work that was accepted, routed, and then
+// died before it could reach the remote: the window is dropped and its events are gone until the
+// next resync re-derives them.
+const (
+	commitFailureKindWindow = "window"
+	commitFailureKindAtomic = "atomic"
+
+	// commitFailureRefused is a plan the acceptance gate or a write-boundary precondition
+	// rejected. It is also surfaced as a GitTarget condition, but a condition is not a rate.
+	commitFailureRefused = "refused"
+	// commitFailureError is any other write fault.
+	commitFailureError = "error"
+)
+
+// Queue-drop kinds. The set covers every item that can be refused by a full queue.
+const (
+	queueDropWrite  = "write"
+	queueDropAttach = "attach"
+	queueDropResync = "resync"
+)
 
 // commitLabels is the {author_kind, message_source} pair one commit is counted under.
 type commitLabels struct {
@@ -1558,7 +1609,20 @@ type commitLabels struct {
 	messageSource string
 }
 
-func (w *BranchWorker) recordCommitsByAuthorKind(pendingWrites []PendingWrite, commitsCreated int) {
+// publishCommitsForPush counts the commits a successful push put on the remote, by
+// {author_kind, message_source}.
+//
+// It reads the pending writes as they stand after the push. executePendingWrites stamps each
+// write's CommitSHA in place, so a write a conflict replay rebuilt to nothing has a zero SHA and is
+// not counted: this is the commits that reached the remote, not the ones that were created.
+func (w *BranchWorker) publishCommitsForPush(pendingWrites []PendingWrite) {
+	if telemetry.GitCommitsTotal == nil {
+		return
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	counts := map[commitLabels]int64{}
 	for _, pendingWrite := range pendingWrites {
 		if !pendingWrite.createdCommit() {
@@ -1569,26 +1633,95 @@ func (w *BranchWorker) recordCommitsByAuthorKind(pendingWrites []PendingWrite, c
 			messageSource: pendingWrite.messageSource(),
 		}]++
 	}
-	if len(counts) == 0 && commitsCreated > 0 {
-		// Commits were created but no pending write claims them, so neither label can be read
-		// from a write. Fall back to the same committer identity the author label already uses.
-		counts[commitLabels{
-			authorKind:    authorKindCommitter,
-			messageSource: messageSourceReconcile,
-		}] = int64(commitsCreated)
-	}
 	for labels, count := range counts {
 		// Label by the recording BranchWorker's own identity {provider_namespace,
 		// provider_name, branch} plus author_kind and message_source. The prefixed key names
 		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`.
-		telemetry.CommitsTotal.Add(w.ctx, count, metric.WithAttributes(
-			attribute.String("provider_namespace", w.GitProviderNamespace),
-			attribute.String("provider_name", w.GitProviderRef),
-			attribute.String("branch", w.Branch),
+		telemetry.GitCommitsTotal.Add(ctx, count, metric.WithAttributes(w.providerAttrs(
 			attribute.String("author_kind", labels.authorKind),
 			attribute.String("message_source", labels.messageSource),
-		))
+		)...))
 	}
+}
+
+// recordPushOutcome closes out one push cycle: its terminal outcome and its wall time.
+//
+// The duration spans every replay retry on purpose. What an operator needs is how long it took the
+// mirror to accept the work, not how fast one attempt was, and a cycle that replayed three times
+// took what it took.
+func (w *BranchWorker) recordPushOutcome(outcome string, started time.Time) {
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if telemetry.GitPushesTotal != nil {
+		telemetry.GitPushesTotal.Add(ctx, 1,
+			metric.WithAttributes(w.providerAttrs(attribute.String("outcome", outcome))...))
+	}
+	if telemetry.GitPushDurationSeconds != nil {
+		telemetry.GitPushDurationSeconds.Record(ctx, time.Since(started).Seconds(),
+			metric.WithAttributes(w.providerAttrs()...))
+	}
+}
+
+// recordPushRetry counts one replay round inside a push cycle.
+func (w *BranchWorker) recordPushRetry(reason string) {
+	if telemetry.GitPushRetriesTotal == nil {
+		return
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	telemetry.GitPushRetriesTotal.Add(ctx, 1,
+		metric.WithAttributes(w.providerAttrs(attribute.String("reason", reason))...))
+}
+
+// providerAttrs is the {provider_namespace, provider_name, branch} identity every Git-side metric
+// this worker records is labelled by. The keys are prefixed, never bare namespace/name: a
+// Prometheus pod scrape with honor_labels=false overwrites a bare `namespace` attribute with the
+// scraped pod's own, which silently breaks every per-provider selector.
+func (w *BranchWorker) providerAttrs(extra ...attribute.KeyValue) []attribute.KeyValue {
+	return append([]attribute.KeyValue{
+		attribute.String("provider_namespace", w.GitProviderNamespace),
+		attribute.String("provider_name", w.GitProviderRef),
+		attribute.String("branch", w.Branch),
+	}, extra...)
+}
+
+// recordCommitFailure counts one window or request that died between routing and pushing: its
+// events are lost until the next resync re-derives them.
+//
+// `refused` and `error` need different people. A refusal is a Git path a human has to fix and will
+// not clear on its own; an error may be transient.
+func (w *BranchWorker) recordCommitFailure(kind, reason string) {
+	if telemetry.GitCommitFailuresTotal == nil {
+		return
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	telemetry.GitCommitFailuresTotal.Add(ctx, 1, metric.WithAttributes(w.providerAttrs(
+		attribute.String("kind", kind),
+		attribute.String("reason", reason),
+	)...))
+}
+
+// recordQueueDrop counts one item the queue was too full to accept.
+//
+// Every increment is work thrown away: a live write is recovered only by the next resync, and an
+// attach by the controller's next poll.
+func (w *BranchWorker) recordQueueDrop(kind string) {
+	if telemetry.GitQueueDropsTotal == nil {
+		return
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	telemetry.GitQueueDropsTotal.Add(ctx, 1,
+		metric.WithAttributes(w.providerAttrs(attribute.String("kind", kind))...))
 }
 
 // getGitProvider fetches the GitProvider for this worker.

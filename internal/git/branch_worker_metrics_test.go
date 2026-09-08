@@ -7,17 +7,26 @@ import (
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-const branchWorkerQueueDepthMetric = "gitopsreverser_branch_worker_queue_depth"
-const commitsTotalMetric = "gitopsreverser_commits_total"
+const (
+	commitsTotalMetric   = "gitopsreverser_git_commits_total"
+	queueDepthMetric     = "gitopsreverser_git_queue_depth"
+	queueDropsMetric     = "gitopsreverser_git_queue_drops_total"
+	pushesTotalMetric    = "gitopsreverser_git_pushes_total"
+	pushRetriesMetric    = "gitopsreverser_git_push_retries_total"
+	pushDurationMetric   = "gitopsreverser_git_push_duration_seconds"
+	commitFailuresMetric = "gitopsreverser_git_commit_failures_total"
+)
 
 func newMetricsTestWorker() *BranchWorker {
 	return &BranchWorker{
@@ -32,7 +41,7 @@ func newMetricsTestWorker() *BranchWorker {
 	}
 }
 
-func queueDepthLabels() map[string]string {
+func workerLabels() map[string]string {
 	return map[string]string{
 		"provider_namespace": "test-ns",
 		"provider_name":      "test-provider",
@@ -40,20 +49,25 @@ func queueDepthLabels() map[string]string {
 	}
 }
 
-// recordPendingWritesMetrics must label commits_total with the recording worker's
-// identity {provider_namespace, provider_name, branch} — the same key set as
-// branch_worker_queue_depth (queueDepthLabels), since both are branch-worker metrics.
-// Without labels the counter is a single global series; with them, concurrent workers
-// (and parallel e2e specs, isolated by their per-suite GitProvider namespace) count
-// separately.
+// commitAndPush models the moment a push lands: the counts are read off the pending writes AS THEY
+// STAND, which is the contract — a commit is counted when it reaches the remote, from whatever
+// survived the final replay, never from what was created locally.
+func commitAndPush(w *BranchWorker, writes []PendingWrite, _ int) {
+	w.publishCommitsForPush(writes)
+}
+
+// commits_total must be labelled with the recording worker's identity
+// {provider_namespace, provider_name, branch}. Without labels the counter is a single global
+// series; with them, concurrent workers (and parallel e2e specs, isolated by their per-suite
+// GitProvider namespace) count separately.
 func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordPendingWritesMetrics(nil, 2)
+	commitAndPush(w, committerWrites(2), 2)
 
-	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, queueDepthLabels())
+	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
 	require.True(t, ok, "expected a commits_total sample labelled by the worker identity")
 	assert.Equal(t, int64(2), commits)
 }
@@ -66,9 +80,9 @@ func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testin
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordPendingWritesMetrics(nil, 1)
+	commitAndPush(w, committerWrites(1), 1)
 
-	otherNamespace := queueDepthLabels()
+	otherNamespace := workerLabels()
 	otherNamespace["provider_namespace"] = "other-suite-ns"
 	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, otherNamespace)
 	assert.False(t, ok, "a different provider_namespace must not match this worker's commits")
@@ -79,7 +93,7 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByAuthorKind(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordPendingWritesMetrics([]PendingWrite{
+	commitAndPush(w, []PendingWrite{
 		{
 			Kind:      PendingWriteCommit,
 			Events:    []Event{{UserInfo: UserInfo{Username: "alice"}}},
@@ -98,7 +112,7 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByAuthorKind(t *testing.T) {
 		},
 	}, 3)
 
-	labels := queueDepthLabels()
+	labels := workerLabels()
 	labels["author_kind"] = authorKindUser
 	count, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
 	require.True(t, ok)
@@ -119,95 +133,95 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
-// recordQueueDepth must report 0 for a freshly drained worker: empty queue and
-// no retained unpushed work.
-func TestRecordQueueDepth_DrainedReportsZero(t *testing.T) {
-	reader, err := telemetry.InitTestExporter()
-	require.NoError(t, err)
-
-	w := newMetricsTestWorker()
-	w.recordQueueDepth()
-
-	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
-	require.True(t, ok, "expected a branch_worker_queue_depth sample")
-	assert.Equal(t, int64(0), depth)
+// committerWrites builds n resync writes that each produced a commit. A resync write claims its
+// commit through Committed rather than a SHA, and carries no per-event author, so it is the
+// committer/reconcile pair.
+func committerWrites(n int) []PendingWrite {
+	writes := make([]PendingWrite, 0, n)
+	for range n {
+		writes = append(writes, PendingWrite{Kind: PendingWriteResync, Committed: boolPtr(true)})
+	}
+	return writes
 }
 
-// recordQueueDepth must count both accepted-but-unhandled items (in flight) and
-// the retained unpushed-work flag, so the gauge reflects work the channel length
-// alone cannot see — including an item already dequeued and being processed.
-func TestRecordQueueDepth_CountsInflightAndRetained(t *testing.T) {
-	reader, err := telemetry.InitTestExporter()
-	require.NoError(t, err)
+// queueDepth must report 0 for a freshly drained worker: empty queue and no retained unpushed
+// work.
+func TestQueueDepth_DrainedReportsZero(t *testing.T) {
+	assert.Equal(t, int64(0), newMetricsTestWorker().queueDepth())
+}
 
+// queueDepth must count both accepted-but-unhandled items (in flight) and the retained
+// unpushed-work flag, so it reflects work the channel length alone cannot see — including an item
+// already dequeued and being processed.
+func TestQueueDepth_CountsInflightAndRetained(t *testing.T) {
 	w := newMetricsTestWorker()
-	// Two items accepted but not yet fully handled, plus retained unpushed work.
 	w.inflightItems.Store(2)
 	w.hasUnpushedWork.Store(true)
 
-	w.recordQueueDepth()
-
-	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
-	require.True(t, ok, "expected a branch_worker_queue_depth sample")
-	assert.Equal(t, int64(3), depth)
+	assert.Equal(t, int64(3), w.queueDepth())
 }
 
-// recordQueueDepth must still report > 0 for an item that has been dequeued from
-// the channel but is still being handled — the exact window where len(eventQueue)
-// would read 0 and a drain gate could be falsely satisfied mid-commit.
-func TestRecordQueueDepth_InflightItemDequeuedButUnhandled(t *testing.T) {
-	reader, err := telemetry.InitTestExporter()
-	require.NoError(t, err)
-
+// queueDepth must still report > 0 for an item dequeued from the channel but still being handled —
+// the exact window where len(eventQueue) would read 0 and a drain gate could be falsely satisfied
+// mid-commit.
+func TestQueueDepth_InflightItemDequeuedButUnhandled(t *testing.T) {
 	w := newMetricsTestWorker()
-	// Simulate the loop having received the item (channel empty) while it is
-	// still being processed: inflight accounts for it, retained flag not yet set.
 	w.inflightItems.Store(1)
 	w.hasUnpushedWork.Store(false)
 
-	w.recordQueueDepth()
-
-	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
-	require.True(t, ok, "expected a branch_worker_queue_depth sample")
-	assert.Equal(t, int64(1), depth, "an in-flight item must keep depth > 0 even with an empty channel")
+	assert.Equal(t, int64(1), w.queueDepth())
 }
 
-// enqueueRequest must account for the accepted item in inflightItems but must
-// NOT publish the depth gauge itself: the gauge is last-writer-wins, so an
-// enqueue goroutine that raced the loop's drain could latch a stale value and
-// hang the restart drain gate. Publication is the loop's job; once the loop
-// observes the inflight item it reports the non-zero depth.
-func TestEnqueueRequest_AccountsInflightWithoutPublishing(t *testing.T) {
+// This is the regression the observable gauge exists for.
+//
+// The depth used to be PUSHED from the bottom of the worker loop, so a worker that had accepted
+// work the loop had not yet got to reported 0 — and it kept reporting 0 for as long as the loop was
+// blocked inside one item, which is the stall the gauge is supposed to expose. Read at scrape time
+// there is no loop in between: the enqueue alone is enough.
+func TestQueueDepthGauge_ReportsWorkTheLoopHasNotReachedYet(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	manager := &WorkerManager{Log: logr.Discard(), workers: map[BranchKey]*BranchWorker{}}
+	w := newMetricsTestWorker()
+	manager.workers[BranchKey{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}] = w
+	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, manager.queueDepthSamples)
+	defer telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, nil)
+
+	// Work is accepted. The loop is not running at all, which is the worst case of "has not got to
+	// it yet", and no metric call is made anywhere on this path.
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+
+	depth, ok := telemetry.CollectInt64Sum(reader, queueDepthMetric, workerLabels())
+	require.True(t, ok, "the scrape must observe the queue even with the loop stopped")
+	assert.Equal(t, int64(2), depth)
+}
+
+// A full queue drops work, and that has to be countable. It used to be a log line and nothing else:
+// the depth gauge said the queue was deep, and nothing said anything had been thrown away.
+func TestEnqueueRequest_FullQueueCountsTheDrop(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.enqueueRequest(&WriteRequest{
-		Events:     []Event{{}},
-		CommitMode: CommitModePerEvent,
-	})
+	w.eventQueue = make(chan WorkItem, 1)
+	require.True(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent}))
+	require.False(t, w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent}),
+		"the second request must be refused by the full queue")
 
-	// The item is accounted for, but enqueue did not touch the gauge.
-	assert.Equal(t, int64(1), w.inflightItems.Load())
-	_, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
-	assert.False(t, ok, "enqueue must not publish the depth gauge; only the loop does")
-
-	// The loop's publication (modelled here by a direct record) then reports the
-	// inflight item as non-zero depth.
-	w.recordQueueDepth()
-	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
-	require.True(t, ok, "expected a branch_worker_queue_depth sample after the loop publishes")
-	assert.Equal(t, int64(1), depth)
+	labels := workerLabels()
+	labels["kind"] = queueDropWrite
+	drops, ok := telemetry.CollectInt64Sum(reader, queueDropsMetric, labels)
+	require.True(t, ok, "a dropped write must be counted")
+	assert.Equal(t, int64(1), drops)
+	assert.Equal(t, int64(1), w.inflightItems.Load(), "the refused item must not stay in the inflight count")
 }
 
-// On shutdown the loop must drain items still buffered on eventQueue so the depth
-// gauge settles to 0. Each buffered item was counted into inflightItems at
-// enqueue; left undrained, the exiting worker's final publish would latch a
-// non-zero depth that never clears.
+// On shutdown the loop must drain items still buffered on eventQueue so the depth reads 0. Each
+// buffered item was counted into inflightItems at enqueue; left undrained, the exiting worker would
+// report a non-zero depth that never clears.
 func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
-	reader, err := telemetry.InitTestExporter()
-	require.NoError(t, err)
-
 	w := newMetricsTestWorker()
 	// Two write requests accepted onto the queue but never handled by the loop.
 	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
@@ -216,13 +230,10 @@ func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
 
 	loop := newBranchWorkerEventLoop(w, time.Second)
 	loop.handleShutdown()
-	// run() publishes once more after handleShutdown; model that here.
-	loop.syncQueueDepthMetric()
+	loop.syncUnpushedWorkFlag()
 
 	assert.Equal(t, int64(0), w.inflightItems.Load(), "buffered items must be drained from the inflight count")
-	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
-	require.True(t, ok, "expected a branch_worker_queue_depth sample after shutdown")
-	assert.Equal(t, int64(0), depth, "a drained, exiting worker must publish depth 0")
+	assert.Equal(t, int64(0), w.queueDepth(), "a drained, exiting worker must read depth 0")
 }
 
 // A CommitRequest attach still buffered at shutdown is fire-and-forget: it is
@@ -251,7 +262,7 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByMessageSource(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordPendingWritesMetrics([]PendingWrite{
+	commitAndPush(w, []PendingWrite{
 		{
 			Kind:      PendingWriteCommit,
 			Events:    []Event{{UserInfo: UserInfo{Username: "alice"}}},
@@ -274,7 +285,7 @@ func TestRecordPendingWritesMetrics_LabelsCommitsByMessageSource(t *testing.T) {
 		messageSourceCommitRequest: 1,
 		messageSourceReconcile:     1,
 	} {
-		labels := queueDepthLabels()
+		labels := workerLabels()
 		labels["message_source"] = source
 		count, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
 		require.True(t, ok, "expected a commits_total sample for message_source=%q", source)
@@ -290,7 +301,7 @@ func TestRecordPendingWritesMetrics_MessageSourceSplitsOneAuthorKind(t *testing.
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.recordPendingWritesMetrics([]PendingWrite{
+	commitAndPush(w, []PendingWrite{
 		{
 			Kind:      PendingWriteCommit,
 			Events:    []Event{{UserInfo: UserInfo{Username: "alice"}}},
@@ -304,7 +315,7 @@ func TestRecordPendingWritesMetrics_MessageSourceSplitsOneAuthorKind(t *testing.
 		},
 	}, 2)
 
-	labels := queueDepthLabels()
+	labels := workerLabels()
 	labels["author_kind"] = authorKindUser
 
 	total, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
@@ -320,4 +331,155 @@ func TestRecordPendingWritesMetrics_MessageSourceSplitsOneAuthorKind(t *testing.
 	request, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
 	require.True(t, ok)
 	assert.Equal(t, int64(1), request)
+}
+
+// A commit that never reaches the remote must not be counted.
+//
+// commits_total used to be recorded at local commit creation while claiming to count pushed
+// commits, so a dead remote and a healthy one drew the same graph: the product's headline metric
+// climbing while nothing arrived in Git.
+func TestCommitsTotal_OnlyCountedWhenThePushLands(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	writes := committerWrites(3)
+
+	// The commits exist locally and the push failed. Nothing is published.
+	w.recordPushOutcome(pushOutcomeFailed, time.Now())
+	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
+	require.False(t, ok, "a locally created commit must not be counted before it reaches the remote")
+
+	w.publishCommitsForPush(writes)
+
+	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
+	require.True(t, ok)
+	assert.Equal(t, int64(3), commits)
+}
+
+// A commit the replay DISCARDED must not be counted, and this is why the count is read off the
+// writes at push time rather than held from commit time.
+//
+// executePendingWrites stamps CommitSHA in place. A replay that finds nothing left to do for a
+// write leaves its SHA zero, so reading the slice after the push counts exactly what survived.
+func TestCommitsTotal_ExcludesCommitsDiscardedByReplay(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	writes := []PendingWrite{
+		{Kind: PendingWriteCommit, Events: []Event{{UserInfo: UserInfo{Username: "alice"}}},
+			CommitSHA: plumbing.NewHash("1111111111111111111111111111111111111111")},
+		// The replay produced nothing for this one: the remote already had the change.
+		{Kind: PendingWriteCommit, Events: []Event{{UserInfo: UserInfo{Username: "alice"}}}},
+	}
+
+	w.publishCommitsForPush(writes)
+
+	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, workerLabels())
+	require.True(t, ok)
+	assert.Equal(t, int64(1), commits, "only the commit that survived the replay is on the remote")
+}
+
+// A resync write carries its commit through a SHARED pointer that survives a conflict replay, so
+// each execution has to reset it. A replay that finds nothing left to do returns early, and a stale
+// true would count a commit the replay never made.
+func TestExecuteResyncPendingWrite_ResetsCommittedWhenNothingChanges(t *testing.T) {
+	repo, err := gogit.PlainInit(t.TempDir(), false)
+	require.NoError(t, err)
+	require.NoError(t, PinExplicitSigningPolicy(repo))
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	w := &BranchWorker{
+		contentWriter: newContentWriter(itypes.SensitiveResourcePolicy{}),
+		mapper:        configMapMapper(),
+		Log:           logr.Discard(),
+		ctx:           t.Context(),
+	}
+
+	committed := false
+	pendingWrite := PendingWrite{
+		Kind:      PendingWriteResync,
+		Desired:   []manifestanalyzer.DesiredResource{desiredCM("keep", "blue")},
+		Committed: &committed,
+	}
+
+	// First execution writes and commits.
+	commits, err := w.executeResyncPendingWrite(t.Context(), repo, worktree, pendingWrite)
+	require.NoError(t, err)
+	require.Equal(t, 1, commits)
+	require.True(t, committed, "the first execution committed")
+
+	// Second execution is the replay shape: the worktree already holds the desired state, so
+	// nothing changes and no commit is made. The flag must come back down.
+	commits, err = w.executeResyncPendingWrite(t.Context(), repo, worktree, pendingWrite)
+	require.NoError(t, err)
+	require.Equal(t, 0, commits)
+	assert.False(t, committed,
+		"a replay that made no commit must not leave the write claiming one")
+}
+
+// A push cycle ends exactly once, with a duration, whichever way it ended. Without this the only
+// trace of a mirror that has stopped advancing is a log line.
+func TestRecordPushOutcome_CountsTheCycleAndItsDuration(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordPushOutcome(pushOutcomePushed, time.Now())
+	w.recordPushOutcome(pushOutcomeFailed, time.Now())
+	w.recordPushRetry(pushRetryRemoteMoved)
+
+	labels := workerLabels()
+	labels["outcome"] = pushOutcomeFailed
+	failed, ok := telemetry.CollectInt64Sum(reader, pushesTotalMetric, labels)
+	require.True(t, ok, "a push cycle that gave up must be counted")
+	assert.Equal(t, int64(1), failed)
+
+	labels["outcome"] = pushOutcomePushed
+	pushed, ok := telemetry.CollectInt64Sum(reader, pushesTotalMetric, labels)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), pushed)
+
+	retryLabels := workerLabels()
+	retryLabels["reason"] = pushRetryRemoteMoved
+	retries, ok := telemetry.CollectInt64Sum(reader, pushRetriesMetric, retryLabels)
+	require.True(t, ok, "a replay round is counted separately: it is not a terminal outcome")
+	assert.Equal(t, int64(1), retries)
+
+	durations, ok := telemetry.CollectHistogramCount(reader, pushDurationMetric, workerLabels())
+	require.True(t, ok)
+	assert.Equal(t, uint64(2), durations, "both cycles are timed, however they ended")
+}
+
+// A commit that fails takes its whole window with it, and that has to be countable.
+//
+// This was the largest remaining hole in the pipeline census. The failure happens AFTER routing and
+// BEFORE pushing, so neither git_queue_drops_total nor git_pushes_total sees it: the mirror falls
+// behind for every object in the window until the next resync re-derives them, and the only trace
+// was a log line, or for a refusal a GitTarget condition nobody alerts on.
+func TestRecordCommitFailure_SeparatesRefusalFromWriteFault(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
+	w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
+
+	refused := workerLabels()
+	refused["kind"] = commitFailureKindWindow
+	refused["reason"] = commitFailureRefused
+	count, ok := telemetry.CollectInt64Sum(reader, commitFailuresMetric, refused)
+	require.True(t, ok, "a refused window must be counted")
+	assert.Equal(t, int64(1), count)
+
+	// The two reasons need different people: a refusal is a Git path a human has to fix and will
+	// not clear on its own, while an error may be transient. Folding them would hide that.
+	faulted := workerLabels()
+	faulted["kind"] = commitFailureKindAtomic
+	faulted["reason"] = commitFailureError
+	count, ok = telemetry.CollectInt64Sum(reader, commitFailuresMetric, faulted)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count)
 }

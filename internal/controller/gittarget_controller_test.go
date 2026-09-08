@@ -171,10 +171,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(validatedCondition).NotTo(BeNil(), "Validated condition should exist")
 			Expect(validatedCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed))
 
-			// SECURITY TEST: Verify branch push status is cleared.
-			Expect(createdGitTarget.Status.LastPushTime).To(BeNil(),
-				"LastPushTime MUST be nil when branch is not allowed")
-
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
@@ -420,8 +416,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 					}
 					Expect(validatedCondition).NotTo(BeNil())
 					Expect(validatedCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed))
-					// Security: verify branch push status is cleared.
-					Expect(createdGitTarget.Status.LastPushTime).To(BeNil())
 				} else {
 					// If allowed, reason should not be BranchNotAllowed
 					Expect(readyCondition.Reason).NotTo(Equal(GitTargetReasonBranchNotAllowed))

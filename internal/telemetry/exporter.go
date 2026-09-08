@@ -24,32 +24,44 @@ import (
 var (
 	otelMeter metric.Meter
 
-	// GitOperationsTotal counts git operations performed by branch workers.
-	GitOperationsTotal metric.Int64Counter
-	// ObjectsWrittenTotal counts objects that resulted in file writes.
-	ObjectsWrittenTotal metric.Int64Counter
-	// CommitsTotal counts commit batches pushed to git, labelled by the recording
+	// GitDocumentsTotal is the write-boundary census: one increment per DOCUMENT the writer
+	// decided about, labelled by {gittarget_namespace, gittarget_name, group, version, resource,
+	// outcome}. outcome is a frozen enum:
+	//
+	//   written        — the document was created or updated in the working tree.
+	//   deleted_live   — removed because a watch DELETE said the object is gone.
+	//   deleted_sweep  — removed by a mark-and-sweep resync, which is the path that reconciles a
+	//                    deletion nobody was watching for.
+	//   unchanged      — the writer diffed it to a no-op, so no file changed.
+	//   retained       — a mark-and-sweep would have deleted it and spec.prune.mode kept it. The
+	//                    only numeric trace a suppressed drop leaves: it produces no plan action,
+	//                    no commit and no ResyncStats entry. Non-zero is configured behaviour,
+	//                    never a fault.
+	//   refused        — the writer declined to place it, so it is NOT in the mirror.
+	//                    placement_refusals_total carries the reason.
+	//
+	// Tallied on the write batch and published after a successful flush, under the batch's
+	// GitTarget: a resync can apply every document and then abort on a precondition, writing
+	// nothing at all.
+	GitDocumentsTotal metric.Int64Counter
+	// GitCommitsTotal counts commit batches that REACHED THE REMOTE, labelled by the recording
 	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity plus
-	// message_source. Live, snapshot and resync paths all feed this one counter;
-	// message_source (commit_request / live / reconcile) is what tells them apart. It counts
-	// commits that USED a request-supplied message, not CommitRequests: a request omitting
-	// spec.message renders through liveTemplate and counts as live.
-	CommitsTotal metric.Int64Counter
-	// ResyncSweepDeletesTotal counts managed documents deleted by mark-and-sweep
-	// resyncs, labelled by the swept resource {group, version, resource}.
-	ResyncSweepDeletesTotal metric.Int64Counter
-	// PruneRetainedDocumentsTotal counts managed documents a GitTarget's spec.prune.mode
-	// KEPT that a mark-and-sweep would otherwise have deleted, labelled by
-	// {prune_mode, gittarget_namespace, gittarget_name}. It is the retention twin of
-	// ResyncSweepDeletesTotal and the only numeric trace a suppressed drop leaves: such a
-	// drop produces no plan action, no commit, and no ResyncStats entry. A non-zero value
-	// is the configured behaviour, never a fault.
-	PruneRetainedDocumentsTotal metric.Int64Counter
+	// message_source. Live, snapshot and resync paths all feed this one counter; message_source
+	// (commit_request / live / reconcile) is what tells them apart. It counts commits that USED a
+	// request-supplied message, not CommitRequests: a request omitting spec.message renders through
+	// liveTemplate and counts as live.
+	//
+	// It is recorded on a successful push, not on local commit creation. Recorded at creation it
+	// claimed a commit the remote might never take, so a dead remote and a healthy one produced the
+	// same graph — the product's headline metric climbing while nothing reached Git. Counting at
+	// the terminal success is also the only place the accounting is right exactly once: a push
+	// cycle that hits a moved remote REBUILDS its commits and pushes again.
+	GitCommitsTotal metric.Int64Counter
 
 	// PlacementsTotal counts new-file placements resolved for a resource with no document in
 	// Git yet — the only case placement runs for — labelled by {source, disposition,
 	// gittarget_namespace, gittarget_name, group, version, resource}. source is which
-	// mechanism chose the path (declared / kustomize_root / canonical) and disposition is what
+	// mechanism chose the path (by_type / default / kustomize_root / canonical) and disposition is what
 	// it did with it (new_file / appended).
 	//
 	// It exists because sibling inference was deleted: a
@@ -84,45 +96,146 @@ var (
 	// mirrored, and is not applied by anything.
 	PlacementKustomizationEntriesTotal metric.Int64Counter
 
-	// TargetReconcileCompletedTotal counts completed watch recovery passes per
-	// GitTarget: each increment marks either a streaming-snapshot resync applied on
-	// the branch worker or a cursor-backed watch resume (see Manager.recordTargetReconcileCompleted).
-	// Labelled by {gittarget_namespace,
-	// gittarget_name, trigger} where trigger is `rule_change` (the GVR/rule reconcile
-	// path). A counter, not a
-	// latched gauge, on purpose: a counter resets to 0 on a fresh pod, so a
-	// per-pod `{pod="<new>"} > 0` check after a rollout proves the new pod did
-	// its own reconcile — robust to the old pod's stale series that a Prometheus
-	// pod scrape may still be holding during the rollout, which a latched gauge
-	// (or a cross-pod sum-over-baseline) cannot distinguish.
-	// The label keys avoid the reserved `namespace`/`name`: a pod scrape with
-	// honor_labels=false would overwrite a metric's `namespace` attribute with the
-	// scraped pod's own namespace, making a per-GitTarget `namespace` selector
-	// silently match nothing. Load-bearing for the restart-reconcile e2e spec and
-	// useful long-term for spotting excessive reconciles via increase(...[5m]);
-	// treat the name/labels as a public observability contract.
-	TargetReconcileCompletedTotal metric.Int64Counter
-	// BranchWorkerQueueDepth gauges pending work for a single branch worker:
-	// accepted-but-not-yet-handled items (queued or actively being processed)
-	// plus any committed-but-not-yet-pushed work the worker is still holding. It
-	// reads 0 only when the worker has fully drained (every accepted item handled
-	// and nothing retained for replay), so it never reports drained while a
-	// commit/push is still in flight. Labelled by {provider_namespace,
-	// provider_name, branch}; the namespace/name keys are prefixed to avoid the
-	// reserved Prometheus pod-scrape target labels (see
-	// TargetReconcileCompletedTotal). Load-bearing for the restart-reconcile e2e
-	// spec's drain wait; treat the name/labels as a public observability contract.
-	BranchWorkerQueueDepth metric.Int64Gauge
+	// WatchEventsTotal is the ingest census: every event a target watch delivers is counted here
+	// exactly once, labelled by {gittarget_namespace, gittarget_name, group, version, resource,
+	// outcome}. It is the first stage of the pipeline and, until it existed, the only stage with no
+	// instrument at all — "nothing is happening", "the rules filtered everything" and "delivery is
+	// failing" were indistinguishable from outside.
+	//
+	// outcome is a frozen enum, and its values fall into three classes rather than "healthy and
+	// unhealthy" — several of these are correct outcomes:
+	//
+	//   EXPECTED (the pipeline working):
+	//     routed              — reached the writer. The number the funnel starts from.
+	//     unchanged           — a live UPDATE whose sanitized content equals what Git already
+	//                           holds: the /status-churn case, expected in volume.
+	//     operation_filtered  — the rule's operation set does not select this verb.
+	//     bookmark            — a watch bookmark, carrying cursor progress and no object.
+	//     shutdown            — the stream was cancelled while the event waited for its author.
+	//                           Not loss: a restart replays and resyncs the object.
+	//
+	//   DEGRADED (working, but something upstream is odd):
+	//     not_object          — the event carried no decodable object.
+	//     stream_error        — the API server sent an error frame that is NOT an expired cursor
+	//                           (those are classified as a session end, reason=expired, and never
+	//                           reach this census). The session dies and the reconnect replays, so
+	//                           nothing observed is dropped — but a non-zero rate is an API server
+	//                           saying something about this watch that it does not say routinely.
+	//
+	//   LOSS (an observed change that did not reach Git):
+	//     route_failed        — the writer refused it. Nothing retries until the next resync, so
+	//                           the mirror is behind for that object.
+	//
+	// route_failed OVERLAPS git_queue_drops_total: a full worker queue is one of the ways a route
+	// fails, so one dropped event can increment both. They are two views of one event — where it
+	// was refused, and by what — so a panel may show either, and a sum over both counts that event
+	// twice. Neither is a unique-loss total.
+	//
+	// It carries the GitTarget because "which tenant stopped receiving events" is the question, and
+	// deliberately NOT the watch event type (added/modified/deleted): that halves the series
+	// budget, and the written-versus-deleted split is answered better at the writer by
+	// GitDocumentsTotal.
+	WatchEventsTotal metric.Int64Counter
+	// WatchEventHandlingSeconds records how long a target watch stream was BUSY on one event,
+	// labelled by {group, version, resource}: the whole of routeLiveTargetWatchEvent, attribution
+	// wait included.
+	//
+	// This is the head-of-line signal, and it is a proven failure rather than a theoretical one: a
+	// slow attribution resolution blocks the events queued BEHIND it on the same single-threaded
+	// stream, which broke a CommitRequest e2e spec and was only ever visible by correlating two
+	// log lines by hand. The attribution wait histogram times each resolution in isolation and
+	// cannot see the delay one imposes on its neighbours; occupancy can, because a stream that is
+	// busy is a stream nothing else is being read from.
+	//
+	// It measures OCCUPANCY, not queue delay, and the difference is deliberate. Measuring the wait
+	// itself needs an arrival timestamp stamped before the blocking consumer, and the events arrive
+	// on a client-go watch channel this process does not fill — there is nowhere honest to stamp
+	// one. Timing after the dequeue would name a wait it never observed. Read saturation as
+	// rate(_sum[5m]), the fraction of wall time the stream spent unavailable; approaching 1 means
+	// events are queueing behind it.
+	WatchEventHandlingSeconds metric.Float64Histogram
+	// WatchSessionsEndedTotal counts watch sessions that ended, labelled by {group, version,
+	// resource, reason}: `expired` (the resourceVersion fell out of history — 410 pressure, which
+	// forces a full replay), `error`, or `stopped` (the plan retired the stream, which is routine).
+	// A restart storm is a rebuild storm, and a rebuild walks the whole type.
+	WatchSessionsEndedTotal metric.Int64Counter
+	// WatchReplayDurationSeconds records how long an initial-events replay took to reach
+	// initial-events-end, labelled by {group, version, resource}. It is what a 410 storm actually
+	// charges: the cost of every rebuild it forces.
+	WatchReplayDurationSeconds metric.Float64Histogram
 
-	// ResyncBackgroundFailuresTotal counts rule-change resyncs whose apply failed or
+	// WatchRecoveryTotal counts completed watch recoveries, labelled by {gittarget_namespace,
+	// gittarget_name, group, resource, mode}. mode names WHICH recovery path ran:
+	// `cursor_resume` (a durable cursor was still in history, so no replay was needed),
+	// `type_reconcile` (a per-type snapshot resync applied on the branch worker), `replay` (a full
+	// sendInitialEvents rebuild), or `list_fallback` (the source does not support streaming lists,
+	// which is the aggregated-API case and worth knowing about).
+	//
+	// It was called TargetReconcileCompletedTotal with a `trigger` label whose documented value
+	// (`rule_change`) the code never emitted. The name described the caller rather than the event.
+	//
+	// No `version` label: a recovery covers a CELL, which is keyed by group/resource, and the
+	// per-type reconcile path genuinely does not know a served version. An empty version on that
+	// arm beside a populated one on the cursor-resume arm would be worse than no label.
+	//
+	// A counter, not a latched gauge, on purpose: a counter resets to 0 on a fresh pod, so a
+	// per-pod `{pod="<new>"} > 0` check after a rollout proves the new pod did its own recovery —
+	// robust to the old pod's stale series that a Prometheus pod scrape may still be holding during
+	// the rollout, which a latched gauge (or a cross-pod sum-over-baseline) cannot distinguish.
+	// The label keys avoid the reserved `namespace`/`name`: a pod scrape with honor_labels=false
+	// would overwrite a metric's `namespace` attribute with the scraped pod's own namespace, making
+	// a per-GitTarget `namespace` selector silently match nothing. Load-bearing for the
+	// restart-reconcile e2e spec; treat the name and labels as a public observability contract.
+	WatchRecoveryTotal metric.Int64Counter
+
+	// GitCommitFailuresTotal counts work that was routed to a worker and then died before it
+	// could ever be pushed, labelled by {provider_namespace, provider_name, branch, kind, reason}.
+	// kind is `window` (an ordinary live commit window) or `atomic` (a snapshot/resync request);
+	// reason is `refused` (the acceptance gate or a write-boundary precondition rejected the plan,
+	// which needs a human to fix the Git path) or `error` (a write fault).
+	//
+	// This was the largest remaining hole. A commit failure drops the whole window — the events are
+	// already lost to the failed flush — and it happens AFTER routing and BEFORE pushing, so
+	// neither GitQueueDropsTotal nor GitPushesTotal sees it. The mirror silently falls behind for
+	// every object in that window until the next resync re-derives them, and until now the only
+	// trace was a log line (or, for a refusal, a GitTarget condition nobody is alerting on).
+	GitCommitFailuresTotal metric.Int64Counter
+	// GitPushesTotal counts push CYCLES at their terminal end, labelled by {provider_namespace,
+	// provider_name, branch, outcome} where outcome is `pushed` or `failed`. A cycle that exhausts
+	// its replay retries was previously a log line and nothing else: the mirror stops advancing and
+	// every other metric reads healthy, because commits are still being created locally.
+	GitPushesTotal metric.Int64Counter
+	// GitPushRetriesTotal counts replay rounds inside a push cycle, labelled by
+	// {provider_namespace, provider_name, branch, reason}. reason has one value, `remote_moved`:
+	// the remote branch moved, so the pending writes are rebuilt on the new head and re-pushed.
+	// Every other rejection ends the cycle rather than retrying it, and is a `failed` outcome on
+	// GitPushesTotal. A retry is not a terminal outcome, which is why it is its own counter rather
+	// than a third value there; rate(retries)/rate(pushes) is the contention signal.
+	GitPushRetriesTotal metric.Int64Counter
+	// GitPushDurationSeconds records one push cycle's wall time, labelled by
+	// {provider_namespace, provider_name, branch}. Retries are inside the measurement on purpose:
+	// what an operator wants is how long it took the mirror to accept the work, not how fast one
+	// attempt was.
+	GitPushDurationSeconds metric.Float64Histogram
+	// GitQueueDropsTotal counts work the branch worker threw away because its queue was full,
+	// labelled by {provider_namespace, provider_name, branch, kind} where kind is `write`,
+	// `attach` or `resync`. Every increment is lost work: a write is recovered only by the next
+	// resync, and until then the mirror is behind for that object with no other trace.
+	//
+	// The queue-depth gauge said the queue was deep. Nothing said anything had been dropped, which
+	// is the one thing an operator needs to know, and a saturating queue is exactly when it
+	// happens.
+	GitQueueDropsTotal metric.Int64Counter
+
+	// GitResyncFailuresTotal counts rule-change resyncs whose apply failed or
 	// timed out at the worker AFTER being enqueued. Delivery is marked on enqueue (the
 	// resync is fire-and-forget to avoid an unbounded re-gather loop — see
-	// Manager.recordTargetReconcileCompleted), so a failed background apply is otherwise
+	// Manager.recordWatchRecovery), so a failed background apply is otherwise
 	// only logged. This counter makes those failures observable/alertable without
 	// triggering an immediate re-gather. Labelled by {gittarget_namespace,
 	// gittarget_name}; a sustained increase means snapshots are not committing and the
 	// folder is relying on steady-state events to catch up.
-	ResyncBackgroundFailuresTotal metric.Int64Counter
+	GitResyncFailuresTotal metric.Int64Counter
 
 	// AuditEventsTotal is the single per-event census: every successfully decoded, converted, and
 	// validated audit event increments it exactly once, labelled by {outcome, category, group,
@@ -130,14 +243,12 @@ var (
 	// change; it never carries object state. Liveness = sum(...) > 0; the e2e invariant gates on
 	// category="error" == 0.
 	AuditEventsTotal metric.Int64Counter
-	// AuditEventListsTotal counts inbound audit EventList requests at the webhook boundary,
-	// labelled by bounded outcome (processed/empty/decode_error/process_error).
-	AuditEventListsTotal metric.Int64Counter
-	// AuditEventListEventsTotal counts decoded audit event items delivered in EventLists,
-	// labelled by the same bounded outcome.
-	AuditEventListEventsTotal metric.Int64Counter
-	// AuditEventListDurationSeconds records how long the webhook takes to answer an
-	// EventList request, labelled by outcome.
+	// AuditEventListDurationSeconds times every request at /audit-webhook, labelled by bounded
+	// outcome: bad_method, bad_path and bare_endpoint_disabled for requests refused at the door,
+	// then processed, empty, decode_error and process_error.
+	//
+	// Its _count series IS the request counter — a histogram ships its own observation count — so
+	// there is no separate one. The per-event census is AuditEventsTotal.
 	AuditEventListDurationSeconds metric.Float64Histogram
 	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes, labelled by
 	// {tier, actor_kind, group, version, resource}. tier names WHICH evidence answered
@@ -161,24 +272,40 @@ var (
 	// every scope and match structure. Read against the eviction counter it says whether the caps
 	// are binding.
 	AttributionFactIndexEntries metric.Int64Gauge
-	// AttributionFactIndexEvictionsTotal counts facts dropped from the in-memory fact index because
+	// The three fact-loss counters below all mean "attribution that will never happen", and they
+	// are deliberately NOT one counter, because they do not count the same THING:
+	//
+	//   an eviction    is one FACT, known exactly.
+	//   a trim gap     is one OCCURRENCE, spanning an unknown number of entries.
+	//   a decode error is one ENTRY, and an entry carries a whole audit batch's facts.
+	//
+	// Adding them produces a number in no unit at all. They were briefly merged into a single
+	// `attribution_facts_lost_total{reason}` on the argument that an operator reads them together
+	// and wants one alert; that is true, and it is what a recording rule is for. A metric's name
+	// has to be true about what it counts before it is convenient.
+
+	// AttributionFactIndexEvictionsTotal counts FACTS dropped from the in-memory fact index because
 	// it was full, labelled by bounded reason (per_type/total). An attribution lost to a full index
 	// has to look different from one that was never published, or a burst is silently absorbed.
+	//
+	// It is also the removal pointer's only horizon: every other index entry expires on the fact
+	// TTL. Note it does not prove the fact went unused — a fact may have been matched already and
+	// then evicted — so read it as pressure on the caps rather than as a count of lost joins.
 	AttributionFactIndexEvictionsTotal metric.Int64Counter
+	// AttributionFactStreamGapsTotal counts OCCASIONS a fact stream was trimmed past this process's
+	// follower, labelled by stream. Every gap is facts lost for good, and how many is unknowable:
+	// the entries are gone. It is the one loss a log transport can see at all.
+	AttributionFactStreamGapsTotal metric.Int64Counter
+	// AttributionFactStreamDecodeErrorsTotal counts fact-stream ENTRIES the follower could not
+	// decode, labelled by transport. Such an entry is skipped and its position passed, so the whole
+	// audit batch it carried is lost — and unlike a trim gap the loss leaves no other trace, which
+	// is why this is the loss path that most needed a counter.
+	AttributionFactStreamDecodeErrorsTotal metric.Int64Counter
 	// AttributionCollectionWithoutUIDSetTotal counts collection facts published without the uid set
 	// the precise join would have used, labelled by bounded reason (uid_cap/no_uids). The scope
 	// fallback is already correct, so this says how often the precise path was available — not that
 	// anything broke.
 	AttributionCollectionWithoutUIDSetTotal metric.Int64Counter
-	// AttributionFactStreamGapsTotal counts occasions a fact stream was trimmed past this process's
-	// follower, labelled by stream. Every gap is facts lost for good, and it is the one loss a log
-	// transport can see at all.
-	AttributionFactStreamGapsTotal metric.Int64Counter
-	// AttributionFactStreamDecodeErrorsTotal counts fact-stream entries the follower could not
-	// decode, labelled by transport. Such an entry is skipped and its position passed, so the facts
-	// it carried are lost — and unlike a trim gap the loss leaves no other trace, which is why this
-	// is the loss path that most needed a counter.
-	AttributionFactStreamDecodeErrorsTotal metric.Int64Counter
 	// AttributionFactFollowerErrorsTotal counts fact-follower read failures, labelled by transport.
 	// The follower retries with a backoff rather than returning, so the errors are otherwise only a
 	// log line.
@@ -203,23 +330,13 @@ var (
 	APICatalogRefreshTotal metric.Int64Counter
 	// APICatalogRefreshDurationSeconds records the wall time of one catalog refresh.
 	APICatalogRefreshDurationSeconds metric.Float64Histogram
-	// APICatalogGeneration gauges the current APIResourceCatalog generation.
-	APICatalogGeneration metric.Int64Gauge
-	// WatchedTypes gauges the number of watched types per GitTarget, labelled by
-	// gittarget_namespace and gittarget_name.
-	WatchedTypes metric.Int64Gauge
 
 	// The watch-plane owner is a queue, and a queue that grows silently is what makes a stall
-	// hard to see. These six are the queue's instrument panel; see
-	// docs/design/watch-manager-ownership.md.
+	// hard to see. These are the queue's instrument panel; see
+	// docs/design/watch-manager-ownership.md. Its two gauges — dirty depth and the timestamp the
+	// oldest dirty target went dirty — are OBSERVABLE and live in gauges.go, because a gauge this
+	// loop pushes stops moving exactly when the loop stops.
 
-	// WatchPlanDirtyTargets gauges how many GitTargets the owner currently owes a plan pass.
-	// It is saturation depth: a number that climbs and does not come back down.
-	WatchPlanDirtyTargets metric.Int64Gauge
-	// WatchPlanOldestDirtyAgeSeconds gauges how long the longest-waiting dirty GitTarget has
-	// been dirty. It is the single most useful operational number here: it goes up and stays
-	// up exactly when something is stuck, whether the queue is deep or holds one wedged target.
-	WatchPlanOldestDirtyAgeSeconds metric.Int64Gauge
 	// WatchPlanPassesTotal counts plan passes by {outcome, gittarget_namespace,
 	// gittarget_name}, where outcome is completed, failed, or timed_out. It separates "not
 	// running" from "running and failing", and timed_out from a real error because the two have
@@ -228,25 +345,46 @@ var (
 	// WatchPlanPassDurationSeconds records the wall time of one plan pass. It is the input to
 	// choosing the per-target deadline.
 	WatchPlanPassDurationSeconds metric.Float64Histogram
-	// WatchPlanTriggersTotal counts triggers by {reason}: declare, rule_change, api_surface,
-	// source_namespace, periodic. It shows which source is noisy.
+	// WatchPlanTriggersTotal counts triggers by {reason, coalesced}. reason is declare,
+	// rule_change, shared_refresh or periodic, and shows which source is noisy. coalesced is
+	// "true" when the trigger landed on a GitTarget that was ALREADY dirty, which is the proof
+	// that the silence window does what it claims: one `kubectl apply` of a GitTarget and four
+	// WatchRules should show four coalesced triggers and one pass.
+	//
+	// coalesced is a label rather than the second counter it used to be, so the ratio is one
+	// metric's business instead of a division across two.
 	WatchPlanTriggersTotal metric.Int64Counter
-	// WatchPlanTriggersCoalescedTotal counts triggers that landed on a GitTarget that was
-	// already dirty. It is the proof that the silence window does what it claims: one
-	// `kubectl apply` of a GitTarget and four WatchRules should show four of these and one pass.
-	WatchPlanTriggersCoalescedTotal metric.Int64Counter
 
-	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
-	SecretEncryptionAttemptsTotal metric.Int64Counter
-	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
-	SecretEncryptionSuccessTotal metric.Int64Counter
-	// SecretEncryptionFailuresTotal counts failed Secret encryptions.
-	SecretEncryptionFailuresTotal metric.Int64Counter
-	// SecretEncryptionCacheHitsTotal counts cache hits for encrypted Secret content.
-	SecretEncryptionCacheHitsTotal metric.Int64Counter
-	// SecretEncryptionMarkerSkipsTotal counts marker-based skips that reused cached Secret content.
-	SecretEncryptionMarkerSkipsTotal metric.Int64Counter
+	// SecretEncryptionsTotal counts Secret encryption decisions, labelled by bounded outcome:
+	// "encrypted" (the encryptor ran and produced ciphertext), "failed" (it ran and errored, and
+	// the write is rejected), or "cached" (already-encrypted content was reused because the
+	// sensitive marker was unchanged).
+	//
+	// It replaces five counters over two populations. attempts was incremented immediately before
+	// Encrypt, so it was exactly success + failures; and cache_hits and marker_skips were
+	// incremented on consecutive lines of the same branch, on every path, so they could never
+	// differ. The documented "cache effectiveness" ratio was cache_hits / attempts, which divided
+	// over disjoint populations and could exceed 1 — with one counter it is a share of one total.
+	SecretEncryptionsTotal metric.Int64Counter
 )
+
+// cardinalityLimit caps the data points ONE instrument may publish per collection. Past it the SDK
+// collapses the rest into a single otel.metric.overflow=true point, losing the labels that identify
+// them — a metric that reads plausible and names nothing.
+//
+// The SDK's own default is 2000, which three families exceed at the install size
+// docs/design/metrics-observability-plan.md §7.1 models: watch_events_total (3,600),
+// git_documents_total (3,000) and placements_total (4,800 ceiling). This is roughly 3x the largest
+// of those, so an install several times the model still names its objects instead of truncating
+// them. It is PER INSTRUMENT and says nothing about the process total, which is the sum over every
+// instrument; §7.1 owns that estimate. For a histogram it is more conservative than it looks, since
+// one data point exports bucket count + 2 series — which is why §7.1 keeps histogram label sets
+// small rather than relying on this.
+//
+// Raised rather than removed, so an unbounded label set overflows visibly instead of growing
+// without bound. Overflow is only a signal if someone watches for it: alert on
+// otel_metric_overflow="true".
+const cardinalityLimit = 15000
 
 // InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
 func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
@@ -262,7 +400,10 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	}
 
 	// Create a meter provider with the Prometheus exporter.
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(exporter),
+		sdkmetric.WithCardinalityLimit(cardinalityLimit),
+	)
 	otel.SetMeterProvider(provider)
 
 	// Get the meter from the new provider.
@@ -283,7 +424,10 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 // It returns the reader to collect from.
 func InitTestExporter() (*sdkmetric.ManualReader, error) {
 	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(reader),
+		sdkmetric.WithCardinalityLimit(cardinalityLimit),
+	)
 	otel.SetMeterProvider(provider)
 	otelMeter = provider.Meter("gitops-reverser")
 	if err := registerInstruments(); err != nil {
@@ -324,44 +468,40 @@ func registerInstruments() error {
 
 func registerCounters() error {
 	counters := []cSpec{
-		{"gitopsreverser_git_operations_total", &GitOperationsTotal},
-		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
-		{"gitopsreverser_commits_total", &CommitsTotal},
-		{"gitopsreverser_resync_sweep_deletes_total", &ResyncSweepDeletesTotal},
-		{"gitopsreverser_prune_retained_documents_total", &PruneRetainedDocumentsTotal},
+		{"gitopsreverser_git_documents_total", &GitDocumentsTotal},
+		{"gitopsreverser_git_commits_total", &GitCommitsTotal},
+		{"gitopsreverser_git_commit_failures_total", &GitCommitFailuresTotal},
+		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
+		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
+		{"gitopsreverser_git_queue_drops_total", &GitQueueDropsTotal},
 		{"gitopsreverser_placements_total", &PlacementsTotal},
 		{"gitopsreverser_placement_refusals_total", &PlacementRefusalsTotal},
 		{
 			"gitopsreverser_placement_kustomization_entries_total",
 			&PlacementKustomizationEntriesTotal,
 		},
-		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
-		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
+		{"gitopsreverser_watch_events_total", &WatchEventsTotal},
+		{"gitopsreverser_watch_sessions_ended_total", &WatchSessionsEndedTotal},
+		{"gitopsreverser_watch_recovery_total", &WatchRecoveryTotal},
+		{"gitopsreverser_git_resync_failures_total", &GitResyncFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
-		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
-		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
 		{"gitopsreverser_attribution_resolutions_total", &AttributionResolutionsTotal},
 		{"gitopsreverser_attribution_facts_total", &AttributionFactsTotal},
 		{"gitopsreverser_attribution_fact_index_evictions_total", &AttributionFactIndexEvictionsTotal},
 		{"gitopsreverser_attribution_fact_stream_gaps_total", &AttributionFactStreamGapsTotal},
 		{
-			"gitopsreverser_attribution_collection_without_uidset_total",
-			&AttributionCollectionWithoutUIDSetTotal,
-		},
-		{
 			"gitopsreverser_attribution_fact_stream_decode_errors_total",
 			&AttributionFactStreamDecodeErrorsTotal,
 		},
+		{
+			"gitopsreverser_attribution_collection_without_uidset_total",
+			&AttributionCollectionWithoutUIDSetTotal,
+		},
 		{"gitopsreverser_attribution_fact_follower_errors_total", &AttributionFactFollowerErrorsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
+		{"gitopsreverser_secret_encryptions_total", &SecretEncryptionsTotal},
 		{"gitopsreverser_watch_plan_passes_total", &WatchPlanPassesTotal},
 		{"gitopsreverser_watch_plan_triggers_total", &WatchPlanTriggersTotal},
-		{"gitopsreverser_watch_plan_triggers_coalesced_total", &WatchPlanTriggersCoalescedTotal},
-		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
-		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
-		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},
-		{"gitopsreverser_secret_encryption_cache_hits_total", &SecretEncryptionCacheHitsTotal},
-		{"gitopsreverser_secret_encryption_marker_skips_total", &SecretEncryptionMarkerSkipsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
@@ -386,7 +526,18 @@ func registerHistograms() error {
 	// watchPlanPassBuckets span one target's plan pass: in-memory replanning (sub-millisecond)
 	// up through a first observation of a cluster and on to the per-target deadline.
 	watchPlanPassBuckets := []float64{0.0005, 0.001, 0.005, 0.025, 0.1, 0.5, 1, 5, 15, 30}
+	// gitPushBuckets span a push to a healthy nearby remote (tens of milliseconds) up through a
+	// contended one that replays, and on to a remote that is timing out.
+	gitPushBuckets := []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
+	// watchHandlingBuckets span an event routed immediately through one that sat out the whole
+	// attribution grace window, and past it.
+	watchHandlingBuckets := []float64{0.0005, 0.001, 0.005, 0.025, 0.1, 0.5, 1, 3, 10, 30}
+	// watchReplayBuckets span a replay of a handful of objects through a full walk of a busy type.
+	watchReplayBuckets := []float64{0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 300}
 	hists := []hSpec{
+		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds, gitPushBuckets},
+		{"gitopsreverser_watch_event_handling_seconds", &WatchEventHandlingSeconds, watchHandlingBuckets},
+		{"gitopsreverser_watch_replay_duration_seconds", &WatchReplayDurationSeconds, watchReplayBuckets},
 		{
 			"gitopsreverser_watch_plan_pass_duration_seconds",
 			&WatchPlanPassDurationSeconds,
@@ -419,14 +570,13 @@ func registerHistograms() error {
 }
 
 func registerGauges() error {
+	// Synchronous gauges: each is stamped by the event it describes, so there is no loop between
+	// the state and the value and nothing for a callback to improve. The follower timestamp is the
+	// worked example — it SHOULD stop advancing when the follower wedges, because that is the
+	// signal.
 	gauges := []gSpec{
 		{"gitopsreverser_api_catalog_resources", &APICatalogResources},
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
-		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
-		{"gitopsreverser_watched_types", &WatchedTypes},
-		{"gitopsreverser_watch_plan_dirty_targets", &WatchPlanDirtyTargets},
-		{"gitopsreverser_watch_plan_oldest_dirty_age_seconds", &WatchPlanOldestDirtyAgeSeconds},
-		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 		{"gitopsreverser_attribution_fact_index_entries", &AttributionFactIndexEntries},
 		{
 			"gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds",
@@ -441,5 +591,41 @@ func registerGauges() error {
 		}
 		*s.dest = v
 	}
+	return registerObservableGauges()
+}
+
+// registerObservableGauges creates the gauges whose value is READ at scrape time from a source a
+// producer installs with SetGaugeSource. See gauges.go for why these in particular cannot be
+// pushed: every one of them measures saturation of a loop, so publishing from inside that loop
+// freezes the value during the stall it exists to report.
+func registerObservableGauges() error {
+	observable := []struct {
+		name   string
+		source string
+	}{
+		{"gitopsreverser_git_queue_depth", GaugeGitQueueDepth},
+		{"gitopsreverser_watch_types", GaugeWatchTypes},
+		{"gitopsreverser_watch_streams_open", GaugeWatchStreamsOpen},
+		{"gitopsreverser_watch_plan_dirty_targets", GaugeWatchPlanDirtyTargets},
+		{
+			"gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds",
+			GaugeWatchPlanOldestDirtySince,
+		},
+		{"gitopsreverser_resource_condition", GaugeResourceCondition},
+	}
+	for _, o := range observable {
+		if _, err := otelMeter.Int64ObservableGauge(
+			o.name,
+			metric.WithInt64Callback(observeGauge(o.source)),
+		); err != nil {
+			return err
+		}
+	}
+
+	// resource_condition is the one observable gauge whose state this package owns, so it installs
+	// its own source here rather than waiting for a producer to call SetGaugeSource. The registry
+	// it reads is package state that is always safe to read and empty until a reconcile publishes,
+	// so there is no lifecycle to manage and nothing for the source to outlive.
+	SetGaugeSource(GaugeResourceCondition, resourceConditionSamples)
 	return nil
 }
