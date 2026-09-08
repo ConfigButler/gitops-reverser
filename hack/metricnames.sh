@@ -28,7 +28,11 @@ EXCLUDED_PATHS=(':!external-sources' ':!docs/UPGRADING.md' ':!docs/design' ':!do
 #   gitopsreverser_audit_     a prefix truncated mid-sentence in prose
 #   gitopsreverser_does_not_  a deliberately-absent name in a negative test
 #   gitopsreverser_foo_       the histogram teaching example in interpreting-metrics.md
-ALLOWED_NON_METRICS='^gitopsreverser_(audit_|does_not_exist|foo_seconds)$'
+#
+# The truncated forms are matched as well as the full names, because the two comment lines
+# above are themselves tracked text this check reads: written without them, the check failed
+# on its own explanation of itself.
+ALLOWED_NON_METRICS='^gitopsreverser_(audit_|does_not_(exist)?|foo_(seconds)?)$'
 
 referenced="$(
   git grep -hoE 'gitopsreverser_[a-z0-9_]+' -- . "${EXCLUDED_PATHS[@]}" |
