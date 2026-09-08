@@ -217,7 +217,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 		targetNS,
 		watchRule.Spec.GitTargetRef.Name,
 	)
-	return r.commitRule(ctx, st, ruleReadiness(watchRule.Status.Conditions, "WatchRule", msg))
+	return commitRule(ctx, st, ruleReadiness(watchRule.Status.Conditions, "WatchRule", msg))
 }
 
 // stallRule publishes a terminal WatchRule outcome and ends the reconcile.
@@ -228,29 +228,7 @@ func (r *WatchRuleReconciler) stallRule(
 ) (ctrl.Result, error) {
 	rd := newRuleReadiness("WatchRule", "")
 	rd.stalled(reason, message)
-	return r.commitRule(ctx, st, rd)
-}
-
-// commitRule writes the trio, persists the status, and picks the requeue cadence from the same
-// verdict, so the cadence can never disagree with what status says.
-//
-// Only a CONVERGING rule takes the fast loop. A stalled one waits for an event — a ClusterProvider
-// policy change, a source-cluster Namespace label change, an edit to the rule — and every one of
-// those has a watch edge registered in SetupWithManager, so polling it would find nothing.
-func (r *WatchRuleReconciler) commitRule(
-	ctx context.Context,
-	st *reconcileStatus,
-	rd *readiness,
-) (ctrl.Result, error) {
-	st.applyReadiness(rd)
-	if err := st.commit(ctx); err != nil {
-		return ctrl.Result{}, err
-	}
-	cadence := RequeueSteadyInterval
-	if rd.converging() {
-		cadence = RequeueStreamSettleInterval
-	}
-	return ctrl.Result{RequeueAfter: st.requeueAfter(cadence)}, nil
+	return commitRule(ctx, st, rd)
 }
 
 func (r *WatchRuleReconciler) setResourceResolutionCondition(

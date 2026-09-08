@@ -13,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -53,8 +52,10 @@ func TestRuleReadiness_GitTargetReadyStalledBlocksRule(t *testing.T) {
 // rejected, and a rule stuck on the older answer is exactly what a spec waiting on its Ready reason
 // reads.
 //
-// Both rule kinds carry their own copy of commitRule, so both are checked here: fixing one and
-// leaving the other is the shape of mistake this table exists to catch.
+// Both rule kinds go through it, which is now one shared function rather than a copy each. The
+// table stays because the two kinds still reach it over different objects — one namespaced, one
+// cluster-scoped, each with its own status subresource — and it is the whole path from a verdict to
+// a requeue that is under test, not the arithmetic in the middle.
 func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
@@ -74,12 +75,10 @@ func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 	// no-op path and never reach the patch this test is about.
 	tests := []struct {
 		name    string
-		commit  func(context.Context, *reconcileStatus, *readiness) (ctrl.Result, error)
 		newRule func() statusObject
 	}{
 		{
-			name:   "WatchRule",
-			commit: (&WatchRuleReconciler{}).commitRule,
+			name: "WatchRule",
 			newRule: func() statusObject {
 				return &configbutleraiv1alpha3.WatchRule{
 					ObjectMeta: metav1.ObjectMeta{Name: "rule", Namespace: "tenant-acme", ResourceVersion: "1"},
@@ -87,8 +86,7 @@ func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 			},
 		},
 		{
-			name:   "ClusterWatchRule",
-			commit: (&ClusterWatchRuleReconciler{}).commitRule,
+			name: "ClusterWatchRule",
 			newRule: func() statusObject {
 				return &configbutleraiv1alpha3.ClusterWatchRule{
 					ObjectMeta: metav1.ObjectMeta{Name: "rule", ResourceVersion: "1"},
@@ -108,7 +106,7 @@ func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 			rule := tc.newRule()
 			landed := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rule).
 				WithStatusSubresource(rule).Build()
-			result, err := tc.commit(context.Background(), beginStatus(landed, nil, rule), converging())
+			result, err := commitRule(context.Background(), beginStatus(landed, nil, rule), converging())
 			require.NoError(t, err)
 			assert.Equal(t, RequeueStreamSettleInterval, result.RequeueAfter,
 				"a converging rule that published its status keeps the stream-settle loop")
@@ -116,7 +114,7 @@ func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 			rule = tc.newRule()
 			lost := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rule).
 				WithInterceptorFuncs(conflict).Build()
-			result, err = tc.commit(context.Background(), beginStatus(lost, nil, rule), converging())
+			result, err = commitRule(context.Background(), beginStatus(lost, nil, rule), converging())
 			require.NoError(t, err)
 			assert.Equal(t, RequeueWriteLostInterval, result.RequeueAfter,
 				"a converging rule whose status never landed must come back promptly, not on the settle loop")
