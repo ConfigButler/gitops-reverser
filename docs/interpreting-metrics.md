@@ -142,22 +142,19 @@ sum by (kind) (rate(gitopsreverser_git_queue_drops_total[5m]))
 sum by (kind, reason) (rate(gitopsreverser_git_commit_failures_total[5m]))
 ```
 
-**How busy is a type's ingestion?** A stream is single-threaded, so time it spends handling one
-event is time nothing else on that stream is being read. This is **aggregate busy-seconds per
-second, per type**:
+**How much work is a type's ingestion doing?** A stream is single-threaded, so time it spends
+handling one event is time nothing else on that stream is being read. This is **aggregate processing
+seconds per second, per type**:
 
 ```promql
 sum by (group, version, resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))
 ```
 
-It is not a per-stream ratio and cannot be turned into one. The histogram is labelled by type, and
-one type may be watched by several streams (one per namespace) whose measurements share those
-labels, so the individual streams are not recoverable from the exported series. Read it as "this
-type's ingestion is spending N seconds of work per second": a value near 1 means at least one stream
-is close to saturated, and a value comfortably below 1 means none of them is.
-
-Publishing the per-stream number would need the namespace on the widest histogram in the system,
-which is not worth it for a signal this one already answers.
+It does not answer per-stream saturation, and no threshold on it can. One type may be watched by
+several streams (one per namespace) whose measurements share these labels, so the individual streams
+are not recoverable from the exported series: one stream at 100% and ten streams at 10% both total
+`1`. Read it as how much work this type's ingestion is doing, and use it for trend and comparison
+between types rather than as a utilization figure.
 
 **Is watch stable, and what are rebuilds costing?**
 

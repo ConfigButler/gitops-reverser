@@ -1,13 +1,15 @@
-# Metrics, status, and the shape of the pipeline: a plan
+# Metrics, status, and the shape of the pipeline
 
-> **PLAN**, written 2026-09-07. It **replaces** the previous revision of this file wholesale; the
-> old text is in `git log`. Index: [`../INDEX.md`](../INDEX.md)
+> **built.** Phases 1-4 shipped 2026-09; only the dashboard and alert rules (Phase 5) are open. It
+> stays in `design/` because Go source cites it by path as the rationale for what the code does.
+> It **replaces** the previous revision of this file wholesale; the old text is in `git log`.
+> Index: [`../INDEX.md`](../INDEX.md)
 >
-> This is the single canonical metrics plan. It is architecture-led:
-> [architecture.md](../architecture.md) is the spine, [interpreting-metrics.md](../interpreting-metrics.md)
-> is the live baseline and the per-metric documentation bar, and
+> This is the single canonical metrics document for *why the surface has this shape*. The live
+> instrument list, label vocabularies and queries are
+> [interpreting-metrics.md](../interpreting-metrics.md), which is the one place they are maintained;
+> [architecture.md](../architecture.md) is the spine and
 > [spec/status-conditions-guide.md](../spec/status-conditions-guide.md) owns the status half.
-> It takes breaking changes deliberately and in one release.
 
 ## 1. The three questions this answers
 
@@ -542,7 +544,7 @@ Alerts, as rules rather than sketches this time:
 | Fact-store errors | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | fact appends are failing |
 | Follower wedged | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)` for 10m | attribution degrading cluster-wide; **both arms are required**, because the gauge does not exist until the first successful read |
 | Watch plane stuck | `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120` for 5m | a GitTarget cannot be planned. Written against the timestamp, because the age metric it replaces froze during exactly this condition (§2.5) |
-| Head-of-line | `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m])) > 0.8` | a type's ingestion is spending 0.8s of work per second. It is an AGGREGATE and cannot be turned into a per-stream ratio: several streams of one type share these labels, so their identities are not recoverable from the exported series |
+| Head-of-line | a sustained rise in `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))` | a type's ingestion is doing more work per second. It is aggregate processing seconds per second and answers no per-stream question: one stream at 100% and ten at 10% both total 1, so no fixed threshold means anything. Trend and cross-type comparison only |
 | Degraded API surface | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | a broken APIService is hiding types |
 | Encryption failing | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected |
 

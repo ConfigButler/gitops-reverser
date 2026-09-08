@@ -16,6 +16,7 @@ import (
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -229,4 +230,51 @@ func TestShouldLogRetention_ThrottlesPerTarget(t *testing.T) {
 	// not go permanently silent after its first line.
 	w.retentionLoggedAt["tenant-a"] = w.retentionLoggedAt["tenant-a"].Add(-2 * retentionLogInterval)
 	assert.True(t, w.shouldLogRetention("tenant-a"))
+}
+
+// status.retention and the retained-document counter must report the SAME number for the same
+// resync.
+//
+// They are derived independently — one from `Plan.RetainedOrphans`, one from
+// `Plan.RetainedOrphansByType` — so nothing structural keeps them in step, and a stray second
+// tally call doubled the metric while status stayed correct. Lint, the unit suite and e2e all
+// passed over that, because until now nothing asserted the count a real resync publishes.
+func TestPrune_RetainedCountMatchesStatusExactly(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	worktree := newWorktreeForTest(t)
+	seedPlacedManifest(t, worktree, "apps/orphan-a.yaml", cmManifest("orphan-a", "blue"))
+	seedPlacedManifest(t, worktree, "apps/orphan-b.yaml", cmManifest("orphan-b", "blue"))
+	seedPlacedManifest(t, worktree, "apps/orphan-c.yaml", cmManifest("orphan-c", "blue"))
+
+	// An empty desired set under onEvent: every managed document is retained rather than swept.
+	stats := resyncUnder(t, worktree, v1alpha3.PruneOnEvent)
+	require.Equal(t, 3, stats.Retained, "all three documents are retained by the policy")
+
+	retained, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_git_documents_total",
+		map[string]string{
+			"group": "", "version": "v1", "resource": "configmaps", "outcome": documentRetained,
+		})
+	require.True(t, ok, "a retained document must reach the census")
+	assert.Equal(t, int64(stats.Retained), retained,
+		"the counter and status.retention must not disagree about one resync")
+}
+
+// One retained document is one increment. Stated separately from the three-document case because a
+// doubling is invisible at n=1 in a ratio but obvious against an exact expectation.
+func TestPrune_OneRetainedDocumentIncrementsByOne(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	worktree := newWorktreeForTest(t)
+	seedPlacedManifest(t, worktree, "apps/orphan.yaml", cmManifest("orphan", "blue"))
+
+	stats := resyncUnder(t, worktree, v1alpha3.PruneOnEvent)
+	require.Equal(t, 1, stats.Retained)
+
+	retained, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_git_documents_total",
+		map[string]string{"outcome": documentRetained})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), retained)
 }

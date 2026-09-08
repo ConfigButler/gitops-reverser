@@ -526,21 +526,17 @@ publish time and stop paying a grace for evidence that cannot arrive) is ranked 
 
 ## What is observable
 
-| Metric | Labels | Answers |
-|---|---|---|
-| `gitopsreverser_attribution_resolutions_total` | `tier`, `actor_kind`, `group`, `version`, `resource` | which evidence named the author and who it named, per type |
-| `gitopsreverser_attribution_resolution_wait_seconds` | `tier`, `event_kind`, `group`, `version`, `resource` | how long the join waited, by tier and by write/removal |
-| `gitopsreverser_attribution_facts_total` | `op` = `written` / `matched` | how much of what is published is ever used |
-| `gitopsreverser_attribution_fact_index_entries` | none | entries held across every scope |
-| `gitopsreverser_attribution_fact_index_evictions_total` | `reason` = `per_type` / `total` | whether the caps are binding |
-| `gitopsreverser_attribution_collection_without_uidset_total` | `reason` = `uid_cap` / `no_uids` | how often the precise collection join was unavailable |
-| `gitopsreverser_attribution_fact_stream_gaps_total` | `stream` | facts lost for good to a trim |
-| `gitopsreverser_attribution_fact_stream_decode_errors_total` | `transport` | entries skipped because they could not be decoded |
-| `gitopsreverser_attribution_fact_follower_errors_total` | `transport` | follower reads that failed and were retried |
-| `gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds` | none | whether the follower is reading at all |
-| `gitopsreverser_attribution_transport_info` | `transport` | which contract the metrics above are read under |
-| `gitopsreverser_audit_events_total` | …, `no_attribution_fact` | audit events that produced no fact |
-| `gitopsreverser_commits_total` | …, `author_kind` | what reached Git |
+Attribution answers two questions an operator has to be able to ask separately: **coverage** (did the
+join name an actor at all) and **quality** (on what evidence). `attribution_resolutions_total`
+carries both, as `tier` and `actor_kind`; coverage is `tier != "absent"`, and a shift from `exact`
+toward `name` or `deletecollection_scope` is a quality regression even while coverage holds flat.
+Around it sit the fact pipeline's three loss counters, the follower's liveness pair, and
+`git_commits_total{author_kind}` for what actually reached Git.
+
+The instrument list, the label vocabularies and the queries live in
+[`../interpreting-metrics.md`](../interpreting-metrics.md), which is the one place they are
+maintained. This document deliberately does not repeat them: it carried its own copy until that copy
+drifted from the code, which is the argument against a second inventory rather than for a better one.
 
 Metrics are not the whole surface. One misconfiguration is a **state**, not a rate, and it is
 reported as a condition on the object that carries it: `AuditFactsReceived` on `ClusterProvider`,

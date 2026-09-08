@@ -775,8 +775,13 @@ The count is refreshed when a resync runs, so it lags a change in the cluster un
 `observedTime` dates the last **change** to this roll-up, not the last scan: a resync that re-reports
 the same count does not restamp it, the way `status.placement.resolvedAtRevision` does not. So an old
 timestamp means the retention has been stable **or** that nothing has measured it since, and the
-field cannot tell you which. For "is this still being measured", read the rate of
-`gitopsreverser_git_documents_total{outcome="retained"}` instead.
+field cannot tell you which.
+
+Nothing else answers that question either, so do not go looking. A rising
+`gitopsreverser_git_documents_total{outcome="retained"}` is positive evidence that retention was
+evaluated and found something; a flat one is produced equally by a healthy resync retaining nothing
+and by a resync that stopped running. Use `gitopsreverser_git_resync_failures_total` and
+`gitopsreverser_watch_recovery_total` to ask whether resyncs are happening at all.
 
 `spec.prune` is mutable (unlike `gitProviderRef`, `branch`, and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists

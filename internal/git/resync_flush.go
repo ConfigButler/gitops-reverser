@@ -476,7 +476,6 @@ func (wb *writeBatch) applyResyncPlan(
 	// writer at all.
 	stats.Retained = plan.RetainedOrphans
 	wb.tallyPruneRetention(plan)
-	wb.tallyPruneRetention(plan)
 	return stats, nil
 }
 
