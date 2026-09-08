@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.43.0...v0.44.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **metrics:** rebuild the metric surface around the pipeline ([#346](https://github.com/ConfigButler/gitops-reverser/issues/346))
+* **gittarget:** `GitTarget.spec.commit.message.eventTemplate` and `groupTemplate` are retired and rejected; migrate to `liveTemplate`. Default commit subjects change. See docs/UPGRADING.md#one-live-commit-message-template.
+
+### Features
+
+* **clusterprovider:** latch an AuditFactsReceived condition on the first fact per audit route ([#341](https://github.com/ConfigButler/gitops-reverser/issues/341)) ([0e38cf4](https://github.com/ConfigButler/gitops-reverser/commit/0e38cf4845dfdbd8357bfd058616ca3f8ec1dd37))
+* **gittarget:** one liveTemplate for every live commit message ([#345](https://github.com/ConfigButler/gitops-reverser/issues/345)) ([7e41997](https://github.com/ConfigButler/gitops-reverser/commit/7e41997660b7c9ff26234e5b2943ac1f2c624fb3))
+* **metrics:** rebuild the metric surface around the pipeline ([#346](https://github.com/ConfigButler/gitops-reverser/issues/346)) ([c87fe2b](https://github.com/ConfigButler/gitops-reverser/commit/c87fe2b392e5669dce5556e475295c8c5c876fab))
+
+
+### Bug Fixes
+
+* **watchrule:** mirror GitTarget readiness on the event, and close six adoption-report gaps ([#343](https://github.com/ConfigButler/gitops-reverser/issues/343)) ([9612e00](https://github.com/ConfigButler/gitops-reverser/commit/9612e003ce17f3218b6ef5afec341bb28bd4515c))
+
+
+### Documentation
+
+* close the API wave and placement-visibility issues, and drop three items ([#340](https://github.com/ConfigButler/gitops-reverser/issues/340)) ([183964f](https://github.com/ConfigButler/gitops-reverser/commit/183964f70f938c7d00c0c38a44767023dbe77114))
+
 ## [0.43.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.42.1...v0.43.0) (2026-09-03)
 
 
