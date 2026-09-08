@@ -201,10 +201,11 @@ var (
 	// every other metric reads healthy, because commits are still being created locally.
 	GitPushesTotal metric.Int64Counter
 	// GitPushRetriesTotal counts replay rounds inside a push cycle, labelled by
-	// {provider_namespace, provider_name, branch, reason} where reason is `remote_moved` (the
-	// remote branch moved, so the pending writes are rebuilt on the new head and re-pushed) or
-	// `error`. A retry is not a terminal outcome, which is why it is its own counter rather than a
-	// third value on GitPushesTotal; rate(retries)/rate(pushes) is the contention signal.
+	// {provider_namespace, provider_name, branch, reason}. reason has one value, `remote_moved`:
+	// the remote branch moved, so the pending writes are rebuilt on the new head and re-pushed.
+	// Every other rejection ends the cycle rather than retrying it, and is a `failed` outcome on
+	// GitPushesTotal. A retry is not a terminal outcome, which is why it is its own counter rather
+	// than a third value there; rate(retries)/rate(pushes) is the contention signal.
 	GitPushRetriesTotal metric.Int64Counter
 	// GitPushDurationSeconds records one push cycle's wall time, labelled by
 	// {provider_namespace, provider_name, branch}. Retries are inside the measurement on purpose:

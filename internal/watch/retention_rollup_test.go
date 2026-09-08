@@ -291,3 +291,53 @@ func TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing(t *testing
 	assert.Contains(t, strings.Join(*lines, "\n"),
 		"a fresh measurement of this cell produced the count already published")
 }
+
+// A re-measurement announces itself ONCE.
+//
+// The Info log above is deliberate and rare: it marks the one shape a stale published count can
+// hide behind. It only stays rare if the revision marker survives the report that raised it — and
+// mutateWatchPlane discards the whole clone when the mutation reports no operator-visible change,
+// which dropped the marker with it. Every later resync of that cell then looked like a fresh
+// re-measurement and said so again, turning a diagnostic into the noise it was written to avoid.
+func TestMarkTargetRetention_RemeasurementIsAnnouncedOnce(t *testing.T) {
+	log, lines := recordingLogger()
+	m := &Manager{Log: log}
+	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	cell := types.CellKeyFor(configmapsGVR, "apps")
+
+	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 7})
+	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+
+	// The cell restarts and its replacement reports the same count under a new revision: one
+	// announcement. Every resync after it is routine, under a revision now already reported.
+	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 8})
+	for range 4 {
+		m.MarkTargetRetention(gitDest, cell, 8, v1alpha3.PruneOnEvent, 2)
+	}
+
+	announcements := strings.Count(strings.Join(*lines, "\n"),
+		"a fresh measurement of this cell produced the count already published")
+	assert.Equal(t, 1, announcements,
+		"the marker must persist so a re-measurement is announced once, not on every later resync")
+}
+
+// Persisting the marker must not enqueue a reconcile: nothing an operator reads has moved, and a
+// reconcile per resync of every steady scope is the storm this roll-up exists beside.
+func TestMarkTargetRetention_UnchangedRemeasurementPublishesNothing(t *testing.T) {
+	log, _ := recordingLogger()
+	m := &Manager{Log: log}
+	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	cell := types.CellKeyFor(configmapsGVR, "apps")
+
+	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 7})
+	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+	before := m.RetentionForGitTarget(gitDest)
+
+	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 8})
+	m.MarkTargetRetention(gitDest, cell, 8, v1alpha3.PruneOnEvent, 2)
+
+	after := m.RetentionForGitTarget(gitDest)
+	assert.Equal(t, before.RetainedDocuments, after.RetainedDocuments)
+	assert.Equal(t, before.LastChangedTime, after.LastChangedTime,
+		"a re-measurement that changes no number must not restamp the roll-up")
+}

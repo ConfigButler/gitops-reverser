@@ -158,7 +158,13 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		// Phase 3 drain signals replace a 75 s blind wait. The reconcile counter
 		// is scoped to the new pod via its `pod` target label: a counter resets to
 		// 0 on a fresh pod, so `{pod="<new>"} > 0` proves the new pod completed its
-		// own post-restart reconcile. A sum() over a pre-restart baseline
+		// own post-restart reconcile.
+		//
+		// mode="type_reconcile" is load-bearing. watch_recovery_total counts every recovery path,
+		// and `replay` increments at initial-events-end — BEFORE the replay's resync has been
+		// applied. An unscoped `> 0` would therefore pass as soon as the new pod finished reading,
+		// not when it finished writing, which is the moment this spec exists to wait for. Only
+		// type_reconcile is recorded after the resync applies on the branch worker. A sum() over a pre-restart baseline
 		// cannot prove this — once Prometheus marks the old pod's series stale, the
 		// new pod's first increment can bring the cross-pod sum back to the old
 		// total rather than above it, so `> baseline` could never pass.
@@ -169,7 +175,8 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
 				`sum(gitopsreverser_watch_recovery_total`+
-					`{gittarget_namespace=%q,gittarget_name=%q,pod=%q}) or vector(0)`,
+					`{gittarget_namespace=%q,gittarget_name=%q,pod=%q,mode="type_reconcile"}) `+
+					`or vector(0)`,
 				testNs, gitTargetName, newControllerPod,
 			),
 			func(v float64) bool { return v > 0 },

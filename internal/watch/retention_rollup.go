@@ -102,8 +102,8 @@ func (m *Manager) MarkTargetRetention(
 	// converged one.
 	var dropped string
 	var installed uint64
-	var remeasured bool
-	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
+	var remeasured, changed bool
+	m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		state := s.retention[gitDest.Key()]
 		scope, selected := state.scopes[cell]
 		if !selected {
@@ -119,13 +119,20 @@ func (m *Manager) MarkTargetRetention(
 		// them, and enqueueing for it would make every watch-set replacement reconcile twice.
 		priorTotal, priorMode, priorReported := state.total(), state.mode, state.anyReported()
 		remeasured = scope.reported && scope.reportedRevision != revision
+		// The revision marker moves whenever a NEW stream incarnation reports, whether or not the
+		// number moved. It has to be persisted either way: mutateWatchPlane discards the clone when
+		// this returns false, so an unchanged re-measurement used to drop the marker and see itself
+		// as a fresh re-measurement again on the next report, re-emitting the Info log below every
+		// time. It is persisted, and it does NOT enqueue a reconcile: nothing an operator reads has
+		// moved.
+		revisionAdvanced := scope.reportedRevision != revision
 		scope.retained = retained
 		scope.reported = true
 		scope.reportedRevision = revision
 		state.scopes[cell] = scope
 		state.mode = mode.OrDefault()
 		s.retention[gitDest.Key()] = state
-		changed := !priorReported || state.total() != priorTotal || state.mode != priorMode
+		changed = !priorReported || state.total() != priorTotal || state.mode != priorMode
 		// The observation time advances ONLY when the observation itself moved.
 		//
 		// Restamping it on every accepted report — including the routine re-reports that change
@@ -141,7 +148,7 @@ func (m *Manager) MarkTargetRetention(
 			state.observed = time.Now()
 			s.retention[gitDest.Key()] = state
 		}
-		return changed
+		return changed || revisionAdvanced
 	})
 	if dropped != "" {
 		m.Log.WithName("retention").Info(
