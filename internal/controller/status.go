@@ -163,6 +163,14 @@ func (s *reconcileStatus) applyReadiness(r *readiness) {
 func (s *reconcileStatus) commit(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("status")
 
+	// Ahead of the no-op check below, and that ordering is the contract rather than a convenience.
+	// The condition gauge is a LEVEL, not an event: a fresh pod whose first reconcile computes no
+	// status change must still publish, or the object has no series at all until something happens
+	// to move it — the same "a restart must republish" property watch_recovery_total is a counter
+	// for. It is also ahead of the patch, so a write lost to the optimistic lock still publishes
+	// what this reconcile computed; the next pass republishes either way.
+	s.publishConditionMetrics()
+
 	data, err := client.MergeFrom(s.before).Data(s.object)
 	if err != nil {
 		return fmt.Errorf("compute status patch for %s: %w", client.ObjectKeyFromObject(s.object), err)

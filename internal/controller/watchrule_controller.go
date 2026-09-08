@@ -21,6 +21,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	reverserTypes "github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
@@ -78,6 +79,10 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			if r.WatchManager != nil {
 				r.WatchManager.TriggerAllRuleChange()
 			}
+
+			// Stop publishing its conditions for the same reason the store entry goes: a series
+			// that outlives its object reports Ready=False forever and never clears.
+			telemetry.ForgetResourceConditions(conditionKindWatchRule, req.Namespace, req.Name)
 
 			return ctrl.Result{}, nil
 		}

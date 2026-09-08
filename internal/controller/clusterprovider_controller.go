@@ -27,6 +27,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // LegacyClusterProviderFinalizer is the fact-purge finalizer this controller USED to take. It is
@@ -100,6 +101,10 @@ func (r *ClusterProviderReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, req.NamespacedName, &provider); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("ClusterProvider not found, was likely deleted", "name", req.Name)
+			// The object is gone, so its condition series must stop rather than latch its last
+			// value: a gauge that keeps reporting Ready=False for a deleted object is a permanent
+			// false positive that trains people to ignore the panel.
+			telemetry.ForgetResourceConditions(conditionKindClusterProvider, req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "unable to fetch ClusterProvider", "name", req.Name)

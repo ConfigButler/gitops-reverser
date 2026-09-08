@@ -41,6 +41,11 @@ const (
 	GaugeWatchStreamsOpen          = "watch_streams_open"
 	GaugeWatchPlanDirtyTargets     = "watch_plan_dirty_targets"
 	GaugeWatchPlanOldestDirtySince = "watch_plan_oldest_dirty_since_timestamp_seconds"
+	// GaugeResourceCondition is observable for a different reason than its neighbours: it is not
+	// measuring a loop's saturation, it needs series that STOP. Its source publishes from a map
+	// keyed by config object, so deleting the key ends the series at the next scrape — where a
+	// pushed gauge would latch its last value and report a deleted object as unready forever.
+	GaugeResourceCondition = "resource_condition"
 )
 
 var (

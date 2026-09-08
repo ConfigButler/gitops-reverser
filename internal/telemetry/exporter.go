@@ -587,6 +587,7 @@ func registerObservableGauges() error {
 			"gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds",
 			GaugeWatchPlanOldestDirtySince,
 		},
+		{"gitopsreverser_resource_condition", GaugeResourceCondition},
 	}
 	for _, o := range observable {
 		if _, err := otelMeter.Int64ObservableGauge(
@@ -596,5 +597,11 @@ func registerObservableGauges() error {
 			return err
 		}
 	}
+
+	// resource_condition is the one observable gauge whose state this package owns, so it installs
+	// its own source here rather than waiting for a producer to call SetGaugeSource. The registry
+	// it reads is package state that is always safe to read and empty until a reconcile publishes,
+	// so there is no lifecycle to manage and nothing for the source to outlive.
+	SetGaugeSource(GaugeResourceCondition, resourceConditionSamples)
 	return nil
 }

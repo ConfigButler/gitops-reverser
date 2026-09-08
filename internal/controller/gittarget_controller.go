@@ -31,6 +31,7 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
@@ -1093,8 +1094,11 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 ) {
 	gitDest := types.NewResourceReference(namespacedName.Name, namespacedName.Namespace)
 	// Unconditionally, and before the EventRouter check below: the tracker is the reconciler's own
-	// memory, so it must be released for a deleted target whether or not a data plane is wired.
+	// memory, so it must be released for a deleted target whether or not a data plane is wired. The
+	// condition gauge is released on the same terms and for a sharper reason: a condition series
+	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
+	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
 
 	if r.EventRouter == nil {
 		return
