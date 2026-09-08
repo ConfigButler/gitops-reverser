@@ -15,7 +15,7 @@ import (
 
 const watchRecoveryMetric = "gitopsreverser_watch_recovery_total"
 
-const resyncBackgroundFailuresMetric = "gitopsreverser_resync_background_failures_total"
+const resyncFailuresMetric = "gitopsreverser_git_resync_failures_total"
 
 // recordBackgroundResyncFailure must count a fire-and-forget resync that failed at the
 // worker, labelled per GitTarget, so a silently-recovered failure is observable.
@@ -29,9 +29,9 @@ func TestRecordBackgroundResyncFailure_IncrementsPerGitTarget(t *testing.T) {
 	r.recordBackgroundResyncFailure(gitDest)
 	r.recordBackgroundResyncFailure(gitDest)
 
-	value, ok := telemetry.CollectInt64Sum(reader, resyncBackgroundFailuresMetric,
+	value, ok := telemetry.CollectInt64Sum(reader, resyncFailuresMetric,
 		map[string]string{"gittarget_namespace": "my-ns", "gittarget_name": "my-target"})
-	require.True(t, ok, "expected a resync_background_failures_total sample")
+	require.True(t, ok, "expected a git_resync_failures_total sample")
 	assert.Equal(t, int64(2), value)
 }
 

@@ -139,10 +139,10 @@ func (r *EventRouter) ServiceCommitRequest(
 // timed out at the worker, so the failure is observable even though delivery was already
 // marked on enqueue. No-op until the counter is registered.
 func (r *EventRouter) recordBackgroundResyncFailure(gitDest types.ResourceReference) {
-	if telemetry.ResyncBackgroundFailuresTotal == nil {
+	if telemetry.GitResyncFailuresTotal == nil {
 		return
 	}
-	telemetry.ResyncBackgroundFailuresTotal.Add(context.Background(), 1, metric.WithAttributes(
+	telemetry.GitResyncFailuresTotal.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("gittarget_namespace", gitDest.Namespace),
 		attribute.String("gittarget_name", gitDest.Name),
 	))

@@ -221,7 +221,7 @@ var (
 	// happens.
 	GitQueueDropsTotal metric.Int64Counter
 
-	// ResyncBackgroundFailuresTotal counts rule-change resyncs whose apply failed or
+	// GitResyncFailuresTotal counts rule-change resyncs whose apply failed or
 	// timed out at the worker AFTER being enqueued. Delivery is marked on enqueue (the
 	// resync is fire-and-forget to avoid an unbounded re-gather loop — see
 	// Manager.recordWatchRecovery), so a failed background apply is otherwise
@@ -229,7 +229,7 @@ var (
 	// triggering an immediate re-gather. Labelled by {gittarget_namespace,
 	// gittarget_name}; a sustained increase means snapshots are not committing and the
 	// folder is relying on steady-state events to catch up.
-	ResyncBackgroundFailuresTotal metric.Int64Counter
+	GitResyncFailuresTotal metric.Int64Counter
 
 	// AuditEventsTotal is the single per-event census: every successfully decoded, converted, and
 	// validated audit event increments it exactly once, labelled by {outcome, category, group,
@@ -453,7 +453,7 @@ func registerCounters() error {
 		{"gitopsreverser_watch_events_total", &WatchEventsTotal},
 		{"gitopsreverser_watch_sessions_ended_total", &WatchSessionsEndedTotal},
 		{"gitopsreverser_watch_recovery_total", &WatchRecoveryTotal},
-		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
+		{"gitopsreverser_git_resync_failures_total", &GitResyncFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
 		{"gitopsreverser_attribution_resolutions_total", &AttributionResolutionsTotal},
 		{"gitopsreverser_attribution_facts_total", &AttributionFactsTotal},

@@ -4,13 +4,10 @@
 > [`internal/telemetry/exporter.go`](../internal/telemetry/exporter.go). Names changed in that pass;
 > [`UPGRADING.md`](UPGRADING.md) carries the old-to-new table.
 
-This is the operator's field guide to the metrics GitOps Reverser exports. It explains how to
-read each metric family and gives copy-pasteable PromQL for the questions operators actually
-ask.
-
-Every metric documented here has a real recording site in the code. If you find a metric in a
-dashboard that is not listed here, it was removed — see [Known gaps](#known-gaps-not-yet-emitted)
-for the areas that are deliberately not instrumented yet.
+The operator's field guide to the metrics GitOps Reverser exports: what each family means, and
+copy-pasteable PromQL for the questions operators actually ask. Every metric here has a production
+recording site; the areas deliberately not instrumented are listed under
+[Known gaps](#known-gaps-not-yet-emitted), so a blank panel is never mistaken for a healthy zero.
 
 ---
 
@@ -53,26 +50,29 @@ rate(gitopsreverser_foo_seconds_sum[5m]) / rate(gitopsreverser_foo_seconds_count
 
 ---
 
-## What is instrumented today
+## The two paths
 
-Object state is ingested by **watch**; **audit is an optional attribution lookup** that only
-names the author of a watch-observed change (see
-[architecture.md → Optional Attribution](architecture.md#optional-attribution)). The metric
-coverage reflects that split, with one important caveat: the **watch ingestion path itself is
-only lightly instrumented today** — most of the live metrics sit at the Git-write and
-discovery edges. The deliberately-uncovered areas are listed under
-[Known gaps](#known-gaps-not-yet-emitted) so a blank dashboard panel is never mistaken for a
-healthy zero.
+Object state is ingested by **watch** and decides what reaches Git. **Audit is an optional
+attribution lookup** that only names the author of a watch-observed change: a missing or late fact
+changes the author, never the state (see
+[architecture.md → Optional Attribution](architecture.md#optional-attribution)). The two never call
+each other and meet only at the resolver, so they are documented apart.
 
-The live metric families are: **Git write & reconcile**, **Audit attribution**, **API resource
-catalog**, and **Secret encryption**.
+| Family | Covers |
+| --- | --- |
+| [Pipeline](#pipeline-watch-to-push) | watch ingest, the write boundary, commits, pushes |
+| [Audit attribution](#audit-attribution-optional) | the audit door, the fact pipeline, the join |
+| [API resource catalog](#api-resource-catalog) | what the operator is willing to watch, per source cluster |
+| [Watch plane owner](#watch-plane-owner) | the queue that plans each GitTarget's watches |
+| [Secret encryption](#secret-encryption) | the path that keeps Secrets out of Git in plaintext |
 
 ---
 
-## Git write & reconcile
+## Pipeline: watch to push
 
-The path from a watch-observed change to a pushed commit, plus the per-GitTarget reconcile
-signals. Background: [architecture.md → Git Write Architecture](architecture.md#git-write-architecture).
+Everything an observed change passes through on its way to the remote, in order: ingest, the write
+boundary, the commit, the push. Background:
+[architecture.md → Git Write Architecture](architecture.md#git-write-architecture).
 
 | Metric | Type | Labels | Notes |
 | --- | --- | --- | --- |
@@ -133,9 +133,9 @@ sum by (provider_namespace, provider_name, branch) (
   rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0
 ```
 
-**Is work being thrown away?** Both should be flat zero, and both used to be log lines and nothing
-else. A queue drop is a saturated worker; a commit failure takes a whole window with it, and
-`reason="refused"` will not clear until someone fixes the Git path:
+**Is work being thrown away?** Both should be flat zero. A queue drop is a saturated worker; a
+commit failure takes a whole window with it, and `reason="refused"` will not clear until someone
+fixes the Git path:
 
 ```promql
 sum by (kind) (rate(gitopsreverser_git_queue_drops_total[5m]))
@@ -194,7 +194,7 @@ low `commit_request` share does not by itself mean requests are failing.
 **How much of the history is people naming their own changes?**
 
 ```promql
-sum by (message_source) (rate(gitopsreverser_commits_total[15m]))
+sum by (message_source) (rate(gitopsreverser_git_commits_total[15m]))
 ```
 
 A `commit_request` share that falls to zero after a rollout **may** mean save requests stopped
@@ -208,14 +208,14 @@ without their message reaching a commit is the window worth tuning against `clos
 **Commit rate per provider/branch:**
 
 ```promql
-sum by (provider_namespace, provider_name, branch) (rate(gitopsreverser_commits_total[5m]))
+sum by (provider_namespace, provider_name, branch) (rate(gitopsreverser_git_commits_total[5m]))
 ```
 
 **Are real names landing in Git?** A wall of `author_kind="committer"` means the Git history is not
 showing human or named service-account authors, even if audit is flowing:
 
 ```promql
-sum by (author_kind) (rate(gitopsreverser_commits_total[15m]))
+sum by (author_kind) (rate(gitopsreverser_git_commits_total[15m]))
 ```
 
 **Is a branch worker backing up?** A persistently rising gauge indicates a stalled remote:
@@ -335,7 +335,7 @@ and no second source** — watch, not audit, carries the object body — so the 
 the request boundary and the per-event census.
 
 The log is Redis Streams by default and an in-process ring with
-`--author-attribution-transport=memory`, which is why attribution no longer implies Redis. Background:
+`--author-attribution-transport=memory`, so attribution does not require Redis. Background:
 [architecture.md → Optional Attribution](architecture.md#optional-attribution).
 
 | Metric | Type | Labels |
@@ -356,9 +356,7 @@ The log is Redis Streams by default and an in-process ring with
 
 **EventList request boundary.** `audit_eventlist_duration_seconds` times every request at
 `/audit-webhook`, and its `_count` series **is** the request counter: a histogram ships its own
-observation count, so the separate `audit_eventlists_total` that used to publish the same numbers
-was removed, along with the per-item counter beside it (`audit_events_total` counts the same items
-once each, with the type and verb on them).
+observation count, so there is no separate one. The per-event census is `audit_events_total`.
 
 `outcome` is bounded and covers the door as well as the batch: `bad_method`, `bad_path`,
 `bare_endpoint_disabled`, `processed`, `empty`, `decode_error`, `process_error`. The first three are
@@ -473,7 +471,7 @@ tiers as misses, which they are not — they named an actor.
 
 The two labels answer two different questions. **`tier`** names which evidence produced the author,
 and it is ordered, strongest first. **`actor_kind`** names who that evidence named, in the same
-vocabulary `commits_total{author_kind}` uses.
+vocabulary `git_commits_total{author_kind}` uses.
 
 Three values are named for the **verb that produced the fact** and how it matched:
 `delete_sticky`, `deletecollection_body_uid`, `deletecollection_scope`. Those are the tiers only a
@@ -515,12 +513,6 @@ which is why coverage can be read off the tier alone.
 ```promql
 sum by (tier) (rate(gitopsreverser_attribution_resolutions_total[5m]))
 ```
-
-> **`result` is gone**, and so are `exact_user`, `exact_serviceaccount`, and `weak`. See
-> [`UPGRADING.md`](UPGRADING.md) for the old-to-new mapping. `exact_deletecollection_item` went
-> earlier, with the expander and the fact keyspace; `deletecollection_body_uid` is its closest equivalent and
-> `deletecollection_scope` is new capability rather than a rename. See
-> [`attribution-fact-stream.md`](finished/attribution-fact-stream.md).
 
 **Is the grace window paying for itself?** `event_kind` is `write` or `removal`, and the split is
 the point: a removal holds a fallback and keeps waiting for evidence about the deletion, a write
@@ -719,9 +711,9 @@ healthy install sits under the settle window plus a pass, so seconds:
 time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds
 ```
 
-It is exported as a **timestamp**, not an age, and that is not cosmetic: the age it replaces was
-republished once per owner-loop turn, so a wedged pass froze it at whatever it held when the loop
-stopped moving. A timestamp stays true with nobody recomputing it.
+It is a **timestamp**, so `time() -` is required: a bare comparison against a duration is true of
+every instant since 1970. A timestamp is used rather than a pre-computed age because an age has to
+be recomputed to stay true, and the loop that would recompute it is the one that gets stuck.
 
 **Is it not running, or running and failing?** A silent watch plane and a retrying one look
 identical on a dirty-count panel alone. `timed_out` is broken out from `failed` because the two
@@ -782,9 +774,8 @@ Secrets are never committed in plaintext; these metrics confirm the encryption p
 rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[5m])
 ```
 
-**Where is the encryption path spending its work?** One counter, so this is a share of one total.
-The old guidance divided `cache_hits` by `attempts`, which were disjoint populations (the cache is
-consulted first and returns early, so a hit never became an attempt) and could exceed 1:
+**Where is the encryption path spending its work?** One counter over one population, so the three
+outcomes are shares of one total:
 
 ```promql
 sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
@@ -826,13 +817,10 @@ Listed so a missing panel is never read as a healthy zero. The plan for them is
 - **The reference dashboard and alert rules.** The queries in this document are the specification
   they are written from; the JSON and the rule files are not shipped yet.
 
-The watch ingestion stage, shard occupancy, push health, and the audit ingress rejections that used
-to be listed here have **shipped**.
+## Adding a metric
 
-## Adding a new metric to this document
-
-When you add a metric, add a row here too — **and only after it has a production recording
-site**. A defined-but-unrecorded instrument is a contract the code does not honor; it does not
-belong in `exporter.go` or in this document. The bar for a row: a reader who has never seen the
-metric should learn (1) what it measures, (2) at least one query that answers a real operator
-question, and (3) what a bad value looks like. A metric without an interpretation is noise.
+The bar for a row here: a reader who has never seen the metric learns what it measures, one query
+that answers a real operator question, and what a bad value looks like. A metric without an
+interpretation is noise. The rest of the policy — a recording site before an instrument, and the
+doc row in the same change — is
+[metrics-observability-plan.md](design/metrics-observability-plan.md) §3.
