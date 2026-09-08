@@ -803,10 +803,7 @@ func (l *branchWorkerEventLoop) run() {
 			return
 		case item := <-l.w.eventQueue:
 			l.handleQueueItem(item)
-			// Decrement only after the item is fully handled; the post-handling
-			// open-window/pending-writes state is captured by syncUnpushedWorkFlag
-			// below, so there is no window where depth drops to 0 prematurely.
-			l.w.inflightItems.Add(-1)
+			l.releaseHandledItem()
 		case <-commitC:
 			l.commitTimer = nil
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonTimer)
@@ -835,6 +832,16 @@ func (l *branchWorkerEventLoop) run() {
 //
 // The flag is all the loop owes the depth gauge: queueDepth() reads it and inflightItems at scrape
 // time, so nothing here publishes a value that could go stale while the loop is busy.
+// releaseHandledItem releases one handled item from the in-flight count.
+//
+// The order is the contract: queueDepth() reads the in-flight count and the retained-work flag
+// together, so publishing the flag second lets both read empty while a window is open, and a scrape
+// landing there reports a drained queue for a worker that has work.
+func (l *branchWorkerEventLoop) releaseHandledItem() {
+	l.syncUnpushedWorkFlag()
+	l.w.inflightItems.Add(-1)
+}
+
 func (l *branchWorkerEventLoop) syncUnpushedWorkFlag() {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
 }
