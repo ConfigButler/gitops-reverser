@@ -116,6 +116,11 @@ var (
 	//
 	//   DEGRADED (working, but something upstream is odd):
 	//     not_object          — the event carried no decodable object.
+	//     stream_error        — the API server sent an error frame that is NOT an expired cursor
+	//                           (those are classified as a session end, reason=expired, and never
+	//                           reach this census). The session dies and the reconnect replays, so
+	//                           nothing observed is dropped — but a non-zero rate is an API server
+	//                           saying something about this watch that it does not say routinely.
 	//
 	//   LOSS (an observed change that did not reach Git):
 	//     route_failed        — the writer refused it. Nothing retries until the next resync, so

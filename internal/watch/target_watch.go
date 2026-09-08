@@ -978,12 +978,8 @@ func (m *Manager) processLiveTargetWatchEvent(
 	stream targetWatchStream,
 	ev watch.Event,
 ) error {
-	if targetWatchExpired(ev) {
-		// The cursor's resourceVersion fell out of watch history. Reconnecting drops
-		// to the cursor-resume path, which gets the same "expired" and rebuilds from a
-		// fresh replay (overwriting the stale cursor); no explicit delete needed.
-		return errTargetWatchExpired
-	}
+	// No expired-cursor check here: routeLiveTargetWatchEvent owns it, so both callers classify a
+	// 410 the same way. See the comment at that check.
 	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, stream, ev)
 	if err != nil {
 		return err
@@ -1009,6 +1005,23 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	}(time.Now())
 
 	rv := targetWatchEventResourceVersion(ev)
+
+	// The expired-cursor check lives HERE, at the shared boundary, for the same reason the
+	// occupancy timer above does: there are two callers and only one of them used to make it.
+	// processLiveTargetWatchEvent checked before routing; handleTargetWatchSessionEvent's live arm
+	// called straight in. So a mid-stream 410 on a COLD-started watch — the ordinary case, since a
+	// fresh watch stays in its first session after initial-events-end — fell through to the
+	// watch.Error arm below and ended the session as `error` rather than `expired`. The reconnect
+	// still recorded `expired` at open, so the signal was not lost; what it cost was a spurious
+	// `error` on every 410, and `error` is the reason an operator reads as "something is actually
+	// broken" while `expired` is documented as routine watch-history pressure.
+	if targetWatchExpired(ev) {
+		// The cursor's resourceVersion fell out of watch history. Reconnecting drops to the
+		// cursor-resume path, which gets the same "expired" and rebuilds from a fresh replay
+		// (overwriting the stale cursor); no explicit delete needed.
+		return rv, errTargetWatchExpired
+	}
+
 	switch ev.Type {
 	case watch.Bookmark:
 		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeBookmark)
@@ -1066,8 +1079,19 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeRouted)
 		return rv, nil
 	case watch.Error:
+		// Counted, for the reason the shutdown arm is: a census with an unrecorded exit is not a
+		// census, and the totals quietly stop adding up. This arm is reachable only for a
+		// watch.Error that is NOT an expired cursor — those are classified above and never get
+		// here — so anything landing on it is a genuinely anomalous frame from the API server
+		// rather than the routine watch-history pressure a 410 represents. DEGRADED, not loss:
+		// the session ends and the reconnect replays, so no observed change is dropped.
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeStreamError)
 		return rv, fmt.Errorf("target watch error for %s: %v", stream.key.GVR.String(), ev.Object)
 	default:
+		// Unreachable against client-go's watch.EventType set, which the four arms above exhaust.
+		// Counted under the same outcome rather than left silent: if a future event type appears,
+		// the census says so instead of the totals simply failing to add up.
+		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeStreamError)
 		return rv, nil
 	}
 }

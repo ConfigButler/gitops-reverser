@@ -76,7 +76,7 @@ boundary, the commit, the push. Background:
 
 | Metric | Type | Labels | Notes |
 | --- | --- | --- | --- |
-| `watch_events_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The ingest census: every delivered watch event, exactly once. `outcome` is `routed` / `unchanged` / `operation_filtered` / `not_object` / `bookmark` / `shutdown` / `route_failed`. |
+| `watch_events_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The ingest census: every delivered watch event, exactly once. `outcome` is `routed` / `unchanged` / `operation_filtered` / `not_object` / `bookmark` / `shutdown` / `stream_error` / `route_failed`. |
 | `watch_event_handling_seconds` | histogram | `group`, `version`, `resource` | How long a stream was **busy** on one event, attribution wait included. Occupancy, not queue delay. |
 | `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `expired` (cursor out of history, forcing a rebuild) / `error` / `stopped`. |
 | `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | Time to `initial-events-end`: what a `410` storm charges. |
@@ -104,12 +104,20 @@ red trains people to ignore it. Four classes:
 | Class | Values | Read as |
 | --- | --- | --- |
 | **expected** | `routed`, `unchanged`, `operation_filtered`, `bookmark`, `shutdown`, `written`, `deleted_live`, `deleted_sweep`, `retained`, `cached` | the pipeline working. `unchanged` is a document considered and found identical; `refused` is a document the writer declined to place, which is loss |
-| **degraded** | `author_kind="unresolved"`, `mode="list_fallback"`, weak attribution tiers | working, on weaker evidence |
+| **degraded** | `author_kind="unresolved"`, `mode="list_fallback"`, `not_object`, `stream_error`, weak attribution tiers | working, on weaker evidence |
 | **recoverable** | `git_pushes_total{outcome="failed"}` — the writes are retained and retried | alert on it **sustained with no successes**, never on one occurrence |
 | **loss** | `route_failed`, any `git_queue_drops_total`, any `git_commit_failures_total`, `placement_refusals_total`, `git_documents_total{outcome="refused"}` | an observed change that did not reach Git |
 
 `route_failed` and a queue drop **overlap**: a full worker queue is one of the ways a route fails, so
 one dropped event increments both. They are two views of one event, and summing them double-counts.
+
+`placement_refusals_total` and `git_documents_total{outcome="refused"}` **overlap the same way**: a
+resource the writer declines to place increments both, so the loss class holds two views of one
+refusal rather than two refusals. Read them for different questions — `placement_refusals_total`
+carries the `reason` and fires only on the new-file path, `git_documents_total{outcome="refused"}` is
+the write-boundary census view — and never add them. They are not quite 1:1 either: a refusal raised
+after placement has already resolved reaches the census without a reason, so the census total is the
+one to trust for "how many documents were refused".
 
 ### The funnel
 
@@ -132,6 +140,21 @@ sum by (provider_namespace, provider_name, branch) (
 unless
 sum by (provider_namespace, provider_name, branch) (
   rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0
+```
+
+**How contended is the branch?** A retry is a replay round *inside* a cycle, not a terminal
+outcome, which is why it is its own counter rather than a third value on `git_pushes_total`. The
+ratio is the contention signal: several writers sharing a branch push the remote head forward under
+each other, and every retry rebuilds the pending writes on the new head before pushing again. A
+steadily climbing ratio is work being redone, and it is the early warning for the push-latency rise
+that follows:
+
+```promql
+sum by (provider_namespace, provider_name, branch) (
+  rate(gitopsreverser_git_push_retries_total[5m]))
+/
+sum by (provider_namespace, provider_name, branch) (
+  rate(gitopsreverser_git_pushes_total[5m]))
 ```
 
 **Is work being thrown away?** Both should be flat zero. A queue drop is a saturated worker; a

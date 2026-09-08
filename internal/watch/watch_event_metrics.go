@@ -33,6 +33,7 @@ const (
 	watchOutcomeBookmark          = "bookmark"
 	watchOutcomeRouteFailed       = "route_failed"
 	watchOutcomeShutdown          = "shutdown"
+	watchOutcomeStreamError       = "stream_error"
 )
 
 // Watch session end reasons.
