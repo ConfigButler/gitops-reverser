@@ -70,6 +70,22 @@ Two of them count work that used to disappear with only a log line:
   behind for every object in that window until a resync re-derives them. `reason="refused"` is a Git
   path a human has to fix and will not clear on its own.
 
+`resource_condition{kind,resource_namespace,resource_name,type,status,reason}` is the configuration
+state, and the question the rest of the surface leaves unanswered: not *is the pipeline flowing* but
+*was my configuration accepted*. It publishes the kstatus trio — `Ready`, `Reconciling`, `Stalled` —
+of every `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider` and `ClusterProvider`, as one
+series per possible status of which exactly one is `1`, so alerts compare `== 1`:
+
+```promql
+gitopsreverser_resource_condition{type="Ready", status="False"} == 1
+```
+
+Conditions used to be readable only with a kubeconfig, so a target held at `Ready=False` could page
+nobody. `Unknown` is published rather than omitted, because "not reconciled yet" is a state; a
+deleted object stops publishing rather than reporting its last value forever. `CommitRequest` is not
+on it — one is created per save, so a series per object would churn continuously; read
+`git_commits_total{message_source="commit_request"}` and the object's own conditions instead.
+
 ### `GitTarget.status` loses one field and renames another
 
 **`lastPushTime` is removed.** It was declared and never written — the only assignment in the tree

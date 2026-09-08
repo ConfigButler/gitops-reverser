@@ -1361,6 +1361,15 @@ as one funnel and its loss paths as one selector:
 cluster, so a degraded `APIService` on a remote cluster is visible. **Secret encryption** is one
 counter, `_secret_encryptions_total{outcome}`.
 
+**Configuration state** is the one family that is not about flow.
+`gitopsreverser_resource_condition{kind,resource_namespace,resource_name,type,status,reason}`
+publishes the kstatus trio of every object a human declared (`GitTarget`, `WatchRule`,
+`ClusterWatchRule`, `GitProvider`, `ClusterProvider`) as one series per possible status, of which
+exactly one is `1`. It is recorded at `reconcileStatus.commit()`, the single status choke point all
+five controllers use, and the object's entry is dropped when the object goes: a condition series
+that outlives its object reports `Ready=False` forever and never clears. It is the only family
+carrying object names, which §7.1 of the plan permits for configuration objects and nothing else.
+
 Gauges here are **observable**: their value is read when Prometheus scrapes, not pushed from the
 loop they measure, because a gauge published from inside a work loop reports the loop's last healthy
 moment for as long as the loop is stuck. For the same reason "how long has this been waiting" is

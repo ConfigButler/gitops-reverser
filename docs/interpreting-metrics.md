@@ -60,11 +60,113 @@ each other and meet only at the resolver, so they are documented apart.
 
 | Family | Covers |
 | --- | --- |
+| [Configuration state](#configuration-state) | whether the objects a human declared were accepted, which is the question that precedes both paths |
 | [Pipeline](#pipeline-watch-to-push) | watch ingest, the write boundary, commits, pushes |
 | [Audit attribution](#audit-attribution-optional) | the audit door, the fact pipeline, the join |
 | [API resource catalog](#api-resource-catalog) | what the operator is willing to watch, per source cluster |
 | [Watch plane owner](#watch-plane-owner) | the queue that plans each GitTarget's watches |
 | [Secret encryption](#secret-encryption) | the path that keeps Secrets out of Git in plaintext |
+
+---
+
+## Configuration state
+
+Every other family here answers **is the pipeline flowing**. This one answers **was my
+configuration accepted**, and it is the question that comes first: a `GitTarget` that has sat at
+`Ready=False` for a day is as serious as a stalled push, and until this metric existed only one of
+the two could page anybody. The conditions were always on the objects; nothing could watch them
+without a kubeconfig.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `resource_condition` | gauge | `kind`, `resource_namespace`, `resource_name`, `type`, `status`, `reason` |
+
+- `kind` is `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider` or `ClusterProvider` — the
+  objects a human declares.
+- `type` is the kstatus trio: `Ready` (the summary), `Reconciling` (working on it) and `Stalled`
+  (given up, and nothing will retry without a human).
+- `status` is `True`, `False` or `Unknown`.
+- `reason` is the condition's reason as it stands — `ValidationFailed`, `UnsupportedContent`,
+  `ProviderNotFound` — which is what turns a count panel into a first guess.
+
+**Each condition publishes three series, one per possible status, of which exactly one is `1`.**
+So every query below compares `== 1`; a selector without it matches the two zeroes as well. The
+alternative shape — one series whose *value* encodes the status — cannot be selected on and cannot
+be aggregated, and `count by (status)` over it means nothing.
+
+**`Unknown` is published, never omitted.** An object that has not been reconciled yet is in a
+state, and an absent series is indistinguishable from an operator that is not running.
+
+**A deleted object stops publishing.** The series ends when the object goes, rather than reporting
+its last value forever — which matters more than it sounds: a condition gauge that keeps a deleted
+object at `Ready=False` manufactures a permanent false positive, and a panel that is permanently
+red is a panel nobody reads.
+
+This is the only family carrying object names, and
+[metrics-observability-plan.md](design/metrics-observability-plan.md) §7.1 permits it here and
+nowhere else. These objects are configuration — bounded by how many someone wrote — where the
+resources being mirrored are data, unbounded, and never a label. `CommitRequest` is excluded on the
+same reasoning: one is created per save, so it is data-shaped, and its state is read from
+`git_commits_total{message_source="commit_request"}` and from the object's own conditions.
+
+**Which configuration objects are not Ready?** The panel to start from:
+
+```promql
+gitopsreverser_resource_condition{type="Ready", status="False"} == 1
+```
+
+**The fleet, in one panel** — how many objects of each kind are in each state:
+
+```promql
+count by (kind, status) (gitopsreverser_resource_condition{type="Ready"} == 1)
+```
+
+**Which are permanently wedged?** `Stalled` is the kstatus "will not retry" signal, so this set
+needs a human and will not clear on its own. `reason` names which gate refused:
+
+```promql
+gitopsreverser_resource_condition{type="Stalled", status="True"} == 1
+```
+
+**Which have never been reconciled?** Expected briefly after an apply and after a restart;
+persistent means the controller is not picking the object up at all:
+
+```promql
+gitopsreverser_resource_condition{type="Ready", status="Unknown"} == 1
+```
+
+**Why is one of them unready?** Diagnosis is still `kubectl describe`, but the reason label gets
+you to the right object and the right gate first:
+
+```promql
+count by (kind, reason) (
+  gitopsreverser_resource_condition{type="Ready", status="False"} == 1)
+```
+
+### Reading these objects in a Flux dashboard
+
+The shape is `gotk_reconcile_condition`'s, deliberately: the geometry is battle-tested and the
+Grafana panels for it already exist. The name is not, because the GitOps Toolkit is defined by
+membership under the `fluxcd` organization rather than by behaviour, so `gotk_` on our series would
+be a false statement about where they came from no matter how closely the conditions match.
+
+For anyone who wants these objects inside Flux-shaped panels, the alias belongs on the consumer's
+side, as a recording rule — opt-in, committing us to nobody else's schema:
+
+```yaml
+# Optional. Surfaces gitops-reverser config objects in GOTK-shaped dashboards.
+- record: gotk_reconcile_condition
+  expr: |
+    label_replace(label_replace(
+      gitopsreverser_resource_condition,
+      "name", "$1", "resource_name", "(.*)"),
+      "namespace", "$1", "resource_namespace", "(.*)")
+```
+
+Operators already running `kube-state-metrics` can get roughly the same series straight from the
+CRs with a `CustomResourceStateMetrics` config, and that is a reasonable thing to do. It is not
+what ships here: it lags by its own scrape interval, and it can do neither the `Unknown` synthesis
+nor the delete, which are the two things that make this metric trustworthy.
 
 ---
 
@@ -271,6 +373,21 @@ resolved-type count; `state="blocked"` is the difference between resolved and ru
 ```promql
 sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types)
 gitopsreverser_watch_types{state="blocked"} > 0
+```
+
+**Does a target's rules resolve to nothing at all?** The most common misconfiguration there is — a
+typo in `resources:`, or a type the default watch policy excludes — produces a target that looks
+completely healthy on every other panel, because a pipeline with no input has nothing to report:
+
+```promql
+sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types) == 0
+```
+
+The other half of that confusion is a type the cluster serves and this operator refuses to watch,
+which is a policy answer rather than a resolution failure:
+
+```promql
+gitopsreverser_api_catalog_resources{state="excluded"}
 ```
 
 **What is this operator costing my API server?** The question a cluster admin asks before installing
@@ -852,6 +969,9 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected by the encryption path. |
 | `rate(gitopsreverser_git_queue_drops_total[5m]) > 0` | The queue saturated and work was thrown away. |
 | `gitopsreverser_git_queue_depth` rising and not draining | A branch worker is backing up against a stalled remote. |
+| `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, `for: 15m` | A declared object has not been accepted. The `== 1` is not optional: each condition publishes one series per status, so the selector alone matches the two zeroes too. |
+| `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | Permanently wedged: `Stalled` is the kstatus "nothing will retry" signal, so this needs a human and will not clear on its own. `reason` names the gate. |
+| `sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types) == 0`, `for: 10m` | A GitTarget's rules resolve to no watchable type — a typo in `resources:`, or a type the default watch policy excludes. It mirrors nothing while looking healthy everywhere else. The 10 minutes let a freshly declared target settle. |
 
 ---
 

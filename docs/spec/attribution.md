@@ -542,6 +542,13 @@ Metrics are not the whole surface. One misconfiguration is a **state**, not a ra
 reported as a condition on the object that carries it: `AuditFactsReceived` on `ClusterProvider`,
 with a default `FACTS` printer column.
 
+A `ClusterProvider`'s readiness is watchable from Prometheus as
+`gitopsreverser_resource_condition{kind="ClusterProvider", type="Ready", status="False"} == 1`
+([interpreting-metrics.md](../interpreting-metrics.md#configuration-state)). `AuditFactsReceived` is
+deliberately not on that metric: it is a latch rather than a level, it is absent entirely when the
+operator runs without author attribution, and it is not part of `Ready` for the reason given below.
+Read it off the object.
+
 | Status | Reason | Means |
 |---|---|---|
 | `True` | `Received` | a fact has been published on this provider's audit route, and this answer is latched for good |

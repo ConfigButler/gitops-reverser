@@ -489,6 +489,13 @@ The most useful status fields are:
 
 Use conditions for automation.
 
+The kstatus trio is also on Prometheus, so the same answer is alertable without a kubeconfig:
+`gitopsreverser_resource_condition{kind="GitTarget", type="Ready", status="False"} == 1` names every
+target that has not been accepted, and `reason` says which gate refused. The metric covers `Ready`,
+`Reconciling` and `Stalled` for every object on this page except `CommitRequest`; the per-kind axis
+conditions above stay on the object, where `kubectl describe` reads them. See
+[interpreting-metrics.md](interpreting-metrics.md#configuration-state).
+
 ### `GitTarget.spec.commit`: how writes become commits
 
 `spec.commit` says how this target's writes are batched into commits and how those commits are
