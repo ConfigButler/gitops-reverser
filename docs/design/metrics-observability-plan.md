@@ -433,6 +433,21 @@ on the caps rather than as a count of lost joins.
 | `git_pushes_total` | counter | `provider_*`, `branch`, `outcome` | §2.4's second. `outcome`: `pushed` / `failed`, counted once per push cycle at its terminal end. `failed` is **recoverable**, not loss: the writes are retained and a later push carries them, which is why the alert on it needs the second arm in §7 |
 | `git_push_retries_total` | counter | `provider_*`, `branch`, `reason` | `reason`: `remote_moved` / `error`. A replay round is not a terminal outcome, so it is its own counter rather than a third `outcome` value. `rate(retries) / rate(pushes)` is the contention signal |
 | `git_push_duration_seconds` | histogram | `provider_*`, `branch` | push latency, re-added **with** a recording site this time |
+| `resource_condition` | gauge | `kind`, `resource_namespace`, `resource_name`, `type`, `status`, `reason` | *was my configuration accepted* — the question every other instrument here leaves unanswered. Three series per (object, condition), one per status, exactly one of them `1`: status as a LABEL is what makes `{status="False"} == 1` a selector and `count by (kind, status)` a rollup, neither of which works on a gauge whose VALUE encodes the status. `Unknown` is synthesized for an object that carries no such condition yet, because "not reconciled" is a state and not an absence. One recording site: `reconcileStatus.commit()`, which all five config controllers already use |
+
+`resource_condition` is the one place principle 4 needs stating rather than applying. A metric
+counts throughput and a status states a condition — but the condition is only readable by something
+holding a kubeconfig, and "a `GitTarget` has been `Ready=False` for a day" is as serious as a stalled
+push while only one of the two can page anybody. The metric does not restate the status API or
+compete with it: it publishes the CURRENT value of a condition the object still owns, so the alert
+fires from Prometheus and the diagnosis is still `kubectl describe`. `reason` is on the series for
+that reason, since it is what turns a count panel into a first guess.
+
+Its delete path is the part that has to be right. Flux shipped `gotk_reconcile_condition` in 2021
+and added deletion in 2023; for two years a deleted object reported `Ready=False` forever and the
+alert never cleared, which is worse than no gauge because it trains people to ignore the panel. This
+one publishes from a map keyed by object, and a deleted object's key is dropped — so the series
+stops rather than latching.
 
 ### 5.5 Kept unchanged
 
@@ -569,6 +584,11 @@ one alert-rule file. Built **after** the families exist, never against a name st
   summed**, follower liveness as `time() - <last-success gauge>`, and the transport legend.
 - **Row 5, Discovery and secrets.** Allowed resources, degraded group/versions, refresh outcome mix,
   `secret_encryptions_total{outcome}`.
+- **Row 6, Configuration state.** The one row that is not about flow:
+  `count by (kind, status) (resource_condition{type="Ready"} == 1)` as the fleet rollup, a table of
+  `resource_condition{type="Ready", status="False"} == 1` naming the objects and their `reason`, and
+  a stat of `{type="Stalled", status="True"}`. Every panel compares `== 1`, because each condition
+  publishes one series per status and a bare selector matches the two zeroes as well.
 
 Alerts, as rules rather than sketches this time:
 
@@ -586,6 +606,9 @@ Alerts, as rules rather than sketches this time:
 | Head-of-line | a sustained rise in `sum by (group,version,resource) (rate(gitopsreverser_watch_event_handling_seconds_sum[5m]))` | a type's ingestion is doing more work per second. It is aggregate processing seconds per second and answers no per-stream question: one stream at 100% and ten at 10% both total 1, so no fixed threshold means anything. Trend and cross-type comparison only |
 | Degraded API surface | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | a broken APIService is hiding types |
 | Encryption failing | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected |
+| Configuration not accepted | `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, for 15m | a declared object has not been accepted. The `== 1` is load-bearing, not decoration: the selector alone also matches the two zero-valued companion series |
+| Configuration wedged | `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | kstatus Stalled means nothing will retry. It needs a human, and `reason` says which gate refused |
+| Rules match nothing | `sum by (gittarget_namespace,gittarget_name) (gitopsreverser_watch_types) == 0`, for 10m | a GitTarget resolves no watchable type, so it mirrors nothing while every flow panel reads healthy: a pipeline with no input has nothing to report |
 
 ## 7.1 Cardinality budget
 
@@ -601,14 +624,31 @@ install for this product.
 | `attribution_resolutions_total` | 30 × 8 tiers × 3 actor kinds = **720** | |
 | `attribution_resolution_wait_seconds` | 8 tiers × 2 kinds × (13 buckets + `_sum` + `_count`) = **240** | **7,200** before the §5.3 trim. A histogram multiplies by its bucket count *plus two*, so this row moves whenever the bucket boundaries are re-tuned: which is the trap, and the reason bucket sets are declared in one place in `exporter.go` |
 | `placements_total` | 20 × 30 × 4 sources × 2 dispositions = **4,800** ceiling | far sparser in practice, and the ceiling is the wrong intuition: placement runs only for a resource with no document in Git yet, so a series appears when a (target, type, source, disposition) combination is first used and most combinations never are |
+| `resource_condition` | 60 config objects × 3 condition types × 3 statuses = **540** | the one family keyed on object identity, and the only one bounded by how many objects a human wrote rather than by what the cluster contains — see the identity rule below |
 | everything else | low hundreds | |
 
 Call it **under 15,000 series**, comfortable for a single Prometheus. Two rules keep it there:
 
 - **A histogram's label set costs 15× a counter's.** Put a dimension on the counter beside it, not on
   the histogram, unless the distribution differs along that dimension.
-- **Never an object identity.** No object `name`, `namespace`, `uid`, author, or commit SHA on any
-  label, ever. That is the only thing here that is unbounded rather than merely large.
+- **Never an UNBOUNDED object identity.** No `name`, `namespace` or `uid` of a *watched* object, and
+  no author or commit SHA, on any label, ever. Those are the only things here that are unbounded
+  rather than merely large: watched objects are data — thousands to millions of them, created by
+  anyone with access to the source cluster, and a label on them is a series this operator does not
+  control the count of. An author or a commit SHA is worse still, being unbounded in *time* as well.
+
+  The operator's own configuration objects are the other case, and the rule reads the other way for
+  them. `GitTarget`, `WatchRule`, `ClusterWatchRule`, `GitProvider` and `ClusterProvider` are
+  written by a human: their number is bounded by how many someone declared — 60 in the model
+  install above — and it does not move with cluster load, tenant activity, or how much is being
+  mirrored. Naming them is what makes *which* one is unready answerable, which is the whole content
+  of a configuration-state signal; a config metric that cannot name the object it is about reports
+  that something is wrong and nothing else. `resource_condition` carries `resource_name` and
+  `resource_namespace` for exactly that reason, and nothing else may.
+
+  Flux draws the same line from the same reasoning: `gotk_reconcile_condition` carries `name` and
+  `namespace` because Flux CRs are configuration, and Flux publishes nothing per *reconciled*
+  object.
 
 ## 8. Migration
 
