@@ -97,8 +97,8 @@ and stays Available for the whole suite. The spec only *reads* it — it never
 registers or removes it — so there is no in-flight discovery perturbation to
 serialize against. Everything the spec mutates is name-isolated (own namespace,
 own repo, namespace-scoped flunder WatchRule, namespaced Flunders), and its one
-cluster-wide assertion (`gitopsreverser_audit_shallow_dropped_total == 0`) is a
-global zero-invariant that is parallel-safe by design.
+cluster-wide assertion (`gitopsreverser_audit_events_total{category="error"} == 0`)
+is a global zero-invariant that is parallel-safe by design.
 
 ## Triage list (watch during stability runs)
 

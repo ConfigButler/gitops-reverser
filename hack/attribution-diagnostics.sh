@@ -60,7 +60,7 @@ curl -sG "http://localhost:${prom_pod_port}/api/v1/query" \
   python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("data",{}).get("result",[]); print("   apiserver_audit_requests_rejected_total =", r[0]["value"][1] if r else "n/a (not scraped)")' \
   || echo "   (query failed)"
 curl -sG "http://localhost:${prom_pod_port}/api/v1/query" \
-  --data-urlencode 'query=sum(gitopsreverser_audit_eventlist_events_total) or vector(0)' |
+  --data-urlencode 'query=sum(gitopsreverser_audit_events_total) or vector(0)' |
   python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("data",{}).get("result",[]); print("   audit events INGESTED by us          =", r[0]["value"][1] if r else "0")' \
   || echo "   (query failed)"
 kill ${pf} 2>/dev/null || true
