@@ -102,8 +102,9 @@ rather than expecting both to move.
 # Watch events reaching the pipeline, by terminal outcome
 sum by (outcome) (gitopsreverser_watch_events_total)
 
-# Which pod is actually ingesting (i.e. which one holds the lease)
-sum by (pod) (gitopsreverser_watch_events_total)
+# Which pod is actually ingesting (i.e. which one holds the lease). A rate, not the
+# total: a former leader keeps the higher cumulative count long after it stopped.
+sum by (pod) (rate(gitopsreverser_watch_events_total[5m]))
 
 # Audit requests at /audit-webhook - the histogram's _count IS the request counter
 sum by (outcome) (gitopsreverser_audit_eventlist_duration_seconds_count)

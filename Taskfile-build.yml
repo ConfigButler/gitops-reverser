@@ -217,9 +217,9 @@ tasks:
       - lint-docs
 
   lint-docs:
-    desc: All documentation checks — references, markdown structure, and prose
-    # The three docs linters do not overlap and each is bad at the others' job, so
-    # they stay three tasks and this aggregates them. See docs/design/docs-linting.md.
+    desc: All documentation checks — references, markdown structure, prose, and metric names
+    # The four checks do not overlap and each is bad at the others' job, so they stay
+    # four tasks and this aggregates them. See docs/design/docs-linting.md.
     #
     #   lint-doc-links    references resolve, including doc paths inside Go comments
     #   lint-markdown     markdown structure: fences, headings, lists, blank lines
