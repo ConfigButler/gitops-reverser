@@ -47,6 +47,8 @@ this is an observability change, and no mirror behaves differently because of it
   `bare_endpoint_disabled` — for requests refused before decoding. An apiserver posting to the wrong path
   used to look exactly like an apiserver posting nothing.
 - `watch_plan_triggers_total` gains `coalesced`.
+- `watch_types` gains **`source_cluster`**, so type counts and session counts read on the same axis.
+  Existing queries now sum across clusters; add `{source_cluster="default"}` to keep the old scope.
 
 ### New
 
@@ -54,6 +56,11 @@ this is an observability change, and no mirror behaves differently because of it
 that had no instrument at all. Alongside it: `watch_event_handling_seconds`,
 `watch_sessions_ended_total{reason}`, `watch_replay_duration_seconds`,
 `git_pushes_total{outcome}`, `git_push_retries_total{reason}` and `git_push_duration_seconds`.
+
+`watch_streams_open{source_cluster,gittarget_*}` answers the question a cluster admin asks before
+installing this operator: how many watch connections will it hold against my API server?
+`watch_types` cannot, because a GitTarget watching one type across three namespaces resolves **one
+type** and opens **three watches**.
 
 Two of them count work that used to disappear with only a log line:
 

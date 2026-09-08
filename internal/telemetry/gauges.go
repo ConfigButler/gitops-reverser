@@ -38,6 +38,7 @@ type GaugeSource func() []GaugeSample
 const (
 	GaugeGitQueueDepth               = "git_queue_depth"
 	GaugeWatchTypes                  = "watch_types"
+	GaugeWatchStreamsOpen            = "watch_streams_open"
 	GaugeWatchPlanDirtyTargets       = "watch_plan_dirty_targets"
 	GaugeWatchPlanOldestDirtySince   = "watch_plan_oldest_dirty_since_timestamp_seconds"
 	GaugeAttributionFactIndexEntries = "attribution_fact_index_entries"

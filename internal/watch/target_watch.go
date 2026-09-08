@@ -623,6 +623,8 @@ func (m *Manager) targetWatchReplayAndStream(
 		return fmt.Errorf("open target watch %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
 	defer w.Stop()
+	// One open session against the source cluster, for as long as this watch lives.
+	defer m.trackOpenWatch(gitDest)()
 
 	return m.pumpTargetWatchSession(ctx, log, gitDest, stream, w.ResultChan(), replaying, replayStarted)
 }
@@ -699,6 +701,8 @@ func (m *Manager) targetWatchResumeAndStream(
 			stream.key.GVR.String(), stream.key.Namespace, cursor, err)
 	}
 	defer w.Stop()
+	// One open session against the source cluster, for as long as this watch lives.
+	defer m.trackOpenWatch(gitDest)()
 
 	log.V(1).Info("target watch resumed from cursor",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
@@ -739,6 +743,8 @@ func (m *Manager) targetWatchListAndStream(
 			stream.key.GVR.String(), stream.key.Namespace, err)
 	}
 	defer w.Stop()
+	// One open session against the source cluster, for as long as this watch lives.
+	defer m.trackOpenWatch(gitDest)()
 
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
 	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)

@@ -575,6 +575,7 @@ func registerObservableGauges() error {
 	}{
 		{"gitopsreverser_git_queue_depth", GaugeGitQueueDepth},
 		{"gitopsreverser_watch_types", GaugeWatchTypes},
+		{"gitopsreverser_watch_streams_open", GaugeWatchStreamsOpen},
 		{"gitopsreverser_watch_plan_dirty_targets", GaugeWatchPlanDirtyTargets},
 		{
 			"gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds",

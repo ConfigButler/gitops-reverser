@@ -168,6 +168,12 @@ type Manager struct {
 	watchedTypeInit sync.Once
 	watchedTypes    *watchedTypeStore
 
+	// openWatches counts the object-state watch sessions currently open, per (source cluster,
+	// GitTarget). It answers the question a cluster admin asks before installing this operator:
+	// how many watch connections will it hold against my API server? See watch_stream_gauge.go.
+	openWatchesMu sync.Mutex
+	openWatches   map[openWatchKey]int
+
 	// targetWatches is the data plane: one raw watch per (GitTarget, GVR, namespace scope), and
 	// the only source of live object state. Its initial desired set comes from the replay, or from
 	// the buffered LIST fallback when sendInitialEvents is unsupported.

@@ -108,7 +108,11 @@ func (m *Manager) refreshWatchedTypeTables() {
 //
 // Summing the states gives the target's resolved-type count; `state="blocked"` is the difference
 // between a type it resolves and one it is actually watching. Named for TYPES, not streams: it
-// aggregates by resource type, and one type may be watched by several streams across namespaces.
+// aggregates by resource type, and one type may be watched by several streams across namespaces —
+// watch_streams_open counts those.
+//
+// It carries source_cluster so a fleet can be read per cluster, the same axis watch_streams_open
+// and the catalog metrics use.
 func (m *Manager) installWatchTypeGaugeSource() {
 	telemetry.SetGaugeSource(telemetry.GaugeWatchTypes, m.watchTypeSamples)
 }
@@ -151,7 +155,9 @@ func (m *Manager) watchTypeSamples() []telemetry.GaugeSample {
 		} {
 			samples = append(samples, telemetry.GaugeSample{
 				Value: int64(s.count),
-				Attrs: append(gitTargetIdentityAttrs(table.GitDest), attribute.String("state", s.state)),
+				Attrs: append(gitTargetIdentityAttrs(table.GitDest),
+					attribute.String("source_cluster", m.clusterIDForGitTarget(table.GitDest)),
+					attribute.String("state", s.state)),
 			})
 		}
 	}

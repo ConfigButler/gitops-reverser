@@ -81,7 +81,8 @@ boundary, the commit, the push. Background:
 | `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `expired` (cursor out of history, forcing a rebuild) / `error` / `stopped`. |
 | `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | Time to `initial-events-end`: what a `410` storm charges. |
 | `watch_recovery_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `resource`, `mode` | One per completed recovery. `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. No `version`: a recovery covers a cell. |
-| `watch_types` | gauge | `gittarget_namespace`, `gittarget_name`, `state` | Types this target resolves, by `streaming` / `replaying` / `blocked`. `sum` is the resolved total. |
+| `watch_types` | gauge | `source_cluster`, `gittarget_namespace`, `gittarget_name`, `state` | Types this target resolves, by `streaming` / `replaying` / `blocked`. `sum` is the resolved total. |
+| `watch_streams_open` | gauge | `source_cluster`, `gittarget_namespace`, `gittarget_name` | Watch **sessions** currently open against the source cluster. Not the same as types: one type across three namespaces is three sessions. |
 | `git_documents_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The write-boundary census, per **document**. `outcome` is `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained` / `refused`. |
 | `git_commits_total` | counter | `provider_namespace`, `provider_name`, `branch`, `author_kind`, `message_source` | Commit batches that **reached the remote**. |
 | `git_pushes_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per push cycle: `pushed` or `failed`. |
@@ -247,6 +248,35 @@ resolved-type count; `state="blocked"` is the difference between resolved and ru
 ```promql
 sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_types)
 gitopsreverser_watch_types{state="blocked"} > 0
+```
+
+**What is this operator costing my API server?** The question a cluster admin asks before installing
+it, and the one `watch_types` cannot answer: a GitTarget watching ConfigMaps in three namespaces
+resolves **one type** and opens **three watches**. `watch_streams_open` counts the sessions:
+
+```promql
+sum by (source_cluster) (gitopsreverser_watch_streams_open)
+```
+
+It counts what the API server itself would count. A session appears when the watch opens — replay
+included, since a replaying watch is an open connection — and disappears when it closes, so a
+connection attempt that failed and a stream sitting in reconnect backoff are both absent rather than
+counted as held. Internal controller and discovery watches are outside it; this is the object-state
+watch load only.
+
+**Which GitTarget is opening them?** Useful when one target's rules are wider than intended:
+
+```promql
+topk(10, sum by (gittarget_namespace, gittarget_name) (gitopsreverser_watch_streams_open))
+```
+
+**Sessions per resolved type** is the fan-out a namespace-scoped rule set produces. A ratio near 1
+means most types are watched cluster-wide; a large ratio means many per-namespace watches, which is
+the shape that multiplies connections fastest:
+
+```promql
+sum by (source_cluster) (gitopsreverser_watch_streams_open)
+  / sum by (source_cluster) (gitopsreverser_watch_types)
 ```
 
 **Are resyncs sweeping resources out of Git?** Non-zero is expected after a resource disappears from
