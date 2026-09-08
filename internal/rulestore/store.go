@@ -57,6 +57,22 @@ type compiledSelector struct {
 	Resources []string
 }
 
+// clone returns a selector sharing no backing array with the receiver.
+//
+// The store hands compiled rules to callers and takes them from a CR it does not own, so every
+// crossing of that boundary copies. Struct assignment is not enough: it duplicates four slice
+// HEADERS, leaving the store's rule and the caller's snapshot writing through to the same arrays —
+// and a caller writing there reaches store state behind the mutex entirely. An empty slice clones
+// to nil, which every reader here already treats as "match all", exactly as before.
+func (s *compiledSelector) clone() compiledSelector {
+	return compiledSelector{
+		Operations:  append([]configv1alpha3.OperationType(nil), s.Operations...),
+		APIGroups:   append([]string(nil), s.APIGroups...),
+		APIVersions: append([]string(nil), s.APIVersions...),
+		Resources:   append([]string(nil), s.Resources...),
+	}
+}
+
 // CompiledResourceRule represents a single resource matching rule with all its filters.
 type CompiledResourceRule struct {
 	compiledSelector
@@ -180,13 +196,14 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 		if i < len(sourceNamespaces) {
 			namespaces = append([]string(nil), sourceNamespaces[i]...)
 		}
+		selector := compiledSelector{
+			Operations:  r.Operations,
+			APIGroups:   r.APIGroups,
+			APIVersions: r.APIVersions,
+			Resources:   r.Resources,
+		}
 		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
-			compiledSelector: compiledSelector{
-				Operations:  r.Operations,
-				APIGroups:   r.APIGroups,
-				APIVersions: r.APIVersions,
-				Resources:   r.Resources,
-			},
+			compiledSelector: selector.clone(),
 			SourceNamespaces: namespaces,
 		})
 	}
@@ -249,13 +266,14 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	}
 
 	for _, r := range rule.Spec.Rules {
+		selector := compiledSelector{
+			Operations:  r.Operations,
+			APIGroups:   r.APIGroups,
+			APIVersions: r.APIVersions,
+			Resources:   r.Resources,
+		}
 		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
-			compiledSelector: compiledSelector{
-				Operations:  r.Operations,
-				APIGroups:   r.APIGroups,
-				APIVersions: r.APIVersions,
-				Resources:   r.Resources,
-			},
+			compiledSelector: selector.clone(),
 		})
 	}
 
@@ -576,6 +594,7 @@ func deepCopyCompiledRule(in CompiledRule) CompiledRule {
 		cp.ResourceRules = make([]CompiledResourceRule, len(in.ResourceRules))
 		copy(cp.ResourceRules, in.ResourceRules)
 		for i := range cp.ResourceRules {
+			cp.ResourceRules[i].compiledSelector = in.ResourceRules[i].clone()
 			cp.ResourceRules[i].SourceNamespaces =
 				append([]string(nil), in.ResourceRules[i].SourceNamespaces...)
 		}
@@ -589,6 +608,9 @@ func deepCopyCompiledClusterRule(in CompiledClusterRule) CompiledClusterRule {
 	if len(in.Rules) > 0 {
 		cp.Rules = make([]CompiledClusterResourceRule, len(in.Rules))
 		copy(cp.Rules, in.Rules)
+		for i := range cp.Rules {
+			cp.Rules[i].compiledSelector = in.Rules[i].clone()
+		}
 	}
 	return cp
 }

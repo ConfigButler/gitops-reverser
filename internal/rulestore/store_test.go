@@ -1258,10 +1258,9 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 // ptr is a local helper for the one probe whose two kinds legitimately disagree.
 func ptr[T any](v T) *T { return &v }
 
-// TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied pins the one slice the store copies
-// per item rather than by struct assignment. Embedding the selector moved four sibling fields
-// around it, and a copy that silently became shallow would hand every caller a slice aliasing the
-// stored rule — the store promises snapshots callers may freely modify.
+// TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied pins the source-namespace slice,
+// which the store has always copied per item rather than by struct assignment. A copy that silently
+// became shallow would hand every caller a slice aliasing the stored rule.
 func TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied(t *testing.T) {
 	t.Parallel()
 
@@ -1285,5 +1284,134 @@ func TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied(t *testing.T) 
 	again := store.SnapshotWatchRules()
 	if got := again[0].ResourceRules[0].SourceNamespaces[0]; got != "tenant-acme" {
 		t.Errorf("a caller mutating its snapshot reached the stored rule: got %q", got)
+	}
+}
+
+// TestStore_OwnsItsSelectorSlices covers the two boundaries a compiled selector crosses, on both
+// rule kinds and all four of its slices.
+//
+// Struct assignment copies slice HEADERS, so before the selector owned its arrays the store shared
+// them in both directions: with the CR it was compiled from, and with every snapshot it handed out.
+// Either aliasing lets a write outside the store change what the store matches on, with no lock
+// held and no reconcile — a rule silently starts or stops selecting a type. Snapshot* documents the
+// opposite: callers may freely modify what they get back.
+func TestStore_OwnsItsSelectorSlices(t *testing.T) {
+	t.Parallel()
+
+	// selectorOf reads the four slices back off whichever kind the case compiled, so one table can
+	// assert the same property for both.
+	type selectors struct {
+		operations  []configv1alpha3.OperationType
+		apiGroups   []string
+		apiVersions []string
+		resources   []string
+	}
+
+	tests := []struct {
+		name string
+		// install compiles a rule whose selector slices the test still holds a reference to, and
+		// returns those slices for mutation plus a reader for the store's own copy.
+		install func(store *RuleStore) (mutate func(), stored func() selectors)
+	}{
+		{
+			name: "WatchRule",
+			install: func(store *RuleStore) (func(), func() selectors) {
+				item := configv1alpha3.ResourceRule{
+					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
+					APIGroups:   []string{"apps"},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"deployments"},
+				}
+				rule := configv1alpha3.WatchRule{
+					Spec: configv1alpha3.WatchRuleSpec{Rules: []configv1alpha3.ResourceRule{item}},
+				}
+				rule.Name = "rule"
+				rule.Namespace = "tenant-acme"
+				store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "target", "tenant-acme",
+					"provider", "tenant-acme", "main", "clusters")
+
+				return func() {
+						item.Operations[0] = configv1alpha3.OperationDelete
+						item.APIGroups[0] = "batch"
+						item.APIVersions[0] = "v2"
+						item.Resources[0] = "statefulsets"
+					}, func() selectors {
+						snap := store.SnapshotWatchRules()[0].ResourceRules[0]
+						return selectors{snap.Operations, snap.APIGroups, snap.APIVersions, snap.Resources}
+					}
+			},
+		},
+		{
+			name: "ClusterWatchRule",
+			install: func(store *RuleStore) (func(), func() selectors) {
+				item := configv1alpha3.ClusterResourceRule{
+					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
+					APIGroups:   []string{"apps"},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"deployments"},
+				}
+				rule := configv1alpha3.ClusterWatchRule{
+					Spec: configv1alpha3.ClusterWatchRuleSpec{
+						Rules: []configv1alpha3.ClusterResourceRule{item},
+					},
+				}
+				rule.Name = "cluster-rule"
+				store.AddOrUpdateClusterWatchRule(rule, "target", "tenant-acme", "provider",
+					"tenant-acme", "main", "clusters")
+
+				return func() {
+						item.Operations[0] = configv1alpha3.OperationDelete
+						item.APIGroups[0] = "batch"
+						item.APIVersions[0] = "v2"
+						item.Resources[0] = "statefulsets"
+					}, func() selectors {
+						snap := store.SnapshotClusterWatchRules()[0].Rules[0]
+						return selectors{snap.Operations, snap.APIGroups, snap.APIVersions, snap.Resources}
+					}
+			},
+		},
+	}
+
+	want := selectors{
+		operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
+		apiGroups:   []string{"apps"},
+		apiVersions: []string{"v1"},
+		resources:   []string{"deployments"},
+	}
+	assertSelectors := func(t *testing.T, boundary string, got selectors) {
+		t.Helper()
+		if got.operations[0] != want.operations[0] {
+			t.Errorf("%s: operations reached the store: %v", boundary, got.operations)
+		}
+		if got.apiGroups[0] != want.apiGroups[0] {
+			t.Errorf("%s: apiGroups reached the store: %v", boundary, got.apiGroups)
+		}
+		if got.apiVersions[0] != want.apiVersions[0] {
+			t.Errorf("%s: apiVersions reached the store: %v", boundary, got.apiVersions)
+		}
+		if got.resources[0] != want.resources[0] {
+			t.Errorf("%s: resources reached the store: %v", boundary, got.resources)
+		}
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := NewStore()
+			mutateSource, stored := tc.install(store)
+
+			// Boundary one: the CR the rule was compiled from is still mutable by its owner.
+			mutateSource()
+			assertSelectors(t, "compiled-from CR", stored())
+
+			// Boundary two: a snapshot the store handed out, which callers may freely modify.
+			snapshot := stored()
+			snapshot.operations[0] = configv1alpha3.OperationDelete
+			snapshot.apiGroups[0] = "batch"
+			snapshot.apiVersions[0] = "v2"
+			snapshot.resources[0] = "statefulsets"
+			assertSelectors(t, "returned snapshot", stored())
+		})
 	}
 }
