@@ -1,11 +1,12 @@
 # Admission consent: a blast-radius refusal you can say yes to
 
-> **design** — direction-setting; ships no code. Nothing it describes is supported today.
+> **Deferred design:** ships no code. The current baseline is
+> [Git write preflight](../git-write-preflight.md); consent is outside its scope.
 > Captured: 2026-07-15
 > Related:
 > [README.md](README.md),
-> [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) — **the
-> tier-1/2/3 model this extends; tier 3 is the admission gate**,
+> [Git write preflight](../git-write-preflight.md): onboarding refusal, all-target admission,
+> and target errors for late failures; no per-edit accounting tier,
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md)
 > — the write boundary; fan-in = 1; base read-only by L1,
 > [render-attribution.md](render-attribution.md) §5 — attribution may be heuristic, verification may not,
@@ -39,10 +40,9 @@ cross-environment edit, because it cannot tell the two apart. The missing thing 
 rule — it is a way for the user to **declare which one this is.**
 
 That declaration has to happen where the user is, and synchronously, which is why this rides the
-**tier-3 admission gate** already designed in
-[unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) (opt-in per
-GitTarget, `failurePolicy: Ignore`, `--dry-run=server` preflight). Tier 3 as written only *rejects*
-an unsavable write. This adds the "yes."
+admission preflight described in [Git write preflight](../git-write-preflight.md).
+That proposal is opt-in, fails closed for covered requests, and requires all involved targets to
+pass. Consent would be a separate extension and cannot bypass those targets' authorization.
 
 ---
 
@@ -142,7 +142,8 @@ already understood by the pipeline:
   that belongs in Git.
 - **A field on the `CommitRequest`** — the object a caller already polls for `Pushed` + `status.sha`
   — is the natural home for *session-scoped* consent ("everything in this save window may touch the
-  base"), and it composes with the `FullyReflected` condition tier 2 puts there.
+  base"). The current preflight design adds no `FullyReflected` condition; the scope and lifetime
+  of any future consent attached to a save command remain open.
 
 ### The edge consent must not cross: authorization
 
@@ -165,7 +166,7 @@ user's intent can be accepted or rejected **whole, before persistence** — the 
 write-gating doc names as the real argument for the gate. The infrastructure exists (the operator
 already runs admission webhooks,
 [`validate_operator_types_handler.go`](../../../internal/webhook/validate_operator_types_handler.go)),
-and tier 3 already specifies it. Consent adds one branch:
+and the preflight design specifies the baseline. Consent would add one branch:
 
 ```mermaid
 flowchart TD
@@ -182,19 +183,19 @@ flowchart TD
     class OK,OKC good
 ```
 
-Two honest limits, both already answered by the tier-3 design:
+Two limits retained from the preflight design:
 
 - **Admission sees one request; the oracle needs the batch.** The webhook can only run a
   *single-object preview* of the oracle (project this one object to source form, re-render, read the
-  blast radius). It can be wrong — staleness, or cross-object batch effects it cannot see. That is
-  tolerable because the gate is **fail-open and advisory**: a wrong *deny* is a retry, and a wrong
-  *allow* is caught at flush.
+  blast radius). Staleness can change the later result, and a coordinated batch can be valid
+  while its first request alone is refused. Retrying does not solve that batch limitation.
+  Covered requests fail closed when any involved target cannot pass the assessment.
 - **Consent granted at admission does not bind the flush.** This is the load-bearing safety line. The
   flush-time oracle re-verifies the *whole batch* against the declared intents — including the
   consented ones — and still refuses if the consented set does not actually converge. So a stale or
   mistaken admission-time "yes" cannot cause a bad write. Worst case it lands, the flush refuses it,
-  and the [reconcile trigger](orchestrator-reconcile-trigger.md) reverts it — the same safety net
-  that catches an edit made while the gate was disabled entirely.
+  and the affected target enters error. The [reconcile trigger](orchestrator-reconcile-trigger.md)
+  is a separate proposed recovery mechanism; automatic rollback is not part of preflight.
 
 ---
 
@@ -210,5 +211,5 @@ Two honest limits, both already answered by the tier-3 design:
   the fan-in refusal being liftable.
 - **What computes the consequence at admission time?** The single-object preview needs the same
   source-form projection the writer uses, evaluated against a store snapshot. Its cost and staleness
-  are the tier-3 concerns; consent adds the requirement that the *hash* it produces is stable across
+  are the preflight concerns; consent adds the requirement that the *hash* it produces is stable across
   the preview and the eventual flush, or the token will spuriously fail to match.

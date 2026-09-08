@@ -331,7 +331,8 @@ first.** Stated as a dependency, not smuggled as an assumption.
 ## 5. The boundary: opt-in, and never on a mirror
 
 Patching another controller's object, and (on Argo) issuing a sync, are boundary crossings. They are
-off by default and enabled per GitTarget, alongside the tier-3 write gate — e.g. a
+off by default and enabled per GitTarget, separately from
+[Git write preflight](../git-write-preflight.md). An illustrative configuration is a
 `spec.reconcileTrigger: Off | OnRefusal | OnDrift` knob. Two hard rules:
 
 - **Never on a cluster the operator merely mirrors.** As with the write gate, we do not get to drive

@@ -607,7 +607,7 @@ When the whole *writable* subtree is governed by **exactly one** supported kusto
 the new document is written beside that kustomization's other files and added to its
 `resources:` list in the same commit (the product-level "add to the right kustomize file"
 framing lives in
-[`unreflectable-edits-and-write-gating.md`](../design/support-boundary/unreflectable-edits-and-write-gating.md)).
+[`git-write-preflight.md`](../design/git-write-preflight.md)).
 
 This is a **structural fact, not an inference**: the destination follows from there being
 one root, not from picking the largest matching cohort of similar documents. Consequently:

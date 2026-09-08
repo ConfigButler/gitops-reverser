@@ -96,8 +96,9 @@ reason code.
   [`gitPathRefusalReason`](../../../../../internal/watch/event_router.go) maps a refusal made purely of
   write-boundary kinds to `WriteBoundaryRefused` — distinct from the umbrella `UnsupportedContent`,
   because the folder is not malformed; the edit had nowhere honest to land. There is **no per-edit
-  record**: `FullyReflected` and the unreflected set are designed and unbuilt in
-  [`unreflectable-edits-and-write-gating.md`](../../../../../docs/design/support-boundary/unreflectable-edits-and-write-gating.md).
+  record**. The proposed
+  [Git write preflight](../../../../../docs/design/git-write-preflight.md) rejects covered edits
+  before persistence and retains target errors for late failures. It adds no residue store.
 - **Telling anyone is its own mechanism.** The resync path returns the refusal on its result channel;
   the live-event path has none, because a commit window is finalized on a timer, so the branch worker
   reports it through a `GitPathRefusalReporter` hook the watch manager installs. Without that hook
