@@ -147,6 +147,25 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
+		// The join series, asserted here because this is the one suite that drives a save end to
+		// end. It is what lets an operator get from a failing branch back to the GitTargets behind
+		// it: the push-side instruments carry {provider_namespace, provider_name, branch} and
+		// everything upstream carries the GitTarget, and nothing else bridges them.
+		//
+		// Unlike commit_requests_total (whose whole-run report lives in the suite's AfterSuite,
+		// because it carries only {outcome}) this one IS labelled by GitTarget, so it isolates
+		// cleanly from the other parallel processes.
+		By("verifying the branch-target join series names this suite's GitTarget")
+		ensurePrometheusClient()
+		waitForMetric(
+			fmt.Sprintf(
+				`sum(gitopsreverser_git_branch_targets{gittarget_namespace=%q,gittarget_name=%q,`+
+					`provider_namespace=%q,provider_name=%q,branch="main"}) or vector(0)`,
+				testNs, gitTargetName, testNs, gitProvName),
+			func(v float64) bool { return v == 1 },
+			"the join series maps this GitTarget to the provider and branch its commits are labelled by",
+		)
+
 		By("cleaning up the test Deployment and CommitRequest")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", deployName, "--ignore-not-found=true")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
