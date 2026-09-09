@@ -345,6 +345,41 @@ func TestAttach_ClaimedSameAuthorWindowIsNotAMismatch(t *testing.T) {
 		"a window this author could have claimed is contention, never a mismatch")
 }
 
+// A window that opens AFTER the grace has already elapsed was never a refusal: the request waited
+// out its whole grace with nothing open, which is the benign outcome. The marking pass and the
+// expiry pass run back to back on one wake, so without a deadline check an event arriving at the
+// moment of expiry would open a window, mark the overdue request, and resolve it as a mismatch in
+// the same pass — turning a timeout into a refusal that never happened.
+func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	// Bob parks with nothing open, and his grace runs out before anyone else starts work.
+	serviceAttach(loop, attachReq("bob", 60))
+	require.Nil(t, loop.openWindow, "precondition: nothing was open during bob's grace")
+	forceDue(loop)
+
+	// Only now does alice's work arrive and open a window.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+	loop.serviceCommitRequests()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome,
+		"a window that opened after the grace expired cannot have refused this request")
+}
+
+// TestAttach_IdempotentReSendKeepsFirstDeadline verifies a re-sent attach (same
+
 // TestAttach_IdempotentReSendKeepsFirstDeadline verifies a re-sent attach (same
 
 // TestAttach_IdempotentReSendKeepsFirstDeadline verifies a re-sent attach (same

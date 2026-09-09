@@ -120,12 +120,21 @@ func (l *branchWorkerEventLoop) serviceCommitRequests() {
 // A window that MATCHES but is already claimed by another request is not a mismatch. That is
 // contention between two of one author's own saves, it resolves on the next window, and calling
 // it a mismatch would attribute a queueing delay to the wrong cause.
+//
+// A request whose deadline has ALREADY passed is skipped, using the same predicate
+// processDueCommitRequests uses to select it: the two run back to back on one wake, so an event
+// arriving at the moment of expiry would otherwise open a window, mark the overdue request, and
+// resolve it as a mismatch in the same pass. Nothing refused that request; it waited out its whole
+// grace with nothing open, which is the benign outcome. Marking it would turn a timeout into a
+// refusal that never happened, in the one direction this instrument exists to keep apart.
 func (l *branchWorkerEventLoop) noteForeignWindow() {
 	if l.openWindow == nil {
 		return
 	}
+	now := time.Now()
 	for _, pcr := range l.pendingCRs {
-		if pcr.attached || pcr.sawForeignWindow || pcr.matchesWindow(l.openWindow) {
+		if !pcr.finalizeAt.After(now) || pcr.attached || pcr.sawForeignWindow ||
+			pcr.matchesWindow(l.openWindow) {
 			continue
 		}
 		pcr.sawForeignWindow = true

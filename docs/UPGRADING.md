@@ -10,8 +10,15 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 ## A `CommitRequest` refused by someone else's window now says so
 
 **Not breaking for readiness**, and listed here because it is a status value that starts appearing
-where it never has. A `CommitRequest` whose grace elapses while another author's (or another
-GitTarget's) commit window is open now resolves as `WindowMismatch` rather than `NoWindowInGrace`.
+where it never has. A `CommitRequest` that saw another author's (or another GitTarget's) commit
+window during its grace, and never got one it could claim, now resolves as `WindowMismatch` rather
+than `NoWindowInGrace`.
+
+The trigger is what the request **observed while it was waiting**, not what happens to be open at
+the end. A foreign window runs on its own timer and is usually finalized before the waiting
+request's grace elapses, so a rule that looked only at expiry would report most of these refusals as
+benign — intermittently. The converse also holds: a window that opens after the grace has already
+run out refused nothing, and stays `NoWindowInGrace`.
 
 `WindowMismatch` has been declared, surfaced by the controller and documented since the feature
 shipped, but nothing produced it: the eager-attach refactor replaced the one-shot finalize signal —
