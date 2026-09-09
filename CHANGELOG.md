@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.44.0...v0.45.0) (2026-09-09)
+
+
+### Features
+
+* **metrics:** GitTarget and cluster identity, plus a per-run e2e observability reset ([#351](https://github.com/ConfigButler/gitops-reverser/issues/351)) ([85495ca](https://github.com/ConfigButler/gitops-reverser/commit/85495caec76c1c0ae8b6cd3112e0ee67b16b0125))
+* **metrics:** join the pipeline's two halves, and count CommitRequest outcomes ([#350](https://github.com/ConfigButler/gitops-reverser/issues/350)) ([a6bb1ba](https://github.com/ConfigButler/gitops-reverser/commit/a6bb1ba95cf09345af7ffe2f070ff56987355038))
+
 ## [0.44.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.43.0...v0.44.0) (2026-09-08)
 
 
