@@ -147,16 +147,22 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		// The join series, asserted here because this is the one suite that drives a save end to
-		// end. It is what lets an operator get from a failing branch back to the GitTargets behind
-		// it: the push-side instruments carry {provider_namespace, provider_name, branch} and
-		// everything upstream carries the GitTarget, and nothing else bridges them.
-		//
-		// Unlike commit_requests_total (whose whole-run report lives in the suite's AfterSuite,
-		// because it carries only {outcome}) this one IS labelled by GitTarget, so it isolates
-		// cleanly from the other parallel processes.
-		By("verifying the branch-target join series names this suite's GitTarget")
+		// The wiring check for both new instruments, made here because this is where the evidence
+		// is: the commit above is verified in Git, so a missing series is a broken exporter rather
+		// than a spec that did not run. Both queries are scoped to this suite's own GitTarget, so
+		// they need no run bookkeeping to isolate from the other parallel processes.
+		By("verifying this save reached the CommitRequest outcome counter")
 		ensurePrometheusClient()
+		waitForMetric(
+			fmt.Sprintf(
+				`sum(gitopsreverser_commit_requests_total{outcome="committed",`+
+					`gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
+				testNs, gitTargetName),
+			func(v float64) bool { return v > 0 },
+			"the committed save is counted under its own GitTarget",
+		)
+
+		By("verifying the branch-target join series names this suite's GitTarget")
 		waitForMetric(
 			fmt.Sprintf(
 				`sum(gitopsreverser_git_branch_targets{gittarget_namespace=%q,gittarget_name=%q,`+

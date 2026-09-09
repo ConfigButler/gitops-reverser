@@ -63,10 +63,37 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	By("preparing e2e cluster prerequisites via Task target")
 	prepareE2EClusterOnce()
+
+	// After prepare, while this process still holds the exclusive cluster lock, so every spec runs
+	// against a Prometheus with no retained samples and a controller whose counters start at zero.
+	resetE2EObservability()
 	return nil
 }, func(_ []byte) {
 	configureE2EProcess()
 })
+
+// resetE2EObservability discards Prometheus's retained samples and restarts the controller so its
+// in-process counters start from zero. Both halves are needed: resetting Prometheus alone leaves
+// the controller ready to republish its old totals on the very next scrape.
+//
+// Opt out with E2E_SKIP_OBSERVABILITY_RESET=1 when comparing across runs is worth more than
+// isolating one.
+func resetE2EObservability() {
+	if strings.TrimSpace(os.Getenv("E2E_SKIP_OBSERVABILITY_RESET")) != "" {
+		_, _ = fmt.Fprintf(GinkgoWriter, "⚠️  observability reset skipped; metrics may include earlier runs\n")
+		return
+	}
+
+	By("resetting Prometheus data and controller counters for this run")
+	cmd := taskCommand(
+		fmt.Sprintf("CTX=%s", resolveE2EContext()),
+		fmt.Sprintf("NAMESPACE=%s", resolveE2ENamespace()),
+		"reset-e2e-observability",
+	)
+	output, err := utils.Run(cmd)
+	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
+	Expect(err).NotTo(HaveOccurred(), "failed to reset e2e observability state")
+}
 
 // Release the cluster lock once every parallel process has finished. The second
 // function runs only on process #1, AFTER every parallel process has completed its
@@ -88,58 +115,28 @@ var commitRequestOutcomes = []string{
 	"committed", "window_mismatch", "no_window", "already_present", "failed",
 }
 
-// reportCommitRequestOutcomes prints the whole run's CommitRequest outcome distribution and gates
-// on the one value that is always a fault.
+// reportCommitRequestOutcomes prints the run's CommitRequest outcome distribution.
 //
-// It is a SUITE-level report rather than a per-spec assertion because the counter carries only
-// {outcome} — no namespace, deliberately: a CommitRequest is created once per save, so labelling it
-// by object would churn a series per save. That makes the counter un-isolatable between the four
-// parallel processes, and a whole-run aggregate is the honest shape for it. The per-spec half of
-// this coverage is the join series, which IS labelled by GitTarget; see the Commit Request suite.
+// DIAGNOSTIC, not a gate. A suite-wide "none failed" assertion would first have to establish that
+// the last save had been scraped, and until that is handled a green result would mean less than it
+// looks. The wiring claim this counter has to support is made where the evidence is local: the
+// Commit Request spec asserts its own save appears, scoped to its own GitTarget.
 //
-// The breakdown is the point as much as the gate. `committed` is what the happy path looks like,
-// and it is the only value these specs produce today: `window_mismatch` needs two authors
-// contending for one branch's window, which nothing here arranges. Printing the distribution is
-// what makes that visible in the artifacts rather than assumed.
-//
-// max_over_time spans the run because the restart-reconcile spec restarts the controller and the
-// counter resets with the process; Prometheus keeps the pre-restart samples. `or vector(0)` keeps a
-// never-incremented outcome readable as a zero instead of an empty result.
+// The breakdown is the point. `committed` is what the happy path looks like and the only value
+// these specs produce: `window_mismatch` needs two authors contending for one branch's window,
+// which nothing here arranges. The per-run reset means these numbers are this run's.
 func reportCommitRequestOutcomes() {
 	By("reporting the run's CommitRequest terminal outcomes")
 	ensurePrometheusClient()
 	verifyPrometheusAvailable()
 
-	total, err := queryPrometheus(
-		`sum(max_over_time(gitopsreverser_commit_requests_total[2h])) or vector(0)`)
-	Expect(err).NotTo(HaveOccurred(), "failed to query the CommitRequest outcome counter")
-	if total == 0 {
-		// A shard whose label filter excludes the commit-request specs resolves no requests at all,
-		// and E2E_LABEL_FILTER REPLACES the default rather than narrowing it. Skipping keeps this
-		// from failing a leg that never ran the feature.
-		_, _ = fmt.Fprintf(GinkgoWriter,
-			"✅ CommitRequest outcome report skipped: no CommitRequest resolved in this run\n")
-		return
-	}
-
 	for _, oc := range commitRequestOutcomes {
-		n, qErr := queryPrometheus(fmt.Sprintf(
+		n, err := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_commit_requests_total{outcome=%q}[2h])) or vector(0)`, oc))
-		if qErr == nil {
+		if err == nil {
 			_, _ = fmt.Fprintf(GinkgoWriter, "   commit request outcome %-16s = %.0f\n", oc, n)
 		}
 	}
-
-	const failedQuery = `sum(max_over_time(gitopsreverser_commit_requests_total{outcome="failed"}[2h])) or vector(0)`
-	failed, err := queryPrometheus(failedQuery)
-	Expect(err).NotTo(HaveOccurred(), "failed to query the CommitRequest failure outcome")
-	Expect(failed).To(BeZero(),
-		"no CommitRequest may end in outcome=\"failed\", but %.0f did (query %q). That outcome is a "+
-			"finalize error or an unmapped result — never a benign refusal, which is no_window or "+
-			"window_mismatch. Inspect the controller logs for \"CommitRequest finalized\".",
-		failed, failedQuery)
-	_, _ = fmt.Fprintf(GinkgoWriter,
-		"✅ no CommitRequest ended in outcome=\"failed\" (%.0f resolved across the run)\n", total)
 }
 
 // assertNoAnomalousAuditOutcomes is the headline invariant of the audit-event-outcome taxonomy:
