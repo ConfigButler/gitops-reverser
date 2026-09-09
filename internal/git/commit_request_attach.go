@@ -27,8 +27,14 @@ const (
 	// FinalizeNoOpenWindow means no matching same-author window was collected
 	// within the grace, so nothing was committed for the request.
 	FinalizeNoOpenWindow FinalizeOutcome = "NoOpenWindow"
-	// FinalizeWindowMismatch means the open window belonged to a different author
-	// or GitTarget than the request, so it was left untouched.
+	// FinalizeWindowMismatch means a window was open during the request's grace that belonged to
+	// a different author or GitTarget, so it was left untouched and the grace elapsed without a
+	// window this request could claim. It is a refusal a human can see: the author's own edits
+	// went into somebody else's commit, under a generated message rather than theirs.
+	//
+	// Raised at expiry from pendingCommitRequest.sawForeignWindow, never at attach time: under
+	// eager attach a request WAITS for a matching window rather than being refused on sight, so
+	// "a foreign window is open right now" is not yet an outcome.
 	FinalizeWindowMismatch FinalizeOutcome = "WindowMismatch"
 	// FinalizeAlreadyPresent means a matching window was finalized but its events
 	// produced no diff — the change already matches the remote, so no commit was
@@ -114,6 +120,30 @@ type pendingCommitRequest struct {
 	finalizeAt time.Time
 	// attached is true once this request's message is bound to the open window.
 	attached bool
+	// sawForeignWindow is set when a window was open during this request's grace that it could
+	// not claim, because the window belonged to a different author or GitTarget.
+	//
+	// It is STICKY rather than checked at expiry, and that is the whole point: a foreign window
+	// runs on its own timer and is usually finalized before this request's grace elapses, so an
+	// instant check at expiry would miss the common case and report the refusal as "nothing was
+	// pending" — intermittently, which is worse than never.
+	sawForeignWindow bool
+}
+
+// expiryOutcome is the terminal outcome for a request whose grace elapsed without it ever
+// attaching to a window.
+//
+// The distinction it restores is the one the eager-attach refactor dropped: "nothing was pending
+// to save" and "someone else held the window the whole time" are different events with the same
+// shape, and only the second one silently substitutes a generated commit message for the sentence
+// the request's author typed. FinalizeWindowMismatch has always been declared, surfaced by the
+// controller as the WindowMismatch reason, and counted by commit_requests_total; from the eager
+// attach onwards nothing produced it, so every one of those refusals reported as NoOpenWindow.
+func (p *pendingCommitRequest) expiryOutcome() FinalizeOutcome {
+	if p.sawForeignWindow {
+		return FinalizeWindowMismatch
+	}
+	return FinalizeNoOpenWindow
 }
 
 // matchesWindow reports whether the request identifies the given open window, by GitTarget and

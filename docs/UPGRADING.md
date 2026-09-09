@@ -7,6 +7,30 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A `CommitRequest` refused by someone else's window now says so
+
+**Not breaking for readiness**, and listed here because it is a status value that starts appearing
+where it never has. A `CommitRequest` whose grace elapses while another author's (or another
+GitTarget's) commit window is open now resolves as `WindowMismatch` rather than `NoWindowInGrace`.
+
+`WindowMismatch` has been declared, surfaced by the controller and documented since the feature
+shipped, but nothing produced it: the eager-attach refactor replaced the one-shot finalize signal —
+which refused a foreign window on sight — with a request that parks and waits, and the refusal was
+never re-raised at the point the wait gives up. Every such refusal has therefore reported as
+`NoWindowInGrace`, which is the same value as the benign "nothing was pending to save".
+
+The two are worth separating because only one of them is user-visible: the author's edits went into
+somebody else's commit, carrying a generated message instead of the sentence they typed.
+
+What to check:
+
+- Anything switching on `status.conditions[?(@.type=="Ready")].reason` sees a new value.
+  `Ready=True`, `Pushed=False` and `Stalled=False` are unchanged, so kstatus stays `Current` and no
+  readiness gate moves.
+- `gitopsreverser_commit_requests_total{outcome="no_window"}` loses the mismatch population to
+  `outcome="window_mismatch"`. An alert on `no_window` that was standing in for "saves are being
+  refused" should move to `window_mismatch`, which is the population it was reaching for.
+
 ## The metric surface is rebuilt around the pipeline (breaking for dashboards and alerts)
 
 Every metric name below carries the `gitopsreverser_` prefix. Nothing else in the operator changes:

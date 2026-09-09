@@ -381,9 +381,15 @@ without their message reaching a commit is the window worth tuning against `clos
 sum by (outcome) (rate(gitopsreverser_commit_requests_total[15m]))
 ```
 
-`window_mismatch` is the value to watch. It is the case where the commit is still made, pushed and
-correct while carrying a **generated** message instead of the sentence its author typed, so nothing
-else in this document goes red for it.
+`window_mismatch` is the value to watch, and the two refusals are deliberately separate. Both mean
+the grace elapsed without a window the request could claim, but only `window_mismatch` means one
+was open the whole time and belonged to somebody else: the author's edits went into that commit,
+under a **generated** message instead of the sentence they typed. Nothing else in this document
+goes red for it. `no_window` is the benign half — nothing was pending to save.
+
+The distinction is recorded at expiry from whether a window the request could not claim was seen
+during its grace, so a foreign window that closes before the grace runs out still counts. Reading
+`no_window` as "users are being refused" over-reports; reading only `committed` under-reports.
 
 **What one increment means.** One terminal DECISION, recorded outside the status-write retry loop.
 That is not one per `CommitRequest`: a terminal status that never persisted is re-decided when the
