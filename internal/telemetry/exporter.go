@@ -44,6 +44,29 @@ var (
 	// GitTarget: a resync can apply every document and then abort on a precondition, writing
 	// nothing at all.
 	GitDocumentsTotal metric.Int64Counter
+	// CommitRequestsTotal counts CommitRequests reaching a terminal outcome, labelled by
+	// {outcome} alone: committed / no_window / window_mismatch / already_present / failed.
+	//
+	// It is the fleet view resource_condition deliberately refuses to give this kind. A
+	// CommitRequest is created once per save, so a gauge per object would churn a series
+	// continuously; a counter over terminal outcomes is bounded by the enum instead. The pointer
+	// that used to stand in for it, git_commits_total{message_source="commit_request"}, counts
+	// only the requests that succeeded AND were used, so the whole failure population had no
+	// series at all — and this is the one object a human waits on synchronously. A request that
+	// does not land still produces a green, pushed commit carrying a GENERATED message instead of
+	// the sentence its author typed, which is user-visible and was un-alertable.
+	//
+	// window_mismatch is the value that matters most for that reason: it is the silent
+	// substitution, not an error anybody sees.
+	//
+	// COUNTING SEMANTICS, because this counter cannot promise what it looks like it promises. It
+	// counts one increment per TERMINAL DECISION ATTEMPT, recorded outside the status-write retry
+	// loop. That is not once per CommitRequest: a status write that fails permanently is requeued
+	// and re-decides, and restart recovery re-reconciles any request whose terminal status never
+	// persisted (documented at CommitRequestReconciler.SetupWithManager as a knowingly-accepted
+	// gap). Deduplicating across invocations needs a durable marker on the object, which is an API
+	// change rather than an instrument. Read rates and ratios from it, not exact request counts.
+	CommitRequestsTotal metric.Int64Counter
 	// GitCommitsTotal counts commit batches that REACHED THE REMOTE, labelled by the recording
 	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity plus
 	// message_source. Live, snapshot and resync paths all feed this one counter; message_source
@@ -470,6 +493,7 @@ func registerCounters() error {
 	counters := []cSpec{
 		{"gitopsreverser_git_documents_total", &GitDocumentsTotal},
 		{"gitopsreverser_git_commits_total", &GitCommitsTotal},
+		{"gitopsreverser_commit_requests_total", &CommitRequestsTotal},
 		{"gitopsreverser_git_commit_failures_total", &GitCommitFailuresTotal},
 		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
 		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
@@ -596,8 +620,10 @@ func registerGauges() error {
 
 // registerObservableGauges creates the gauges whose value is READ at scrape time from a source a
 // producer installs with SetGaugeSource. See gauges.go for why these in particular cannot be
-// pushed: every one of them measures saturation of a loop, so publishing from inside that loop
-// freezes the value during the stall it exists to report.
+// pushed. Most of them measure saturation of a loop, so publishing from inside that loop freezes
+// the value during the stall it exists to report. The two keyed on config objects —
+// resource_condition and git_branch_targets — are here for the other reason: they need series that
+// STOP when the object is deleted, which a pushed gauge cannot do.
 func registerObservableGauges() error {
 	observable := []struct {
 		name   string
@@ -612,6 +638,7 @@ func registerObservableGauges() error {
 			GaugeWatchPlanOldestDirtySince,
 		},
 		{"gitopsreverser_resource_condition", GaugeResourceCondition},
+		{"gitopsreverser_git_branch_targets", GaugeGitBranchTargets},
 	}
 	for _, o := range observable {
 		if _, err := otelMeter.Int64ObservableGauge(
@@ -627,5 +654,8 @@ func registerObservableGauges() error {
 	// it reads is package state that is always safe to read and empty until a reconcile publishes,
 	// so there is no lifecycle to manage and nothing for the source to outlive.
 	SetGaugeSource(GaugeResourceCondition, resourceConditionSamples)
+	// git_branch_targets is the same case: package state, always safe to read, empty until a
+	// GitTarget reconcile publishes into it.
+	SetGaugeSource(GaugeGitBranchTargets, branchTargetSamples)
 	return nil
 }

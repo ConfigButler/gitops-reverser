@@ -175,6 +175,14 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	publishLayout(st, &target, layout, scanned)
 
 	providerNS := target.Namespace
+	// Ahead of every gate, for the reason the layout stanza above is: the join series has to carry
+	// the targets that are NOT working. git_pushes_total names a branch that stopped advancing and
+	// cannot name the GitTargets behind it, and a mapping published only on the happy path would
+	// go missing exactly when that question is being asked. It is a statement about configuration,
+	// so it holds whether or not a worker ever started. See telemetry/branch_targets.go.
+	telemetry.RecordBranchTarget(
+		target.Namespace, target.Name, providerNS, target.Spec.GitProviderRef.Name, target.Spec.Branch)
+
 	validated, validationMsg, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS)
 	if validationErr != nil {
 		return ctrl.Result{}, validationErr
@@ -1098,6 +1106,9 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
 	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
+	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
+	// branch's push failures to an object that no longer exists.
+	telemetry.ForgetBranchTarget(namespacedName.Namespace, namespacedName.Name)
 
 	if r.EventRouter == nil {
 		return

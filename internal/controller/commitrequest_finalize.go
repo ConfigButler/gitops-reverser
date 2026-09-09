@@ -3,11 +3,16 @@
 package controller
 
 import (
+	"context"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // CommitRequest condition reasons (CamelCase tokens surfaced on status.conditions).
@@ -25,6 +30,60 @@ const (
 	crReasonPushed                  = "Pushed"
 	crReasonGitTargetRefPruned      = "GitTargetRefPruned"
 )
+
+// The bounded `outcome` values on gitopsreverser_commit_requests_total.
+//
+// They are derived from git.FinalizeOutcome rather than from the condition reasons above: the
+// FinalizeResult is what DECIDES, and the reasons include non-terminal and attribution-only values
+// that have no business on a terminal counter. The set is closed, and outcomeFailed absorbs every
+// hard failure so an unmapped result can never go uncounted.
+const (
+	crOutcomeCommitted      = "committed"
+	crOutcomeNoWindow       = "no_window"
+	crOutcomeWindowMismatch = "window_mismatch"
+	crOutcomeAlreadyPresent = "already_present"
+	crOutcomeFailed         = "failed"
+)
+
+// commitRequestOutcome maps one finalize result to its counter value.
+//
+// A finalize error outranks the outcome because FinalizeResult.Outcome is only set when Err is nil,
+// and an unrecognized outcome counts as failed for the same reason applyFinalizeResultToStatus
+// fails it: an empty or unknown outcome with no error is a bug, and a bug that increments nothing
+// is a bug nobody sees.
+func commitRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
+	if finalizeErr != nil {
+		return crOutcomeFailed
+	}
+	switch result.Outcome {
+	case git.FinalizeCommitted:
+		return crOutcomeCommitted
+	case git.FinalizeNoOpenWindow:
+		return crOutcomeNoWindow
+	case git.FinalizeWindowMismatch:
+		return crOutcomeWindowMismatch
+	case git.FinalizeAlreadyPresent:
+		return crOutcomeAlreadyPresent
+	default:
+		return crOutcomeFailed
+	}
+}
+
+// recordCommitRequestOutcome increments the terminal-outcome counter once.
+//
+// It is called at the point the outcome is SETTLED, never from inside applyFinalizeResultToStatus:
+// that runs inside writeTerminalStatus's conflict-retry loop, up to commitRequestStatusUpdateAttempts
+// times for one request, so recording there would over-report exactly the contended case. The
+// counter measures what the pipeline decided; whether the terminal status then reached the API
+// server is a separate failure, already logged.
+//
+// See the instrument's doc comment for what this does and does not promise across reconciles.
+func recordCommitRequestOutcome(ctx context.Context, outcome string) {
+	if telemetry.CommitRequestsTotal == nil {
+		return
+	}
+	telemetry.CommitRequestsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
 
 // noWindowInGraceMessage is the prose for a NoWindowInGrace outcome: the grace
 // elapsed with nothing pending to save.

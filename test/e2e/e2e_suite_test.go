@@ -78,8 +78,69 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 	// Diagnostic first, so its numbers reach the artifacts even when the gating
 	// audit invariant below fails the suite.
 	reportAttributionStats()
+	reportCommitRequestOutcomes()
 	assertNoAnomalousAuditOutcomes()
 })
+
+// commitRequestOutcomes is the bounded outcome set of gitopsreverser_commit_requests_total, in the
+// order a reader wants them: the success, the two refusals, the no-op, then the fault.
+var commitRequestOutcomes = []string{
+	"committed", "window_mismatch", "no_window", "already_present", "failed",
+}
+
+// reportCommitRequestOutcomes prints the whole run's CommitRequest outcome distribution and gates
+// on the one value that is always a fault.
+//
+// It is a SUITE-level report rather than a per-spec assertion because the counter carries only
+// {outcome} — no namespace, deliberately: a CommitRequest is created once per save, so labelling it
+// by object would churn a series per save. That makes the counter un-isolatable between the four
+// parallel processes, and a whole-run aggregate is the honest shape for it. The per-spec half of
+// this coverage is the join series, which IS labelled by GitTarget; see the Commit Request suite.
+//
+// The breakdown is the point as much as the gate. `committed` is what the happy path looks like,
+// and it is the only value these specs produce today: `window_mismatch` needs two authors
+// contending for one branch's window, which nothing here arranges. Printing the distribution is
+// what makes that visible in the artifacts rather than assumed.
+//
+// max_over_time spans the run because the restart-reconcile spec restarts the controller and the
+// counter resets with the process; Prometheus keeps the pre-restart samples. `or vector(0)` keeps a
+// never-incremented outcome readable as a zero instead of an empty result.
+func reportCommitRequestOutcomes() {
+	By("reporting the run's CommitRequest terminal outcomes")
+	ensurePrometheusClient()
+	verifyPrometheusAvailable()
+
+	total, err := queryPrometheus(
+		`sum(max_over_time(gitopsreverser_commit_requests_total[2h])) or vector(0)`)
+	Expect(err).NotTo(HaveOccurred(), "failed to query the CommitRequest outcome counter")
+	if total == 0 {
+		// A shard whose label filter excludes the commit-request specs resolves no requests at all,
+		// and E2E_LABEL_FILTER REPLACES the default rather than narrowing it. Skipping keeps this
+		// from failing a leg that never ran the feature.
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"✅ CommitRequest outcome report skipped: no CommitRequest resolved in this run\n")
+		return
+	}
+
+	for _, oc := range commitRequestOutcomes {
+		n, qErr := queryPrometheus(fmt.Sprintf(
+			`sum(max_over_time(gitopsreverser_commit_requests_total{outcome=%q}[2h])) or vector(0)`, oc))
+		if qErr == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "   commit request outcome %-16s = %.0f\n", oc, n)
+		}
+	}
+
+	const failedQuery = `sum(max_over_time(gitopsreverser_commit_requests_total{outcome="failed"}[2h])) or vector(0)`
+	failed, err := queryPrometheus(failedQuery)
+	Expect(err).NotTo(HaveOccurred(), "failed to query the CommitRequest failure outcome")
+	Expect(failed).To(BeZero(),
+		"no CommitRequest may end in outcome=\"failed\", but %.0f did (query %q). That outcome is a "+
+			"finalize error or an unmapped result — never a benign refusal, which is no_window or "+
+			"window_mismatch. Inspect the controller logs for \"CommitRequest finalized\".",
+		failed, failedQuery)
+	_, _ = fmt.Fprintf(GinkgoWriter,
+		"✅ no CommitRequest ended in outcome=\"failed\" (%.0f resolved across the run)\n", total)
+}
 
 // assertNoAnomalousAuditOutcomes is the headline invariant of the audit-event-outcome taxonomy:
 // after a full run, no audit event ended in an error outcome (category="error" — a write_error,

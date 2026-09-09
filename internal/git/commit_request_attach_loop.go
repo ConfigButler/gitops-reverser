@@ -17,7 +17,8 @@ import (
 //   a same-author window opens           → Attached
 //   finalize deadline fires while Attached → finalize the window with its message → resolved
 //   any other path finalizes the Attached window → same (the message rides the window)
-//   deadline fires while WaitingForWindow → resolved NoOpenWindow
+//   deadline fires while WaitingForWindow → resolved NoOpenWindow, or WindowMismatch when a
+//                                            window it could not claim was open during the grace
 
 // commitRequestOutcomeTTL bounds how long a resolved CommitRequest outcome is
 // retained for the controller to poll before it is GC'd. It comfortably exceeds
@@ -103,9 +104,47 @@ func (l *branchWorkerEventLoop) serviceCommitRequests() {
 		l.stopAttachTimer()
 		return
 	}
+	l.noteForeignWindow()
 	l.attachWaitingCommitRequests()
 	l.processDueCommitRequests()
 	l.rearmAttachTimer()
+}
+
+// noteForeignWindow records, on every waiting request, that a window it cannot claim is open.
+//
+// It runs BEFORE attachWaitingCommitRequests and independently of it, because that function
+// returns early when the window is already claimed — so the scan inside it cannot be the place
+// this is observed. It also runs on every pass rather than at expiry: the foreign window is
+// finalized on its own timer, usually before this request's grace elapses.
+//
+// A window that MATCHES but is already claimed by another request is not a mismatch. That is
+// contention between two of one author's own saves, it resolves on the next window, and calling
+// it a mismatch would attribute a queueing delay to the wrong cause.
+//
+// A request whose deadline has ALREADY passed is skipped, using the same predicate
+// processDueCommitRequests uses to select it: the two run back to back on one wake, so an event
+// arriving at the moment of expiry would otherwise open a window, mark the overdue request, and
+// resolve it as a mismatch in the same pass. Nothing refused that request; it waited out its whole
+// grace with nothing open, which is the benign outcome. Marking it would turn a timeout into a
+// refusal that never happened, in the one direction this instrument exists to keep apart.
+func (l *branchWorkerEventLoop) noteForeignWindow() {
+	if l.openWindow == nil {
+		return
+	}
+	now := time.Now()
+	for _, pcr := range l.pendingCRs {
+		if !pcr.finalizeAt.After(now) || pcr.attached || pcr.sawForeignWindow ||
+			pcr.matchesWindow(l.openWindow) {
+			continue
+		}
+		pcr.sawForeignWindow = true
+		l.w.Log.Info("CommitRequest is waiting on a window that belongs to someone else",
+			"request", pcr.id.Namespace+"/"+pcr.id.Name,
+			"requestAuthor", pcr.author,
+			"requestTarget", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
+			"windowAuthor", l.openWindow.Author,
+			"windowTarget", l.openWindow.GitTargetNamespace+"/"+l.openWindow.GitTarget)
+	}
 }
 
 // attachWaitingCommitRequests binds the waiting same-author request with the earliest finalize deadline to the
@@ -167,8 +206,10 @@ func (l *branchWorkerEventLoop) processDueCommitRequests() {
 			}
 			continue
 		}
-		// Grace elapsed with no matching same-author window collected.
-		l.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeNoOpenWindow})
+		// Grace elapsed with no matching same-author window collected. Which of the two refusals
+		// this is depends on whether anything was open that this request could not have: see
+		// pendingCommitRequest.expiryOutcome.
+		l.resolveCommitRequest(id, FinalizeResult{Outcome: pcr.expiryOutcome()})
 	}
 }
 

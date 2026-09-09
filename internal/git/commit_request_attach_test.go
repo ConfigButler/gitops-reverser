@@ -223,7 +223,7 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 }
 
 // TestAttach_ForeignWindowIsNotStolen verifies an attach for a different author
-// parks (never finalizes another author's window) and resolves NoOpenWindow once
+// parks (never finalizes another author's window) and resolves WindowMismatch once
 // its grace elapses, leaving the foreign window open.
 func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
@@ -248,10 +248,139 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
 	require.NoError(t, res.Err)
-	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome, "another author's save must not finalize alice's window")
+	assert.Equal(t, FinalizeWindowMismatch, res.Outcome,
+		"bob waited out his grace on a window that was alice's the whole time; that is a refusal a "+
+			"human can see, not the benign 'nothing was pending'")
 	require.NotNil(t, loop.openWindow, "alice's window must be left open")
 	assert.Equal(t, "alice", loop.openWindow.Author)
 }
+
+// The two refusals must stay distinguishable, which is the whole reason WindowMismatch exists:
+// only one of them means the author's edits went into somebody else's commit under a generated
+// message. A grace that elapses with nothing open at all is the benign one.
+func TestAttach_NoWindowAtAllIsNotAMismatch(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	serviceAttach(loop, attachReq("bob", 60))
+	require.Nil(t, loop.openWindow, "precondition: nothing is open")
+
+	forceDue(loop)
+	loop.serviceCommitRequests()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome,
+		"nothing was pending to save; that is not a refusal and must not read as one")
+}
+
+// The mismatch flag has to be STICKY. A foreign window runs on its own timer and is normally
+// finalized well before the waiting request's grace elapses, so a check made only at expiry would
+// see nothing open and report the refusal as benign — intermittently, which is the worst outcome
+// of the three.
+func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+
+	serviceAttach(loop, attachReq("bob", 60))
+
+	// Alice's window is finalized on its own account, long before bob's grace elapses.
+	loop.finalizeOpenWindowWithReason(windowFinalizeReasonTimer)
+	require.Nil(t, loop.openWindow, "precondition: nothing is open when bob's grace runs out")
+
+	forceDue(loop)
+	loop.serviceCommitRequests()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeWindowMismatch, res.Outcome,
+		"bob was refused by a window that has since closed; the refusal still happened")
+}
+
+// A window bob COULD have claimed, already taken by another of his own saves, is contention rather
+// than a mismatch: it resolves on the next window, and calling it a mismatch would blame a
+// queueing delay on the wrong cause.
+func TestAttach_ClaimedSameAuthorWindowIsNotAMismatch(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+
+	// Alice's first save claims the window; her second one has to wait for the next.
+	first := attachReq("alice", 60)
+	serviceAttach(loop, first)
+	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the window is claimed")
+
+	second := attachReq("alice", 60)
+	second.Name = "save-second"
+	second.UID = "uid-save-second"
+	serviceAttach(loop, second)
+
+	pending := loop.pendingCRs[commitRequestID{Namespace: second.Namespace, Name: second.Name, UID: second.UID}]
+	require.NotNil(t, pending)
+	assert.False(t, pending.sawForeignWindow,
+		"a window this author could have claimed is contention, never a mismatch")
+}
+
+// A window that opens AFTER the grace has already elapsed was never a refusal: the request waited
+// out its whole grace with nothing open, which is the benign outcome. The marking pass and the
+// expiry pass run back to back on one wake, so without a deadline check an event arriving at the
+// moment of expiry would open a window, mark the overdue request, and resolve it as a mismatch in
+// the same pass — turning a timeout into a refusal that never happened.
+func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	// Bob parks with nothing open, and his grace runs out before anyone else starts work.
+	serviceAttach(loop, attachReq("bob", 60))
+	require.Nil(t, loop.openWindow, "precondition: nothing was open during bob's grace")
+	forceDue(loop)
+
+	// Only now does alice's work arrive and open a window.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("cm", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+	loop.serviceCommitRequests()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome,
+		"a window that opened after the grace expired cannot have refused this request")
+}
+
+// TestAttach_IdempotentReSendKeepsFirstDeadline verifies a re-sent attach (same
+
+// TestAttach_IdempotentReSendKeepsFirstDeadline verifies a re-sent attach (same
 
 // TestAttach_IdempotentReSendKeepsFirstDeadline verifies a re-sent attach (same
 // identity) does not reset the finalize deadline or duplicate the registration.
