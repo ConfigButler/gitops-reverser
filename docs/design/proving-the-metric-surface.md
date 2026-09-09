@@ -1,11 +1,22 @@
 # Proving the metric surface: useful labels and trustworthy e2e checks
 
-> **Design:** proposed work, not implemented behavior.
-> Date: 2026-09-09. Reviewed against `9341d668` on
-> `feat/pipeline-join-and-commitrequest-outcomes`.
+> **Design, partly built.** Date: 2026-09-09, written against `9341d668`.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Related: [`metrics-observability-plan.md`](metrics-observability-plan.md) and
 > [`../interpreting-metrics.md`](../interpreting-metrics.md).
+>
+> **Built** (`feat/metric-identity-and-e2e-isolation`): the GitTarget labels on
+> `commit_requests_total` and the fallback for an unresolved target; `source_cluster` on
+> `git_branch_targets`; the independent-trigger fix, which became a per-target assertion in the
+> CommitRequest spec rather than cross-process bookkeeping; and isolation **option B**, measured at
+> 27s and 29s on the two runs taken.
+>
+> **Not built**: step 5 (direct cluster labels on further families), diagnostics export and
+> retention, the `e2e_run` scrape label (option C), a pinned-seed regression, and stubbed
+> failure-path checks. The audit invariant is unreviewed under the query rules below.
+>
+> Read the sections on cardinality, where cluster labels belong, and counter observations as
+> standing guidance; the options table and implementation order are kept as the record of why.
 
 ## Recommendation
 
