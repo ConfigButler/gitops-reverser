@@ -160,7 +160,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		waitForMetric(
 			fmt.Sprintf(
 				`sum(gitopsreverser_git_branch_targets{gittarget_namespace=%q,gittarget_name=%q,`+
-					`provider_namespace=%q,provider_name=%q,branch="main"}) or vector(0)`,
+					`provider_namespace=%q,provider_name=%q,branch="main",source_cluster="default"}) `+
+					`or vector(0)`,
 				testNs, gitTargetName, testNs, gitProvName),
 			func(v float64) bool { return v == 1 },
 			"the join series maps this GitTarget to the provider and branch its commits are labelled by",

@@ -37,6 +37,24 @@ import (
 //     branch and this series while producing no commits by design. Nothing here separates
 //     "suspended" from "stuck"; resource_condition does.
 //
+// # source_cluster
+//
+// It carries the cluster the GitTarget mirrors FROM, so the same join answers "which tenant's
+// cluster" as well as "which GitTarget". The value is GitTarget.SourceCluster(), which is the
+// referenced ClusterProvider's NAME and defaults to "default" — a concrete, non-empty string, so
+// there is no empty label value that PromQL cannot tell apart from a missing one. It is NOT the
+// internal config-plane sentinel, which is deliberately the empty string and is a different
+// identity; see the doc on SourceCluster for why the name is a convention rather than a claim
+// about which physical cluster it is.
+//
+// It rides this series rather than being added to the nine GitTarget-labelled instruments because
+// spec.clusterProviderRef is CEL-immutable: a GitTarget's cluster is fixed for its life, so one
+// join recovers the axis for all of them. The Git-side instruments cannot carry it at all — a
+// branch is shared by GitTargets that may mirror different clusters, so a single value there would
+// have to be invented, which is the same objection that keeps gittarget_* off git_commits_total.
+// Joining a branch's failed pushes to several clusters means each is POTENTIALLY affected; it does
+// not allocate the failures between them, and summing the expanded result double-counts the push.
+//
 // # Why it publishes configured targets rather than running workers
 //
 // The recording site is the GitTarget reconcile, ahead of every readiness gate, so a target that
@@ -51,11 +69,13 @@ type branchTargetKey struct {
 	name      string
 }
 
-// branchTargetDestination is where that GitTarget writes, as the Git-side instruments label it.
+// branchTargetDestination is where that GitTarget writes, as the Git-side instruments label it,
+// plus the cluster it mirrors FROM.
 type branchTargetDestination struct {
 	providerNamespace string
 	providerName      string
 	branch            string
+	sourceCluster     string
 }
 
 var (
@@ -67,13 +87,14 @@ var (
 //
 // Call it on every reconcile that resolves a destination, including one that then fails a gate: a
 // gauge is level rather than event, and the join has to carry the targets that are not working.
-func RecordBranchTarget(namespace, name, providerNamespace, providerName, branch string) {
+func RecordBranchTarget(namespace, name, providerNamespace, providerName, branch, sourceCluster string) {
 	branchTargetsMu.Lock()
 	defer branchTargetsMu.Unlock()
 	branchTargets[branchTargetKey{namespace: namespace, name: name}] = branchTargetDestination{
 		providerNamespace: providerNamespace,
 		providerName:      providerName,
 		branch:            branch,
+		sourceCluster:     sourceCluster,
 	}
 }
 
@@ -107,6 +128,7 @@ func branchTargetSamples() []GaugeSample {
 				attribute.String("provider_namespace", dest.providerNamespace),
 				attribute.String("provider_name", dest.providerName),
 				attribute.String("branch", dest.branch),
+				attribute.String("source_cluster", dest.sourceCluster),
 			},
 		})
 	}

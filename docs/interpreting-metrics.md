@@ -202,8 +202,8 @@ boundary, the commit, the push. Background:
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync`. Every increment is lost work. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
-| `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name` | Always 1. The **join** between the GitTarget-labelled half of the pipeline and the branch-labelled half. Published per configured GitTarget, whether or not its worker runs. |
-| `commit_requests_total` | counter | `outcome` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. See the counting note below. |
+| `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labelled half of the pipeline and the branch-labelled half. Published per configured GitTarget, whether or not its worker runs. |
+| `commit_requests_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. A target that never resolved publishes the empty pair. See the counting note below. |
 | `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document at a resolved path. |
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined. Every increment is a resource **absent** from the mirror. |
 | `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | `added` / `no_change` / `failed`. |
@@ -380,6 +380,19 @@ without their message reaching a commit is the window worth tuning against `clos
 ```promql
 sum by (outcome) (rate(gitopsreverser_commit_requests_total[15m]))
 ```
+
+**Which target's saves are failing?** The counter carries the GitTarget, so the fleet view above is
+an aggregation rather than the only view available:
+
+```promql
+sum by (gittarget_namespace, gittarget_name, outcome) (
+  rate(gitopsreverser_commit_requests_total[15m])
+)
+```
+
+An empty `gittarget_name` is a request whose target never resolved. The name it asked for is on the
+object's conditions, deliberately not on the series: it is client-supplied text and would grow the
+metric without bound.
 
 `window_mismatch` is the value to watch, and the two refusals are deliberately separate. Both mean
 the grace elapsed without a window the request could claim, but only `window_mismatch` means one

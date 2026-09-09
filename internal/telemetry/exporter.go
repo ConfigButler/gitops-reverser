@@ -45,7 +45,21 @@ var (
 	// nothing at all.
 	GitDocumentsTotal metric.Int64Counter
 	// CommitRequestsTotal counts CommitRequests reaching a terminal outcome, labelled by
-	// {outcome} alone: committed / no_window / window_mismatch / already_present / failed.
+	// {outcome, gittarget_namespace, gittarget_name}. outcome is committed / no_window /
+	// window_mismatch / already_present / failed.
+	//
+	// The GitTarget identity is here because "are saves failing" is rarely the question an operator
+	// has; "which target's saves are failing" is. Cardinality is bounded by CONFIGURATION rather
+	// than by events: five outcomes across N targets is at most 5N combinations however many
+	// millions of saves reuse them. It is the same bound resource_condition already accepts, and
+	// the reason the earlier fleet-only shape was the wrong default for a controller serving many
+	// tenants — an outcome-only counter has no key to join back to, so no mapping gauge could
+	// recover the identity it had already discarded.
+	//
+	// An UNRESOLVED target publishes the empty pair rather than the requested name. spec.gitTargetRef
+	// is whatever the client wrote, so labelling it would let anyone with create rights on
+	// commitrequests mint unbounded series by naming targets that do not exist; the requested
+	// reference stays on the object's conditions and in the logs.
 	//
 	// It is the fleet view resource_condition deliberately refuses to give this kind. A
 	// CommitRequest is created once per save, so a gauge per object would churn a series
@@ -56,8 +70,8 @@ var (
 	// does not land still produces a green, pushed commit carrying a GENERATED message instead of
 	// the sentence its author typed, which is user-visible and was un-alertable.
 	//
-	// window_mismatch is the value that matters most for that reason: it is the silent
-	// substitution, not an error anybody sees.
+	// window_mismatch is the value that matters most: it is the silent substitution, not an error
+	// anybody sees.
 	//
 	// COUNTING SEMANTICS, because this counter cannot promise what it looks like it promises. It
 	// counts one increment per TERMINAL DECISION ATTEMPT, recorded outside the status-write retry

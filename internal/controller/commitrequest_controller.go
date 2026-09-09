@@ -156,7 +156,10 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// object the schema could not have seen: one stored before the rule landed. It is terminal
 	// rather than retried, because CommitRequest.spec is immutable and no apply can repair it.
 	if err := git.ValidateLiteralCommitMessage(commitRequest.Spec.Message); err != nil {
-		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err, attribution)
+		// The fallback identity: this fails before ServiceCommitRequest, so nothing has
+		// confirmed the named GitTarget exists.
+		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err, attribution,
+			commitRequestTarget{})
 		return ctrl.Result{}, nil
 	}
 
@@ -182,7 +185,8 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Error(result.Err, "CommitRequest finalize failed",
 			"gitTarget", commitRequest.Spec.GitTargetRef.Name, "name", req.NamespacedName)
 	}
-	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution)
+	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution,
+		resolvedCommitRequestTarget(commitRequest))
 	return ctrl.Result{}, nil
 }
 
@@ -211,8 +215,14 @@ func (r *CommitRequestReconciler) awaitAttachOutcome(
 
 	log.Info("CommitRequest did not resolve within the safety window; failing closed",
 		"name", req.NamespacedName)
+	// A nil serviceErr means the last attempt DID get the GitTarget and simply had no outcome
+	// yet, so the identity is known; a non-nil one never resolved it and takes the fallback.
+	target := commitRequestTarget{}
+	if serviceErr == nil {
+		target = resolvedCommitRequestTarget(commitRequest)
+	}
 	r.writeTerminalStatus(ctx, log, commitRequest,
-		git.FinalizeResult{}, errors.New(resolveTimeoutMessage), attribution)
+		git.FinalizeResult{}, errors.New(resolveTimeoutMessage), attribution, target)
 
 	return ctrl.Result{}, nil
 }
@@ -259,7 +269,7 @@ func (r *CommitRequestReconciler) refusePrunedGitTargetRef(
 	// state that must not be missing from the counter. Note the status write below is returned for
 	// requeue, so a failing write re-decides and increments again: see the instrument's doc
 	// comment on what one increment means.
-	recordCommitRequestOutcome(ctx, crOutcomeFailed)
+	recordCommitRequestOutcome(ctx, crOutcomeFailed, commitRequestTarget{})
 	failCommitRequest(commitRequest, crReasonGitTargetRefPruned,
 		"spec.gitTargetRef is empty: this request was created before spec.targetRef was renamed, "+
 			"and its value was pruned by the upgrade. A CommitRequest spec is immutable, so this "+
@@ -367,6 +377,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 	result git.FinalizeResult,
 	finalizeErr error,
 	attribution commitRequestAttribution,
+	target commitRequestTarget,
 ) {
 	expectedUID := commitRequest.UID
 	reader := r.APIReader
@@ -377,7 +388,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 	// Once, here, and deliberately not inside the loop below: result and finalizeErr are inputs
 	// that do not change across attempts, so this is the point the outcome is settled. Recording
 	// per attempt would over-count every request that hit a conflict.
-	recordCommitRequestOutcome(ctx, commitRequestOutcome(result, finalizeErr))
+	recordCommitRequestOutcome(ctx, commitRequestOutcome(result, finalizeErr), target)
 
 	current := commitRequest
 	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
