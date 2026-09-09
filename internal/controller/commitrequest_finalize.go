@@ -69,6 +69,33 @@ func commitRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
 	}
 }
 
+// commitRequestTarget is the GitTarget identity one terminal outcome is counted under.
+//
+// The zero value is the documented FALLBACK for a request whose target could not be resolved, and
+// it publishes empty labels rather than the requested name. That is deliberate: spec.gitTargetRef
+// is whatever the client wrote, so labelling an unresolved reference would let anyone with create
+// rights on commitrequests mint an unbounded number of series by naming targets that do not exist.
+// The requested reference is still on the object's conditions and in the logs, which is where an
+// unbounded string belongs.
+type commitRequestTarget struct {
+	namespace string
+	name      string
+}
+
+// resolvedCommitRequestTarget names the GitTarget a request was serviced against.
+//
+// It is only correct to call once the workflow has RESOLVED that target, which
+// EventRouter.ServiceCommitRequest does by getting the GitTarget and returning an error when it is
+// absent. So a nil service error is the proof that this identity exists, and no extra API lookup is
+// needed to bound the label — the plan's rule that metric recording must not block terminal status
+// on another failing call.
+//
+// The namespace is the REQUEST's, not a field: a CommitRequest names a same-namespace GitTarget,
+// which is the same assumption ServiceCommitRequest makes when it builds the object key.
+func resolvedCommitRequestTarget(cr *configv1alpha3.CommitRequest) commitRequestTarget {
+	return commitRequestTarget{namespace: cr.Namespace, name: cr.Spec.GitTargetRef.Name}
+}
+
 // recordCommitRequestOutcome increments the terminal-outcome counter once.
 //
 // It is called at the point the outcome is SETTLED, never from inside applyFinalizeResultToStatus:
@@ -78,11 +105,15 @@ func commitRequestOutcome(result git.FinalizeResult, finalizeErr error) string {
 // server is a separate failure, already logged.
 //
 // See the instrument's doc comment for what this does and does not promise across reconciles.
-func recordCommitRequestOutcome(ctx context.Context, outcome string) {
+func recordCommitRequestOutcome(ctx context.Context, outcome string, target commitRequestTarget) {
 	if telemetry.CommitRequestsTotal == nil {
 		return
 	}
-	telemetry.CommitRequestsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+	telemetry.CommitRequestsTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("outcome", outcome),
+		attribute.String("gittarget_namespace", target.namespace),
+		attribute.String("gittarget_name", target.name),
+	))
 }
 
 // noWindowInGraceMessage is the prose for a NoWindowInGrace outcome: the grace

@@ -175,6 +175,20 @@ tasks:
       - task: _prepare-e2e-ready
       - task: portforward-ensure
 
+  reset-e2e-observability:
+    desc: Discard Prometheus data and reset controller counters so a run is judged on its own evidence
+    # No sources/generates/status on purpose: this must run on EVERY invocation. Putting it in the
+    # stamp graph would let a cached prepare silently skip it, which is the failure mode it exists
+    # to prevent -- an assertion about "this run" reading a previous run's samples.
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export CONTROLLER_DEPLOY_SELECTOR="{{.CONTROLLER_DEPLOY_SELECTOR}}"
+        bash hack/e2e/reset-observability.sh
+      # The reset replaces the Prometheus pod, which kills its port-forward.
+      - task: portforward-ensure
+
   prepare-e2e-demo:
     desc: Prepare demo-only prerequisites for talk/demo e2e runs
     cmds:

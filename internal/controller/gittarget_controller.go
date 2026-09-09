@@ -181,7 +181,8 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// go missing exactly when that question is being asked. It is a statement about configuration,
 	// so it holds whether or not a worker ever started. See telemetry/branch_targets.go.
 	telemetry.RecordBranchTarget(
-		target.Namespace, target.Name, providerNS, target.Spec.GitProviderRef.Name, target.Spec.Branch)
+		target.Namespace, target.Name, providerNS, target.Spec.GitProviderRef.Name, target.Spec.Branch,
+		target.SourceCluster())
 
 	validated, validationMsg, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS)
 	if validationErr != nil {

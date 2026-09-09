@@ -1,194 +1,293 @@
-# Proving the metric surface: a plan for what e2e should assert
+# Proving the metric surface: useful labels and trustworthy e2e checks
 
-> **design**: a plan for unbuilt work. Nothing here binds until scheduled.
-> Date: 2026-09-09. Written against `9341d668` on `feat/pipeline-join-and-commitrequest-outcomes`.
+> **Design, partly built.** Date: 2026-09-09, written against `9341d668`.
 > Index: [`../INDEX.md`](../INDEX.md)
-> Related: [`metrics-observability-plan.md`](metrics-observability-plan.md) (what the surface is),
-> [`../interpreting-metrics.md`](../interpreting-metrics.md) (the instrument inventory)
+> Related: [`metrics-observability-plan.md`](metrics-observability-plan.md) and
+> [`../interpreting-metrics.md`](../interpreting-metrics.md).
 >
-> **The finding that shrinks this plan: run identity already exists.** `testNamespaceFor` is
-> `fmt.Sprintf("%d-test-%s", GinkgoRandomSeed(), suite)`, so every e2e namespace carries the run's
-> seed, and every instrument labelled `gittarget_namespace` or `provider_namespace` is already
-> unique per run. Two consecutive local runs produced `1788938080-test-commit-request` and
-> `1788938742-test-commit-request`. A per-run scrape label was on this plan; for most of the
-> surface it is not needed, and `waitForCommitInNamespace` already relies on the property.
+> **Built** (`feat/metric-identity-and-e2e-isolation`): the GitTarget labels on
+> `commit_requests_total` and the fallback for an unresolved target; `source_cluster` on
+> `git_branch_targets`; the independent-trigger fix, which became a per-target assertion in the
+> CommitRequest spec rather than cross-process bookkeeping; and isolation **option B**, measured at
+> 27s and 29s on the two runs taken.
 >
-> What remains is narrower and sharper: **identity-free instruments cannot be run-scoped at all**,
-> and one assertion added on this branch is circular.
+> **Not built**: step 5 (direct cluster labels on further families), diagnostics export and
+> retention, the `e2e_run` scrape label (option C), a pinned-seed regression, and stubbed
+> failure-path checks. The audit invariant is unreviewed under the query rules below.
+>
+> Read the sections on cardinality, where cluster labels belong, and counter observations as
+> standing guidance; the options table and implementation order are kept as the record of why.
 
-## Why this page exists
+## Recommendation
 
-Two defects on one branch, with the same shape.
+Give operators enough identity to locate a failure. Add GitTarget identity to `commit_requests_total`
+and source-cluster identity to the target mapping. Keep the number of series proportional to
+configuration wherever possible. Use request status and correlated logs for individual saves.
 
-`FinalizeWindowMismatch` was declared, switched on by the controller, surfaced as a condition
-reason with its own message, and counted by a new metric. Nothing produced it. It had been dead
-since the eager-attach refactor, and every layer a reader inspected looked correct.
+For e2e, prove that instrumentation responds to known work, and isolate observations across runs.
+Resetting Prometheus before a run is a supported design option. Prefer that option with a fresh
+controller for the dedicated e2e environment, subject to measuring startup cost. Leave the environment
+running after completion, including failure, and export diagnostics before their retention expires.
 
-The e2e check added to catch that class has the same blind spot. It skips when the counter reports
-zero observations, so deleting every recording call leaves it green. **It reads the metric to decide
-whether to check the metric.**
+Ship this in small changes. Correct the current e2e checks before describing them as proof of the
+metric surface. GitTarget labels are a useful product improvement to prioritize next. A broad
+source-cluster rollout requires an instrument inventory and should be a separate change.
 
-Both are cases of a signal that looks wired and is not. That is the failure this page is about.
+## Start from the operator's question
 
-## Two rules
+A metric is useful when its labels identify something the reader can investigate or act on.
+Saving a small number of series at the cost of hiding which target fails is a poor default for a
+controller serving many tenants.
 
-**A metric assertion must not take its trigger from the metric under test.** The trigger has to come
-from outside: whether the specs ran, whether the object reached its terminal state, whether the
-commit landed. Anything read from the instrument itself makes the check vacuous exactly when the
-instrument is broken, which is the only time it matters.
+| Question | Appropriate evidence |
+|---|---|
+| Are saves failing anywhere? | Aggregate outcome counter |
+| Which GitTarget's saves fail? | Outcome counter with GitTarget identity |
+| Which source cluster has trouble? | Cluster-owned metrics and target-to-cluster mapping |
+| Which targets might a failed push affect? | Branch metrics joined to target mapping |
+| Did this particular save land with its message? | CommitRequest status, commit SHA, and Git content |
+| Why did this request fail? | Conditions and logs correlated by request identity |
 
-**No enum value may be reachable only through an injected fake.** Every value in a bounded label set
-needs one test that produces it from the real producer. The controller-side tests for
-`window_mismatch` passed for months against a fake finalizer supplying an outcome the worker never
-emitted. A fake proves the mapping; only the producer proves the value exists.
+An outcome-only counter cannot be joined back to a tenant or target: it has already discarded that
+identity. The mapping can enrich an existing key; it cannot reconstruct a missing one.
 
-## What the four layers can prove
+A source cluster is also not necessarily a tenant. One cluster can serve several tenants, and one
+tenant can use several targets. Dashboards should name the actual dimension they display.
 
-Each layer answers a question the one below it cannot. Listed with what it is blind to, because that
-is what decides where a given assertion belongs.
+## Cardinality policy
 
-| Layer | Question | Blind to |
+Allow bounded outcome enums and configuration identities that answer an operational question.
+Keep per-request names, UIDs, commit SHAs, author identities, and arbitrary error text in logs or
+object status. Test-run identities belong in the test harness or scrape configuration.
+
+Cardinality depends on distinct label combinations, not the number of events. Five outcomes across
+100 GitTargets produce at most 500 target/outcome combinations for one emitting process. Millions
+of saves against those same targets reuse those combinations. Scrape-target labels and additional
+independent dimensions increase the total.
+
+Configuration identity is a growth bound, not a fixed limit. Short-lived targets create historical
+series, and the telemetry SDK can retain counter series after targets disappear. Estimate both
+active and retained combinations, including target churn, process restarts, and histogram buckets.
+Check SDK aggregation limits and Prometheus resource use at the intended deployment size before
+claiming a capacity guarantee. Document the measured target count and retention assumptions.
+
+A label functionally determined by another label does not multiply every combination independently.
+Adding `source_cluster` to an immutable GitTarget identity mostly adds label bytes and indexing cost.
+Its value still needs to justify the extra public contract and recording-site maintenance.
+
+### CommitRequest outcomes should identify the GitTarget
+
+Propose this label set:
+
+```text
+commit_requests_total{outcome,gittarget_namespace,gittarget_name}
+```
+
+This lets an operator alert on one target, compare save outcomes across targets, and correlate the
+result with the rest of the pipeline. Fleet queries remain straightforward:
+
+```promql
+sum by (outcome) (rate(gitopsreverser_commit_requests_total[15m]))
+```
+
+A target panel preserves the identity:
+
+```promql
+sum by (gittarget_namespace, gittarget_name, outcome) (
+  rate(gitopsreverser_commit_requests_total[15m])
+)
+```
+
+Keep the existing counting semantics: one terminal decision attempt outside the status-write retry
+loop. Adding labels does not make this an exact request ledger across lost status writes or restarts.
+
+Resolve identity from the command's configured target. Requests that fail before a target can be
+resolved must still count. Use a documented fallback, such as empty target namespace and name, for
+unresolvable references; preserve the requested reference in conditions and logs. Do not create
+unbounded series from arbitrary nonexistent target names, or make metric recording block terminal
+status on an additional failing API lookup. Reuse target identity already resolved by the workflow.
+
+Migration work includes the metric inventory, dashboard examples, and an upgrade note. Queries that
+expect one series per outcome need aggregation. Do not retain a second fleet-only counter with the
+same events, which introduces another recording path to keep consistent.
+
+## Where source-cluster labels belong
+
+Use the identity the instrument's producer owns.
+
+| Instrument family | Recommendation |
+|---|---|
+| Cluster discovery, catalog, and cluster-owned watch health | Carry `source_cluster` directly |
+| Target mapping, `git_branch_targets` | Add `source_cluster` from `GitTarget.SourceCluster()` |
+| GitTarget-owned event, document, placement, and request counters | Start with the mapping; evaluate direct labels for common cluster dashboards |
+| Shared branch commits, pushes, retries, and queue depth | Keep provider/branch identity; join to potentially affected targets |
+| Process-wide queue or transport health | Keep process/transport identity unless the producer has a real cluster partition |
+
+`GitTarget.SourceCluster()` returns the referenced ClusterProvider name, with `default` as the
+fallback. Use that existing contract. The internal empty config-plane sentinel is a separate
+identity; do not rename it through the target mapping. A provider called `default` can reference a
+remote cluster, so its name does not promise physical locality.
+
+Direct `source_cluster` labels are worthwhile when they make a common alert substantially easier,
+when a cluster operation has no target, or when historical attribution must survive target deletion.
+A current mapping disappears with its target, so it cannot reliably enrich historical counters for
+a deleted target. Direct labels retain the identity on each observation.
+
+For an existing immutable target, redundant source identity is usually affordable. Avoid making
+operators write joins for every routine question solely to save one label. First add the mapping,
+then assess concrete dashboards and measured series cost for each proposed direct addition. Keep
+label spelling and identity consistent across producers.
+
+A branch can serve targets from different clusters. Joining its failed pushes to several clusters
+means each is potentially affected; it does not allocate the failures between them. Summing the
+expanded result can double-count the same push. Provide dashboard examples that preserve this
+meaning, and never invent one owning cluster for a shared branch.
+
+## What e2e should prove
+
+Two defects motivated this plan. `FinalizeWindowMismatch` existed in types and controller mappings
+without a real worker emission. A later metric check skipped when the counter was absent, so removing
+its recording calls would still pass the suite.
+
+Require an independent trigger for each metric assertion: an executed test, a terminal object, or a
+verified commit. Use aggregated Ginkgo reports or explicit test observations across parallel
+processes. Distinguish specs that were excluded, attempted, and completed the relevant operation.
+A missing series must fail a check whose operation completed; it must not select the skip path.
+
+| Layer | Assertion |
+|---|---|
+| Producer tests | Each supported outcome is produced by the real deciding code |
+| Wiring tests | Known work reaches the deployed exporter and Prometheus with the expected labels |
+| Run checks | Required signals appeared and no unexpected failures were observed during the run |
+| Historical reports | Comparable runs retain approximate distributions and diagnostic artifacts |
+
+Fakes remain useful for mapping and defensive unknown-value tests. They cannot be the only evidence
+that a supported outcome occurs. Exercise real producer paths at the cheapest suitable test layer;
+every failure mode does not need a separate expensive cluster test.
+
+Namespace-scoped metrics can isolate many specs already: `testNamespaceFor` includes the Ginkgo
+seed. That seed is repeatable for reproduction, so it is not a unique invocation ID. `TESTNAMESPACE`
+and fixed-namespace suites also defeat namespace-based isolation. Use explicit run boundaries even
+when selecting on a test namespace.
+
+## Counter observations need a baseline
+
+Separate detecting an observed failure from estimating how many events occurred.
+
+`increase()` handles observable counter resets and extrapolates to the requested time range. It is
+useful for approximate reports. It cannot recover an event before the first sample: a series first
+seen at 1 and then remaining at 1 has zero observed increase. A series with too few samples may yield
+no result. Treating either case as proof of zero failures is incorrect.
+
+Initialize the bounded failure outcomes where practical, and wait for their baseline scrape before
+work begins. After known work completes, wait for a scrape that includes it before asserting. At
+controller restarts, account for new series and possible sampling gaps. Preserve missing-data checks
+instead of using `or vector(0)` to hide a broken exporter.
+
+With fresh counters and isolated history, a positive `max_over_time` can detect an observed failure,
+including a first sample of 1. It does not reconstruct event totals across resets within a series.
+Replacement pods commonly create distinct scrape series; evaluate each series before aggregation.
+Retain request-status assertions because activity lost entirely between scrapes is invisible to any
+PromQL expression.
+
+Review the existing audit invariant under the same rules. Choose its query based on whether it asks
+about any observed failure or an approximate total; do not mechanically replace every maximum with
+an increase.
+
+## Options for isolating runs
+
+| Option | Benefit | Cost or limitation |
 |---|---|---|
-| **L1 contract** | is every enum value produced by real code? | whether it reaches Prometheus |
-| **L2 wiring** | given activity, does the series appear? | whether the numbers are right |
-| **L3 run** | what happened across this run? | which spec did it |
-| **L4 fleet** | how does this run compare to previous ones? | anything within a run |
+| A: retain Prometheus, record run boundaries and baselines | Fast warm startup; earlier runs remain queryable | More handling of resets, first samples, and shared counters |
+| B: reset Prometheus and start a fresh controller before each run | Clearer history and counter ownership | Pod startup and scrape readiness add latency |
+| C: add an `e2e_run` scrape-target label | Explicit run selection, including fixed namespaces | Configuration rollout and retained series; counters still need baselines |
 
-`window_mismatch` passed L2 and L3 for months while failing L1: the counter existed, incremented on
-other outcomes, and reported plausible totals.
+### Retain history
 
-## What run identity we already have, and what we do not
+Record start and end timestamps once in the synchronized suite lifecycle and distribute them to all
+processes. Capture pre-work baselines and use the same boundaries in reports. Restrict queries to
+the intended controller scrape targets. An elapsed-time range alone does not solve first-sample
+loss or events emitted by leftover work from an earlier run.
 
-`testNamespaceFor` seeds the namespace, so a run is identifiable wherever an object namespace
-reaches a label:
+This option is appropriate when warm startup speed matters more than implementation simplicity.
+Namespace selectors remain useful for separating concurrent specs inside the run.
 
-- `gittarget_namespace` on `watch_events_total`, `git_documents_total`, `watch_recovery_total`,
-  `git_resync_failures_total`, `watch_plan_passes_total`, the three placement counters,
-  `watch_types`, `watch_streams_open`, and the new `git_branch_targets`.
-- `provider_namespace` on `git_commits_total`, `git_pushes_total`, `git_push_retries_total`,
-  `git_push_duration_seconds`, `git_queue_drops_total`, `git_commit_failures_total`,
-  `git_queue_depth`. The GitProvider is created in the same seeded namespace as its GitTarget.
+### Reset before the run, preserve afterward
 
-So the whole pipeline is run-scopable today by selecting on a namespace prefix, with two caveats
-worth stating rather than discovering:
+Prefer this option for the dedicated e2e environment if a startup measurement shows acceptable cost.
+Implement it once per invocation under the existing exclusive run lock, outside cached Task stamps.
+A cached preparation task must not silently skip the reset.
 
-- **`TESTNAMESPACE` overrides it.** `testNamespaceFor` returns that value verbatim when set, which
-  collapses run identity by design. Anything relying on the seed must tolerate its absence.
-- **Fixed-namespace suites are exempt.** A suite that installs into documented namespaces rather
-  than seeded ones has no run axis, and gains one only from the scrape side.
+1. Export any previous diagnostics that must survive the next reset, then complete prior-run resource
+   cleanup and stop the old controller so it cannot keep emitting old work.
+2. Replace the dedicated Prometheus pod with fresh data storage. The current manifest has no storage
+   specification, so the Operator defaults to `emptyDir`. Verify this assumption in the setup check;
+   replacing a pod with persistent storage would preserve its data.
+3. Start a fresh controller. Resetting Prometheus alone leaves old application counter values ready
+   to reappear on the next scrape.
+4. Wait for exporter readiness, target discovery, and required baseline scrapes. Reconnect any
+   port-forward affected by pod replacement. Only then start test activity.
+5. Run the specs and collect final observations, including diagnostic collection on failure.
+6. Leave Prometheus and the controller available for inspection after success or failure. Export
+   reports and failure artifacts without deleting the live data.
 
-**`commit_requests_total{outcome}` has neither.** It carries no namespace, no GitTarget, no cluster:
-that was the deliberate choice to keep it bounded when a CommitRequest is created once per save. The
-consequence, which needs stating plainly rather than argued away, is that **it cannot be scoped to a
-run, a tenant, or a spec, and no mapping gauge can recover that** because aggregation already
-discarded the key.
+Reset only at the next invocation's start. Do not add an end-of-run cleanup. Current retention is
+two hours, so leaving Prometheus running alone does not preserve evidence indefinitely. Export
+selected query results and logs, or a TSDB snapshot copied outside the pod, for later investigation.
+Snapshot support needs an explicit setup decision because the admin API is disabled by default.
 
-## Two problems that look like one
+A smaller database may reduce query work, but startup has a cost. Measure total preparation and run
+time on fresh and reused clusters before claiming a speed improvement. This option isolates runs;
+parallel specs sharing the same target still require other evidence for exact attribution.
 
-They need different fixes, and a run label solves only the first.
+### Label scrapes by run
 
-| Problem | Symptom | Fix |
-|---|---|---|
-| Cluster reuse across runs | yesterday's failure fails today's clean run; yesterday's success hides today's missing instrumentation | scope the observation to this run |
-| Counter resets within a run | the restart-reconcile spec restarts the controller and counters return to zero | `increase()`, which is reset-aware |
+Stamp the run ID through the e2e ServiceMonitor's target relabeling, then wait until Prometheus has
+adopted the configuration and scraped the new label before starting work. Apply it consistently to
+replacement controller pods. Keep the label out of application code.
 
-`max_over_time` is wrong for both. It preserves a maximum rather than reconstructing increments, so
-across a restart it undercounts by the whole post-restart portion. The existing audit invariant uses
-it, so this is a pre-existing flaw that the CommitRequest report copied.
+A new scrape label does not reset application counters. Capture baselines or restart the producer,
+and handle first samples as in the other options. Prometheus `external_labels` concern communication
+with external systems; they do not add run selectors to ordinary local queries.
 
-`increase()` is correct for both and extrapolates, so counts print as `12.3` rather than `12`. For a
-gate on zero that is exact. For a report it is approximate and should say so.
+Use this option when preserving several runs in one Prometheus is an explicit requirement. It is
+not necessary to introduce it solely to distinguish one dedicated run after option B resets history.
 
-## The plan
+## Implementation order and acceptance
 
-### 1. Break the circularity in the CommitRequest outcome check
+1. Fix the current circular skip and report wording. Make missing instrumentation fail after a known
+   successful operation, and allow excluded specs to remain inapplicable. Wait for final scrapes.
+2. Implement one isolation option and its diagnostics lifecycle. Exercise consecutive runs, reuse
+   of the same Ginkgo seed, fixed namespaces, and a controller restart within a run. An earlier
+   failure must not fail the next clean run. A newly observed failure must fail its own run.
+3. Add GitTarget identity to CommitRequest outcomes, preserving the fallback for unresolvable
+   targets. Prove two targets are distinguishable, repeated saves reuse series, and terminal
+   decisions still count once outside status conflict retries. Test the real exporter labels.
+4. Extend the target mapping with `source_cluster`. Test local and remote provider identities,
+   deletion, and multiple targets from different clusters sharing one branch.
+5. Evaluate broader direct cluster labels against actual dashboard queries and a measured series
+   budget. Record the selected families, the historical-query benefit, and the compatibility impact.
 
-**Problem.** `reportCommitRequestOutcomes` skips when the counter is zero, so missing instrumentation
-is indistinguishable from a shard that never ran the specs.
+Add regression scenarios where one failure occurs before the first scrape, only one sample exists,
+and the producer restarts before the final query. Missing evidence must remain visible. Verify that
+removing recording calls makes the relevant wiring test fail. Check that diagnostics remain readable
+after a failed run and exported artifacts remain usable after the next reset.
 
-**Change.** Take the trigger from Ginkgo. `ReportAfterSuite` receives the aggregated report from all
-parallel processes, so "did any `commit-request`-labelled spec pass?" is answerable without querying
-Prometheus. When they ran, the metric is **required**; when they did not, the check is genuinely not
-applicable.
+## Merge boundary
 
-**Acceptance.** Deleting the `recordCommitRequestOutcome` calls fails the suite. Running a shard
-whose filter excludes `commit-request` still passes. Both asserted by running them.
+The branch's metrics and worker fix are useful independently of this larger plan. Merge them once
+known defects in the current assertions are resolved and the required checks pass. If isolation is
+not implemented in that change, keep the aggregate report explicitly diagnostic and avoid a gate
+that attributes retained history to the current run.
 
-### 2. Scope the aggregates to this run
+GitTarget outcome labels are the first follow-up product change; they need not wait for a broad
+cluster-label redesign. Keep that redesign separate so a useful observability increment does not
+turn into a rewrite of every instrument. This document does not itself establish merge readiness
+for any later branch head.
 
-**Problem.** The `[2h]` window reaches into previous runs on a reused cluster.
+## Separate product question: commands in data planes
 
-**Change.** `SynchronizedBeforeSuite` already returns `[]byte` from process 1 to every other process
-and currently returns `nil`. Stamp the run's start there and query
-`increase(metric[<elapsed>s])`. No infrastructure change, correct on a reused cluster, reset-aware.
-
-**Acceptance.** A run immediately following a failed run passes. Deliberately, this is the assertion
-that a stale-history bug would have failed.
-
-### 3. `source_cluster` on the mapping
-
-**Change.** Add it to `git_branch_targets` from the GitTarget's own source-cluster identity.
-`spec.clusterProviderRef` is CEL-immutable, so GitTarget to cluster is a stable one-to-one and the
-cluster axis becomes derivable for every GitTarget-labelled instrument through one join, rather than
-a label added to nine.
-
-**The config-plane sentinel is a separate concept from "unset".** `configPlaneClusterID` is
-deliberately the empty string so it cannot collide with a ClusterProvider name, but an empty label
-value is indistinguishable from a missing label in PromQL. The label needs an explicit rendering for
-the config plane.
-
-**Not on the git-side instruments.** A branch is shared by GitTargets that may mirror different
-clusters, so a single `source_cluster` there would have to be invented, which is the same objection
-that keeps `gittarget_*` off `git_commits_total`.
-
-**Acceptance.** A remote-source GitTarget and a local one publish distinguishable values, and the
-config-plane rendering is selectable.
-
-### 4. Record the two rules where they will be read
-
-At the instruments and at the assertions, not on a page. A rule in `docs/design/` is a rule nobody
-reads at the moment they are about to break it.
-
-### 5. Deferred: an `e2e_run` scrape-target label
-
-**Only worth building for identity-free instruments**, which today means `commit_requests_total`
-alone. The e2e `ServiceMonitor` is ours, so an `endpoints[].relabelings` entry stamping a run id
-labels everything from that target without the application knowing.
-
-**It does not belong in gitops-reverser.** A run id compiled into the operator is a test concern
-shipped into the product's metric surface and live in every production deployment. The generic need
-behind it is real and already solved by convention: Prometheus supplies `job` and `instance` per
-target, and `external_labels` is the standard way to stamp cluster or environment identity. The
-generic answer is scrape-side configuration, which is a second reason not to build it into the
-operator.
-
-**Reconsider when** a second identity-free instrument appears, or when a fixed-namespace suite needs
-run attribution.
-
-## What this plan does not do
-
-- **It does not add `source_cluster` to `commit_requests_total`.** Recorded because the reasoning
-  was wrong the first time: that label would be bounded by cluster and outcome, not by save, so it
-  is a capacity and product judgment rather than a cardinality error. Keeping the counter fleet-wide
-  is a decision to give up tenant attribution on saves, and that limitation belongs in the
-  instrument's doc comment.
-- **It does not pursue spec-level attribution for identity-free aggregates.** With parallel specs
-  sharing one controller, exact attribution to a single spec needs a distinguishing label, a serial
-  phase, or correlated logs. Run-level is achievable; spec-level is not, and claiming otherwise
-  would be the same kind of overreach as the circular skip.
-- **It does not move `CommitRequest` into data planes.** It is a command against a managed
-  GitTarget, and the current placement keeps authorization, submitter attribution and status
-  ownership together. Remote submission becomes compelling for a "save with only tenant-cluster
-  credentials" workflow, and that needs its own design: how a remote request selects an authorized
-  management-plane target, how the submitting identity survives the boundary, and how the result
-  gets back. Watching the CRD remotely answers none of the three.
-
-## Open questions
-
-- **Does the audit invariant want the same `increase()` correction?** It has the identical
-  `max_over_time` flaw. Fixing it is out of scope here and is the same change.
-- **Should the seed-in-namespace property be a documented contract?** Several helpers rely on it and
-  `TESTNAMESPACE` silently defeats it. Either it is load-bearing and should be stated, or the
-  helpers should not depend on it.
-- **What is the right config-plane label value?** `local`, `config-plane`, or the operator's own
-  cluster id if one is ever introduced. It is a public label value once shipped.
+Keep CommitRequest in the configuration plane for this work. Remote submission deserves its own
+proposal when users need to save using only tenant-cluster credentials. That proposal must specify
+authorized target selection, submitter identity across the boundary, and delivery of status back to
+the requester. Metrics do not require changing command placement.

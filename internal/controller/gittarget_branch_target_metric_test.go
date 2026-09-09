@@ -28,8 +28,8 @@ func TestGitTargetCleanup_ForgetsTheBranchTargetMapping(t *testing.T) {
 	require.NoError(t, err)
 	defer telemetry.ForgetBranchTarget("team-a", "sibling")
 
-	telemetry.RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main")
-	telemetry.RecordBranchTarget("team-a", "sibling", "team-a", "acme", "main")
+	telemetry.RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
+	telemetry.RecordBranchTarget("team-a", "sibling", "team-a", "acme", "main", "default")
 
 	_, ok := telemetry.CollectInt64Sum(reader, branchTargetsMetricName, map[string]string{
 		"gittarget_namespace": "team-a",

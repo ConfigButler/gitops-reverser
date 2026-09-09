@@ -35,8 +35,8 @@ func TestBranchTargets_TwoTargetsOnOneBranchEachPublish(t *testing.T) {
 	defer ForgetBranchTarget("team-a", "mirror")
 	defer ForgetBranchTarget("team-a", "docs")
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main")
-	RecordBranchTarget("team-a", "docs", "team-a", "acme", "main")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
+	RecordBranchTarget("team-a", "docs", "team-a", "acme", "main", "default")
 
 	for _, name := range []string{"mirror", "docs"} {
 		value, ok := branchTargetSeries(t, reader, "team-a", name)
@@ -63,7 +63,7 @@ func TestBranchTargets_ForgetStopsTheSeries(t *testing.T) {
 	reader, err := InitTestExporter()
 	require.NoError(t, err)
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
 	_, ok := branchTargetSeries(t, reader, "team-a", "mirror")
 	require.True(t, ok)
 
@@ -79,8 +79,8 @@ func TestBranchTargets_ForgetIsScopedToOneTarget(t *testing.T) {
 	require.NoError(t, err)
 	defer ForgetBranchTarget("team-a", "docs")
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main")
-	RecordBranchTarget("team-a", "docs", "team-a", "acme", "main")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
+	RecordBranchTarget("team-a", "docs", "team-a", "acme", "main", "default")
 
 	ForgetBranchTarget("team-a", "mirror")
 
@@ -98,12 +98,78 @@ func TestBranchTargets_RepeatedRecordStaysOneSeries(t *testing.T) {
 	defer ForgetBranchTarget("team-a", "mirror")
 
 	for range 5 {
-		RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main")
+		RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
 	}
 
 	value, ok := branchTargetSeries(t, reader, "team-a", "mirror")
 	require.True(t, ok)
 	assert.Equal(t, int64(1), value)
+}
+
+// The cluster axis. A local and a remote target publish distinguishable values, and the local one
+// is a concrete name rather than an empty string: GitTarget.SourceCluster() defaults to "default",
+// so PromQL never has to tell an empty label value apart from a missing label.
+func TestBranchTargets_SourceClusterDistinguishesLocalFromRemote(t *testing.T) {
+	reader, err := InitTestExporter()
+	require.NoError(t, err)
+	defer ForgetBranchTarget("team-a", "local")
+	defer ForgetBranchTarget("team-a", "remote")
+
+	RecordBranchTarget("team-a", "local", "team-a", "acme", "main", "default")
+	RecordBranchTarget("team-a", "remote", "team-a", "acme", "main", "tenant-eu-1")
+
+	for name, cluster := range map[string]string{"local": "default", "remote": "tenant-eu-1"} {
+		value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
+			"gittarget_name": name,
+			"source_cluster": cluster,
+		})
+		require.True(t, ok, "%s must publish source_cluster=%s", name, cluster)
+		assert.Equal(t, int64(1), value)
+	}
+
+	_, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{"source_cluster": ""})
+	assert.False(t, ok, "no series may carry an empty source_cluster; the config-plane sentinel is "+
+		"a different identity and must not reach this label")
+}
+
+// One branch, two clusters. This is the arrangement that makes a single source_cluster on the
+// git-side instruments impossible: joining the branch's failed pushes names both clusters as
+// POTENTIALLY affected, and neither the mapping nor the join allocates the failure between them.
+func TestBranchTargets_OneBranchCanSpanTwoClusters(t *testing.T) {
+	reader, err := InitTestExporter()
+	require.NoError(t, err)
+	defer ForgetBranchTarget("team-a", "from-eu")
+	defer ForgetBranchTarget("team-a", "from-us")
+
+	RecordBranchTarget("team-a", "from-eu", "team-a", "acme", "main", "tenant-eu-1")
+	RecordBranchTarget("team-a", "from-us", "team-a", "acme", "main", "tenant-us-1")
+
+	for _, cluster := range []string{"tenant-eu-1", "tenant-us-1"} {
+		value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
+			"provider_namespace": "team-a",
+			"provider_name":      "acme",
+			"branch":             "main",
+			"source_cluster":     cluster,
+		})
+		require.True(t, ok, "cluster %s must be reachable from the branch's own labels", cluster)
+		assert.Equal(t, int64(1), value)
+	}
+}
+
+// A GitTarget's cluster is fixed for its life (spec.clusterProviderRef is CEL-immutable), which is
+// what makes one join series enough for every GitTarget-labelled instrument. The recording site is
+// still a replace, so a re-reconcile cannot leave two clusters published for one target.
+func TestBranchTargets_RerecordReplacesTheClusterRatherThanAdding(t *testing.T) {
+	reader, err := InitTestExporter()
+	require.NoError(t, err)
+	defer ForgetBranchTarget("team-a", "mirror")
+
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "tenant-eu-1")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "tenant-eu-1")
+
+	value, ok := branchTargetSeries(t, reader, "team-a", "mirror")
+	require.True(t, ok)
+	assert.Equal(t, int64(1), value, "one target publishes one series, whatever its cluster")
 }
 
 // Two GitTargets with the same name in different namespaces are different objects writing to
@@ -115,8 +181,8 @@ func TestBranchTargets_NamespaceIsPartOfTheIdentity(t *testing.T) {
 	defer ForgetBranchTarget("team-a", "mirror")
 	defer ForgetBranchTarget("team-b", "mirror")
 
-	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main")
-	RecordBranchTarget("team-b", "mirror", "team-b", "globex", "main")
+	RecordBranchTarget("team-a", "mirror", "team-a", "acme", "main", "default")
+	RecordBranchTarget("team-b", "mirror", "team-b", "globex", "main", "default")
 
 	value, ok := CollectInt64Sum(reader, branchTargetsMetric, map[string]string{
 		"gittarget_namespace": "team-b",
