@@ -4,8 +4,9 @@ package controller
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/yaml"
 
 	api "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -32,7 +34,7 @@ func applyIgnoringUnknownFields(ctx context.Context, c client.Client, obj *unstr
 		&client.PatchOptions{Raw: &metav1.PatchOptions{FieldValidation: "Ignore"}})
 }
 
-const gitTargetCRDName = "gittargets.configbutler.ai"
+const crdBaseDir = "../../config/crd/bases"
 
 // legacyGitTarget is the shape a GitTarget had before liveTemplate replaced the two
 // per-event templates: the documents this migration has to keep working for.
@@ -51,10 +53,18 @@ func legacyGitTarget(name string) *unstructured.Unstructured {
 	}}
 }
 
-// startCRDEnv brings up an envtest apiserver with the project CRDs and returns a client.
-func startCRDEnv(t *testing.T) client.Client {
+// startEnv brings up an envtest apiserver holding exactly the given CRDs and returns a client.
+// Passing the CRDs as objects rather than a directory is what lets a caller install a MODIFIED
+// schema, without ever editing one that is already being served.
+func startEnv(t *testing.T, crds ...*apiextv1.CustomResourceDefinition) client.Client {
 	t.Helper()
-	env := &envtest.Environment{CRDDirectoryPaths: []string{"../../config/crd/bases"}, ErrorIfCRDPathMissing: true}
+	env := &envtest.Environment{}
+	if len(crds) == 0 {
+		env.CRDDirectoryPaths = []string{crdBaseDir}
+		env.ErrorIfCRDPathMissing = true
+	} else {
+		env.CRDs = crds
+	}
 	cfg, err := env.Start()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, env.Stop()) })
@@ -65,6 +75,38 @@ func startCRDEnv(t *testing.T) client.Client {
 	require.NoError(t, err)
 
 	return c
+}
+
+// gitTargetCRDWithoutMessageValidation reads the shipped GitTarget CRD and returns it with the
+// retirement rules on spec.commit.message removed.
+//
+// The point is WHEN this happens: before the apiserver has ever seen the CRD, so the relaxed
+// schema is the only one it ever compiles. Editing a live CRD instead means asking it to rebuild
+// a serving handler, and under CPU pressure that rebuild is sometimes missed outright -- the new
+// schema reads back correctly while the previously compiled one goes on validating, with nothing
+// to retrigger it. Doing the edit here removes the rebuild from the test rather than waiting on
+// one, which is not something a timeout can fix: measured under load, every run that converged
+// did so within 6.3s and every run that failed used its entire budget, whether that was 10
+// seconds or 60.
+func gitTargetCRDWithoutMessageValidation(t *testing.T) *apiextv1.CustomResourceDefinition {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(crdBaseDir, "configbutler.ai_gittargets.yaml"))
+	require.NoError(t, err)
+	var crd apiextv1.CustomResourceDefinition
+	require.NoError(t, yaml.Unmarshal(raw, &crd))
+	for i := range crd.Spec.Versions {
+		root := crd.Spec.Versions[i].Schema.OpenAPIV3Schema
+		spec := root.Properties["spec"]
+		commit := spec.Properties["commit"]
+		msg := commit.Properties["message"]
+		require.NotEmpty(t, msg.XValidations, "shipped CRD no longer carries the rules this test relaxes")
+		msg.XValidations = nil
+		commit.Properties["message"] = msg
+		spec.Properties["commit"] = commit
+		root.Properties["spec"] = spec
+	}
+
+	return &crd
 }
 
 // TestLiveMessageValidation_RejectsLegacyAcceptsMigrated pins what the SHIPPED schema does:
@@ -83,7 +125,7 @@ func startCRDEnv(t *testing.T) client.Client {
 // removes the rebuild from the picture rather than waiting on it.
 func TestLiveMessageValidation_RejectsLegacyAcceptsMigrated(t *testing.T) {
 	ctx := context.Background()
-	c := startCRDEnv(t)
+	c := startEnv(t)
 
 	err := applyIgnoringUnknownFields(ctx, c, legacyGitTarget("reject-legacy"))
 	require.Error(t, err)
@@ -97,27 +139,16 @@ func TestLiveMessageValidation_RejectsLegacyAcceptsMigrated(t *testing.T) {
 
 func TestLiveMessageMigration_StoredValuesAndRemoval(t *testing.T) {
 	ctx := context.Background()
-	c := startCRDEnv(t)
 	legacy := legacyGitTarget
 
-	// Storing the pre-migration shape means getting it past the validation that forbids it, and
-	// the only way in is to take that validation off the CRD. It is never put back: proving the
-	// shipped schema still rejects this shape is TestLiveMessageValidation_RejectsLegacyAcceptsMigrated's
-	// job, against an untouched CRD, precisely so that this test does not have to wait on a
-	// second handler rebuild it cannot make the apiserver perform.
-	var crd apiextv1.CustomResourceDefinition
-	require.NoError(t, c.Get(ctx, client.ObjectKey{Name: gitTargetCRDName}, &crd))
-	message := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["commit"].Properties["message"]
-	message.XValidations = nil
-	crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["commit"].Properties["message"] = message
-	require.NoError(t, c.Update(ctx, &crd))
-
-	// The first successful apply IS the evidence that the relaxed schema is being served.
+	// Storing the pre-migration shape means getting it past the validation that forbids it. That
+	// relaxation is applied to the CRD BEFORE it is installed, so the apiserver compiles it once
+	// and nothing here ever waits on a schema change. Proving the SHIPPED schema still rejects
+	// this shape is TestLiveMessageValidation_RejectsLegacyAcceptsMigrated's job, against a CRD
+	// that is never modified at all.
+	c := startEnv(t, gitTargetCRDWithoutMessageValidation(t))
 	for _, name := range []string{"migrate-apply", "migrate-patch"} {
-		obj := legacy(name)
-		require.Eventually(t, func() bool {
-			return applyIgnoringUnknownFields(ctx, c, obj) == nil
-		}, 10*time.Second, 100*time.Millisecond)
+		require.NoError(t, applyIgnoringUnknownFields(ctx, c, legacy(name)))
 	}
 	for _, name := range []string{"migrate-apply", "migrate-patch"} {
 		var target api.GitTarget
