@@ -49,26 +49,55 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
 
-FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS sops-downloader
+FROM golang:1.27.1@sha256:512690a5660563b57d37ecc31129e7f136e831db2aed24a1dbeb8ad7380dc0fa AS sops-builder
+
+# Automatic platform arguments provided by Docker BuildKit
+ARG TARGETOS
 ARG TARGETARCH
-# Keep current: the CI image-scan gate fails on fixable CRITICALs in this
-# binary's compiled-in deps (old releases ship vulnerable grpc/stdlib builds).
-ARG SOPS_VERSION=v3.13.3
-RUN apk add --no-cache curl
-RUN case "${TARGETARCH}" in \
-    amd64)  SOPS_ARCH=amd64 ;; \
-    arm64)  SOPS_ARCH=arm64 ;; \
-    *) echo "unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
-    esac \
- && curl -fsSL -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.${SOPS_ARCH}" \
- && chmod 0555 /usr/local/bin/sops
+
+# SOPS is BUILT here rather than downloaded from its GitHub release.
+#
+# A Go release binary carries an embedded SBOM — the toolchain version and every
+# dependency version it was compiled with — and that is what image scanners read.
+# So a prebuilt binary accumulates findings on a clock set by UPSTREAM's release
+# cadence, not ours: v3.13.3 was frozen on Go 1.26.5 with x/crypto v0.54.0 and
+# grpc v1.82.1, and every stdlib or dependency CVE disclosed since lands on it
+# permanently. There is no newer release to bump to, and waiting for one is not a
+# mitigation. Scanning the release artifact today reports 14 findings, none of
+# them a defect in SOPS's own code.
+#
+# Building the same upstream tag with the toolchain above, from the pinned module
+# in hack/sops-build (which also holds the dependencies past the versions SOPS
+# requires), reports zero. The version and the dependency pins live in that
+# module's go.mod so Dependabot tracks them; see hack/sops-build/pins.go for why
+# each one is held forward.
+#
+# This does NOT weaken the supply chain. The download it replaces verified
+# nothing — no checksum, no signature, just TLS to a URL. Building through the
+# module graph verifies every source module against go.sum and the public Go
+# checksum database.
+WORKDIR /workspaces/sops-build
+
+# Only the module files: the build resolves cmd/sops out of the module cache, and
+# pins.go is behind a build tag that is never set, so neither is needed here.
+COPY hack/sops-build/go.mod hack/sops-build/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+# Static, like the manager: the runtime stage is distroless/static. -trimpath so
+# the binary does not carry builder paths.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -trimpath -ldflags "-s -w" \
+    -o /out/sops github.com/getsops/sops/v3/cmd/sops \
+    && chmod 0555 /out/sops
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:debug@sha256:53cd815b916ffc1751285f307bdaa728f459224296e97af342e73e4cebeb41e8
 WORKDIR /
 COPY --from=builder /workspaces/manager .
-COPY --from=sops-downloader /usr/local/bin/sops /usr/local/bin/sops
+COPY --from=sops-builder /out/sops /usr/local/bin/sops
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

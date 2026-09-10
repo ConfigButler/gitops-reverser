@@ -1,7 +1,14 @@
 version: 2
 updates:
   - package-ecosystem: "gomod"
-    directory: "/"
+    # Two modules. "/" is the operator itself; "/hack/sops-build" pins the SOPS
+    # version the image builds from source, plus the dependencies held ahead of
+    # the ones SOPS requires. That second module exists TO be updated — it is how
+    # a CVE in the SOPS binary reaches us as a pull request instead of waiting on
+    # an upstream release — so leaving it off this list would defeat the point.
+    directories:
+      - "/"
+      - "/hack/sops-build"
     schedule:
       interval: "weekly"
     groups:
