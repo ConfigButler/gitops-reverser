@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	filippo.io/age v1.3.2
-	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/fluxcd/pkg/apis/meta v1.31.0
 	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
