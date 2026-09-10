@@ -1,7 +1,7 @@
 # Build the manager binary
 # Base images are pinned by digest (Scorecard "pinned dependencies");
 # Dependabot's docker ecosystem keeps version + digest current together.
-FROM golang:1.27.1@sha256:512690a5660563b57d37ecc31129e7f136e831db2aed24a1dbeb8ad7380dc0fa AS builder
+FROM golang:1.27.1@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea AS builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
 
-FROM golang:1.27.1@sha256:512690a5660563b57d37ecc31129e7f136e831db2aed24a1dbeb8ad7380dc0fa AS sops-builder
+FROM golang:1.27.1@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea AS sops-builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
