@@ -352,13 +352,22 @@ tasks:
       - '{{.GOLANGCI_LINT}} run'
 
   lint-gomod:
-    desc: Check that go.mod and go.sum are tidy
+    desc: Check that go.mod and go.sum are tidy, in every module
     # Only `go mod tidy` knows whether the module graph is tidy, so ask it rather than
     # re-deriving the answer. `-diff` reports what tidying WOULD change and exits non-zero,
     # without writing anything, so the check never mutates the tree it is checking.
     #
     # Nothing gated this before, and it drifted: k8s.io/apiextensions-apiserver sat marked
     # `// indirect` while internal/controller imported it directly in a test.
+    #
+    # EVERY module, not just the root one. `go mod tidy` operates on the module containing
+    # the working directory and does not recurse, so a nested module is invisible to a check
+    # that only runs here — and hack/sops-build is dependency surface the image is built
+    # from, where a silent drift is exactly what this repository is trying not to have.
+    # A module added later must be added to MODULES below; there is no discovery step,
+    # because `find`ing go.mod files would also walk the untracked clones in external-sources/.
+    vars:
+      MODULES: ". hack/sops-build"
     sources:
       - api/**/*.go
       - cmd/**/*.go
@@ -368,12 +377,19 @@ tasks:
       - test/**/*.go
       - go.mod
       - go.sum
+      - hack/sops-build/go.mod
+      - hack/sops-build/go.sum
     cmds:
       - |
-        if ! go mod tidy -diff; then
-          echo "❌ go.mod/go.sum are not tidy — run 'go mod tidy' and commit the result" >&2
-          exit 1
-        fi
+        set -eu
+        rc=0
+        for mod in {{.MODULES}}; do
+          if ! (cd "${mod}" && go mod tidy -diff); then
+            echo "❌ ${mod}/go.mod and ${mod}/go.sum are not tidy — run 'go mod tidy' there and commit the result" >&2
+            rc=1
+          fi
+        done
+        exit "${rc}"
 
   lint-actions:
     desc: Lint GitHub Actions workflows with actionlint
