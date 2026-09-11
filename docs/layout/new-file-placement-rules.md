@@ -29,7 +29,7 @@
 > gets its path from the GitTarget's declared `placement.byType`/`placement.default`
 > (Option B2); failing that, from the folder's one supported kustomization root, if it has
 > exactly one; failing that, from the built-in canonical
-> `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` path. Nothing reads the layout of
+> `{namespace}/{group}/{resource}/{name}.yaml` path. Nothing reads the layout of
 > the other documents of the same type. Option C did exactly that and was deleted — the
 > argument is in [`open-asks-priority.md`](../design/open-asks-priority.md) and summarised
 > in [its own section below](#option-c-follow-the-existing-layout-sibling-inference--removed).
@@ -96,7 +96,7 @@ spec:
     byType:
       v1/secrets: "{namespace}/secret-{name}.yaml"
       v1/configmaps: "{namespace}/configmaps.yaml"
-    default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
+    default: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml"
 ```
 
 In this example:
@@ -173,7 +173,7 @@ shape is:
 spec:
   placement:
     sensitiveRules:
-      - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
+      - path: "{groupPath}/{version}/{resource}/{namespace}/{name}.sops.yaml"
     normalRules:
       - match:
           apiGroups: [""]
@@ -241,7 +241,7 @@ spec:
   placement:
     sensitiveTypes:
       v1/secrets: "{namespace}/secret-{name}.sops.yaml"
-    sensitiveDefault: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
+    sensitiveDefault: "{groupPath}/{version}/{resource}/{namespace}/{name}.sops.yaml"
     normalTypes:
       v1/configmaps: "{namespace}/configmaps.yaml"
     normalDefault: "all.yaml"
@@ -302,7 +302,7 @@ placement:
   sensitive:
     byType:
       v1/secrets: "{namespace}/secret-{name}.sops.yaml"
-    default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
+    default: "{groupPath}/{version}/{resource}/{namespace}/{name}.sops.yaml"
   normal:
     byType:
       v1/configmaps: "{namespace}/configmaps.yaml"
@@ -411,7 +411,7 @@ placement:
   byType:
     v1/secrets: "{namespace}/secrets/{name}.yaml"
     v1/configmaps: "{namespace}/configmaps.yaml"
-  default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
+  default: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml"
 ```
 
 ```go
@@ -443,7 +443,7 @@ The important safety rule moves from the API shape into validation:
   `{namespace}/{name}.yaml`;
 - a `default` that can catch sensitive resources must be identity-complete across
   type, scope, and name, for example
-  `{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml`;
+  `{groupPath}/{version}/{resource}/{namespace}/{name}.yaml`;
 - a broad bundling default such as `all.yaml` is valid only if it cannot catch
   sensitive resources, for example because every sensitive type watched by the
   target has an exact `byType` entry or because the target has no sensitive
@@ -588,7 +588,7 @@ and each one either answers or declines:
 | 1a | declared `placement.byType` for this exact type | `by_type` | the GitTarget named this type |
 | 1b | declared `placement.default`, the catch-all | `default` | the GitTarget named a fallback |
 | 2 | the folder's single supported kustomization root | `kustomize_root` | a file that root cannot reach never renders |
-| 3 | canonical `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` | `canonical` | nothing else did |
+| 3 | canonical `{namespace}/{group}/{resource}/{name}.yaml` | `canonical` | nothing else did |
 
 Every resolved path — whichever step produced it — then passes one gate before a byte is
 written: [path validation](#path-validation), the append-safety rules, and the
@@ -598,7 +598,7 @@ being merely logged.
 
 ### The kustomize-root fallback
 
-The canonical path is a `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` tree a
+The canonical path is a `{namespace}/{group}/{resource}/{name}.yaml` tree a
 kustomization's `resources:` graph can never reach. So in a folder that kustomize builds,
 a new document at the canonical path is not merely oddly placed — it is **never rendered**,
 and nothing applies it. That is the failure new-file placement exists to prevent, and it is
@@ -860,7 +860,7 @@ sensitive resources in the GitTarget. There are two ways a template can prove
 that:
 
 1. The path contains the full API identity variables:
-   `{groupPath}`, `{version}`, `{resource}`, `{namespaceOrCluster}`, and `{name}`.
+   `{groupPath}`, `{version}`, `{resource}`, `{namespace}`, and `{name}`.
 2. The placement entry narrows to exactly one served resource type, and the path
    contains the scope identity for that type:
    `{namespace}` plus `{name}` for namespaced resources, or `{name}` for
@@ -886,7 +886,7 @@ If the match does not narrow to one type, use the full identity path:
 
 ```yaml
 placement:
-  default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
+  default: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml"
 ```
 
 `.sops.yaml` and `.sops.yml` remain good conventions, and the built-in secure
@@ -899,7 +899,7 @@ Variable expansion must also be non-lossy for identity variables. Do not use a
 sanitizer that turns two legal Kubernetes names into the same path segment.
 Percent-encoding or another reversible path encoding is safer than lossy
 replacement for `{groupPath}`, `{version}`, `{resource}`, `{namespace}`,
-`{namespaceOrCluster}`, and `{name}`.
+`{namespace}`, and `{name}`.
 
 ## Template variables
 
@@ -922,8 +922,7 @@ Recommended variables:
 | `{resource}` | plural resource name, for example `configmaps` |
 | `{kind}` | manifest kind, for example `ConfigMap` |
 | `{scope}` | `namespaced` or `cluster` |
-| `{namespace}` | metadata namespace, empty for cluster-scoped resources |
-| `{namespaceOrCluster}` | namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for cluster-scoped resources |
+| `{namespace}` | the resource's namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for a cluster-scoped resource |
 | `{name}` | metadata name |
 | `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
 | `{label:key}` | the value of that label on the placed resource, or the `_unlabeled` sentinel when it carries none; `{label:key\|fallback}` names a different bucket, and an empty fallback renders no segment at all ([details](#labelkey--the-one-metadata-variable)) |
@@ -944,7 +943,7 @@ With those variables, the built-in canonical layout is **namespace-first, no
 version segment** (as implemented in `ResourceIdentifier.ToGitPath`):
 
 ```text
-{namespaceOrCluster}/{groupPath}/{resource}/{name}{sensitiveSuffix}
+{namespace}/{groupPath}/{resource}/{name}{sensitiveSuffix}
 ```
 
 The scope leads (a real namespace, or the literal `_cluster` for a cluster-scoped
@@ -1008,8 +1007,8 @@ renders the built-in sentinel `_unlabeled` rather than an empty segment — an
 empty segment would collapse and fold every unlabeled resource of the type onto
 one path, so it is replaced with a real, fixed segment instead.
 
-`_unlabeled` plays exactly the role `_cluster` already plays for
-`{namespaceOrCluster}`: a value no real label could ever hold — a label value
+`_unlabeled` plays exactly the role `_cluster` already plays for a
+cluster-scoped resource's `{namespace}`: a value no real label could ever hold — a label value
 must be alphanumeric at both ends, and `_unlabeled` starts with `_` — so it can
 never collide with one, and it is one documented constant rather than an
 invisible per-deployment default a reader would have to guess at.
@@ -1238,7 +1237,7 @@ placement:
   byType:
     v1/secrets: "{namespace}/secret-{name}.yaml"
     v1/configmaps: "{namespace}/configmaps.yaml"
-  default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
+  default: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml"
 ```
 
 The keys are plural resource keys, so use `v1/secrets` and `v1/configmaps`, not
@@ -1256,7 +1255,7 @@ resources get their own bundle.
 ```yaml
 placement:
   sensitiveRules:
-    - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
+    - path: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml"
   normalRules:
     - match:
         scope: Namespaced
@@ -1291,7 +1290,7 @@ used here as a repository convention, but it is not part of the safety contract.
 ```yaml
 placement:
   sensitiveRules:
-    - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
+    - path: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml"
   normalRules:
     - match:
         apiGroups: [""]

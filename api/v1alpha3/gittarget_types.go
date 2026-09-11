@@ -214,7 +214,7 @@ type GitTargetCommitSpec struct {
 // kustomization when the whole folder is governed by exactly one supported
 // kustomization (so the file is reachable from a render root instead of being
 // written where kustomize would never build it), and otherwise at the built-in
-// canonical, versionless {namespaceOrCluster}/{group}/{resource}/{name}.yaml path.
+// canonical, versionless {namespace}/{group}/{resource}/{name}.yaml path.
 // Nothing infers a destination from where the repository keeps other resources of
 // the same type: a layout this operator cannot derive from one root is declared
 // here or it is canonical. Because the canonical path omits the API version,

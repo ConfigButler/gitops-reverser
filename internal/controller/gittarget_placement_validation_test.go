@@ -30,7 +30,7 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			"byType plus an identity-complete default",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
-				Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml",
+				Default: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml",
 			},
 			true,
 		},
@@ -45,14 +45,14 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"the versionless canonical default is accepted (#295)",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+				Default: "{namespace}/{groupPath}/{resource}/{name}.yaml",
 			},
 			true,
 		},
 		{
 			"a label variable passes the static gate with no object to read it from",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{label:app.kubernetes.io/instance}/{namespaceOrCluster}/" +
+				Default: "{label:app.kubernetes.io/instance}/{namespace}/" +
 					"{groupPath}/{resource}/{name}.yaml",
 			},
 			true,
@@ -60,35 +60,35 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"a label does not supply the type identity a default needs to stay Secret-safe",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{label:app.kubernetes.io/instance}/{namespaceOrCluster}/{name}.yaml",
+				Default: "{label:app.kubernetes.io/instance}/{namespace}/{name}.yaml",
 			},
 			false,
 		},
 		{
 			"a fallback bucket no label value could reach is accepted",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{label:team|_none}/{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+				Default: "{label:team|_none}/{namespace}/{groupPath}/{resource}/{name}.yaml",
 			},
 			true,
 		},
 		{
 			"an empty fallback is a declared segment collapse, not a typo",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{label:team|}/{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+				Default: "{label:team|}/{namespace}/{groupPath}/{resource}/{name}.yaml",
 			},
 			true,
 		},
 		{
 			"a fallback that would invent a directory is rejected",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{label:team|a/b}/{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+				Default: "{label:team|a/b}/{namespace}/{groupPath}/{resource}/{name}.yaml",
 			},
 			false,
 		},
 		{
 			"a label key Kubernetes would reject is rejected here, not per resource",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{label:not a key}/{namespaceOrCluster}/{name}.yaml",
+				Default: "{label:not a key}/{namespace}/{name}.yaml",
 			},
 			false,
 		},
@@ -113,7 +113,7 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"annotations are not a placement variable",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{annotation:team}/{namespaceOrCluster}/{name}.yaml",
+				Default: "{annotation:team}/{namespace}/{name}.yaml",
 			},
 			false,
 		},
@@ -156,7 +156,7 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"unknown template variable",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}-{bogus}.yaml",
+				Default: "{groupPath}/{version}/{resource}/{namespace}/{name}-{bogus}.yaml",
 			},
 			false,
 		},

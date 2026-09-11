@@ -2,7 +2,7 @@
 
 The built-in canonical layout, and the only shape in this set that needs no layout configuration at
 all: no `placement`, no flag. A path carries the object's identity —
-`{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml` — and the document carries its namespace,
+`{namespace}/{groupPath}/{resource}/{name}.yaml` — and the document carries its namespace,
 so a file means the same thing wherever it is read.
 
 This is the **viewer** shape. Its first job is that a human, or a diff on a pull request, can see

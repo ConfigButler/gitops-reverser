@@ -95,15 +95,7 @@ func (r ResourceIdentifier) Key() string {
 // splits on that bump. Neither is wrong; they answer different questions, and a caller
 // joining data that outlives a release wants this one.
 func (r ResourceIdentifier) ToGitPath() string {
-	scope := r.Namespace
-	if scope == "" {
-		// Cluster-scoped resource: the scope segment is "_cluster", an illegal
-		// Kubernetes namespace name (DNS-1123 forbids "_"), so it can never collide
-		// with a real namespace and reads unambiguously as "not a namespace" — unlike
-		// a bare "cluster", which is itself a legal namespace name. Matches the
-		// {namespaceOrCluster} placement template variable.
-		scope = "_cluster"
-	}
+	scope := r.NamespaceOrCluster()
 
 	if r.Group == "" {
 		// Core resources (no group): omit the group segment entirely.
@@ -116,6 +108,26 @@ func (r ResourceIdentifier) ToGitPath() string {
 // IsClusterScoped returns true if the resource is cluster-scoped.
 func (r ResourceIdentifier) IsClusterScoped() bool {
 	return r.Namespace == ""
+}
+
+// ClusterScopeSegment is what stands in the namespace position for a cluster-scoped resource:
+// an illegal Kubernetes namespace name (DNS-1123 forbids "_"), so it can never collide with a
+// real namespace and reads unambiguously as "not a namespace" — unlike a bare "cluster", which
+// is itself a legal namespace name.
+//
+// It is one constant rather than a literal per renderer because every surface that names a
+// resource's scope must name it identically: the canonical Git path (ToGitPath), the {namespace}
+// placement variable, and a commit message's .Namespace. There is no second, scope-aware spelling
+// of any of the three — one concept, one word.
+const ClusterScopeSegment = "_cluster"
+
+// NamespaceOrCluster is the resource's namespace, or ClusterScopeSegment when it is
+// cluster-scoped. A cluster-scoped resource HAS a scope name; it is simply not a namespace.
+func (r ResourceIdentifier) NamespaceOrCluster() string {
+	if r.IsClusterScoped() {
+		return ClusterScopeSegment
+	}
+	return r.Namespace
 }
 
 // String returns a human-readable representation.

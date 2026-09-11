@@ -69,8 +69,8 @@ func validateSecretSafety(spec *configbutleraiv1alpha3.GitTargetPlacementSpec) (
 
 	if secretTmpl != "" && !secretRouteComplete {
 		return false, fmt.Sprintf(
-			"placement byType[%q] %q must be identity-complete (include {name} and "+
-				"{namespace}/{namespaceOrCluster}) because Secrets are sensitive and must never share a file",
+			"placement byType[%q] %q must be identity-complete (include {name} and {namespace}) "+
+				"because Secrets are sensitive and must never share a file",
 			coreSecretsTypeKey, secretTmpl,
 		)
 	}

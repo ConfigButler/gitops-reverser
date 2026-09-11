@@ -86,7 +86,7 @@ const (
 	// convention: a file that root cannot reach would never render at all.
 	PlacementSourceKustomizeRoot PlacementSource = "kustomize_root"
 	// PlacementSourceCanonical is the built-in, versionless
-	// {namespaceOrCluster}/{group}/{resource}/{name}.yaml fallback: no declared
+	// {namespace}/{group}/{resource}/{name}.yaml fallback: no declared
 	// template, and no single kustomize root to hang the file off. For a repository
 	// with a hand-authored layout this is the signal that a placement.byType or
 	// placement.default line is missing — which is why it is counted per
@@ -505,7 +505,7 @@ const placementLabelFallbackSeparator = "|"
 // placementUnlabeledSentinel is what "{label:key}" renders for a resource that does not carry
 // the label (or carries it empty) when the template names no explicit "{label:key|fallback}".
 //
-// It plays the same role here that "_cluster" plays for {namespaceOrCluster}: a value no real
+// It plays the same role here that "_cluster" plays for a cluster-scoped {namespace}: a value no real
 // label could ever hold — a label value must be alphanumeric at both ends, and this starts with
 // "_" — so it can never collide with one, and it is a single documented constant rather than a
 // per-deployment invisible default. A template that wants its own bucket name still writes
@@ -595,17 +595,36 @@ func isKnownPlacementVariable(name string) bool {
 	}
 	switch name {
 	case "group", "groupPath", "version", "apiVersion", "resource",
-		"kind", "scope", "namespace", "namespaceOrCluster", "name", "sensitiveSuffix":
+		"kind", "scope", "namespace", "name", "sensitiveSuffix":
 		return true
 	default:
 		return false
 	}
 }
 
+// removedPlacementVariableGuidance is the sentence that tells the author of a REMOVED variable
+// what to write instead, and "" for a placeholder that is merely unknown. A removed name reported
+// as "unknown" reads like a typo and sends its reader hunting for a misspelling that is not there,
+// so it is named and answered.
+func removedPlacementVariableGuidance(placeholder string) string {
+	if placeholder == "{namespaceOrCluster}" {
+		return "{namespaceOrCluster} was removed: {namespace} now renders \"" +
+			types.ClusterScopeSegment + "\" for a cluster-scoped resource, so it is the only " +
+			"namespace-position variable"
+	}
+	return ""
+}
+
 // unknownPlacementVariablesError names every placeholder in tmpl that is not a variable this
 // package renders, shared by the render path and the static Validated gate so the two report a
-// typo identically.
+// typo identically. A placeholder that names a REMOVED variable is reported with its
+// replacement instead of being lumped in with the typos.
 func unknownPlacementVariablesError(tmpl string, unknown []string) error {
+	for _, placeholder := range unknown {
+		if guidance := removedPlacementVariableGuidance(placeholder); guidance != "" {
+			return fmt.Errorf("placement template %q: %s", tmpl, guidance)
+		}
+	}
 	return fmt.Errorf(
 		"placement template %q references unknown variable(s): %s",
 		tmpl,
@@ -616,15 +635,11 @@ func unknownPlacementVariablesError(tmpl string, unknown []string) error {
 func placementVars(req PlacementRequest) map[string]string {
 	id := req.Identifier
 	scope := "namespaced"
-	nsOrCluster := id.Namespace
 	if id.IsClusterScoped() {
+		// {scope} is the readable "cluster"/"namespaced" descriptor. The namespace-position
+		// VALUE is {namespace}, which renders types.ClusterScopeSegment here — the same word
+		// the canonical path and a commit message use, so all three name a scope identically.
 		scope = "cluster"
-		// The namespace-position segment uses "_cluster", an illegal Kubernetes
-		// namespace name (DNS-1123 forbids "_"), so it can never collide with a real
-		// namespace — unlike a bare "cluster", which is a legal namespace name. This
-		// mirrors ResourceIdentifier.ToGitPath's built-in canonical scope segment.
-		// {scope} above stays the readable "cluster"/"namespaced" descriptor.
-		nsOrCluster = "_cluster"
 	}
 	apiVersion := id.Version
 	if id.Group != "" {
@@ -635,17 +650,16 @@ func placementVars(req PlacementRequest) map[string]string {
 		sensitiveSuffix = ".sops.yaml"
 	}
 	vars := map[string]string{
-		"group":              id.Group,
-		"groupPath":          id.Group,
-		"version":            id.Version,
-		"apiVersion":         apiVersion,
-		"resource":           id.Resource,
-		"kind":               req.Kind,
-		"scope":              scope,
-		"namespace":          id.Namespace,
-		"namespaceOrCluster": nsOrCluster,
-		"name":               id.Name,
-		"sensitiveSuffix":    sensitiveSuffix,
+		"group":           id.Group,
+		"groupPath":       id.Group,
+		"version":         id.Version,
+		"apiVersion":      apiVersion,
+		"resource":        id.Resource,
+		"kind":            req.Kind,
+		"scope":           scope,
+		"namespace":       id.NamespaceOrCluster(),
+		"name":            id.Name,
+		"sensitiveSuffix": sensitiveSuffix,
 	}
 	// Labels join the same map under their full placeholder name. The "label:" prefix is not a
 	// legal bare variable, so a label literally named "namespace" cannot shadow the built-in one.
@@ -805,7 +819,7 @@ func ValidPlacementTemplatePath(tmpl string) error {
 // already complete, never supply the part that is missing.
 func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool {
 	hasName := strings.Contains(tmpl, "{name}")
-	hasScope := strings.Contains(tmpl, "{namespace}") || strings.Contains(tmpl, "{namespaceOrCluster}")
+	hasScope := strings.Contains(tmpl, "{namespace}")
 	if !hasName || !hasScope {
 		return false
 	}

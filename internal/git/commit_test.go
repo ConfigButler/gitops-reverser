@@ -671,10 +671,12 @@ func renderSingleLiveCommitMessage(event Event, config CommitConfig) (string, er
 // expectSingleLiveMessage builds the message the default live template renders for one retained
 // resource: a "chore: sync 1 resource" subject and one body line per entry.
 func expectSingleLiveMessage(operation, apiVersion, resource, namespace, name string) string {
-	location := name
-	if namespace != "" {
-		location = namespace + "/" + name
+	// The namespace position is never blank: a cluster-scoped resource renders the "_cluster"
+	// sentinel, the same word its Git path uses, so the default template prints it unguarded.
+	if namespace == "" {
+		namespace = types.ClusterScopeSegment
 	}
+	location := namespace + "/" + name
 
 	return fmt.Sprintf("chore: sync 1 resource\n\n- [%s] %s/%s/%s\n", operation, apiVersion, resource, location)
 }

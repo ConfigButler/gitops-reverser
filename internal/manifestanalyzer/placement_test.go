@@ -582,7 +582,7 @@ func TestRenderPlacementTemplate(t *testing.T) {
 	vars := map[string]string{
 		"group": "", "groupPath": "", "version": "v1", "apiVersion": "v1",
 		"resource": "configmaps", "kind": "ConfigMap", "scope": "namespaced",
-		"namespace": "default", "namespaceOrCluster": "default", "name": "app",
+		"namespace": "default", "name": "app",
 		"sensitiveSuffix": ".yaml",
 	}
 	got, err := RenderPlacementTemplate("{groupPath}/{version}/{resource}/{namespace}/{name}.yaml", vars)
@@ -600,10 +600,10 @@ func TestPlacementVars_GroupedClusterScoped(t *testing.T) {
 		Kind:       "ClusterRole",
 	}
 	vars := placementVars(req)
-	if vars["scope"] != "cluster" || vars["namespaceOrCluster"] != "_cluster" {
-		t.Errorf("got scope=%q namespaceOrCluster=%q, want scope=\"cluster\" (descriptor) and "+
-			"namespaceOrCluster=\"_cluster\" (illegal-namespace sentinel) for a cluster-scoped resource",
-			vars["scope"], vars["namespaceOrCluster"])
+	if vars["scope"] != "cluster" || vars["namespace"] != "_cluster" {
+		t.Errorf("got scope=%q namespace=%q, want scope=\"cluster\" (descriptor) and "+
+			"namespace=\"_cluster\" (illegal-namespace sentinel) for a cluster-scoped resource",
+			vars["scope"], vars["namespace"])
 	}
 	if want := "rbac.authorization.k8s.io/v1"; vars["apiVersion"] != want {
 		t.Errorf("apiVersion = %q, want %q for a grouped resource", vars["apiVersion"], want)
@@ -663,15 +663,15 @@ func TestIdentityCompletePlacementTemplate(t *testing.T) {
 		narrowedToOneType bool
 		want              bool
 	}{
-		{"full identity", "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml", false, true},
+		{"full identity", "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml", false, true},
 		{
 			"versionless canonical shape",
-			"{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+			"{namespace}/{groupPath}/{resource}/{name}.yaml",
 			false,
 			true,
 		},
-		{"missing resource for default", "{groupPath}/{version}/{namespaceOrCluster}/{name}.yaml", false, false},
-		{"missing group for default", "{version}/{resource}/{namespaceOrCluster}/{name}.yaml", false, false},
+		{"missing resource for default", "{groupPath}/{version}/{namespace}/{name}.yaml", false, false},
+		{"missing group for default", "{version}/{resource}/{namespace}/{name}.yaml", false, false},
 		{"narrowed type needs only scope+name", "{namespace}/secret-{name}.sops.yaml", true, true},
 		{"narrowed type missing name", "{namespace}/secret.sops.yaml", true, false},
 		{"narrowed type missing scope", "secret-{name}.sops.yaml", true, false},
@@ -890,5 +890,40 @@ func TestLocateNew_DistinguishesByTypeFromDefault(t *testing.T) {
 	}
 	if fellThrough.Source != PlacementSourceDefault {
 		t.Fatalf("a type no byType entry names must report default, got %s", fellThrough.Source)
+	}
+}
+
+// {namespace} is the ONLY namespace-position variable: for a cluster-scoped resource it renders
+// the "_cluster" sentinel rather than nothing, so the segment never collapses and cluster-scoped
+// resources never scatter into the directory above the one the template named.
+func TestLocateNew_ClusterScoped_RendersTheClusterSentinel(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	policy := &PlacementPolicy{Default: "{namespace}/{resource}/{name}.yaml"}
+	req := PlacementRequest{
+		Identifier: types.NewResourceIdentifier(
+			"rbac.authorization.k8s.io", "v1", "clusterroles", "", "admin"),
+		Kind: "ClusterRole",
+	}
+
+	res, err := LocateNew(store, policy, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if want := "_cluster/clusterroles/admin.yaml"; res.Path != want {
+		t.Fatalf("got %q, want %q", res.Path, want)
+	}
+}
+
+// The removed variable is reported by name with its replacement. "unknown variable" alone would
+// send its author hunting for a typo that is not there.
+func TestValidPlacementTemplateSyntax_NamespaceOrClusterIsRemovedAndSaysSo(t *testing.T) {
+	err := ValidPlacementTemplateSyntax("{namespaceOrCluster}/{name}.yaml")
+	if err == nil {
+		t.Fatal("{namespaceOrCluster} must be rejected: it no longer exists")
+	}
+	for _, want := range []string{"{namespaceOrCluster} was removed", "{namespace}", "_cluster"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q is missing %q", err.Error(), want)
+		}
 	}
 }

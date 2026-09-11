@@ -18,7 +18,7 @@ func labeledConfigMapRequest(name string, labels map[string]string) PlacementReq
 
 func TestLocateNew_LabelVariable_RendersTheValue(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team}/{namespace}/{name}.yaml"}
 	req := labeledConfigMapRequest("cache", map[string]string{"team": "payments"})
 
 	res, err := LocateNew(store, policy, req)
@@ -52,11 +52,11 @@ func TestLocateNew_PrefixedLabelKey_IsOneVariableNotTwoSegments(t *testing.T) {
 }
 
 // A resource missing the label is still placed — at the built-in unlabeled sentinel, the same
-// trick {namespaceOrCluster} already uses for "_cluster": a fixed, documented, collision-free
+// trick {namespace} already uses for "_cluster" on a cluster-scoped resource: a fixed,
 // value rather than a refusal or an invisible per-deployment default.
 func TestLocateNew_MissingLabel_PlacesAtTheUnlabeledSentinel(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team}/{namespace}/{name}.yaml"}
 	req := labeledConfigMapRequest("cache", map[string]string{"other": "x"})
 
 	res, err := LocateNew(store, policy, req)
@@ -73,7 +73,7 @@ func TestLocateNew_MissingLabel_PlacesAtTheUnlabeledSentinel(t *testing.T) {
 // carrying the label empty folds onto the wrong file.
 func TestLocateNew_EmptyLabelValue_FallsBackLikeAMissingLabel(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team}/{namespace}/{name}.yaml"}
 	req := labeledConfigMapRequest("cache", map[string]string{"team": ""})
 
 	res, err := LocateNew(store, policy, req)
@@ -89,7 +89,7 @@ func TestLocateNew_EmptyLabelValue_FallsBackLikeAMissingLabel(t *testing.T) {
 // each resolve independently.
 func TestLocateNew_MissingLabel_DoesNotAffectALabeledSibling(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team}/{namespace}/{name}.yaml"}
 
 	bare, err := LocateNew(store, policy, labeledConfigMapRequest("bare", nil))
 	if err != nil {
@@ -207,7 +207,7 @@ func TestRenderPlacementTemplate_SanitizesSlashInALabelValue(t *testing.T) {
 // An explicit fallback overrides the built-in unlabeled sentinel with the author's own bucket name.
 func TestLocateNew_LabelFallback_OverridesTheSentinel(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team|unassigned}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team|unassigned}/{namespace}/{name}.yaml"}
 
 	res, err := LocateNew(store, policy, labeledConfigMapRequest("cache", nil))
 	if err != nil {
@@ -221,7 +221,7 @@ func TestLocateNew_LabelFallback_OverridesTheSentinel(t *testing.T) {
 // The fallback is only a fallback: a resource that carries the label is unaffected by it.
 func TestLocateNew_LabelFallback_YieldsToARealValue(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team|unassigned}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team|unassigned}/{namespace}/{name}.yaml"}
 
 	res, err := LocateNew(store, policy, labeledConfigMapRequest("cache", map[string]string{"team": "payments"}))
 	if err != nil {
@@ -235,7 +235,7 @@ func TestLocateNew_LabelFallback_YieldsToARealValue(t *testing.T) {
 // An empty label value is "absent" for the fallback too, matching the sentinel it replaces.
 func TestLocateNew_LabelFallback_CoversAnEmptyValue(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team|unassigned}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team|unassigned}/{namespace}/{name}.yaml"}
 
 	res, err := LocateNew(store, policy, labeledConfigMapRequest("cache", map[string]string{"team": ""}))
 	if err != nil {
@@ -315,7 +315,7 @@ func TestPlacementTemplateLabelKeys_StripsTheFallback(t *testing.T) {
 // sentinel is spelled this way too, and may be named explicitly.
 func TestLocateNew_UnderscoreFallback_NamesACollisionProofBucket(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team|_none}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team|_none}/{namespace}/{name}.yaml"}
 
 	res, err := LocateNew(store, policy, labeledConfigMapRequest("cache", nil))
 	if err != nil {
@@ -331,7 +331,7 @@ func TestLocateNew_UnderscoreFallback_NamesACollisionProofBucket(t *testing.T) {
 // has made the choice in text, so it is honoured.
 func TestLocateNew_EmptyFallback_CollapsesTheSegment(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team|}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team|}/{namespace}/{name}.yaml"}
 
 	res, err := LocateNew(store, policy, labeledConfigMapRequest("cache", nil))
 	if err != nil {
@@ -346,7 +346,7 @@ func TestLocateNew_EmptyFallback_CollapsesTheSegment(t *testing.T) {
 // sibling keeps its own bucket, so the two do not merge.
 func TestLocateNew_EmptyFallback_LeavesALabeledResourceAlone(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{label:team|}/{namespaceOrCluster}/{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{label:team|}/{namespace}/{name}.yaml"}
 
 	res, err := LocateNew(store, policy,
 		labeledConfigMapRequest("cache", map[string]string{"team": "payments"}))
@@ -363,7 +363,7 @@ func TestLocateNew_EmptyFallback_LeavesALabeledResourceAlone(t *testing.T) {
 // for a core resource.
 func TestLocateNew_EmptyFallback_InAFileNameRendersNothing(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
-	policy := &PlacementPolicy{Default: "{namespaceOrCluster}/{label:team|}-{name}.yaml"}
+	policy := &PlacementPolicy{Default: "{namespace}/{label:team|}-{name}.yaml"}
 
 	res, err := LocateNew(store, policy, labeledConfigMapRequest("cache", nil))
 	if err != nil {

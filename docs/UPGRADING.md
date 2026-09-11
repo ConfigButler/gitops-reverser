@@ -7,6 +7,67 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `{namespaceOrCluster}` is gone; `{namespace}` renders `_cluster`
+
+**Breaking for a placement template that names `{namespaceOrCluster}`.** There is now one
+namespace-position variable instead of two.
+
+`{namespace}` renders the resource's namespace, or the literal `_cluster` when the resource is
+cluster-scoped — the value `{namespaceOrCluster}` used to render, and the one the built-in
+canonical path has always used. Rename the variable:
+
+```yaml
+placement:
+  default: "{namespace}/{groupPath}/{resource}/{name}.yaml"   # was {namespaceOrCluster}
+```
+
+A GitTarget still naming `{namespaceOrCluster}` goes `Validated=False` with `InvalidConfig` and a
+message that names the replacement, so it fails at the gate rather than writing anything.
+
+**What changes for a template that already said `{namespace}`:** only cluster-scoped resources, and
+only newly created files. `{namespace}` used to render empty for one, and an empty segment is
+dropped, so `{namespace}/{resource}/{name}.yaml` filed a ClusterRole at `clusterroles/admin.yaml`
+and scattered cluster-scoped resources into the directory above the one the template named. It now
+files it at `_cluster/clusterroles/admin.yaml`. Placement is match-first, so nothing already in Git
+moves; only resources first written after the upgrade land in the new place.
+
+Why collapse the two: an empty render is the one thing a path variable must never do, since it
+folds resources onto a path the template did not describe. `{namespaceOrCluster}` existed only to
+avoid that fold, which made the safe spelling the longer one and the short, obvious spelling the
+trap. One variable that always renders a scope removes the trap instead of documenting it.
+
+## Commit message templates can read the kind, the scope sentinel, and labels
+
+**Not breaking**: existing templates render unchanged; these are additional fields.
+
+Each `Resources` entry in `liveTemplate` gains `Kind`, `Labels` and a `Label` accessor, the
+template itself gains `LabelValues` / `LabelValue`, and `Namespace` gains the scope sentinel
+described below:
+
+```yaml
+liveTemplate: |-
+  chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}{{with .LabelValue "team"}} for {{.}}{{end}}
+
+  {{range .Resources -}}
+  - [{{.Operation}}] {{.Kind}} {{.Namespace}}/{{.Name}}
+  {{end -}}
+```
+
+`Namespace` renders `_cluster` for a cluster-scoped resource, the same value the `{namespace}`
+placement variable and the canonical path use, so a body line no longer has to guard an empty
+namespace by hand. The default template stops doing so, which changes one line of a default commit
+message: a cluster-scoped resource reads `- [CREATE] v1/nodes/_cluster/node-1` where it used to
+read `- [CREATE] v1/nodes/node-1`.
+
+Read a label with `{{.Label "team"}}`, not `{{.Labels.team}}`: these templates render with
+`missingkey=error`, so indexing a label a resource does not carry fails the render, and a failed
+render fails the commit. The accessor renders empty instead. A template using the dotted form is
+rejected at admission with `Validated=False`, because the sample render includes a resource that
+carries no labels.
+
+A `DELETE` event carries no object, so `Kind` and `Labels` are empty for one; every identity field
+is unaffected. `reconcileTemplate` is unchanged: it names a type rather than a list of resources.
+
 ## Placement templates can read a label, and a stray `{…}` is now an error
 
 **Not breaking for any valid template**, and listed here because one previously-tolerated
@@ -25,7 +86,7 @@ A few things to know before you use it:
 
 - A resource that does not set the label — or sets it to the empty string, which Kubernetes
   allows — is still placed: it renders the built-in `_unlabeled` bucket, mirroring how
-  `{namespaceOrCluster}` renders `_cluster` for a cluster-scoped resource — a fixed, documented
+  `{namespace}` renders `_cluster` for a cluster-scoped resource — a fixed, documented
   value no real label could ever hold. Use `{label:team|unassigned}` to name your own bucket
   instead; `unassigned` renders whenever the label is absent.
 - A fallback is at most 63 characters of `[A-Za-z0-9._-]` and may be neither `.` nor `..`, so it
