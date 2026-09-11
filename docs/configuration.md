@@ -601,7 +601,7 @@ spec:
 | Template | Fields |
 |---|---|
 | `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, and the `LabelValues` / `LabelValue` accessors |
-| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `NamespaceOrCluster`, `Name`, `APIVersion`, `Labels`, and the `Label` accessor |
+| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `Labels`, and the `Label` accessor |
 | `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `Revision` |
 
 Live `Count` counts retained entries after window coalescing, before the writer compares them with
@@ -646,10 +646,13 @@ Three things to know:
 - **A commit spans n resources, so a label is a set here.** `LabelValues "team"` is the sorted,
   distinct list of values in this commit, skipping resources that do not set it; `LabelValue "team"`
   is the single value when the whole commit agrees on one, and empty when it does not. A subject
-  line that names a team is only honest under the second.
+  line that names a team is only honest under the second. The two differ on a resource that does
+  not carry the label: `LabelValues` skips it, `LabelValue` treats it as a disagreement and renders
+  nothing, so a commit holding one labeled and one unlabeled resource is named after neither.
 - **A `DELETE` carries no object**, because the resource is already gone from the cluster, so
   `Kind` and `Labels` are empty for one. The identity fields (`Name`, `Namespace`, `Resource`, …)
-  are unaffected.
+  are unaffected. A commit containing a `DELETE` therefore has no agreed `LabelValue`: what the
+  deleted resource was labeled is not something the window still knows.
 
 `reconcileTemplate` gets none of these. It describes a *type* being reconciled rather than a list
 of resources, so there are no labels to read, and its `Namespace` keeps the plain meaning it always

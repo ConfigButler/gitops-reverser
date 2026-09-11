@@ -122,6 +122,55 @@ func TestLiveCommitMessageData_LabelValue_AgreedValue(t *testing.T) {
 	}
 }
 
+// A resource that does not carry the label disagrees; it does not abstain. Reading the value off
+// LabelValues (which skips the unlabeled) named a mixed commit after the only team in it, so
+// "chore: sync 2 resources for payments" described a commit half of which nobody can attribute.
+func TestLiveCommitMessageData_LabelValue_PartiallyLabeledCommitNamesNoOne(t *testing.T) {
+	labeled := labeledDeploymentEvent("api", "prod", map[string]string{"team": "payments"})
+
+	for _, tc := range []struct {
+		name  string
+		other Event
+	}{
+		{"no labels at all", labeledDeploymentEvent("bare", "prod", nil)},
+		{"the label empty", labeledDeploymentEvent("blank", "prod", map[string]string{"team": ""})},
+		{"a different label", labeledDeploymentEvent("other", "prod", map[string]string{"squad": "payments"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := buildLiveCommitMessageData("someone", "target", []Event{labeled, tc.other})
+
+			if v := data.LabelValue("team"); v != "" {
+				t.Errorf("LabelValue = %q, want empty: %q carries no team, so the commit is not one team's",
+					v, tc.other.Identifier.Name)
+			}
+		})
+	}
+}
+
+// A DELETE carries no object and therefore no labels, so a commit holding one cannot claim a team
+// either: the deleted resource's team is not something the window still knows.
+func TestLiveCommitMessageData_LabelValue_DeleteLeavesTheCommitUnnamed(t *testing.T) {
+	deleted := labeledDeploymentEvent("gone", "prod", map[string]string{"team": "payments"})
+	deleted.Object = nil
+	deleted.Operation = "DELETE"
+
+	data := buildLiveCommitMessageData("someone", "target", []Event{
+		labeledDeploymentEvent("api", "prod", map[string]string{"team": "payments"}),
+		deleted,
+	})
+
+	if v := data.LabelValue("team"); v != "" {
+		t.Errorf("LabelValue = %q, want empty: a DELETE carries no labels to agree with", v)
+	}
+}
+
+// The accessor still answers for an empty window rather than panicking on Resources[0].
+func TestLiveCommitMessageData_LabelValue_NoResources(t *testing.T) {
+	if v := (LiveCommitMessageData{}).LabelValue("team"); v != "" {
+		t.Errorf("LabelValue = %q, want empty when the commit holds no resources", v)
+	}
+}
+
 func TestRenderLiveCommitMessage_ReadsMetadataFields(t *testing.T) {
 	config := CommitConfig{Message: CommitMessageConfig{
 		LiveTemplate: `chore: sync {{.Count}} resources{{with .LabelValue "team"}} for {{.}}{{end}}` + "\n" +

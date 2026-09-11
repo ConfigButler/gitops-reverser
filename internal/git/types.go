@@ -719,16 +719,28 @@ func (d LiveCommitMessageData) LabelValues(key string) []string {
 	return values
 }
 
-// LabelValue is the one value every resource in this commit agrees on for key, and "" when
-// they disagree or none of them carries the label. It is what a SUBJECT line wants: naming
-// the team a commit belongs to is only honest when the commit is one team's.
+// LabelValue is the one value every resource in this commit agrees on for key, and "" unless
+// all of them carry it with that value. It is what a SUBJECT line wants: naming the team a
+// commit belongs to is only honest when the commit is one team's.
 //
 //	chore: sync {{.Count}} resources{{with .LabelValue "team"}} for {{.}}{{end}}
+//
+// A resource that does not carry the label DISAGREES; it does not abstain. That is why this
+// cannot be LabelValues with a length check: that set skips the unlabeled, so one
+// "team: payments" resource committed next to an unlabeled one would name the whole commit
+// "for payments" and hide the resource nobody can attribute. The same rule leaves a commit
+// containing a DELETE unnamed, since a DELETE carries no object and so no labels (see
+// ResourceRef.Labels) — the deleted resource's team is not something the window can know.
 func (d LiveCommitMessageData) LabelValue(key string) string {
-	if values := d.LabelValues(key); len(values) == 1 {
-		return values[0]
+	shared := ""
+	for _, r := range d.Resources {
+		value := r.Label(key)
+		if value == "" || (shared != "" && value != shared) {
+			return ""
+		}
+		shared = value
 	}
-	return ""
+	return shared
 }
 
 // ResolveCommitConfig resolves a GitProvider's commit settings into runtime defaults.

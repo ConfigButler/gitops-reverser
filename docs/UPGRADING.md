@@ -65,8 +65,13 @@ render fails the commit. The accessor renders empty instead. A template using th
 rejected at admission with `Validated=False`, because the sample render includes a resource that
 carries no labels.
 
+`LabelValue "team"` renders a value only when **every** resource in the commit carries that label
+with that value; one unlabeled resource in the window leaves the subject unnamed rather than
+attributing the whole commit to the only team in it. `LabelValues "team"` is the sorted, distinct
+set and skips the unlabeled, which is what a body line ranging over teams wants.
+
 A `DELETE` event carries no object, so `Kind` and `Labels` are empty for one; every identity field
-is unaffected.
+is unaffected. That makes `LabelValue` empty for any commit containing a `DELETE`.
 
 `reconcileTemplate` gains no fields, but its **default** now names the namespace of a
 namespace-scoped reconcile: `chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)`.
