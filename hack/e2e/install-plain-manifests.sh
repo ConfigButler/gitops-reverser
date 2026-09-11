@@ -44,6 +44,14 @@ sed -i \
 	"s|--redis-addr=${DEFAULT_AUDIT_REDIS_ADDR}|--redis-addr=${E2E_AUDIT_REDIS_ADDR}|" \
 	"${tmpdir}/install.yaml"
 
+# The public install bundle keeps credentialed HTTP Git disabled by default; the e2e fixtures
+# intentionally use an in-cluster HTTP Gitea service.
+if ! grep -q -- "--allow-insecure-git-http" "${tmpdir}/install.yaml"; then
+	perl -0pi -e \
+		's/(\n\s+- --redis-insecure\n)/$1            - --allow-insecure-git-http\n/' \
+		"${tmpdir}/install.yaml"
+fi
+
 # Inject fixed ClusterIP for the controller Service
 perl -0pi -e \
 	"s/type: ClusterIP\n/type: ClusterIP\n  clusterIP: ${E2E_CONTROLLER_SERVICE_CLUSTER_IP}\n/" \
