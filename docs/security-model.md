@@ -105,7 +105,7 @@ namespace it already knows. Narrowing that further is
 | Git credentials Secret | Grants push access to your repository. |
 | SOPS/age key material | Decrypts (and the public key encrypts) Secret data written to Git. |
 | Redis/Valkey queue | Buffers decoded audit events in transit; not an audit archive. |
-| Audit ingress (`/audit-webhook`) | Accepts audit traffic; protected by mutual TLS via cert-manager. |
+| Audit ingress (`/audit-webhook/default` for the default provider) | Accepts audit traffic; protected by mutual TLS via cert-manager. |
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
 
 ## Secret data the controller writes to Git

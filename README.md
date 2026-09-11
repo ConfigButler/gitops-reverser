@@ -84,7 +84,7 @@ Every commit carries a Git *author* and a Git *committer*. By default both are o
 identity (`configured-author`). Turn on attribution and the **author** becomes the real Kubernetes
 actor (user, service account, or CI identity), while the committer never moves. That needs
 kube-apiserver audit delivery (managed control planes like EKS/GKE/AKS generally do not expose it)
-plus Valkey/Redis: see the [attribution setup guide](docs/attribution-setup-guide.md).
+and an attribution transport: see the [attribution setup guide](docs/attribution-setup-guide.md).
 
 If attribution is enabled but a live change has no usable audit fact, the commit says so: its author
 is `unknown (attribution unresolved)`, and the configured committer identity is never substituted in
@@ -282,9 +282,9 @@ To tear the demo down: `helm uninstall gitops-reverser -n gitops-reverser` and
 
 ### Want named users on your commits?
 
-Turn on `attributed-author` mode so the real Kubernetes actor becomes the Git author. Needs audit
-delivery and Valkey/Redis: the [attribution setup guide](docs/attribution-setup-guide.md) walks it
-through.
+Enable audit attribution to use the Kubernetes actor as the Git author while keeping the
+committer unchanged. The [attribution setup guide](docs/attribution-setup-guide.md) covers receiver
+configuration, API server delivery, and verification. It requires control over kube-apiserver settings.
 
 ### Rather have it managed?
 
