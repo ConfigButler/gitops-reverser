@@ -5,6 +5,7 @@ package manifestanalyzer
 import (
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // AcceptanceRefusedError is the writer-facing error for a GitTarget folder the acceptance
@@ -31,10 +32,90 @@ func (e *AcceptanceRefusedError) Error() string {
 		first.Path, first.Message, len(e.Issues)-1)
 }
 
+const acceptanceBlockMessageMax = 512
+const truncationSuffixLen = 3
+
 // BlockMessage returns a bounded, human-readable one-liner suitable for a GitTarget status
-// condition / stream-block message. It is the same text as Error today, named separately so
-// the surface intent is explicit at the call site.
-func (e *AcceptanceRefusedError) BlockMessage() string { return e.Error() }
+// condition / stream-block message. It keeps Error stable for callers while adding the
+// machine-stable issue kind and, when known, the actor who can fix the folder.
+func (e *AcceptanceRefusedError) BlockMessage() string {
+	if len(e.Issues) == 0 {
+		return e.Error()
+	}
+
+	first := e.Issues[0]
+	parts := []string{"Git path refused"}
+	if first.Kind != "" {
+		parts = append(parts, "kind="+string(first.Kind))
+	}
+	if first.Path != "" {
+		parts = append(parts, "path="+first.Path)
+	}
+	if first.DocumentIndex > 0 {
+		parts = append(parts, fmt.Sprintf("document=%d", first.DocumentIndex))
+	}
+	if first.Solvable && first.Actor != ActorUnknown {
+		parts = append(parts, "actor="+string(first.Actor))
+	}
+
+	msg := strings.Join(parts, " ")
+	if first.Message != "" {
+		msg += ": " + first.Message
+	}
+	if hint := issueHint(first); hint != "" {
+		msg += "; " + hint
+	}
+	if len(e.Issues) > 1 {
+		msg += fmt.Sprintf(" (and %d more issue(s))", len(e.Issues)-1)
+	}
+	return capMessage(msg, acceptanceBlockMessageMax)
+}
+
+func issueHint(issue AcceptanceIssue) string {
+	switch issue.Kind {
+	case IssueAmbiguousLayout:
+		return "point spec.path at one render root"
+	case IssueForeignFile, IssueForeignSymlink, IssueForeignSubmodule:
+		return "remove or move unmanaged content"
+	case IssueIgnoreShadowsManaged:
+		return "narrow .gittargetignore or move the managed resource"
+	case IssueMultipleSourceNamespaces:
+		return "split targets or serialize namespaces"
+	case IssueUnrenderedPlacement:
+		return "adjust placement so the file renders from the target root"
+	case IssueUnsupportedKustomize:
+		if issue.Solvable {
+			return "edit the unsupported kustomization feature"
+		}
+		return "use a supported source layout for this target"
+	case IssueWriteEscapesScope:
+		return "keep writes under spec.path"
+	case IssueDuplicate,
+		IssueImpureManagedFile,
+		IssueInvalidYAML,
+		IssueMixedFile,
+		IssueNonKRM,
+		IssueOutOfScope,
+		IssueRenderDoesNotMatchLive,
+		IssueRenderRefused,
+		IssueUnplaceableEdit,
+		IssueUnresolvedKRM,
+		IssueWriteFanIn:
+		return ""
+	default:
+		return ""
+	}
+}
+
+func capMessage(msg string, limit int) string {
+	if len(msg) <= limit {
+		return msg
+	}
+	if limit <= truncationSuffixLen {
+		return msg[:limit]
+	}
+	return msg[:limit-truncationSuffixLen] + "..."
+}
 
 // AllIssuesOfKinds reports whether every issue in the refusal is one of the given kinds. The
 // surface uses it to pick a precise status reason: a refusal made up purely of

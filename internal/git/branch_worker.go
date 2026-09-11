@@ -395,6 +395,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		// for a newer snapshot. Swap in the newer request; the loop reads whatever
 		// is current when the marker comes up.
 		superseded := pending.request
+		request.RefreshRemote = request.RefreshRemote || superseded.RefreshRemote
 		pending.request = request
 		w.pendingResyncsMu.Unlock()
 		// The superseded request's caller is waiting on its reply channel. Answer
@@ -986,7 +987,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		// logged as a write fault; nothing was committed either way, so the request is
 		// dropped in both cases.
 		name, namespace := atomicRefusalTarget(request)
-		if l.w.reportPathRefusal(err, name, namespace) {
+		if l.w.reportPathRefusal(err, name, namespace, request.sourceCell()) {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
 		} else {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
@@ -1112,7 +1113,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// GitPathAccepted=False instead of being logged as a transient write fault. The
 		// window is dropped either way — the events are already lost to the failed flush,
 		// and the next resync re-derives them.
-		if l.w.reportPathRefusal(err, targetName, targetNamespace) {
+		if l.w.reportPathRefusal(err, targetName, targetNamespace, sourceCellForEvents(events)) {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
 		} else {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
@@ -1455,6 +1456,45 @@ func (w *BranchWorker) rebuildPendingWrites(
 	}
 
 	return baseBranch, baseHash, nil
+}
+
+func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(ctx context.Context, pendingWrites []PendingWrite) error {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
+	if len(pendingWrites) == 0 {
+		return nil
+	}
+
+	provider, err := w.getGitProvider(ctx)
+	if err != nil {
+		return fmt.Errorf("get GitProvider: %w", err)
+	}
+
+	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys)
+	if err != nil {
+		return fmt.Errorf("resolve auth: %w", err)
+	}
+
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return fmt.Errorf("open repository: %w", err)
+	}
+
+	pullReport, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
+	if err != nil {
+		return fmt.Errorf("sync remote before replay: %w", err)
+	}
+	w.updateBranchMetadataFromPullReport(pullReport)
+
+	rootBranch, rootHash, err := w.rebuildPendingWrites(repo, pendingWrites)
+	if err != nil {
+		return fmt.Errorf("rebuild pending writes: %w", err)
+	}
+	w.pushCycleRootBranch = rootBranch
+	w.pushCycleRootHash = rootHash
+	return nil
 }
 
 // tightenPendingPruneModes lowers every retained write's captured prune mode before replay.

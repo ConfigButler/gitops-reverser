@@ -4,6 +4,28 @@
 > surface workflow. The two-refusal model, the any-target refusal rule, and the advisory
 > (fail-open) posture are decided direction. API names and diagnostic shapes remain illustrative.
 
+## Purpose
+
+This feature is an opt-in fast feedback path for editing surfaces that expect their changes to be
+reverse-written into a supported Git source. Its job is to answer one narrow question while the
+author is still making the edit:
+
+> Can this requested object change be represented by the writer's currently supported source
+> operations for every involved `GitTarget`?
+
+That makes it a structural allow/warn/disallow check. It is about known support boundaries:
+base-owned fields that would need unsupported patch authoring, writes that would escape a target's
+source scope, fields supplied by transformers, sibling objects that would move, ignored paths,
+unsupported source features, and objects with no publishing destination. It is not about
+race-proofing Git, policing concurrent editors, or proving the push will later succeed. Kubernetes
+remains the accepted state of record; the writer follows that state and still performs
+authoritative checks before committing.
+
+Use this gate where a user is editing a live object as a shortcut for producing Git they expect to
+keep. Do not enable it merely because the operator observes a namespace. Live-cluster mirroring,
+audit capture, and discovery should continue to accept API writes even when the mirror cannot
+represent every field.
+
 ## Recommendation
 
 Build a shared, read-only Git write preflight and expose it through an opt-in validating admission
@@ -16,15 +38,29 @@ already holds, quickly and without touching the network. It is deliberately not 
 change will reach Git. See [What this gate is and is not](#what-this-gate-is-and-is-not).
 
 Prioritize this over broader Helm support or additional source transformations for the editing
-surface use case. It makes the existing supported surface easier to trust: an author learns that
-a change cannot be saved while making it, instead of discovering a stalled target afterward.
+surface use case. It makes the existing supported surface easier to trust: an author learns that a
+live change cannot be reverse-written while making it, instead of discovering a stalled target
+afterward.
 
 Call the operation **Git write preflight**. “Cannot be reverted” sounds like the operator cannot
-undo a change. The question here is whether it can write the proposed change back to Git.
+undo a change. “Cannot be reversed” is closer, but still ambiguous. The question here is whether
+the writer can publish the proposed live-state change back to Git.
 
 Use validating admission because the decision is acceptance or rejection. The handler should
 preserve the author's requested object. Kubernetes runs validating admission after mutation; its
 [admission documentation][kubernetes-admission] describes the ordering and response contract.
+
+### Implementation bar
+
+Implement this only if the first version stays inside the narrow contract above. It is worthwhile
+when it gives a fast, local answer for common edits that would otherwise make the `GitTarget` turn
+red after the user's command already succeeded. It is not worthwhile if it recreates admission or
+audit as a second state-capture path, waits on the writer, performs Git work in the webhook path, or
+claims coverage for subresources and coordinated batches it cannot faithfully model.
+
+The fallback remains valuable and simpler: make late structural failures turn the affected
+`GitTarget` red quickly and clearly. Preflight exists to move some of those messages earlier for
+editing surfaces, not to replace target status as the authoritative publication signal.
 
 ## The user-visible problem
 
@@ -129,7 +165,7 @@ future commit on the branch is supported.
 State this plainly in user-facing documentation, because the value of an advisory gate depends
 entirely on people knowing which half they are in. The dividing line is simple: preflight answers
 questions about the **shape of the repository and the shape of the change**, both of which it can
-read from the working copy it already has. It cannot answer questions about **the future or the
+read from a branch filesystem it already has. It cannot answer questions about **the future or the
 network**.
 
 Answerable from the offline copy, and therefore reliable:
@@ -144,7 +180,7 @@ Answerable from the offline copy, and therefore reliable:
 | Is this field supplied by a build transformer or owned by a tolerated patch? | source-form and patch checks |
 | Is the folder structurally unsupported (undecodable build file, remote base)? | acceptance gate |
 | Does the object resolve to no publishing destination at all? | target resolution |
-| Would the delete patch collide with an existing file? | placement, once [step 2](#difficulty) lands |
+| Would the delete patch collide with an existing file? | placement, once skipped-plan refusals land |
 
 Not answerable, and never claimed:
 
@@ -162,6 +198,19 @@ when someone commits, not between one `kubectl apply` and the next, so a shape-d
 as true a second later as it was when computed. The answers lost to staleness live entirely in the
 second table, where the honest response was never anything but "cannot know".
 
+### Where useful answers exist today
+
+The existing tests and layout corpus support a limited but useful first surface. These are writer
+facts, not admission facts; the webhook still needs its own persistence and warning tests.
+
+| Source shape | Useful preflight answers | First-version limits |
+|---|---|---|
+| Flat and tree folders, namespaces serialized ([shapes 1 and 3][shape-readme]) | Placement, in-place edits, `pathScopePrecondition`, `.gittargetignore` shadow checks, and fan-in checks where a plan touches shared context. | No claim about a downstream deployer that later rewrites the object. |
+| Namespace-free flat/tree folders ([shapes 2 and 4][shape-readme]) | The same file-placement and write-boundary answers, plus the existing one-source-namespace fence. | The external namespace supplier is intentionally unverifiable. |
+| Single Kustomize folders ([shape 5][shape-readme]) | Resource registration, namespace inference, supported direct edits, and render verification. | Render cost may force `Cannot assess` under the admission budget. |
+| Base/overlay and layered Kustomize folders ([shapes 6-8][shape-readme]) | Overlay-local new objects, image and replica override authoring, base-owned unsupported-field refusals, shared-entry sibling refusals, and unsupported source-form refusals. | Single-object admission cannot represent coordinated sibling changes; direct Git remains the batch route. |
+| Field-patch-only events such as `/scale` | The writer can patch a parent Deployment when the watch/audit path supplies a field patch. | Admission does not see subresources in the current webhook shape. Exclude them until a parent-object adapter exists. |
+
 Enable this feature explicitly for editing surfaces whose authored changes are intended to reach
 Git. Keep it off by default for live-cluster mirroring, audit capture, and discovery. With the gate
 off, the operator still refuses unsafe Git writes and reports target errors; it does not restrict
@@ -178,7 +227,7 @@ Otherwise admission and publication will disagree as support evolves.
 
 ```mermaid
 flowchart TD
-  R[Admission request] --> S[Resolve involved targets against the local working copy]
+  R[Admission request] --> S[Resolve involved targets against a published read snapshot]
   S --> P[Shared write planner and render verification, in memory]
   P --> A[Every target publishable]
   P --> D[Any refusal: deny with target reasons]
@@ -192,10 +241,10 @@ flowchart TD
   V -->|Refusal| X[Abort affected flush and report GitTarget error]
 ```
 
-The admission path must not commit, push, fetch, enqueue a publication, or advance watch state. It
-reads the working copy and plans in memory; see [The no-Git-operations
-rule](#the-no-git-operations-rule). A request may still fail after this webhook approves it, and
-watch remains the source of persisted object state.
+The admission path must not commit, push, fetch, enqueue a publication, advance watch state, or wait
+for the writer. It reads a snapshot the branch worker already published and plans in memory; see
+[The no-Git-operations rule](#the-no-git-operations-rule). A request may still fail after this
+webhook approves it, and watch remains the source of persisted object state.
 
 Candidate implementation seams:
 
@@ -207,6 +256,39 @@ Candidate implementation seams:
 
 These are starting points for a refactor, not a claim that the current planner can be called from
 admission without changes. Establish what state it reads and mutates before choosing an interface.
+
+### Where the request lands
+
+The natural attachment point is the branch worker's normal write-planning boundary: the same place
+where a watched change is converted into an in-memory write batch before a commit is created.
+Admission should translate the API request into that planner's input and ask for a verdict; it
+should not own a separate set of support rules.
+
+In other words, the webhook is the transport, not the implementation. The implementation belongs
+beside commit planning, because that is where the operator already knows the target branch,
+worktree, render scope, write boundaries, override projections, and exact refusal reasons. The
+branch worker should publish a ready read snapshot outside admission; the webhook path must take no
+writer lock, perform no refresh, and either evaluate immediately against that snapshot or return
+`Cannot assess`.
+
+If contention proves material, the branch worker may own a refreshed read-only preflight view; the
+cost is a second snapshot with its own staleness, so measure before adding it.
+
+### Why this is not a state source
+
+Do not put preflight back into the ingestion model. The project deliberately moved state capture to
+watch streams because admission and audit sit at the wrong moment for final object truth: they see
+the request, while defaulting, conversion, controllers, finalizers, and storage still decide what
+eventually appears in etcd. Admission is still useful for this feature because the question is
+narrower: whether the requested shape appears serializable by the supported writer.
+
+That means preflight never records desired state and never substitutes for the watch. It can deny a
+known structural mismatch before persistence, or warn that it cannot answer quickly. Once the API
+server accepts a request, only the watch stream supplies the object the writer follows.
+
+This constraint is also the guard against reintroducing the removed admission/audit machinery. A
+preflight adapter may normalize an admission request enough to ask the writer's planner a question;
+it must not become a parallel event format that the commit loop consumes.
 
 ### Evaluation input
 
@@ -222,12 +304,15 @@ configuration changes or pending local state.
 
 #### The no-Git-operations rule
 
-Preflight reads the **already checked-out worktree on disk** and nothing else. This is a hard
-invariant, not a performance goal:
+Preflight reads an **already-prepared, stable branch filesystem** and nothing else. Because the
+webhook path must not take the writer lock, the active worktree is not safe to read while
+`writeBatch.flush` may be writing files one by one. The branch worker must publish a stable read
+view outside admission first: an immutable file snapshot, a read-only mirror, or a separate checkout
+with an explicit refresh policy. This is a hard invariant, not a performance goal:
 
 > The preflight path performs no Git operation. No fetch, no pull, no push, no commit, no
-> checkout, no index write. It reads files from the working copy the branch worker already has,
-> and plans in memory.
+> checkout, no index write. It reads files from a stable filesystem view the branch worker already
+> published, and plans in memory.
 
 The current writer makes this cheap to honour, because everything before the byte-writing loop is
 already of that shape. `scanRenderScope` walks the checked-out directory with ordinary filesystem
@@ -236,12 +321,17 @@ touched path; every precondition then runs over those in-memory buffers. The one
 path is a local `HEAD` read for the revision stamp, and it belongs to the layout report, which does
 not run under preflight anyway.
 
-Enforce it rather than intending it. The preflight entry point should take the worktree as a
-read-only filesystem, so a Git operation is not merely discouraged but unavailable to it, and a
-test should assert that a preflight evaluation leaves the working copy and the index byte-identical.
+Enforce it rather than intending it. The preflight entry point should take an already-published
+read-only filesystem, so a Git operation is not merely discouraged but unavailable to it, and a test
+should assert that a preflight evaluation leaves the active working copy, any preflight view, and
+the index byte-identical.
 
 The consequence is deliberate: preflight's view of Git is exactly as fresh as the branch worker's
-last fetch, and no fresher. It answers from what the operator already knows.
+last published branch filesystem, and no fresher. It answers from what the operator already knows.
+
+A missing stable snapshot is `Cannot assess`, never a reason to inspect the mutating worktree
+directly. Torn reads are worse than warnings because they can produce a confident refusal from a
+repository state the writer would never have observed.
 
 #### When there is no local copy
 
@@ -496,8 +586,9 @@ or per-edit residue lifecycle is introduced.
 ## Walkthrough: expected behavior and current evidence
 
 These cases assume an accepted base plus leaf-overlay layout, explicit gate coverage, and fresh
-snapshots. “Allow” means every involved target passes the complete preflight. The webhook is still
-unbuilt; linked tests establish current writer behavior, not completed admission behavior.
+snapshots. “Allow, silently” means every involved target passes the complete preflight; “allow with
+warning” is the `Cannot assess` path. The webhook is still unbuilt; linked tests establish current
+writer behavior, not completed admission behavior.
 
 ### Image and replica changes on a base-owned Deployment
 
@@ -512,8 +603,8 @@ Shape 8 provides the inspectable image input and expected Git patch.
 `kubectl scale` uses `/scale`. The [override tests][override-tests] cover the writer's scale field
 patch, but admission must reconstruct the parent object and resolve its targets to make the same
 assessment. A gate covering ordinary UPDATE alone must not claim it covers this command. Require
-that adapter before advertising protected scaling; deny covered scale requests that cannot be
-assessed instead of silently bypassing preflight.
+that adapter before advertising protected scaling. Until then, exclude `/scale` from preflight
+coverage and disclose the gap.
 
 ### Base-owned environment variable, resource limit, or probe
 
@@ -604,9 +695,9 @@ For the same API image edit, let A have an isolated override and B have an overr
 unrelated Deployment. A passes, B refuses, and admission denies the whole object request. Neither
 publishes that rejected request. Neither healthy target enters error solely due to the denial.
 
-If B instead lacks a usable snapshot, deny with “cannot assess B.” If B's current repository is
-invalid, B independently reports its target error. Correcting B's repository and completing resync
-allows a fresh request to pass, provided all involved targets then comply.
+If B instead lacks a usable snapshot, allow with a warning: “cannot assess B.” If B's current
+repository is invalid, B independently reports its target error. Correcting B's repository and
+completing resync allows a fresh request to pass, provided all involved targets then comply.
 
 If both pass at R1 and a direct Git commit invalidates B at R2, B's write-time validation still fails
 and B enters error. A may already have published. Tests must make this asynchronous limit visible,
@@ -617,7 +708,8 @@ including the case where R2 is discovered without any intervening API request.
 ### Authority and scope
 
 1. How does request-to-target resolution prove that the involved set is complete, including remote
-   source identities and changing selectors? All involved targets must pass; that decision is settled.
+   source identities and changing selectors? The settled rule is any known refusal blocks the
+   request, while unknown target state folds to an allow-with-warning.
 2. Who may enable the gate, and how are webhook selectors kept consistent with effective claims?
    Can users remove a label to leave coverage?
 3. Where is the webhook installed when `ClusterProvider` points at a remote editing API, and how
@@ -633,8 +725,8 @@ including the case where R2 is discovered without any intervening API request.
    affect false refusals, reproducibility, and concurrency?
 3. How old may a snapshot be before the answer becomes “cannot assess”? What happens during startup
    or target reconfiguration?
-4. Can planning and rendering run without mutating the manifest store or taking locks that delay
-   the publisher? What resource budget makes admission latency predictable?
+4. Can planning and rendering run without mutating the manifest store or taking writer locks in the
+   webhook path? What resource budget makes admission latency predictable?
 5. Do encrypted resources or other intentionally reduced render checks qualify for a publishable
    verdict, or require a narrower statement of what was checked?
 
@@ -667,12 +759,14 @@ including the case where R2 is discovered without any intervening API request.
 
 ## Delivery sequence and acceptance evidence
 
-1. Extract and test a read-only preflight against the checked-out working copy, with a test that
-   proves it performs no Git operation and leaves the copy untouched. Establish planner parity
-   with the writer for the initial supported operations.
-2. Map late refusals and incomplete/skipped plans to target errors; verify resync recovery.
-3. Add the opt-in validating endpoint and server-side dry-run behavior with bounded evaluation.
-4. Demonstrate known acceptance, known refusal, and indeterminate behavior end to end.
+1. Extract and test a read-only preflight planner, with a test that proves it performs no Git
+   operation and mutates no repository state. Establish planner parity with the writer for the
+   initial supported operations.
+2. Publish a stable per-branch read snapshot outside admission. The webhook path must never wait on
+   the writer or read a worktree that can be mutating underneath it.
+3. Map late refusals and incomplete/skipped plans to target errors; verify resync recovery.
+4. Add the opt-in validating endpoint and server-side dry-run behavior with bounded evaluation.
+5. Demonstrate known acceptance, known refusal, and indeterminate behavior end to end.
 
 ### Difficulty
 
@@ -682,10 +776,11 @@ the actual work.
 
 | Step | Size | Why |
 |---|---|---|
-| 1. Read-only preflight | **Small–Medium** | The split already exists. See below. |
-| 2. Skipped plans become target errors | **Medium**, and the riskiest | Changes shipped write-path behavior. |
-| 3. Endpoint, chart, coverage config | **Medium** | Mostly packaging, little of it novel. |
-| 4. End-to-end evidence | **Medium** | Corpus and fixtures exist; the admission cases do not. |
+| 1. Read-only preflight planner | **Small–Medium** | The flush split already exists. See below. |
+| 2. Stable read snapshot | **Medium** | Needed for a lock-free webhook path; no current code publishes one. |
+| 3. Skipped plans become target errors | **Medium**, and the riskiest | Changes shipped write-path behavior. |
+| 4. Endpoint, chart, coverage config | **Medium** | Mostly packaging, little of it novel. |
+| 5. End-to-end evidence | **Medium** | Corpus and fixtures exist; the admission cases do not. |
 
 **Step 1 is small because the writer is already plan-then-flush.** `flushEventsToWorktree` builds
 the entire change in memory (`writeBatch` accumulates `fileBuffer`s and never touches the
@@ -697,12 +792,13 @@ calls, on in-memory state, with no I/O. So the extraction is: split `flush` into
 one function, not a re-architecture. The earlier caution that the planner might not be callable
 from admission turns out to be over-cautious: the seam was built in.
 
-Two real tasks remain in that step: suppress `scanLayout`, which publishes `GitTarget` status and
-must not run on a read-only path; and decide how to read the worktree while the event loop may hold
-`repoMu`. With a 1s timeout and allow-on-timeout, a bounded `TryLock` is sufficient: contention
-becomes a warning, not a stall.
+Two real tasks remain around that step. First, suppress `scanLayout`, which publishes `GitTarget`
+status and must not run on a read-only path. Second, publish a stable read snapshot the webhook can
+use without waiting on the writer. That second task is real implementation work, not a free side
+effect of the `flush` split. With a 1s timeout and allow-on-timeout, missing or stale snapshot
+context becomes a warning, not a stall.
 
-**Step 2 is the risk, and it is not webhook work at all.** Making a skipped plan visible means
+**Step 3 is the risk, and it is not webhook work at all.** Making a skipped plan visible means
 changing behavior that is deliberate today:
 [`TestOverlayAuthors_DeletePatch_SkipsOnPathCollision`][placement-tests] asserts
 `require.NoError(..., "a patch-path collision must be skipped, not error")`. Turning that into a
@@ -711,7 +807,7 @@ change, its own release note, and its own soak. It is worth doing whether or not
 because a front gate that only advises makes the authoritative rear gate more important, not
 less.
 
-**Step 3 has no novel plumbing.** The admission server, cert wiring, and a second webhook entry all
+**Step 4 has no novel plumbing.** The admission server, cert wiring, and a second webhook entry all
 exist; `/validate-all` already runs at `timeoutSeconds: 1` with `failurePolicy: Ignore`, which is
 exactly the posture this feature wants. The new surface is chart packaging (`/validate-all` is
 deliberately e2e-only and not in the chart), the opt-in coverage selector, and the rule set. The
@@ -770,6 +866,7 @@ point where an author can most easily respond.
 
 [kubernetes-admission]: https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/
 [admission-response]: https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#response
+[shape-readme]: ../../test/fixtures/layout-corpus/shapes/README.md
 [shape8]: ../../test/fixtures/layout-corpus/shapes/8-base-owned-field-edit/README.md
 [flush-planning]: ../../internal/git/plan_flush.go
 [fidelity-gate]: ../../internal/git/render_fidelity_gate.go

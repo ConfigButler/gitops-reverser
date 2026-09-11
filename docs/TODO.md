@@ -4,6 +4,14 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 ## Current backlog
 
+- [ ] Finish making `GitTarget` turn red quickly and explain why no commit was made.
+  The plan is in [gittarget-red-status-plan.md](design/gittarget-red-status-plan.md). This is the
+  replacement direction for Git write preflight: no admission webhook Git work, no extra state
+  source, and no promise before etcd. The first slice has shipped: stale refusal messages now
+  republish, scoped refusal recovery is not over-broad, bounded refusal messages include stable
+  issue detail, and the unsupported-folder e2e covers Git-side break and recovery. Remaining work is
+  the broader reason/status contract table and any later durable restart behavior.
+
 - [ ] **High availability (near-term priority).** Support running more than one controller replica;
   `replicaCount > 1` is currently hard-rejected by the chart. Redis/Valkey is already the shared store
   for watch resume cursors, command-author facts, and — since the fact-stream switchover — the

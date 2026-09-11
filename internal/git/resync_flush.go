@@ -98,6 +98,22 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	if !req.Heal {
 		closedWindow = l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 	}
+	if req.RefreshRemote {
+		if len(l.pendingWrites) > 0 {
+			if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites); err != nil {
+				l.w.Log.Error(err, "Failed to refresh remote before resync and replay pending writes",
+					"resources", len(req.Desired),
+					"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
+					"pendingWrites", len(l.pendingWrites))
+				req.reply(ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
+				return
+			}
+		} else if _, err := l.w.syncWithRemote(l.w.ctx); err != nil {
+			l.w.Log.Error(err, "Failed to refresh remote before resync", "resources", len(req.Desired))
+			req.reply(ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
+			return
+		}
+	}
 
 	stats := &ResyncStats{}
 	committed := false

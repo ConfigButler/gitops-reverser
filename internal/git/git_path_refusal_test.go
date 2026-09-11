@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -28,21 +29,38 @@ func refusedError() error {
 }
 
 // captureRefusals installs a recording reporter on a bare worker.
-func captureRefusals(w *BranchWorker) *[]types.ResourceReference {
-	seen := &[]types.ResourceReference{}
-	w.pathRefusal = func(target types.ResourceReference, _ *manifestanalyzer.AcceptanceRefusedError) {
-		*seen = append(*seen, target)
+type capturedRefusal struct {
+	target types.ResourceReference
+	cell   types.CellKey
+}
+
+func captureRefusals(w *BranchWorker) *[]capturedRefusal {
+	seen := &[]capturedRefusal{}
+	w.pathRefusal = func(
+		target types.ResourceReference,
+		cell types.CellKey,
+		_ *manifestanalyzer.AcceptanceRefusedError,
+	) {
+		*seen = append(*seen, capturedRefusal{target: target, cell: cell})
 	}
 	return seen
 }
 
-// TestReportPathRefusal_ReportsAttributedRefusal is the happy path: a wrapped refusal with a
-// fully named target reaches the reporter and tells the caller not to log a write fault.
-func TestReportPathRefusal_ReportsAttributedRefusal(t *testing.T) {
+func TestReportPathRefusal_ReportsAttributedRefusalWithSourceCell(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
-	seen := captureRefusals(w)
+	seen := &[]types.ResourceReference{}
+	cell := types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "apps")
 
-	assert.True(t, w.reportPathRefusal(refusedError(), "podinfo-test", "team-a"))
+	w.pathRefusal = func(
+		target types.ResourceReference,
+		gotCell types.CellKey,
+		_ *manifestanalyzer.AcceptanceRefusedError,
+	) {
+		*seen = append(*seen, target)
+		assert.Equal(t, cell, gotCell)
+	}
+
+	assert.True(t, w.reportPathRefusal(refusedError(), "podinfo-test", "team-a", cell))
 	require.Len(t, *seen, 1)
 	assert.Equal(t, types.NewResourceReference("podinfo-test", "team-a"), (*seen)[0])
 }
@@ -53,7 +71,7 @@ func TestReportPathRefusal_PassesThroughNonRefusal(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	seen := captureRefusals(w)
 
-	assert.False(t, w.reportPathRefusal(errors.New("remote hung up"), "podinfo-test", "team-a"))
+	assert.False(t, w.reportPathRefusal(errors.New("remote hung up"), "podinfo-test", "team-a", types.CellKey{}))
 	assert.Empty(t, *seen, "a transient write fault must not be reported as a Git path refusal")
 }
 
@@ -70,7 +88,7 @@ func TestReportPathRefusal_UnattributableRefusalIsNotRecorded(t *testing.T) {
 		w := &BranchWorker{Log: logr.Discard()}
 		seen := captureRefusals(w)
 
-		assert.True(t, w.reportPathRefusal(refusedError(), c.name, c.ns),
+		assert.True(t, w.reportPathRefusal(refusedError(), c.name, c.ns, types.CellKey{}),
 			"an unattributable refusal is still a refusal, not a write fault")
 		assert.Empty(t, *seen,
 			"a refusal with an incomplete target reference must never be recorded (%q/%q)", c.ns, c.name)

@@ -193,6 +193,7 @@ func (r *EventRouter) resolveWorkerForGitDest(
 // than the gather deletes managed documents outside it. heal marks a drift-correcting resync the
 // worker defers while a commit window is open. enqueued is false when the worker's queue was full
 // and dropped the request (its failure is still delivered on resultCh for the drain to record).
+// refreshRemote asks the worker to fetch the latest remote tip before it inspects the folder.
 func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
@@ -201,6 +202,7 @@ func (r *EventRouter) enqueueScopedResync(
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 	heal bool,
+	refreshRemote bool,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
 	if err != nil {
@@ -215,6 +217,7 @@ func (r *EventRouter) enqueueScopedResync(
 		Scope:              &scope,
 		SourceCell:         sourceCell,
 		Heal:               heal,
+		RefreshRemote:      refreshRemote,
 		Result:             resultCh,
 	})
 	return resultCh, enqueued, nil
@@ -249,7 +252,7 @@ func (r *EventRouter) drainScopedResync(
 			"gitDest", gitDest.String(), "cell", cell.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		if r.WatchManager != nil {
-			r.WatchManager.MarkTargetGitPathAccepted(gitDest)
+			r.WatchManager.MarkTargetGitPathScopeAccepted(gitDest, cell)
 			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, cell)
 			// Recorded for every applied resync, including the ones that retained nothing: zero
 			// is the converged signal and is only meaningful if it is published as actively as a
@@ -295,7 +298,8 @@ func (r *EventRouter) handleScopedResyncError(
 		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget path content",
 			"gitDest", gitDest.String(), "cell", cell.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
-			r.WatchManager.MarkTargetGitPathRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
+			r.WatchManager.MarkTargetGitPathScopeRefused(
+				gitDest, cell, gitPathRefusalReason(refused), refused.BlockMessage())
 		}
 		return
 	}
