@@ -595,13 +595,13 @@ spec:
         {{range .Resources -}}
         - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}
         {{end -}}
-      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
+      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Namespace}} in {{.Namespace}}{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
 ```
 
 | Template | Fields |
 |---|---|
-| `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources` |
-| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Namespace`, `Name`, `APIVersion` |
+| `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, and the `LabelValues` / `LabelValue` accessors |
+| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `Labels`, and the `Label` accessor |
 | `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `Revision` |
 
 Live `Count` counts retained entries after window coalescing, before the writer compares them with
@@ -615,9 +615,91 @@ message. Printing a resource entry directly keeps its `group/version/resource[/n
 display name or the `attribution-unresolved` Git author sentinel. The sentinel appears only in the
 Git author header when attribution ran without resolving an actor. Messages never change authorship.
 
+##### Kind, scope, and labels
+
+`Kind` is the commit-message spelling of the `{kind}` [placement variable](#template-variables),
+and `Namespace` now answers the scope question completely: it renders the resource's namespace, or
+the literal `_cluster` when the resource is cluster-scoped, exactly as `{namespace}` does in a path.
+A body line no longer has to guard it with `{{if .Namespace}}`, because the field is never blank;
+the default template no longer does.
+
+`Labels` is the resource's labels as the writer commits them, and is read with the `Label`
+accessor:
+
+```yaml
+liveTemplate: |-
+  chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}{{with .LabelValue "team"}} for {{.}}{{end}}
+
+  {{range .Resources -}}
+  - [{{.Operation}}] {{.Kind}} {{.Namespace}}/{{.Name}} ({{.Label "app.kubernetes.io/instance"}})
+  {{end -}}
+```
+
+Three things to know:
+
+- **Read a label with `{{.Label "team"}}`, never `{{.Labels.team}}`.** These templates render with
+  `missingkey=error`, so indexing a label a resource does not carry does not render empty: it fails
+  the render, and a failed render fails the whole commit, losing the window until the next resync.
+  `Label` returns the empty string instead. Validation catches the dotted form (its sample events
+  include a resource with no labels), so such a template is rejected at admission rather than at
+  2am, but the accessor is the spelling to write.
+- **A commit spans n resources, so a label is a set here.** `LabelValues "team"` is the sorted,
+  distinct list of values in this commit, skipping resources that do not set it; `LabelValue "team"`
+  is the single value when the whole commit agrees on one, and empty when it does not. A subject
+  line that names a team is only honest under the second. The two differ on a resource that does
+  not carry the label: `LabelValues` skips it, `LabelValue` treats it as a disagreement and renders
+  nothing, so a commit holding one labeled and one unlabeled resource is named after neither.
+- **A `DELETE` carries no object**, because the resource is already gone from the cluster, so
+  `Kind` and `Labels` are empty for one. The identity fields (`Name`, `Namespace`, `Resource`, …)
+  are unaffected. A commit containing a `DELETE` therefore has no agreed `LabelValue`: what the
+  deleted resource was labeled is not something the window still knows.
+
+`reconcileTemplate` gets none of these. It describes a *type* being reconciled rather than a list
+of resources, so there are no labels to read, and its `Namespace` keeps the plain meaning it always
+had: the namespace a namespace-scoped reconcile covered, empty for a whole-target or all-namespaces
+one. That emptiness means "every namespace", not "cluster-scoped", so the `_cluster` sentinel would
+be a lie there rather than a convenience.
+
+##### Two languages, one vocabulary
+
+Placement templates and commit templates are deliberately different renderers: a path has to be
+statically checkable (that is what lets the operator prove a Secret route cannot collide two
+Secrets onto one file), while a commit message has to iterate over n resources, which needs
+`range` and `if`. Neither language can do the other's job.
+
+The nouns are the same in both, and only the spelling follows each host language:
+
+| Concept | Placement | Commit message |
+|---|---|---|
+| namespace, or `_cluster` when cluster-scoped | `{namespace}` | `.Namespace` |
+| kind | `{kind}` | `.Kind` |
+| name | `{name}` | `.Name` |
+| API version | `{apiVersion}` | `.APIVersion` |
+| one label | `{label:team}` | `.Label "team"` |
+
+The capitals are Go's, not a style choice: `text/template` can only reach exported struct fields,
+which must begin with one. The braces are lower-case because a placement template reads like the
+manifest it is filing (`metadata.namespace`). A label needs a method call rather than a field on
+the commit side because a Go template field name cannot contain a `:` or a `/`.
+
 Reconcile type fields name the synced type; `Namespace` names a namespace-scoped snapshot.
 Whole-target snapshots leave those fields empty. `Revision` is the snapshot's resourceVersion and
 can be absent, including a pure sweep. Guard optional values as in the example.
+
+A reconcile runs per *cell* (a (type, namespace) pair) rather than per target, so a
+namespace-scoped run covers exactly one namespace and the default subject names it:
+
+```text
+chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)
+```
+
+Without it, a target watching one type in two namespaces writes two byte-identical subjects, which
+is the same reason the type is in there. `Namespace` stays guarded by `{{if}}` rather than falling
+back to a sentinel the way `Resources[i].Namespace` does, and the difference is not an oversight:
+per resource, empty has exactly one meaning (the kind has no namespaces), so `_cluster` is a true
+name for it. Per run, empty covers two different facts: an all-namespaces sweep of a namespaced
+type, and a cluster-scoped type that has no namespaces. No single word is true of both, so the
+honest rendering is to say nothing.
 
 `eventTemplate` and `groupTemplate` are retired and rejected. Follow the
 [upgrade instructions](UPGRADING.md#one-live-commit-message-template) to migrate existing templates.
@@ -938,7 +1020,7 @@ spec:
     byType:
       v1/configmaps: "{namespace}/configmaps.yaml"     # bundle every ConfigMap of a namespace into one file
       v1/secrets: "{namespace}/secrets/{name}.yaml"    # one file per Secret
-    default: "{namespaceOrCluster}/{group}/{resource}/{name}.yaml"
+    default: "{namespace}/{group}/{resource}/{name}.yaml"
 ```
 
 - **`byType`** maps an exact `[group/]version/resource` key (core resources omit the group, e.g.
@@ -959,8 +1041,7 @@ named `api` in namespace `team-a`:
 | Variable | Renders | Example |
 |---|---|---|
 | `{name}` | resource name | `api` |
-| `{namespace}` | the resource's namespace; **empty** for a cluster-scoped resource | `team-a` |
-| `{namespaceOrCluster}` | the namespace, or the literal `_cluster` for a cluster-scoped resource | `team-a` (a Node → `_cluster`) |
+| `{namespace}` | the resource's namespace, or the literal `_cluster` for a cluster-scoped resource | `team-a` (a Node → `_cluster`) |
 | `{resource}` | plural resource name | `deployments` |
 | `{group}` | API group; **empty** for core resources | `apps` (a ConfigMap → empty) |
 | `{groupPath}` | the API group as a path segment; equivalent to `{group}` today (the empty core-group segment is dropped either way) | `apps` |
@@ -969,14 +1050,95 @@ named `api` in namespace `team-a`:
 | `{kind}` | manifest kind | `Deployment` |
 | `{scope}` | `namespaced` or `cluster` (a readable label, not a namespace-position value) | `namespaced` |
 | `{sensitiveSuffix}` | `.sops.yaml` for a sensitive resource, `.yaml` otherwise | `.yaml` (a Secret → `.sops.yaml`) |
+| `{label:key}` | the value of that label on the resource, or `_unlabeled` if it has none; the key may be prefixed (`{label:app.kubernetes.io/instance}`) | `voter` |
+| `{label:key\|fallback}` | the same, but with your own bucket in place of `_unlabeled` | `unassigned` |
 
-> **`{namespace}` vs `{namespaceOrCluster}`, the one to get right.** For a cluster-scoped resource
-> `{namespace}` is **empty**, so its whole path segment vanishes: a template `{namespace}/{resource}/{name}.yaml`
-> renders `clusterroles/admin.yaml` for a ClusterRole (no scope folder at all). Use `{namespaceOrCluster}`
-> when a single template must also place cluster-scoped resources; it keeps a stable `_cluster/` segment
-> (`_cluster/clusterroles/admin.yaml`) so namespaced and cluster-scoped resources stay cleanly separated.
-> `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute, so don't use it as the folder for
-> cluster resources.
+> **`{namespace}` always renders something.** For a cluster-scoped resource it is the literal
+> `_cluster`, so `{namespace}/{resource}/{name}.yaml` files a ClusterRole at
+> `_cluster/clusterroles/admin.yaml` and namespaced and cluster-scoped resources stay cleanly
+> separated without a second template. `_cluster` is not a legal namespace name (DNS-1123 forbids
+> `_`), so it can never collide with a real one. `{scope}` is a *descriptor* (`cluster`/
+> `namespaced`), not a substitute, so don't use it as the folder for cluster resources.
+
+#### Placing by label (`{label:key}`)
+
+One variable reads the object's metadata rather than its identity. `{label:team}` renders the value
+of the resource's `team` label, and the key may be prefixed: `{label:app.kubernetes.io/instance}` is
+one variable, not a variable followed by a directory, because the template scanner takes the whole
+`{…}` including the `/` inside it. It works in `byType` and in `default` alike, and a template may
+read more than one label.
+
+```yaml
+placement:
+  byType:
+    v1/configmaps: "{label:app.kubernetes.io/instance}/configmaps.yaml"
+```
+
+Resources sharing a label value bundle into one file, which is usually the point: every ConfigMap
+labeled `app.kubernetes.io/instance: voter` lands in `voter/configmaps.yaml`. The commit that
+writes them can name the same label: see [Kind, scope, and labels](#kind-scope-and-labels).
+
+##### Every resource is placed, labeled or not
+
+There is no "not placed" state to design around. A resource that does not carry the label (or
+carries it with an empty value, which Kubernetes permits) renders a bucket instead:
+
+| The resource | `{label:team}` | `{label:team\|unassigned}` | `{label:team\|}` |
+|---|---|---|---|
+| sets `team: payments` | `payments` | `payments` | `payments` |
+| does not set `team` | `_unlabeled` | `unassigned` | nothing; the segment collapses |
+| sets `team: ""` | `_unlabeled` | `unassigned` | nothing; the segment collapses |
+
+`_unlabeled` is the built-in bucket, and it is chosen the same way `_cluster` is for a
+cluster-scoped `{namespace}`: a label value has to start and end alphanumeric, so no real one can
+ever be `_unlabeled` and no real resource can land in that bucket by accident.
+
+##### Choosing your own fallback
+
+`{label:key|fallback}` replaces `_unlabeled` with a bucket you name. A fallback is at most 63
+characters of `[A-Za-z0-9._-]`, may not be `.` or `..`, and may be empty. Three consequences are
+worth knowing before you pick one:
+
+- **A fallback that is a legal label value shares its bucket with resources labeled it.**
+  `{label:team|unassigned}` files unlabeled ConfigMaps exactly where `team: unassigned` ones go, and
+  nothing afterwards can tell the two apart. When you need them distinguishable, begin the fallback
+  with `_`: a label value may not start with one, so `{label:team|_none}` is a bucket only your
+  fallback can reach. That is why a fallback is allowed a leading `_` where a label value is not.
+- **An empty fallback is a request to render nothing**, and the empty segment is then dropped, so
+  unlabeled resources land one directory up: `{label:team|}/{name}.yaml` puts them at `api.yaml`
+  while labeled ones go to `payments/api.yaml`. Write it when you want the labeled resources filed
+  into folders and the rest left where they are. Only *whole* segments collapse, so inside a file
+  name `{label:team|}-{name}.yaml` renders `-api.yaml` rather than `api.yaml`.
+- **A fallback can never add a directory or escape `spec.path`**, because the character set has no
+  `/` and `..` is refused. A template that tries is rejected by the GitTarget's `Validated`
+  condition with `InvalidConfig`, before anything is written; it is not silently repaired.
+
+##### The destination is sticky
+
+Placement is match-first and runs only for a resource with no document in Git yet, so the rendered
+path is a snapshot of the label *at the moment the file was created*. Labeling a resource
+afterwards does not move it out of `_unlabeled/`, changing the label does not move it to the new
+bucket, and removing the label does not move it into one. Nothing reconciles a file's location
+against the label it carries today; if you want a resource moved, move it in Git.
+
+##### Labels the operator strips are rejected up front
+
+The writer removes controller bookkeeping (`kustomize.toolkit.fluxcd.io/*`, `kro.run/*`,
+`applyset.kubernetes.io/*`) before a document reaches Git, so those values are already gone by the
+time placement runs. A template reading one would not merely be unhelpful; every resource of its
+type would render the same fallback forever. The `Validated` gate rejects such a template by name
+rather than letting it fail silently per resource. `app.kubernetes.io/instance` is deliberately
+**not** stripped (it is indistinguishable from the standard recommended label) and stays usable.
+
+##### Two more limits
+
+- **A label is not identity.** Two resources can carry the same one, so `{label:key}` adds
+  discrimination to a path but never counts toward the identity-completeness a sensitive route
+  requires: keep `{name}` and a scope variable in those templates.
+- **`{annotation:key}` does not exist.** A label value is at most 63 path-safe characters; an
+  annotation value is unbounded text (`kubectl.kubernetes.io/last-applied-configuration` is a whole
+  JSON document), so there is no truncation rule that would not surprise somebody. Nothing else on
+  the object is exposed either; the variables above are the whole language.
 
 #### Sensitivity is a write-safety rule, not a placement setting
 

@@ -54,7 +54,7 @@ flowchart TD
   P -->|"placement.byType has this GVR"| T1["byType template"]
   P -->|"placement.default is set"| T2["default template"]
   P -->|"neither, and the folder has one kustomize root"| T3["beside the root, {name}.yaml"]
-  P -->|"neither, and it has none"| T4["canonical:<br/>{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml"]
+  P -->|"neither, and it has none"| T4["canonical:<br/>{namespace}/{groupPath}/{resource}/{name}.yaml"]
 
   T1 --> K{"Does a kustomization<br/>govern that directory?"}
   T2 --> K
@@ -224,7 +224,7 @@ succeeds would be advertising rather than specifying, which is why both halves a
 Shape 3 exists for a use that is not deployment at all: pointing GitOps Reverser at a cluster to
 **see** what is in it, as reviewable documents with a Git history, and never applying the result.
 That is why the tree stays, and it constrains two things. The path has to carry the identity — the
-canonical `{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml` is what makes a folder browsable
+canonical `{namespace}/{groupPath}/{resource}/{name}.yaml` is what makes a folder browsable
 without an index — and the document has to carry `metadata.namespace`, because a viewer reads one
 file at a time and a file that means something different depending on its folder is not a record.
 

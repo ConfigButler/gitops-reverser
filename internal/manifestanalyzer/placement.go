@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -43,6 +45,19 @@ type PlacementRequest struct {
 	// rebased under WriteScope rather than escaping it. Empty for a self-contained subtree,
 	// where the scan root IS spec.path and every resolved path is already in scope.
 	WriteScope string
+	// Labels is metadata.labels as the writer will commit them — the SANITIZED object's labels,
+	// not the raw cluster object's, so one internal/sanitize strips (kustomize.toolkit.fluxcd.io/*,
+	// kro.run/*, applyset.kubernetes.io/*) is already gone by the time it gets here. That is why
+	// the GitTarget's Validated gate refuses a template reading one of those: it could never
+	// discriminate by it. Nil for a resource carrying no labels.
+	//
+	// A key the resource does not set — or sets to the empty string, which Kubernetes allows —
+	// renders the "{label:key|fallback}" fallback the template declared, and the built-in
+	// placementUnlabeledSentinel when it declared none. Either way the resource is placed: the
+	// DEFAULT never renders an empty segment, because that would fold every unlabeled resource
+	// of the type one directory up. A template can still ask for exactly that fold, by declaring
+	// an empty fallback ("{label:key|}").
+	Labels map[string]string
 }
 
 // PlacementSource names which mechanism produced a Path: the "why here" answer for one document.
@@ -71,7 +86,7 @@ const (
 	// convention: a file that root cannot reach would never render at all.
 	PlacementSourceKustomizeRoot PlacementSource = "kustomize_root"
 	// PlacementSourceCanonical is the built-in, versionless
-	// {namespaceOrCluster}/{group}/{resource}/{name}.yaml fallback: no declared
+	// {namespace}/{group}/{resource}/{name}.yaml fallback: no declared
 	// template, and no single kustomize root to hang the file off. For a repository
 	// with a hand-authored layout this is the signal that a placement.byType or
 	// placement.default line is missing — which is why it is counted per
@@ -167,6 +182,12 @@ func (e *PlacementRefusedError) Unwrap() error { return e.cause }
 func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementRequest) (PlacementResult, error) {
 	vars := placementVars(req)
 
+	// A declared template can only fail to render because its own TEXT is wrong — an unknown
+	// variable. The Validated gate rejects those before any write, so reaching one here means
+	// the spec is ahead of the gate; fall through below rather than erroring mid-batch.
+	// "{label:key}" never fails to render: a resource that does not carry the label gets the
+	// "{label:key|fallback}" value, or the built-in unlabeled sentinel if the template named
+	// none (see placementUnlabeledSentinel).
 	if path, source, ok, err := resolveDeclared(policy, req, vars); err == nil && ok {
 		return finishPlacement(store, req, path, source)
 	}
@@ -465,43 +486,180 @@ func PlacementTypeKey(group, version, resource string) string {
 	return fmt.Sprintf("%s/%s/%s", group, version, resource)
 }
 
-var placementVariablePattern = regexp.MustCompile(`\{[a-zA-Z]+\}`)
+// placementPlaceholderPattern matches anything "{...}"-shaped rather than only a legal variable
+// name, so a placeholder this package does not understand is REPORTED instead of left in the path
+// as literal text. That widening is what makes "{label:key}" safe to add: a label key may contain
+// "/", so an unrecognized label placeholder pasted through verbatim would split into directories.
+var placementPlaceholderPattern = regexp.MustCompile(`\{[^{}]*\}`)
+
+// strayPlacementBracesError reports a template carrying a brace that is not part of a complete
+// placeholder: "{namespace}/{label:team/{name}.yaml", or a nested "{label:{name}}".
+//
+// placementPlaceholderPattern only finds COMPLETE "{...}" runs, so without this check an unclosed
+// one is not a placeholder at all — it is literal text, and it renders into the path verbatim.
+// That is the exact failure the widened pattern was introduced to prevent, one level up: the
+// example above resolves to "app/{label:team/cache.yaml", a clean relative .yaml path that every
+// later gate accepts, so the writer would create a directory literally named "{label:team".
+// A brace in a path is never what an author meant, so the template is refused instead.
+func strayPlacementBracesError(tmpl string) error {
+	if residue := placementPlaceholderPattern.ReplaceAllString(tmpl, ""); strings.ContainsAny(residue, "{}") {
+		return fmt.Errorf(
+			"placement template %q has a brace that does not open or close a complete variable: "+
+				"every %q and %q must belong to one, such as {name}",
+			tmpl, "{", "}",
+		)
+	}
+	return nil
+}
+
+// placementLabelPrefix introduces the one variable that takes an argument:
+// "{label:app.kubernetes.io/instance}" renders that label's value on the placed resource.
+const placementLabelPrefix = "label:"
+
+// placementLabelFallbackSeparator introduces the optional value to use when the resource does
+// not carry the label: "{label:team|unassigned}". "|" is not legal in a label key, so it cannot
+// be mistaken for part of one, and a "|" with nothing after it is a declared EMPTY fallback
+// rather than a typo (see validPlacementFallback).
+const placementLabelFallbackSeparator = "|"
+
+// placementUnlabeledSentinel is what "{label:key}" renders for a resource that does not carry
+// the label (or carries it empty) when the template names no explicit "{label:key|fallback}".
+//
+// It plays the same role here that "_cluster" plays for a cluster-scoped {namespace}: a value no real
+// label could ever hold — a label value must be alphanumeric at both ends, and this starts with
+// "_" — so it can never collide with one, and it is a single documented constant rather than a
+// per-deployment invisible default. A template that wants its own bucket name still writes
+// "{label:key|fallback}"; this is only what renders when it doesn't, so every resource is still
+// placed and the mirror never has a silent, label-shaped gap in it.
+const placementUnlabeledSentinel = "_unlabeled"
+
+// placementLabelVariable is a parsed "{label:key}" or "{label:key|fallback}" placeholder. Either
+// form always renders: a resource missing the label gets the declared fallback if the template
+// names one, or placementUnlabeledSentinel otherwise. The explicit form exists to let the author
+// choose their own bucket — a different name, or no segment at all — in place of the built-in
+// one; it is not how a template opts in to being placed at all.
+type placementLabelVariable struct {
+	key         string
+	fallback    string
+	hasFallback bool
+}
+
+// parsePlacementLabelVariable splits a placeholder's inner name into a label key and its optional
+// fallback. The second result is false for a name that is not a label variable at all.
+func parsePlacementLabelVariable(name string) (placementLabelVariable, bool) {
+	spec, isLabel := strings.CutPrefix(name, placementLabelPrefix)
+	if !isLabel {
+		return placementLabelVariable{}, false
+	}
+	if key, fallback, found := strings.Cut(spec, placementLabelFallbackSeparator); found {
+		return placementLabelVariable{key: key, fallback: fallback, hasFallback: true}, true
+	}
+	return placementLabelVariable{key: spec}, true
+}
+
+// valid reports whether the key is one Kubernetes would accept and the declared fallback, if
+// there is one, is safe as a rendered path segment.
+func (v placementLabelVariable) valid() bool {
+	if len(validation.IsQualifiedName(v.key)) != 0 {
+		return false
+	}
+	if !v.hasFallback {
+		return true
+	}
+	return validPlacementFallback(v.fallback)
+}
+
+// placementFallbackPattern is the charset a declared "{label:key|fallback}" bucket may use: the
+// label-VALUE charset, minus the label rule that both ends be alphanumeric.
+//
+// Dropping that end rule is the point rather than an oversight. A fallback that is itself a legal
+// label value shares its bucket with resources genuinely labeled it — "{label:team|unassigned}"
+// puts the unlabeled ones exactly where team=unassigned goes, which is sometimes wanted and
+// sometimes a surprise. Allowing a leading "_" lets a template say "{label:team|_none}" and get a
+// bucket no real value can reach, the same collision-proofing placementUnlabeledSentinel and
+// "_cluster" are built on. What the charset keeps is the half that protects the path: no "/", no
+// "\", no "%", no space, no control character, so a fallback can no more invent a directory or
+// escape the write jail than a real label value can.
+var placementFallbackPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// placementFallbackMaxLength is the length limit Kubernetes puts on a label VALUE. A fallback
+// stands in for one, so it is held to the same ceiling rather than being allowed to grow into a
+// path segment no label could have produced.
+const placementFallbackMaxLength = 63
+
+// validPlacementFallback reports whether a declared fallback is safe as one rendered path segment.
+//
+// The EMPTY fallback ("{label:key|}") is deliberately accepted, and renders nothing:
+// collapseEmptyPathSegments then drops the segment, so an unlabeled resource lands one directory
+// up instead of in a bucket of its own. That is the same fold placementUnlabeledSentinel exists to
+// prevent — but the sentinel protects the DEFAULT, the case where nobody chose. A template that
+// spells out an empty fallback has chosen, in text a reviewer can see in the GitTarget, so it is
+// honoured rather than second-guessed. The fence that actually matters still holds either way:
+// "." and ".." are refused outright and the charset refuses a separator, so the worst an author
+// can do to themselves here is a flatter tree.
+func validPlacementFallback(v string) bool {
+	if v == "" {
+		return true
+	}
+	if len(v) > placementFallbackMaxLength || v == "." || v == ".." {
+		return false
+	}
+	return placementFallbackPattern.MatchString(v)
+}
 
 // isKnownPlacementVariable reports whether name is one of the variables
-// RenderPlacementTemplate accepts. Keep in sync with placementVars and
-// placementVariableNames.
+// RenderPlacementTemplate accepts. Keep in sync with placementVars.
 func isKnownPlacementVariable(name string) bool {
+	if label, isLabel := parsePlacementLabelVariable(name); isLabel {
+		return label.valid()
+	}
 	switch name {
 	case "group", "groupPath", "version", "apiVersion", "resource",
-		"kind", "scope", "namespace", "namespaceOrCluster", "name", "sensitiveSuffix":
+		"kind", "scope", "namespace", "name", "sensitiveSuffix":
 		return true
 	default:
 		return false
 	}
 }
 
-// placementVariableNames lists every variable isKnownPlacementVariable accepts,
-// for callers (ValidPlacementTemplateSyntax) that need the full set rather than a
-// single-name membership check.
-func placementVariableNames() []string {
-	return []string{
-		"group", "groupPath", "version", "apiVersion", "resource",
-		"kind", "scope", "namespace", "namespaceOrCluster", "name", "sensitiveSuffix",
+// removedPlacementVariableGuidance is the sentence that tells the author of a REMOVED variable
+// what to write instead, and "" for a placeholder that is merely unknown. A removed name reported
+// as "unknown" reads like a typo and sends its reader hunting for a misspelling that is not there,
+// so it is named and answered.
+func removedPlacementVariableGuidance(placeholder string) string {
+	if placeholder == "{namespaceOrCluster}" {
+		return "{namespaceOrCluster} was removed: {namespace} now renders \"" +
+			types.ClusterScopeSegment + "\" for a cluster-scoped resource, so it is the only " +
+			"namespace-position variable"
 	}
+	return ""
+}
+
+// unknownPlacementVariablesError names every placeholder in tmpl that is not a variable this
+// package renders, shared by the render path and the static Validated gate so the two report a
+// typo identically. A placeholder that names a REMOVED variable is reported with its
+// replacement instead of being lumped in with the typos.
+func unknownPlacementVariablesError(tmpl string, unknown []string) error {
+	for _, placeholder := range unknown {
+		if guidance := removedPlacementVariableGuidance(placeholder); guidance != "" {
+			return fmt.Errorf("placement template %q: %s", tmpl, guidance)
+		}
+	}
+	return fmt.Errorf(
+		"placement template %q references unknown variable(s): %s",
+		tmpl,
+		strings.Join(unknown, ", "),
+	)
 }
 
 func placementVars(req PlacementRequest) map[string]string {
 	id := req.Identifier
 	scope := "namespaced"
-	nsOrCluster := id.Namespace
 	if id.IsClusterScoped() {
+		// {scope} is the readable "cluster"/"namespaced" descriptor. The namespace-position
+		// VALUE is {namespace}, which renders types.ClusterScopeSegment here — the same word
+		// the canonical path and a commit message use, so all three name a scope identically.
 		scope = "cluster"
-		// The namespace-position segment uses "_cluster", an illegal Kubernetes
-		// namespace name (DNS-1123 forbids "_"), so it can never collide with a real
-		// namespace — unlike a bare "cluster", which is a legal namespace name. This
-		// mirrors ResourceIdentifier.ToGitPath's built-in canonical scope segment.
-		// {scope} above stays the readable "cluster"/"namespaced" descriptor.
-		nsOrCluster = "_cluster"
 	}
 	apiVersion := id.Version
 	if id.Group != "" {
@@ -511,31 +669,62 @@ func placementVars(req PlacementRequest) map[string]string {
 	if req.Sensitive {
 		sensitiveSuffix = ".sops.yaml"
 	}
-	return map[string]string{
-		"group":              id.Group,
-		"groupPath":          id.Group,
-		"version":            id.Version,
-		"apiVersion":         apiVersion,
-		"resource":           id.Resource,
-		"kind":               req.Kind,
-		"scope":              scope,
-		"namespace":          id.Namespace,
-		"namespaceOrCluster": nsOrCluster,
-		"name":               id.Name,
-		"sensitiveSuffix":    sensitiveSuffix,
+	vars := map[string]string{
+		"group":           id.Group,
+		"groupPath":       id.Group,
+		"version":         id.Version,
+		"apiVersion":      apiVersion,
+		"resource":        id.Resource,
+		"kind":            req.Kind,
+		"scope":           scope,
+		"namespace":       id.NamespaceOrCluster(),
+		"name":            id.Name,
+		"sensitiveSuffix": sensitiveSuffix,
 	}
+	// Labels join the same map under their full placeholder name. The "label:" prefix is not a
+	// legal bare variable, so a label literally named "namespace" cannot shadow the built-in one.
+	for key, value := range req.Labels {
+		vars[placementLabelPrefix+key] = value
+	}
+	return vars
 }
 
 // RenderPlacementTemplate expands a brace-variable path template ("{namespace}/
 // secret-{name}.sops.yaml") against vars, then collapses empty path segments left
 // behind by an omitted variable (e.g. "{groupPath}" for a core resource) so
 // "{groupPath}/{version}/..." renders "v1/..." rather than "/v1/...". It returns an
-// error naming any "{...}"-shaped placeholder that is not a known variable, so a
-// typo in a declared template is caught rather than silently left as literal text.
+// error naming any "{...}"-shaped placeholder that is not a known variable, and any brace that
+// belongs to no complete placeholder at all, so a typo in a declared template is caught rather
+// than silently left in the path as literal text.
 func RenderPlacementTemplate(tmpl string, vars map[string]string) (string, error) {
+	// Before substituting: a stray brace is not a variable this function can fail to resolve, it
+	// is literal text that would be written into the repository as a path segment.
+	if err := strayPlacementBracesError(tmpl); err != nil {
+		return "", err
+	}
 	var unknown []string
-	rendered := placementVariablePattern.ReplaceAllStringFunc(tmpl, func(match string) string {
+	rendered := placementPlaceholderPattern.ReplaceAllStringFunc(tmpl, func(match string) string {
 		name := strings.Trim(match, "{}")
+		if label, isLabel := parsePlacementLabelVariable(name); isLabel {
+			if !label.valid() {
+				unknown = append(unknown, match)
+				return match
+			}
+			// Present-but-empty counts as absent. Kubernetes accepts an empty label value, and
+			// rendering one leaves a segment collapseEmptyPathSegments then drops — folding every
+			// resource that happens to carry the label empty onto one path, which is exactly the
+			// silent identity fold sanitizePlacementSegment exists to prevent.
+			if value := vars[placementLabelPrefix+label.key]; value != "" {
+				return sanitizePlacementSegment(value)
+			}
+			// The declared fallback wins over the sentinel, including when it is empty: that is
+			// the one case where this DOES render an empty segment, because the template asked
+			// for it in writing (see validPlacementFallback).
+			if label.hasFallback {
+				return label.fallback
+			}
+			return placementUnlabeledSentinel
+		}
 		if !isKnownPlacementVariable(name) {
 			unknown = append(unknown, match)
 			return match
@@ -543,11 +732,7 @@ func RenderPlacementTemplate(tmpl string, vars map[string]string) (string, error
 		return sanitizePlacementSegment(vars[name])
 	})
 	if len(unknown) > 0 {
-		return "", fmt.Errorf(
-			"placement template %q references unknown variable(s): %s",
-			tmpl,
-			strings.Join(unknown, ", "),
-		)
+		return "", unknownPlacementVariablesError(tmpl, unknown)
 	}
 	return collapseEmptyPathSegments(rendered), nil
 }
@@ -582,20 +767,51 @@ func collapseEmptyPathSegments(p string) string {
 // placement variables, independent of any resource identity — the check a
 // GitTarget's Validated gate runs statically at reconcile time, before any
 // repository scan.
+//
+// It scans placeholders rather than rendering the template, because "{label:key}" has no static
+// value to render: whether a resource sets that label, and so whether it renders the value or
+// falls back to a fallback/sentinel, is a per-object fact answered at write time. What IS static,
+// and checked here, is that the key itself is one Kubernetes would accept.
 func ValidPlacementTemplateSyntax(tmpl string) error {
-	names := placementVariableNames()
-	stub := make(map[string]string, len(names))
-	for _, name := range names {
-		stub[name] = ""
+	if err := strayPlacementBracesError(tmpl); err != nil {
+		return err
 	}
-	_, err := RenderPlacementTemplate(tmpl, stub)
-	return err
+	var unknown []string
+	for _, match := range placementPlaceholderPattern.FindAllString(tmpl, -1) {
+		if !isKnownPlacementVariable(strings.Trim(match, "{}")) {
+			unknown = append(unknown, match)
+		}
+	}
+	if len(unknown) > 0 {
+		return unknownPlacementVariablesError(tmpl, unknown)
+	}
+	return nil
+}
+
+// PlacementTemplateLabelKeys lists the label keys tmpl reads, in template order, so a caller with
+// knowledge this package does not have — which labels never survive to the write path — can reject
+// a template that could never discriminate by the label it names: every resource of the type would
+// render the same fallback/sentinel value, silently collapsing what looked like a per-label split
+// into one bucket. Malformed label placeholders are left out; ValidPlacementTemplateSyntax reports
+// those.
+func PlacementTemplateLabelKeys(tmpl string) []string {
+	var keys []string
+	for _, match := range placementPlaceholderPattern.FindAllString(tmpl, -1) {
+		if label, isLabel := parsePlacementLabelVariable(strings.Trim(match, "{}")); isLabel && label.valid() {
+			keys = append(keys, label.key)
+		}
+	}
+	return keys
 }
 
 // ValidPlacementTemplatePath statically rejects a template whose own literal text could render
 // outside spec.path or with the wrong file name: "..", a leading "/", a "\" separator, or a
 // non-YAML suffix. Runs at the Validated gate, before any scan, so a bad template fails fast and
 // visibly instead of skipping resource by resource.
+//
+// A "{label:key}" placeholder may itself contain the "/" of a prefixed label key, so the segment
+// walk below sees it split in two. That is harmless: neither half can be ".." (the key is a
+// qualified name), and the suffix check reads the whole string.
 func ValidPlacementTemplatePath(tmpl string) error {
 	trimmed := strings.TrimSpace(tmpl)
 	if trimmed == "" {
@@ -626,9 +842,13 @@ func ValidPlacementTemplatePath(tmpl string) error {
 // Those are {groupPath} and {resource}, deliberately NOT {version}: two served versions of one
 // group/resource are the SAME object, so a version segment splits one identity rather than
 // separating two.
+//
+// {label:key} deliberately counts for nothing here. A label is not identity — two Secrets in one
+// namespace can carry the same one — so it can only ever ADD discrimination to a path that is
+// already complete, never supply the part that is missing.
 func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool {
 	hasName := strings.Contains(tmpl, "{name}")
-	hasScope := strings.Contains(tmpl, "{namespace}") || strings.Contains(tmpl, "{namespaceOrCluster}")
+	hasScope := strings.Contains(tmpl, "{namespace}")
 	if !hasName || !hasScope {
 		return false
 	}

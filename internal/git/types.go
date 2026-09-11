@@ -4,6 +4,7 @@ package git
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -87,18 +88,28 @@ const (
 	DefaultCommitterName = "GitOps Reverser"
 	// DefaultCommitterEmail matches the default operator email in Git history.
 	DefaultCommitterEmail = "noreply@configbutler.ai"
-	// DefaultReconcileCommitMessageTemplate names the synced type, so the otherwise
-	// indistinguishable per-type reconciles one GitTarget produces are self-describing. Plural
-	// resource alone for readability; add {{.APIVersion}} when plural collisions matter. The
-	// {{if}} guards fall back to "chore: reconcile N resources" for a whole-target reconcile, so
-	// the subject never degrades to an identity-less "chore: reconcile N ".
+	// DefaultReconcileCommitMessageTemplate names the synced type AND, when the run covered one,
+	// the namespace, so the otherwise indistinguishable per-cell reconciles one GitTarget
+	// produces are self-describing: a target watching configmaps in team-a and in team-b would
+	// otherwise write two byte-identical subjects. Plural resource alone for readability; add
+	// {{.APIVersion}} when plural collisions matter.
+	//
+	// The {{if}} guards fall back to "chore: reconcile N resources" for a whole-target reconcile,
+	// so the subject never degrades to an identity-less "chore: reconcile N ". The namespace guard
+	// in particular must stay an {{if}} rather than a sentinel: an empty Namespace here means the
+	// run was not namespace-scoped, which covers BOTH an all-namespaces sweep of a namespaced type
+	// and a cluster-scoped type having no namespaces at all. No single word is true of both, so
+	// the honest rendering of "no namespace to name" is to say nothing. (Contrast ResourceRef,
+	// which describes ONE resource, where empty has exactly one meaning and carries the
+	// types.ClusterScopeSegment sentinel.)
 	DefaultReconcileCommitMessageTemplate = "chore: reconcile {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
+		"{{if .Namespace}} in {{.Namespace}}{{end}}" +
 		"{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
 	// DefaultLiveCommitMessageTemplate describes retained input resources.
 	DefaultLiveCommitMessageTemplate = "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}\n\n" +
 		"{{range .Resources -}}" +
-		"- [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}\n" +
+		"- [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}\n" +
 		"{{end -}}"
 
 	resourceRefStringPartCap = 5
@@ -600,19 +611,50 @@ type ReconcileCommitMessageData struct {
 
 // ResourceRef is the lightweight resource identifier emitted to grouped commit
 // templates via LiveCommitMessageData.Resources.
+//
+// Its fields are deliberately the placement template language's variables under Go template
+// casing: {namespace} is .Namespace, {kind} is .Kind, and so on.
+// The two renderers are separate on purpose (a path must be statically checkable, a message
+// must be able to range over n resources), but a reader should not have to learn two
+// vocabularies to describe the same resource. See docs/configuration.md.
 type ResourceRef struct {
 	Operation  string
 	APIVersion string
 	Group      string
 	Version    string
 	Resource   string
-	Namespace  string
-	Name       string
+	// Kind is the manifest kind, the commit-message spelling of the {kind} placement
+	// variable. It is read off the event's object, so it is EMPTY for a DELETE: the watcher
+	// carries no object for one, because by then the object is gone from the cluster.
+	Kind string
+	// Namespace is the resource's namespace, or the literal "_cluster" when it is
+	// cluster-scoped — types.ClusterScopeSegment, the same word the canonical Git path and the
+	// {namespace} placement variable use. A cluster-scoped resource HAS a scope name; it is
+	// simply not a namespace, and "_cluster" is a name no real namespace can collide with
+	// (DNS-1123 forbids "_"). A template therefore never has to guard this field.
+	Namespace string
+	Name      string
+	// Labels is the resource's metadata.labels as the writer commits them: the SANITIZED
+	// object's labels, so one internal/sanitize strips is already absent, exactly as for the
+	// "{label:key}" placement variable. It is nil for a DELETE (no object) and for a resource
+	// carrying none.
+	//
+	// Read it with .Label, not with .Labels.key — see Label.
+	Labels map[string]string
 }
 
-// String renders the ref as group/version/resource[/namespace]/name.
-// The format mirrors ResourceIdentifier.String for templates that want to
-// {{range}} over Resources and just print each entry.
+// Label is the value of one label on this resource, and "" when it does not carry the label.
+//
+// Use it rather than indexing Labels directly. These templates render with
+// missingkey=error, so "{{.Labels.team}}" does not render empty for a resource that has no
+// "team" label: it fails the render, and a failed render fails the whole commit (the window's
+// events are lost until the next resync). "{{.Label \"team\"}}" renders empty instead, which
+// is this language's counterpart of the "_unlabeled" bucket a path falls back to.
+func (r ResourceRef) Label(key string) string { return r.Labels[key] }
+
+// String renders the ref as group/version/resource/namespace/name, where the namespace segment
+// is "_cluster" for a cluster-scoped resource (Namespace never renders blank). Templates that
+// {{range}} over Resources and print each entry get that form.
 func (r ResourceRef) String() string {
 	parts := make([]string, 0, resourceRefStringPartCap)
 	if r.Group != "" {
@@ -648,6 +690,57 @@ type LiveCommitMessageData struct {
 	// Resources is the per-resource list, deduplicated by file path so the
 	// final state is what's being committed.
 	Resources []ResourceRef
+}
+
+// LabelValues is the sorted, distinct set of values this commit's resources carry for one
+// label key, skipping every resource that does not set it (so the result is empty, never a
+// list with a blank in it).
+//
+// A label is single-valued for a path and set-valued for a commit message: placement asks the
+// question of one resource, a commit asks it of the n resources in the window. Printing the
+// slice renders Go's "[a b]" form, so a template usually ranges over it:
+//
+//	{{range .LabelValues "team"}}{{.}} {{end}}
+func (d LiveCommitMessageData) LabelValues(key string) []string {
+	seen := make(map[string]struct{}, len(d.Resources))
+	values := make([]string, 0, len(d.Resources))
+	for _, r := range d.Resources {
+		value := r.Labels[key]
+		if value == "" {
+			continue
+		}
+		if _, dup := seen[value]; dup {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
+// LabelValue is the one value every resource in this commit agrees on for key, and "" unless
+// all of them carry it with that value. It is what a SUBJECT line wants: naming the team a
+// commit belongs to is only honest when the commit is one team's.
+//
+//	chore: sync {{.Count}} resources{{with .LabelValue "team"}} for {{.}}{{end}}
+//
+// A resource that does not carry the label DISAGREES; it does not abstain. That is why this
+// cannot be LabelValues with a length check: that set skips the unlabeled, so one
+// "team: payments" resource committed next to an unlabeled one would name the whole commit
+// "for payments" and hide the resource nobody can attribute. The same rule leaves a commit
+// containing a DELETE unnamed, since a DELETE carries no object and so no labels (see
+// ResourceRef.Labels) — the deleted resource's team is not something the window can know.
+func (d LiveCommitMessageData) LabelValue(key string) string {
+	shared := ""
+	for _, r := range d.Resources {
+		value := r.Label(key)
+		if value == "" || (shared != "" && value != shared) {
+			return ""
+		}
+		shared = value
+	}
+	return shared
 }
 
 // ResolveCommitConfig resolves a GitProvider's commit settings into runtime defaults.

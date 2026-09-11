@@ -122,11 +122,12 @@ func TestRenderReconcileCommitMessageFromEvents_DefaultTemplate(t *testing.T) {
 
 func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(t *testing.T) {
 	cases := []struct {
-		name     string
-		count    int
-		gvr      schema.GroupVersionResource
-		revision string
-		expected string
+		name      string
+		count     int
+		gvr       schema.GroupVersionResource
+		namespace string
+		revision  string
+		expected  string
 	}{
 		{
 			name:     "core type names the plural resource and revision",
@@ -153,10 +154,29 @@ func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(
 			revision: "",
 			expected: "chore: reconcile 0 secrets",
 		},
+		// A namespace-scoped reconcile covers exactly one namespace by construction, so naming it
+		// is what separates the two subjects a target watching one type in two namespaces writes.
+		{
+			name:      "a namespace-scoped reconcile names its namespace",
+			count:     4,
+			gvr:       schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+			namespace: "team-a",
+			revision:  "1331",
+			expected:  "chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)",
+		},
+		// Empty means the run was not namespace-scoped, which covers both an all-namespaces sweep
+		// and a cluster-scoped type. No word is true of both, so the subject names none.
+		{
+			name:     "an unscoped reconcile says nothing about namespaces",
+			count:    9,
+			gvr:      schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+			revision: "1400",
+			expected: "chore: reconcile 9 configmaps (last resourceVersion: 1400)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scope := ResyncScopeFor(tc.gvr, "")
+			scope := ResyncScopeFor(tc.gvr, tc.namespace)
 			message, err := renderReconcileCommitMessage(
 				tc.count, "demo", &scope, tc.revision, ResolveCommitConfig(nil))
 			require.NoError(t, err)
@@ -671,10 +691,12 @@ func renderSingleLiveCommitMessage(event Event, config CommitConfig) (string, er
 // expectSingleLiveMessage builds the message the default live template renders for one retained
 // resource: a "chore: sync 1 resource" subject and one body line per entry.
 func expectSingleLiveMessage(operation, apiVersion, resource, namespace, name string) string {
-	location := name
-	if namespace != "" {
-		location = namespace + "/" + name
+	// The namespace position is never blank: a cluster-scoped resource renders the "_cluster"
+	// sentinel, the same word its Git path uses, so the default template prints it unguarded.
+	if namespace == "" {
+		namespace = types.ClusterScopeSegment
 	}
+	location := namespace + "/" + name
 
 	return fmt.Sprintf("chore: sync 1 resource\n\n- [%s] %s/%s/%s\n", operation, apiVersion, resource, location)
 }

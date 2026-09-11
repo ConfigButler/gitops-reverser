@@ -108,14 +108,24 @@ func buildLiveCommitMessageData(author, gitTarget string, events []Event) LiveCo
 	resources := make([]ResourceRef, 0, len(events))
 	for _, e := range events {
 		operations[e.Operation]++
+		// Kind and Labels live on the object, which a DELETE event does not carry (the object
+		// is gone by then), so both stay empty for one rather than being guessed at.
+		kind := ""
+		var labels map[string]string
+		if e.Object != nil {
+			kind = e.Object.GetKind()
+			labels = e.Object.GetLabels()
+		}
 		resources = append(resources, ResourceRef{
 			Operation:  e.Operation,
 			APIVersion: buildAPIVersion(e.Identifier.Group, e.Identifier.Version),
 			Group:      e.Identifier.Group,
 			Version:    e.Identifier.Version,
 			Resource:   e.Identifier.Resource,
-			Namespace:  e.Identifier.Namespace,
+			Kind:       kind,
+			Namespace:  e.Identifier.NamespaceOrCluster(),
 			Name:       e.Identifier.Name,
+			Labels:     labels,
 		})
 	}
 	return LiveCommitMessageData{
