@@ -373,3 +373,49 @@ func TestLocateNew_EmptyFallback_InAFileNameRendersNothing(t *testing.T) {
 		t.Fatalf("got %q, want %q", res.Path, want)
 	}
 }
+
+// A brace that never closes is not a placeholder at all: placementPlaceholderPattern skips it, so
+// before this check it stayed in the rendered path as literal text and every later gate accepted
+// the result — "{namespace}/{label:team/{name}.yaml" resolved to "app/{label:team/cache.yaml",
+// a clean .yaml path the writer would happily create a "{label:team" directory for.
+func TestPlacementTemplate_StrayBraceIsRejectedEverywhere(t *testing.T) {
+	cases := []struct {
+		tmpl string
+		why  string
+	}{
+		{"{namespace}/{label:team/{name}.yaml", "an unclosed label placeholder swallowed by the next one"},
+		{"{namespace}/{name.yaml", "an unclosed placeholder at the end"},
+		{"{namespace}/name}.yaml", "a closing brace with nothing opening it"},
+		{"{label:{name}}/{name}.yaml", "nested braces"},
+		{"{{name}}/x.yaml", "a doubled brace pair"},
+	}
+	for _, tc := range cases {
+		if err := ValidPlacementTemplateSyntax(tc.tmpl); err == nil {
+			t.Errorf("%s: ValidPlacementTemplateSyntax(%q) = nil, want rejected", tc.why, tc.tmpl)
+		}
+		got, err := RenderPlacementTemplate(tc.tmpl, map[string]string{
+			"namespace": "app", "name": "cache", "label:team": "payments",
+		})
+		if err == nil {
+			t.Errorf("%s: RenderPlacementTemplate(%q) = %q, want rejected", tc.why, tc.tmpl, got)
+		}
+		if got != "" {
+			t.Errorf("%s: RenderPlacementTemplate(%q) returned %q; a refused template renders nothing",
+				tc.why, tc.tmpl, got)
+		}
+	}
+}
+
+// The check must not cost a legal template: a path with no braces at all, and one made only of
+// complete placeholders, both still pass.
+func TestPlacementTemplate_StrayBraceCheckLeavesLegalTemplatesAlone(t *testing.T) {
+	for _, tmpl := range []string{
+		"static/configmaps.yaml",
+		"{namespace}/{label:app.kubernetes.io/instance}/{name}{sensitiveSuffix}",
+		"{label:team|_none}/{groupPath}/{resource}/{name}.yaml",
+	} {
+		if err := ValidPlacementTemplateSyntax(tmpl); err != nil {
+			t.Errorf("ValidPlacementTemplateSyntax(%q) = %v, want accepted", tmpl, err)
+		}
+	}
+}

@@ -102,13 +102,21 @@ A few things to know before you use it:
 `{annotation:key}` is deliberately not supported: an annotation value has no length or character
 limit of its own, so it is not a path segment the way a 63-character label value is.
 
-What to check before upgrading: a placement template containing a `{…}`-shaped piece of text that
-is **not** a variable. Recognizing `{label:app.kubernetes.io/name}` means the template scanner now
-matches any `{…}`, where it previously matched only `{word}` and left everything else in the path
-as literal text. Such a template now fails the GitTarget's `Validated` gate with
-`InvalidConfig` naming the placeholder, instead of silently writing braces — and, for anything
-containing a `/`, an unintended directory — into your repository. Nothing moves a file already
-committed at such a path.
+What to check before upgrading: a placement template containing a brace that is not part of a
+variable. Recognizing `{label:app.kubernetes.io/name}` means the template scanner now matches any
+`{…}`, where it previously matched only `{word}` and left everything else in the path as literal
+text. Two shapes are now refused at the GitTarget's `Validated` gate with `InvalidConfig` instead
+of being written into your repository:
+
+- a complete `{…}` that names no variable, such as a misspelled `{namspace}`. The message names the
+  placeholder.
+- a brace belonging to no complete variable at all, such as `{namespace}/{label:team/{name}.yaml`
+  (the label placeholder never closes) or a nested `{label:{name}}`. These were the more dangerous
+  half: an unclosed placeholder is not a placeholder, so it used to render verbatim, and the
+  example above resolved to `app/{label:team/cache.yaml` — a clean relative `.yaml` path that every
+  later check accepted, so the writer created a directory literally named `{label:team`.
+
+Nothing moves a file already committed at such a path.
 
 ## A `CommitRequest` refused by someone else's window now says so
 

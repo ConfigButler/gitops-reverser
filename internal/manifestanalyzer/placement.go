@@ -492,6 +492,26 @@ func PlacementTypeKey(group, version, resource string) string {
 // "/", so an unrecognized label placeholder pasted through verbatim would split into directories.
 var placementPlaceholderPattern = regexp.MustCompile(`\{[^{}]*\}`)
 
+// strayPlacementBracesError reports a template carrying a brace that is not part of a complete
+// placeholder: "{namespace}/{label:team/{name}.yaml", or a nested "{label:{name}}".
+//
+// placementPlaceholderPattern only finds COMPLETE "{...}" runs, so without this check an unclosed
+// one is not a placeholder at all — it is literal text, and it renders into the path verbatim.
+// That is the exact failure the widened pattern was introduced to prevent, one level up: the
+// example above resolves to "app/{label:team/cache.yaml", a clean relative .yaml path that every
+// later gate accepts, so the writer would create a directory literally named "{label:team".
+// A brace in a path is never what an author meant, so the template is refused instead.
+func strayPlacementBracesError(tmpl string) error {
+	if residue := placementPlaceholderPattern.ReplaceAllString(tmpl, ""); strings.ContainsAny(residue, "{}") {
+		return fmt.Errorf(
+			"placement template %q has a brace that does not open or close a complete variable: "+
+				"every %q and %q must belong to one, such as {name}",
+			tmpl, "{", "}",
+		)
+	}
+	return nil
+}
+
 // placementLabelPrefix introduces the one variable that takes an argument:
 // "{label:app.kubernetes.io/instance}" renders that label's value on the placed resource.
 const placementLabelPrefix = "label:"
@@ -673,9 +693,15 @@ func placementVars(req PlacementRequest) map[string]string {
 // secret-{name}.sops.yaml") against vars, then collapses empty path segments left
 // behind by an omitted variable (e.g. "{groupPath}" for a core resource) so
 // "{groupPath}/{version}/..." renders "v1/..." rather than "/v1/...". It returns an
-// error naming any "{...}"-shaped placeholder that is not a known variable, so a
-// typo in a declared template is caught rather than silently left as literal text.
+// error naming any "{...}"-shaped placeholder that is not a known variable, and any brace that
+// belongs to no complete placeholder at all, so a typo in a declared template is caught rather
+// than silently left in the path as literal text.
 func RenderPlacementTemplate(tmpl string, vars map[string]string) (string, error) {
+	// Before substituting: a stray brace is not a variable this function can fail to resolve, it
+	// is literal text that would be written into the repository as a path segment.
+	if err := strayPlacementBracesError(tmpl); err != nil {
+		return "", err
+	}
 	var unknown []string
 	rendered := placementPlaceholderPattern.ReplaceAllStringFunc(tmpl, func(match string) string {
 		name := strings.Trim(match, "{}")
@@ -747,6 +773,9 @@ func collapseEmptyPathSegments(p string) string {
 // falls back to a fallback/sentinel, is a per-object fact answered at write time. What IS static,
 // and checked here, is that the key itself is one Kubernetes would accept.
 func ValidPlacementTemplateSyntax(tmpl string) error {
+	if err := strayPlacementBracesError(tmpl); err != nil {
+		return err
+	}
 	var unknown []string
 	for _, match := range placementPlaceholderPattern.FindAllString(tmpl, -1) {
 		if !isKnownPlacementVariable(strings.Trim(match, "{}")) {
