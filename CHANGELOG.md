@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.45.0...v0.45.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **gittarget:** report scoped path refusals ([#358](https://github.com/ConfigButler/gitops-reverser/issues/358)) ([dbca196](https://github.com/ConfigButler/gitops-reverser/commit/dbca196cdeb1d30dd83604f449566172b5334e94))
+* **helm:** correct audit setup and streamline operator docs ([#359](https://github.com/ConfigButler/gitops-reverser/issues/359)) ([211c581](https://github.com/ConfigButler/gitops-reverser/commit/211c58164cbf1fa0617fdbd713df42c8ac3fe760))
+
 ## [0.45.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.44.0...v0.45.0) (2026-09-09)
 
 
