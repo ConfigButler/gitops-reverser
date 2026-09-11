@@ -65,10 +65,33 @@ type GitTargetSpec struct {
 	// +optional
 	Encryption *EncryptionSpec `json:"encryption,omitempty"`
 
+	// Why a "{label:key|fallback}" may start with "_" where a label value may not: a
+	// fallback that is itself label-legal shares its bucket with the resources genuinely
+	// labeled it, and nothing downstream can separate the two again. A leading "_" is the
+	// only way to name a bucket no label value can reach — the property "_unlabeled" and
+	// "_cluster" are already built on. The empty fallback is allowed for the mirror-image
+	// reason: the built-in sentinel protects the case where nobody chose, while an empty
+	// fallback is a choice spelled out in the spec, visible in review and in `kubectl get`.
+	// See docs/layout/new-file-placement-rules.md.
+
 	// Placement declares where NEW resources are written. It has no effect on a
 	// resource that already has a document in Git — that document is always
 	// updated in place at its existing location, wherever that is. Mutable: a
 	// change only affects resources created after the change.
+	//
+	// Its byType and default templates share one variable language (docs/configuration.md).
+	// Besides the resource's identity, a template may read one of its labels:
+	// "{label:app.kubernetes.io/instance}/configmaps.yaml". A resource that does not set
+	// that label, or sets it to the empty string, is still placed — it renders the built-in
+	// "_unlabeled" bucket, a value no real label can hold, so it is never confused with a
+	// resource genuinely labeled that way. "{label:key|fallback}" declares a different
+	// bucket: at most 63 characters of [A-Za-z0-9._-], neither "." nor "..", so it can add
+	// no directory and escape no path. It may start with "_" to stay collision-proof
+	// ("{label:team|_none}"), or be empty ("{label:team|}") to render nothing at all, which
+	// collapses the segment and lands unlabeled resources one directory up. A label is
+	// never identity, so it does not contribute to the identity-completeness a sensitive
+	// route requires, and because placement runs only for a resource with no document yet,
+	// labeling one afterwards never moves the file already written.
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 

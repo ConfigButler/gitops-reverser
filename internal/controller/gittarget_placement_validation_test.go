@@ -50,6 +50,74 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			true,
 		},
 		{
+			"a label variable passes the static gate with no object to read it from",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:app.kubernetes.io/instance}/{namespaceOrCluster}/" +
+					"{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"a label does not supply the type identity a default needs to stay Secret-safe",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:app.kubernetes.io/instance}/{namespaceOrCluster}/{name}.yaml",
+			},
+			false,
+		},
+		{
+			"a fallback bucket no label value could reach is accepted",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:team|_none}/{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"an empty fallback is a declared segment collapse, not a typo",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:team|}/{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"a fallback that would invent a directory is rejected",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:team|a/b}/{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+			},
+			false,
+		},
+		{
+			"a label key Kubernetes would reject is rejected here, not per resource",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:not a key}/{namespaceOrCluster}/{name}.yaml",
+			},
+			false,
+		},
+		{
+			"a label the writer strips can never place anything, so it is rejected at the gate",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType: map[string]string{
+					"v1/configmaps": "{label:kustomize.toolkit.fluxcd.io/name}/configmaps.yaml",
+				},
+			},
+			false,
+		},
+		{
+			"app.kubernetes.io/instance survives sanitization and stays usable",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType: map[string]string{
+					"v1/configmaps": "{label:app.kubernetes.io/instance}/configmaps.yaml",
+				},
+			},
+			true,
+		},
+		{
+			"annotations are not a placement variable",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{annotation:team}/{namespaceOrCluster}/{name}.yaml",
+			},
+			false,
+		},
+		{
 			"bundling default with no Secret route is rejected",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "all.yaml",

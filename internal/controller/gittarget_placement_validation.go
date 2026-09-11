@@ -8,6 +8,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
 // coreSecretsTypeKey is the placement byType key for core Kubernetes Secrets — the
@@ -100,6 +101,25 @@ func validatePlacementTemplate(tmpl string) (string, bool) {
 	}
 	if err := manifestanalyzer.ValidPlacementTemplatePath(tmpl); err != nil {
 		return err.Error(), true
+	}
+	return validatePlacementTemplateLabels(tmpl)
+}
+
+// validatePlacementTemplateLabels rejects a template reading a label the writer strips before a
+// byte reaches Git (Flux's kustomize.toolkit.fluxcd.io/*, kro.run/*, applyset.kubernetes.io/*).
+// The value is gone by the time placement runs, so every resource of the type would render the
+// same fallback (or the built-in sentinel) regardless of what it is actually labeled — the
+// template can never do the per-label split its author wrote it for. That is exactly the fault a
+// static gate exists to turn into a visible condition.
+func validatePlacementTemplateLabels(tmpl string) (string, bool) {
+	for _, key := range manifestanalyzer.PlacementTemplateLabelKeys(tmpl) {
+		if sanitize.IsStrippedLabel(key) {
+			return fmt.Sprintf(
+				"placement template %q reads label %q, which is stripped from every document before "+
+					"it is written to Git, so every resource of its type would render the same fallback",
+				tmpl, key,
+			), true
+		}
 	}
 	return "", false
 }

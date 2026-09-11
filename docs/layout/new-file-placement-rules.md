@@ -12,7 +12,8 @@
 > by B2 on the same branch before release; Option A remains deferred. See
 > "Sensitivity as a write-safety classifier (B2 implementation notes)" below for how
 > the encryption guarantee is preserved without the API-level split.
-> Captured: 2026-06-05. Option C removed: 2026-07-29.
+> Captured: 2026-06-05. Option C removed: 2026-07-29. `{label:key}` added: 2026-09-11
+> (`{annotation:key}` declined with it — see "What is deliberately not exposed").
 > Related:
 > [open-asks-priority.md](../design/open-asks-priority.md) — **the argument for deleting Option C**,
 > [contextual-namespace.md](contextual-namespace.md),
@@ -925,6 +926,7 @@ Recommended variables:
 | `{namespaceOrCluster}` | namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for cluster-scoped resources |
 | `{name}` | metadata name |
 | `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
+| `{label:key}` | the value of that label on the placed resource, or the `_unlabeled` sentinel when it carries none; `{label:key\|fallback}` names a different bucket, and an empty fallback renders no segment at all ([details](#labelkey--the-one-metadata-variable)) |
 
 **A template carries its own extension.** Nothing is appended: `"{namespace}/{name}"` is rejected by
 [path validation](#path-validation), which requires a recognized YAML suffix, and
@@ -987,21 +989,119 @@ default/secrets/app.yaml
 before release. Because placement is match-first for existing files, the change only
 affects newly-created files and never moves one already in Git.)
 
-Optional future variables can expose selected object metadata:
+### `{label:key}` — the one metadata variable
+
+One variable reads the object's metadata rather than its identity:
 
 | Variable | Meaning |
 |---|---|
-| `{label:key}` | sanitized value of a metadata label |
-| `{annotation:key}` | sanitized value of a metadata annotation |
+| `{label:key}` | the value of that label on the placed resource |
 
-Those are useful, but they should not be day-one unless there is a strong need.
-Labels and annotations can change. Placement is create-time and non-retroactive,
-so changing a label later would not move the file, but it can still surprise
-users who expected the path to track metadata.
+`{label:app.kubernetes.io/instance}` renders that label's value. The key is a
+Kubernetes qualified name, so it may carry a `/` prefix; the placeholder scanner
+matches anything `{…}`-shaped precisely so that `/` is consumed as part of the
+variable name instead of becoming a directory separator.
 
-Do not expose arbitrary object fields such as `{spec.foo}` in the first version.
-That makes path policy depend on mutable, schema-specific content and pulls the
-placement layer into every CRD's structure.
+**A missing label never blocks placement.** If the resource does not set the
+label (or sets it to the empty string, which Kubernetes permits) the variable
+renders the built-in sentinel `_unlabeled` rather than an empty segment — an
+empty segment would collapse and fold every unlabeled resource of the type onto
+one path, so it is replaced with a real, fixed segment instead.
+
+`_unlabeled` plays exactly the role `_cluster` already plays for
+`{namespaceOrCluster}`: a value no real label could ever hold — a label value
+must be alphanumeric at both ends, and `_unlabeled` starts with `_` — so it can
+never collide with one, and it is one documented constant rather than an
+invisible per-deployment default a reader would have to guess at.
+
+A template that would rather name its own bucket than use `_unlabeled` says so,
+with `{label:key|fallback}`:
+
+```yaml
+placement:
+  byType:
+    v1/configmaps: "{label:team|unassigned}/configmaps.yaml"
+```
+
+A fallback is held to **half** of the label-value rules: at most 63 characters
+of `[A-Za-z0-9._-]`, and neither `.` nor `..`. That is the half which makes a
+string safe as one path segment, so a declared fallback can no more introduce a
+`/` or escape the write jail than a real label value can.
+
+The half deliberately dropped is the label rule that a value start and end
+alphanumeric, and dropping it buys two things that the label-value rules would
+have forbidden:
+
+- **A fallback may begin with `_`.** A fallback that is itself a legal label
+  value shares its bucket with the resources genuinely labeled it —
+  `{label:team|unassigned}` files unlabeled resources exactly where
+  `team: unassigned` goes, and nothing downstream can separate them again. A
+  leading `_` is the only way to name a bucket no label value can reach, which
+  is the same property `_unlabeled` and `_cluster` are built on. Forcing the
+  fallback to be label-legal would have made every custom bucket collidable and
+  left the collision-proof one reserved for the operator.
+- **A fallback may be empty.** `{label:key|}` renders nothing, so
+  `collapseEmptyPathSegments` drops the segment and an unlabeled resource lands
+  one directory up — labeled resources filed into folders, the rest left at the
+  top level. That is the same fold `_unlabeled` exists to prevent, and it is
+  allowed here for a reason the default cannot claim: the sentinel protects the
+  case where nobody chose, while an empty fallback is a choice spelled out in
+  the GitTarget, visible in review and in `kubectl get gittarget -o yaml`. The
+  fence that matters is unaffected: only whole empty segments collapse, so a
+  file name keeps whatever literal text surrounds the placeholder.
+
+This sentinel design is a deliberate change from the first cut of this feature,
+which refused the resource outright when the label was missing — a resource that
+never got labeled was simply never written to Git, its absence surfacing only as
+a refusal counter rather than in the folder or in GitTarget status. For a mirror
+whose whole job is completeness, that traded a "wrong but visible" outcome for a
+worse one: a permanent, silent hole in exactly the observability tool built to
+catch holes. Placing at `_unlabeled` keeps every resource in the mirror and
+keeps the "where did this go, and why" answer in the same place — the rendered
+path — that every other placement decision already lives in. No
+`reason="missing_label"` refusal exists, and none ever shipped.
+
+The trade that refusal was protecting against is real and does not go away: this
+is **sticky**, because placement is match-first. A resource that lands in
+`_unlabeled/` (or a declared fallback bucket) stays there after somebody adds
+the label, a relabeled resource stays in the bucket its old value named, and a
+resource whose label is removed stays where the value put it. Nothing
+reconciles a document's location against the label it carries today. That is the
+same trade `placement.byType`/`placement.default` already make for every other
+template — match-first is a property of placement generally, not something
+specific to labels — so it is not a new risk, only a familiar one applied here
+too.
+
+**A label the writer strips is rejected at the `Validated` gate.** The sanitizer
+removes controller bookkeeping — `kustomize.toolkit.fluxcd.io/*`, `kro.run/*`,
+`applyset.kubernetes.io/*` — before a document reaches Git, so the value is gone
+by the time placement runs. A template reading one of those would not be a
+template that sometimes refuses; it would refuse every resource of its type
+forever. The gate says so instead. Note that `app.kubernetes.io/instance` is
+deliberately **not** stripped (see `isOperationalLabel`), so it remains usable.
+
+**A label is never identity.** Two resources in one namespace can carry the same
+label, so `{label:key}` adds discrimination to a path but can never supply the
+`{name}`/scope part that makes a template identity-complete. The sensitive-route
+rules are unchanged by it.
+
+**The mutability caveat stands.** Placement is create-time and non-retroactive: a
+label that changes later does not move the file already written. The path is a
+snapshot of the label at creation, not a view of it.
+
+### What is deliberately not exposed
+
+`{annotation:key}` is **not** a variable, and the difference from labels is not
+taste. A label value is constrained by the API server to at most 63 characters of
+`[A-Za-z0-9._-]`, which is exactly a safe path segment. An annotation value is
+arbitrary text of arbitrary length — `kubectl.kubernetes.io/last-applied-configuration`
+is a JSON document — so exposing it would mean inventing a truncation and
+escaping policy whose output nobody can predict from the object. Add it only
+behind a concrete use case that a label cannot serve.
+
+Do not expose arbitrary object fields such as `{spec.foo}`. That makes path
+policy depend on mutable, schema-specific content and pulls the placement layer
+into every CRD's structure.
 
 ## Path validation
 
@@ -1318,7 +1418,7 @@ catch-all layout.
    - never let a sensitive resource join a plaintext file, or a plaintext resource an
      encrypted one; refuse instead, with a bounded reason;
    - count every resolution by `{source, disposition}` and every refusal by `{reason}`,
-     labelled with the GitTarget and the type, which is the smaller obligation that
+     labeled with the GitTarget and the type, which is the smaller obligation that
      replaces P8's never-built cohort trace.
 5. Parse and validate path templates once per GitTarget reconcile. Sensitive
    resources must resolve to identity-complete paths and must be written through
@@ -1405,7 +1505,7 @@ Resolution-ladder unit tests:
 
 Metric tests (`internal/git/placement_metrics_test.go`), driving the real write path:
 
-- a canonical fall-back is labelled with the GitTarget and the type key a `byType` line
+- a canonical fall-back is labeled with the GitTarget and the type key a `byType` line
   would name — the labels are the feature, so they are asserted rather than the count alone;
 - declared and kustomize-root placements are distinguishable from canonical, and
   `kustomize_root` is never counted as a fall-back;
@@ -1432,8 +1532,14 @@ Integration/e2e tests:
   an explicit catch-all, or should the controller append the canonical fallback
   implicitly? This document recommends explicit catch-all rules because they make
   the user's layout complete on the page.
-- Should `{label:key}` and `{annotation:key}` ship in v1, or wait until somebody
-  has a concrete use case?
+- ~~Should `{label:key}` and `{annotation:key}` ship in v1, or wait until somebody
+  has a concrete use case?~~ **Closed, split.** `{label:key}` ships; a missing
+  label renders the built-in `_unlabeled` sentinel rather than refusing, and
+  `{label:key|fallback}` overrides that sentinel with a declared bucket — which
+  may start with `_` to stay collision-proof, or be empty to collapse the
+  segment. See [its section above](#labelkey--the-one-metadata-variable).
+  `{annotation:key}` is declined: an annotation value is unbounded text, so it is
+  not a path segment the way a label value is.
 - Should `discovery.recurse: false` survive the newer "whole folder ownership"
   model, or should flat discovery be dropped before placement rules land?
 - Should placement rule matches include `watchRuleNames` later for users who want

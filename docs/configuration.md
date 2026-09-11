@@ -969,6 +969,11 @@ named `api` in namespace `team-a`:
 | `{kind}` | manifest kind | `Deployment` |
 | `{scope}` | `namespaced` or `cluster` (a readable label, not a namespace-position value) | `namespaced` |
 | `{sensitiveSuffix}` | `.sops.yaml` for a sensitive resource, `.yaml` otherwise | `.yaml` (a Secret → `.sops.yaml`) |
+| `{label:key}` | the value of that label on the resource, or `_unlabeled` if it has none; the key may be prefixed (`{label:app.kubernetes.io/instance}`) | `voter` |
+| `{label:key\|fallback}` | the same, but with your own bucket in place of `_unlabeled` | `unassigned` |
+
+Two of the identity variables are easy to mix up, and only one of them places cluster-scoped
+resources sensibly:
 
 > **`{namespace}` vs `{namespaceOrCluster}`, the one to get right.** For a cluster-scoped resource
 > `{namespace}` is **empty**, so its whole path segment vanishes: a template `{namespace}/{resource}/{name}.yaml`
@@ -977,6 +982,85 @@ named `api` in namespace `team-a`:
 > (`_cluster/clusterroles/admin.yaml`) so namespaced and cluster-scoped resources stay cleanly separated.
 > `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute, so don't use it as the folder for
 > cluster resources.
+
+#### Placing by label (`{label:key}`)
+
+One variable reads the object's metadata rather than its identity. `{label:team}` renders the value
+of the resource's `team` label, and the key may be prefixed: `{label:app.kubernetes.io/instance}` is
+one variable, not a variable followed by a directory, because the template scanner takes the whole
+`{…}` including the `/` inside it. It works in `byType` and in `default` alike, and a template may
+read more than one label.
+
+```yaml
+placement:
+  byType:
+    v1/configmaps: "{label:app.kubernetes.io/instance}/configmaps.yaml"
+```
+
+Resources sharing a label value bundle into one file, which is usually the point: every ConfigMap
+labeled `app.kubernetes.io/instance: voter` lands in `voter/configmaps.yaml`.
+
+##### Every resource is placed, labeled or not
+
+There is no "not placed" state to design around. A resource that does not carry the label (or
+carries it with an empty value, which Kubernetes permits) renders a bucket instead:
+
+| The resource | `{label:team}` | `{label:team\|unassigned}` | `{label:team\|}` |
+|---|---|---|---|
+| sets `team: payments` | `payments` | `payments` | `payments` |
+| does not set `team` | `_unlabeled` | `unassigned` | nothing; the segment collapses |
+| sets `team: ""` | `_unlabeled` | `unassigned` | nothing; the segment collapses |
+
+`_unlabeled` is the built-in bucket, and it is chosen the same way `_cluster` is for
+`{namespaceOrCluster}`: a label value has to start and end alphanumeric, so no real one can ever be
+`_unlabeled` and no real resource can land in that bucket by accident.
+
+##### Choosing your own fallback
+
+`{label:key|fallback}` replaces `_unlabeled` with a bucket you name. A fallback is at most 63
+characters of `[A-Za-z0-9._-]`, may not be `.` or `..`, and may be empty. Three consequences are
+worth knowing before you pick one:
+
+- **A fallback that is a legal label value shares its bucket with resources labeled it.**
+  `{label:team|unassigned}` files unlabeled ConfigMaps exactly where `team: unassigned` ones go, and
+  nothing afterwards can tell the two apart. When you need them distinguishable, begin the fallback
+  with `_`: a label value may not start with one, so `{label:team|_none}` is a bucket only your
+  fallback can reach. That is why a fallback is allowed a leading `_` where a label value is not.
+- **An empty fallback is a request to render nothing**, and the empty segment is then dropped, so
+  unlabeled resources land one directory up: `{label:team|}/{name}.yaml` puts them at `api.yaml`
+  while labeled ones go to `payments/api.yaml`. Write it when you want the labeled resources filed
+  into folders and the rest left where they are. Only *whole* segments collapse, so inside a file
+  name `{label:team|}-{name}.yaml` renders `-api.yaml` rather than `api.yaml`.
+- **A fallback can never add a directory or escape `spec.path`**, because the character set has no
+  `/` and `..` is refused. A template that tries is rejected by the GitTarget's `Validated`
+  condition with `InvalidConfig`, before anything is written; it is not silently repaired.
+
+##### The destination is sticky
+
+Placement is match-first and runs only for a resource with no document in Git yet, so the rendered
+path is a snapshot of the label *at the moment the file was created*. Labeling a resource
+afterwards does not move it out of `_unlabeled/`, changing the label does not move it to the new
+bucket, and removing the label does not move it into one. Nothing reconciles a file's location
+against the label it carries today; if you want a resource moved, move it in Git.
+
+##### Labels the operator strips are rejected up front
+
+The writer removes controller bookkeeping (`kustomize.toolkit.fluxcd.io/*`, `kro.run/*`,
+`applyset.kubernetes.io/*`) before a document reaches Git, so those values are already gone by the
+time placement runs. A template reading one would not merely be unhelpful; every resource of its
+type would render the same fallback forever. The `Validated` gate rejects such a template by name
+rather than letting it fail silently per resource. `app.kubernetes.io/instance` is deliberately
+**not** stripped (it is indistinguishable from the standard recommended label) and stays usable.
+
+##### Two more limits
+
+- **A label is not identity.** Two resources can carry the same one, so `{label:key}` adds
+  discrimination to a path but never counts toward the identity-completeness a sensitive route
+  requires: keep `{name}` and a scope variable in those templates.
+- **`{annotation:key}` does not exist.** A label value is at most 63 path-safe characters; an
+  annotation value is unbounded text (`kubectl.kubernetes.io/last-applied-configuration` is a whole
+  JSON document), so there is no truncation rule that would not surprise somebody. Nothing else on
+  the object is exposed either; the variables above are the whole language.
 
 #### Sensitivity is a write-safety rule, not a placement setting
 

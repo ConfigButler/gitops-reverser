@@ -7,6 +7,48 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Placement templates can read a label, and a stray `{…}` is now an error
+
+**Not breaking for any valid template**, and listed here because one previously-tolerated
+spelling now fails a gate that used to let it through.
+
+`spec.placement.byType` and `spec.placement.default` accept `{label:key}`, which renders the
+value of that label on the resource being placed:
+
+```yaml
+placement:
+  byType:
+    v1/configmaps: "{label:app.kubernetes.io/instance}/configmaps.yaml"
+```
+
+A few things to know before you use it:
+
+- A resource that does not set the label — or sets it to the empty string, which Kubernetes
+  allows — is still placed: it renders the built-in `_unlabeled` bucket, mirroring how
+  `{namespaceOrCluster}` renders `_cluster` for a cluster-scoped resource — a fixed, documented
+  value no real label could ever hold. Use `{label:team|unassigned}` to name your own bucket
+  instead; `unassigned` renders whenever the label is absent.
+- A fallback is at most 63 characters of `[A-Za-z0-9._-]` and may be neither `.` nor `..`, so it
+  can introduce no directory and escape no path. It may start with `_` — `{label:team|_none}`
+  names a bucket no real label value can reach, where `{label:team|unassigned}` shares one with
+  resources genuinely labeled `team: unassigned` — and it may be empty: `{label:team|}` renders
+  nothing, so the segment collapses and unlabeled resources land one directory up.
+- Where a resource lands is decided once, when its file is created. Labeling it later does not
+  move it out of `_unlabeled/`, and changing the label does not move it to the new bucket.
+- A label is not identity, so `{label:key}` never satisfies the identity-completeness a
+  sensitive (Secret) route requires. Keep `{name}` and a scope variable in those templates.
+
+`{annotation:key}` is deliberately not supported: an annotation value has no length or character
+limit of its own, so it is not a path segment the way a 63-character label value is.
+
+What to check before upgrading: a placement template containing a `{…}`-shaped piece of text that
+is **not** a variable. Recognizing `{label:app.kubernetes.io/name}` means the template scanner now
+matches any `{…}`, where it previously matched only `{word}` and left everything else in the path
+as literal text. Such a template now fails the GitTarget's `Validated` gate with
+`InvalidConfig` naming the placeholder, instead of silently writing braces — and, for anything
+containing a `/`, an unintended directory — into your repository. Nothing moves a file already
+committed at such a path.
+
 ## A `CommitRequest` refused by someone else's window now says so
 
 **Not breaking for readiness**, and listed here because it is a status value that starts appearing
@@ -913,7 +955,7 @@ New tuning knobs, all with behaviour-preserving defaults: `attribution.maxFactsP
 (10000). They bound the in-process index and the collection join; see
 [configuration.md](configuration.md).
 
-## 0.41.0 — the attribution metrics are relabelled and partly renamed (breaking for queries)
+## 0.41.0 — the attribution metrics are relabeled and partly renamed (breaking for queries)
 
 The `result` label is **gone** from `gitopsreverser_attribution_resolutions_total` and
 `gitopsreverser_attribution_resolution_wait_seconds`. It crammed two orthogonal questions into one
@@ -1180,7 +1222,7 @@ A non-zero `retainedDocuments` means the mirror holds documents a converged one 
 configured outcome, not a fault, so no condition goes `False` for it. `0` means a resync ran and
 found nothing to retain; an absent `retention` block means none has reported yet. The same event
 logs a throttled line naming the target and increments
-`gitopsreverser_prune_retained_documents_total`, labelled by GitTarget and mode. See
+`gitopsreverser_prune_retained_documents_total`, labeled by GitTarget and mode. See
 [configuration.md](configuration.md#seeing-what-was-kept).
 
 This ships in the **same release** as the rule-kind scope change below, and is what makes that
