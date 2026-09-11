@@ -6,7 +6,6 @@ committer.
 
 Start with a working [Git mirror](../README.md#quick-start). You need control over kube-apiserver
 flags and files; managed control planes that hide these settings cannot use this webhook.
-For Flux on Talos, use the [installation recipe](talos-flux-setup.md).
 
 ## 1. Enable the receiver
 
@@ -29,6 +28,10 @@ Redis/Valkey holds attribution facts and watch cursors. If its data is lost, rec
 and watches cold-replay. For a disposable single-pod setup, `attribution.transport: memory` needs
 no Redis but loses facts whenever the reverser restarts. It also leaves Redis-backed features such
 as `CommitRequest` author capture inactive unless you configure Redis separately.
+
+The chart's default `ClusterProvider` admits targets from every namespace. To restrict it, set
+`clusterProvider.default.accessFrom.names` and `selector: null`; Helm otherwise retains the
+permissive `selector: {}`. See [RBAC](rbac.md) for the controller's read permissions.
 
 The chart creates the audit Service and cert-manager certificates. Wait for the release to be
 ready, then read its Secret names and kubeconfig generator:
@@ -74,11 +77,14 @@ kube-apiserver, and set:
 --audit-webhook-batch-max-size=100
 ```
 
+The files must exist and be readable by the API server's process user before it starts. Follow
+your distribution's file lifecycle: Talos 1.14 writes `machine.files` during boot, so stage the
+configuration and reboot each node. A successful live apply does not prove the files exist.
+
 Restart one API server at a time and check its direct `/readyz` endpoint before continuing.
 Use `batch`: blocking modes couple API writes to receiver availability. Batching buffers and
 retries during short outages, but its finite buffer does not guarantee delivery through an outage.
-See [Talos](talos-flux-setup.md#2-stage-the-talos-configuration) or
-[k3s file placement](audit-setup/cluster/readme.md) for platform details.
+See [k3s file placement](audit-setup/cluster/readme.md) for an example.
 
 ### Choose the audit policy
 

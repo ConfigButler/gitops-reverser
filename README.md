@@ -283,8 +283,8 @@ To tear the demo down: `helm uninstall gitops-reverser -n gitops-reverser` and
 ### Want named users on your commits?
 
 Enable audit attribution to use the Kubernetes actor as the Git author while keeping the
-committer unchanged. Follow the [attribution setup guide](docs/attribution-setup-guide.md), or the
-[Flux on Talos recipe](docs/talos-flux-setup.md). Both require control over kube-apiserver settings.
+committer unchanged. The [attribution setup guide](docs/attribution-setup-guide.md) covers receiver
+configuration, API server delivery, and verification. It requires control over kube-apiserver settings.
 
 ### Rather have it managed?
 

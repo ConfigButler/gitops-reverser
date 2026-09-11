@@ -18,7 +18,6 @@ If you only want the supported product docs, start with the files below.
 - [`azure-devops-getting-started.md`](azure-devops-getting-started.md): Azure DevOps repository and credential setup
 - [`attribution-setup-guide.md`](attribution-setup-guide.md): naming real Kubernetes users as commit
   authors via kube-apiserver audit delivery
-- [`talos-flux-setup.md`](talos-flux-setup.md): Flux installation and serial Talos audit rollout
 - [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age
 - [`security-model.md`](security-model.md): controller access, trust boundaries, and the Git
   credentials Secret shape
