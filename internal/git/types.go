@@ -88,13 +88,23 @@ const (
 	DefaultCommitterName = "GitOps Reverser"
 	// DefaultCommitterEmail matches the default operator email in Git history.
 	DefaultCommitterEmail = "noreply@configbutler.ai"
-	// DefaultReconcileCommitMessageTemplate names the synced type, so the otherwise
-	// indistinguishable per-type reconciles one GitTarget produces are self-describing. Plural
-	// resource alone for readability; add {{.APIVersion}} when plural collisions matter. The
-	// {{if}} guards fall back to "chore: reconcile N resources" for a whole-target reconcile, so
-	// the subject never degrades to an identity-less "chore: reconcile N ".
+	// DefaultReconcileCommitMessageTemplate names the synced type AND, when the run covered one,
+	// the namespace, so the otherwise indistinguishable per-cell reconciles one GitTarget
+	// produces are self-describing: a target watching configmaps in team-a and in team-b would
+	// otherwise write two byte-identical subjects. Plural resource alone for readability; add
+	// {{.APIVersion}} when plural collisions matter.
+	//
+	// The {{if}} guards fall back to "chore: reconcile N resources" for a whole-target reconcile,
+	// so the subject never degrades to an identity-less "chore: reconcile N ". The namespace guard
+	// in particular must stay an {{if}} rather than a sentinel: an empty Namespace here means the
+	// run was not namespace-scoped, which covers BOTH an all-namespaces sweep of a namespaced type
+	// and a cluster-scoped type having no namespaces at all. No single word is true of both, so
+	// the honest rendering of "no namespace to name" is to say nothing. (Contrast ResourceRef,
+	// which describes ONE resource, where empty has exactly one meaning and carries the
+	// types.ClusterScopeSegment sentinel.)
 	DefaultReconcileCommitMessageTemplate = "chore: reconcile {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
+		"{{if .Namespace}} in {{.Namespace}}{{end}}" +
 		"{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
 	// DefaultLiveCommitMessageTemplate describes retained input resources.
 	DefaultLiveCommitMessageTemplate = "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}\n\n" +

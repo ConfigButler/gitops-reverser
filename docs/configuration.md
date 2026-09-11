@@ -595,7 +595,7 @@ spec:
         {{range .Resources -}}
         - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}
         {{end -}}
-      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
+      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Namespace}} in {{.Namespace}}{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
 ```
 
 | Template | Fields |
@@ -682,6 +682,21 @@ the commit side because a Go template field name cannot contain a `:` or a `/`.
 Reconcile type fields name the synced type; `Namespace` names a namespace-scoped snapshot.
 Whole-target snapshots leave those fields empty. `Revision` is the snapshot's resourceVersion and
 can be absent, including a pure sweep. Guard optional values as in the example.
+
+A reconcile runs per *cell* (a (type, namespace) pair) rather than per target, so a
+namespace-scoped run covers exactly one namespace and the default subject names it:
+
+```text
+chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)
+```
+
+Without it, a target watching one type in two namespaces writes two byte-identical subjects, which
+is the same reason the type is in there. `Namespace` stays guarded by `{{if}}` rather than falling
+back to a sentinel the way `Resources[i].Namespace` does, and the difference is not an oversight:
+per resource, empty has exactly one meaning (the kind has no namespaces), so `_cluster` is a true
+name for it. Per run, empty covers two different facts: an all-namespaces sweep of a namespaced
+type, and a cluster-scoped type that has no namespaces. No single word is true of both, so the
+honest rendering is to say nothing.
 
 `eventTemplate` and `groupTemplate` are retired and rejected. Follow the
 [upgrade instructions](UPGRADING.md#one-live-commit-message-template) to migrate existing templates.

@@ -66,7 +66,15 @@ rejected at admission with `Validated=False`, because the sample render includes
 carries no labels.
 
 A `DELETE` event carries no object, so `Kind` and `Labels` are empty for one; every identity field
-is unaffected. `reconcileTemplate` is unchanged: it names a type rather than a list of resources.
+is unaffected.
+
+`reconcileTemplate` gains no fields, but its **default** now names the namespace of a
+namespace-scoped reconcile: `chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)`.
+A reconcile runs per (type, namespace) cell, so that run covered exactly one namespace, and without
+the name a target watching one type in several namespaces wrote identical subjects for each. A
+whole-target or all-namespaces reconcile is unchanged, because an empty `Namespace` there means the
+run was not namespace-scoped at all — a fact no single word states truthfully, so the subject
+states none.
 
 ## Placement templates can read a label, and a stray `{…}` is now an error
 
