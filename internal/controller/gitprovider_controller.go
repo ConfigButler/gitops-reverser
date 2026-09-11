@@ -41,6 +41,9 @@ type GitProviderReconciler struct {
 	// dev-only missing-key opt-out) for the connectivity check's credential read, so it matches
 	// what the write path uses.
 	SSHHostKeys gitpkg.SSHHostKeyConfig
+
+	// CredentialPolicy controls explicit insecure opt-ins for Git credential transports.
+	CredentialPolicy gitpkg.CredentialTransportPolicy
 }
 
 // gitProviderLogFirsts keeps startup progress visible without turning every
@@ -252,7 +255,7 @@ func (r *GitProviderReconciler) extractCredentials(
 	if err != nil {
 		return nil, err
 	}
-	return cred.Options(), nil
+	return gitpkg.CredentialOptionsForProvider(gitProvider, cred, r.CredentialPolicy)
 }
 
 // extractCredential is extractCredentials before the options wrapper. go-git v6 credentials are

@@ -67,24 +67,40 @@ func (m *Manager) MarkTargetGitPathAccepted(gitDest types.ResourceReference) {
 	if prior, had := m.watchPlane().acceptance[gitDest.Key()]; had && prior.Accepted {
 		return
 	}
-	m.reportGitPathAcceptance(gitDest, GitPathAcceptanceStatus{
-		Accepted: true,
-		Reason:   "GitPathAccepted",
-		Message:  "GitTarget path accepted",
-	})
+	m.reportGitPathAcceptance(gitDest, acceptedGitPathStatus())
 }
 
 // MarkTargetGitPathScopeAccepted clears a scoped refusal only when the successful resync covered
 // the same cell that produced the refusal. A successful replay of secrets must not hide a still
 // impossible configmaps path, because the GitTarget status is the operator's only durable clue.
 func (m *Manager) MarkTargetGitPathScopeAccepted(gitDest types.ResourceReference, cell types.CellKey) {
-	prior, had := m.watchPlane().acceptance[gitDest.Key()]
-	if had && !prior.Accepted && cell != (types.CellKey{}) {
-		if !prior.RefusedCellSet || prior.RefusedCell != cell {
-			return
+	status := acceptedGitPathStatus()
+	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		prior, had := s.acceptance[gitDest.Key()]
+		if had && !prior.Accepted && cell != (types.CellKey{}) {
+			if !prior.RefusedCellSet || prior.RefusedCell != cell {
+				return false
+			}
 		}
+		if had && prior.Accepted {
+			return false
+		}
+		status.At = metav1.Now()
+		s.acceptance[gitDest.Key()] = status
+		return true
+	})
+	if changed {
+		m.enqueueGitTargetReconcile(gitDest)
 	}
-	m.MarkTargetGitPathAccepted(gitDest)
+}
+
+// acceptedGitPathStatus is the canonical healthy GitPathAccepted condition payload.
+func acceptedGitPathStatus() GitPathAcceptanceStatus {
+	return GitPathAcceptanceStatus{
+		Accepted: true,
+		Reason:   "GitPathAccepted",
+		Message:  "GitTarget path accepted",
+	}
 }
 
 func (m *Manager) reportGitPathAcceptance(gitDest types.ResourceReference, status GitPathAcceptanceStatus) {

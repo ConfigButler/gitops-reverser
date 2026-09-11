@@ -53,6 +53,9 @@ type WorkerManager struct {
 	// sshHostKeys configures SSH host-key resolution for every worker's credential reads. Set
 	// once at startup (SetSSHHostKeyConfig) before any worker is created.
 	sshHostKeys SSHHostKeyConfig
+	// credentialPolicy controls explicit insecure opt-ins for Git credential transports. Set
+	// once at startup (SetCredentialTransportPolicy) before any worker is created.
+	credentialPolicy CredentialTransportPolicy
 
 	// pathRefusal reports a refused live write plan to the GitTarget status surface. Set
 	// once at startup (SetPathRefusalReporter) before any worker is created; nil in the
@@ -123,6 +126,13 @@ func (m *WorkerManager) SetSSHHostKeyConfig(cfg SSHHostKeyConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sshHostKeys = cfg
+}
+
+// SetCredentialTransportPolicy injects Git credential transport policy into every worker.
+func (m *WorkerManager) SetCredentialTransportPolicy(policy CredentialTransportPolicy) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.credentialPolicy = policy
 }
 
 // SetPathRefusalReporter injects the hook every worker calls when a live write plan is
@@ -207,6 +217,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.mapper = m.mapper
 		worker.clusterMapper = m.clusterMapper
 		worker.sshHostKeys = m.sshHostKeys
+		worker.credentialPolicy = m.credentialPolicy
 		worker.pathRefusal = m.pathRefusal
 		worker.layoutReporter = m.layoutReporter
 		worker.renderFidelityGate = m.renderFidelityGate

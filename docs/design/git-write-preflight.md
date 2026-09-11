@@ -143,9 +143,11 @@ stronger promise unbuyable at any acceptable price:
 - **Time of check to time of use.** Even a fresh answer is stale by the time the object persists.
   Git can move underneath it, and a direct commit never traverses Kubernetes admission at all.
 
-So preflight answers from a local snapshot, without a network call, and accepts that it will be
-wrong in one direction only: it may allow something that later fails to publish. It must never
-reject something the writer would in fact have published.
+So preflight answers from a local snapshot, without a network call, and accepts that its guarantee
+is snapshot-relative. It must not reject a request the writer would publish when evaluating that same
+snapshot, but a stale published snapshot may still contain blockers that current inputs have already
+removed. In that stale case the gate can falsely reject a request that a fresh writer evaluation
+would publish.
 
 This shapes the whole design. **A denial is a finding; an allow is only the absence of one.**
 Say so in user-facing documentation and keep the asymmetry visible in the messages themselves.

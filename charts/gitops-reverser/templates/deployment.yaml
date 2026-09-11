@@ -102,6 +102,9 @@ spec:
             {{- with .Values.controllerManager.additionalSensitiveResources }}
             - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
             {{- end }}
+            {{- if .Values.controllerManager.allowInsecureGitHTTP }}
+            - --allow-insecure-git-http
+            {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}

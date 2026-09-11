@@ -61,6 +61,9 @@ controllerManager:
   # Extra Secret-shaped resources that must use the encrypted Git write path.
   # Entries are resource or group/resource, for example core.cozystack.io/tenantsecrets.
   additionalSensitiveResources: []
+  # Permit credentials with http:// GitProvider URLs. This is only for trusted
+  # in-cluster development Git servers; production remotes should use HTTPS or SSH.
+  allowInsecureGitHTTP: false
 
 # cert-manager issuer shared by every certificate the chart mints. One self-signed CA
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server

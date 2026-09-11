@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/fluxcd/pkg/apis/meta"
+	gogithttp "github.com/go-git/go-git/v6/plumbing/transport/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gossh "golang.org/x/crypto/ssh"
@@ -356,5 +357,62 @@ func TestCredentialFromSecretData_AzureDevOpsPATForm(t *testing.T) {
 			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "contains username but no password")
+	})
+}
+
+// TestCredentialOptionsForProvider_HTTPAuthSafety pins the transport boundary around HTTP
+// credentials: authenticated network remotes must not use cleartext http://, and authenticated HTTP
+// operations keep go-git's initial-only redirect policy explicit.
+func TestCredentialOptionsForProvider_HTTPAuthSafety(t *testing.T) {
+	t.Run("credentialed http URL is rejected", func(t *testing.T) {
+		provider := &configv1alpha3.GitProvider{
+			Spec: configv1alpha3.GitProviderSpec{URL: "http://example.com/repo.git"},
+		}
+		cred := Credential{Basic: &gogithttp.BasicAuth{Username: "git", Password: "token"}}
+
+		options, err := CredentialOptionsForProvider(provider, cred, CredentialTransportPolicy{})
+
+		require.Error(t, err)
+		assert.Nil(t, options)
+		assert.Contains(t, err.Error(), "must use https or ssh")
+	})
+
+	t.Run("anonymous http URL stays allowed", func(t *testing.T) {
+		provider := &configv1alpha3.GitProvider{
+			Spec: configv1alpha3.GitProviderSpec{URL: "http://example.com/public.git"},
+		}
+
+		options, err := CredentialOptionsForProvider(provider, Credential{}, CredentialTransportPolicy{})
+
+		require.NoError(t, err)
+		assert.Nil(t, options)
+	})
+
+	t.Run("https HTTP auth pins redirect policy", func(t *testing.T) {
+		provider := &configv1alpha3.GitProvider{
+			Spec: configv1alpha3.GitProviderSpec{URL: "https://example.com/repo.git"},
+		}
+		cred := Credential{Bearer: &gogithttp.TokenAuth{Token: "token"}}
+
+		options, err := CredentialOptionsForProvider(provider, cred, CredentialTransportPolicy{})
+
+		require.NoError(t, err)
+		assert.Len(t, options, 2)
+	})
+
+	t.Run("explicit opt-in allows credentialed http URL", func(t *testing.T) {
+		provider := &configv1alpha3.GitProvider{
+			Spec: configv1alpha3.GitProviderSpec{URL: "http://git-http.git.svc/repo.git"},
+		}
+		cred := Credential{Basic: &gogithttp.BasicAuth{Username: "git", Password: "token"}}
+
+		options, err := CredentialOptionsForProvider(
+			provider,
+			cred,
+			CredentialTransportPolicy{AllowInsecureGitHTTP: true},
+		)
+
+		require.NoError(t, err)
+		assert.Len(t, options, 2)
 	})
 }

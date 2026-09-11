@@ -135,6 +135,7 @@ func main() {
 		cfg.sensitiveResources,
 	)
 	workerManager.SetSSHHostKeyConfig(cfg.sshHostKeys)
+	workerManager.SetCredentialTransportPolicy(cfg.credentialPolicy)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
@@ -315,10 +316,11 @@ func main() {
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
 
 	if err := (&controller.GitProviderReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		SSHHostKeys: cfg.sshHostKeys,
-		Recorder:    mgr.GetEventRecorderFor("gitprovider"),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		SSHHostKeys:      cfg.sshHostKeys,
+		CredentialPolicy: cfg.credentialPolicy,
+		Recorder:         mgr.GetEventRecorderFor("gitprovider"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitProvider")
 		os.Exit(1)
@@ -453,6 +455,7 @@ type appConfig struct {
 	branchBufferMaxBytes int64
 	sensitiveResources   types.SensitiveResourcePolicy
 	sshHostKeys          git.SSHHostKeyConfig
+	credentialPolicy     git.CredentialTransportPolicy
 	// sourceClusterQPS / sourceClusterBurst bound the rate at which the operator talks to a
 	// source cluster reached through a GitTarget.spec.kubeConfig. A remote is reached over a
 	// network the in-cluster config is not, so it carries client-side throttling by default.
@@ -635,6 +638,8 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.BoolVar(&cfg.sshHostKeys.AllowMissingKnownHosts, "insecure-allow-missing-known-hosts", false,
 		"INSECURE, dev/throwaway clusters only: permit SSH when no host-key source produced any "+
 			"known_hosts at all. A present-but-unparseable known_hosts is always a hard error.")
+	fs.BoolVar(&cfg.credentialPolicy.AllowInsecureGitHTTP, "allow-insecure-git-http", false,
+		"INSECURE, dev/throwaway clusters only: permit credentials with http:// GitProvider URLs.")
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
 		Development: false,

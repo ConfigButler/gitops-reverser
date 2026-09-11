@@ -68,6 +68,7 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 		wantAttribution  bool
 		wantAuditTLSCert string
 		wantHTTP2        bool
+		wantGitHTTP      bool
 	}{
 		"chart defaults": {
 			wantKeyPrefix: "gitops-reverser",
@@ -118,6 +119,11 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			wantRedisAddr:   "redis.example.com:6379",
 			wantAttribution: true,
 		},
+		"credentialed git http opt-in": {
+			setValues:     []string{"controllerManager.allowInsecureGitHTTP=true"},
+			wantKeyPrefix: "gitops-reverser",
+			wantGitHTTP:   true,
+		},
 	}
 
 	for name, tc := range tests {
@@ -142,6 +148,8 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			}
 			require.Equal(t, tc.wantHTTP2, cfg.enableHTTP2,
 				"servers.enableHTTP2 must reach the binary, and default to off")
+			require.Equal(t, tc.wantGitHTTP, cfg.credentialPolicy.AllowInsecureGitHTTP,
+				"controllerManager.allowInsecureGitHTTP must reach the binary")
 		})
 	}
 }

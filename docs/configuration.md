@@ -121,6 +121,11 @@ re-authoring it. The keys read for each auth method:
 Auth precedence is SSH key → HTTP basic → bearer token. Client certificates (mTLS), custom CA
 certificates, and GitHub App credentials are **not supported**.
 
+Credentials are refused with `http://` GitProvider URLs by default. Use HTTPS or SSH for real
+repositories. For trusted in-cluster development Git servers that intentionally serve plain HTTP,
+start the manager with `--allow-insecure-git-http` or set
+`controllerManager.allowInsecureGitHTTP=true` in the Helm chart.
+
 > **A reused Secret needs write access.** Flux and Argo CD only *clone*, so their Git credentials are
 > often read-only (a read-only deploy key, a read-scoped token). GitOps Reverser **pushes** commits,
 > so a reused Secret's key or token must have **write** access on the repository; otherwise the
