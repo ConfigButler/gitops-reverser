@@ -27,7 +27,11 @@ func (w *BranchWorker) normalWritesAllowed(targetName, targetNamespace string) b
 // timer, and its failure used to be logged and dropped — so they report through this hook
 // instead. The watch Manager supplies it (WorkerManager.SetPathRefusalReporter), which is
 // why the reason mapping lives there and not here.
-type PathRefusalReporter func(target itypes.ResourceReference, refused *manifestanalyzer.AcceptanceRefusedError)
+type PathRefusalReporter func(
+	target itypes.ResourceReference,
+	cell itypes.CellKey,
+	refused *manifestanalyzer.AcceptanceRefusedError,
+)
 
 // reportPathRefusal classifies a failed live commit. When the error is (or wraps) an
 // AcceptanceRefusedError it hands the refusal to the configured reporter and returns true, so
@@ -40,11 +44,15 @@ type PathRefusalReporter func(target itypes.ResourceReference, refused *manifest
 // collide on that one key. Refusing to guess keeps a silent mis-attribution from looking like
 // a healthy target elsewhere.
 //
-// Recovery is the resync path's job: once the human fixes the Git path, the next successful
-// per-type resync calls MarkTargetGitPathAccepted and clears the condition. A live write never
-// clears it, because a live write that happens to avoid the offending file proves nothing about
-// the rest of the subtree.
-func (w *BranchWorker) reportPathRefusal(err error, targetName, targetNamespace string) bool {
+// Recovery is the resync path's job: once the human fixes the Git path, the next successful resync
+// for the same cell clears the condition. A live write never clears it, because a live write that
+// happens to avoid the offending file proves nothing about the rest of the subtree.
+func (w *BranchWorker) reportPathRefusal(
+	err error,
+	targetName string,
+	targetNamespace string,
+	cell itypes.CellKey,
+) bool {
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	if !errors.As(err, &refused) {
 		return false
@@ -58,9 +66,9 @@ func (w *BranchWorker) reportPathRefusal(err error, targetName, targetNamespace 
 	}
 	target := itypes.NewResourceReference(targetName, targetNamespace)
 	w.Log.Info("Live write refused: unsupported GitTarget path content",
-		"gitTarget", target.String(), "detail", refused.Error())
+		"gitTarget", target.String(), "sourceCell", sourceCellForLog(cell), "detail", refused.Error())
 	if w.pathRefusal != nil {
-		w.pathRefusal(target, refused)
+		w.pathRefusal(target, cell, refused)
 	}
 	return true
 }

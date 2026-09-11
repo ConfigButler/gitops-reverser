@@ -5,12 +5,14 @@ package watch
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -29,8 +31,9 @@ import (
 func TestReportGitPathRefusal_SurfacesWriteBoundaryRefusal(t *testing.T) {
 	mgr := &Manager{Log: logr.Discard()}
 	gitDest := types.NewResourceReference("podinfo-test", "team-a")
+	cell := types.CellKeyFor(configmapsGVR, "apps")
 
-	mgr.ReportGitPathRefusal(gitDest, &manifestanalyzer.AcceptanceRefusedError{
+	mgr.ReportGitPathRefusal(gitDest, cell, &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind:    manifestanalyzer.IssueWriteFanIn,
 			Path:    "base/deployment.yaml",
@@ -43,6 +46,8 @@ func TestReportGitPathRefusal_SurfacesWriteBoundaryRefusal(t *testing.T) {
 	assert.Equal(t, "WriteBoundaryRefused", gitPath.Reason,
 		"a pure write-boundary refusal must not hide behind the umbrella UnsupportedContent reason")
 	assert.Contains(t, gitPath.Message, "base/deployment.yaml", "the refusal must name the offending file")
+	assert.Equal(t, cell, gitPath.RefusedCell)
+	assert.True(t, gitPath.RefusedCellSet)
 	assert.Empty(t, mgr.watchPlane().streams, "a Git path refusal must not mutate stream readiness")
 }
 
@@ -52,7 +57,7 @@ func TestReportGitPathRefusal_ContentRefusalKeepsUmbrellaReason(t *testing.T) {
 	mgr := &Manager{Log: logr.Discard()}
 	gitDest := types.NewResourceReference("podinfo-test", "team-a")
 
-	mgr.ReportGitPathRefusal(gitDest, &manifestanalyzer.AcceptanceRefusedError{
+	mgr.ReportGitPathRefusal(gitDest, types.CellKey{}, &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind:    manifestanalyzer.IssueForeignFile,
 			Path:    "notes.txt",
@@ -63,6 +68,54 @@ func TestReportGitPathRefusal_ContentRefusalKeepsUmbrellaReason(t *testing.T) {
 	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
 	assert.False(t, gitPath.Accepted)
 	assert.Equal(t, "UnsupportedContent", gitPath.Reason)
+}
+
+func TestGitPathAcceptance_MessageChangePublishesStatus(t *testing.T) {
+	mgr := &Manager{Log: logr.Discard()}
+	events := mgr.GitPathEvents()
+	gitDest := types.NewResourceReference("podinfo-test", "team-a")
+
+	mgr.MarkTargetGitPathRefused(gitDest, "UnsupportedContent", "Git path refused at a.yaml")
+	requireGitPathEvent(t, events)
+
+	mgr.MarkTargetGitPathRefused(gitDest, "UnsupportedContent", "Git path refused at b.yaml")
+	requireGitPathEvent(t, events)
+
+	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
+	assert.Equal(t, "Git path refused at b.yaml", gitPath.Message)
+}
+
+func TestGitPathAcceptance_SiblingScopeSuccessDoesNotClearRefusal(t *testing.T) {
+	mgr := &Manager{Log: logr.Discard()}
+	gitDest := types.NewResourceReference("podinfo-test", "team-a")
+	configMaps := types.CellKeyFor(configmapsGVR, "apps")
+	secrets := types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "apps")
+
+	mgr.MarkTargetGitPathScopeRefused(gitDest, configMaps, "UnsupportedContent", "configmaps refused")
+	mgr.MarkTargetGitPathScopeAccepted(gitDest, secrets)
+
+	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
+	assert.False(t, gitPath.Accepted, "an unrelated successful scope must not clear the target refusal")
+	assert.Equal(t, configMaps, gitPath.RefusedCell)
+
+	mgr.MarkTargetGitPathScopeAccepted(gitDest, configMaps)
+	assert.True(t, mgr.GitPathAcceptanceForGitTarget(gitDest).Accepted)
+}
+
+func TestGitPathAcceptance_ScopedSuccessDoesNotClearUnscopedRefusal(t *testing.T) {
+	mgr := &Manager{Log: logr.Discard()}
+	gitDest := types.NewResourceReference("podinfo-test", "team-a")
+	configMaps := types.CellKeyFor(configmapsGVR, "apps")
+
+	mgr.MarkTargetGitPathRefused(gitDest, "UnsupportedContent", "whole target refused")
+	mgr.MarkTargetGitPathScopeAccepted(gitDest, configMaps)
+
+	assert.False(t, mgr.GitPathAcceptanceForGitTarget(gitDest).Accepted,
+		"a cell success must not clear a target-wide refusal")
+
+	mgr.MarkTargetGitPathScopeAccepted(gitDest, types.CellKey{})
+	assert.True(t, mgr.GitPathAcceptanceForGitTarget(gitDest).Accepted,
+		"a whole-target proof may clear an unscoped refusal")
 }
 
 // TestReportGitPathRefusal_SatisfiesWorkerManagerReporter is a compile-time proof that the
@@ -150,7 +203,7 @@ func TestReportGitPathRefusal_RenderFidelityKeepsGitPathAccepted(t *testing.T) {
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")
 
-	manager.ReportGitPathRefusal(target, &manifestanalyzer.AcceptanceRefusedError{
+	manager.ReportGitPathRefusal(target, types.CellKey{}, &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind: manifestanalyzer.IssueRenderDoesNotMatchLive, Field: "data.region", Token: "${REGION}",
 		}},
@@ -160,6 +213,15 @@ func TestReportGitPathRefusal_RenderFidelityKeepsGitPathAccepted(t *testing.T) {
 	fidelity := manager.RenderFidelityForGitTarget(target)
 	assert.Equal(t, git.RenderFidelityFalse, fidelity.State)
 	assert.Equal(t, "RenderDoesNotMatchLive", fidelity.Reason)
+}
+
+func requireGitPathEvent(t *testing.T, events <-chan event.GenericEvent) {
+	t.Helper()
+	select {
+	case <-events:
+	case <-time.After(time.Second):
+		t.Fatal("expected GitTarget reconcile event after acceptance status changed")
+	}
 }
 
 // TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake covers the branch that made

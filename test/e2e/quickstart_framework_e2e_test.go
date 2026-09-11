@@ -149,6 +149,8 @@ func (r *quickstartFrameworkRun) helmInstallReadmeQuickstart() {
 		"--reuse-values",
 		// The README's no-Redis default: empty addr runs configured-author.
 		"--set", "queue.redis.addr=",
+		// The e2e repo is intentionally served by in-cluster HTTP Gitea.
+		"--set", "controllerManager.allowInsecureGitHTTP=true",
 		"--set", "quickstart.enabled=true",
 		"--set", fmt.Sprintf("quickstart.namespace=%s", r.namespace),
 		// We created the namespace + git-creds above (README step 3, before install).

@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	gogithttp "github.com/go-git/go-git/v6/plumbing/transport/http"
@@ -39,6 +41,13 @@ type SSHHostKeyConfig struct {
 	AllowMissingKnownHosts bool
 }
 
+// CredentialTransportPolicy controls unsafe Git credential transports.
+type CredentialTransportPolicy struct {
+	// AllowInsecureGitHTTP permits credentials with http:// GitProvider URLs. It is intended for
+	// trusted in-cluster development Git servers only.
+	AllowInsecureGitHTTP bool
+}
+
 // getAuthFromSecret fetches the credentials Secret named by the GitProvider and resolves it into
 // go-git transport options. A GitProvider with no secretRef authenticates anonymously (public repos).
 func getAuthFromSecret(
@@ -46,12 +55,47 @@ func getAuthFromSecret(
 	k8sClient client.Client,
 	provider *v1alpha3.GitProvider,
 	hostKeys SSHHostKeyConfig,
+	transportPolicy CredentialTransportPolicy,
 ) ([]gitclient.Option, error) {
 	cred, err := credentialFromSecret(ctx, k8sClient, provider, hostKeys)
 	if err != nil {
 		return nil, err
 	}
-	return cred.Options(), nil
+	return CredentialOptionsForProvider(provider, cred, transportPolicy)
+}
+
+// CredentialOptionsForProvider applies transport policy to a resolved credential.
+func CredentialOptionsForProvider(
+	provider *v1alpha3.GitProvider,
+	cred Credential,
+	policy CredentialTransportPolicy,
+) ([]gitclient.Option, error) {
+	if credentialed(cred) && gitProviderURLScheme(provider) == "http" && !policy.AllowInsecureGitHTTP {
+		return nil, errors.New("credentialed GitProvider URL must use https or ssh, not http")
+	}
+
+	options := cred.Options()
+	if cred.Basic != nil || cred.Bearer != nil {
+		options = append(options, gitclient.WithRedirectPolicy(gitclient.FollowInitialRedirects))
+	}
+	return options, nil
+}
+
+// credentialed reports whether cred would send authentication material over a Git transport.
+func credentialed(cred Credential) bool {
+	return cred.SSH != nil || cred.Basic != nil || cred.Bearer != nil
+}
+
+// gitProviderURLScheme returns the normalized URL scheme or empty when it cannot be parsed.
+func gitProviderURLScheme(provider *v1alpha3.GitProvider) string {
+	if provider == nil {
+		return ""
+	}
+	u, err := url.Parse(provider.Spec.URL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Scheme)
 }
 
 // credentialFromSecret is getAuthFromSecret before the options wrapper: it returns the concrete
@@ -122,7 +166,7 @@ func AuthFromSecretData(
 	if err != nil {
 		return nil, err
 	}
-	return cred.Options(), nil
+	return CredentialOptionsForProvider(provider, cred, CredentialTransportPolicy{})
 }
 
 // CredentialFromSecretData resolves a credential from an already-fetched Git credentials Secret,

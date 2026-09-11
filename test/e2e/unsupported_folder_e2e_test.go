@@ -61,23 +61,35 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 		cleanupNamespace(testNs)
 	})
 
-	It("refuses a hard-Kustomize path without writing", func() {
-		By("seeding the Git repository with a path that uses an unsupported Kustomize feature")
-		seedFolder := writeUnsupportedKustomizeFolder(testNs)
-		DeferCleanup(func() { _ = os.RemoveAll(seedFolder) })
-		seedRenderedFolderIntoRepo(repo, testNs, seedFolder, gitPath)
+	It("turns red after an unsupported Git-side commit, then recovers when it is undone", func() {
+		By("creating the live ConfigMap the supported source already contains")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", "unsupported-sample", "--ignore-not-found=true")
+		_, err := kubectlRunInNamespace(
+			testNs,
+			"create",
+			"configmap",
+			"unsupported-sample",
+			"--from-literal=hello=world",
+		)
+		Expect(err).NotTo(HaveOccurred(), "failed to create supported live ConfigMap")
+		DeferCleanup(func() {
+			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", "unsupported-sample", "--ignore-not-found=true")
+		})
 
-		// Capture the seed commit before the GitTarget exists, so any later operator commit is
-		// detectable. The operator must add nothing on top of this.
-		var seedHead string
+		By("seeding the Git repository with a supported Kustomize path")
+		supportedFolder := writeSupportedKustomizeFolder(testNs)
+		DeferCleanup(func() { _ = os.RemoveAll(supportedFolder) })
+		seedRenderedFolderIntoRepo(repo, testNs, supportedFolder, gitPath)
+
+		var supportedHead string
 		Eventually(func(g Gomega) {
-			seedHead = remoteBranchHead(g, repo.CheckoutDir)
-			g.Expect(seedHead).NotTo(BeEmpty(), "the seed commit must be on the remote")
+			supportedHead = remoteBranchHead(g, repo.CheckoutDir)
+			g.Expect(supportedHead).NotTo(BeEmpty(), "the supported seed commit must be on the remote")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-		By("creating the GitTarget, WatchRule, and ClusterWatchRule pointed at the unsupported path")
+		By("creating the GitTarget, WatchRule, and ClusterWatchRule pointed at the supported path")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
-		err := applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", struct {
+		err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", struct {
 			Name            string
 			Namespace       string
 			DestinationName string
@@ -85,8 +97,28 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 		Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
 		applyUnsupportedPathClusterWatchRule(clusterRuleName, testNs, destName)
 
-		By("the path is refused and the GitTarget is stalled")
+		By("the GitTarget and its rules start healthy")
+		waitForGitTargetGitPathAccepted(destName, testNs)
+		waitForRuleReady("watchrule", ruleName, testNs)
+		waitForRuleReady("clusterwatchrule", clusterRuleName, "")
+
+		By("pushing an unsupported Kustomize change directly to Git")
+		unsupportedFolder := writeUnsupportedKustomizeFolder(testNs)
+		DeferCleanup(func() { _ = os.RemoveAll(unsupportedFolder) })
+		seedRenderedFolderIntoRepo(repo, testNs, unsupportedFolder, gitPath)
+		var unsupportedHead string
+		Eventually(func(g Gomega) {
+			unsupportedHead = remoteBranchHead(g, repo.CheckoutDir)
+			g.Expect(unsupportedHead).NotTo(Equal(supportedHead), "the unsupported commit must reach the remote")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+		requestGitTargetReconcile(destName, testNs)
+
+		By("the path is refused, the GitTarget is stalled, and the unsupported file is named")
 		waitForGitTargetGitPathRefused(destName, testNs, "UnsupportedContent")
+		verifyResourceCondition("gittarget", destName, testNs,
+			"GitPathAccepted", "False", "UnsupportedContent", "kind=unsupported-kustomize")
+		verifyResourceCondition("gittarget", destName, testNs,
+			"GitPathAccepted", "False", "UnsupportedContent", "kustomization.yaml")
 
 		By("the WatchRule and ClusterWatchRule surface the refused GitTarget dependency")
 		waitForRuleBlockedByGitPath("watchrule", ruleName, testNs, "UnsupportedContent")
@@ -95,12 +127,45 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 		By("the operator commits nothing on top of the unsupported path")
 		Consistently(func(g Gomega) {
 			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).
-				To(Equal(seedHead), "the operator must not commit into a refused path")
+				To(Equal(unsupportedHead), "the operator must not commit into a refused path")
 		}, 20*time.Second, 4*time.Second).Should(Succeed())
 
-		By("unsupported Git path refused: GitTarget stalled, nothing written")
+		By("undoing the unsupported Git-side change and requesting a fresh reconcile")
+		seedRenderedFolderIntoRepo(repo, testNs, supportedFolder, gitPath)
+		requestGitTargetReconcile(destName, testNs)
+
+		By("the GitTarget and its rules recover")
+		waitForGitTargetGitPathAccepted(destName, testNs)
+		waitForRuleReady("watchrule", ruleName, testNs)
+		waitForRuleReady("clusterwatchrule", clusterRuleName, "")
+
+		By("unsupported Git path refusal recovered after the Git-side fix")
 	})
 })
+
+// writeSupportedKustomizeFolder renders a temp folder holding a kustomization.yaml plus the
+// ConfigMap it references, using only the source shape the writer can safely manage. The spec
+// creates a matching live ConfigMap before the target starts, so this seed is a no-op mirror rather
+// than an unrelated prune setup.
+func writeSupportedKustomizeFolder(namespace string) string {
+	GinkgoHelper()
+
+	dir, err := os.MkdirTemp("", "gitops-reverser-e2e-supported-*")
+	Expect(err).NotTo(HaveOccurred(), "failed to create supported fixture directory")
+
+	kustomization := "apiVersion: kustomize.config.k8s.io/v1beta1\n" +
+		"kind: Kustomization\n" +
+		"namespace: " + namespace + "\n" +
+		"resources:\n  - cm.yaml\n"
+	configMap := "apiVersion: v1\n" +
+		"kind: ConfigMap\n" +
+		"metadata:\n  name: unsupported-sample\n  namespace: " + namespace + "\n" +
+		"data:\n  hello: world\n"
+
+	Expect(os.WriteFile(filepath.Join(dir, "kustomization.yaml"), []byte(kustomization), 0o600)).To(Succeed())
+	Expect(os.WriteFile(filepath.Join(dir, "cm.yaml"), []byte(configMap), 0o600)).To(Succeed())
+	return dir
+}
 
 // writeUnsupportedKustomizeFolder renders a temp folder holding a kustomization.yaml that uses
 // an unsupported feature (a patches block) plus the ConfigMap it references. The operator
@@ -145,6 +210,14 @@ func waitForGitTargetGitPathRefused(name, namespace, expectedReason string) {
 	verifyResourceCondition("gittarget", name, namespace, "Stalled", "True", "", "", "150s")
 }
 
+func waitForRuleReady(resourceType, name, namespace string) {
+	GinkgoHelper()
+
+	verifyResourceCondition(resourceType, name, namespace, "GitTargetReady", "True", "", "", "150s")
+	verifyResourceCondition(resourceType, name, namespace, "Ready", "True", "", "", "150s")
+	verifyResourceCondition(resourceType, name, namespace, "Stalled", "False", "", "", "150s")
+}
+
 func waitForRuleBlockedByGitPath(resourceType, name, namespace, expectedReason string) {
 	GinkgoHelper()
 
@@ -160,6 +233,20 @@ func waitForRuleBlockedByGitPath(resourceType, name, namespace, expectedReason s
 	verifyResourceCondition(resourceType, name, namespace, "Ready", "False", expectedReason, "kustomization.yaml")
 	verifyResourceCondition(resourceType, name, namespace, "Stalled", "True", expectedReason, "kustomization.yaml")
 	verifyResourceCondition(resourceType, name, namespace, "Reconciling", "False", expectedReason, "stalled")
+}
+
+func requestGitTargetReconcile(name, namespace string) {
+	GinkgoHelper()
+
+	_, err := kubectlRunInNamespace(
+		namespace,
+		"annotate",
+		"gittarget",
+		name,
+		fmt.Sprintf("reconcile.configbutler.ai/requestedAt=%d", time.Now().UnixNano()),
+		"--overwrite",
+	)
+	Expect(err).NotTo(HaveOccurred(), "failed to request GitTarget reconcile")
 }
 
 func applyUnsupportedPathClusterWatchRule(name, targetNamespace, targetName string) {

@@ -52,6 +52,7 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 3*time.Second, cfg.attributionGrace)
 	assert.False(t, cfg.zapOpts.Development)
 	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())
+	assert.False(t, cfg.credentialPolicy.AllowInsecureGitHTTP)
 }
 
 func TestParseFlagsWithArgs_AdmissionWebhookValues(t *testing.T) {
@@ -83,6 +84,15 @@ func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
 	cfg, err := parseFlagsWithArgs(fs, args)
 	require.NoError(t, err)
 	assert.True(t, cfg.auditInsecure)
+}
+
+func TestParseFlagsWithArgs_InsecureCredentialedGitHTTP(t *testing.T) {
+	fs := flag.NewFlagSet("test-insecure-git-http", flag.ContinueOnError)
+
+	cfg, err := parseFlagsWithArgs(fs, []string{"--allow-insecure-git-http"})
+
+	require.NoError(t, err)
+	assert.True(t, cfg.credentialPolicy.AllowInsecureGitHTTP)
 }
 
 func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {

@@ -225,10 +225,12 @@ type Manager struct {
 
 // GitPathAcceptanceStatus is the whole-target write-safety status for a GitTarget path.
 type GitPathAcceptanceStatus struct {
-	Accepted bool
-	Reason   string
-	Message  string
-	At       metav1.Time
+	Accepted       bool
+	Reason         string
+	Message        string
+	At             metav1.Time
+	RefusedCell    types.CellKey
+	RefusedCellSet bool
 }
 
 const (

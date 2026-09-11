@@ -390,6 +390,10 @@ type ResyncRequest struct {
 	// for idle recurs on every silence timeout, so it never starves. A first-sync backfill is NOT
 	// a heal: it must establish initial state promptly.
 	Heal bool
+	// RefreshRemote asks the worker to fetch/reset to the remote tip before evaluating the
+	// acceptance gate. Forced GitTarget rechecks use it because their trigger is often "I changed
+	// Git; look again", and the local checkout may still hold the refused revision.
+	RefreshRemote bool
 	// SourceCell names the target-watch cell that gathered this snapshot. Zero for a
 	// whole-GitTarget resync, which speaks for no single cell. Diagnostic only: nothing
 	// filters the queue on it. See source_cell.go.

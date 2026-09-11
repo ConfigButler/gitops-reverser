@@ -56,9 +56,16 @@ func (r *WriteRequest) sourceCell() types.CellKey {
 	if r == nil || len(r.Events) == 0 {
 		return types.CellKey{}
 	}
-	first := r.Events[0].SourceCell
-	for i := range r.Events {
-		if r.Events[i].SourceCell != first {
+	return sourceCellForEvents(r.Events)
+}
+
+func sourceCellForEvents(events []Event) types.CellKey {
+	if len(events) == 0 {
+		return types.CellKey{}
+	}
+	first := events[0].SourceCell
+	for i := range events {
+		if events[i].SourceCell != first {
 			return types.CellKey{}
 		}
 	}

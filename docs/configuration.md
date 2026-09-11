@@ -121,6 +121,11 @@ re-authoring it. The keys read for each auth method:
 Auth precedence is SSH key → HTTP basic → bearer token. Client certificates (mTLS), custom CA
 certificates, and GitHub App credentials are **not supported**.
 
+Credentials are refused with `http://` GitProvider URLs by default. Use HTTPS or SSH for real
+repositories. For trusted in-cluster development Git servers that intentionally serve plain HTTP,
+start the manager with `--allow-insecure-git-http` or set
+`controllerManager.allowInsecureGitHTTP=true` in the Helm chart.
+
 > **A reused Secret needs write access.** Flux and Argo CD only *clone*, so their Git credentials are
 > often read-only (a read-only deploy key, a read-scoped token). GitOps Reverser **pushes** commits,
 > so a reused Secret's key or token must have **write** access on the repository; otherwise the
@@ -488,6 +493,39 @@ The most useful status fields are:
   `status.placement` carrying the detail. See below.
 
 Use conditions for automation.
+
+### Why a `GitTarget` is not committing
+
+Start with the target, then check the rules that feed it:
+
+```bash
+kubectl get gittarget -A
+kubectl describe gittarget -n <namespace> <name>
+kubectl get watchrule,clusterwatchrule -A
+```
+
+A red `GitTarget` means the target itself cannot validate, run, or publish. `Ready=False` gives the
+summary reason, while the domain conditions name the axis to fix:
+
+| Condition | What to check |
+|---|---|
+| `Validated=False` | The referenced `GitProvider`, branch policy, `ClusterProvider`, and namespace authorization. |
+| `EncryptionConfigured=False` | The age/SOPS Secret and whether key generation is allowed. |
+| `GitProviderReady=False` | Repository URL, credential Secret, host keys, and push permissions. |
+| `ClusterProviderReady=False` or `SourceClusterReachable=False` | Source-cluster credentials and access. |
+| `GitPathAccepted=False` | Repository files under `spec.path`; the message includes the issue kind, path, and actor when known. |
+| `RenderMatchesLive=False` | Fields that no longer match the rendered source, often transformer-owned values. |
+
+A green `GitTarget` with a red `WatchRule` or `ClusterWatchRule` means the destination may be fine,
+but the selected source objects are not being watched or authorized. Inspect the rule's `Ready`,
+`GitTargetReady`, `SourceNamespaceAuthorized`, and `StreamsRunning` conditions.
+
+After fixing a Git-side folder problem, request a fresh read of the path:
+
+```bash
+kubectl annotate gittarget -n <namespace> <name> \
+  reconcile.configbutler.ai/requestedAt="$(date -Iseconds)" --overwrite
+```
 
 The kstatus trio is also on Prometheus, so the same answer is alertable without a kubeconfig:
 `gitopsreverser_resource_condition{kind="GitTarget", type="Ready", status="False"} == 1` names every

@@ -347,6 +347,48 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 	assert.True(t, worker.pushCycleRootHash.IsZero())
 }
 
+func TestRefreshRemoteAndRebuildPendingWrites_ReplaysWithoutPushing(t *testing.T) {
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+
+	pendingWrite, err := worker.buildGroupedPendingWrite(
+		worker.ctx,
+		[]Event{configMapEvent("from-operator", "alice", "team-a")},
+	)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	pendingWrites := []PendingWrite{*pendingWrite}
+
+	otherPath := filepath.Join(t.TempDir(), "other")
+	otherRepo, otherWorktree := initLocalRepo(t, otherPath, remoteURL, "main")
+	commitFileChange(t, otherWorktree, otherPath, "OUTSIDE.md", "from-other-actor\n")
+	require.NoError(t, otherRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+	}))
+
+	contendingRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	require.NoError(t, worker.refreshRemoteAndRebuildPendingWrites(worker.ctx, pendingWrites))
+
+	remoteRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, contendingRef.Hash(), remoteRef.Hash(), "refresh/replay must not publish retained writes")
+	assert.Equal(t, contendingRef.Hash(), worker.pushCycleRootHash,
+		"the replayed push cycle must be rooted at the fresh remote tip")
+
+	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	require.NoError(t, err)
+	localRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, pendingWrites[0].CommitSHA, localRef.Hash(), "the retained write carries its replayed SHA")
+	require.NotEqual(t, contendingRef.Hash(), localRef.Hash(), "the retained write is replayed locally")
+
+	replayedCommit, err := localRepo.CommitObject(localRef.Hash())
+	require.NoError(t, err)
+	require.Len(t, replayedCommit.ParentHashes, 1)
+	assert.Equal(t, contendingRef.Hash(), replayedCommit.ParentHashes[0])
+}
+
 func TestPushPendingCommits_ReplayPreservesPendingWriteCommitOrder(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
 

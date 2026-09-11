@@ -109,6 +109,10 @@ type targetWatchKey struct {
 type targetWatchStream struct {
 	key targetWatchKey
 	ops OperationSet
+	// refreshRemote asks the worker to inspect the remote tip before applying this stream's
+	// replay. It is set on forced GitTarget rechecks, where a human may have fixed or broken the
+	// folder directly in Git and the local checkout is the stale thing being tested.
+	refreshRemote bool
 	// revision is the incarnation of this stream's CELL, issued by the render-fidelity gate
 	// when the stream was started. It is captured at start, not read when a replay result is
 	// ready: a cancelled stream that read the current revision on its way out would report its
@@ -229,7 +233,7 @@ func (m *Manager) replaceGitTargetWatches(
 	cells := cellsForWatchKeys(keys)
 	m.resetTargetStreamStates(table.GitDest, cells, starting)
 	revisions, fidelityChanged := m.reconcileTargetRenderFidelity(table.GitDest, cells, starting)
-	started := m.startTargetWatchStreams(ctx, set, keysByCell(keys), streams, specs, revisions, starting)
+	started := m.startTargetWatchStreams(ctx, set, keysByCell(keys), streams, specs, revisions, starting, force)
 
 	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
 	if fidelityChanged {
@@ -278,6 +282,7 @@ func (m *Manager) startTargetWatchStreams(
 	specs map[targetWatchKey]string,
 	revisions map[types.CellKey]uint64,
 	starting []types.CellKey,
+	refreshRemote bool,
 ) []startingTargetWatch {
 	out := make([]startingTargetWatch, 0, len(starting))
 	for _, cell := range starting {
@@ -290,9 +295,10 @@ func (m *Manager) startTargetWatchStreams(
 		out = append(out, startingTargetWatch{
 			ctx: streamCtx,
 			stream: targetWatchStream{
-				key:      watchKey,
-				ops:      streams[watchKey],
-				revision: revisions[cell],
+				key:           watchKey,
+				ops:           streams[watchKey],
+				refreshRemote: refreshRemote,
+				revision:      revisions[cell],
 			},
 		})
 	}
@@ -899,7 +905,8 @@ func (m *Manager) enqueueReplayResync(
 	// writes on the strength of a snapshot the new plan never gathered. The gate already
 	// ignores a superseded revision; capturing it at start is what makes it stale.
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, revision, false)
+		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, revision, false,
+		stream.refreshRemote)
 	if err != nil {
 		return err
 	}

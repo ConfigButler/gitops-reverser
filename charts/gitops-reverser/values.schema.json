@@ -99,6 +99,10 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Resource or group/resource, e.g. core.cozystack.io/tenantsecrets."
+        },
+        "allowInsecureGitHTTP": {
+          "type": "boolean",
+          "description": "Permit credentials with http:// GitProvider URLs for trusted in-cluster development Git servers."
         }
       }
     },

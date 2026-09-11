@@ -104,6 +104,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 		nil,
 		"12",
 		false,
+		false,
 	)
 
 	require.Error(t, err)
@@ -131,6 +132,7 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 		types.CellKey{},
 		nil,
 		"12",
+		false,
 		false,
 	)
 
