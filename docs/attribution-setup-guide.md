@@ -1,210 +1,160 @@
-# Attribution Setup Guide
+# Attribute commits to Kubernetes users
 
-By default GitOps Reverser runs **configured-author**: every mirrored commit is authored by the single
-configured committer identity. **Attribution** turns on a second identity — the actual Kubernetes
-user or service account that made the change becomes the commit *author*, while the committer stays
-constant. Git carries both.
+Attribution uses kube-apiserver audit events to name the Kubernetes actor as the Git author.
+The configured committer stays unchanged. Without attribution, both identities use the configured
+committer.
 
-Once attribution is on, a change whose actor cannot be resolved is authored
-`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` rather than falling
-back to the committer. Seeing that identity in your history means attribution ran and did not find a
-matching audit fact — check the audit webhook path before assuming it is normal. Its rate is
-`commits_total{author_kind="unresolved"}`.
+Start with a working [Git mirror](../README.md#quick-start). You need control over kube-apiserver
+flags and files; managed control planes that hide these settings cannot use this webhook.
+For Flux on Talos, use the [installation recipe](talos-flux-setup.md).
 
-Attribution is the only optional capability, and it is a real operational step up: it requires
-kube-apiserver audit delivery and a Redis/Valkey backing store. This guide covers what that costs
-and how the pieces fit. It assumes GitOps Reverser is already installed and mirroring state — see
-the [root README quick start](../README.md#quick-start) for that first run.
+## 1. Enable the receiver
 
-## The two modes
+Add these chart values to your release and reconcile it:
 
-Every install shares one base — Kubernetes watch/RBAC access, Git credentials, and cert-manager. The
-only thing that varies is who shows up as the commit author:
+```yaml
+replicaCount: 1
+attribution:
+  enabled: true
+  transport: redis
+queue:
+  redis:
+    addr: valkey.example.internal:6379
+    # For authenticated Valkey, supply a Secret in the release namespace:
+    # auth:
+    #   existingSecret: valkey-auth
+```
 
-| Mode | Git author | Git committer | Also needs |
-|---|---|---|---|
-| **`configured-author`** *(default)* | the configured identity | the configured identity | nothing |
-| **`attributed-author`** | the authenticated Kubernetes actor | the configured identity | audit delivery + Valkey/Redis |
+Redis/Valkey holds attribution facts and watch cursors. If its data is lost, recent facts are lost
+and watches cold-replay. For a disposable single-pod setup, `attribution.transport: memory` needs
+no Redis but loses facts whenever the reverser restarts. It also leaves Redis-backed features such
+as `CommitRequest` author capture inactive unless you configure Redis separately.
 
-With `attribution.enabled`, only the **author** column moves:
-
-| Who made the change (Kubernetes actor) | Git author | Git committer |
-|---|---|---|
-| Human user (`simon@example.com`) | Simon | `ConfigButler Bot` |
-| Service account (`system:serviceaccount:team-a:deployer`) | the `team-a/deployer` service account | `ConfigButler Bot` |
-| CI / GitHub App identity | that CI / App identity | `ConfigButler Bot` |
-| No usable audit fact for a live change | `unknown (attribution unresolved)` | `ConfigButler Bot` |
-
-The committer column never moves. That is the point.
-
-## When it fits
-
-Attribution works by correlating kube-apiserver **audit events** with the objects the operator sees
-on **watch**. That means the apiserver has to deliver audit events to the controller over a webhook,
-which only self-managed control planes expose:
-
-- **Supported:** clusters where you control apiserver flags — k3s, k3d, Talos, Kamaji, kubeadm.
-- **Not supported:** managed control planes (EKS, GKE, AKS) that hide apiserver configuration.
-
-On a managed platform, either front it with a self-managed control plane or stay in configured-author
-mode. The [audit webhook connectivity design](facts/audit-webhook-api-server-connectivity.md) has
-the full reasoning on hosting.
-
-## Source clusters — the `ClusterProvider`
-
-Each source cluster a `GitTarget` mirrors FROM is named by a cluster-scoped **`ClusterProvider`**,
-the read-side peer of `GitProvider`. `GitTarget.spec.clusterProviderRef` **defaults to
-`{name: "default"}`** — a provider you create by that conventional name, which the chart can render
-for you with `clusterProvider.createDefault: true`. `default` is only the name an omitted reference
-points at: that provider may omit `spec.kubeConfig` (the operator's own cluster) or set it to mirror
-a remote one.
-
-The provider's **name is the cluster's identity** for the watch data plane, and the default for its
-**audit route**. Attribution facts are partitioned by `spec.attribution.auditRoute`, which falls back
-to the provider's name, so a fact from one cluster can never name the author of an object watched on
-another. Set it explicitly when several providers name one cluster: an API server has a single audit
-webhook backend and posts under one route, so the others must declare that route to see its facts.
-A provider also carries a deny-by-default
-`spec.accessFrom` policy: a `GitTarget` may reference it only from an admitted namespace
-(enforced on every reconcile, before that target's watches start — so tightening the policy also
-stops a `GitTarget` that already exists).
-
-**No provider, no streaming.** A `GitTarget` may mirror a source cluster only through an *existing*
-`ClusterProvider` — `default` included — and the operator **never creates one**. If you set
-`clusterProvider.createDefault: false` without committing your own `default`, a `GitTarget` that
-references it is held `NotReady` (`ClusterProviderNotFound`) and never falls back to an implicit
-in-cluster identity. Commit the object yourself, or point such targets at another `ClusterProvider`.
-
-**Remote source clusters.** Create a `ClusterProvider` with a `spec.kubeConfig.secretRef` (the
-kubeconfig Secret lives in the operator namespace) for the outbound *watch* connection, and — for
-attribution — configure that cluster's apiserver to POST audit events to `/audit-webhook/<name>`
-(the provider's name). The audit server already requires a CA-signed client certificate
-(`RequireAndVerifyClientCert`); the remote apiserver presents the **cert-manager-issued audit client
-certificate** the chart mints, exactly as the local apiserver does, and the operator accepts the
-named route only for a `ClusterProvider` that exists. (Binding a distinct client certificate to each
-provider is a future hardening; today the trust boundary is CA-level.) Remote attribution needs a
-self-managed control plane — EKS/GKE/AKS are not supported (see *When it fits*). The current model is
-in [the architecture guide](architecture.md#optional-attribution); the remaining multi-source hardening
-work is in [multi-source audit-ingress hardening](design/multi-source-audit-ingress-hardening.md). See
-[SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model) for the accepted shared-credential trust
-assumption and its limits.
-
-## Prerequisites
-
-- GitOps Reverser installed and producing configured-author commits.
-- A control plane whose apiserver flags you can set and reload.
-- **Redis/Valkey, required.** In configured-author mode it is optional; with attribution on it holds the
-  audit attribution facts (in addition to watch resume cursors), so `queue.redis.addr` must be
-  non-empty. See Redis is required for HA for sizing notes.
-
-## The two sides of the setup
-
-Enabling attribution splits into a **chart side** (in-cluster, managed by Helm) and a
-**control-plane side** (node-local files and apiserver flags the chart cannot touch). Do the chart
-side first — it generates the exact values the control-plane side needs.
-
-### 1. Chart side — enable and read the notes
+The chart creates the audit Service and cert-manager certificates. Wait for the release to be
+ready, then read its Secret names and kubeconfig generator:
 
 ```bash
-helm upgrade gitops-reverser \
-  oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser \
-  --reuse-values \
-  --set attribution.enabled=true \
-  --set queue.redis.addr=valkey.example.internal:6379
-
 helm get notes gitops-reverser -n gitops-reverser
 ```
 
-Use the address of the Redis/Valkey service you prepared in the prerequisites. For an authenticated
-instance, also set `queue.redis.auth.existingSecret` (and, if needed,
-`queue.redis.auth.existingSecretKey`). The chart rejects attribution without a Redis address rather
-than starting an audit receiver that cannot retain facts.
+Use the Helm **storage namespace** here. For Flux this may be `flux-system`, even when the pods
+and certificate Secrets live in `gitops-reverser`.
 
-With `attribution.enabled=true` the chart additionally deploys the audit receiver, its Service, and
-(via cert-manager) the audit TLS materials — a root CA Secret and a kube-apiserver client-cert
-Secret.
+## 2. Configure delivery on every API server
 
-`helm get notes` is the authoritative, install-specific output: it renders the audit webhook URL
-reachable from your control-plane node, the exact Secret names, and a copy-paste block that assembles
-the `audit-webhook.kubeconfig` kube-apiserver expects. Treat that rendered block as the source of
-truth rather than transcribing values by hand — it reflects your Service type, ports, and TLS
-choices.
+Generate the webhook kubeconfig from the audit CA and client certificate Secrets. Keep CA
+verification and `tls-server-name`; the audit listener requires mTLS. The kubeconfig embeds a
+private key: encrypt it before committing it to Git.
 
-### 2. Control-plane side — what the chart cannot do
+Set its `server` to an address reachable from each control-plane host, with a **named route**:
 
-The chart deliberately does **not** touch your nodes. Working from the rendered notes, you:
-
-1. Generate `audit-webhook.kubeconfig` from the audit Secrets.
-2. Copy it to **every** control-plane node (it must be a static file present before the apiserver
-   reads it).
-3. Provide an audit **policy** file — start from the tuned example at
-   [`test/e2e/cluster/audit/policy.yaml`](../test/e2e/cluster/audit/policy.yaml), which already drops
-   runtime noise and heartbeats.
-4. Set the apiserver audit flags and point them at those files:
-   `--audit-policy-file`, `--audit-webhook-config-file`, and `--audit-webhook-mode=batch`.
-5. Restart or reload kube-apiserver once, one node at a time.
-
-**Use `batch` mode. Never start with `blocking` or `blocking-strict`** — those couple normal API
-request latency to the health of the audit receiver and can reject valid requests when the receiver
-is slow. The [connectivity design doc](facts/audit-webhook-api-server-connectivity.md#audit-webhook-backend-best-practices)
-covers the recommended flags and what to tune first; the
-[TLS design doc](finished/audit-webhook-tls-design.md) covers trusting the receiver certificate versus
-the local-only `insecure-skip-tls-verify` shortcut. For a k3s-specific file-placement walkthrough,
-see [`audit-setup/cluster/readme.md`](audit-setup/cluster/readme.md).
-
-## How matching works
-
-Audit facts and watch events arrive on independent paths, so the controller joins them with a bounded
-wait rather than blocking:
-
-- **`attribution.grace`** (default `3s`) — how long a watch event waits for a matching audit fact
-  before it ships with the explicit unresolved author. Larger raises the attribution hit-rate at the cost
-  of commit latency.
-- **`attribution.ttl`** (default `10m`) — how long an unmatched audit fact is retained waiting for
-  its watch event.
-
-Attribution is opportunistic: on a strong match the named user or service account is the author; with
-no match in the grace window, the commit still lands, authored as
-`unknown (attribution unresolved)`. No change is dropped for lack of a match. For a live mutation that
-should be attributable, treat this author as an audit-attribution configuration or delivery problem until
-the audit policy, webhook route, source identity, and Redis connectivity are verified.
-
-## Verifying and reverting
-
-Check the `ClusterProvider` first:
-
-```console
-$ kubectl get clusterprovider
-NAME               READY   REASON      FACTS     AGE
-default            True    Succeeded   True      31m
-srcns-delegating   True    Succeeded   Unknown   4m
+```yaml
+server: https://REACHABLE_ADDRESS:9444/audit-webhook/default
+tls-server-name: gitops-reverser-audit.gitops-reverser.svc
 ```
 
-`FACTS` is the `AuditFactsReceived` condition. `True` means an attribution fact has arrived on that
-provider's audit route, so the route is wired end to end. `Unknown` means none ever has, and every
-commit mirrored through that provider is authored `unknown (attribution unresolved)`;
-`kubectl describe clusterprovider <name>` names the route and the audit webhook URL to check. The
-condition never goes back to `Unknown` once it has been `True`: a route that has proved itself and
-then goes quiet is a quiet cluster, not a fault. It is absent when attribution is disabled.
+The route is `ClusterProvider.spec.attribution.auditRoute`, defaulting to the provider's name.
+The chart creates a provider named `default`. If Helm notes show a bare `/audit-webhook`, append
+`/default` (or your route). The bare endpoint requires `attribution.auditRouteAnnotationKey` and
+an annotation on every event; it is not the default endpoint.
 
-An `Unknown` that persists is almost always one thing: an apiserver takes a single audit webhook
-backend and so posts under a single route, while a `ClusterProvider` that does not set
-`spec.attribution.auditRoute` reads a route named after itself. Point every provider for that
-cluster at the route the apiserver posts to.
+A ClusterIP works only when the host can route to the service CIDR. Otherwise use a reachable
+NodePort or load balancer. Do not assume cluster DNS or a loopback NodePort works from the host.
+Keep `tls-server-name` when connecting by IP so the service certificate's DNS SAN is verified.
 
-The controller reports `NotReady` on `/readyz` until the audit listener is accepting connections
-(with a loaded TLS cert) and it has reached Redis, so a rollout or cert rotation buffers events in the
-apiserver instead of dropping them. Once ready, make a change as a distinct user and confirm the
-resulting commit's **author** is that identity while the committer is unchanged.
+Place the kubeconfig and the policy below on every control-plane node, mount them into
+kube-apiserver, and set:
 
-To return to configured-author, upgrade with `--set attribution.enabled=false`. The audit receiver and
-Service are removed; you can then also remove the apiserver audit flags on the nodes.
+```text
+--audit-policy-file=/path/to/audit-policy.yaml
+--audit-webhook-config-file=/path/to/audit-webhook.kubeconfig
+--audit-webhook-mode=batch
+--audit-webhook-version=audit.k8s.io/v1
+--audit-webhook-batch-max-wait=1s
+--audit-webhook-batch-max-size=100
+```
 
-## Related docs
+Restart one API server at a time and check its direct `/readyz` endpoint before continuing.
+Use `batch`: blocking modes couple API writes to receiver availability. Batching buffers and
+retries during short outages, but its finite buffer does not guarantee delivery through an outage.
+See [Talos](talos-flux-setup.md#2-stage-the-talos-configuration) or
+[k3s file placement](audit-setup/cluster/readme.md) for platform details.
 
-- [`design/audit-webhook-api-server-connectivity.md`](facts/audit-webhook-api-server-connectivity.md):
-  networking, DNS, and TLS tradeoffs for audit delivery
-- [`design/audit-webhook-tls-design.md`](finished/audit-webhook-tls-design.md): trusting the audit receiver certificate
-- [`configuration.md`](configuration.md): core configuration objects
-- [`../README.md`](../README.md): product overview and configured-author quick start
+### Choose the audit policy
+
+Start with the [tuned policy](../test/e2e/cluster/audit/policy.yaml). It captures configuration
+writes at `RequestResponse` level, including CRDs and custom resources, and drops reads,
+heartbeats, core runtime noise, selected status updates, and HPA-driven scale changes.
+Keep the write catch-all so newly installed APIs are covered.
+
+For broader noise filtering, add these resources to the first `level: None` rule:
+
+```yaml
+resources:
+  - group: ""
+    resources: ["pods/*", "nodes/*"]
+  - group: events.k8s.io
+    resources: [events]
+  - group: discovery.k8s.io
+    resources: [endpointslices]
+  - group: "*"
+    resources: ["*/status"]
+```
+
+Merge these with the existing exclusions. A `pods` entry alone does not exclude `pods/exec` or
+other subresources. Keep manual scale writes if you want their authors recorded.
+
+The example includes Secret writes at `RequestResponse` level. To keep Secret bodies out of the
+webhook, exclude core `secrets` too. Those writes then have no audit evidence for attribution.
+The audit policy controls evidence collection; `WatchRule` and `ClusterWatchRule` control what
+gets written to Git.
+
+## 3. Verify a live change
+
+Check receiver readiness and the route:
+
+```bash
+kubectl -n gitops-reverser rollout status deployment/gitops-reverser
+kubectl get clusterprovider default
+```
+
+`FACTS=True` means the provider has received an attribution fact at least once. It is historical
+evidence, not a continuous health check. Receiver readiness alone does not prove API server delivery.
+
+Using your normal user credentials, mutate a ConfigMap covered by an existing ready `GitTarget`
+and `WatchRule`:
+
+```bash
+kubectl -n YOUR_WATCHED_NAMESPACE create configmap attribution-check \
+  --from-literal=check=first
+kubectl -n YOUR_WATCHED_NAMESPACE patch configmap attribution-check \
+  --type=merge -p '{"data":{"check":"second"}}'
+```
+
+After the target's commit window closes, fetch its branch and inspect the commits affecting the
+ConfigMap. The author should identify your Kubernetes user; the committer should be unchanged:
+
+```bash
+git show --format=fuller COMMIT
+```
+
+Repeat through each direct API server endpoint, using a unique ConfigMap name per test. Delete
+the test objects afterward. A baseline snapshot is not a substitute for this live-write check.
+
+An unmatched live change is authored as
+`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`.
+Check the route, policy coverage, API server webhook errors, and transport connectivity first.
+`attribution.grace` defaults to `3s`; increase it only if facts arrive after that window.
+`attribution.ttl` defaults to `10m`.
+
+## Rotate or disable
+
+When the audit client certificate changes, regenerate the embedded kubeconfig and roll it out to
+all API servers. A server certificate renewal under the same CA needs no node update. Plan CA
+rotation with trust overlap; replacing the CA while nodes still trust the old one breaks delivery.
+
+To disable attribution, remove webhook delivery from every API server first. Then set
+`attribution.enabled: false` in the release. This avoids sending events to a removed Service.
+
+For remote clusters and shared routes, see [configuration](configuration.md) and the
+[shared audit trust boundary](../SECURITY.md#shared-audit-ingress-trust-model).

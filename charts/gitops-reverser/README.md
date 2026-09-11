@@ -196,7 +196,7 @@ nodeSelector:
 | `attribution.enabled` | Run audit ingress and name mirrored-resource commit authors from matching kube-apiserver audit facts | `false` |
 | `attribution.transport` | Where attribution facts travel between the audit receiver and the watch side. `redis` appends them to Redis streams and needs `queue.redis.addr`; `memory` keeps them in an in-process ring, which needs no Redis but loses facts on a restart and is **refused at startup with `replicaCount > 1`** | `redis` |
 | `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it. Bounds stream retention and the in-memory index together, and is the horizon a restart replays from | `10m` |
-| `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
+| `attribution.grace` | Bounded per-event wait for a matching audit fact before a live change ships with an unresolved author | `3s` |
 | `attribution.maxFactsPerType` | Cap on the facts held in memory for one (audit route, type), evicted oldest-first, so a burst on one noisy type cannot evict every other type's facts | `4096` |
 | `attribution.maxFacts` | Cap on the facts held in memory across every type. Must be at least `maxFactsPerType`; overflow evicts from the type holding the most | `65536` |
 | `attribution.collectionWindow` | How long after a `deletecollection` a removal in its scope may still be credited to it. It only has to cover audit batching plus clock skew, since the removal is attributed at delete-request time | `30s` |
