@@ -56,10 +56,13 @@ server: https://REACHABLE_ADDRESS:9444/audit-webhook/default
 tls-server-name: gitops-reverser-audit.gitops-reverser.svc
 ```
 
-The route is `ClusterProvider.spec.attribution.auditRoute`, defaulting to the provider's name.
-The chart creates a provider named `default`. If Helm notes show a bare `/audit-webhook`, append
-`/default` (or your route). The bare endpoint requires `attribution.auditRouteAnnotationKey` and
-an annotation on every event; it is not the default endpoint.
+Use `/audit-webhook/default` for a normal installation. The chart creates the `default`
+`ClusterProvider`; older Helm notes may omit the `/default` suffix.
+For another provider, use its `spec.attribution.auditRoute`, which defaults to its name.
+
+Only installations explicitly using `attribution.auditRouteAnnotationKey` should keep the bare
+`/audit-webhook` endpoint. That mode selects a route from each event's annotation; appending
+`/default` would instead select the named `default` route for the entire request.
 
 A ClusterIP works only when the host can route to the service CIDR. Otherwise use a reachable
 NodePort or load balancer. Do not assume cluster DNS or a loopback NodePort works from the host.

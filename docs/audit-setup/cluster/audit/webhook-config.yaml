@@ -1,16 +1,15 @@
-# /etc/rancher/k3s/audit/config.yaml
+# Template: replace the CA and client credential placeholders before use.
+# Generate them from the release Secrets described by helm get notes.
 apiVersion: v1
 kind: Config
 preferences: {}
 clusters:
 - name: audit-webhook
   cluster:
-    # Use the ClusterIP, but with HTTPS
-    server: https://10.43.200.200:443/audit-webhook
-    # We could also configure an network wide ingress with it's own cert, but it's better if it has a small surface
-    insecure-skip-tls-verify: true 
-    # base64content = kubectl get secret -n <namespace> <cert-name> -o jsonpath='{.data.ca\.crt}'
-    # certificate-authority: base64content
+    # Replace with a Service IP reachable from every control-plane host.
+    server: https://10.43.200.200:9444/audit-webhook/default
+    tls-server-name: gitops-reverser-audit.gitops-reverser.svc
+    certificate-authority-data: REPLACE_WITH_BASE64_AUDIT_ROOT_CA
 contexts:
 - name: webhook
   context:
@@ -19,4 +18,6 @@ contexts:
 current-context: webhook
 users:
 - name: kube-apiserver
-  user: {}
+  user:
+    client-certificate-data: REPLACE_WITH_BASE64_AUDIT_CLIENT_CERT
+    client-key-data: REPLACE_WITH_BASE64_AUDIT_CLIENT_KEY

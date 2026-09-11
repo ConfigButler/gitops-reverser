@@ -32,7 +32,7 @@ It also disables these packaged k3s components by default:
 
 The bootstrap source in [`audit/webhook-config.yaml`](audit/webhook-config.yaml) targets:
 
-`https://10.43.200.200:9444/audit-webhook`
+`https://10.43.200.200:9444/audit-webhook/default`
 
 Notes:
 

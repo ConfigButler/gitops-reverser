@@ -42,6 +42,7 @@ func renderAuditNotes(t *testing.T, values ...string) string {
 	return rendered.Data["notes"]
 }
 
+// TestChartAuditNotesUseConfiguredRouteMode checks the mTLS generator across service types and route modes.
 func TestChartAuditNotesUseConfiguredRouteMode(t *testing.T) {
 	tests := map[string]struct {
 		values []string
@@ -66,6 +67,24 @@ func TestChartAuditNotesUseConfiguredRouteMode(t *testing.T) {
 				require.NotContains(t, notes, "/audit-webhook/default")
 				require.Contains(t, notes, "example.com/route")
 			}
+		})
+	}
+}
+
+// TestChartAuditNotesWithoutTLS checks that development examples match the plain HTTP listener.
+func TestChartAuditNotesWithoutTLS(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		name, path := "named default", "/audit-webhook/default"
+		values := []string{"servers.audit.tls.enabled=false"}
+		if shared {
+			name, path = "shared stream", "/audit-webhook"
+			values = append(values, "attribution.auditRouteAnnotationKey=example.com/route")
+		}
+		t.Run(name, func(t *testing.T) {
+			notes := renderAuditNotes(t, values...)
+			require.Contains(t, notes, "server: http://<reachable-address>:9444"+path+"\n")
+			require.NotContains(t, notes, "server: https://")
+			require.NotContains(t, notes, "insecure-skip-tls-verify:")
 		})
 	}
 }

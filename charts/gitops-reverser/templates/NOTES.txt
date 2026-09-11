@@ -146,8 +146,7 @@ validation. This is for local/bootstrap scenarios only, not a production recomme
 `servers.audit.tls.enabled=false`, so only an insecure development bootstrap makes sense:
 
 ```yaml
-server: https://<reachable-address>/audit-webhook
-insecure-skip-tls-verify: true
+server: http://<reachable-address>:{{ $auditServerPort }}{{ $auditPath }}
 ```
 
 {{- end }}
