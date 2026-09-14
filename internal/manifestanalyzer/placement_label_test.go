@@ -146,7 +146,8 @@ func TestValidPlacementTemplateSyntax_Labels(t *testing.T) {
 
 // The syntax gate must not need a resource to run: it is the static Validated check, and a label
 // has no value until an object arrives. A template referencing a label it cannot resolve is
-// valid; the resource that does not carry it is refused later, at write time.
+// valid, and so is the resource: one that does not carry the label is still mirrored, into the
+// built-in "_unlabeled" bucket or the template's own declared fallback.
 func TestValidPlacementTemplateSyntax_LabelNeedsNoValue(t *testing.T) {
 	if err := ValidPlacementTemplateSyntax("{label:team}/{namespace}/{name}.yaml"); err != nil {
 		t.Fatalf("ValidPlacementTemplateSyntax: %v, want a label template to pass the static gate", err)
