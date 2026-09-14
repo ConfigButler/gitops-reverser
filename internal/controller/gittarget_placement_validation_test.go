@@ -30,7 +30,7 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			"byType plus an identity-complete default",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
-				Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml",
+				Default: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml",
 			},
 			true,
 		},
@@ -45,9 +45,105 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"the versionless canonical default is accepted (#295)",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{namespaceOrCluster}/{groupPath}/{resource}/{name}.yaml",
+				Default: "{namespace}/{groupPath}/{resource}/{name}.yaml",
 			},
 			true,
+		},
+		{
+			// A namespace fallback still discriminates by namespace, so it must satisfy the
+			// identity-completeness a sensitive route requires rather than being read as a
+			// different variable that happens to start the same way.
+			"a Secret route may name its own cluster bucket",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType:  map[string]string{"v1/secrets": "{namespace|_global}/secrets/{name}.yaml"},
+				Default: "all.yaml",
+			},
+			true,
+		},
+		{
+			// A fallback naming a real namespace is a bundling choice, not a collision: scope is a
+			// property of the type, so the namespaced resources sharing that folder are all of
+			// other types and render other paths.
+			"a namespace fallback may name a real namespace",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{namespace|team-a}/{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"a fallback on a variable that is never absent is refused",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{namespace}/{groupPath}/{resource}/{name|orphan}.yaml",
+			},
+			false,
+		},
+		{
+			"a label variable passes the static gate with no object to read it from",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:app.kubernetes.io/instance}/{namespace}/" +
+					"{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"a label does not supply the type identity a default needs to stay Secret-safe",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:app.kubernetes.io/instance}/{namespace}/{name}.yaml",
+			},
+			false,
+		},
+		{
+			"a fallback bucket no label value could reach is accepted",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:team|_none}/{namespace}/{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"an empty fallback is a declared segment collapse, not a typo",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:team|}/{namespace}/{groupPath}/{resource}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"a fallback that would invent a directory is rejected",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:team|a/b}/{namespace}/{groupPath}/{resource}/{name}.yaml",
+			},
+			false,
+		},
+		{
+			"a label key Kubernetes would reject is rejected here, not per resource",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{label:not a key}/{namespace}/{name}.yaml",
+			},
+			false,
+		},
+		{
+			"a label the writer strips can never place anything, so it is rejected at the gate",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType: map[string]string{
+					"v1/configmaps": "{label:kustomize.toolkit.fluxcd.io/name}/configmaps.yaml",
+				},
+			},
+			false,
+		},
+		{
+			"app.kubernetes.io/instance survives sanitization and stays usable",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType: map[string]string{
+					"v1/configmaps": "{label:app.kubernetes.io/instance}/configmaps.yaml",
+				},
+			},
+			true,
+		},
+		{
+			"annotations are not a placement variable",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{annotation:team}/{namespace}/{name}.yaml",
+			},
+			false,
 		},
 		{
 			"bundling default with no Secret route is rejected",
@@ -88,7 +184,7 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"unknown template variable",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}-{bogus}.yaml",
+				Default: "{groupPath}/{version}/{resource}/{namespace}/{name}-{bogus}.yaml",
 			},
 			false,
 		},

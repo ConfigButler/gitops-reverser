@@ -388,8 +388,18 @@ func wroteBytes(o upsertOutcome) bool {
 // file) is logged and left unwritten rather than mis-written; the next event or resync retries.
 func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome, error) {
 	kind := ""
+	// Labels come off the event's object — the SANITIZED one (see Event.Object), and the only
+	// place they exist at this point: placement runs precisely when there is no document in Git
+	// to read them from. Sanitized is also what the "{label:key}" variable must see, and what the
+	// GitTarget's Validated gate assumes: a label the writer strips is already absent here, so a
+	// template naming one is refused at the gate rather than quietly bucketing every resource of
+	// its type together. An object-less event cannot reach this function (a field patch branches
+	// off in applyEvent, and a non-delete always carries an object), but if one ever did, nil
+	// labels place it at the unlabeled sentinel rather than guess.
+	var labels map[string]string
 	if event.Object != nil {
 		kind = event.Object.GetKind()
+		labels = event.Object.GetLabels()
 	}
 	// A folder covering several render roots has no single one for a NEW document, and picking
 	// one would hand it to an environment nobody named. An existing document is unaffected: it
@@ -408,6 +418,7 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		Kind:       kind,
 		Sensitive:  sensitive,
 		WriteScope: wb.writeSubdir,
+		Labels:     labels,
 	})
 	if err != nil {
 		refusal := placementRefusalReason(err)

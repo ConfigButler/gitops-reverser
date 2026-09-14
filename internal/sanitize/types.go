@@ -66,6 +66,13 @@ func cleanAnnotations(annotations map[string]string) map[string]string {
 	return cleaned
 }
 
+// IsStrippedLabel reports whether a label is removed before an object is written to Git.
+//
+// Exported for the GitTarget Validated gate: a placement template reading such a label could
+// never discriminate by it, because the value is gone by the time placement runs. Callers
+// outside this package need the predicate, not the stripping.
+func IsStrippedLabel(key string) bool { return isOperationalLabel(key) }
+
 // isOperationalLabel reports whether a label is controller bookkeeping.
 //
 // Note the asymmetry with Argo CD: its `label` and `annotation+label` tracking

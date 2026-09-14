@@ -65,10 +65,58 @@ type GitTargetSpec struct {
 	// +optional
 	Encryption *EncryptionSpec `json:"encryption,omitempty"`
 
+	// Why a "{label:key|fallback}" may start with "_" where a label value may not: a
+	// fallback that is itself label-legal shares its bucket with the resources genuinely
+	// labeled it, and nothing downstream can separate the two again. A leading "_" is the
+	// only way to name a bucket no label value can reach — the property "_unlabeled" and
+	// "_cluster" are already built on. The empty fallback is allowed for the mirror-image
+	// reason: the built-in sentinel protects the case where nobody chose, while an empty
+	// fallback is a choice spelled out in the spec, visible in review and in `kubectl get`.
+	// See docs/layout/new-file-placement-rules.md.
+
+	// Why {namespace} takes the same "|fallback" as {label:key}, under the same rules and no
+	// others: they are one problem — a variable with an absent case needs a bucket, and the author
+	// should be able to name it — so they share the grammar, the charset and the fence.
+	//
+	// A namespace fallback naming a real namespace is deliberately allowed. The collision it looks
+	// like it could cause cannot occur: scope is a property of the TYPE, so two resources
+	// rendering the same {groupPath}/{resource} are both cluster-scoped or both namespaced, and
+	// the fallback fires only for the former. What is left is a template that drops the type
+	// variables — a bundle such as "{namespace|team-a}/all.yaml" — where cluster-scoped resources
+	// join that namespace's bundle. Bundling is a supported, declared layout; documents keep their
+	// identity inside a file and the write-time guards still refuse a sensitive document in a
+	// shared one.
+
 	// Placement declares where NEW resources are written. It has no effect on a
 	// resource that already has a document in Git — that document is always
 	// updated in place at its existing location, wherever that is. Mutable: a
 	// change only affects resources created after the change.
+	//
+	// Its byType and default templates share one variable language (docs/configuration.md).
+	// Besides the resource's identity, a template may read one of its labels:
+	// "{label:app.kubernetes.io/instance}/configmaps.yaml".
+	//
+	// Two variables can be absent for a resource that is otherwise placeable, and both are
+	// still placed rather than skipped: "{label:key}" on a resource that does not set the
+	// label (or sets it empty) renders the built-in "_unlabeled" bucket, and "{namespace}" on
+	// a cluster-scoped resource renders "_cluster". Neither is a value its kind of source can
+	// hold, so neither is ever confused with a real one.
+	//
+	// Append "|fallback" to either to name that bucket yourself — "{label:team|unassigned}",
+	// "{namespace|_global}". A fallback is at most 63 characters of [A-Za-z0-9._-] and is
+	// neither "." nor "..", so it can add no directory and escape no path; it may start with
+	// "_" to stay collision-proof, or be empty ("{label:team|}", "{namespace|}") to render
+	// nothing, collapsing the segment. A {namespace} fallback may name a real namespace
+	// ("{namespace|team-a}"), which files cluster-scoped resources in that folder; begin it with
+	// "_" instead when you want a bucket no namespace can reach. Only these two variables take a
+	// fallback, and one written on any other is rejected rather than silently ignored — not
+	// because the others always have a value ({groupPath} renders empty for a core resource) but
+	// because an empty group segment collapses by design, which is the canonical path's intent.
+	//
+	// A label is never identity, so it does not contribute to the identity-completeness a
+	// sensitive route requires (a {namespace} fallback does not cost it either). Because
+	// placement runs only for a resource with no document yet, labeling one afterwards never
+	// moves the file already written.
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 
@@ -191,7 +239,7 @@ type GitTargetCommitSpec struct {
 // kustomization when the whole folder is governed by exactly one supported
 // kustomization (so the file is reachable from a render root instead of being
 // written where kustomize would never build it), and otherwise at the built-in
-// canonical, versionless {namespaceOrCluster}/{group}/{resource}/{name}.yaml path.
+// canonical, versionless {namespace}/{group}/{resource}/{name}.yaml path.
 // Nothing infers a destination from where the repository keeps other resources of
 // the same type: a layout this operator cannot derive from one root is declared
 // here or it is canonical. Because the canonical path omits the API version,

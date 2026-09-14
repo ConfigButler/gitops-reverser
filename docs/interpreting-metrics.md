@@ -202,7 +202,7 @@ boundary, the commit, the push. Background:
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync`. Every increment is lost work. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
-| `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labelled half of the pipeline and the branch-labelled half. Published per configured GitTarget, whether or not its worker runs. |
+| `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labeled half of the pipeline and the branch-labeled half. Published per configured GitTarget, whether or not its worker runs. |
 | `commit_requests_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. A target that never resolved publishes the empty pair. See the counting note below. |
 | `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document at a resolved path. |
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined. Every increment is a resource **absent** from the mirror. |
@@ -255,7 +255,7 @@ sum by (provider_namespace, provider_name, branch) (
   rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0
 ```
 
-**Which GitTargets does that branch serve?** The push-side instruments are labelled by
+**Which GitTargets does that branch serve?** The push-side instruments are labeled by
 `{provider_namespace, provider_name, branch}` because one BranchWorker serves a (GitProvider,
 branch) that several GitTargets can share. `git_branch_targets` is the join that names them:
 
@@ -558,6 +558,13 @@ sum by (reason, gittarget_namespace, gittarget_name, resource) (
 | `multi_document_target` | the resolved file holds a document the writer cannot account for, so it will not overwrite it |
 | `unclassified` | a refusal shape newer than this table — report it |
 
+A `{label:key}` template never refuses for a missing label: a resource that does not set it lands
+at the built-in `_unlabeled` bucket, or at whatever the template's own `{label:key|fallback}` names
+— including one directory up, if that fallback is empty — so it is always mirrored somewhere. See
+[the label placement docs](layout/new-file-placement-rules.md#labelkey--the-one-metadata-variable)
+if a lot of resources are landing in `_unlabeled` and you would rather they used a declared
+fallback or a different variable.
+
 **The one that looks fine in the folder.** A new file whose `resources:` entry could not be added is
 committed and never built by kustomize: it is in Git, it looks mirrored, and nothing applies it. This
 should be zero:
@@ -859,7 +866,7 @@ or
 ```
 
 **Which transport is in force?** `gitopsreverser_attribution_transport_info` is an info gauge whose
-value is always 1, labelled `redis` or `memory`. It is a legend rather than a threshold, and it
+value is always 1, labeled `redis` or `memory`. It is a legend rather than a threshold, and it
 changes how every metric above reads: a burst of unresolved commits after a restart is *expected*
 under the in-process transport, which drops every fact with the process, and a *bug* under Redis.
 
@@ -1014,7 +1021,7 @@ Secrets are never committed in plaintext; these metrics confirm the encryption p
 
 | Metric | Type | Notes |
 | --- | --- | --- |
-| `secret_encryptions_total` | counter | One per encryption decision, labelled `outcome`: `encrypted`, `failed` (the write is rejected), or `cached` (unchanged content reused). |
+| `secret_encryptions_total` | counter | One per encryption decision, labeled `outcome`: `encrypted`, `failed` (the write is rejected), or `cached` (unchanged content reused). |
 
 **Encryption failure rate** — should be zero; non-zero means Secret writes are being rejected:
 

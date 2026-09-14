@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -131,6 +132,13 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
+	// One sample carries an object with labels and a kind, and the others carry none, so both
+	// directions of a metadata-reading template are exercised here: the render with the label
+	// present, and the render without it. That second one is the important half — these
+	// templates run with missingkey=error, so "{{.Labels.team}}" fails for a resource that does
+	// not carry "team", and failing at admission is the difference between a rejected GitTarget
+	// and a commit that dies mid-window months later. "{{.Label \"team\"}}" renders empty and
+	// passes both.
 	for _, author := range []string{"template-validator", ""} {
 		var events []Event
 		for _, operation := range []string{"CREATE", "UPDATE", "DELETE"} {
@@ -138,6 +146,9 @@ func ValidateCommitConfig(config CommitConfig) error {
 			event.UserInfo.Username = author
 			event.Operation = operation
 			event.Identifier.Name = operation
+			if operation == "CREATE" {
+				event.Object = sampleLabeledObject()
+			}
 			events = append(events, event)
 			if _, err := renderLiveCommitMessage(PendingWrite{
 				Kind: PendingWriteCommit, Events: events,
@@ -148,6 +159,24 @@ func ValidateCommitConfig(config CommitConfig) error {
 	}
 
 	return nil
+}
+
+// sampleLabeledObject is the object the commit-template validator hands one of its sample
+// events: enough metadata for {{.Kind}} and a label accessor to render, and deliberately not
+// handed to the DELETE sample, which carries no object in production either.
+func sampleLabeledObject() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata": map[string]any{
+			"name":      "example",
+			"namespace": "default",
+			"labels": map[string]any{
+				"app.kubernetes.io/instance": "example",
+				"team":                       "example-team",
+			},
+		},
+	}}
 }
 
 func operatorSignature(config CommitConfig, when time.Time) *object.Signature {

@@ -276,6 +276,32 @@ spec:
                   resource that already has a document in Git — that document is always
                   updated in place at its existing location, wherever that is. Mutable: a
                   change only affects resources created after the change.
+
+                  Its byType and default templates share one variable language (docs/configuration.md).
+                  Besides the resource's identity, a template may read one of its labels:
+                  "{label:app.kubernetes.io/instance}/configmaps.yaml".
+
+                  Two variables can be absent for a resource that is otherwise placeable, and both are
+                  still placed rather than skipped: "{label:key}" on a resource that does not set the
+                  label (or sets it empty) renders the built-in "_unlabeled" bucket, and "{namespace}" on
+                  a cluster-scoped resource renders "_cluster". Neither is a value its kind of source can
+                  hold, so neither is ever confused with a real one.
+
+                  Append "|fallback" to either to name that bucket yourself — "{label:team|unassigned}",
+                  "{namespace|_global}". A fallback is at most 63 characters of [A-Za-z0-9._-] and is
+                  neither "." nor "..", so it can add no directory and escape no path; it may start with
+                  "_" to stay collision-proof, or be empty ("{label:team|}", "{namespace|}") to render
+                  nothing, collapsing the segment. A {namespace} fallback may name a real namespace
+                  ("{namespace|team-a}"), which files cluster-scoped resources in that folder; begin it with
+                  "_" instead when you want a bucket no namespace can reach. Only these two variables take a
+                  fallback, and one written on any other is rejected rather than silently ignored — not
+                  because the others always have a value ({groupPath} renders empty for a core resource) but
+                  because an empty group segment collapses by design, which is the canonical path's intent.
+
+                  A label is never identity, so it does not contribute to the identity-completeness a
+                  sensitive route requires (a {namespace} fallback does not cost it either). Because
+                  placement runs only for a resource with no document yet, labeling one afterwards never
+                  moves the file already written.
                 properties:
                   byType:
                     additionalProperties:

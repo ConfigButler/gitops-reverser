@@ -65,7 +65,7 @@ objection (F9 is), and not unfixable (F4 is the fix), but it is where the idea s
 to,
 
 ```text
-{namespaceOrCluster}/{groupPath}/{resource}/{name}{sensitiveSuffix}
+{namespace}/{groupPath}/{resource}/{name}{sensitiveSuffix}
 ```
 
 is judged *not* identity-complete, and every GitTarget that did not also declare a Secret route
