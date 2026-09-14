@@ -922,7 +922,7 @@ Recommended variables:
 | `{resource}` | plural resource name, for example `configmaps` |
 | `{kind}` | manifest kind, for example `ConfigMap` |
 | `{scope}` | `namespaced` or `cluster` |
-| `{namespace}` | the resource's namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for a cluster-scoped resource; `{namespace\|fallback}` names a different bucket, subject to [one extra rule](#a-namespace-fallback-may-not-name-a-real-namespace) |
+| `{namespace}` | the resource's namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for a cluster-scoped resource; `{namespace\|fallback}` names a different bucket ([details](#namespace-takes-the-same-fallback-fenced-the-same-way)) |
 | `{name}` | metadata name |
 | `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
 | `{label:key}` | the value of that label on the placed resource, or the `_unlabeled` sentinel when it carries none; `{label:key\|fallback}` names a different bucket, and an empty fallback renders no segment at all ([details](#labelkey--the-one-metadata-variable)) |
@@ -1049,26 +1049,32 @@ have forbidden:
   fence that matters is unaffected: only whole empty segments collapse, so a
   file name keeps whatever literal text surrounds the placeholder.
 
-#### A `{namespace}` fallback may not name a real namespace
+#### `{namespace}` takes the same fallback, fenced the same way
 
-`{namespace}` takes the same `|fallback` suffix, parsed by the same code and
-fenced by the same path-segment charset: absence is one problem, so it has one
-grammar. `{namespace|_global}` files cluster-scoped resources under `_global/`
-instead of `_cluster/`, and `{namespace|}` collapses the segment for them.
+`{namespace}` accepts the same `|fallback`, parsed by the same code and held to
+the same path-segment charset: absence is one problem, so it has one grammar.
+`{namespace|_global}` files cluster-scoped resources under `_global/`, and
+`{namespace|}` collapses the segment for them.
 
-It carries one rule the label form does not: a non-empty fallback must not be a
-legal namespace name (a DNS-1123 label). The two variables differ in what
-absence costs. A label is not identity, so a colliding label fallback merely
-merges two buckets and the path still separates resources by `{namespace}` and
-`{name}`. The namespace position **is** identity, so under
-`{namespace|team-a}/{resource}/{name}.yaml` a cluster-scoped `Foo` named `db`
-renders `team-a/foos/db.yaml` — the very path a namespaced `Foo` named `db` in
-namespace `team-a` renders. Two distinct objects, one file, which is precisely
-the collision `_cluster` was chosen to be incapable of; a stand-in for it has to
-inherit that property rather than quietly give it up. The empty fallback needs
-no such rule: it shortens the path only for cluster-scoped resources, and a
-namespaced resource always fills that segment, so the two can never meet at the
-same depth.
+An earlier cut of this refused a fallback that was itself a legal namespace
+name, on the theory that `{namespace|team-a}` could fold a cluster-scoped
+resource onto the path a namespaced resource of the same type and name already
+renders. That collision cannot happen. Scope is a property of the **type**, not
+the object, so two resources rendering the same `{groupPath}/{resource}` are
+both cluster-scoped or both namespaced, and the fallback fires only for the
+former. An identity-complete template always carries those type variables, and a
+`byType` entry is narrowed to one type, so the pair the argument needs does not
+exist.
+
+What remains is a template that deliberately omits the type variables, such as
+`{namespace|team-a}/all.yaml`, where cluster-scoped resources join the bundle
+namespace `team-a` writes. That is bundling, which this design supports on
+purpose: each document keeps its identity inside the file, the write-time
+co-mingle guards still refuse a sensitive document in a shared file, and
+`validateSecretSafety` refuses a bundling default outright unless Secrets have
+an identity-complete route of their own. Choosing a bucket that shares a folder
+with a real namespace is the author's call, the same call bundling has always
+been.
 
 Every other variable takes no fallback at all. `{name}`, `{resource}` and the
 rest always have a value, so a `|` on one of them can never fire; it is refused

@@ -73,9 +73,11 @@ func TestLocateNew_EmptyNamespaceFallback_CollapsesOnlyForClusterScoped(t *testi
 	}
 }
 
-// The namespace position is identity, so its fallback carries one rule a label fallback does not:
-// it may not be a name a real namespace could hold, or a cluster-scoped resource would render the
-// path a namespaced resource of the same type and name already renders.
+// A namespace fallback is fenced exactly as a label fallback is: by what is safe in one path
+// segment, and nothing else. A bucket that happens to name a real namespace is allowed — the
+// collision that would justify refusing it cannot occur, because scope is a property of the TYPE,
+// so two resources rendering the same {resource} are both cluster-scoped or both namespaced and
+// the fallback only ever fires for the former.
 func TestValidPlacementTemplateSyntax_NamespaceFallback(t *testing.T) {
 	cases := []struct {
 		tmpl string
@@ -87,9 +89,9 @@ func TestValidPlacementTemplateSyntax_NamespaceFallback(t *testing.T) {
 		{"{namespace|no.namespace}/{name}.yaml", true, "a dot, which no namespace may contain"},
 		{"{namespace|NoNamespace}/{name}.yaml", true, "uppercase, which no namespace may contain"},
 		{"{namespace|}/{name}.yaml", true, "an empty fallback: a declared request to collapse the segment"},
-		{"{namespace|team-a}/{name}.yaml", false, "a legal namespace name would collide with that namespace"},
-		{"{namespace|prod}/{name}.yaml", false, "a legal namespace name, however unlikely to exist"},
-		{"{namespace|cluster}/{name}.yaml", false, "\"cluster\" is itself a legal namespace name"},
+		{"{namespace|team-a}/{name}.yaml", true, "a real namespace name: the author's call, as bundling is"},
+		{"{namespace|prod}/{name}.yaml", true, "the same, for a name a cluster is likely to have"},
+		{"{namespace|cluster}/{name}.yaml", true, "\"cluster\" is a legal namespace name and allowed too"},
 		{"{namespace|_a/b}/{name}.yaml", false, "a fallback inventing a directory"},
 		{"{namespace|..}/{name}.yaml", false, "a bare parent-directory fallback"},
 		{"{namespace|_" + strings.Repeat("a", 63) + "}/{name}.yaml", false,
@@ -129,22 +131,49 @@ func TestValidPlacementTemplateSyntax_FallbackOnlyWhereAVariableCanBeAbsent(t *t
 // The refusals an author is most likely to hit must say what to write instead, not "unknown
 // variable" — the message that sends a reader hunting for a misspelling that is not there.
 func TestValidPlacementTemplateSyntax_FallbackRefusalsExplainThemselves(t *testing.T) {
-	err := ValidPlacementTemplateSyntax("{namespace|team-a}/{name}.yaml")
-	if err == nil {
-		t.Fatal("a colliding namespace fallback must be rejected")
-	}
-	for _, want := range []string{"legal namespace name", "share a file", "_team-a"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not mention %q", err.Error(), want)
-		}
-	}
-
-	err = ValidPlacementTemplateSyntax("{namespace|_a b}/{name}.yaml")
+	err := ValidPlacementTemplateSyntax("{namespace|_a b}/{name}.yaml")
 	if err == nil {
 		t.Fatal("an unsafe fallback must be rejected")
 	}
 	if !strings.Contains(err.Error(), "one path segment") {
 		t.Errorf("error %q does not explain the path-segment charset", err.Error())
+	}
+
+	err = ValidPlacementTemplateSyntax("{namespace}/{name|orphan}.yaml")
+	if err == nil {
+		t.Fatal("a fallback on a never-absent variable must be rejected")
+	}
+	if !strings.Contains(err.Error(), "takes no") {
+		t.Errorf("error %q does not explain that the variable is never absent", err.Error())
+	}
+}
+
+// A fallback naming a real namespace does exactly what it says: cluster-scoped resources land in
+// that namespace's folder. It is a bundling choice, so it must render rather than be refused.
+func TestLocateNew_NamespaceFallbackMayNameARealNamespace(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	policy := &PlacementPolicy{Default: "{namespace|team-a}/{groupPath}/{resource}/{name}.yaml"}
+
+	res, err := LocateNew(store, policy, newClusterRoleRequest("admin"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	want := "team-a/rbac.authorization.k8s.io/clusterroles/admin.yaml"
+	if res.Path != want {
+		t.Fatalf("got %q, want %q", res.Path, want)
+	}
+
+	// The namespaced neighbour it shares that folder with is a DIFFERENT type, because scope is a
+	// property of the type — which is why the two can never render one path here.
+	cm, err := LocateNew(store, policy, newConfigMapRequest("cache", "team-a"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if cm.Path == res.Path {
+		t.Fatalf("a namespaced resource rendered the cluster-scoped path %q", cm.Path)
+	}
+	if want := "team-a/configmaps/cache.yaml"; cm.Path != want {
+		t.Fatalf("got %q, want %q", cm.Path, want)
 	}
 }
 

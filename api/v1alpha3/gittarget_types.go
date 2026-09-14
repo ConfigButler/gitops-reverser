@@ -74,16 +74,18 @@ type GitTargetSpec struct {
 	// fallback is a choice spelled out in the spec, visible in review and in `kubectl get`.
 	// See docs/layout/new-file-placement-rules.md.
 
-	// Why {namespace} takes the same "|fallback" as {label:key} but is fenced harder: they are
-	// one problem — a variable with an absent case needs a bucket, and the author should be able
-	// to name it — so they share the grammar and the path-segment charset. They part on what
-	// absence MEANS. A label is not identity, so a fallback colliding with a real label value only
-	// merges two buckets. The namespace position IS identity: "{namespace|team-a}" would render,
-	// for a cluster-scoped resource, the exact path a namespaced resource of the same type and
-	// name in "team-a" renders, and the two would land in one file. So a namespace fallback must
-	// be a name no namespace can hold (not a legal DNS-1123 label), which is the same property
-	// "_cluster" was chosen for. Empty stays legal because it shortens the path only for
-	// cluster-scoped resources, and a namespaced one always fills that segment.
+	// Why {namespace} takes the same "|fallback" as {label:key}, under the same rules and no
+	// others: they are one problem — a variable with an absent case needs a bucket, and the author
+	// should be able to name it — so they share the grammar, the charset and the fence.
+	//
+	// A namespace fallback naming a real namespace is deliberately allowed. The collision it looks
+	// like it could cause cannot occur: scope is a property of the TYPE, so two resources
+	// rendering the same {groupPath}/{resource} are both cluster-scoped or both namespaced, and
+	// the fallback fires only for the former. What is left is a template that drops the type
+	// variables — a bundle such as "{namespace|team-a}/all.yaml" — where cluster-scoped resources
+	// join that namespace's bundle. Bundling is a supported, declared layout; documents keep their
+	// identity inside a file and the write-time guards still refuse a sensitive document in a
+	// shared one.
 
 	// Placement declares where NEW resources are written. It has no effect on a
 	// resource that already has a document in Git — that document is always
@@ -104,10 +106,11 @@ type GitTargetSpec struct {
 	// "{namespace|_global}". A fallback is at most 63 characters of [A-Za-z0-9._-] and is
 	// neither "." nor "..", so it can add no directory and escape no path; it may start with
 	// "_" to stay collision-proof, or be empty ("{label:team|}", "{namespace|}") to render
-	// nothing, collapsing the segment. A {namespace} fallback carries one extra rule: it must
-	// not be a legal namespace name, or a cluster-scoped resource would share a path with the
-	// namespace it names. Only these two variables take a fallback; the rest always have a
-	// value, and one written on them is rejected rather than silently ignored.
+	// nothing, collapsing the segment. A {namespace} fallback may name a real namespace
+	// ("{namespace|team-a}"), which files cluster-scoped resources in that folder; begin it with
+	// "_" instead when you want a bucket no namespace can reach. Only these two variables take a
+	// fallback; the rest always have a value, and one written on them is rejected rather than
+	// silently ignored.
 	//
 	// A label is never identity, so it does not contribute to the identity-completeness a
 	// sensitive route requires (a {namespace} fallback does not cost it either). Because

@@ -598,27 +598,26 @@ func (v placementVariable) renderable() bool {
 	}
 }
 
-// validNamespaceFallback is the one rule a namespace fallback has that a label fallback does not:
-// it may not be a name a real namespace could hold.
+// Why a {namespace} fallback may name a real namespace, where an earlier cut of this refused one:
 //
-// The asymmetry is the whole reason these two are not simply the same check. A label is not part
-// of a resource's identity, so "{label:team|unassigned}" sharing a bucket with resources
-// genuinely labeled team=unassigned costs nothing — the path is still discriminated by
-// {namespace} and {name}. The namespace position IS identity. "{namespace|team-a}" would put a
-// cluster-scoped resource on exactly the path a namespaced resource of the same type and name in
-// namespace "team-a" renders, folding two distinct objects onto one file — the silent collision
-// types.ClusterScopeSegment was chosen to be impossible. So a declared fallback must be
-// impossible in the same way: not a legal DNS-1123 label, hence not a legal namespace.
+// That refusal assumed "{namespace|team-a}" could fold two distinct objects onto one path — a
+// cluster-scoped resource landing where a namespaced resource of the same type and name in
+// "team-a" lands. It cannot. Scope is a property of the TYPE, not the object, so two resources
+// rendering the same {groupPath}/{resource} are the same type and are therefore both
+// cluster-scoped or both namespaced, while the fallback fires only for the former. An
+// identity-complete template always carries those type variables, or is a ByType entry narrowed
+// to one type, so the two resources that collision needs cannot both exist.
 //
-// Empty is still allowed, and is safe for a different reason: it removes the segment only for
-// cluster-scoped resources, and a namespaced resource always renders a non-empty one in that
-// position, so the two can never meet at the same depth.
-func validNamespaceFallback(fallback string) bool {
-	if fallback == "" {
-		return true
-	}
-	return len(validation.IsDNS1123Label(fallback)) != 0
-}
+// What is left is a template that deliberately omits the type variables — a bundling path such as
+// "{namespace|team-a}/all.yaml" — where a cluster-scoped resource joins the bundle namespace
+// "team-a" writes. That is not a silent fold: bundling is a declared, supported layout, every
+// document keeps its own identity inside the file, and the write-time co-mingle guards still
+// refuse to put a sensitive document in a shared file. validateSecretSafety refuses a bundling
+// default outright unless Secrets have an identity-complete route of their own.
+//
+// So a namespace fallback is fenced exactly as a label fallback is, by validPlacementFallback,
+// which protects the PATH. Whether a bucket shares a folder with a real namespace is the author's
+// call, the same call bundling has always been.
 
 // placementFallbackPattern is the charset a declared "{label:key|fallback}" bucket may use: the
 // label-VALUE charset, minus the label rule that both ends be alphanumeric.
@@ -674,7 +673,6 @@ const (
 	faultUnknownName
 	faultFallbackNotSupported
 	faultFallbackUnsafe
-	faultNamespaceFallbackCollides
 )
 
 // placementVariableFault reports why a parsed variable cannot be used, or faultNone.
@@ -690,9 +688,6 @@ func placementVariableFault(v placementVariable) placementVariableFaultKind {
 	}
 	if !validPlacementFallback(v.fallback) {
 		return faultFallbackUnsafe
-	}
-	if v.name == placementNamespaceVariable && !validNamespaceFallback(v.fallback) {
-		return faultNamespaceFallbackCollides
 	}
 	return faultNone
 }
@@ -722,13 +717,6 @@ func placementVariableGuidance(placeholder string) string {
 			"{%s} fallback %q is not usable as one path segment: at most %d characters of letters, "+
 				"digits, \".\", \"_\" and \"-\", and neither \".\" nor \"..\"",
 			v.name, v.fallback, placementFallbackMaxLength,
-		)
-	case faultNamespaceFallbackCollides:
-		return fmt.Sprintf(
-			"{namespace} fallback %q is itself a legal namespace name, so a cluster-scoped resource "+
-				"would render the path a resource in namespace %q renders and the two would share a "+
-				"file; use a name no namespace can hold, such as %q",
-			v.fallback, v.fallback, "_"+v.fallback,
 		)
 	case faultNone, faultUnknownName:
 		return ""
@@ -971,10 +959,10 @@ func templateReadsPlacementVariable(tmpl, name string) bool {
 //
 // A {namespace} carrying a fallback still counts, which is why the scope check parses rather than
 // matching the literal "{namespace}". "{namespace|_global}" discriminates exactly as well as the
-// bare form: validNamespaceFallback has already refused any fallback a real namespace could
-// collide with, and an empty one removes the segment only for cluster-scoped resources, which a
-// namespaced resource can never match at that depth. The other three variables take no fallback
-// at all (placementVariableFault), so a literal match is exact for them.
+// bare form: the fallback fires only for cluster-scoped resources, and this template carries the
+// type variables (or is narrowed to one type), so the resources that would have to collide are the
+// same type and therefore the same scope. The other three variables take no fallback at all
+// (placementVariableFault), so a literal match is exact for them.
 func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool {
 	hasName := strings.Contains(tmpl, "{name}")
 	hasScope := templateReadsPlacementVariable(tmpl, placementNamespaceVariable)

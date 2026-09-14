@@ -61,13 +61,14 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			true,
 		},
 		{
-			// The gate must refuse a namespace fallback a real namespace could collide with,
-			// because that is exactly how two distinct resources end up in one file.
-			"a namespace fallback that is a legal namespace is refused",
+			// A fallback naming a real namespace is a bundling choice, not a collision: scope is a
+			// property of the type, so the namespaced resources sharing that folder are all of
+			// other types and render other paths.
+			"a namespace fallback may name a real namespace",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "{namespace|team-a}/{groupPath}/{resource}/{name}.yaml",
 			},
-			false,
+			true,
 		},
 		{
 			"a fallback on a variable that is never absent is refused",

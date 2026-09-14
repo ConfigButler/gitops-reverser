@@ -1159,31 +1159,39 @@ placement:
 ```
 
 The rules a fallback obeys are the same for both, because both render into one path segment: at
-most 63 characters of `[A-Za-z0-9._-]`, never `.` or `..`, and an empty fallback (`{namespace|}`)
-renders nothing so the segment collapses. A template that breaks them is rejected by the
-`Validated` condition with `InvalidConfig` before anything is written.
+most 63 characters of `[A-Za-z0-9._-]`, never `.` or `..`, and an empty fallback (`{label:team|}`,
+`{namespace|}`) renders nothing so the segment collapses. Nothing else is off limits. A template
+that breaks those rules is rejected by the `Validated` condition with `InvalidConfig` before
+anything is written.
 
 Only these two take a fallback. `{name}`, `{resource}`, `{kind}` and the rest always have a value,
 so a `|` written on one of them is a misunderstanding rather than a typo, and it is refused with
 that explanation instead of being accepted as syntax that can never fire.
 
-##### The one rule `{namespace}` adds
+##### A fallback that names a real namespace
 
-A `{namespace}` fallback may not be a name a real namespace could hold. `{namespace|team-a}` is
-rejected; `{namespace|_global}`, `{namespace|no.namespace}` and `{namespace|}` are accepted.
+Nothing stops you writing `{namespace|team-a}`, and it does what it says: cluster-scoped resources
+land in `team-a/`, alongside whatever namespace `team-a` writes there. That is a bundling choice,
+not a collision, and it is allowed for the same reason bundling is.
 
-The reason is that the two variables differ in what absence *costs*. A label is not part of a
-resource's identity, so `{label:team|unassigned}` sharing a bucket with resources labeled
-`team: unassigned` merely merges two groups: the path still tells resources apart by `{namespace}`
-and `{name}`. The namespace position **is** identity. Under `{namespace|team-a}/{resource}/{name}.yaml`
-a cluster-scoped `Foo` named `db` would render `team-a/foos/db.yaml`, and so would a namespaced
-`Foo` named `db` in namespace `team-a`: two distinct objects, one file. That is the collision
-`_cluster` was chosen to be incapable of, so a fallback standing in for it has to be incapable of it
-too. The empty fallback stays legal because it shortens the path only for cluster-scoped resources,
-and a namespaced resource always fills that segment, so the two can never meet.
+It cannot silently merge two resources. Scope is a property of the **type**, not the object, so two
+resources rendering the same `{groupPath}/{resource}` are either both cluster-scoped or both
+namespaced, and the fallback only ever fires for the first kind. Under
+`{namespace|team-a}/{groupPath}/{resource}/{name}.yaml` a ClusterRole named `admin` goes to
+`team-a/rbac.authorization.k8s.io/clusterroles/admin.yaml`, and no namespaced resource can render
+that path, because no namespaced resource is a ClusterRole.
 
-A `{namespace}` fallback costs nothing in identity-completeness: a sensitive `byType` route may use
-`{namespace|_global}` wherever it could use `{namespace}`.
+What a real-namespace fallback does do is put cluster-scoped resources in a folder a human reads as
+a namespace. If you would rather they stayed unmistakable, begin the fallback with `_`
+(`{namespace|_global}`): no namespace may contain one, so the bucket is yours alone. That is a
+readability preference, not a safety rule.
+
+The one case worth thinking about is a template that drops the type variables (a bundle such as
+`{namespace|team-a}/all.yaml`), where cluster-scoped resources join the file namespace `team-a`
+writes. Documents keep their own identity inside a bundle, and sensitive resources are never
+allowed into a shared file, so the fence that matters still holds. For Secrets specifically, a
+bundling `default` is rejected outright unless Secrets have their own identity-complete `byType`
+route; picking a route that keeps them apart is yours to get right.
 
 #### Sensitivity is a write-safety rule, not a placement setting
 
