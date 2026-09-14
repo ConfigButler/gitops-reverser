@@ -74,6 +74,17 @@ type GitTargetSpec struct {
 	// fallback is a choice spelled out in the spec, visible in review and in `kubectl get`.
 	// See docs/layout/new-file-placement-rules.md.
 
+	// Why {namespace} takes the same "|fallback" as {label:key} but is fenced harder: they are
+	// one problem — a variable with an absent case needs a bucket, and the author should be able
+	// to name it — so they share the grammar and the path-segment charset. They part on what
+	// absence MEANS. A label is not identity, so a fallback colliding with a real label value only
+	// merges two buckets. The namespace position IS identity: "{namespace|team-a}" would render,
+	// for a cluster-scoped resource, the exact path a namespaced resource of the same type and
+	// name in "team-a" renders, and the two would land in one file. So a namespace fallback must
+	// be a name no namespace can hold (not a legal DNS-1123 label), which is the same property
+	// "_cluster" was chosen for. Empty stays legal because it shortens the path only for
+	// cluster-scoped resources, and a namespaced one always fills that segment.
+
 	// Placement declares where NEW resources are written. It has no effect on a
 	// resource that already has a document in Git — that document is always
 	// updated in place at its existing location, wherever that is. Mutable: a
@@ -81,17 +92,27 @@ type GitTargetSpec struct {
 	//
 	// Its byType and default templates share one variable language (docs/configuration.md).
 	// Besides the resource's identity, a template may read one of its labels:
-	// "{label:app.kubernetes.io/instance}/configmaps.yaml". A resource that does not set
-	// that label, or sets it to the empty string, is still placed — it renders the built-in
-	// "_unlabeled" bucket, a value no real label can hold, so it is never confused with a
-	// resource genuinely labeled that way. "{label:key|fallback}" declares a different
-	// bucket: at most 63 characters of [A-Za-z0-9._-], neither "." nor "..", so it can add
-	// no directory and escape no path. It may start with "_" to stay collision-proof
-	// ("{label:team|_none}"), or be empty ("{label:team|}") to render nothing at all, which
-	// collapses the segment and lands unlabeled resources one directory up. A label is
-	// never identity, so it does not contribute to the identity-completeness a sensitive
-	// route requires, and because placement runs only for a resource with no document yet,
-	// labeling one afterwards never moves the file already written.
+	// "{label:app.kubernetes.io/instance}/configmaps.yaml".
+	//
+	// Two variables can be absent for a resource that is otherwise placeable, and both are
+	// still placed rather than skipped: "{label:key}" on a resource that does not set the
+	// label (or sets it empty) renders the built-in "_unlabeled" bucket, and "{namespace}" on
+	// a cluster-scoped resource renders "_cluster". Neither is a value its kind of source can
+	// hold, so neither is ever confused with a real one.
+	//
+	// Append "|fallback" to either to name that bucket yourself — "{label:team|unassigned}",
+	// "{namespace|_global}". A fallback is at most 63 characters of [A-Za-z0-9._-] and is
+	// neither "." nor "..", so it can add no directory and escape no path; it may start with
+	// "_" to stay collision-proof, or be empty ("{label:team|}", "{namespace|}") to render
+	// nothing, collapsing the segment. A {namespace} fallback carries one extra rule: it must
+	// not be a legal namespace name, or a cluster-scoped resource would share a path with the
+	// namespace it names. Only these two variables take a fallback; the rest always have a
+	// value, and one written on them is rejected rather than silently ignored.
+	//
+	// A label is never identity, so it does not contribute to the identity-completeness a
+	// sensitive route requires (a {namespace} fallback does not cost it either). Because
+	// placement runs only for a resource with no document yet, labeling one afterwards never
+	// moves the file already written.
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 

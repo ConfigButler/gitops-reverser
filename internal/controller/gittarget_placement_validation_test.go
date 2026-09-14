@@ -50,6 +50,33 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			true,
 		},
 		{
+			// A namespace fallback still discriminates by namespace, so it must satisfy the
+			// identity-completeness a sensitive route requires rather than being read as a
+			// different variable that happens to start the same way.
+			"a Secret route may name its own cluster bucket",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType:  map[string]string{"v1/secrets": "{namespace|_global}/secrets/{name}.yaml"},
+				Default: "all.yaml",
+			},
+			true,
+		},
+		{
+			// The gate must refuse a namespace fallback a real namespace could collide with,
+			// because that is exactly how two distinct resources end up in one file.
+			"a namespace fallback that is a legal namespace is refused",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{namespace|team-a}/{groupPath}/{resource}/{name}.yaml",
+			},
+			false,
+		},
+		{
+			"a fallback on a variable that is never absent is refused",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Default: "{namespace}/{groupPath}/{resource}/{name|orphan}.yaml",
+			},
+			false,
+		},
+		{
 			"a label variable passes the static gate with no object to read it from",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "{label:app.kubernetes.io/instance}/{namespace}/" +

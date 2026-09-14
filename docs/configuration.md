@@ -1042,6 +1042,7 @@ named `api` in namespace `team-a`:
 |---|---|---|
 | `{name}` | resource name | `api` |
 | `{namespace}` | the resource's namespace, or the literal `_cluster` for a cluster-scoped resource | `team-a` (a Node → `_cluster`) |
+| `{namespace\|fallback}` | the same, but with your own bucket in place of `_cluster` | `_global` |
 | `{resource}` | plural resource name | `deployments` |
 | `{group}` | API group; **empty** for core resources | `apps` (a ConfigMap → empty) |
 | `{groupPath}` | the API group as a path segment; equivalent to `{group}` today (the empty core-group segment is dropped either way) | `apps` |
@@ -1057,8 +1058,10 @@ named `api` in namespace `team-a`:
 > `_cluster`, so `{namespace}/{resource}/{name}.yaml` files a ClusterRole at
 > `_cluster/clusterroles/admin.yaml` and namespaced and cluster-scoped resources stay cleanly
 > separated without a second template. `_cluster` is not a legal namespace name (DNS-1123 forbids
-> `_`), so it can never collide with a real one. `{scope}` is a *descriptor* (`cluster`/
-> `namespaced`), not a substitute, so don't use it as the folder for cluster resources.
+> `_`), so it can never collide with a real one. To name that bucket yourself, write
+> `{namespace|_global}` (see [Naming the bucket yourself](#naming-the-bucket-yourself-fallback)).
+> `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute, so don't use it as the
+> folder for cluster resources.
 
 #### Placing by label (`{label:key}`)
 
@@ -1139,6 +1142,48 @@ rather than letting it fail silently per resource. `app.kubernetes.io/instance` 
   annotation value is unbounded text (`kubectl.kubernetes.io/last-applied-configuration` is a whole
   JSON document), so there is no truncation rule that would not surprise somebody. Nothing else on
   the object is exposed either; the variables above are the whole language.
+
+#### Naming the bucket yourself (`|fallback`)
+
+Two variables can be **absent** for a resource that is otherwise perfectly placeable, and they are
+the same problem wearing two hats: `{label:key}` on a resource that does not carry the label, and
+`{namespace}` on a cluster-scoped resource, which has no namespace at all. Neither is a refusal.
+Each renders a built-in bucket (`_unlabeled` and `_cluster`), and each accepts the same
+`|fallback` suffix to let you name that bucket instead:
+
+```yaml
+placement:
+  default: "{namespace|_global}/{groupPath}/{resource}/{name}{sensitiveSuffix}"
+  byType:
+    v1/configmaps: "{label:team|unassigned}/configmaps.yaml"
+```
+
+The rules a fallback obeys are the same for both, because both render into one path segment: at
+most 63 characters of `[A-Za-z0-9._-]`, never `.` or `..`, and an empty fallback (`{namespace|}`)
+renders nothing so the segment collapses. A template that breaks them is rejected by the
+`Validated` condition with `InvalidConfig` before anything is written.
+
+Only these two take a fallback. `{name}`, `{resource}`, `{kind}` and the rest always have a value,
+so a `|` written on one of them is a misunderstanding rather than a typo, and it is refused with
+that explanation instead of being accepted as syntax that can never fire.
+
+##### The one rule `{namespace}` adds
+
+A `{namespace}` fallback may not be a name a real namespace could hold. `{namespace|team-a}` is
+rejected; `{namespace|_global}`, `{namespace|no.namespace}` and `{namespace|}` are accepted.
+
+The reason is that the two variables differ in what absence *costs*. A label is not part of a
+resource's identity, so `{label:team|unassigned}` sharing a bucket with resources labeled
+`team: unassigned` merely merges two groups: the path still tells resources apart by `{namespace}`
+and `{name}`. The namespace position **is** identity. Under `{namespace|team-a}/{resource}/{name}.yaml`
+a cluster-scoped `Foo` named `db` would render `team-a/foos/db.yaml`, and so would a namespaced
+`Foo` named `db` in namespace `team-a`: two distinct objects, one file. That is the collision
+`_cluster` was chosen to be incapable of, so a fallback standing in for it has to be incapable of it
+too. The empty fallback stays legal because it shortens the path only for cluster-scoped resources,
+and a namespaced resource always fills that segment, so the two can never meet.
+
+A `{namespace}` fallback costs nothing in identity-completeness: a sensitive `byType` route may use
+`{namespace|_global}` wherever it could use `{namespace}`.
 
 #### Sensitivity is a write-safety rule, not a placement setting
 

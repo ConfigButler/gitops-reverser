@@ -600,10 +600,21 @@ func TestPlacementVars_GroupedClusterScoped(t *testing.T) {
 		Kind:       "ClusterRole",
 	}
 	vars := placementVars(req)
-	if vars["scope"] != "cluster" || vars["namespace"] != "_cluster" {
-		t.Errorf("got scope=%q namespace=%q, want scope=\"cluster\" (descriptor) and "+
-			"namespace=\"_cluster\" (illegal-namespace sentinel) for a cluster-scoped resource",
+	// The namespace-position value is the RAW namespace here — empty is how the renderer learns
+	// the variable is absent — so the "_cluster" guarantee is asserted where it now holds, at the
+	// render, rather than in the map it is no longer baked into.
+	if vars["scope"] != "cluster" || vars["namespace"] != "" {
+		t.Errorf("got scope=%q namespace=%q, want scope=\"cluster\" (descriptor) and an empty "+
+			"namespace (absent, so {namespace} falls back) for a cluster-scoped resource",
 			vars["scope"], vars["namespace"])
+	}
+	rendered, err := RenderPlacementTemplate("{namespace}/{name}.yaml", vars)
+	if err != nil {
+		t.Fatalf("RenderPlacementTemplate: %v", err)
+	}
+	if want := "_cluster/admin.yaml"; rendered != want {
+		t.Errorf("got %q, want %q (illegal-namespace sentinel for a cluster-scoped resource)",
+			rendered, want)
 	}
 	if want := "rbac.authorization.k8s.io/v1"; vars["apiVersion"] != want {
 		t.Errorf("apiVersion = %q, want %q for a grouped resource", vars["apiVersion"], want)

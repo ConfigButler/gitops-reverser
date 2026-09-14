@@ -36,6 +36,13 @@ folds resources onto a path the template did not describe. `{namespaceOrCluster}
 avoid that fold, which made the safe spelling the longer one and the short, obvious spelling the
 trap. One variable that always renders a scope removes the trap instead of documenting it.
 
+**To name that bucket something other than `_cluster`**, write `{namespace|_global}`. The `|`
+fallback `{label:key}` already had works on `{namespace}` too, with one added rule: the fallback
+may not be a legal namespace name, or a cluster-scoped resource would render the path a namespaced
+resource in that namespace renders. An empty `{namespace|}` restores the old collapsing behavior
+for cluster-scoped resources, spelled out in the spec rather than happening by accident. See
+[Naming the bucket yourself](./configuration.md#naming-the-bucket-yourself-fallback).
+
 ## Commit message templates can read the kind, the scope sentinel, and labels
 
 **Not breaking**: existing templates render unchanged; these are additional fields.
