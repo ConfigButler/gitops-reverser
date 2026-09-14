@@ -294,8 +294,9 @@ spec:
                   nothing, collapsing the segment. A {namespace} fallback may name a real namespace
                   ("{namespace|team-a}"), which files cluster-scoped resources in that folder; begin it with
                   "_" instead when you want a bucket no namespace can reach. Only these two variables take a
-                  fallback; the rest always have a value, and one written on them is rejected rather than
-                  silently ignored.
+                  fallback, and one written on any other is rejected rather than silently ignored — not
+                  because the others always have a value ({groupPath} renders empty for a core resource) but
+                  because an empty group segment collapses by design, which is the canonical path's intent.
 
                   A label is never identity, so it does not contribute to the identity-completeness a
                   sensitive route requires (a {namespace} fallback does not cost it either). Because

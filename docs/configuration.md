@@ -1164,9 +1164,12 @@ most 63 characters of `[A-Za-z0-9._-]`, never `.` or `..`, and an empty fallback
 that breaks those rules is rejected by the `Validated` condition with `InvalidConfig` before
 anything is written.
 
-Only these two take a fallback. `{name}`, `{resource}`, `{kind}` and the rest always have a value,
-so a `|` written on one of them is a misunderstanding rather than a typo, and it is refused with
-that explanation instead of being accepted as syntax that can never fire.
+Only these two take a fallback, and a `|` written on any other variable is refused with that
+explanation rather than accepted as syntax that can never fire. That is not because the others
+always have a value: `{groupPath}` and `{group}` render empty for a core resource. It is because an
+empty group is not a resource missing something, it is a resource whose identity has no group
+segment, so the segment collapses and the canonical path is what it was always meant to be. Only
+`{namespace}` and `{label:key}` have an absence worth naming a bucket for.
 
 ##### A fallback that names a real namespace
 

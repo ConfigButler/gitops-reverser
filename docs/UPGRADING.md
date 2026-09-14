@@ -36,9 +36,9 @@ folds resources onto a path the template did not describe. `{namespaceOrCluster}
 avoid that fold, which made the safe spelling the longer one and the short, obvious spelling the
 trap. One variable that always renders a scope removes the trap instead of documenting it.
 
-**To name that bucket something other than `_cluster`**, write `{namespace|_global}`. The `|`
-fallback `{label:key}` already had works on `{namespace}` too, under the same rules: at most 63
-characters of `[A-Za-z0-9._-]`, never `.` or `..`. An empty `{namespace|}` restores the old
+**To name that bucket something other than `_cluster`**, write `{namespace|_global}`. The
+`|fallback` form that `{label:key}` already supported now works on `{namespace}` too, under the
+same rules: at most 63 characters of `[A-Za-z0-9._-]`, never `.` or `..`. An empty `{namespace|}` restores the old
 collapsing behavior for cluster-scoped resources, spelled out in the spec rather than happening by
 accident. See [Naming the bucket yourself](./configuration.md#naming-the-bucket-yourself-fallback).
 

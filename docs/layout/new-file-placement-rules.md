@@ -1076,9 +1076,13 @@ an identity-complete route of their own. Choosing a bucket that shares a folder
 with a real namespace is the author's call, the same call bundling has always
 been.
 
-Every other variable takes no fallback at all. `{name}`, `{resource}` and the
-rest always have a value, so a `|` on one of them can never fire; it is refused
-with that explanation rather than accepted as syntax that does nothing.
+Every other variable takes no fallback at all, and a `|` on one is refused with
+that explanation rather than accepted as syntax that does nothing. The reason is
+not that the others always have a value — `{groupPath}` renders empty for a
+core-group resource — but that an empty group is a resource whose identity has
+no group segment rather than a resource missing one. Collapsing that segment is
+the canonical path's intent, and a bucket there would invent a folder the layout
+never asked for.
 
 This sentinel design is a deliberate change from the first cut of this feature,
 which refused the resource outright when the label was missing — a resource that

@@ -144,7 +144,36 @@ func TestValidPlacementTemplateSyntax_FallbackRefusalsExplainThemselves(t *testi
 		t.Fatal("a fallback on a never-absent variable must be rejected")
 	}
 	if !strings.Contains(err.Error(), "takes no") {
-		t.Errorf("error %q does not explain that the variable is never absent", err.Error())
+		t.Errorf("error %q does not explain that the variable takes no fallback", err.Error())
+	}
+}
+
+// The refusal must not claim the variable "always has a value": {groupPath} renders empty for a
+// core-group resource, so an author who writes {groupPath|core} would be told something the very
+// next render contradicts. The true rule is which variables get a BUCKET, not which can be empty.
+func TestValidPlacementTemplateSyntax_RefusalDoesNotMisstateWhyGroupPathTakesNoFallback(t *testing.T) {
+	rendered, err := RenderPlacementTemplate("{groupPath}/{resource}/{name}.yaml", map[string]string{
+		"groupPath": "", "resource": "configmaps", "name": "app",
+	})
+	if err != nil {
+		t.Fatalf("RenderPlacementTemplate: %v", err)
+	}
+	if want := "configmaps/app.yaml"; rendered != want {
+		t.Fatalf("got %q, want %q — {groupPath} does render empty for a core resource", rendered, want)
+	}
+
+	err = ValidPlacementTemplateSyntax("{groupPath|core}/{namespace}/{name}.yaml")
+	if err == nil {
+		t.Fatal("{groupPath|core} must be rejected")
+	}
+	if strings.Contains(err.Error(), "always has a value") {
+		t.Errorf("error %q claims {groupPath} always has a value, which the render above disproves",
+			err.Error())
+	}
+	for _, want := range []string{"{namespace}", "{label:key}", "collapses its segment"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
 	}
 }
 

@@ -569,10 +569,16 @@ func (v placementVariable) labelKey() (string, bool) {
 }
 
 // absentSentinel is what the variable renders for a resource that supplies no value, when the
-// template declares no fallback of its own. The second result is false for a variable that has
-// no absent state — {name}, {resource} and the rest always have a value — and such a variable
-// therefore takes no fallback either: the two questions have one answer, so they share one
-// function rather than drifting apart in two lists.
+// template declares no fallback of its own. The second result is false for a variable with no
+// absent state to name, and such a variable therefore takes no fallback either: the two questions
+// have one answer, so they share one function rather than drifting apart in two lists.
+//
+// "No absent state" is not the same as "always has a value". {groupPath} renders empty for a
+// core-group resource, and {group} with it — but an empty group is not a resource MISSING
+// something, it is a resource whose identity has no group segment, and collapseEmptyPathSegments
+// dropping that segment is the canonical path's intent rather than a hole to paper over. A bucket
+// there would invent a folder the layout never asked for. Only {namespace} and {label:key} have
+// an absence a reader would otherwise have to hunt for, so only they get a bucket to land in.
 func (v placementVariable) absentSentinel() (string, bool) {
 	if _, isLabel := v.labelKey(); isLabel {
 		return placementUnlabeledSentinel, true
@@ -707,9 +713,10 @@ func placementVariableGuidance(placeholder string) string {
 	switch placementVariableFault(v) {
 	case faultFallbackNotSupported:
 		return fmt.Sprintf(
-			"{%s} always has a value, so it takes no %q fallback: only {namespace}, which is absent "+
-				"for a cluster-scoped resource, and {label:key}, which is absent for a resource that "+
-				"does not carry the label, can fall back",
+			"{%s} takes no %q fallback: only {namespace}, absent for a cluster-scoped resource, and "+
+				"{label:key}, absent for a resource that does not carry the label, fall back to a "+
+				"bucket; a variable that renders empty for any other reason, such as {groupPath} for "+
+				"a core resource, collapses its segment instead",
 			v.name, placementFallbackSeparator,
 		)
 	case faultFallbackUnsafe:
