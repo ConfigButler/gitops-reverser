@@ -5,6 +5,7 @@ package watch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,6 +82,24 @@ func TestSessionEndReason_SeparatesExpiryFromTeardown(t *testing.T) {
 	assert.Equal(t, sessionEndedExpired, sessionEndReason(context.Background(), errTargetWatchExpired))
 	assert.Equal(t, sessionEndedError, sessionEndReason(context.Background(), errors.New("boom")))
 	assert.Equal(t, sessionEndedStopped, sessionEndReason(context.Background(), nil))
+}
+
+// The API server's own randomized watch timeout is the most common way a session ends on a healthy
+// cluster. Counting it under `error` left that label describing the protocol working, so an
+// operator alerting on it learned nothing — the same fault the mid-stream 410 had before it was
+// split out as `expired`.
+//
+// It is also the only instrument that sees a reconnect at all now that a clean end publishes no
+// stream state, which is what makes a hot flap detectable.
+func TestSessionEndReason_ACleanCloseIsNotAnError(t *testing.T) {
+	assert.Equal(t, sessionEndedClosed, sessionEndReason(context.Background(), errTargetWatchClosed))
+	assert.Equal(t, sessionEndedClosed,
+		sessionEndReason(context.Background(), fmt.Errorf("pump: %w", errTargetWatchClosed)))
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.Equal(t, sessionEndedStopped, sessionEndReason(cancelled, errTargetWatchClosed),
+		"teardown still outranks the close it causes")
 }
 
 // The recovery counter carries group/resource and no version: a recovery covers a CELL, and the

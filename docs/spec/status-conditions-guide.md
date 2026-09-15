@@ -152,6 +152,17 @@ document cannot silently disagree.
    patch lands, not beside each condition write, so a reconcile that writes `Ready` twice (a
    placeholder, then the real outcome) announces only the value that was actually stored.
 
+6. **Grade the Event's severity by `Stalled`, not by "`Ready` is not `True`".** `Warning` means a
+   human is needed — which is what `Stalled=True` already means, and what kstatus calls `Failed`.
+   Everything progressing is `Normal`: a stream still replaying after a restart, a rule waiting on a
+   GitTarget that is still coming up. These are different questions, and conflating them costs the
+   severity its meaning — if every ordinary startup emits a `Warning`, a real block arrives looking
+   exactly like the routine ones and nobody picks it out. The accumulator has already decided this
+   (`readinessProgressing` vs `readinessStalled`) and publishes the verdict as `Stalled`, so reading
+   it back cannot drift from the trio. Alerting that wants every not-ready transition should route
+   on the `Ready` condition itself rather than on Event severity, matching `Ready != True` so it
+   covers the `Unknown` that an unestablished gate publishes as well as `False`.
+
 ## Applied to this project
 
 GitTarget, WatchRule, and ClusterWatchRule use the kstatus trio as the generic layer:

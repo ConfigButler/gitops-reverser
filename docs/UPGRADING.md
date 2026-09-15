@@ -7,6 +7,48 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Watch reconnects no longer report as failures
+
+**Not breaking, but two observable surfaces move.** Neither needs a manifest change; both may need
+an alert rule updated.
+
+### `watch_sessions_ended_total` gains `reason="closed"`
+
+The API server ends every watch on its own randomized timeout, and the stream reconnects from its
+cursor in about two seconds. That ending used to be counted as `reason="error"`, so on a healthy
+cluster the `error` series was almost entirely the protocol working. It is now `closed`.
+
+An alert on `reason="error"` gets quieter and more accurate; nothing needs to change for it to be
+correct. A dashboard panel split by reason gains a series. If you want to catch a stream that is
+reconnecting in a hot loop, alert on the `closed` rate — see
+[interpreting-metrics.md](./interpreting-metrics.md).
+
+The reconnect itself no longer touches stream readiness at all. A clean session end says only that
+the session ended; whether anything is wrong is the next open's answer, and a failing open still
+marks the stream `Blocked`/`WatchError` one backoff later. This removes a `Ready=False` flip that
+used to occur roughly every forty minutes per watched type on a completely healthy cluster — which
+also means `kubectl wait --for=condition=Ready` and CI gates built on it are no longer racing it.
+
+A mid-stream `410` is now graded `Replaying`/`ExpiredResourceVersion` rather than
+`Blocked`/`WatchError`, matching how the cursor-resume path has always graded the same expiry.
+
+### Event severity is graded by `Stalled`
+
+Kubernetes Events for a persisted `Ready` transition on `GitTarget`, `WatchRule`,
+`ClusterWatchRule`, `GitProvider` and `ClusterProvider` used to be `Warning` for anything that was
+not `Ready=True`. They are now `Warning` only when `Stalled=True` — a human is needed — and `Normal`
+for everything progressing: streams still replaying after a restart, a rule waiting on a GitTarget
+that is still coming up.
+
+**If you route alerts on Event `type=Warning` for these kinds**, you will stop seeing startup
+replays and dependency waits. That is the intent: previously essentially every `Warning` on a
+healthy cluster was the system working, so a real block arrived indistinguishable from the routine
+ones. Alerting that wants the old breadth should route on the `Ready` condition rather than on
+Event severity, which is the more durable signal in any case. Match on `Ready != True`, not on
+`Ready=False`: a progressing gate that has not been established at all publishes `Ready=Unknown`
+(a GitTarget whose source cluster has not yet reported reachability does exactly this), and
+`kstatus` treats both as in progress.
+
 ## `{namespaceOrCluster}` is gone; `{namespace}` renders `_cluster`
 
 **Breaking for a placement template that names `{namespaceOrCluster}`.** There is now one
