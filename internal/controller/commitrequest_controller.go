@@ -68,7 +68,23 @@ const (
 	// +60s attribution component is gone. Past it, a request the worker never resolved
 	// (e.g. a vanished worker) fails closed instead of polling forever.
 	commitRequestResolveTimeout = 300*time.Second + 120*time.Second
+
+	// defaultCloseDelaySeconds mirrors the +kubebuilder:default on
+	// CommitRequest.spec.closeDelaySeconds. The API server fills the field in, so nil
+	// reaches here only from a client that bypasses defaulting; resolving it to the same
+	// value keeps the two paths from disagreeing.
+	defaultCloseDelaySeconds int32 = 2
 )
+
+// closeDelaySeconds resolves the request's collect delay. A nil field is the schema
+// default (a request that named no delay); an explicit 0 stays 0, which is what the
+// pointer type exists to preserve.
+func closeDelaySeconds(spec configbutleraiv1alpha3.CommitRequestSpec) int32 {
+	if spec.CloseDelaySeconds == nil {
+		return defaultCloseDelaySeconds
+	}
+	return *spec.CloseDelaySeconds
+}
 
 // CommitRequestReconciler deliberately does NOT use reconcileStatus, which every other controller
 // here shares. The difference is not stylistic, so it is worth saying once:
@@ -175,7 +191,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		GitTargetName:      commitRequest.Spec.GitTargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
 		Message:            commitRequest.Spec.Message,
-		CloseDelaySeconds:  commitRequest.Spec.CloseDelaySeconds,
+		CloseDelaySeconds:  closeDelaySeconds(commitRequest.Spec),
 	})
 	if serviceErr != nil || !resolved {
 		return r.awaitAttachOutcome(ctx, log, req, commitRequest, attribution, serviceErr)

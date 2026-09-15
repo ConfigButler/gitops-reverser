@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -286,6 +287,42 @@ func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 }
 
+// A request that names no delay must reach the worker carrying the schema default,
+// not zero. The API server normally fills the field in, so nil arrives here only from
+// a client that bypassed defaulting — and a zero there is the reported defect: the
+// request expires before the write it exists to publish can open a window.
+func TestCommitRequestReconcile_OmittedCloseDelayUsesTheDefault(t *testing.T) {
+	cr := newCommitRequest("save-default")
+	cr.CreationTimestamp = metav1.Now()
+	require.Nil(t, cr.Spec.CloseDelaySeconds, "the fixture must leave the field unset")
+	c := newCommitRequestClient(t, nil, cr)
+	f := &fakeFinalizer{resolved: false}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+
+	reconcileCommitRequest(t, r, "save-default")
+
+	require.Len(t, f.calls, 1)
+	assert.Equal(t, defaultCloseDelaySeconds, f.calls[0].CloseDelaySeconds,
+		"an omitted closeDelaySeconds is the default, never an immediate finalize")
+}
+
+// The pointer type exists so that an explicit 0 survives defaulting. A caller that
+// asks for an immediate finalize still gets one.
+func TestCommitRequestReconcile_ExplicitZeroCloseDelayIsPreserved(t *testing.T) {
+	cr := newCommitRequest("save-now")
+	cr.CreationTimestamp = metav1.Now()
+	cr.Spec.CloseDelaySeconds = ptr.To(int32(0))
+	c := newCommitRequestClient(t, nil, cr)
+	f := &fakeFinalizer{resolved: false}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+
+	reconcileCommitRequest(t, r, "save-now")
+
+	require.Len(t, f.calls, 1)
+	assert.Equal(t, int32(0), f.calls[0].CloseDelaySeconds,
+		"an explicit 0 must not be re-read as an omitted field")
+}
+
 // The close-delay collect window is the worker's job now: the controller does not
 // hold the finalize itself. While the worker has not resolved the attach, the
 // controller polls — spec.closeDelaySeconds is passed through to the worker, not
@@ -294,7 +331,7 @@ func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
 func TestCommitRequestReconcile_NotResolvedRecordsCloseDelayWait(t *testing.T) {
 	cr := newCommitRequest("save-linger")
 	cr.CreationTimestamp = metav1.Now()
-	cr.Spec.CloseDelaySeconds = 30
+	cr.Spec.CloseDelaySeconds = ptr.To(int32(30))
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}

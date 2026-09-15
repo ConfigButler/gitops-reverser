@@ -10,8 +10,8 @@ worker to close that window after the requested collect delay.
 ## Request and window contract
 
 The request identifies the target in `spec.gitTargetRef.name`, may provide `spec.message`, and sets
-`spec.closeDelaySeconds` (0–300 seconds). It is handled by the target’s single branch worker, so resource
-events and the attach request share one FIFO.
+`spec.closeDelaySeconds` (0–300 seconds, default `2`). It is handled by the target’s single branch worker,
+so resource events and the attach request share one FIFO.
 
 The worker attaches a request only when all of these match an open window:
 
@@ -26,6 +26,12 @@ actor’s named window. Therefore one user’s request never finalizes another u
 
 On its first receipt, the worker sets the deadline to receipt plus `closeDelaySeconds`. Repeated reconciles
 are idempotent and keep that first deadline. Time spent waiting for a matching window consumes the delay.
+
+The default is `2` rather than `0` because the write a request exists to publish reaches the worker
+strictly after the request does: a watch event is held until its audit fact arrives, so a zero
+deadline is shorter than the smallest window-open latency the pipeline can produce. The field is a
+pointer, so an omitted value and an explicit `0` stay distinguishable — `0` still means finalize on
+the next pass of the event loop.
 Normal flush triggers can close an attached window early, carrying its message. Each request claims
 at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
 provides no ordering guarantee; use a non-zero window for custom save messages. The delay does not
