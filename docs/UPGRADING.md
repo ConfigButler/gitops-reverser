@@ -9,9 +9,11 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 ## `CommitRequest.spec.closeDelaySeconds` defaults to 2 seconds
 
-**Breaking.** A `CommitRequest` that omits `closeDelaySeconds` now waits two seconds before
-finalizing its window. It used to finalize immediately, which is why the field's old default could
-not work: the write a save exists to publish reaches the branch worker *after* the request does.
+**Breaking.** A `CommitRequest` that omits `closeDelaySeconds` now sets its finalize deadline two
+seconds out instead of finalizing immediately. Two seconds is an upper bound, not a wait: a normal
+flush trigger can still close the attached window earlier, carrying the request's message with it.
+The old default could not work, because the write a save exists to publish reaches the branch worker
+*after* the request does.
 
 A watch event is held in the watch path until the API server's audit fact for that write arrives,
 bounded below by `--audit-webhook-batch-max-wait` plus the attribution join. A request created the
@@ -70,8 +72,14 @@ changes the `WindowMismatch`. See
 
 ### Check your integration's assertion
 
-Every failure mode here resolves `Ready=True`, so an integration that only checks the request went
-green passes in both the working and the broken case. Assert on the commit message instead.
+The timing failures described above are all benign no-commit outcomes, so they resolve `Ready=True`:
+`NoWindowInGrace` for a request that found no window, `WindowMismatch` for one it could not claim.
+An integration that only checks the request went green therefore passes in both the working and the
+broken case. Assert on the commit message instead.
+
+This is narrower than "a failure sets `Ready=False`". A finalize that actually errors resolves
+`Ready=False` with `Stalled=True` and reason `FinalizeFailed`, which is a real failure and does need
+to be caught. It is the *silent* cases above that green-checking misses.
 
 ## Save messages can be framed by the GitTarget
 
