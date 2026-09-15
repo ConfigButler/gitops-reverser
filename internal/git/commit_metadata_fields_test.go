@@ -32,7 +32,7 @@ func labeledDeploymentEvent(name, namespace string, labels map[string]string) Ev
 }
 
 func TestBuildLiveCommitMessageData_CarriesKindAndLabels(t *testing.T) {
-	data := buildLiveCommitMessageData("someone", "target", []Event{
+	data := buildLiveCommitMessageData("someone", "target", "", []Event{
 		labeledDeploymentEvent("api", "prod", map[string]string{"team": "payments"}),
 	})
 
@@ -57,7 +57,7 @@ func TestBuildLiveCommitMessageData_ClusterScopedRendersTheSentinel(t *testing.T
 	event := labeledDeploymentEvent("admin", "", nil)
 	event.Identifier = types.NewResourceIdentifier("rbac.authorization.k8s.io", "v1", "clusterroles", "", "admin")
 
-	data := buildLiveCommitMessageData("someone", "target", []Event{event})
+	data := buildLiveCommitMessageData("someone", "target", "", []Event{event})
 
 	if got := data.Resources[0].Namespace; got != types.ClusterScopeSegment {
 		t.Errorf("Namespace = %q, want the %q sentinel, so a template need not guard it",
@@ -72,7 +72,7 @@ func TestBuildLiveCommitMessageData_DeleteHasNoObjectMetadata(t *testing.T) {
 	event.Object = nil
 	event.Operation = "DELETE"
 
-	ref := buildLiveCommitMessageData("someone", "target", []Event{event}).Resources[0]
+	ref := buildLiveCommitMessageData("someone", "target", "", []Event{event}).Resources[0]
 
 	if ref.Kind != "" || ref.Labels != nil {
 		t.Errorf("Kind = %q, Labels = %v, want both empty for a DELETE", ref.Kind, ref.Labels)
@@ -84,7 +84,7 @@ func TestBuildLiveCommitMessageData_DeleteHasNoObjectMetadata(t *testing.T) {
 
 // A commit is 1:n, so a label is a SET here where placement reads a single value.
 func TestLiveCommitMessageData_LabelValues(t *testing.T) {
-	data := buildLiveCommitMessageData("someone", "target", []Event{
+	data := buildLiveCommitMessageData("someone", "target", "", []Event{
 		labeledDeploymentEvent("api", "prod", map[string]string{"team": "payments"}),
 		labeledDeploymentEvent("web", "prod", map[string]string{"team": "storefront"}),
 		labeledDeploymentEvent("cache", "prod", map[string]string{"team": "payments"}),
@@ -112,7 +112,7 @@ func TestLiveCommitMessageData_LabelValues(t *testing.T) {
 
 // The subject-line case: one shared value names the whole commit.
 func TestLiveCommitMessageData_LabelValue_AgreedValue(t *testing.T) {
-	data := buildLiveCommitMessageData("someone", "target", []Event{
+	data := buildLiveCommitMessageData("someone", "target", "", []Event{
 		labeledDeploymentEvent("api", "prod", map[string]string{"team": "payments"}),
 		labeledDeploymentEvent("cache", "prod", map[string]string{"team": "payments"}),
 	})
@@ -137,7 +137,7 @@ func TestLiveCommitMessageData_LabelValue_PartiallyLabeledCommitNamesNoOne(t *te
 		{"a different label", labeledDeploymentEvent("other", "prod", map[string]string{"squad": "payments"})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			data := buildLiveCommitMessageData("someone", "target", []Event{labeled, tc.other})
+			data := buildLiveCommitMessageData("someone", "target", "", []Event{labeled, tc.other})
 
 			if v := data.LabelValue("team"); v != "" {
 				t.Errorf("LabelValue = %q, want empty: %q carries no team, so the commit is not one team's",
@@ -154,7 +154,7 @@ func TestLiveCommitMessageData_LabelValue_DeleteLeavesTheCommitUnnamed(t *testin
 	deleted.Object = nil
 	deleted.Operation = "DELETE"
 
-	data := buildLiveCommitMessageData("someone", "target", []Event{
+	data := buildLiveCommitMessageData("someone", "target", "", []Event{
 		labeledDeploymentEvent("api", "prod", map[string]string{"team": "payments"}),
 		deleted,
 	})

@@ -575,10 +575,13 @@ write rather than stopping the mirror.
 `reconcileTemplate` formats atomic snapshots and resyncs. Invalid templates report
 `Validated=False` with reason `InvalidConfig`; validation exercises singleton and mixed-operation
 windows, empty authors, and scoped and whole-target snapshots through the production renderer.
-Sample execution cannot prove every possible conditional branch valid.
+Sample execution cannot prove every possible conditional branch valid. That applies to
+`requestTemplate`'s [message check](#framing-a-save-message) too: a template that drops the save
+message only on some branch passes validation and falls back at commit time.
 
 | Input, in precedence order | Message source |
 |---|---|
+| Attached [save request](#commitrequest) **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage` |
 | Non-empty literal override, including an attached [save request](#commitrequest) | Exact supplied text |
 | Live window of any size | `liveTemplate` |
 | Atomic snapshot or resync | `reconcileTemplate` |
@@ -601,6 +604,7 @@ spec:
 | Template | Fields |
 |---|---|
 | `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, and the `LabelValues` / `LabelValue` accessors |
+| `requestTemplate` | the same fields, plus `RequestMessage` |
 | Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `Labels`, and the `Label` accessor |
 | `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `Revision` |
 
@@ -611,9 +615,53 @@ first-seen order. An entry already matching Git still counts, and several entrie
 The count can exceed the number of changed resources. A no-op creates no commit, even with a literal
 message. Printing a resource entry directly keeps its `group/version/resource[/namespace]/name` form.
 
+`RequestMessage` belongs to `requestTemplate`. It exists on the live context too, but is always
+empty there: a window carrying a save request's message renders `requestTemplate` when one is
+configured and the literal message when one is not, so `liveTemplate` only ever runs for windows
+that have no request message. Do not reach for `{{if .RequestMessage}}` inside `liveTemplate`;
+it never fires.
+
 `Author` is the raw window username and is empty when no actor is named. It does not use an OIDC
 display name or the `attribution-unresolved` Git author sentinel. The sentinel appears only in the
 Git author header when attribution ran without resolving an actor. Messages never change authorship.
+
+##### Framing a save message
+
+By default a [save request](#commitrequest)'s message **replaces** the template, so supplying one
+costs you the resource body `liveTemplate` would have produced: the commit says why, but no longer
+says what. `requestTemplate` composes the two.
+
+```yaml
+spec:
+  commit:
+    message:
+      requestTemplate: |-
+        {{.RequestMessage}}
+
+        {{range .Resources -}}
+        - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}
+        {{end -}}
+```
+
+It renders only for a window a save request attached to; every other window is unaffected. Omit it
+and request messages are committed verbatim, exactly as before.
+
+The request is **never** parsed as a template. Its message arrives as `.RequestMessage` and is
+committed unaltered, so a save-button user supplies the content while the operator owns the
+wording around it. Nothing a requester writes is ever executed, and braces inside a request message
+stay literal in every case.
+
+A `requestTemplate` that never renders `.RequestMessage` is **rejected** with `Validated=False`,
+because dropping the requester's stated reason is the one thing this field must not do. Every
+spelling that puts the message in the commit is accepted (`{{.RequestMessage}}`, a pipeline, or a
+variable), because the check renders the template and looks for the message in the output rather
+than scanning the template's text.
+
+`requestTemplate` is validated against the same window shapes as `liveTemplate`, so a template
+reading a label some resources do not carry fails at admission rather than at commit time. If one
+does fail to render in production, the request's message is committed verbatim instead of the
+window being lost, and the commit is counted under `message_source="commit_request_fallback"`.
+Alert on that rate: the commit itself succeeds and no condition moves, so it is the only signal.
 
 ##### Kind, scope, and labels
 
@@ -1614,7 +1662,9 @@ The entire spec is immutable. Create a new `CommitRequest` for each save attempt
 A present message accepts 1–1024 Unicode characters, including newline. All other ASCII control
 characters, including tab, carriage return, and DEL, are rejected, as is whitespace-only text.
 Accepted surrounding spaces are preserved. Braces such as `{{.Author}}` remain literal; omission
-uses [the live template](#commit-message-templates). A rejected request leaves automatic mirroring
+uses [the live template](#commit-message-templates). To frame a save message with what was saved,
+configure [`requestTemplate`](#framing-a-save-message) on the GitTarget. The request is still never
+parsed as a template. A rejected request leaves automatic mirroring
 available. The submitter chooses any semantic prefix; free-form messages are accepted.
 
 A request attaches to at most one matching open window. Normal flush triggers may close it early;

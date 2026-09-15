@@ -31,8 +31,13 @@ at most one window and cannot rename a finalized commit, including one waiting f
 provides no ordering guarantee; use a non-zero window for custom save messages. The delay does not
 reserve a transaction. Competing requests keep the earliest-finalize-deadline selection policy.
 
-`spec.message` is literal, including template-like text and surrounding spaces. Omission uses
-`GitTarget.spec.commit.message.liveTemplate`. A present value accepts 1–1024 Unicode characters;
+`spec.message` is literal, including template-like text and surrounding spaces. It is never parsed
+as a template, so a request author cannot execute one. Omission uses
+`GitTarget.spec.commit.message.liveTemplate`. A target may set
+`GitTarget.spec.commit.message.requestTemplate` to frame the message with the window's resources;
+the message still arrives unaltered, as `.RequestMessage`, and a template that does not render it
+is rejected at admission, so the request's bytes always reach the commit. A `requestTemplate` that
+fails to render commits the message verbatim rather than losing the window. A present value accepts 1–1024 Unicode characters;
 newline is allowed, other ASCII controls and whitespace-only text are rejected. Validation never
 truncates accepted text. A no-op still creates no commit. The message does not change Git identities.
 

@@ -184,6 +184,28 @@ type CommitMessageSpec struct {
 	// +optional
 	LiveTemplate string `json:"liveTemplate,omitempty"`
 
+	// Rationale, kept out of the doc comment (and so out of the CRD schema) by the blank line
+	// below: a CommitRequest is created by whoever holds create on it in a namespace, so its
+	// author supplies the message but must not set commit-message policy. Framing the message
+	// rather than parsing it keeps that split — the operator owns the wording, the requester owns
+	// the words, and nothing a requester writes is ever executed. Rejecting a template that never
+	// renders RequestMessage is what keeps the split honest in the other direction: silently
+	// discarding a requester's stated reason would be worse than having no template at all.
+
+	// RequestTemplate frames a CommitRequest's message instead of committing it verbatim. It
+	// renders only for a commit window whose attached request supplied a message; every other
+	// window uses liveTemplate or reconcileTemplate.
+	//
+	// It receives the same fields as liveTemplate, plus RequestMessage carrying the request's
+	// message unaltered. That message is never parsed as a template, so template syntax inside it
+	// stays literal.
+	//
+	// Omitted, a request's message is committed exactly as supplied. A template that never renders
+	// RequestMessage is rejected. One that fails to render at commit time commits the message
+	// verbatim instead, counted as message_source="commit_request_fallback".
+	// +optional
+	RequestTemplate string `json:"requestTemplate,omitempty"`
+
 	// ReconcileTemplate formats atomic snapshots and resyncs.
 	// Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, Revision.
 	// Type and Namespace fields are empty for whole-target snapshots. Revision can be empty.

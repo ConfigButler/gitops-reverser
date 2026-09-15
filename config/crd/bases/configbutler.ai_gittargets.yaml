@@ -172,6 +172,20 @@ spec:
                           Type and Namespace fields are empty for whole-target snapshots. Revision can be empty.
                           Guard optional fields so the message remains meaningful for every snapshot scope.
                         type: string
+                      requestTemplate:
+                        description: |-
+                          RequestTemplate frames a CommitRequest's message instead of committing it verbatim. It
+                          renders only for a commit window whose attached request supplied a message; every other
+                          window uses liveTemplate or reconcileTemplate.
+
+                          It receives the same fields as liveTemplate, plus RequestMessage carrying the request's
+                          message unaltered. That message is never parsed as a template, so template syntax inside it
+                          stays literal.
+
+                          Omitted, a request's message is committed exactly as supplied. A template that never renders
+                          RequestMessage is rejected. One that fails to render at commit time commits the message
+                          verbatim instead, counted as message_source="commit_request_fallback".
+                        type: string
                     type: object
                     x-kubernetes-validations:
                     - message: eventTemplate is retired; migrate to liveTemplate

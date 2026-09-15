@@ -109,7 +109,7 @@ func TestExecutor_GroupedSingleEvent_UsesLiveTemplate(t *testing.T) {
 		CommitConfig: config,
 	}
 
-	message, options, err := pendingWrite.commitMetadata()
+	message, options, _, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
 	assert.Equal(t, "group: alice changed 1", message)
 	assert.Equal(t, "alice", options.Author.Name)
@@ -129,7 +129,7 @@ func TestExecutor_GroupedMultiEvent_UsesLiveTemplate(t *testing.T) {
 		CommitConfig: config,
 	}
 
-	message, options, err := pendingWrite.commitMetadata()
+	message, options, _, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
 	assert.Equal(t, "group: alice 2 team-a", message)
 	assert.Equal(t, "alice", options.Author.Name)
@@ -152,7 +152,7 @@ func TestExecutor_AtomicUnit_UsesReconcileMessage(t *testing.T) {
 		GitTargetNamespace: "default",
 	}
 
-	message, options, err := pendingWrite.commitMetadata()
+	message, options, _, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
 	assert.Equal(t, "reconcile: 2 team-a", message)
 	assert.Equal(t, DefaultCommitterName, options.Author.Name)
@@ -167,7 +167,7 @@ func TestExecutor_NoOpUnit_SkipsCommit(t *testing.T) {
 	headBefore, err := repo.Head()
 	require.NoError(t, err)
 
-	created, hash, err := worker.executePendingWrite(context.Background(), repo, worktree, PendingWrite{
+	created, hash, _, err := worker.executePendingWrite(context.Background(), repo, worktree, PendingWrite{
 		Kind:         PendingWriteCommit,
 		Events:       []Event{event},
 		CommitConfig: ResolveCommitConfig(nil),
@@ -210,7 +210,7 @@ func TestExecutor_AppliesEncryptionFromPendingWrite_NotFromWorker(t *testing.T) 
 		},
 	}
 
-	created, hash, err := worker.executePendingWrite(context.Background(), repo, worktree, pendingWrite)
+	created, hash, _, err := worker.executePendingWrite(context.Background(), repo, worktree, pendingWrite)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
 	assert.False(t, hash.IsZero(), "a committed write reports its commit hash")
@@ -246,7 +246,7 @@ func TestCommitMetadata_ResyncRenderedMessageIsNotHeldToTheLiteralRequestContrac
 				CommitMessage:      rendered,
 			}
 
-			message, options, err := pendingWrite.commitMetadata()
+			message, options, _, err := pendingWrite.commitMetadata()
 			require.NoError(t, err)
 			assert.Equal(t, rendered, message)
 			assert.NotNil(t, options)
@@ -300,7 +300,7 @@ func TestMessageSource_MatchesTheMessageActuallyRendered(t *testing.T) {
 
 			assert.Equal(t, tc.want, write.messageSource())
 
-			message, _, err := write.commitMetadata()
+			message, _, _, err := write.commitMetadata()
 			require.NoError(t, err)
 			if tc.message != "" {
 				assert.Equal(t, tc.message, message)

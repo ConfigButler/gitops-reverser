@@ -353,6 +353,23 @@ serve several GitTargets sharing a provider+branch, coalescing their writes into
 the worker is the honest attribution unit. `author_kind` is `user`, `serviceaccount`, `committer`, or `unresolved`;
 reconcile/resync commits and configured-author mode use `committer`.
 
+`message_source` is `live`, `reconcile`, or one of three request values: `commit_request` (a save
+request's message committed verbatim, no `requestTemplate` configured), `commit_request_framed`
+(`requestTemplate` rendered), and `commit_request_fallback` (`requestTemplate` failed to render, so
+the message was committed verbatim instead).
+
+The fallback is the one to alert on. It is a **successful** commit — nothing is refused and no
+condition moves — so without this counter a `requestTemplate` that has quietly stopped applying
+looks exactly like one that was never configured:
+
+```promql
+sum by (provider_namespace, provider_name) (
+  rate(gitopsreverser_git_commits_total{message_source="commit_request_fallback"}[15m])
+) > 0
+```
+
+`framed / (framed + fallback)` is the health ratio for the feature.
+
 **`unresolved` is the one to watch.** It means attribution RAN and did not name an actor, so
 the commit carries the `unknown (attribution unresolved)` author instead of a person. It is
 deliberately not folded into `user` (which would make a lost actor look like a named one, so a
