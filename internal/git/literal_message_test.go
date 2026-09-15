@@ -43,14 +43,14 @@ func TestCommitMetadata_LiteralPrecedenceAndPreservation(t *testing.T) {
 				CommitConfig: ResolveCommitConfig(nil)}
 			p.CommitConfig.Message.LiveTemplate = "{{ invalid"
 			p.CommitConfig.Message.ReconcileTemplate = "{{ invalid"
-			actual, options, err := p.commitMetadata()
+			actual, options, _, err := p.commitMetadata()
 			require.NoError(t, err)
 			assert.Equal(t, message, actual)
 			assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 		}
 	}
 	p := PendingWrite{Kind: PendingWriteCommit, CommitMessage: " \n ", CommitConfig: ResolveCommitConfig(nil)}
-	_, _, err := p.commitMetadata()
+	_, _, _, err := p.commitMetadata()
 	require.ErrorContains(t, err, "non-whitespace")
 }
 

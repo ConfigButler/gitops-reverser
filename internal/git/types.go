@@ -305,6 +305,12 @@ type PendingWrite struct {
 	// resolved Committed (with CommitSHA) once this write is pushed. It rides the write through the
 	// push cooldown and the conflict rebase-replay, so the result follows the data.
 	CommitRequest *commitRequestID
+	// committedMessageSource is the message source this write actually committed under, stamped by
+	// executePendingWrites the way CommitSHA is and for the same reason: publishCommitsForPush runs
+	// after the push, and recomputing the source from the write cannot know that a requestTemplate
+	// render failed at commit time. Zero means "not stamped", so messageSource() recomputes.
+	committedMessageSource messageResolution
+
 	// CommitSHA is the hash of the commit this write created, captured in
 	// executePendingWrite and refreshed when the write is re-executed on a
 	// rebase-replay (so it is never a stale pre-rebase hash). Zero when the write
@@ -588,6 +594,9 @@ type CommitterConfig struct {
 type CommitMessageConfig struct {
 	LiveTemplate      string
 	ReconcileTemplate string
+	// RequestTemplate frames a CommitRequest's message. Empty — the default — commits that
+	// message verbatim, which is the behaviour every target had before the field existed.
+	RequestTemplate string
 }
 
 // ReconcileCommitMessageData is the template context for reconcile commit messages.
@@ -690,6 +699,14 @@ type LiveCommitMessageData struct {
 	// Resources is the per-resource list, deduplicated by file path so the
 	// final state is what's being committed.
 	Resources []ResourceRef
+	// RequestMessage is the message an attached CommitRequest supplied, unaltered. It is empty for
+	// every window no request attached to, which is the ordinary case and why liveTemplate may
+	// reference it freely.
+	//
+	// It lives on this struct rather than on a parallel request-only context for the reason
+	// ResourceRef's own comment gives about the placement vocabulary: a reader should not have to
+	// learn two vocabularies to describe one commit. One sample builder then serves both renders.
+	RequestMessage string
 }
 
 // LabelValues is the sorted, distinct set of values this commit's resources carry for one
@@ -789,6 +806,12 @@ func (c CommitConfig) WithTargetMessage(spec *v1alpha3.CommitMessageSpec) Commit
 	}
 	if reconcileTemplate := strings.TrimSpace(spec.ReconcileTemplate); reconcileTemplate != "" {
 		c.Message.ReconcileTemplate = reconcileTemplate
+	}
+	// No built-in default to fall back to, unlike the two above: an unset requestTemplate is not
+	// "use the standard framing", it is "do not frame at all", and that has to stay distinguishable
+	// from a configured one or every existing target would start reformatting its save messages.
+	if requestTemplate := strings.TrimSpace(spec.RequestTemplate); requestTemplate != "" {
+		c.Message.RequestTemplate = requestTemplate
 	}
 	return c
 }

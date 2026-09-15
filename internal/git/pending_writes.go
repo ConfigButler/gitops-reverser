@@ -335,6 +335,18 @@ const (
 	// verbatim. It counts commits that USED such a message, not CommitRequests: a request
 	// omitting spec.message takes the target's liveTemplate and counts as live.
 	messageSourceCommitRequest = "commit_request"
+	// messageSourceCommitRequestFramed is a CommitRequest message rendered through the target's
+	// requestTemplate. Split from commit_request rather than folded into it, even though the text
+	// originated with the request either way: the difference is not HOW the text was produced (the
+	// distinction reconcile deliberately collapses, below) but WHETHER the operator's configured
+	// framing applied at all, which is a question an operator actually asks.
+	messageSourceCommitRequestFramed = "commit_request_framed"
+	// messageSourceCommitRequestFallback is a requestTemplate that failed to render, so the
+	// request's message was committed verbatim instead. It is the ONLY signal for that: the commit
+	// succeeds, nothing is refused, and no condition moves, so without a counter a template that
+	// has quietly stopped applying looks exactly like one that was never configured. Alert on its
+	// rate; see docs/interpreting-metrics.md.
+	messageSourceCommitRequestFallback = "commit_request_fallback"
 	// messageSourceLive is a live window rendered through the target's liveTemplate.
 	messageSourceLive = "live"
 	// messageSourceReconcile is an atomic snapshot or a resync rendered through

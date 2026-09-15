@@ -184,6 +184,19 @@ type CommitMessageSpec struct {
 	// +optional
 	LiveTemplate string `json:"liveTemplate,omitempty"`
 
+	// RequestTemplate optionally frames a CommitRequest's message instead of committing it
+	// verbatim. It renders only for a window a request's message is attached to, and receives the
+	// live fields plus RequestMessage, which carries that message unaltered.
+	//
+	// Omit it and a request's message is committed exactly as supplied, which is the default.
+	// Set it and the operator owns the wording around the message while the requester still owns
+	// the message itself: the request is never parsed as a template, so a save-button user cannot
+	// execute one. A template that never renders RequestMessage is REJECTED — framing the message
+	// is the whole point, and silently dropping a requester's stated reason is worse than having
+	// no template at all.
+	// +optional
+	RequestTemplate string `json:"requestTemplate,omitempty"`
+
 	// ReconcileTemplate formats atomic snapshots and resyncs.
 	// Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, Revision.
 	// Type and Namespace fields are empty for whole-target snapshots. Revision can be empty.

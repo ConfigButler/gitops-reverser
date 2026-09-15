@@ -301,7 +301,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, err
 	}
 	pendingWrite.CommitMessage = rendered
-	message, options, err := pendingWrite.commitMetadata()
+	message, options, _, err := pendingWrite.commitMetadata()
 	if err != nil {
 		return 0, err
 	}

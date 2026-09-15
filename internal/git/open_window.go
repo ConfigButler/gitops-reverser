@@ -103,7 +103,14 @@ func windowPathKey(e Event, writer eventContentWriter) string {
 // buildLiveCommitMessageData produces the template context for a grouped
 // commit unit. Operations are counted by Operation tag; Resources is the
 // deduplicated list of resource refs in arrival order.
-func buildLiveCommitMessageData(author, gitTarget string, events []Event) LiveCommitMessageData {
+//
+// requestMessage is the attached CommitRequest's message, or empty when no request attached. It is
+// carried through unaltered — never parsed, never trimmed — because the request's literal bytes
+// reaching the commit is the audit property the whole CommitRequest contract rests on.
+func buildLiveCommitMessageData(
+	author, gitTarget, requestMessage string,
+	events []Event,
+) LiveCommitMessageData {
 	operations := make(map[string]int, groupedCommitOperationKinds)
 	resources := make([]ResourceRef, 0, len(events))
 	for _, e := range events {
@@ -129,10 +136,11 @@ func buildLiveCommitMessageData(author, gitTarget string, events []Event) LiveCo
 		})
 	}
 	return LiveCommitMessageData{
-		Author:     author,
-		GitTarget:  gitTarget,
-		Count:      len(events),
-		Operations: operations,
-		Resources:  resources,
+		Author:         author,
+		GitTarget:      gitTarget,
+		Count:          len(events),
+		Operations:     operations,
+		Resources:      resources,
+		RequestMessage: requestMessage,
 	}
 }

@@ -7,6 +7,35 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Save messages can be framed by the GitTarget
+
+**Not breaking.** `GitTarget.spec.commit.message.requestTemplate` is new and optional; omit it and
+`CommitRequest.spec.message` is committed verbatim exactly as before.
+
+Until now a save request's message REPLACED the commit template, so supplying one lost the resource
+body `liveTemplate` would have produced. `requestTemplate` composes them:
+
+```yaml
+spec:
+  commit:
+    message:
+      requestTemplate: |-
+        {{.RequestMessage}}
+
+        {{range .Resources -}}
+        - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}
+        {{end -}}
+```
+
+`CommitRequest.spec.message` stays literal and is still never parsed as a template — it arrives as
+`.RequestMessage` and is committed unaltered. A `requestTemplate` that never renders it is rejected
+with `Validated=False`.
+
+`git_commits_total` gains two `message_source` values, `commit_request_framed` and
+`commit_request_fallback`. The existing `commit_request` keeps its meaning (a verbatim message with
+no `requestTemplate` configured), so dashboards reading it are unaffected. Alert on the fallback
+rate: it is a successful commit, so it is the only signal that a template has stopped applying.
+
 ## Watch reconnects no longer report as failures
 
 **Not breaking, but two observable surfaces move.** Neither needs a manifest change; both may need

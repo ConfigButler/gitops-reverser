@@ -4,6 +4,7 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -68,11 +69,20 @@ func renderReconcileCommitMessage(
 }
 
 func renderLiveCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
-	return renderCommitTemplate(
-		"live",
-		config.Message.LiveTemplate,
-		buildLiveCommitMessageData(pendingWrite.Author(), pendingWrite.Target().Name, pendingWrite.Events),
-	)
+	return renderCommitTemplate("live", config.Message.LiveTemplate, pendingWrite.liveMessageData())
+}
+
+// renderRequestCommitMessage frames an attached CommitRequest's message with the target's
+// requestTemplate. The literal rides in as .RequestMessage rather than being parsed, so nothing a
+// requester wrote is ever executed.
+func renderRequestCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
+	return renderCommitTemplate("request", config.Message.RequestTemplate, pendingWrite.liveMessageData())
+}
+
+// liveMessageData is the template context both live renders share. One builder, because a framed
+// request commit is a live window that happens to carry a message — not a different kind of commit.
+func (p PendingWrite) liveMessageData() LiveCommitMessageData {
+	return buildLiveCommitMessageData(p.Author(), p.Target().Name, p.CommitMessage, p.Events)
 }
 
 func renderCommitTemplate(name, text string, data any) (string, error) {
@@ -139,6 +149,30 @@ func ValidateCommitConfig(config CommitConfig) error {
 	// not carry "team", and failing at admission is the difference between a rejected GitTarget
 	// and a commit that dies mid-window months later. "{{.Label \"team\"}}" renders empty and
 	// passes both.
+	for _, events := range liveValidationSamples(sampleEvent) {
+		if _, err := renderLiveCommitMessage(PendingWrite{
+			Kind: PendingWriteCommit, Events: events,
+		}, config); err != nil {
+			return err
+		}
+		if err := validateRequestTemplate(config, events); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// liveValidationSamples is the set of window shapes both live-message templates are validated
+// against: growing windows, mixed operations, an empty author, and — the important half — a
+// resource that carries an object with labels beside ones that carry neither, because these
+// templates run with missingkey=error and it is the render WITHOUT the label that fails.
+//
+// It is shared so liveTemplate and requestTemplate cannot drift into being checked against
+// different worlds. They face identical windows at runtime; checking one more thoroughly than the
+// other just moves which template fails months later instead of at admission.
+func liveValidationSamples(sampleEvent Event) [][]Event {
+	var samples [][]Event
 	for _, author := range []string{"template-validator", ""} {
 		var events []Event
 		for _, operation := range []string{"CREATE", "UPDATE", "DELETE"} {
@@ -150,14 +184,53 @@ func ValidateCommitConfig(config CommitConfig) error {
 				event.Object = sampleLabeledObject()
 			}
 			events = append(events, event)
-			if _, err := renderLiveCommitMessage(PendingWrite{
-				Kind: PendingWriteCommit, Events: events,
-			}, config); err != nil {
-				return err
-			}
+			samples = append(samples, append([]Event(nil), events...))
 		}
 	}
+	return samples
+}
 
+// requestTemplateProbe is the sentinel that requestTemplate validation renders as the request's
+// message. It only has to be something no template could plausibly produce on its own.
+const requestTemplateProbe = "<gitops-reverser probe: request message>"
+
+// validateRequestTemplate checks that a configured requestTemplate renders, AND that it actually
+// puts the request's message in the commit.
+//
+// The second half is the point. Without it the feature has a hole exactly as bad as the one it was
+// designed to avoid: a target could set `requestTemplate: "chore: sync {{.Count}} resources"` and
+// every save message would silently vanish — the requester writes a reason, the commit never
+// carries it, and the commit is still counted as request-sourced. Framing the message is the whole
+// purpose of the field, so a template that drops it is a mistake, not a configuration choice.
+//
+// It probes the RENDERED OUTPUT rather than scanning the template source. A scan for the literal
+// "{{.RequestMessage}}" would reject `{{.RequestMessage | printf "%s"}}`, a template that assigns
+// it to a variable first, and every other legitimate spelling — while the probe accepts all of them
+// for the right reason: the message reached the commit.
+//
+// Sample execution cannot prove every branch: a template that drops the message only under, say,
+// {{if eq .Count 1}} still passes. That is the same caveat docs/configuration.md already states for
+// the other templates, not a new one.
+func validateRequestTemplate(config CommitConfig, events []Event) error {
+	if config.Message.RequestTemplate == "" {
+		return nil
+	}
+
+	rendered, err := renderRequestCommitMessage(PendingWrite{
+		Kind:          PendingWriteCommit,
+		CommitMessage: requestTemplateProbe,
+		Events:        events,
+	}, config)
+	if err != nil {
+		return err
+	}
+	// EVERY sample must carry the message through, not merely one: the contract is that a
+	// requester's reason reaches the commit whatever the window happened to contain.
+	if !strings.Contains(rendered, requestTemplateProbe) {
+		return errors.New("requestTemplate must render {{.RequestMessage}}: as written it would " +
+			"drop the CommitRequest's message from the commit. Omit requestTemplate to commit that " +
+			"message verbatim")
+	}
 	return nil
 }
 
