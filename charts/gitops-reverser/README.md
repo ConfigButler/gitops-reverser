@@ -177,6 +177,8 @@ nodeSelector:
 | `servers.audit.tls.secretNameOverride` | Override Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
 | `controllerManager.additionalSensitiveResources` | Extra Secret-shaped resource types encrypted as `resource` or `group/resource` | `[]` |
 | `controllerManager.allowInsecureGitHTTP` | Permit credentials with `http://` GitProvider URLs for trusted in-cluster development Git servers | `false` |
+| `controllerManager.branchWorkerQueueDepth` | Event queue depth per branch worker. A full queue drops the write (`git_queue_drops_total`) instead of stalling the watch path, so the live attributed commit is lost even though convergence heals the mirror. Costs queue depth × payload of pod memory, which `branchBufferMaxSize` does **not** cover | `1000` |
+| `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds | `8Mi` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |

@@ -127,7 +127,12 @@ func TestReportGitPathRefusal_SatisfiesWorkerManagerReporter(t *testing.T) {
 }
 
 func TestRenderFidelityStatus_ReducesTheCurrentPlansScopes(t *testing.T) {
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	manager := &Manager{Log: logr.Discard()}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")
@@ -172,7 +177,12 @@ func (m *Manager) restartAllFidelityScopes(
 // now a cell — so a stream retired by a served-version change lands squarely on the live cell's
 // scope instead of missing it.
 func TestTargetWatchStream_CarriesTheRevisionItWasStartedWith(t *testing.T) {
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	manager := &Manager{Log: logr.Discard()}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")
@@ -198,7 +208,12 @@ func TestTargetWatchStream_CarriesTheRevisionItWasStartedWith(t *testing.T) {
 }
 
 func TestReportGitPathRefusal_RenderFidelityKeepsGitPathAccepted(t *testing.T) {
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	manager := &Manager{Log: logr.Discard()}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")
@@ -229,7 +244,12 @@ func requireGitPathEvent(t *testing.T, events <-chan event.GenericEvent) {
 // or an unknown target, and the caller used to discard that answer without a word — so a scope
 // could owe a report for ever with nothing anywhere saying why.
 func TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake(t *testing.T) {
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	log, lines := recordingLogger()
 	manager := &Manager{Log: log}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
@@ -253,7 +273,12 @@ func TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake(t *testing
 // gate always issues a non-zero revision, so a stream reporting under zero was started without
 // one; its result is unusable and its scope keeps owing a report.
 func TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision(t *testing.T) {
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	log, lines := recordingLogger()
 	manager := &Manager{Log: log}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
@@ -273,7 +298,12 @@ func TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision(t *testing.T) {
 // published. Publishing what the GATE currently says instead of what this drain saw removes the
 // race.
 func TestRenderFidelityStatus_PublishesTheCurrentStatusNotTheObservedOne(t *testing.T) {
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	manager := &Manager{Log: logr.Discard()}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")

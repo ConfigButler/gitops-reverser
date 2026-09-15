@@ -75,7 +75,7 @@ func replayWorker(t *testing.T, objects []client.Object, fns *interceptor.Funcs)
 	if fns != nil {
 		builder = builder.WithInterceptorFuncs(*fns)
 	}
-	worker := NewBranchWorker(builder.Build(), logr.Discard(), "provider", "default", "main", nil, 0)
+	worker := NewBranchWorker(builder.Build(), logr.Discard(), "provider", "default", "main", nil, BranchWorkerLimits{})
 	worker.ctx = context.Background()
 	return worker
 }

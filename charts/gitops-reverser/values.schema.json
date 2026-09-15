@@ -103,6 +103,15 @@
         "allowInsecureGitHTTP": {
           "type": "boolean",
           "description": "Permit credentials with http:// GitProvider URLs for trusted in-cluster development Git servers."
+        },
+        "branchWorkerQueueDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Event queue depth per branch worker. A full queue drops the write (git_queue_drops_total) rather than stalling the watch path, losing that live attributed commit. Costs queue depth x payload of pod memory, which branchBufferMaxSize does not cover."
+        },
+        "branchBufferMaxSize": {
+          "type": "string",
+          "description": "Maximum in-memory event buffer per branch worker, as a Kubernetes resource quantity (e.g. 8Mi). Bounds the open commit window plus the writes retained for replay until a push succeeds."
         }
       }
     },

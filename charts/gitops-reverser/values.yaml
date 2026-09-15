@@ -64,6 +64,28 @@ controllerManager:
   # Permit credentials with http:// GitProvider URLs. This is only for trusted
   # in-cluster development Git servers; production remotes should use HTTPS or SSH.
   allowInsecureGitHTTP: false
+  # Event queue depth per branch worker. One branch worker is shared by every GitTarget
+  # writing to one (GitProvider, branch), so pointing another GitTarget at a branch
+  # divides the headroom of a worker already in use.
+  #
+  # A full queue DROPS the write and counts git_queue_drops_total, rather than stalling
+  # the watch path behind a slow remote. Convergence heals the mirror afterwards, but the
+  # live attributed commit for a dropped write never happens — so raise this if
+  # git_queue_drops_total is ever non-zero. Size it so a bounded burst cannot overrun it:
+  # roughly (concurrent writers) x (GitTargets sharing the branch worker). Note that an
+  # administrative burst (an unpaced `kubectl delete` of many objects) is far spikier than
+  # the steady-state traffic the depth gauge shows you.
+  #
+  # Costs pod memory ON TOP of branchBufferMaxSize, which does NOT cover this queue: that
+  # cap is accounted only after an item leaves it. Budget queue depth x serialized size
+  # x ~6 (a queued object is held as an unstructured map), per SATURATED worker — about
+  # 5Mi at this default for ~800-byte resources, but the multiplier is on the payload, so
+  # size it against your own if you mirror megabyte-sized ConfigMaps or Secrets.
+  branchWorkerQueueDepth: 1000
+  # Maximum in-memory event buffer per branch worker, as a Kubernetes resource quantity.
+  # Bounds the open commit window plus the writes retained for replay until a push
+  # succeeds; tripping it finalizes the window early, ignoring the commit cadence.
+  branchBufferMaxSize: 8Mi
 
 # cert-manager issuer shared by every certificate the chart mints. One self-signed CA
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server

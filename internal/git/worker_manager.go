@@ -21,6 +21,62 @@ import (
 // --branch-buffer-max-size (8Mi by default).
 const DefaultBranchBufferMaxBytes int64 = 8 * 1024 * 1024
 
+// DefaultBranchWorkerQueueDepth is the default depth of each branch worker's event
+// queue. Operators override it via --branch-worker-queue-depth.
+//
+// It is sized so that a bounded administrative burst cannot overrun it, because a burst
+// that stays under the queue depth cannot drop at ALL, whatever its arrival shape. The
+// sizing input is not an event rate: a slot holds one WriteRequest, so what must fit is
+// the number of concurrent write requests a burst can produce, roughly
+// (concurrent writers) x (GitTargets sharing this branch worker). Note the second factor:
+// workers are keyed by (provider namespace, provider name, branch), so pointing another
+// GitTarget at a branch divides the per-target headroom of a worker already in use.
+//
+// 1000 replaces an earlier 100, which a realistic workload cleared and a scripted one did
+// not: a 200-participant demo across two GitTargets peaked at depth 44, and then deleting
+// those 203 objects unpaced -- hundreds of requests per second rather than the ballots'
+// ~3/s -- dropped 20 writes. Convergence still healed the mirror, but a dropped write is a
+// LIVE, ATTRIBUTED commit that never happened, so the history is missing something the
+// end state cannot show.
+const DefaultBranchWorkerQueueDepth = 1000
+
+// BranchWorkerLimits bounds one branch worker's memory. The two knobs cover different
+// stages of the same pipeline and neither substitutes for the other, which is why they
+// travel together.
+type BranchWorkerLimits struct {
+	// MaxBufferBytes caps totalRetainedBytes: the open commit window plus the writes
+	// committed locally and retained for replay until a push succeeds. Tripping it
+	// finalizes the window early, ignoring the commit cadence.
+	MaxBufferBytes int64
+
+	// QueueDepth is the depth of the event queue, and it is a HARD drop boundary: the
+	// enqueue is deliberately non-blocking, so a full queue throws the item away and
+	// counts git_queue_drops_total rather than stalling the watch path behind a slow
+	// remote.
+	//
+	// MaxBufferBytes does NOT cover this queue. That cap is accounted only once the loop
+	// DEQUEUES an item, so whatever is still on the channel is bounded by count alone and
+	// costs memory ON TOP of it. The channel itself is trivial (a WorkItem is three
+	// pointers); what it retains is not, because each live-event item holds a sanitized
+	// object as an unstructured map, measured at roughly SIX times the bytes it serializes
+	// to. Budget QueueDepth x serialized size x ~6 per SATURATED worker: ~5MiB at the
+	// default depth for ~800-byte resources, but the multiplier rides the payload, so a
+	// folder mirroring megabyte-sized ConfigMaps reaches gigabytes at the same depth.
+	QueueDepth int
+}
+
+// withDefaults fills in the zero value of each knob, so a caller that cares about one
+// need not restate the other.
+func (l BranchWorkerLimits) withDefaults() BranchWorkerLimits {
+	if l.MaxBufferBytes <= 0 {
+		l.MaxBufferBytes = DefaultBranchBufferMaxBytes
+	}
+	if l.QueueDepth <= 0 {
+		l.QueueDepth = DefaultBranchWorkerQueueDepth
+	}
+	return l
+}
+
 // WorkerManager manages BranchWorkers.
 // Creates workers per (repo, branch), shared by multiple GitDestinations.
 // Implements controller-runtime's Runnable interface for lifecycle management.
@@ -28,8 +84,8 @@ type WorkerManager struct {
 	Client client.Client
 	Log    logr.Logger
 
-	branchBufferMaxBytes int64
-	sensitiveResources   types.SensitiveResourcePolicy
+	limits             BranchWorkerLimits
+	sensitiveResources types.SensitiveResourcePolicy
 
 	mu sync.RWMutex
 	// lifecycleMu serialises creating and stopping workers, so one BranchKey never has two live
@@ -72,25 +128,21 @@ type WorkerManager struct {
 	renderFidelityGate *RenderFidelityGate
 }
 
-// NewWorkerManager creates a new worker manager.
-// branchBufferMaxBytes bounds each worker's combined buffer + unpushed-events
-// memory. Pass 0 (or a negative value) to use DefaultBranchBufferMaxBytes.
+// NewWorkerManager creates a new worker manager. limits bounds every worker this manager
+// creates; a zero value of either knob takes that knob's default.
 func NewWorkerManager(
 	client client.Client,
 	log logr.Logger,
-	branchBufferMaxBytes int64,
+	limits BranchWorkerLimits,
 	sensitiveResources types.SensitiveResourcePolicy,
 ) *WorkerManager {
-	if branchBufferMaxBytes <= 0 {
-		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
-	}
 	return &WorkerManager{
-		Client:               client,
-		Log:                  log,
-		branchBufferMaxBytes: branchBufferMaxBytes,
-		sensitiveResources:   sensitiveResources,
-		workers:              make(map[BranchKey]*BranchWorker),
-		renderFidelityGate:   NewRenderFidelityGate(),
+		Client:             client,
+		Log:                log,
+		limits:             limits.withDefaults(),
+		sensitiveResources: sensitiveResources,
+		workers:            make(map[BranchKey]*BranchWorker),
+		renderFidelityGate: NewRenderFidelityGate(),
 	}
 }
 
@@ -209,7 +261,7 @@ func (m *WorkerManager) EnsureWorker(
 			providerNamespace,
 			branch,
 			newContentWriter(m.sensitiveResources),
-			m.branchBufferMaxBytes,
+			m.limits,
 		)
 		// Inject the resolver before Start: the field is read only by the event-loop
 		// goroutine Start spawns, so setting it here (under m.mu, before that goroutine

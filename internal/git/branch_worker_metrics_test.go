@@ -36,7 +36,7 @@ func newMetricsTestWorker() *BranchWorker {
 		Log:                  logr.Discard(),
 		ctx:                  context.Background(),
 		contentWriter:        newContentWriter(itypes.SensitiveResourcePolicy{}),
-		eventQueue:           make(chan WorkItem, branchWorkerQueueSize),
+		eventQueue:           make(chan WorkItem, DefaultBranchWorkerQueueDepth),
 		branchBufferMaxBytes: DefaultBranchBufferMaxBytes,
 	}
 }

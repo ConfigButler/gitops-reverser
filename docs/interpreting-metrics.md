@@ -209,6 +209,44 @@ boundary, the commit, the push. Background:
 | `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | `added` / `no_change` / `failed`. |
 | `git_resync_failures_total` | counter | `gittarget_namespace`, `gittarget_name` | Rule-change resyncs whose apply failed **after** enqueue. |
 
+### Sizing the branch worker queue against `git_queue_drops_total`
+
+`git_queue_drops_total{kind="write"}` is the one loss the end state hides. The enqueue onto a
+branch worker is deliberately non-blocking, so a full queue throws the write away rather than
+stalling the watch path behind a slow remote; the next resync's mark-and-sweep then heals the
+mirror, and the target goes on reporting `RenderMatchesLive=True`. What does not come back is the
+live, attributed commit for the dropped write — the change happened, and the history does not say
+so. Treat any sustained increment as a signal to raise
+`controllerManager.branchWorkerQueueDepth`.
+
+**The depth gauge will not warn you first.** `git_queue_depth` shows the traffic you have, and the
+bursts that overrun the queue are usually the traffic you do not: an unpaced `kubectl delete` of a
+few hundred objects arrives orders of magnitude faster than the application writes the same objects
+did. A workload that sits comfortably at a fraction of the depth can still drop under an
+administrative one.
+
+**Size it by burst, not by rate.** A queue slot holds one write request, so what has to fit is the
+number of concurrent write requests a bounded burst can produce — roughly
+`(concurrent writers) × (GitTargets sharing the branch worker)`. A burst that cannot exceed the
+depth cannot drop at all, whatever its arrival shape. Note the second factor: workers are keyed by
+`(GitProvider namespace, GitProvider name, branch)`, so pointing a second GitTarget at a branch
+halves the headroom of a worker already in use, and nothing in the API surface says so. Confirm
+which targets share one worker by joining on `git_branch_targets` — several targets against a
+single `git_queue_depth` series is one worker serving all of them.
+
+**What it costs.** `--branch-buffer-max-size` does **not** cover this queue. That cap bounds the
+open commit window plus the writes retained for replay until a push succeeds, and it is accounted
+only once an item *leaves* the queue — so queue depth × payload is additional pod memory, on top of
+it.
+
+Budget it as **queue depth × serialized size × ~6**. A queued object is held as an unstructured
+map, which measures around six times the bytes it serializes to; the channel itself is negligible
+beside that. So a full queue of 1000 at the ~800-byte resources of a small CRD is about 5 MiB per
+saturated worker, against a 1Gi default limit — but the multiplier is on the payload, so a folder
+mirroring megabyte-sized ConfigMaps or Secrets reaches gigabytes at the same depth. Size against
+your own payloads, and against how many workers could saturate at once: the figure is per worker,
+and workers are per `(GitProvider, branch)`.
+
 ### Outcomes are classified, not ranked
 
 Several values above are the pipeline working, and a dashboard that paints every non-happy outcome

@@ -32,9 +32,6 @@ import (
 )
 
 const (
-	// branchWorkerQueueSize is the size of the event queue for each branch worker.
-	branchWorkerQueueSize = 100
-
 	// metadataCacheDuration is how long metadata is considered fresh before re-fetching.
 	// This optimization prevents redundant Git fetches when multiple GitTargets
 	// share the same branch and reconcile within a short time window.
@@ -226,23 +223,20 @@ const (
 	windowFinalizeReasonShutdown          windowFinalizeReason = "shutdown"
 )
 
-// NewBranchWorker creates a worker for a (provider, branch) combination.
-// Pass 0 (or a negative value) for branchBufferMaxBytes to use
-// DefaultBranchBufferMaxBytes.
+// NewBranchWorker creates a worker for a (provider, branch) combination. A zero
+// BranchWorkerLimits gets the defaults for both knobs; see BranchWorkerLimits.
 func NewBranchWorker(
 	client client.Client,
 	log logr.Logger,
 	providerName, providerNamespace string,
 	branch string,
 	writer *contentWriter,
-	branchBufferMaxBytes int64,
+	limits BranchWorkerLimits,
 ) *BranchWorker {
 	if writer == nil {
 		writer = newContentWriter(itypes.SensitiveResourcePolicy{})
 	}
-	if branchBufferMaxBytes <= 0 {
-		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
-	}
+	limits = limits.withDefaults()
 	return &BranchWorker{
 		GitProviderRef:       providerName,
 		GitProviderNamespace: providerNamespace,
@@ -254,9 +248,9 @@ func NewBranchWorker(
 			"branch", branch,
 		),
 		contentWriter:        writer,
-		eventQueue:           make(chan WorkItem, branchWorkerQueueSize),
+		eventQueue:           make(chan WorkItem, limits.QueueDepth),
 		pendingResyncs:       make(map[resyncKey]*pendingResync),
-		branchBufferMaxBytes: branchBufferMaxBytes,
+		branchBufferMaxBytes: limits.MaxBufferBytes,
 	}
 }
 
@@ -734,7 +728,7 @@ func (w *BranchWorker) processEvents() {
 	loop := newBranchWorkerEventLoop(w, DefaultCommitWindow)
 	w.Log.Info("Branch worker event loop configured",
 		"defaultCommitWindow", DefaultCommitWindow.String(),
-		"queueSize", cap(w.eventQueue),
+		"queueDepth", cap(w.eventQueue),
 		"branchBufferMaxBytes", w.branchBufferMaxBytes)
 	loop.run()
 }

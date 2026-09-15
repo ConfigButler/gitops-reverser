@@ -46,7 +46,12 @@ func saveAttach(gitTargetName, gitTargetNamespace string) git.AttachCommitReques
 func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
@@ -59,7 +64,12 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 func TestRouteEvent_NoWorker(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	err := router.RouteEvent("provider", "team-a", "main", git.Event{Operation: "UPDATE"})
@@ -71,7 +81,12 @@ func TestRouteEvent_NoWorker(t *testing.T) {
 func TestGitTargetEventStreamRegistry(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 	gitDest := types.NewResourceReference("team-a-config", "team-a")
 	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, &recordingEnqueuer{}, logr.Discard())
@@ -93,7 +108,12 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	resultCh, enqueued, err := router.enqueueScopedResync(
@@ -122,7 +142,12 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build() // no GitTarget exists
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	_, enqueued, err := router.enqueueScopedResync(
@@ -149,7 +174,12 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 func TestDrainScopedResync_TreatsSupersededAsSuccess(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	resultCh := make(chan git.ResyncResult, 1)
@@ -177,7 +207,12 @@ func TestDrainScopedResync_TreatsSupersededAsSuccess(t *testing.T) {
 func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	router := NewEventRouter(workerManager, &Manager{Log: logr.Discard()}, client, logr.Discard())
 	resultCh := make(chan git.ResyncResult, 1)
 	resultCh <- git.ResyncResult{Stats: git.ResyncStats{Created: 1}}
@@ -207,7 +242,12 @@ func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 func TestDrainScopedResync_RefusalMarksGitPathRefused(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	mgr := &Manager{Log: logr.Discard()}
 	router := NewEventRouter(workerManager, mgr, client, logr.Discard())
 
@@ -281,7 +321,12 @@ func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
@@ -306,7 +351,12 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -348,7 +398,12 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 func TestDrainScopedResync_QueueFullIsDrainedNotOrphaned(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		client,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	mgr := &Manager{Log: logr.Discard()}
 	router := NewEventRouter(workerManager, mgr, client, logr.Discard())
 

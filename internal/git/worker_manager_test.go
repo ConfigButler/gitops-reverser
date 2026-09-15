@@ -28,7 +28,7 @@ import (
 // deletes have no resource index to target.
 func TestWorkerManager_SetMapperInjectsIntoWorkers(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(setupScheme()).Build()
-	manager := NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 
 	mapper := typeset.NewSnapshotRegistry(typeset.Snapshot{})
 	manager.SetMapper(mapper)
@@ -103,7 +103,7 @@ func TestWorkerManagerRegisterTarget(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log, 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -158,7 +158,7 @@ func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log, 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -212,7 +212,7 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log, 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -271,7 +271,7 @@ func TestWorkerManagerUnregisterTarget(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log, 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -341,7 +341,7 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log, 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -392,7 +392,7 @@ func TestWorkerManagerGetNonexistentWorker(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log, 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 
 	worker, exists := manager.GetWorkerForTarget("nonexistent", "default", "main")
 	if exists {
@@ -409,7 +409,7 @@ func TestWorkerManagerUnregisterNonexistent(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log, 0, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 
 	// Unregister should be idempotent and not error
 	err := manager.UnregisterTarget("nonexistent", "default", "repo1", "gitops-system", "main")

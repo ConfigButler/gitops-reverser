@@ -131,7 +131,7 @@ func main() {
 	workerManager := git.NewWorkerManager(
 		mgr.GetClient(),
 		ctrl.Log.WithName("worker-manager"),
-		cfg.branchBufferMaxBytes,
+		cfg.branchWorkerLimits,
 		cfg.sensitiveResources,
 	)
 	workerManager.SetSSHHostKeyConfig(cfg.sshHostKeys)
@@ -451,11 +451,11 @@ type appConfig struct {
 	// check: the in-memory fact transport only works when the audit receiver and the resolver are
 	// the same process, and that has to fail loudly rather than degrade into silent attribution
 	// loss.
-	replicaCount         int
-	branchBufferMaxBytes int64
-	sensitiveResources   types.SensitiveResourcePolicy
-	sshHostKeys          git.SSHHostKeyConfig
-	credentialPolicy     git.CredentialTransportPolicy
+	replicaCount       int
+	branchWorkerLimits git.BranchWorkerLimits
+	sensitiveResources types.SensitiveResourcePolicy
+	sshHostKeys        git.SSHHostKeyConfig
+	credentialPolicy   git.CredentialTransportPolicy
 	// sourceClusterQPS / sourceClusterBurst bound the rate at which the operator talks to a
 	// source cluster reached through a GitTarget.spec.kubeConfig. A remote is reached over a
 	// network the in-cluster config is not, so it carries client-side throttling by default.
@@ -614,7 +614,26 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	var branchBufferMaxSizeFlag string
 	fs.StringVar(&branchBufferMaxSizeFlag, "branch-buffer-max-size", branchBufferMaxSizeStr,
 		"Maximum in-memory event buffer per branch worker, as a Kubernetes resource quantity "+
-			"(e.g. 8Mi, 1Gi; default 8Mi). Bounds pod memory under bursty workloads; not user-facing.")
+			"(e.g. 8Mi, 1Gi; default 8Mi). Bounds the open commit window plus the writes retained "+
+			"for replay until a push succeeds. It does NOT bound the event queue, which is "+
+			"accounted only after a dequeue: see --branch-worker-queue-depth.")
+	queueDepthStr := os.Getenv("BRANCH_WORKER_QUEUE_DEPTH")
+	if queueDepthStr == "" {
+		queueDepthStr = strconv.Itoa(git.DefaultBranchWorkerQueueDepth)
+	}
+	queueDepthDefault, err := strconv.Atoi(queueDepthStr)
+	if err != nil {
+		return appConfig{}, fmt.Errorf("invalid BRANCH_WORKER_QUEUE_DEPTH %q: %w", queueDepthStr, err)
+	}
+	fs.IntVar(&cfg.branchWorkerLimits.QueueDepth, "branch-worker-queue-depth", queueDepthDefault,
+		fmt.Sprintf("Event queue depth per branch worker (default %d). ", git.DefaultBranchWorkerQueueDepth)+
+			"A branch worker is shared by every "+
+			"GitTarget writing to one (GitProvider, branch), and a full queue DROPS the write "+
+			"(git_queue_drops_total) rather than stalling the watch path behind a slow remote, "+
+			"losing that live attributed commit even though convergence later heals the mirror. "+
+			"Size it so a bounded burst cannot overrun it: roughly (concurrent writers) x "+
+			"(GitTargets sharing the branch worker). Costs queue depth x payload of pod memory "+
+			"ON TOP of --branch-buffer-max-size, which does not cover this queue.")
 	var additionalSensitiveResources string
 	fs.StringVar(
 		&additionalSensitiveResources,
@@ -674,9 +693,17 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err != nil {
 		return appConfig{}, fmt.Errorf("invalid --branch-buffer-max-size %q: %w", branchBufferMaxSizeFlag, err)
 	}
-	cfg.branchBufferMaxBytes, _ = bufferQuantity.AsInt64()
-	if cfg.branchBufferMaxBytes <= 0 {
+	cfg.branchWorkerLimits.MaxBufferBytes, _ = bufferQuantity.AsInt64()
+	if cfg.branchWorkerLimits.MaxBufferBytes <= 0 {
 		return appConfig{}, fmt.Errorf("--branch-buffer-max-size must be > 0, got %s", branchBufferMaxSizeFlag)
+	}
+	// Refused rather than defaulted: 0 is a channel with no buffer, which drops every write
+	// that does not find the loop already waiting. An operator who typed it meant something
+	// else, and the symptom -- near-total silent loss under any load -- reads like a bug in
+	// the watch path rather than like the number they set.
+	if cfg.branchWorkerLimits.QueueDepth <= 0 {
+		return appConfig{}, fmt.Errorf(
+			"--branch-worker-queue-depth must be > 0, got %d", cfg.branchWorkerLimits.QueueDepth)
 	}
 
 	cfg.sensitiveResources, err = types.ParseSensitiveResourcePolicy(additionalSensitiveResources)

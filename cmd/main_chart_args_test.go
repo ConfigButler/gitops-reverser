@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/yaml"
+
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 // chartInputs are read by the test process itself so `go test` records them as cache
@@ -69,9 +71,13 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 		wantAuditTLSCert string
 		wantHTTP2        bool
 		wantGitHTTP      bool
+		wantQueueDepth   int
+		wantBufferBytes  int64
 	}{
 		"chart defaults": {
-			wantKeyPrefix: "gitops-reverser",
+			wantKeyPrefix:   "gitops-reverser",
+			wantQueueDepth:  git.DefaultBranchWorkerQueueDepth,
+			wantBufferBytes: git.DefaultBranchBufferMaxBytes,
 		},
 		// servers.enableHTTP2 was a value no template read: setting it changed nothing, while
 		// its comment promised an HTTP/2 Rapid-Reset mitigation. Assert it reaches the binary.
@@ -124,6 +130,18 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			wantKeyPrefix: "gitops-reverser",
 			wantGitHTTP:   true,
 		},
+		// The branch-worker capacity knobs exist BECAUSE one compile-time value cannot be
+		// right for every deployment, so an operator raising them is the whole point of the
+		// flags: render an override and confirm it survives the trip to the binary.
+		"raised branch-worker capacity": {
+			setValues: []string{
+				"controllerManager.branchWorkerQueueDepth=4000",
+				"controllerManager.branchBufferMaxSize=32Mi",
+			},
+			wantKeyPrefix:   "gitops-reverser",
+			wantQueueDepth:  4000,
+			wantBufferBytes: 32 * 1024 * 1024,
+		},
 	}
 
 	for name, tc := range tests {
@@ -150,6 +168,12 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 				"servers.enableHTTP2 must reach the binary, and default to off")
 			require.Equal(t, tc.wantGitHTTP, cfg.credentialPolicy.AllowInsecureGitHTTP,
 				"controllerManager.allowInsecureGitHTTP must reach the binary")
+			if tc.wantQueueDepth != 0 {
+				require.Equal(t, tc.wantQueueDepth, cfg.branchWorkerLimits.QueueDepth,
+					"controllerManager.branchWorkerQueueDepth must reach the binary")
+				require.Equal(t, tc.wantBufferBytes, cfg.branchWorkerLimits.MaxBufferBytes,
+					"controllerManager.branchBufferMaxSize must reach the binary")
+			}
 		})
 	}
 }
