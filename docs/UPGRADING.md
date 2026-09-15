@@ -7,6 +7,72 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `CommitRequest.spec.closeDelaySeconds` defaults to 2 seconds
+
+**Breaking.** A `CommitRequest` that omits `closeDelaySeconds` now waits two seconds before
+finalizing its window. It used to finalize immediately, which is why the field's old default could
+not work: the write a save exists to publish reaches the branch worker *after* the request does.
+
+A watch event is held in the watch path until the API server's audit fact for that write arrives,
+bounded below by `--audit-webhook-batch-max-wait` plus the attribution join. A request created the
+moment the write is accepted was therefore evaluated, resolved, and finalized before its own write
+opened a commit window. The visible symptom was a save that reported success and did nothing: the
+request resolved `Ready=True` with reason `NoWindowInGrace` ("nothing was pending to save"), and the
+edit committed seconds later under the target's `liveTemplate` instead of the message the user
+typed.
+
+### What to change
+
+Nothing, if you relied on the old default and it was not working. The new default is the fix.
+
+If you already set `closeDelaySeconds` explicitly, your value is unchanged. A value of `2` is now
+redundant and can be dropped.
+
+If you deliberately want the old immediate finalize — you know the window is already open, and you
+want no collect — say so explicitly:
+
+```yaml
+spec:
+  gitTargetRef:
+    name: example-target
+  closeDelaySeconds: 0
+```
+
+An explicit `0` is preserved, which is the point of the next change.
+
+### The field is now a pointer in the Go API
+
+`CommitRequestSpec.CloseDelaySeconds` is `*int32` rather than `int32`. Go code that constructs a
+`CommitRequest` with the typed client needs a pointer helper such as `k8s.io/utils/ptr`, and code
+that reads the field needs a nil check:
+
+```go
+// before
+cr.Spec.CloseDelaySeconds = 30
+// after
+cr.Spec.CloseDelaySeconds = ptr.To(int32(30))
+```
+
+YAML, `kubectl`, and any unstructured client are unaffected.
+
+The pointer is what keeps an omitted field and an explicit `0` distinguishable once the default is
+stored. On a bare `int32` a typed Go client could no longer express "finalize immediately" at all,
+because its zero value is not serialized and the schema default would replace it with `2`.
+
+### Sizing the value
+
+`2` clears the reference audit configuration (`--audit-webhook-batch-max-wait=1s`) with headroom to
+spare. A loaded or distant cluster may want `4` to `5`. Do **not** size the delay against
+`--author-attribution-grace`: when that grace expires with no fact, the write still ships as a
+window naming no actor, which a request naming a submitter can never claim, and no amount of waiting
+changes the `WindowMismatch`. See
+[configuration.md](./configuration.md#sizing-closedelayseconds).
+
+### Check your integration's assertion
+
+Every failure mode here resolves `Ready=True`, so an integration that only checks the request went
+green passes in both the working and the broken case. Assert on the commit message instead.
+
 ## Save messages can be framed by the GitTarget
 
 **Not breaking.** `GitTarget.spec.commit.message.requestTemplate` is new and optional; omit it and

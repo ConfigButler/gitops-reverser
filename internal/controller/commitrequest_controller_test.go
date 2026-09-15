@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -49,6 +50,36 @@ var _ = Describe("CommitRequest controller", func() {
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
+	})
+
+	// The schema default is the whole of the R2 repair, so it is asserted against a real
+	// API server rather than inferred from the marker: an omitted field must come back as
+	// the default, and an explicit 0 must survive it.
+	It("defaults an omitted closeDelaySeconds and preserves an explicit zero", func() {
+		omitted := &configbutleraiv1alpha3.CommitRequest{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "save-", Namespace: namespace},
+			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+				GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, omitted)).To(Succeed())
+		var storedOmitted configbutleraiv1alpha3.CommitRequest
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(omitted), &storedOmitted)).To(Succeed())
+		Expect(storedOmitted.Spec.CloseDelaySeconds).NotTo(BeNil())
+		Expect(*storedOmitted.Spec.CloseDelaySeconds).To(Equal(int32(2)))
+
+		immediate := &configbutleraiv1alpha3.CommitRequest{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "save-", Namespace: namespace},
+			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+				GitTargetRef:      meta.LocalObjectReference{Name: "team-a-config"},
+				CloseDelaySeconds: ptr.To(int32(0)),
+			},
+		}
+		Expect(k8sClient.Create(ctx, immediate)).To(Succeed())
+		var storedImmediate configbutleraiv1alpha3.CommitRequest
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(immediate), &storedImmediate)).To(Succeed())
+		Expect(storedImmediate.Spec.CloseDelaySeconds).NotTo(BeNil())
+		Expect(*storedImmediate.Spec.CloseDelaySeconds).To(Equal(int32(0)))
 	})
 
 	It("does not overwrite a terminal outcome that is already recorded", func() {

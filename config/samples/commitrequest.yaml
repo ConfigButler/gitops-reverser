@@ -17,3 +17,8 @@ spec:
   # for a subject plus body; other control characters are rejected. When
   # omitted, the generated grouped-commit message is used.
   message: "Increase checkout API memory after load-test failures"
+  # Optional collect delay in seconds, 0-300, default 2. It covers the wait a write
+  # spends on its audit fact before the commit window opens, so a save issued right
+  # after the edit still finds its own window. Raise it on a loaded or distant
+  # cluster; 0 finalizes immediately and usually finds nothing pending.
+  closeDelaySeconds: 2
