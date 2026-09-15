@@ -43,8 +43,11 @@ that is still coming up.
 **If you route alerts on Event `type=Warning` for these kinds**, you will stop seeing startup
 replays and dependency waits. That is the intent: previously essentially every `Warning` on a
 healthy cluster was the system working, so a real block arrived indistinguishable from the routine
-ones. Alerting that wants the old breadth should route on the `Ready` condition going `False`
-rather than on Event severity, which is the more durable signal in any case.
+ones. Alerting that wants the old breadth should route on the `Ready` condition rather than on
+Event severity, which is the more durable signal in any case. Match on `Ready != True`, not on
+`Ready=False`: a progressing gate that has not been established at all publishes `Ready=Unknown`
+(a GitTarget whose source cluster has not yet reported reachability does exactly this), and
+`kstatus` treats both as in progress.
 
 ## `{namespaceOrCluster}` is gone; `{namespace}` renders `_cluster`
 

@@ -160,7 +160,8 @@ document cannot silently disagree.
    exactly like the routine ones and nobody picks it out. The accumulator has already decided this
    (`readinessProgressing` vs `readinessStalled`) and publishes the verdict as `Stalled`, so reading
    it back cannot drift from the trio. Alerting that wants every not-ready transition should route
-   on the `Ready` condition itself rather than on Event severity.
+   on the `Ready` condition itself rather than on Event severity, matching `Ready != True` so it
+   covers the `Unknown` that an unestablished gate publishes as well as `False`.
 
 ## Applied to this project
 
