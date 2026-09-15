@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.46.0...v0.47.0) (2026-09-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **commit:** `CommitRequest.spec.closeDelaySeconds` defaults to 2 instead of finalizing immediately, and `CommitRequestSpec.CloseDelaySeconds` is now `*int32` in the Go API. YAML and unstructured clients are unaffected; set `closeDelaySeconds: 0` explicitly to keep the old immediate finalize. See docs/UPGRADING.md.
+
+### Features
+
+* **commit:** default a save's collect delay to two seconds ([#367](https://github.com/ConfigButler/gitops-reverser/issues/367)) ([46bbf3c](https://github.com/ConfigButler/gitops-reverser/commit/46bbf3c54b813040f0394d115911048937bf7ca6))
+* **commit:** let a GitTarget frame a save request's message ([#364](https://github.com/ConfigButler/gitops-reverser/issues/364)) ([65abf54](https://github.com/ConfigButler/gitops-reverser/commit/65abf543d4e923bbcdcbccefae20ebd9e1352fc7))
+* **git:** make the branch worker queue depth configurable, and raise it ([#368](https://github.com/ConfigButler/gitops-reverser/issues/368)) ([c612722](https://github.com/ConfigButler/gitops-reverser/commit/c6127229610e5bb2a91c00fca9618e97f9401c4b))
+
+
+### Bug Fixes
+
+* **watch:** stop reporting a routine watch reconnect as a failure ([#363](https://github.com/ConfigButler/gitops-reverser/issues/363)) ([d0601a5](https://github.com/ConfigButler/gitops-reverser/commit/d0601a5963e371e0b5761d0814648318cfd0fc01))
+
 ## [0.46.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.45.1...v0.46.0) (2026-09-14)
 
 
