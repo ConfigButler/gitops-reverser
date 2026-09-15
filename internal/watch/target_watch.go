@@ -533,13 +533,44 @@ func (m *Manager) runTargetWatch(
 			return
 		}
 		if err != nil {
-			m.markTargetStreamState(gitDest, stream.key.Cell(), StreamStateBlocked, StreamReasonWatchError, err.Error())
+			if state, reason, mark := targetStreamStateForSessionEnd(err); mark {
+				m.markTargetStreamState(gitDest, stream.key.Cell(), state, reason, err.Error())
+			}
 			log.Info("target watch session ended; reconnecting",
 				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
 		}
 		if !sleepOrDone(ctx, targetWatchBackoff) {
 			return
 		}
+	}
+}
+
+// targetStreamStateForSessionEnd grades one watch session ending, and reports whether that
+// grading is worth publishing at all.
+//
+// A session ENDING says only that it ended. Whether anything is WRONG is the next open's answer,
+// and every open-failure path below already marks the cell Blocked/WatchError one backoff later.
+// Reporting a clean end as Blocked cost a Warning event, a Ready flip and a cadence change on a
+// perfectly healthy cluster, every time the API server hit its randomized watch timeout — roughly
+// every forty minutes, per type. The protocol working is not a failure.
+//
+// It deliberately does NOT report a distinct non-stalled reason for the reconnect either, which is
+// the other shape this could take. Any state other than Streaming flips StreamsRunning to False
+// and so flips Ready, which would make `kubectl wait --for=condition=Ready` and every CI gate
+// built on it intermittently fail against a healthy cluster. The reconnect stays observable where
+// it cannot flap a condition: watch_sessions_ended_total{reason="closed"}.
+//
+// An expired cursor is graded exactly as the resume path already grades it — Replaying, not
+// Blocked. It is routine watch-history pressure that forces a rebuild, and which session happens
+// to observe the 410 must not change how it reads.
+func targetStreamStateForSessionEnd(err error) (StreamState, string, bool) {
+	switch {
+	case errors.Is(err, errTargetWatchClosed):
+		return "", "", false
+	case errors.Is(err, errTargetWatchExpired):
+		return StreamStateReplaying, StreamReasonExpiredResourceVersion, true
+	default:
+		return StreamStateBlocked, StreamReasonWatchError, true
 	}
 }
 

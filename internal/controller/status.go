@@ -244,6 +244,20 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 // stored. Announcing intermediate values would fill `kubectl describe` with states that never
 // existed. Events are how a transient failure that clears before anyone looks stays visible at all,
 // and they are the only thing an Event-driven alerting pipeline can route.
+//
+// SEVERITY is read off Stalled, not off "Ready is not True". Those are different questions, and
+// conflating them is what made the severity stop carrying information: every progressing state —
+// a stream still replaying after a restart, a rule waiting on a GitTarget that is still coming up —
+// announced itself as a Warning, so on a healthy cluster essentially every Warning was the system
+// working. A real block then arrives looking exactly like the sixty-fourth routine one.
+//
+// The accumulator has already answered the question this needs: readinessProgressing means the gate
+// clears on its own (kstatus InProgress) and readinessStalled means it needs a human (kstatus
+// Failed). That verdict is published as Stalled, so reading it here cannot drift from the trio.
+//
+// An absent Stalled keeps Warning. Nothing in this package publishes Ready without the trio — every
+// beginStatus caller goes through applyReadiness — but the conservative arm means a future one that
+// does is loud rather than silently downgraded.
 func (s *reconcileStatus) recordReadyTransition() {
 	if s.recorder == nil {
 		return
@@ -257,9 +271,10 @@ func (s *reconcileStatus) recordReadyTransition() {
 		return
 	}
 
-	eventType := corev1.EventTypeWarning
-	if after.Status == metav1.ConditionTrue {
-		eventType = corev1.EventTypeNormal
+	eventType := corev1.EventTypeNormal
+	if stalled := findCondition(*s.conditions, ConditionTypeStalled); stalled == nil ||
+		stalled.Status == metav1.ConditionTrue {
+		eventType = corev1.EventTypeWarning
 	}
 	s.recorder.Event(s.object, eventType, after.Reason, after.Message)
 }

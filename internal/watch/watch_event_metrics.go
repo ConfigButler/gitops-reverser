@@ -39,6 +39,7 @@ const (
 // Watch session end reasons.
 const (
 	sessionEndedExpired       = "expired"
+	sessionEndedClosed        = "closed"
 	sessionEndedError         = "error"
 	sessionEndedStopped       = "stopped"
 	recoveryModeCursorResume  = "cursor_resume"
@@ -111,12 +112,22 @@ func recordWatchEventHandling(ctx context.Context, gvr schema.GroupVersionResour
 // `expired` is the one to watch: the stored resourceVersion fell out of watch history, so the next
 // session cannot resume and must replay the whole type. A restart storm is a rebuild storm, and the
 // rebuild cost is what recordWatchReplayDuration then measures.
+//
+// `closed` is the API server hitting its randomized watch timeout: the protocol working, and by far
+// the most common ending on a healthy cluster. It is split out of `error` for the same reason the
+// mid-stream 410 was (see the expired-cursor check in routeLiveTargetWatchEvent): `error` is what an
+// operator reads as "something is actually broken", so counting the routine case under it leaves
+// the label carrying no information at all. It is also the only signal for a reconnect that no
+// longer touches stream state — a rate(closed) far above one per watch timeout is a hot flap that
+// conditions, by design, will not show.
 func sessionEndReason(ctx context.Context, err error) string {
 	switch {
 	case ctx.Err() != nil:
 		return sessionEndedStopped
 	case errors.Is(err, errTargetWatchExpired):
 		return sessionEndedExpired
+	case errors.Is(err, errTargetWatchClosed):
+		return sessionEndedClosed
 	case err != nil:
 		return sessionEndedError
 	default:

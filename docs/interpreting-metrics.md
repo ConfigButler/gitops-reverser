@@ -189,7 +189,7 @@ boundary, the commit, the push. Background:
 | --- | --- | --- | --- |
 | `watch_events_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The ingest census: every delivered watch event, exactly once. `outcome` is `routed` / `unchanged` / `operation_filtered` / `not_object` / `bookmark` / `shutdown` / `stream_error` / `route_failed`. |
 | `watch_event_handling_seconds` | histogram | `group`, `version`, `resource` | How long a stream was **busy** on one event, attribution wait included. Occupancy, not queue delay. |
-| `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `expired` (cursor out of history, forcing a rebuild) / `error` / `stopped`. |
+| `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `closed` (the API server's routine watch timeout: the most common ending on a healthy cluster) / `expired` (cursor out of history, forcing a rebuild) / `error` / `stopped`. |
 | `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | Time to `initial-events-end`: what a `410` storm charges. |
 | `watch_recovery_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `resource`, `mode` | One per completed recovery. `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. No `version`: a recovery covers a cell. |
 | `watch_types` | gauge | `source_cluster`, `gittarget_namespace`, `gittarget_name`, `state` | Types this target resolves, by `streaming` / `replaying` / `blocked`. `sum` is the resolved total. |
@@ -332,6 +332,20 @@ between types rather than as a utilization figure.
 sum by (resource, reason) (rate(gitopsreverser_watch_sessions_ended_total[15m]))
 histogram_quantile(0.95, sum by (le) (rate(gitopsreverser_watch_replay_duration_seconds_bucket[5m])))
 ```
+
+A steady trickle of `reason="closed"` is health, not a fault: the API server ends every watch on a
+randomized timeout and the stream reconnects from its cursor in seconds. Because that reconnect
+deliberately moves no condition — a two-second reattach must not flip `StreamsRunning` and make
+`kubectl wait --for=condition=Ready` flaky on a healthy cluster — this counter is the **only** place
+a reconnect is visible, and so the only way to catch a stream that is reconnecting in a hot loop:
+
+```promql
+sum by (resource) (rate(gitopsreverser_watch_sessions_ended_total{reason="closed"}[15m])) > 0.05
+```
+
+One close per stream per watch timeout is expected; the threshold above is roughly an order of
+magnitude above that. `error` now means a session that ended on a genuine fault, and `expired`
+remains the one that costs a full rebuild.
 
 `git_commits_total` carries the **`BranchWorker`'s**
 `{provider_namespace, provider_name, branch, author_kind, message_source}` identity, not a GitTarget: one worker can
