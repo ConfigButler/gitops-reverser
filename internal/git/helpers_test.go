@@ -216,7 +216,7 @@ func newTestBranchWorker(
 	})
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-	worker := NewBranchWorker(k8sClient, logr.Discard(), providerName, "default", branch, nil, 0)
+	worker := NewBranchWorker(k8sClient, logr.Discard(), providerName, "default", branch, nil, BranchWorkerLimits{})
 	worker.ctx = context.Background()
 	return worker, nil
 }

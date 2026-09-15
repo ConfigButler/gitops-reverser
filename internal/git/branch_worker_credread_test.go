@@ -73,7 +73,7 @@ func TestCommitPendingWrites_ResolvesCredentialsOncePerPushCycle(t *testing.T) {
 		}).
 		Build()
 
-	worker := NewBranchWorker(countingClient, logr.Discard(), "test-repo", "default", "main", nil, 0)
+	worker := NewBranchWorker(countingClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
 	worker.ctx = context.Background()
 
 	// First commit of the cycle: fetches the remote tip, so it resolves credentials exactly once.

@@ -78,7 +78,7 @@ func TestPendingWrites_ResolvesEncryptionOncePerUniqueTarget(t *testing.T) {
 		Build()
 
 	counting := &countingClient{Client: baseClient}
-	worker := NewBranchWorker(counting, logr.Discard(), providerName, "default", "main", nil, 0)
+	worker := NewBranchWorker(counting, logr.Discard(), providerName, "default", "main", nil, BranchWorkerLimits{})
 	worker.ctx = context.Background()
 
 	events := []Event{

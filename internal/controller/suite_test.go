@@ -99,7 +99,7 @@ var _ = BeforeSuite(func() {
 
 	// Initialize WorkerManager for new architecture
 	workerManager := git.NewWorkerManager(
-		mgr.GetClient(), logf.Log.WithName("worker-manager"), 0, types.SensitiveResourcePolicy{},
+		mgr.GetClient(), logf.Log.WithName("worker-manager"), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{},
 	)
 	err = mgr.Add(workerManager)
 	Expect(err).NotTo(HaveOccurred())

@@ -281,7 +281,12 @@ func TestOwner_AFailedPassLeavesTheRunningPlanUntouched(t *testing.T) {
 	m.discoveryClient = func() (apiResourceDiscovery, error) {
 		return nil, errors.New("discovery is unavailable")
 	}
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	m.EventRouter = NewEventRouter(workerManager, m, nil, logr.Discard())
 	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
 
@@ -434,7 +439,12 @@ func TestOwner_AStreamOutlivesThePassThatStartedIt(t *testing.T) {
 
 	m := ownerTestManager()
 	m.watchLifetime.Store(&lifetime)
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	m.EventRouter = NewEventRouter(workerManager, m, nil, logr.Discard())
 	gitDest := types.NewResourceReference("target", "team-a")
 
@@ -519,7 +529,12 @@ func TestOwner_AFailedSharedRefreshAsksForAnother(t *testing.T) {
 // `timed_out` pass outcome the metrics doc tells operators to alert on could never be emitted.
 func TestOwner_APassThatIsOutOfTimeStopsAndSaysSo(t *testing.T) {
 	m := ownerTestManager()
-	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	workerManager := git.NewWorkerManager(
+		nil,
+		logr.Discard(),
+		git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{},
+	)
 	m.EventRouter = NewEventRouter(workerManager, m, nil, logr.Discard())
 	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
 

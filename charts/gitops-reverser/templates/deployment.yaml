@@ -105,6 +105,8 @@ spec:
             {{- if .Values.controllerManager.allowInsecureGitHTTP }}
             - --allow-insecure-git-http
             {{- end }}
+            - --branch-worker-queue-depth={{ int .Values.controllerManager.branchWorkerQueueDepth }}
+            - --branch-buffer-max-size={{ .Values.controllerManager.branchBufferMaxSize }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}

@@ -45,7 +45,7 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 		target("negative", ptrString("-2s")),
 		target("garbage", ptrString("not-a-duration")),
 	).Build()
-	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, 0)
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{})
 	ctx := t.Context()
 
 	for _, tc := range []struct {
@@ -163,15 +163,72 @@ func TestNewBranchWorker_DefaultsBufferCap(t *testing.T) {
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, 0)
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{})
 	assert.Equal(t, DefaultBranchBufferMaxBytes, w.branchBufferMaxBytes)
 
-	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, 4096)
+	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{MaxBufferBytes: 4096})
 	assert.Equal(t, int64(4096), w.branchBufferMaxBytes)
 
-	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, -7)
+	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{MaxBufferBytes: -7})
 	assert.Equal(t, DefaultBranchBufferMaxBytes, w.branchBufferMaxBytes,
 		"non-positive override falls back to default")
+}
+
+// The queue depth is the drop boundary, so a configured depth that did not reach the
+// channel would be a knob that reads back correctly and changes nothing — the failure the
+// operator cannot see, because the symptom (dropped writes) is what they set it to prevent.
+func TestNewBranchWorker_QueueDepthReachesTheChannel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{})
+	assert.Equal(t, DefaultBranchWorkerQueueDepth, cap(w.eventQueue))
+
+	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: 7})
+	assert.Equal(t, 7, cap(w.eventQueue))
+
+	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: -1})
+	assert.Equal(t, DefaultBranchWorkerQueueDepth, cap(w.eventQueue),
+		"non-positive override falls back to default")
+}
+
+// The two knobs are independent: setting one must not silently reset the other, since an
+// operator raising the queue has no reason to restate a buffer cap they are happy with.
+func TestNewBranchWorker_LimitsAreIndependent(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: 3})
+	assert.Equal(t, 3, cap(w.eventQueue))
+	assert.Equal(t, DefaultBranchBufferMaxBytes, w.branchBufferMaxBytes)
+
+	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{MaxBufferBytes: 4096})
+	assert.Equal(t, DefaultBranchWorkerQueueDepth, cap(w.eventQueue))
+	assert.Equal(t, int64(4096), w.branchBufferMaxBytes)
+}
+
+// A configured depth must move the drop boundary with it, which is the behaviour the knob
+// is FOR: accept exactly the configured number of pending writes, and drop the next.
+func TestBranchWorker_QueueDepthBoundsAcceptedWrites(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	const depth = 5
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: depth})
+
+	// The worker is never started, so nothing drains: the queue fills to exactly its depth.
+	for i := range depth {
+		assert.Truef(t, w.enqueueRequest(&WriteRequest{}), "write %d must fit the configured depth", i)
+	}
+	assert.False(t, w.enqueueRequest(&WriteRequest{}), "the write past the depth must be dropped")
+	assert.Equal(t, int64(depth), w.inflightItems.Load(),
+		"a dropped write must not be counted in flight")
 }
 
 func ptrString(s string) *string { return &s }
