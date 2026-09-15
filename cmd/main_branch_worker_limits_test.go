@@ -44,20 +44,21 @@ func TestParseFlags_BranchWorkerQueueDepthRejectsNonPositive(t *testing.T) {
 	}
 }
 
-// The env-var seam is how the container image carries a default without the chart having to
-// render the flag, mirroring BRANCH_BUFFER_MAX_SIZE.
-func TestParseFlags_BranchWorkerQueueDepthFromEnv(t *testing.T) {
+// The depth is deliberately flag-only, with no environment fallback. Every install path
+// this repo ships configures the manager by argv -- the chart renders the flag
+// unconditionally, and the config/ manifests pass args too -- so an env seam here would be
+// a second configuration path that no install could actually reach, and one whose parse
+// order could fail a startup the explicit flag had already settled. Asserted so it does not
+// quietly come back.
+func TestParseFlags_BranchWorkerQueueDepthIgnoresEnvironment(t *testing.T) {
 	t.Setenv("BRANCH_WORKER_QUEUE_DEPTH", "2500")
 	cfg, err := parseLimitsArgs(t)
 	require.NoError(t, err)
-	require.Equal(t, 2500, cfg.branchWorkerLimits.QueueDepth)
+	require.Equal(t, git.DefaultBranchWorkerQueueDepth, cfg.branchWorkerLimits.QueueDepth,
+		"the depth is flag-only; an env var must not set it")
 
+	// An unparseable value cannot fail a startup, because nothing reads it.
 	t.Setenv("BRANCH_WORKER_QUEUE_DEPTH", "not-a-number")
-	_, err = parseLimitsArgs(t)
-	require.ErrorContains(t, err, "invalid BRANCH_WORKER_QUEUE_DEPTH")
-
-	// An explicit flag still beats the environment.
-	t.Setenv("BRANCH_WORKER_QUEUE_DEPTH", "2500")
 	cfg, err = parseLimitsArgs(t, "--branch-worker-queue-depth=77")
 	require.NoError(t, err)
 	require.Equal(t, 77, cfg.branchWorkerLimits.QueueDepth)

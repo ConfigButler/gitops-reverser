@@ -617,15 +617,8 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"(e.g. 8Mi, 1Gi; default 8Mi). Bounds the open commit window plus the writes retained "+
 			"for replay until a push succeeds. It does NOT bound the event queue, which is "+
 			"accounted only after a dequeue: see --branch-worker-queue-depth.")
-	queueDepthStr := os.Getenv("BRANCH_WORKER_QUEUE_DEPTH")
-	if queueDepthStr == "" {
-		queueDepthStr = strconv.Itoa(git.DefaultBranchWorkerQueueDepth)
-	}
-	queueDepthDefault, err := strconv.Atoi(queueDepthStr)
-	if err != nil {
-		return appConfig{}, fmt.Errorf("invalid BRANCH_WORKER_QUEUE_DEPTH %q: %w", queueDepthStr, err)
-	}
-	fs.IntVar(&cfg.branchWorkerLimits.QueueDepth, "branch-worker-queue-depth", queueDepthDefault,
+	fs.IntVar(&cfg.branchWorkerLimits.QueueDepth, "branch-worker-queue-depth",
+		git.DefaultBranchWorkerQueueDepth,
 		fmt.Sprintf("Event queue depth per branch worker (default %d). ", git.DefaultBranchWorkerQueueDepth)+
 			"A branch worker is shared by every "+
 			"GitTarget writing to one (GitProvider, branch), and a full queue DROPS the write "+
