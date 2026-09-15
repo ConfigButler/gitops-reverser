@@ -603,8 +603,8 @@ spec:
 
 | Template | Fields |
 |---|---|
-| `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, `RequestMessage`, and the `LabelValues` / `LabelValue` accessors |
-| `requestTemplate` | the same fields, with `RequestMessage` carrying the save request's message |
+| `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, and the `LabelValues` / `LabelValue` accessors |
+| `requestTemplate` | the same fields, plus `RequestMessage` |
 | Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `Labels`, and the `Label` accessor |
 | `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `Revision` |
 
@@ -614,6 +614,12 @@ Git. Repeated edits to one resource collapse to one entry, with the last operati
 first-seen order. An entry already matching Git still counts, and several entries may share a file.
 The count can exceed the number of changed resources. A no-op creates no commit, even with a literal
 message. Printing a resource entry directly keeps its `group/version/resource[/namespace]/name` form.
+
+`RequestMessage` belongs to `requestTemplate`. It exists on the live context too, but is always
+empty there: a window carrying a save request's message renders `requestTemplate` when one is
+configured and the literal message when one is not, so `liveTemplate` only ever runs for windows
+that have no request message. Do not reach for `{{if .RequestMessage}}` inside `liveTemplate`;
+it never fires.
 
 `Author` is the raw window username and is empty when no actor is named. It does not use an OIDC
 display name or the `attribution-unresolved` Git author sentinel. The sentinel appears only in the

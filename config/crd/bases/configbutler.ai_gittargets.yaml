@@ -174,16 +174,17 @@ spec:
                         type: string
                       requestTemplate:
                         description: |-
-                          RequestTemplate optionally frames a CommitRequest's message instead of committing it
-                          verbatim. It renders only for a window a request's message is attached to, and receives the
-                          live fields plus RequestMessage, which carries that message unaltered.
+                          RequestTemplate frames a CommitRequest's message instead of committing it verbatim. It
+                          renders only for a commit window whose attached request supplied a message; every other
+                          window uses liveTemplate or reconcileTemplate.
 
-                          Omit it and a request's message is committed exactly as supplied, which is the default.
-                          Set it and the operator owns the wording around the message while the requester still owns
-                          the message itself: the request is never parsed as a template, so a save-button user cannot
-                          execute one. A template that never renders RequestMessage is REJECTED — framing the message
-                          is the whole point, and silently dropping a requester's stated reason is worse than having
-                          no template at all.
+                          It receives the same fields as liveTemplate, plus RequestMessage carrying the request's
+                          message unaltered. That message is never parsed as a template, so template syntax inside it
+                          stays literal.
+
+                          Omitted, a request's message is committed exactly as supplied. A template that never renders
+                          RequestMessage is rejected. One that fails to render at commit time commits the message
+                          verbatim instead, counted as message_source="commit_request_fallback".
                         type: string
                     type: object
                     x-kubernetes-validations:

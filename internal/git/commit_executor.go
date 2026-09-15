@@ -156,7 +156,15 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, messageRes
 		message = p.CommitMessage
 		err = ValidateLiteralCommitMessage(message)
 	case messageResolutionRequestTemplate:
-		message, resolution = p.framedRequestMessage()
+		// Validated on THIS arm too, not just the verbatim one. The literal reaches Git either
+		// way — framed on success, and by itself on the fallback below — so framing must not
+		// become a route that smuggles a message past the check the verbatim path enforces.
+		// The controller validates earlier (commitrequest_controller.go), which makes this
+		// belt-and-braces rather than reachable today; it is exactly the kind of invariant that
+		// stops being true once a second producer of PendingWrite appears.
+		if err = ValidateLiteralCommitMessage(p.CommitMessage); err == nil {
+			message, resolution = p.framedRequestMessage()
+		}
 	case messageResolutionReconcileTemplate:
 		message, err = renderReconcileCommitMessageFromEvents(p.Events, p.Target().Name, p.CommitConfig)
 	case messageResolutionLiveTemplate:

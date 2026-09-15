@@ -390,30 +390,85 @@ func renderInPlaceFixtureFolder(fixtureRoot, namespace string) string {
 	return rendered
 }
 
+// seedRenderedFolderIntoRepo pushes a fixture folder straight into the target branch, the way a
+// human editing the repo by hand would.
+//
+// It RETRIES, because by the time most callers reach it the GitTarget is healthy and actively
+// mirroring into this same branch. The seed reads the remote tip, builds a commit on it and pushes
+// with the remote's compare-and-swap in force, so any controller commit landing in that window
+// rejects the push:
+//
+//	! [remote rejected] HEAD -> main (incorrect old value provided)
+//
+// Losing that race is expected and says nothing about the behaviour under test, so each attempt
+// rebuilds the commit on the new tip rather than failing the spec. The window is small but real:
+// it was reported as an intermittent failure of the unsupported-folder spec, and the helper is
+// shared by six spec files, so one unretried push is a flake source for all of them.
 func seedRenderedFolderIntoRepo(repo *RepoArtifacts, namespace, renderedFolder, gitPath string) {
 	GinkgoHelper()
 
 	configureRepoOriginWithCredentials(repo, namespace)
-	mustGit := func(args ...string) {
+	Eventually(func() error {
+		return attemptSeedRenderedFolder(repo, renderedFolder, gitPath)
+	}, seedPushTimeout, seedPushInterval).Should(Succeed(),
+		"seeding %q kept losing the push race with the controller's own commits", gitPath)
+}
+
+const (
+	seedPushTimeout  = 60 * time.Second
+	seedPushInterval = 2 * time.Second
+)
+
+// attemptSeedRenderedFolder is one seed attempt, from the CURRENT remote tip.
+//
+// It returns errors rather than asserting, because every step of it is retried: an Expect in here
+// would fail the spec on the first lost race instead of letting Eventually rebuild on the new tip.
+func attemptSeedRenderedFolder(repo *RepoArtifacts, renderedFolder, gitPath string) error {
+	runGit := func(args ...string) error {
 		out, gitErr := gitRun(repo.CheckoutDir, args...)
-		Expect(gitErr).NotTo(HaveOccurred(), fmt.Sprintf("git %s: %s", strings.Join(args, " "), out))
+		if gitErr != nil {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), gitErr, out)
+		}
+		return nil
 	}
 
+	// Re-fetch on EVERY attempt: the whole point of retrying is to rebuild on the tip that beat us.
 	if _, err := gitRun(repo.CheckoutDir, "fetch", "origin", "main"); err == nil {
-		mustGit("checkout", "-B", "main", "origin/main")
-		mustGit("reset", "--hard", "origin/main")
+		if err := runGit("checkout", "-B", "main", "origin/main"); err != nil {
+			return err
+		}
+		if err := runGit("reset", "--hard", "origin/main"); err != nil {
+			return err
+		}
 	} else {
-		mustGit("checkout", "--orphan", "main")
+		if err := runGit("checkout", "--orphan", "main"); err != nil {
+			return err
+		}
 		_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
 	}
 
 	dest := filepath.Join(repo.CheckoutDir, gitPath)
-	Expect(os.RemoveAll(dest)).To(Succeed())
-	Expect(copyFixtureDir(renderedFolder, dest)).To(Succeed())
+	if err := os.RemoveAll(dest); err != nil {
+		return fmt.Errorf("clear %s: %w", gitPath, err)
+	}
+	if err := copyFixtureDir(renderedFolder, dest); err != nil {
+		return fmt.Errorf("copy fixture into %s: %w", gitPath, err)
+	}
 
-	mustGit("add", gitPath)
-	mustGit("commit", "-m", "e2e: seed manifest folder fixture")
-	mustGit("push", "origin", "HEAD:main")
+	if err := runGit("add", gitPath); err != nil {
+		return err
+	}
+	// A retry that lands on a tip already carrying this exact content stages nothing, and
+	// `git commit` with no changes is an error. That is success: the fixture is in Git, which is
+	// all the caller asked for.
+	if staged, err := gitRun(repo.CheckoutDir, "diff", "--cached", "--quiet"); err == nil {
+		_ = staged
+		return nil
+	}
+	if err := runGit("commit", "-m", "e2e: seed manifest folder fixture"); err != nil {
+		return err
+	}
+	return runGit("push", "origin", "HEAD:main")
 }
 
 func copyFixtureDir(src, dst string) error {

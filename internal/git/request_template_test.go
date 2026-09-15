@@ -188,3 +188,30 @@ func TestResolveCommitConfig_RequestTemplateHasNoDefault(t *testing.T) {
 	})
 	assert.Equal(t, requestBodyTemplate, overlaid.Message.RequestTemplate, "overlay trims like the others")
 }
+
+// Framing must not become a route that smuggles a message past the check the verbatim arm
+// enforces. The controller validates earlier, so this is not reachable through the normal flow —
+// it is the invariant that has to survive a second producer of PendingWrite appearing.
+func TestCommitMetadata_FramingStillValidatesTheLiteralMessage(t *testing.T) {
+	config := requestConfig(requestBodyTemplate)
+
+	for name, message := range map[string]string{
+		"a control character": "fix(api): correct\tthe service port",
+		"whitespace only":     "   \n   ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, _, err := requestWrite(message, config).commitMetadata()
+			require.Error(t, err, "a framed message must face the same literal check as a verbatim one")
+
+			// Same verdict on both arms, so framing cannot change what is accepted.
+			_, _, _, unframedErr := requestWrite(message, ResolveCommitConfig(nil)).commitMetadata()
+			require.Error(t, unframedErr)
+		})
+	}
+
+	// And the valid case still renders, so the check gates nothing it should not.
+	message, _, resolution, err := requestWrite("fix(api): correct the service port", config).commitMetadata()
+	require.NoError(t, err)
+	assert.Equal(t, messageResolutionRequestTemplate, resolution)
+	assert.Contains(t, message, "fix(api): correct the service port")
+}
