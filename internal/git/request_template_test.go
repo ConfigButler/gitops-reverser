@@ -215,3 +215,55 @@ func TestCommitMetadata_FramingStillValidatesTheLiteralMessage(t *testing.T) {
 	assert.Equal(t, messageResolutionRequestTemplate, resolution)
 	assert.Contains(t, message, "fix(api): correct the service port")
 }
+
+// A fixed sentinel would let a template satisfy the check by emitting the sentinel itself, never
+// referencing .RequestMessage. The probe is minted fresh per validation precisely so that the only
+// way to pass is to render the message.
+func TestValidateCommitConfig_RejectsATemplateThatFakesTheProbe(t *testing.T) {
+	for name, template := range map[string]string{
+		"the old fixed sentinel": "<gitops-reverser probe: request message>",
+		"the probe prefix":       "gitops-reverser-request-probe-00000000000000000000000000000000",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateCommitConfig(requestConfig(template))
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "requestTemplate must render {{.RequestMessage}}")
+		})
+	}
+}
+
+// Two validations of the same template must not be able to agree by accident on a constant.
+func TestNewRequestTemplateProbe_IsFreshEachTime(t *testing.T) {
+	first, err := newRequestTemplateProbe()
+	require.NoError(t, err)
+	second, err := newRequestTemplateProbe()
+	require.NoError(t, err)
+
+	assert.NotEqual(t, first, second)
+	assert.NotEmpty(t, first)
+}
+
+// requestTemplate describes the commit a CommitRequest's message produces, and a CommitRequest
+// attaches to a live window — which finalizes as PendingWriteCommit. An atomic snapshot can also
+// carry a message, and it must keep the behaviour it had before requestTemplate existed: committed
+// verbatim, never framed with a live context it was not written for.
+func TestResolveMessage_AtomicWriteIsNeverFramed(t *testing.T) {
+	config := requestConfig(requestBodyTemplate)
+
+	atomic := requestWrite("chore: snapshot", config)
+	atomic.Kind = PendingWriteAtomic
+	assert.Equal(t, messageResolutionRequest, atomic.resolveMessage(),
+		"an atomic write with a message stays verbatim even when requestTemplate is configured")
+	assert.Equal(t, messageSourceCommitRequest, atomic.messageSource())
+
+	// And with no message it still renders reconcileTemplate, as documented.
+	plainAtomic := requestWrite("", config)
+	plainAtomic.Kind = PendingWriteAtomic
+	assert.Equal(t, messageResolutionReconcileTemplate, plainAtomic.resolveMessage())
+
+	// A resync is untouched either way.
+	resync := requestWrite("pre-rendered", config)
+	resync.Kind = PendingWriteResync
+	assert.Equal(t, messageResolutionPreRendered, resync.resolveMessage())
+}

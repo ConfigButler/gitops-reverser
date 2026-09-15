@@ -4,6 +4,8 @@ package git
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -190,9 +192,21 @@ func liveValidationSamples(sampleEvent Event) [][]Event {
 	return samples
 }
 
-// requestTemplateProbe is the sentinel that requestTemplate validation renders as the request's
-// message. It only has to be something no template could plausibly produce on its own.
-const requestTemplateProbe = "<gitops-reverser probe: request message>"
+// newRequestTemplateProbe mints the sentinel that requestTemplate validation renders as the
+// request's message.
+//
+// Fresh per call, and unpredictable, because the check asks "did the message reach the commit?" by
+// looking for this string in the rendered output. A FIXED sentinel answers a weaker question: a
+// template that emits the constant itself would pass while never referencing .RequestMessage at
+// all. Nobody would write that on purpose, but a check that can be satisfied without doing the
+// thing it verifies is not a check.
+func newRequestTemplateProbe() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate requestTemplate probe: %w", err)
+	}
+	return "gitops-reverser-request-probe-" + hex.EncodeToString(raw[:]), nil
+}
 
 // validateRequestTemplate checks that a configured requestTemplate renders, AND that it actually
 // puts the request's message in the commit.
@@ -216,9 +230,13 @@ func validateRequestTemplate(config CommitConfig, events []Event) error {
 		return nil
 	}
 
+	probe, err := newRequestTemplateProbe()
+	if err != nil {
+		return err
+	}
 	rendered, err := renderRequestCommitMessage(PendingWrite{
 		Kind:          PendingWriteCommit,
-		CommitMessage: requestTemplateProbe,
+		CommitMessage: probe,
 		Events:        events,
 	}, config)
 	if err != nil {
@@ -226,7 +244,7 @@ func validateRequestTemplate(config CommitConfig, events []Event) error {
 	}
 	// EVERY sample must carry the message through, not merely one: the contract is that a
 	// requester's reason reaches the commit whatever the window happened to contain.
-	if !strings.Contains(rendered, requestTemplateProbe) {
+	if !strings.Contains(rendered, probe) {
 		return errors.New("requestTemplate must render {{.RequestMessage}}: as written it would " +
 			"drop the CommitRequest's message from the commit. Omit requestTemplate to commit that " +
 			"message verbatim")

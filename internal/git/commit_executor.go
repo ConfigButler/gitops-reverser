@@ -92,7 +92,14 @@ func (p PendingWrite) resolveMessage() messageResolution {
 	switch {
 	case p.Kind == PendingWriteResync:
 		return messageResolutionPreRendered
-	case p.CommitMessage != "" && p.CommitConfig.Message.RequestTemplate != "":
+	// Framing is bound to the GROUPED kind, not merely to "carries a message". A CommitRequest
+	// attaches its message to an open live window, which finalizes as PendingWriteCommit, so that
+	// is the only write requestTemplate describes. An atomic snapshot can also carry a message
+	// (WriteRequest.CommitMessage), and framing one with the live context would silently reroute
+	// the documented atomic path through a template written for save requests.
+	case p.Kind == PendingWriteCommit &&
+		p.CommitMessage != "" &&
+		p.CommitConfig.Message.RequestTemplate != "":
 		return messageResolutionRequestTemplate
 	case p.CommitMessage != "":
 		return messageResolutionRequest
