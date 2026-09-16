@@ -453,7 +453,17 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 
 		By("recreating the GitTarget now that the WatchRule is active to force a fresh reconcile batch")
 		cleanupGitTarget(destName, testNs)
-		createValidatedGitTarget(destName, testNs, providerName, commitPath)
+		// The recreated target must carry the SAME reconcile template. It is the batch commit this
+		// spec asserts on, and the recreation exists only to re-trigger the reconcile that produces
+		// it — recreating with the default template instead makes the two targets differ in the one
+		// way the assertion reads. Today the spec still passes, because the fresh reconcile finds
+		// the batch already committed byte-identically and writes nothing, so the commit under
+		// assertion is the pre-recreation one. That is a trap, not a design: the moment the
+		// recreated reconcile has anything to write, the subject becomes "chore: reconcile ..." and
+		// the HavePrefix("e2e-reconcile:") assertion below fails for a reason that has nothing to
+		// do with what this spec tests.
+		createValidatedGitTargetWithCommitMessage(destName, testNs, providerName, commitPath,
+			gitTargetCommitOptions{ReconcileTemplate: customReconcileTemplate})
 
 		By("waiting for the batch commit and verifying its message uses the batch template")
 		Eventually(func(g Gomega) {

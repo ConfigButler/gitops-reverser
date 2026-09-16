@@ -27,7 +27,7 @@ user-facing place — a Kubernetes `resourceVersion`. A commit message about Git
 "revision" should mean something other than a commit.
 
 The rename lands in the same release as the new per-resource
-[`Resources[i].ResourceVersion`](configuration.md#naming-the-version-a-commit-wrote) on
+[`Resources[i].ResourceVersion`](configuration.md#naming-the-state-a-commit-wrote) on
 `liveTemplate`, so the vocabulary changes once: **`Revision` is a Git commit, `ResourceVersion` is a
 Kubernetes version.**
 

@@ -62,18 +62,36 @@ func TestBuildLiveCommitMessageData_CarriesResourceVersionPerResource(t *testing
 
 // A resource re-edited inside one window collapses to its last routed event, so the version the
 // message names is the state the commit actually writes — not the one that opened the window.
-func TestBuildLiveCommitMessageData_ResourceVersionIsTheLastObserved(t *testing.T) {
-	data := buildLiveCommitMessageData("someone", "target", "", []Event{
-		observedEvent("api", "CREATE", "20001", 3),
-		observedEvent("api", "UPDATE", "20009", 4),
-	})
+//
+// It goes through openWindow, which is where coalescing actually happens: add() is
+// last-write-wins per windowPathKey and orderedEvents() yields one event per path.
+// buildLiveCommitMessageData does NOT deduplicate — it appends one ResourceRef per event it is
+// handed — so feeding it both events directly and reading the last element would assert nothing
+// but slice indexing, and would keep passing if coalescing stopped selecting the final event.
+// Hence the length assertion first: one entry is the property, the counters on it are the payload.
+func TestOpenWindow_ResourceVersionIsTheLastObserved(t *testing.T) {
+	first := observedEvent("api", "CREATE", "20001", 3)
+	second := observedEvent("api", "UPDATE", "20009", 4)
 
-	last := data.Resources[len(data.Resources)-1]
-	if last.ResourceVersion != "20009" {
-		t.Errorf("last ref names %q, want the newest observed version 20009", last.ResourceVersion)
+	window := newOpenWindow(first, newContentWriter(types.SensitiveResourcePolicy{}))
+	window.add(first)
+	window.add(second)
+
+	data := buildLiveCommitMessageData(
+		window.Author, window.GitTarget, "", window.orderedEvents())
+
+	if len(data.Resources) != 1 {
+		t.Fatalf("the window collapsed to %d resources, want 1 — both events write the same path",
+			len(data.Resources))
 	}
-	if last.Generation != 4 {
-		t.Errorf("last ref names generation %d, want the newest observed 4", last.Generation)
+	surviving := data.Resources[0]
+	if surviving.ResourceVersion != "20009" {
+		t.Errorf("the surviving ref names %q, want the newest observed version 20009",
+			surviving.ResourceVersion)
+	}
+	if surviving.Generation != 4 {
+		t.Errorf("the surviving ref names generation %d, want the newest observed 4",
+			surviving.Generation)
 	}
 }
 
