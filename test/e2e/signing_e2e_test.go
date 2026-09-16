@@ -394,10 +394,11 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		watchRuleName := providerName + "-wr"
 		commitPath := "e2e/signing-reconcile"
 		// The reconcile template names the synced type ({{.APIVersion}}/{{.Resource}}) and pins the
-		// {{.Revision}} so the per-type reconcile commits are self-describing — the §9 "name the synced
-		// type" improvement in docs/finished/signing-snapshot-tail-replay-failure-investigation.md.
+		// {{.ResourceVersion}} so the per-type reconcile commits are self-describing — the §9 "name the
+		// synced type" improvement in docs/finished/signing-snapshot-tail-replay-failure-investigation.md
+		// (which predates the rename and still writes it as {{.Revision}}).
 		customReconcileTemplate := "e2e-reconcile: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
-			"@{{.Revision}} to {{.GitTarget}}"
+			"@{{.ResourceVersion}} to {{.GitTarget}}"
 
 		DeferCleanup(func() {
 			if skipCleanupBecauseResourcesArePreserved(
@@ -553,7 +554,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		By("creating target A and its WatchRule, then waiting for A to reconcile the seed band")
 		createValidatedGitTargetWithCommitMessage(destNameA, testNs, providerName, commitPathA,
 			gitTargetCommitOptions{ReconcileTemplate: "e2e-reconcile: synced {{.Count}} " +
-				"{{.APIVersion}}/{{.Resource}}@{{.Revision}} to {{.GitTarget}}"})
+				"{{.APIVersion}}/{{.Resource}}@{{.ResourceVersion}} to {{.GitTarget}}"})
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameA, testNs, destNameA}, testNs)).To(Succeed())
@@ -580,7 +581,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "failed to create overlap-b configmaps")
 		createGitTargetWithCommitMessage(destNameB, testNs, providerName, commitPathB, "main",
 			gitTargetCommitOptions{ReconcileTemplate: "e2e-reconcile: synced {{.Count}} " +
-				"{{.APIVersion}}/{{.Resource}}@{{.Revision}} to {{.GitTarget}}"})
+				"{{.APIVersion}}/{{.Resource}}@{{.ResourceVersion}} to {{.GitTarget}}"})
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameB, testNs, destNameB}, testNs)).To(Succeed())

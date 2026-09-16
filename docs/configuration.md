@@ -598,15 +598,15 @@ spec:
         {{range .Resources -}}
         - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}
         {{end -}}
-      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Namespace}} in {{.Namespace}}{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
+      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Namespace}} in {{.Namespace}}{{end}}{{if .ResourceVersion}} (last resourceVersion: {{.ResourceVersion}}){{end}}"
 ```
 
 | Template | Fields |
 |---|---|
 | `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, and the `LabelValues` / `LabelValue` accessors |
 | `requestTemplate` | the same fields, plus `RequestMessage` |
-| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `Labels`, and the `Label` accessor |
-| `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `Revision` |
+| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `ResourceVersion`, `Labels`, and the `Label` accessor |
+| `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `ResourceVersion` |
 
 Live `Count` counts retained entries after window coalescing, before the writer compares them with
 Git. Repeated edits to one resource collapse to one entry, with the last operation retained.
@@ -699,12 +699,51 @@ Three things to know:
   nothing, so a commit holding one labeled and one unlabeled resource is named after neither.
 - **A `DELETE` carries no object**, because the resource is already gone from the cluster, so
   `Kind` and `Labels` are empty for one. The identity fields (`Name`, `Namespace`, `Resource`, …)
-  are unaffected. A commit containing a `DELETE` therefore has no agreed `LabelValue`: what the
-  deleted resource was labeled is not something the window still knows.
+  are unaffected, and so is `ResourceVersion`: the watch delivers the final object, so the last
+  version that existed is still knowable even though the object is not. A commit containing a
+  `DELETE` therefore has no agreed `LabelValue`: what the deleted resource was labeled is not
+  something the window still knows.
+
+##### Naming the version a commit wrote
+
+`{{.ResourceVersion}}` on a `Resources` entry is the `metadata.resourceVersion` of the state that
+commit wrote. It is not committed to the file (`resourceVersion` is stripped from every manifest
+on purpose, because a version inside a manifest would make every observation a byte change); it
+travels beside the object, in the message only. Guard it with `{{with}}`:
+
+```yaml
+liveTemplate: |-
+  chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}
+
+  {{range .Resources -}}
+  - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}{{with .ResourceVersion}}@{{.}}{{end}}
+  {{end -}}
+```
+
+It is off by default. Turn it on when you want a commit to be **joinable**: to an audit log entry,
+to a `kubectl get -o yaml` taken at the time, to another operator's logs.
+
+Two limits, both worth knowing before you rely on it:
+
+- **It lags the cluster, deliberately.** An update whose committed content would be identical (a
+  `/status`-only write) is never routed, so the version in the commit can be older than the
+  object's current one. A resource re-edited inside one window contributes the last routed
+  version, and an entry that already matched Git still contributes one.
+- **Compare it for equality, never by subtraction.** `resourceVersion` is opaque by API contract,
+  and is the cluster-wide store revision in practice, so two consecutive commits of one ConfigMap
+  can read `@1331` then `@8402` with nothing skipped: every other object's writes moved the
+  same counter. Equal to the live version means nothing is pending; a gap means nothing at all. To
+  count what the operator skipped, read `watch_events_total{outcome="unchanged"}`, which is exactly
+  that census.
+
+A producer that observed no object leaves it empty: a reconcile, a resync, and bootstrap writes all
+render nothing there.
 
 `reconcileTemplate` gets none of these. It describes a *type* being reconciled rather than a list
-of resources, so there are no labels to read, and its `Namespace` keeps the plain meaning it always
-had: the namespace a namespace-scoped reconcile covered, empty for a whole-target or all-namespaces
+of resources, so there are no labels to read, and its own `{{.ResourceVersion}}` is the snapshot
+`LIST`'s version: one value for the whole run, not any single object's. Live names n resources, so
+it names each one's version; reconcile names a type, so it names the snapshot's. Its `Namespace`
+keeps the plain meaning it always had: the namespace a namespace-scoped reconcile covered, empty for a whole-target or all-namespaces
 one. That emptiness means "every namespace", not "cluster-scoped", so the `_cluster` sentinel would
 be a lie there rather than a convenience.
 
@@ -724,6 +763,11 @@ The nouns are the same in both, and only the spelling follows each host language
 | name | `{name}` | `.Name` |
 | API version | `{apiVersion}` | `.APIVersion` |
 | one label | `{label:team}` | `.Label "team"` |
+| the observed version | (none) | `.ResourceVersion` |
+
+The version is the first noun that legitimately exists on only one side. A path keyed on a version
+would write a new file on every observation, which is the opposite of what placement is for: a path
+has to be stable and statically checkable. A message describes one moment, so it can name one.
 
 The capitals are Go's, not a style choice: `text/template` can only reach exported struct fields,
 which must begin with one. The braces are lower-case because a placement template reads like the
@@ -731,8 +775,12 @@ manifest it is filing (`metadata.namespace`). A label needs a method call rather
 the commit side because a Go template field name cannot contain a `:` or a `/`.
 
 Reconcile type fields name the synced type; `Namespace` names a namespace-scoped snapshot.
-Whole-target snapshots leave those fields empty. `Revision` is the snapshot's resourceVersion and
-can be absent, including a pure sweep. Guard optional values as in the example.
+Whole-target snapshots leave those fields empty. `ResourceVersion` is the snapshot's resourceVersion
+and can be absent, including a pure sweep. Guard optional values as in the example.
+
+`ResourceVersion` was called `Revision` before `v0.48.0`. A `reconcileTemplate` still naming
+`{{.Revision}}` is rejected, and the `GitTarget` says so on its `Validated` condition. See
+[the upgrade note](UPGRADING.md#reconciletemplates-revision-is-now-resourceversion).
 
 A reconcile runs per *cell* (a (type, namespace) pair) rather than per target, so a
 namespace-scoped run covers exactly one namespace and the default subject names it:

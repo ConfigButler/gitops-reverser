@@ -1140,7 +1140,7 @@ func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 	// Resync: the cluster now has "keep" and no longer has "drop-me".
 	req := &ResyncRequest{
 		Desired:            []manifestanalyzer.DesiredResource{desiredCM("keep", "blue")},
-		Revision:           "42",
+		ResourceVersion:    "42",
 		GitTargetName:      "target-a",
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),

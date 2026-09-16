@@ -78,6 +78,19 @@ func TestValidateCommitConfig(t *testing.T) {
 			},
 			saysA: "spec.commit.message",
 		},
+		{
+			// The renamed reconcile field reaches an operator HERE, on the Validated condition,
+			// so the message has to name the new spelling. Reaching it through the controller
+			// (not just ValidateCommitConfig) is the point: this is the text someone upgrading
+			// into a stored template actually reads.
+			name: "a reconcile template still naming the retired Revision",
+			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{
+				Message: &configbutleraiv1alpha3.CommitMessageSpec{
+					ReconcileTemplate: "chore: reconcile {{.Count}} at {{.Revision}}",
+				},
+			},
+			saysA: "{{.ResourceVersion}}",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			target := &configbutleraiv1alpha3.GitTarget{}

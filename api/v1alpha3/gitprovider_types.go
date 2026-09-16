@@ -179,7 +179,9 @@ type CommitMessageSpec struct {
 	// LiveTemplate formats every live window, including one resource and a 0s window.
 	// Fields: Author (raw username, possibly empty), GitTarget, Count, Operations, Resources.
 	// Count is retained input entries after coalescing, before comparison with Git.
-	// Resources exposes Operation, Group, Version, Resource, Namespace, Name, and APIVersion.
+	// Resources exposes Operation, Group, Version, Resource, Namespace, Name, APIVersion, and
+	// ResourceVersion — the version of the state this commit wrote, which lags the object's
+	// current one and is empty for a producer that observed none. Guard it with {{with}}.
 	// A literal CommitRequest message overrides this template without changing authorship.
 	// +optional
 	LiveTemplate string `json:"liveTemplate,omitempty"`
@@ -207,9 +209,11 @@ type CommitMessageSpec struct {
 	RequestTemplate string `json:"requestTemplate,omitempty"`
 
 	// ReconcileTemplate formats atomic snapshots and resyncs.
-	// Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, Revision.
-	// Type and Namespace fields are empty for whole-target snapshots. Revision can be empty.
+	// Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, ResourceVersion.
+	// ResourceVersion is the snapshot LIST's version, not any one object's. Type and Namespace
+	// fields are empty for whole-target snapshots, and ResourceVersion can be empty.
 	// Guard optional fields so the message remains meaningful for every snapshot scope.
+	// Revision was renamed to ResourceVersion in v0.48.0; a template still naming it is rejected.
 	// +optional
 	ReconcileTemplate string `json:"reconcileTemplate,omitempty"`
 

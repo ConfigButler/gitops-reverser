@@ -7,6 +7,55 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `reconcileTemplate`'s `Revision` is now `ResourceVersion`
+
+**Breaking, and only for a custom `reconcileTemplate`.** The reconcile commit-message field
+`{{.Revision}}` is renamed to `{{.ResourceVersion}}`. A template still naming the old spelling is
+**rejected**, not quietly pruned: the `GitTarget` reports `Validated=False` with reason
+`InvalidConfig` and a message naming both spellings, and it stops gating its rules until the
+template is fixed.
+
+Nothing changes if you never set `reconcileTemplate`. The default template is renamed with the
+field and its output is byte-identical — still
+`chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)`.
+
+### Why
+
+`Revision` meant three different things in this project: a Git commit (`LayoutReport.Revision`, the
+`GitTarget`'s `resolvedAtRevision`), an internal watch-plan counter, and — only in this one
+user-facing place — a Kubernetes `resourceVersion`. A commit message about Git is the last place
+"revision" should mean something other than a commit.
+
+The rename lands in the same release as the new per-resource
+[`Resources[i].ResourceVersion`](configuration.md#naming-the-version-a-commit-wrote) on
+`liveTemplate`, so the vocabulary changes once: **`Revision` is a Git commit, `ResourceVersion` is a
+Kubernetes version.**
+
+### What to change
+
+Rename the field in any `reconcileTemplate` that uses it:
+
+```yaml
+spec:
+  commit:
+    message:
+      # before
+      reconcileTemplate: "chore: reconcile {{.Count}}{{if .Revision}} at {{.Revision}}{{end}}"
+      # after
+      reconcileTemplate: "chore: reconcile {{.Count}}{{with .ResourceVersion}} at {{.}}{{end}}"
+```
+
+Find them before upgrading:
+
+```bash
+kubectl get gittargets -A \
+  -o jsonpath='{range .items[?(@.spec.commit.message.reconcileTemplate)]}{.metadata.namespace}{"/"}{.metadata.name}{"\t"}{.spec.commit.message.reconcileTemplate}{"\n"}{end}' \
+  | grep -F '.Revision'
+```
+
+The meaning is unchanged: it is the snapshot `LIST`'s `resourceVersion`, one value for the whole
+reconcile, and empty for a pure sweep.
+
 ## `CommitRequest.spec.closeDelaySeconds` defaults to 2 seconds
 
 **Breaking.** A `CommitRequest` that omits `closeDelaySeconds` now sets its finalize deadline two

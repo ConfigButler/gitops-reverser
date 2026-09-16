@@ -62,7 +62,7 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 
 	superseded := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "1",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "1",
 		RefreshRemote: true,
 		Result:        superseded,
 	}))
@@ -71,7 +71,7 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	// accepted: it replaces the queued one rather than being dropped.
 	newest := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "2",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "2",
 		Result: newest,
 	}), "a resync for an already-queued scope coalesces instead of being dropped")
 
@@ -88,12 +88,12 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	item := <-w.eventQueue
 	require.NotNil(t, item.Resync)
 	current := w.takePendingResync(item.Resync)
-	assert.Equal(t, "2", current.Revision, "the marker runs the newest request for its scope")
+	assert.Equal(t, "2", current.ResourceVersion, "the marker runs the newest request for its scope")
 	assert.True(t, current.RefreshRemote, "coalescing must preserve a pending remote refresh")
 
 	// The key is cleared, so the next resync for that scope queues a fresh marker.
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "3",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "3",
 		Result: make(chan ResyncResult, 1),
 	}))
 	assert.Len(t, w.eventQueue, 1, "a scope taken off the queue can be queued again")
@@ -108,18 +108,18 @@ func TestEnqueueResync_CoalescingCarriesTheSurvivingRequest(t *testing.T) {
 	scope := ResyncScopeFor(configmapsGVRForScope, "team-a")
 
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "1", Scope: &scope,
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "1", Scope: &scope,
 		SourceCell: cell, Result: make(chan ResyncResult, 1),
 	}))
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "2", Scope: &scope,
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "2", Scope: &scope,
 		SourceCell: cell, Result: make(chan ResyncResult, 1),
 	}))
 
 	item := <-w.eventQueue
 	require.NotNil(t, item.Resync)
 	current := w.takePendingResync(item.Resync)
-	assert.Equal(t, "2", current.Revision,
+	assert.Equal(t, "2", current.ResourceVersion,
 		"the newer snapshot is the one that runs, at the marker's position")
 	assert.Equal(t, cell, current.SourceCell, "and it still names the cell that gathered it")
 }
@@ -285,7 +285,7 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedWrites(t *testing.T) {
 
 	first := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "100",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "100",
 		Scope: scope, Result: first,
 	}))
 
@@ -293,7 +293,7 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedWrites(t *testing.T) {
 	require.True(t, w.Enqueue(liveEvent("target", "app")))
 
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "103",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "103",
 		Scope: scope, Result: make(chan ResyncResult, 1),
 	}))
 
@@ -309,12 +309,12 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedWrites(t *testing.T) {
 	require.Len(t, w.eventQueue, 3, "the later resync takes its own slot rather than coalescing")
 	firstMarker := <-w.eventQueue
 	require.NotNil(t, firstMarker.Resync)
-	assert.Equal(t, "100", w.takePendingResync(firstMarker.Resync).Revision,
+	assert.Equal(t, "100", w.takePendingResync(firstMarker.Resync).ResourceVersion,
 		"the earlier marker runs the snapshot it carried, not the newer one")
 	assert.NotNil(t, (<-w.eventQueue).Request, "the write keeps its position between the snapshots")
 	lastMarker := <-w.eventQueue
 	require.NotNil(t, lastMarker.Resync)
-	assert.Equal(t, "103", w.takePendingResync(lastMarker.Resync).Revision)
+	assert.Equal(t, "103", w.takePendingResync(lastMarker.Resync).ResourceVersion)
 }
 
 // TestEnqueueResync_DoesNotCoalescePastQueuedAttach pins the same fence for a
@@ -325,14 +325,14 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedAttach(t *testing.T) {
 
 	first := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "100",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "100",
 		Result: first,
 	}))
 	w.EnqueueAttach(&AttachCommitRequest{
 		Namespace: "ns", Name: "cr", GitTargetNamespace: "ns", GitTargetName: "target",
 	})
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "103",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "103",
 		Result: make(chan ResyncResult, 1),
 	}))
 
@@ -356,7 +356,7 @@ func TestEnqueueResync_CoalescesPastUnrelatedWrites(t *testing.T) {
 
 	superseded := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "100",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "100",
 		Scope: scope, Result: superseded,
 	}))
 
@@ -365,7 +365,7 @@ func TestEnqueueResync_CoalescesPastUnrelatedWrites(t *testing.T) {
 	require.True(t, w.Enqueue(liveEvent("elsewhere", "app")))
 
 	require.True(t, w.EnqueueResync(&ResyncRequest{
-		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "103",
+		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "103",
 		Scope: scope, Result: make(chan ResyncResult, 1),
 	}))
 
@@ -378,7 +378,7 @@ func TestEnqueueResync_CoalescesPastUnrelatedWrites(t *testing.T) {
 	require.Len(t, w.eventQueue, 3, "coalescing still costs no extra FIFO slot")
 	marker := <-w.eventQueue
 	require.NotNil(t, marker.Resync)
-	assert.Equal(t, "103", w.takePendingResync(marker.Resync).Revision)
+	assert.Equal(t, "103", w.takePendingResync(marker.Resync).ResourceVersion)
 }
 
 // TestEnqueueResync_FenceHoldsUnderConcurrentWrites drives writes and resyncs for one
@@ -464,7 +464,7 @@ func raceWritesAndResyncsOnOneScope(t *testing.T) (fifoTally, int, int) {
 			defer wg.Done()
 			if w.EnqueueResync(&ResyncRequest{
 				GitTargetNamespace: "ns", GitTargetName: "target",
-				Revision: strconv.Itoa(i), Scope: scope, Result: replies[i],
+				ResourceVersion: strconv.Itoa(i), Scope: scope, Result: replies[i],
 			}) {
 				resyncs.Add(1)
 			}

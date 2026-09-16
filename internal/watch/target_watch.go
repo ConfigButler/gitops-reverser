@@ -810,11 +810,11 @@ func (m *Manager) targetWatchListAndStream(
 		return fmt.Errorf("list target watch snapshot %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
 	desired := desiredFromList(stream.key.GVR, list)
-	revision := list.GetResourceVersion()
-	if err := m.enqueueReplayResync(ctx, log, gitDest, stream, desired, revision); err != nil {
+	resourceVersion := list.GetResourceVersion()
+	if err := m.enqueueReplayResync(ctx, log, gitDest, stream, desired, resourceVersion); err != nil {
 		return err
 	}
-	if err := m.recordTargetWatchCursor(ctx, gitDest, stream.key, revision); err != nil {
+	if err := m.recordTargetWatchCursor(ctx, gitDest, stream.key, resourceVersion); err != nil {
 		return err
 	}
 	// Recorded HERE, not where the fallback was chosen. watch_recovery_total counts recoveries that
@@ -824,7 +824,7 @@ func (m *Manager) targetWatchListAndStream(
 	m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeListFallback)
 	log.Info("target watch list fallback complete",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
-		"count", len(desired), "resourceVersion", revision)
+		"count", len(desired), "resourceVersion", resourceVersion)
 	m.markTargetStreamState(
 		gitDest,
 		stream.key.Cell(),
@@ -832,7 +832,7 @@ func (m *Manager) targetWatchListAndStream(
 		StreamReasonAllStreamsReady,
 		"target watch list fallback complete",
 	)
-	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, stream, buffered, revision)
+	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, stream, buffered, resourceVersion)
 }
 
 func (m *Manager) handleTargetWatchSessionEvent(
@@ -916,7 +916,7 @@ func (m *Manager) enqueueReplayResync(
 	gitDest types.ResourceReference,
 	stream targetWatchStream,
 	desired []manifestanalyzer.DesiredResource,
-	revision string,
+	resourceVersion string,
 ) error {
 	if m.EventRouter == nil {
 		return nil
@@ -930,13 +930,14 @@ func (m *Manager) enqueueReplayResync(
 		return nil
 	default:
 	}
-	// The revision is the one this stream was STARTED with, never the cell's current revision.
-	// A cancelled stream can still be in flight with a replay result, and reading the revision
-	// here would let it report a scope clean under a revision it never replayed for — reopening
-	// writes on the strength of a snapshot the new plan never gathered. The gate already
-	// ignores a superseded revision; capturing it at start is what makes it stale.
+	// The stream's PLAN revision (stream.revision, a render-fidelity generation counter — not the
+	// resourceVersion this snapshot is pinned to) is the one this stream was STARTED with, never
+	// the cell's current one. A cancelled stream can still be in flight with a replay result, and
+	// reading that revision here would let it report a scope clean under a revision it never
+	// replayed for — reopening writes on the strength of a snapshot the new plan never gathered.
+	// The gate already ignores a superseded revision; capturing it at start is what makes it stale.
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, revision, false,
+		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, resourceVersion, false,
 		stream.refreshRemote)
 	if err != nil {
 		return err
@@ -958,7 +959,8 @@ func (m *Manager) enqueueReplayResync(
 			stream.key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
 	}
 	log.V(1).Info("target replay resync enqueued",
-		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "revision", revision, "count", len(desired))
+		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
+		"resourceVersion", resourceVersion, "count", len(desired))
 	return nil
 }
 
@@ -1251,10 +1253,23 @@ func sanitizedContentHash(event *git.Event) (string, bool) {
 	return string(sum[:]), true
 }
 
+// targetWatchGitEvent adapts one observed object into the Event the pipeline carries.
+//
+// The resourceVersion is stamped here BECAUSE this is where the unsanitized object is: sanitize
+// strips it from the object below (a version inside a committed manifest makes every
+// observation a byte change), and nothing downstream can recover it — by the time the event
+// reaches a branch worker the object is out of the process and the cluster has moved on. It is
+// a capture-at-the-seam fact, like the author.
+//
+// It is stamped for a DELETE too, where Object deliberately is not: the watch Deleted frame
+// delivers the final object, so the last version that existed is knowable even though the
+// object no longer is.
 func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstructured, op string) git.Event {
 	event := git.Event{
-		Identifier: types.NewResourceIdentifier(gvr.Group, gvr.Version, gvr.Resource, u.GetNamespace(), u.GetName()),
-		Operation:  op,
+		Identifier: types.NewResourceIdentifier(
+			gvr.Group, gvr.Version, gvr.Resource, u.GetNamespace(), u.GetName()),
+		Operation:       op,
+		ResourceVersion: u.GetResourceVersion(),
 	}
 	if op != string(configv1alpha3.OperationDelete) {
 		event.Object = sanitize.Sanitize(u)

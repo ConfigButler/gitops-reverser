@@ -102,7 +102,9 @@ func windowPathKey(e Event, writer eventContentWriter) string {
 
 // buildLiveCommitMessageData produces the template context for a grouped
 // commit unit. Operations are counted by Operation tag; Resources is the
-// deduplicated list of resource refs in arrival order.
+// deduplicated list of resource refs in arrival order — so a resource re-edited inside the
+// window contributes the LAST routed event's resourceVersion, which is the state the commit
+// actually writes.
 //
 // requestMessage is the attached CommitRequest's message, or empty when no request attached. It is
 // carried through unaltered — never parsed, never trimmed — because the request's literal bytes
@@ -133,6 +135,10 @@ func buildLiveCommitMessageData(
 			Namespace:  e.Identifier.NamespaceOrCluster(),
 			Name:       e.Identifier.Name,
 			Labels:     labels,
+			// Read off the EVENT, not off Object: sanitize strips resourceVersion from the
+			// object precisely so it never reaches a committed manifest. That is also why a
+			// DELETE carries one here while Kind and Labels above stay empty for it.
+			ResourceVersion: e.ResourceVersion,
 		})
 	}
 	return LiveCommitMessageData{
