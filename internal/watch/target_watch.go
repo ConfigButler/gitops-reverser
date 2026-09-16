@@ -1255,21 +1255,22 @@ func sanitizedContentHash(event *git.Event) (string, bool) {
 
 // targetWatchGitEvent adapts one observed object into the Event the pipeline carries.
 //
-// The resourceVersion is stamped here BECAUSE this is where the unsanitized object is: sanitize
-// strips it from the object below (a version inside a committed manifest makes every
-// observation a byte change), and nothing downstream can recover it — by the time the event
-// reaches a branch worker the object is out of the process and the cluster has moved on. It is
-// a capture-at-the-seam fact, like the author.
+// The resourceVersion and generation are stamped here BECAUSE this is where the unsanitized
+// object is: sanitize strips both from the object below (a version inside a committed manifest
+// makes every observation a byte change), and nothing downstream can recover them — by the time
+// the event reaches a branch worker the object is out of the process and the cluster has moved
+// on. They are capture-at-the-seam facts, like the author.
 //
-// It is stamped for a DELETE too, where Object deliberately is not: the watch Deleted frame
-// delivers the final object, so the last version that existed is knowable even though the
-// object no longer is.
+// They are stamped for a DELETE too, where Object deliberately is not: the watch Deleted frame
+// delivers the final object, so the last state that existed is knowable even though the object
+// no longer is.
 func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstructured, op string) git.Event {
 	event := git.Event{
 		Identifier: types.NewResourceIdentifier(
 			gvr.Group, gvr.Version, gvr.Resource, u.GetNamespace(), u.GetName()),
 		Operation:       op,
 		ResourceVersion: u.GetResourceVersion(),
+		Generation:      u.GetGeneration(),
 	}
 	if op != string(configv1alpha3.OperationDelete) {
 		event.Object = sanitize.Sanitize(u)

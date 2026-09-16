@@ -162,9 +162,10 @@ spec:
                           LiveTemplate formats every live window, including one resource and a 0s window.
                           Fields: Author (raw username, possibly empty), GitTarget, Count, Operations, Resources.
                           Count is retained input entries after coalescing, before comparison with Git.
-                          Resources exposes Operation, Group, Version, Resource, Namespace, Name, APIVersion, and
+                          Resources exposes Operation, Group, Version, Resource, Namespace, Name, APIVersion,
                           ResourceVersion — the version of the state this commit wrote, which lags the object's
-                          current one and is empty for a producer that observed none. Guard it with {{with}}.
+                          current one and is empty for a producer that observed none — and Generation, the desired
+                          state's counter, which is 0 for a kind without a spec. Guard both with {{with}}.
                           A literal CommitRequest message overrides this template without changing authorship.
                         type: string
                       reconcileTemplate:

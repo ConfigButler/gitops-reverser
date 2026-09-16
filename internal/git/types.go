@@ -531,6 +531,14 @@ type Event struct {
 	// delivers the final object, so this names the last version that existed.
 	ResourceVersion string
 
+	// Generation is the metadata.generation of the observed state — the DESIRED state's counter,
+	// where ResourceVersion counts every write. Same provenance-not-content rule: sanitize strips
+	// generation from Object one line after resourceVersion, and for the same reason.
+	//
+	// 0 means "no generation", which covers both "this producer observed nothing" and "this kind
+	// has none": a ConfigMap or a Secret never carries one, only types with a spec do.
+	Generation int64
+
 	// Operation is the admission operation (CREATE, UPDATE, DELETE).
 	Operation string
 
@@ -711,6 +719,18 @@ type ResourceRef struct {
 	//
 	// Unlike Kind and Labels, a DELETE DOES carry one — see Event.ResourceVersion.
 	ResourceVersion string
+	// Generation is the metadata.generation of the state this commit wrote, and 0 when there is
+	// none. It moves only when the DESIRED state changes, so unlike ResourceVersion it is worth
+	// comparing: it is per object, starts at 1, and advances once per spec write, so a gap
+	// between two commits really does mean spec changes that were not committed separately.
+	//
+	// Two blind spots keep it from replacing ResourceVersion. A ConfigMap, a Secret, and any
+	// other kind without a spec never carry one, so this stays 0 for much of what a target
+	// mirrors. And a label- or annotation-only edit changes what gets committed WITHOUT moving
+	// it, so an unchanged Generation does not mean an unchanged commit.
+	//
+	// Guard it with {{with .Generation}}, which renders nothing for 0.
+	Generation int64
 }
 
 // Label is the value of one label on this resource, and "" when it does not carry the label.

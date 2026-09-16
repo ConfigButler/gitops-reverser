@@ -14,12 +14,13 @@ import (
 )
 
 // observedEvent is a live event as the watch seam builds one: the object sanitized, the observed
-// resourceVersion carried BESIDE it.
-func observedEvent(name, operation, resourceVersion string) Event {
+// counters carried BESIDE it. generation 0 stands in for a kind that has none.
+func observedEvent(name, operation, resourceVersion string, generation int64) Event {
 	event := Event{
 		Identifier:      types.NewResourceIdentifier("apps", "v1", "deployments", "prod", name),
 		Operation:       operation,
 		ResourceVersion: resourceVersion,
+		Generation:      generation,
 	}
 	if operation != "DELETE" {
 		event.Object = &unstructured.Unstructured{Object: map[string]any{
@@ -33,11 +34,11 @@ func observedEvent(name, operation, resourceVersion string) Event {
 
 func TestBuildLiveCommitMessageData_CarriesResourceVersionPerResource(t *testing.T) {
 	data := buildLiveCommitMessageData("someone", "target", "", []Event{
-		observedEvent("api", "CREATE", "20001"),
+		observedEvent("api", "CREATE", "20001", 3),
 		// A DELETE carries no object, and so no Kind and no labels — but it DOES carry a
 		// version: the watch Deleted frame delivers the final object, so the last version that
 		// existed is knowable even though the object is not.
-		observedEvent("web", "DELETE", "20003"),
+		observedEvent("web", "DELETE", "20003", 4),
 		// A reconcile-sourced event observed nothing, so it names no version.
 		{Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "prod", "cm"), Operation: "RECONCILE"},
 	})
@@ -46,6 +47,12 @@ func TestBuildLiveCommitMessageData_CarriesResourceVersionPerResource(t *testing
 	for i, w := range want {
 		if got := data.Resources[i].ResourceVersion; got != w {
 			t.Errorf("Resources[%d].ResourceVersion = %q, want %q", i, got, w)
+		}
+	}
+	wantGenerations := []int64{3, 4, 0}
+	for i, w := range wantGenerations {
+		if got := data.Resources[i].Generation; got != w {
+			t.Errorf("Resources[%d].Generation = %d, want %d", i, got, w)
 		}
 	}
 	if kind := data.Resources[1].Kind; kind != "" {
@@ -57,13 +64,16 @@ func TestBuildLiveCommitMessageData_CarriesResourceVersionPerResource(t *testing
 // message names is the state the commit actually writes — not the one that opened the window.
 func TestBuildLiveCommitMessageData_ResourceVersionIsTheLastObserved(t *testing.T) {
 	data := buildLiveCommitMessageData("someone", "target", "", []Event{
-		observedEvent("api", "CREATE", "20001"),
-		observedEvent("api", "UPDATE", "20009"),
+		observedEvent("api", "CREATE", "20001", 3),
+		observedEvent("api", "UPDATE", "20009", 4),
 	})
 
 	last := data.Resources[len(data.Resources)-1]
 	if last.ResourceVersion != "20009" {
 		t.Errorf("last ref names %q, want the newest observed version 20009", last.ResourceVersion)
+	}
+	if last.Generation != 4 {
+		t.Errorf("last ref names generation %d, want the newest observed 4", last.Generation)
 	}
 }
 
@@ -73,7 +83,7 @@ func TestRenderLiveCommitMessage_RendersResourceVersion(t *testing.T) {
 			`{{range .Resources}}- {{.Name}}{{with .ResourceVersion}}@{{.}}{{end}}` + "\n" + `{{end}}`,
 	}}
 	write := PendingWrite{Kind: PendingWriteCommit, Events: []Event{
-		observedEvent("api", "CREATE", "20001"),
+		observedEvent("api", "CREATE", "20001", 3),
 		{Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "prod", "cm"), Operation: "RECONCILE"},
 	}}
 
@@ -100,7 +110,7 @@ func TestObservedResourceVersionNeverReachesCommittedContent(t *testing.T) {
 		"apiVersion": "apps/v1",
 		"kind":       "Deployment",
 		"metadata": map[string]any{
-			"name": "api", "namespace": "prod", "resourceVersion": "20001",
+			"name": "api", "namespace": "prod", "resourceVersion": "20001", "generation": int64(3),
 		},
 	}}
 
@@ -109,27 +119,34 @@ func TestObservedResourceVersionNeverReachesCommittedContent(t *testing.T) {
 		Operation:       "CREATE",
 		Object:          sanitize.Sanitize(live),
 		ResourceVersion: live.GetResourceVersion(),
+		Generation:      live.GetGeneration(),
 	}
 
-	if event.ResourceVersion != "20001" {
-		t.Fatalf("the event must carry the observed version, got %q", event.ResourceVersion)
+	if event.ResourceVersion != "20001" || event.Generation != 3 {
+		t.Fatalf("the event must carry the observed counters, got %q/%d",
+			event.ResourceVersion, event.Generation)
 	}
 	if got := event.Object.GetResourceVersion(); got != "" {
 		t.Errorf("the committed object still carries resourceVersion %q: it must never reach content", got)
 	}
-	if _, found, _ := unstructured.NestedString(event.Object.Object, "metadata", "resourceVersion"); found {
-		t.Error("metadata.resourceVersion is present in the object the writer commits")
+	if got := event.Object.GetGeneration(); got != 0 {
+		t.Errorf("the committed object still carries generation %d: it must never reach content", got)
+	}
+	for _, field := range []string{"resourceVersion", "generation"} {
+		if _, found, _ := unstructured.NestedFieldNoCopy(event.Object.Object, "metadata", field); found {
+			t.Errorf("metadata.%s is present in the object the writer commits", field)
+		}
 	}
 	// And the source object is untouched, so stamping the event cannot have consumed it.
-	if live.GetResourceVersion() != "20001" {
-		t.Error("sanitizing must not strip the version from the observed object")
+	if live.GetResourceVersion() != "20001" || live.GetGeneration() != 3 {
+		t.Error("sanitizing must not strip the counters from the observed object")
 	}
 }
 
 func TestValidateCommitConfig_AcceptsResourceVersionTemplates(t *testing.T) {
 	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
 		LiveTemplate: `chore: sync {{.Count}}{{range .Resources}} {{.Name}}` +
-			`{{with .ResourceVersion}}@{{.}}{{end}}{{end}}`,
+			`{{with .ResourceVersion}}@{{.}}{{end}}{{with .Generation}} gen{{.}}{{end}}{{end}}`,
 		ReconcileTemplate: `chore: reconcile {{.Count}}{{with .ResourceVersion}} at {{.}}{{end}}`,
 	})
 
@@ -141,7 +158,7 @@ func TestValidateCommitConfig_AcceptsResourceVersionTemplates(t *testing.T) {
 // The validation samples must contain BOTH states, or a template that only renders cleanly for a
 // versioned resource passes admission and fails months later in a mixed window.
 func TestLiveValidationSamples_CoverVersionedAndUnversioned(t *testing.T) {
-	var versioned, unversioned bool
+	var versioned, unversioned, generated, ungenerated bool
 	for _, events := range liveValidationSamples(Event{Operation: "CREATE"}) {
 		for _, event := range events {
 			if event.ResourceVersion == "" {
@@ -149,9 +166,17 @@ func TestLiveValidationSamples_CoverVersionedAndUnversioned(t *testing.T) {
 			} else {
 				versioned = true
 			}
+			if event.Generation == 0 {
+				ungenerated = true
+			} else {
+				generated = true
+			}
 		}
 	}
 	if !versioned || !unversioned {
 		t.Errorf("samples cover versioned=%v unversioned=%v, want both", versioned, unversioned)
+	}
+	if !generated || !ungenerated {
+		t.Errorf("samples cover generation present=%v absent=%v, want both", generated, ungenerated)
 	}
 }

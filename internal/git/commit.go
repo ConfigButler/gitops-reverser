@@ -175,9 +175,10 @@ func ValidateCommitConfig(config CommitConfig) error {
 // different worlds. They face identical windows at runtime; checking one more thoroughly than the
 // other just moves which template fails months later instead of at admission.
 //
-// The UPDATE sample deliberately carries NO resourceVersion. A live watch stamps one on every
-// event, but reconcile and bootstrap do not, and a window is not guaranteed to be one producer's
-// — so the shape a template must survive is the mixed one.
+// The UPDATE sample deliberately carries NO resourceVersion and NO generation. A live watch
+// stamps a version on every event, but reconcile and bootstrap do not, and a generation is absent
+// for every kind without a spec (a ConfigMap, a Secret) however it was produced — so the shape a
+// template must survive is the mixed one.
 func liveValidationSamples(sampleEvent Event) [][]Event {
 	var samples [][]Event
 	for _, author := range []string{"template-validator", ""} {
@@ -188,6 +189,7 @@ func liveValidationSamples(sampleEvent Event) [][]Event {
 			event.Operation = operation
 			event.Identifier.Name = operation
 			event.ResourceVersion = sampleResourceVersion(operation)
+			event.Generation = sampleGeneration(operation)
 			if operation == "CREATE" {
 				event.Object = sampleLabeledObject()
 			}
@@ -209,6 +211,24 @@ func sampleResourceVersion(operation string) string {
 		return "20003"
 	default:
 		return ""
+	}
+}
+
+// sampleGeneration mirrors sampleResourceVersion for the desired-state counter, so a template
+// naming {{.Generation}} is validated against a resource that has one and a resource that does
+// not — the second being every spec-less kind this operator mirrors.
+func sampleGeneration(operation string) int64 {
+	const (
+		sampleCreateGeneration = 3
+		sampleDeleteGeneration = 4
+	)
+	switch operation {
+	case "CREATE":
+		return sampleCreateGeneration
+	case "DELETE":
+		return sampleDeleteGeneration
+	default:
+		return 0
 	}
 }
 

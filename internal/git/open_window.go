@@ -135,10 +135,12 @@ func buildLiveCommitMessageData(
 			Namespace:  e.Identifier.NamespaceOrCluster(),
 			Name:       e.Identifier.Name,
 			Labels:     labels,
-			// Read off the EVENT, not off Object: sanitize strips resourceVersion from the
-			// object precisely so it never reaches a committed manifest. That is also why a
-			// DELETE carries one here while Kind and Labels above stay empty for it.
+			// Read off the EVENT, not off Object: sanitize strips resourceVersion and
+			// generation from the object precisely so neither reaches a committed manifest.
+			// That is also why a DELETE carries them here while Kind and Labels above stay
+			// empty for it.
 			ResourceVersion: e.ResourceVersion,
+			Generation:      e.Generation,
 		})
 	}
 	return LiveCommitMessageData{

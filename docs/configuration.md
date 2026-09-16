@@ -605,7 +605,7 @@ spec:
 |---|---|
 | `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, and the `LabelValues` / `LabelValue` accessors |
 | `requestTemplate` | the same fields, plus `RequestMessage` |
-| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `ResourceVersion`, `Labels`, and the `Label` accessor |
+| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `ResourceVersion`, `Generation`, `Labels`, and the `Label` accessor |
 | `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `ResourceVersion` |
 
 Live `Count` counts retained entries after window coalescing, before the writer compares them with
@@ -699,45 +699,59 @@ Three things to know:
   nothing, so a commit holding one labeled and one unlabeled resource is named after neither.
 - **A `DELETE` carries no object**, because the resource is already gone from the cluster, so
   `Kind` and `Labels` are empty for one. The identity fields (`Name`, `Namespace`, `Resource`, …)
-  are unaffected, and so is `ResourceVersion`: the watch delivers the final object, so the last
-  version that existed is still knowable even though the object is not. A commit containing a
+  are unaffected, and so are `ResourceVersion` and `Generation`: the watch delivers the final
+  object, so the last state that existed is still knowable even though the object is not. A commit containing a
   `DELETE` therefore has no agreed `LabelValue`: what the deleted resource was labeled is not
   something the window still knows.
 
-##### Naming the version a commit wrote
+##### Naming the state a commit wrote
 
-`{{.ResourceVersion}}` on a `Resources` entry is the `metadata.resourceVersion` of the state that
-commit wrote. It is not committed to the file (`resourceVersion` is stripped from every manifest
-on purpose, because a version inside a manifest would make every observation a byte change); it
-travels beside the object, in the message only. Guard it with `{{with}}`:
+Two counters describe the observed state each entry was at. Neither is committed to the file
+(`resourceVersion` and `generation` are stripped from every manifest on purpose, because a counter
+inside a manifest would make every observation a byte change); both travel beside the object, in
+the message only. Both are off by default, and both are guarded with `{{with}}`:
 
 ```yaml
 liveTemplate: |-
   chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}
 
   {{range .Resources -}}
-  - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}{{with .ResourceVersion}}@{{.}}{{end}}
+  - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}{{with .ResourceVersion}}@{{.}}{{end}}{{with .Generation}} gen{{.}}{{end}}
   {{end -}}
 ```
 
-It is off by default. Turn it on when you want a commit to be **joinable**: to an audit log entry,
-to a `kubectl get -o yaml` taken at the time, to another operator's logs.
+| | `{{.ResourceVersion}}` | `{{.Generation}}` |
+|---|---|---|
+| moves when | **anything** is written, `/status` included | only the **desired state** changes |
+| present on | every resource the operator observed | only kinds with a spec: **not** a ConfigMap or a Secret |
+| absent value | `""` | `0` |
+| safe to compare | for **equality** only | yes: per object, starts at `1`, one step per spec write |
 
-Two limits, both worth knowing before you rely on it:
+**Turn `ResourceVersion` on to make a commit joinable**: to an audit log entry, to a
+`kubectl get -o yaml` taken at the time, to another operator's logs. Equal to the object's current
+version means nothing is pending. Do not subtract two of them: `resourceVersion` is opaque by API
+contract and is the cluster-wide store revision in practice, so two consecutive commits of one
+ConfigMap can read `@1331` then `@8402` with nothing skipped, because every other object's writes
+moved the same counter.
 
-- **It lags the cluster, deliberately.** An update whose committed content would be identical (a
-  `/status`-only write) is never routed, so the version in the commit can be older than the
-  object's current one. A resource re-edited inside one window contributes the last routed
-  version, and an entry that already matched Git still contributes one.
-- **Compare it for equality, never by subtraction.** `resourceVersion` is opaque by API contract,
-  and is the cluster-wide store revision in practice, so two consecutive commits of one ConfigMap
-  can read `@1331` then `@8402` with nothing skipped: every other object's writes moved the
-  same counter. Equal to the live version means nothing is pending; a gap means nothing at all. To
-  count what the operator skipped, read `watch_events_total{outcome="unchanged"}`, which is exactly
-  that census.
+**Turn `Generation` on to see what a commit missed.** It is the counter a gap is meaningful in: a
+commit at `gen3` following one at `gen6` means three spec changes that were not committed
+separately. That is the question `ResourceVersion` cannot answer.
 
-A producer that observed no object leaves it empty: a reconcile, a resync, and bootstrap writes all
-render nothing there.
+Read them together, because each is blind where the other sees:
+
+- **`ResourceVersion` lags, deliberately.** An update whose committed content would be identical (a
+  `/status`-only write) is never routed, so the version in a commit can be older than the object's
+  current one. A resource re-edited inside one window contributes the last routed version, and an
+  entry that already matched Git still contributes one.
+- **`Generation` misses metadata.** A label- or annotation-only edit changes what gets committed
+  without moving it, so an unchanged `Generation` across two commits does not mean an unchanged
+  commit. And it is `0` for every spec-less kind, which is much of what a typical target mirrors.
+- **Neither counts skips.** To count what the operator deliberately did not route, read
+  `watch_events_total{outcome="unchanged"}`, which is exactly that census.
+
+A producer that observed no object renders nothing for either: reconcile, resync, and bootstrap
+writes all leave both empty.
 
 `reconcileTemplate` gets none of these. It describes a *type* being reconciled rather than a list
 of resources, so there are no labels to read, and its own `{{.ResourceVersion}}` is the snapshot
@@ -764,10 +778,12 @@ The nouns are the same in both, and only the spelling follows each host language
 | API version | `{apiVersion}` | `.APIVersion` |
 | one label | `{label:team}` | `.Label "team"` |
 | the observed version | (none) | `.ResourceVersion` |
+| the desired-state counter | (none) | `.Generation` |
 
-The version is the first noun that legitimately exists on only one side. A path keyed on a version
-would write a new file on every observation, which is the opposite of what placement is for: a path
-has to be stable and statically checkable. A message describes one moment, so it can name one.
+The two counters are the first nouns that legitimately exist on only one side. A path keyed on a
+counter would write a new file whenever it moved, which is the opposite of what placement is for: a
+path has to be stable and statically checkable. A message describes one moment, so it can name
+one.
 
 The capitals are Go's, not a style choice: `text/template` can only reach exported struct fields,
 which must begin with one. The braces are lower-case because a placement template reads like the
