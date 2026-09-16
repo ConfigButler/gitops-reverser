@@ -67,12 +67,31 @@ func gvkListSummary(gvks []schema.GroupVersionKind) string {
 // GVR-derived API identity with the sanitized object the writer will materialise. Both paths
 // that build a desired set go through it (the `sendInitialEvents` replay fold and the LIST
 // fallback), so the set is shaped identically however the objects were sourced.
+//
+// It applies the SAME deletion-as-intent rule the live path applies in
+// operationForLiveTargetWatchEvent: an object carrying a deletionTimestamp is logically absent
+// from the intent tree, so it is absent from the desired set too. ok=false means "this object is
+// not part of desired", which for a Terminating object is the whole point — a resync sweeps what
+// desired omits, so leaving it out is what makes the snapshot REMOVE the file, exactly as the
+// live DELETE would have.
+//
+// Without this the two gatherings disagreed, and which one ran decided whether a deleted resource
+// came back: a replay or LIST fallback that happened to run while an object was still Terminating
+// folded it into desired, and desired entries are applied as upserts. The object the live path had
+// already removed from Git reappeared, then vanished again on the next resync once the finalizers
+// cleared. Both commits were spurious, and because sanitize strips deletionTimestamp the
+// resurrected manifest looked like an ordinary live resource.
 func desiredFromObject(
 	gvr schema.GroupVersionResource,
 	obj interface{},
 ) (manifestanalyzer.DesiredResource, bool) {
 	u, ok := obj.(*unstructured.Unstructured)
 	if !ok || u == nil {
+		return manifestanalyzer.DesiredResource{}, false
+	}
+	// The deletionTimestamp is the signal, not the finalizer that holds it: an object with no
+	// finalizer is moments from gone and is no more intended to exist than one held for hours.
+	if u.GetDeletionTimestamp() != nil {
 		return manifestanalyzer.DesiredResource{}, false
 	}
 	id := types.NewResourceIdentifier(gvr.Group, gvr.Version, gvr.Resource, u.GetNamespace(), u.GetName())

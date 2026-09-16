@@ -49,6 +49,13 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 	// permanently deleted from git — the exact, easy-to-miss failure mode.
 	orderNames := []string{"restart-order-alpha", "restart-order-bravo", "restart-order-charlie"}
 
+	// terminatingOrder is deleted before the restart but held Terminating by a finalizer, so the
+	// restart's replay LISTs an object that still exists in the API and is already absent from
+	// Git. A snapshot that folds it into the desired set resurrects the file the live
+	// deletion-as-intent rule removed — a deleted resource silently reappearing in the mirror.
+	// The wipe case above and this one are the two directions the same replay can get wrong.
+	const terminatingOrder = "restart-order-terminating"
+
 	BeforeAll(func() {
 		By("setting up the Prometheus client for drain-signal metrics")
 		setupPrometheusClient()
@@ -73,6 +80,9 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 
 	AfterAll(func() {
 		dumpFailureDiagnostics()
+		// Release the hold unconditionally. If the spec failed before clearing it, the object
+		// stays Terminating forever and cleanupNamespace below never completes.
+		removeIceCreamOrderFinalizers(testNs, terminatingOrder)
 		cleanupWatchRule(watchRuleName, testNs)
 		cleanupNamespace(testNs)
 	})
@@ -135,6 +145,32 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 				g.Expect(statErr).NotTo(HaveOccurred(), "expected committed file %q", relPath)
 			}
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("creating a finalizer-held order, then deleting it so it is Terminating across the restart")
+		createIceCreamOrder(crdGroupRestartReconcile, testNs, terminatingOrder)
+		addIceCreamOrderFinalizer(testNs, terminatingOrder)
+		terminatingPath := filepath.Join(
+			gitTargetPath, iceCreamInstancePath(crdGroupRestartReconcile, testNs, terminatingOrder),
+		)
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, restartRepo.CheckoutDir)
+			_, statErr := os.Stat(filepath.Join(restartRepo.CheckoutDir, terminatingPath))
+			g.Expect(statErr).NotTo(HaveOccurred(), "expected committed file %q", terminatingPath)
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		_, deleteErr := kubectlRunInNamespace(testNs, "delete", "icecreamorder", terminatingOrder, "--wait=false")
+		Expect(deleteErr).NotTo(HaveOccurred(), "failed to request deletion of the finalizer-held order")
+
+		By("confirming the live path removed it from Git at intent time while it is still Terminating")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, restartRepo.CheckoutDir)
+			_, statErr := os.Stat(filepath.Join(restartRepo.CheckoutDir, terminatingPath))
+			g.Expect(statErr).To(HaveOccurred(), "deletion-as-intent should have removed %q", terminatingPath)
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+		ts, tsErr := kubectlRunInNamespace(testNs, "get", "icecreamorder", terminatingOrder,
+			"-o", "jsonpath={.metadata.deletionTimestamp}")
+		Expect(tsErr).NotTo(HaveOccurred(), "the finalizer must still hold the object in the API")
+		Expect(strings.TrimSpace(ts)).NotTo(BeEmpty(), "the object must be Terminating when the restart replays")
 
 		headBeforeRestart := revParseHead(restartRepo.CheckoutDir)
 		By(fmt.Sprintf("git mirror complete at %s — restarting the controller", headBeforeRestart))
@@ -200,7 +236,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		// against any Prometheus cross-restart sample staleness in the gates
 		// above: a quiet order, once wiped, never comes back, so a mirror that
 		// stays intact for this window after the drain will stay intact.
-		By("verifying the git mirror is NOT wiped by the restart")
+		By("verifying the git mirror is NOT wiped by the restart, and the Terminating order stays deleted")
 		Consistently(func(g Gomega) {
 			pullLatestRepoState(g, restartRepo.CheckoutDir)
 			for _, relPath := range expectedFiles {
@@ -208,7 +244,23 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 				g.Expect(statErr).NotTo(HaveOccurred(),
 					"file %q disappeared after the controller restart — startup reconcile wiped the mirror", relPath)
 			}
+			// The replay LISTed this object (it is still in the API, held by its finalizer), and
+			// the reconcile gate above proves that replay's resync APPLIED — so this assertion
+			// cannot pass vacuously. A snapshot that treats a Terminating object as desired
+			// resurrects the file here.
+			_, statErr := os.Stat(filepath.Join(restartRepo.CheckoutDir, terminatingPath))
+			g.Expect(statErr).To(HaveOccurred(),
+				"file %q came back after the restart — the replay snapshot treated a Terminating "+
+					"object as desired state", terminatingPath)
 		}, 15*time.Second, 5*time.Second).Should(Succeed())
+
+		By("clearing the finalizer and confirming the terminal DELETED still produces no resurrection")
+		removeIceCreamOrderFinalizers(testNs, terminatingOrder)
+		Consistently(func(g Gomega) {
+			pullLatestRepoState(g, restartRepo.CheckoutDir)
+			_, statErr := os.Stat(filepath.Join(restartRepo.CheckoutDir, terminatingPath))
+			g.Expect(statErr).To(HaveOccurred(), "file %q came back once finalizers cleared", terminatingPath)
+		}, 10*time.Second, 5*time.Second).Should(Succeed())
 
 		By("confirming no commit since the restart deleted tracked files")
 		deletions, logErr := gitRun(
@@ -240,6 +292,24 @@ spec:
 `, group, name, ns, name)
 	_, err := kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply IceCreamOrder %s/%s", ns, name)
+}
+
+// addIceCreamOrderFinalizer holds an order in Terminating once it is deleted, so a replay LISTs an
+// object that exists in the API and is already absent from Git.
+func addIceCreamOrderFinalizer(ns, name string) {
+	_, err := kubectlRunInNamespace(ns, "patch", "icecreamorder", name, "--type", "merge",
+		"-p", `{"metadata":{"finalizers":["e2e.configbutler.ai/hold"]}}`)
+	Expect(err).NotTo(HaveOccurred(), "failed to add finalizer to IceCreamOrder %s/%s", ns, name)
+}
+
+// removeIceCreamOrderFinalizers releases the hold so the object can actually leave the API — and
+// so the namespace can be torn down, which a lingering finalizer would block.
+func removeIceCreamOrderFinalizers(ns, name string) {
+	_, err := kubectlRunInNamespace(ns, "patch", "icecreamorder", name, "--type", "merge",
+		"-p", `{"metadata":{"finalizers":null}}`)
+	if err != nil && !strings.Contains(err.Error(), "NotFound") {
+		Expect(err).NotTo(HaveOccurred(), "failed to clear finalizer on IceCreamOrder %s/%s", ns, name)
+	}
 }
 
 // revParseHead returns the current HEAD commit of the local checkout.
