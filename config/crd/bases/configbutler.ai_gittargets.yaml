@@ -162,15 +162,20 @@ spec:
                           LiveTemplate formats every live window, including one resource and a 0s window.
                           Fields: Author (raw username, possibly empty), GitTarget, Count, Operations, Resources.
                           Count is retained input entries after coalescing, before comparison with Git.
-                          Resources exposes Operation, Group, Version, Resource, Namespace, Name, and APIVersion.
+                          Resources exposes Operation, Group, Version, Resource, Namespace, Name, APIVersion,
+                          ResourceVersion — the version of the state this commit wrote, which lags the object's
+                          current one and is empty for a producer that observed none — and Generation, the desired
+                          state's counter, which is 0 for a kind without a spec. Guard both with {{with}}.
                           A literal CommitRequest message overrides this template without changing authorship.
                         type: string
                       reconcileTemplate:
                         description: |-
                           ReconcileTemplate formats atomic snapshots and resyncs.
-                          Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, Revision.
-                          Type and Namespace fields are empty for whole-target snapshots. Revision can be empty.
+                          Fields: Count, GitTarget, Group, Version, Resource, APIVersion, Namespace, ResourceVersion.
+                          ResourceVersion is the snapshot LIST's version, not any one object's. Type and Namespace
+                          fields are empty for whole-target snapshots, and ResourceVersion can be empty.
                           Guard optional fields so the message remains meaningful for every snapshot scope.
+                          Revision was renamed to ResourceVersion in v0.48.0; a template still naming it is rejected.
                         type: string
                       requestTemplate:
                         description: |-

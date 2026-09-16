@@ -86,7 +86,7 @@ func resyncHealKey(req *ResyncRequest) healKey {
 func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	l.w.Log.Info("Handling resync request",
 		"resources", len(req.Desired),
-		"revision", req.Revision,
+		"resourceVersion", req.ResourceVersion,
 		"scope", req.Scope.String(),
 		"heal", req.Heal,
 		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
@@ -193,7 +193,7 @@ func (w *BranchWorker) buildResyncPendingWrite(
 	return &PendingWrite{
 		Kind:               PendingWriteResync,
 		Desired:            req.Desired,
-		Revision:           req.Revision,
+		ResourceVersion:    req.ResourceVersion,
 		Scope:              req.Scope,
 		ResyncStats:        stats,
 		CommitConfig:       ResolveCommitConfig(provider.Spec.Commit).WithTargetMessage(targetMetadata.CommitMessage),
@@ -296,7 +296,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	// commitMetadata through the verbatim path.
 	changed := stats.Created + stats.Updated + stats.Deleted
 	rendered, err := renderReconcileCommitMessage(
-		changed, target.Name, pendingWrite.Scope, pendingWrite.Revision, pendingWrite.CommitConfig)
+		changed, target.Name, pendingWrite.Scope, pendingWrite.ResourceVersion, pendingWrite.CommitConfig)
 	if err != nil {
 		return 0, err
 	}
@@ -314,7 +314,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	log.FromContext(ctx).Info("git resync commit created",
 		"created", stats.Created, "updated", stats.Updated,
 		"deleted", stats.Deleted, "skipped", stats.Skipped,
-		"placementSkipped", stats.PlacementSkipped, "revision", pendingWrite.Revision)
+		"placementSkipped", stats.PlacementSkipped, "resourceVersion", pendingWrite.ResourceVersion)
 	return 1, nil
 }
 

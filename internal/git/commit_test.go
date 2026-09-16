@@ -202,7 +202,7 @@ func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t 
 		"1331",
 		ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
 			ReconcileTemplate: "e2e-snapshot: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
-				"@{{.Revision}} to {{.GitTarget}}",
+				"@{{.ResourceVersion}} to {{.GitTarget}}",
 		}),
 	)
 	require.NoError(t, err)
@@ -211,7 +211,7 @@ func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t 
 
 func TestValidateCommitConfig_CustomReconcileTemplateReferencingTypeAndRevision(t *testing.T) {
 	config := ResolveCommitConfig(nil).WithTargetMessage(&v1alpha3.CommitMessageSpec{
-		ReconcileTemplate: "reconcile: {{.Count}} {{.APIVersion}}/{{.Resource}}@{{.Revision}} on {{.GitTarget}}",
+		ReconcileTemplate: "reconcile: {{.Count}} {{.APIVersion}}/{{.Resource}}@{{.ResourceVersion}} on {{.GitTarget}}",
 	})
 
 	require.NoError(t, ValidateCommitConfig(config))

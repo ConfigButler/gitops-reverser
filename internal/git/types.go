@@ -3,6 +3,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -105,7 +106,7 @@ const (
 	DefaultReconcileCommitMessageTemplate = "chore: reconcile {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
 		"{{if .Namespace}} in {{.Namespace}}{{end}}" +
-		"{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
+		"{{if .ResourceVersion}} (last resourceVersion: {{.ResourceVersion}}){{end}}"
 	// DefaultLiveCommitMessageTemplate describes retained input resources.
 	DefaultLiveCommitMessageTemplate = "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}\n\n" +
 		"{{range .Resources -}}" +
@@ -289,9 +290,12 @@ type PendingWrite struct {
 	// sweep), and no sibling type's — nor, for a namespace-scoped resync, any sibling
 	// namespace's — document is ever dropped. Nil is the whole-GitTarget resync.
 	Scope *ResyncScope
-	// Revision is the cluster snapshot resourceVersion the desired set is pinned to
-	// (the joined streaming-watch bookmark). Carried for diagnostics and logging.
-	Revision string
+	// ResourceVersion is the cluster snapshot's resourceVersion the desired set is pinned to
+	// (the joined streaming-watch bookmark) — the COLLECTION's version, not any one object's.
+	// Carried for diagnostics, logging, and the reconcile commit message.
+	//
+	// Not "Revision": in this codebase a revision is a Git commit (see LayoutReport.Revision).
+	ResourceVersion string
 	// ResyncStats, when non-nil, is populated during apply with the plan's
 	// create/update/delete/skip counts so a synchronous caller can report them.
 	ResyncStats *ResyncStats
@@ -385,14 +389,14 @@ func (s *ResyncScope) Matches(ri types.ResourceIdentifier) bool {
 }
 
 // ResyncRequest is a synchronous resync of one GitTarget against a complete,
-// revision-pinned desired snapshot (M8). It rides the worker queue so the single
+// version-pinned desired snapshot (M8). It rides the worker queue so the single
 // git-mutating goroutine applies it in order with live events, and replies on
 // Result once the local commit is created. The desired set is the whole watched
-// resource state at Revision; the worker's content-derived mark-and-sweep drops
+// resource state at ResourceVersion; the worker's content-derived mark-and-sweep drops
 // any managed document the snapshot did not contain.
 type ResyncRequest struct {
 	Desired            []manifestanalyzer.DesiredResource
-	Revision           string
+	ResourceVersion    string
 	GitTargetName      string
 	GitTargetNamespace string
 	// Scope, when set, makes this a per-type (M12) reconcile/sweep: the mark-and-sweep is
@@ -513,6 +517,28 @@ type Event struct {
 	// Identifier contains resource identification information.
 	Identifier types.ResourceIdentifier
 
+	// ResourceVersion is the metadata.resourceVersion of the observed state this event
+	// describes. It is PROVENANCE, never content: sanitize strips resourceVersion from Object
+	// on purpose (a version in a committed manifest makes every observation a byte change), so
+	// this field carries the fact BESIDE the object rather than inside it. Never write it back
+	// onto Object.
+	//
+	// Stamped where the object is observed — the live watch holds the unsanitized object there
+	// and nowhere downstream does. Producers with no observed object (reconcile, bootstrap)
+	// leave it empty.
+	//
+	// Unlike the object-derived fields, a DELETE CAN carry one: the watch Deleted frame
+	// delivers the final object, so this names the last version that existed.
+	ResourceVersion string
+
+	// Generation is the metadata.generation of the observed state — the DESIRED state's counter,
+	// where ResourceVersion counts every write. Same provenance-not-content rule: sanitize strips
+	// generation from Object one line after resourceVersion, and for the same reason.
+	//
+	// 0 means "no generation", which covers both "this producer observed nothing" and "this kind
+	// has none": a ConfigMap or a Secret never carries one, only types with a spec do.
+	Generation int64
+
 	// Operation is the admission operation (CREATE, UPDATE, DELETE).
 	Operation string
 
@@ -602,7 +628,7 @@ type CommitMessageConfig struct {
 // ReconcileCommitMessageData is the template context for reconcile commit messages.
 //
 // Group, Version, Resource and APIVersion describe the reconciled type, and are
-// populated only for a per-type reconcile. Revision is the resourceVersion the desired set was
+// populated only for a per-type reconcile. ResourceVersion is the version the desired set was
 // pinned to. Any template referencing these must render cleanly when absent; the default guards
 // both with {{if}}.
 type ReconcileCommitMessageData struct {
@@ -612,10 +638,39 @@ type ReconcileCommitMessageData struct {
 	Version    string
 	Resource   string
 	APIVersion string
-	Revision   string
+	// ResourceVersion is THE COLLECTION'S metadata.resourceVersion — the LIST the desired set
+	// was folded from, not any one object's. A reconcile describes a type, so the version it
+	// can name is the snapshot's. (The per-object counterpart is
+	// LiveCommitMessageData.Resources[i].ResourceVersion, which a live commit carries because
+	// it names n resources.)
+	//
+	// Empty for a pure sweep. It was called Revision until v0.48.0; see the Revision tombstone
+	// below for why the word moved.
+	ResourceVersion string
 	// Namespace is the single source namespace a namespace-scoped reconcile covered, and
 	// is empty for a whole-target or all-namespaces reconcile.
 	Namespace string
+}
+
+// Revision is the retired name of ResourceVersion, kept ONLY so a stored template that still
+// says {{.Revision}} is refused with a sentence instead of a text/template internal
+// ("can't evaluate field Revision in type git.ReconcileCommitMessageData").
+//
+// It is a method rather than a scan of the template source because a method catches every
+// spelling — {{with .Revision}}, {{.Revision | printf "%s"}}, assignment to a variable — which a
+// search for the literal string would not. Same argument validateRequestTemplate makes for
+// probing behaviour rather than matching template text.
+//
+// It deliberately does NOT return the value. Silently honouring the old name would keep the
+// wrong word alive indefinitely, and "accepted, and quietly carried on" is the upgrade failure
+// mode docs/UPGRADING.md is written against. Reject, do not prune.
+//
+// Delete one minor release after v0.48.0. By then {{.Revision}} can go back to failing as a
+// plain unknown field, which is all an unknown field deserves.
+func (ReconcileCommitMessageData) Revision() (string, error) {
+	return "", errors.New(
+		"reconcileTemplate: {{.Revision}} was renamed to {{.ResourceVersion}} in v0.48.0 " +
+			"(it is the snapshot's resourceVersion; \"revision\" now only ever means a Git commit)")
 }
 
 // ResourceRef is the lightweight resource identifier emitted to grouped commit
@@ -650,6 +705,32 @@ type ResourceRef struct {
 	//
 	// Read it with .Label, not with .Labels.key — see Label.
 	Labels map[string]string
+	// ResourceVersion is the metadata.resourceVersion of the observed state this commit wrote,
+	// and "" for a producer that observed none (reconcile, bootstrap). Guard it with
+	// {{with .ResourceVersion}} — empty here has one meaning, "this producer observed no
+	// version", and no sentinel states that better than silence.
+	//
+	// It is NOT the object's current version, and the gap is deliberate: an update whose
+	// git-writable content is unchanged (a /status-only write) is never routed, so this value
+	// lags the cluster's. Compare it for EQUALITY — equal means nothing is pending — never by
+	// subtraction: resourceVersion is opaque by contract and is the global store revision in
+	// practice, so a gap measures other objects' writes, not our own drops. The census
+	// counts those: watch_events_total{outcome="unchanged"}.
+	//
+	// Unlike Kind and Labels, a DELETE DOES carry one — see Event.ResourceVersion.
+	ResourceVersion string
+	// Generation is the metadata.generation of the state this commit wrote, and 0 when there is
+	// none. It moves only when the DESIRED state changes, so unlike ResourceVersion it is worth
+	// comparing: it is per object, starts at 1, and advances once per spec write, so a gap
+	// between two commits really does mean spec changes that were not committed separately.
+	//
+	// Two blind spots keep it from replacing ResourceVersion. A ConfigMap, a Secret, and any
+	// other kind without a spec never carry one, so this stays 0 for much of what a target
+	// mirrors. And a label- or annotation-only edit changes what gets committed WITHOUT moving
+	// it, so an unchanged Generation does not mean an unchanged commit.
+	//
+	// Guard it with {{with .Generation}}, which renders nothing for 0.
+	Generation int64
 }
 
 // Label is the value of one label on this resource, and "" when it does not carry the label.

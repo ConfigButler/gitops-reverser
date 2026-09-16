@@ -24,8 +24,8 @@ import (
 
 // renderReconcileCommitMessageFromEvents renders the reconcile commit message for the
 // events-based atomic path from the provider's ReconcileTemplate. It carries no single
-// type or revision, so those template fields stay empty (the default guards them). Literal
-// overrides are resolved by the caller.
+// type and no snapshot version, so those template fields stay empty (the default guards them).
+// Literal overrides are resolved by the caller.
 func renderReconcileCommitMessageFromEvents(
 	events []Event,
 	gitTarget string,
@@ -44,21 +44,21 @@ func renderReconcileCommitMessageFromEvents(
 // renderReconcileCommitMessage renders the reconcile commit message for a resync from the
 // provider's ReconcileTemplate, so a resync honours a custom reconcile template. count is the
 // number of resources the reconcile changed; scopeGVR names the synced type for a per-type
-// reconcile, and a nil scopeGVR (whole-target reconcile) leaves the type fields empty; revision
-// is the cluster resourceVersion the desired set was pinned to (empty for a pure sweep). The
-// default template guards the type and revision fields so it still renders cleanly when either
-// is absent.
+// reconcile, and a nil scopeGVR (whole-target reconcile) leaves the type fields empty;
+// resourceVersion is the cluster resourceVersion the desired set was pinned to (empty for a
+// pure sweep). The default template guards the type and version fields so it still renders
+// cleanly when either is absent.
 func renderReconcileCommitMessage(
 	count int,
 	gitTarget string,
 	scope *ResyncScope,
-	revision string,
+	resourceVersion string,
 	config CommitConfig,
 ) (string, error) {
 	data := ReconcileCommitMessageData{
-		Count:     count,
-		GitTarget: gitTarget,
-		Revision:  revision,
+		Count:           count,
+		GitTarget:       gitTarget,
+		ResourceVersion: resourceVersion,
 	}
 	if scope != nil {
 		data.Group = scope.Cell.Group
@@ -133,7 +133,8 @@ func ValidateCommitConfig(config CommitConfig) error {
 
 	// Validate the per-type reconcile path with the type and revision fields populated,
 	// so a custom reconcile template that names its synced type ({{.Resource}} / {{.APIVersion}})
-	// or pins the {{.Revision}} is exercised at admission exactly as a per-type reconcile renders it.
+	// or pins the {{.ResourceVersion}} is exercised at admission exactly as a per-type reconcile
+	// renders it.
 	// The sample scope names a namespace so a template referencing {{.Namespace}} — populated
 	// only by a namespace-scoped reconcile — is validated here too.
 	sampleScope := ResyncScopeFor(
@@ -173,6 +174,11 @@ func ValidateCommitConfig(config CommitConfig) error {
 // It is shared so liveTemplate and requestTemplate cannot drift into being checked against
 // different worlds. They face identical windows at runtime; checking one more thoroughly than the
 // other just moves which template fails months later instead of at admission.
+//
+// The UPDATE sample deliberately carries NO resourceVersion and NO generation. A live watch
+// stamps a version on every event, but reconcile and bootstrap do not, and a generation is absent
+// for every kind without a spec (a ConfigMap, a Secret) however it was produced — so the shape a
+// template must survive is the mixed one.
 func liveValidationSamples(sampleEvent Event) [][]Event {
 	var samples [][]Event
 	for _, author := range []string{"template-validator", ""} {
@@ -182,6 +188,8 @@ func liveValidationSamples(sampleEvent Event) [][]Event {
 			event.UserInfo.Username = author
 			event.Operation = operation
 			event.Identifier.Name = operation
+			event.ResourceVersion = sampleResourceVersion(operation)
+			event.Generation = sampleGeneration(operation)
 			if operation == "CREATE" {
 				event.Object = sampleLabeledObject()
 			}
@@ -190,6 +198,38 @@ func liveValidationSamples(sampleEvent Event) [][]Event {
 		}
 	}
 	return samples
+}
+
+// sampleResourceVersion gives the validation samples both states of ResourceVersion: present on a
+// CREATE and on a DELETE — which carries one although it carries no object — and absent on the
+// UPDATE, standing in for every producer that observed no version.
+func sampleResourceVersion(operation string) string {
+	switch operation {
+	case "CREATE":
+		return "20001"
+	case "DELETE":
+		return "20003"
+	default:
+		return ""
+	}
+}
+
+// sampleGeneration mirrors sampleResourceVersion for the desired-state counter, so a template
+// naming {{.Generation}} is validated against a resource that has one and a resource that does
+// not — the second being every spec-less kind this operator mirrors.
+func sampleGeneration(operation string) int64 {
+	const (
+		sampleCreateGeneration = 3
+		sampleDeleteGeneration = 4
+	)
+	switch operation {
+	case "CREATE":
+		return sampleCreateGeneration
+	case "DELETE":
+		return sampleDeleteGeneration
+	default:
+		return 0
+	}
 }
 
 // newRequestTemplateProbe mints the sentinel that requestTemplate validation renders as the
