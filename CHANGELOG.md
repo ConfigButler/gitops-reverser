@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.47.0...v0.48.0) (2026-09-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **commit:** a GitTarget whose spec.commit.message.reconcileTemplate names {{.Revision}} is refused — it reports Validated=False with reason InvalidConfig and stops gating its rules until the template names {{.ResourceVersion}} instead. Targets on the default reconcileTemplate are unaffected: the default is renamed with the field and its output is byte-identical. See docs/UPGRADING.md.
+
+### Features
+
+* **commit:** name the resourceVersion and generation a commit wrote ([#369](https://github.com/ConfigButler/gitops-reverser/issues/369)) ([d814ecf](https://github.com/ConfigButler/gitops-reverser/commit/d814ecfee40fb1d3f847d9ad77c3bc811d84ed79))
+
+
+### Bug Fixes
+
+* **watch:** keep a Terminating object out of a replay's desired set ([#370](https://github.com/ConfigButler/gitops-reverser/issues/370)) ([d7a5139](https://github.com/ConfigButler/gitops-reverser/commit/d7a513975d2ea2799bf3ad2dc9fded66699047c6))
+
 ## [0.47.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.46.0...v0.47.0) (2026-09-15)
 
 
