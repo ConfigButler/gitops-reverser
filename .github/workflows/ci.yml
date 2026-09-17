@@ -639,7 +639,7 @@ jobs:
         run: sudo chmod -R a+rX cover.out .coverage-baseline config/crd/bases config/rbac config/webhook 2>/dev/null || true
 
       - name: Upload unit coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
         with:
           files: cover.out
           flags: unit
@@ -811,7 +811,7 @@ jobs:
         # always(): the SARIF is written by the report pass BEFORE the gate runs, so a
         # gate failure must not swallow the report that explains it.
         if: always()
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: trivy-image.sarif
           # Distinct category so the amd64 and arm64 legs don't overwrite each
@@ -1086,7 +1086,7 @@ jobs:
 
       - name: Upload E2E coverage to Codecov
         if: matrix.coverage == '1'
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
         with:
           files: e2e-cover.out
           flags: e2e
