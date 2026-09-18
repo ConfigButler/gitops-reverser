@@ -132,7 +132,8 @@ patch that *edits a field* of a base-owned object is not authored yet. Reasoning
 Early-stage software; CRDs and behavior may still change.
 
 - Runs as a single controller pod (`replicas=1`).
-- Shared-resource bi-directional workflows need explicit coordination.
+- Shared-resource [bi-directional workflows](docs/bi-directional.md) remain experimental. Git push
+  webhooks can trigger Flux or Argo CD; coordinating unpublished live edits still needs care.
 - Source recovery covers Kubernetes manifests and simple Kustomize layouts, not Helm authoring models.
 - Tested against Kubernetes `1.37` at the API level (envtest) and `1.36` end-to-end (k3s, which has
   no stable `1.37` release yet); other versions may work but are not in the matrix.
