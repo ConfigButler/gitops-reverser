@@ -448,14 +448,31 @@ tasks:
           mod="${pair%%=*}"
           cmd="${pair#*=}"
           want="$(go list -m -f '{{`{{.Version}}`}}' "${mod}")"
-          got="$(grep -oE "go install ${cmd}@[^ \\]+" {{.DOCKERFILE}} | head -n1 | sed 's/.*@//' || true)"
-          if [ -z "${got}" ]; then
+          # Fixed-string, and every reachable install rather than the first. A module
+          # path interpolated into a regex makes its dots wildcards, and `head -n1`
+          # let a correct first install mask a later one that had drifted -- this
+          # Dockerfile installs golang.org/x/tools twice, as goimports and as gopls.
+          got_list="$(awk -v needle="go install ${cmd}@" '
+            {
+              s = $0
+              while ((p = index(s, needle)) > 0) {
+                s = substr(s, p + length(needle))
+                v = s
+                sub(/[ \\].*$/, "", v)
+                if (v != "") print v
+              }
+            }' {{.DOCKERFILE}})"
+          if [ -z "${got_list}" ]; then
             echo "❌ {{.DOCKERFILE}} installs no ${cmd} — add 'go install ${cmd}@${want}' or drop ${mod} from PAIRS" >&2
             rc=1
-          elif [ "${got}" != "${want}" ]; then
-            echo "❌ {{.DOCKERFILE}} pins ${cmd}@${got} but go.mod resolves ${mod} ${want} — bump the Dockerfile" >&2
-            rc=1
+            continue
           fi
+          for got in ${got_list}; do
+            if [ "${got}" != "${want}" ]; then
+              echo "❌ {{.DOCKERFILE}} pins ${cmd}@${got} but go.mod resolves ${mod} ${want} — bump the Dockerfile" >&2
+              rc=1
+            fi
+          done
         done
         exit "${rc}"
 
