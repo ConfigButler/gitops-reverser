@@ -211,6 +211,7 @@ tasks:
     deps:
       - lint-golang
       - lint-gomod
+      - lint-toolchain-pins
       - lint-dockerfiles
       - lint-actions
       - lint-helm
@@ -386,6 +387,73 @@ tasks:
         for mod in {{.MODULES}}; do
           if ! (cd "${mod}" && go mod tidy -diff); then
             echo "❌ ${mod}/go.mod and ${mod}/go.sum are not tidy — run 'go mod tidy' there and commit the result" >&2
+            rc=1
+          fi
+        done
+        exit "${rc}"
+
+  lint-toolchain-pins:
+    desc: Check that the CI image's Go tool pins match the versions go.mod resolves
+    # Three of the binaries .devcontainer/Dockerfile installs are the command form of
+    # a module go.mod already resolves, so the two have to move together:
+    #
+    #   ginkgo         <- github.com/onsi/ginkgo/v2
+    #   setup-envtest  <- sigs.k8s.io/controller-runtime
+    #   goimports      <- golang.org/x/tools
+    #
+    # Nothing connected them before, and nothing could: Dependabot's gomod updates
+    # cannot reach a `go install ...@version` string in a Dockerfile, so a bumped
+    # go.mod quietly left the image a release behind.
+    #
+    # How much that costs differs per tool, and only one of the three is load-bearing:
+    #
+    #   setup-envtest is invoked as the image's binary (the ENVTEST var defaults to
+    #   the bare name), so a stale one is a stale one in every `task test` run.
+    #
+    #   ginkgo and goimports are convenience binaries. The e2e tasks deliberately
+    #   run ginkgo via `go run` so the CLI always matches the imported library
+    #   (see test/e2e/Taskfile-e2e.yml), and golangci-lint uses its own bundled
+    #   goimports -- so a drifted pin here breaks no task. It bites the human who
+    #   types `ginkgo` in the container and gets a version-mismatch refusal instead
+    #   of a test run.
+    #
+    # Keeping all three under one check is the cheap way to keep that distinction
+    # from having to be remembered. Note the consequence: a gomod bump to any of
+    # these three now fails lint until the Dockerfile moves with it. That is the
+    # intent -- the pair lands in one commit rather than drifting until someone
+    # notices.
+    #
+    # `go list -m` is asked for the version rather than grepping go.mod, because the
+    # build list is what a build actually uses -- an indirect requirement (x/tools is
+    # one) can be raised by the module graph without its go.mod line changing.
+    #
+    # controller-gen and scc are deliberately absent: neither module is in go.mod, so
+    # their pins answer to upstream releases alone and there is nothing to agree with.
+    vars:
+      DOCKERFILE: .devcontainer/Dockerfile
+      # module <-> the cmd path .devcontainer/Dockerfile installs it as
+      PAIRS: >-
+        github.com/onsi/ginkgo/v2=github.com/onsi/ginkgo/v2/ginkgo
+        sigs.k8s.io/controller-runtime=sigs.k8s.io/controller-runtime/tools/setup-envtest
+        golang.org/x/tools=golang.org/x/tools/cmd/goimports
+    sources:
+      - .devcontainer/Dockerfile
+      - go.mod
+      - go.sum
+    cmds:
+      - |
+        set -eu
+        rc=0
+        for pair in {{.PAIRS}}; do
+          mod="${pair%%=*}"
+          cmd="${pair#*=}"
+          want="$(go list -m -f '{{`{{.Version}}`}}' "${mod}")"
+          got="$(grep -oE "go install ${cmd}@[^ \\]+" {{.DOCKERFILE}} | head -n1 | sed 's/.*@//' || true)"
+          if [ -z "${got}" ]; then
+            echo "❌ {{.DOCKERFILE}} installs no ${cmd} — add 'go install ${cmd}@${want}' or drop ${mod} from PAIRS" >&2
+            rc=1
+          elif [ "${got}" != "${want}" ]; then
+            echo "❌ {{.DOCKERFILE}} pins ${cmd}@${got} but go.mod resolves ${mod} ${want} — bump the Dockerfile" >&2
             rc=1
           fi
         done
