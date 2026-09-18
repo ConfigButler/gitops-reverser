@@ -20,8 +20,8 @@ recomputation when the remote moves while a cycle is in flight.
 
 ## 1. Every fetch in the system today
 
-Five call sites reach the remote. None is on a timer, and none can be reached from outside the
-process:
+Five call sites reach the remote. **None is on a timer, and none is triggered by the remote
+changing.** Every one of them fires because of something happening on our side:
 
 | Call site | Trigger | Covers |
 | --- | --- | --- |
@@ -29,13 +29,23 @@ process:
 | `bootstrapPathIfNeeded` | first-time path bootstrap | one-off |
 | `commitPendingWrites` | start of a publication cycle, when nothing is retained | the common case |
 | `fetchRemoteBranchHash` | a rejected conditional push | contention |
-| `syncWithRemote` | nothing: `SyncAndGetMetadata` has no caller | dead |
+| `syncWithRemote` | a forced recheck that finds no retained writes | the manual escape hatch |
 
-That last row is the archaeology worth recording. `SyncAndGetMetadata` still carries the comment
-"*This is now called by SyncAndGetMetadata() during controller reconciliation*", and it is not.
-There was a periodic drift-detection path and it is no longer wired to anything. Deleting it or
-reviving it is a decision this page wants made, because leaving a plausible-looking poller in the
-tree is how the gap below stays invisible.
+The last row is the one to read carefully, because there is a dead wrapper sitting next to a live
+path and they are easy to confuse.
+
+`syncWithRemote` itself **is** reachable: [`resync_flush.go`](../../internal/git/resync_flush.go)
+calls it when a resync carries `RefreshRemote` and no pending writes are retained, which is the
+no-op half of the forced recheck (the other half, with writes retained, goes through
+`refreshRemoteAndRebuildPendingWrites` instead). So a forced recheck refreshes the local view
+whether or not there is anything to replay. That matters for §3: the manual escape hatch works on
+a completely idle target.
+
+What is dead is `SyncAndGetMetadata`, the caching wrapper around it, which has no caller at all
+and still carries the comment "*This is now called by SyncAndGetMetadata() during controller
+reconciliation*". There was a periodic drift-detection path and it is no longer wired to anything.
+Deleting the wrapper or reviving it is a decision this page wants made, because leaving a
+plausible-looking poller in the tree is how the gap below stays invisible.
 
 `GitTarget` requeues on `RequeueSteadyInterval` (5 minutes), but that pass publishes status and
 never touches Git.
@@ -82,8 +92,12 @@ reconcile.configbutler.ai/requestedAt changes
   -> observeDataPlane(force)
   -> startTargetWatchStreams(refreshRemote)
   -> enqueueScopedResync{RefreshRemote: true}
-  -> refreshRemoteAndRebuildPendingWrites()    (fetch, then replay retained writes)
+  -> applyResync() branches on retained writes:
+       writes pending -> refreshRemoteAndRebuildPendingWrites()  (fetch, then replay)
+       nothing pending -> syncWithRemote()                       (fetch only)
 ```
+
+Both branches fetch, so the chain does its job on a busy target and on an idle one.
 
 The annotation is deliberately spelled after Flux's, and the doc comment on
 [`ReconcileRequestAnnotation`](../../internal/controller/gittarget_reconcile_request.go) already
@@ -139,9 +153,9 @@ instead of a stuck one, which is the same argument Flux makes for keeping a shor
    `GitTarget`s can track it. Fanning out from repo URL and branch to targets is a lookup the
    worker layer already has; whether the annotation lands on each target or on the provider is
    unsettled.
-3. **Delete or revive `syncWithRemote`?** It is option B, already written, currently unreachable.
-   Leaving it in the tree as dead code with a comment claiming it is called is the worst of the
-   three states.
+3. **Delete or revive `SyncAndGetMetadata`?** The wrapper is option B's caching layer, already
+   written and currently unreachable, sitting on top of a `syncWithRemote` that is very much
+   alive. Leaving it there with a comment claiming it is called is the worst of the three states.
 4. **Is §2.2 worth optimizing at all?** Skipping the re-render when the fetched tree does not
    touch our paths is possible. Nothing has measured how often a mid-cycle move happens outside a
    contended bi-directional corner.
