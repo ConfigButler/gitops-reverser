@@ -68,12 +68,12 @@ RUN apt-get update \
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.37.0 \
     KUSTOMIZE_VERSION=5.8.1 \
-    KUBEBUILDER_VERSION=4.15.0 \
+    KUBEBUILDER_VERSION=4.16.0 \
     GOLANGCI_LINT_VERSION=v2.13.2 \
-    HELM_VERSION=v4.2.4 \
+    HELM_VERSION=v4.3.0 \
     K3D_VERSION=v5.9.0 \
     FLUX_VERSION=2.9.5 \
-    FLUX_OPERATOR_VERSION=0.59.0 \
+    FLUX_OPERATOR_VERSION=0.60.0 \
     TASK_VERSION=v3.53.1 \
     ACTIONLINT_VERSION=1.7.12 \
     HADOLINT_VERSION=2.15.1 \
@@ -82,7 +82,7 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     ORAS_VERSION=1.3.4 \
     NODE_MAJOR=24 \
     MARKDOWNLINT_CLI2_VERSION=0.23.2 \
-    VALE_VERSION=3.20.0 \
+    VALE_VERSION=3.22.0 \
     TRIVY_VERSION=0.74.0
 
 # Fail early on unsupported architectures instead of producing a partial image.
@@ -285,10 +285,10 @@ RUN chgrp -R godev /go && \
 # `go` build in any container deletes ~90% of it regardless. Cleaning in the
 # same layer keeps those ~400MB out of the image instead of merely hiding them.
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 \
-    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.32.1 \
-    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.0 \
+    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.32.2 \
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.1 \
     && go install golang.org/x/tools/cmd/goimports@v0.49.0 \
-    && go install github.com/boyter/scc/v4@v4.0.0 \
+    && go install github.com/boyter/scc/v4@v4.1.0 \
     && go clean -cache
 
 # Initialize golangci-lint cache by running it once on an empty directory
@@ -351,7 +351,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # GOPLS_VERSION -> https://github.com/golang/tools/releases
 # STATICCHECK_VERSION -> https://github.com/dominikh/go-tools/releases
 ENV TILT_VERSION=v0.37.7 \
-    DLV_VERSION=v1.27.1 \
+    DLV_VERSION=v1.27.2 \
     GOPLS_VERSION=v0.23.0 \
     STATICCHECK_VERSION=v0.8.1
 

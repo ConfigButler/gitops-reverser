@@ -1,4 +1,27 @@
 version: 2
+
+# One pull request a week for every ecosystem, not one per ecosystem.
+#
+# Dependabot cannot group across ecosystems from inside `updates:` — each entry
+# there raises its own pull request, which is why this repository was getting a
+# separate gomod, github-actions and docker PR every week. The grouping lives in
+# this top-level block instead, and every ecosystem below joins it by name.
+#
+# That matters beyond tidiness here, because the Go module versions and the CI
+# image are coupled. `.devcontainer/Dockerfile` installs `setup-envtest` at the
+# controller-runtime version, and `task test` invokes that image binary — so a
+# gomod bump that arrives without the matching image bump leaves the two out of
+# step. `task lint-toolchain-pins` is what actually proves they agree; grouping
+# the ecosystems is what gives a single pull request the chance to satisfy it.
+#
+# Entries in a multi-ecosystem group drop their own `schedule` (the group owns it)
+# and must carry `patterns`. Security updates are driven by Dependabot alerts, not
+# by this file, so a single failing version bump here never holds a CVE fix back.
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: "weekly"
+
 updates:
   - package-ecosystem: "gomod"
     # Two modules. "/" is the operator itself; "/hack/sops-build" pins the SOPS
@@ -9,21 +32,15 @@ updates:
     directories:
       - "/"
       - "/hack/sops-build"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
 
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "weekly"
-    groups:
-      github-actions:
-        patterns:
-          - "*"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
 
   - package-ecosystem: "docker"
     # Covers the project Dockerfile, the devcontainer/CI base image and the
@@ -34,9 +51,19 @@ updates:
       - "/"
       - "/.devcontainer"
       - "/test/mutationlab"
-    schedule:
-      interval: "weekly"
-    groups:
-      docker-dependencies:
-        patterns:
-          - "*"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
+
+  - package-ecosystem: "devcontainers"
+    # The Features in .devcontainer/devcontainer.json are versioned dependencies
+    # like any other and drifted unwatched (docker-outside-of-docker and
+    # common-utils were both a release behind). Dependabot updates Features in
+    # every valid dev container location under this directory, so "/" is enough.
+    # This is Features only — the tool versions pinned in the ENV block of
+    # .devcontainer/Dockerfile are plain strings that no ecosystem can see, and
+    # stay a manual bump against the release URLs listed beside them.
+    directory: "/"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
