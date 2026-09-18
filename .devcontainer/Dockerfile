@@ -276,11 +276,20 @@ RUN chgrp -R godev /go && \
 
 # Install Go tools used by the project (using @version doesn't need go.mod)
 # These run AFTER permissions are set to ensure proper group ownership
+#
+# `go clean -cache` drops the Go *build* cache each `go install` leaves behind.
+# Only the module cache (/go/pkg/mod) is worth shipping: it is stable, highly
+# reusable, and Go never trims it. A build cache cannot survive in an image,
+# because a layer freezes every entry's mtime and Go garbage-collects entries
+# by mtime -- so once this layer is older than trimLimit (5 days) the first
+# `go` build in any container deletes ~90% of it regardless. Cleaning in the
+# same layer keeps those ~400MB out of the image instead of merely hiding them.
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 \
     && go install github.com/onsi/ginkgo/v2/ginkgo@v2.32.1 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.0 \
     && go install golang.org/x/tools/cmd/goimports@v0.49.0 \
-    && go install github.com/boyter/scc/v4@v4.0.0
+    && go install github.com/boyter/scc/v4@v4.0.0 \
+    && go clean -cache
 
 # Initialize golangci-lint cache by running it once on an empty directory
 # This downloads linter dependencies without needing source code
@@ -288,7 +297,8 @@ RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
     && go mod init example.com/init \
     && printf 'package main\n\nfunc main() {}\n' > main.go \
     && golangci-lint run --timeout=5m || true \
-    && cd / && rm -rf /tmp/golangci-init
+    && cd / && rm -rf /tmp/golangci-init \
+    && go clean -cache
 
 # Pre-download Go modules for caching - placed AFTER tool installation
 # This layer will be cached and only rebuilt when go.mod/go.sum changes
@@ -390,7 +400,10 @@ RUN arch="$(dpkg --print-architecture)" && \
 
 # Install Delve debugger for Go debugging in VSCode
 # ACLs from CI stage should be preserved, so no need to re-apply
-RUN go install github.com/go-delve/delve/cmd/dlv@${DLV_VERSION}
+# Build cache cleaned for the same reason as the ci stage above; the devcontainer
+# works as `vscode`, so root's build cache here is only dead image weight.
+RUN go install github.com/go-delve/delve/cmd/dlv@${DLV_VERSION} \
+    && go clean -cache
 
 # Install VSCode Go extension tools (gopls and staticcheck). Both are editor-only:
 # gopls is the language server, and this standalone staticcheck powers the editor's
@@ -398,7 +411,8 @@ RUN go install github.com/go-delve/delve/cmd/dlv@${DLV_VERSION}
 # staticcheck's analyzers via golangci-lint's bundled staticcheck linter (configured in
 # .golangci.yml), so this binary is for the IDE, not a second lint pass.
 RUN go install golang.org/x/tools/gopls@${GOPLS_VERSION} \
-    && go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}
+    && go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION} \
+    && go clean -cache
 
 # Create vscode user for non-root development and add to godev group
 RUN groupadd --gid 1000 vscode \
