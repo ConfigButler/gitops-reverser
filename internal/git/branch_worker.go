@@ -682,6 +682,7 @@ func (w *BranchWorker) prepareBootstrapRepository(
 	}
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	w.recordFetch(fetchReasonBootstrap)
 	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return "", fmt.Errorf("failed to prepare repository: %w", err)
@@ -1292,6 +1293,7 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		if err != nil {
 			return fmt.Errorf("resolve auth: %w", err)
 		}
+		w.recordFetch(fetchReasonPublication)
 		pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 		if err != nil {
 			return fmt.Errorf("prepare repository: %w", err)
@@ -1409,6 +1411,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			// connection, an auth failure, a server-side rejection. Only then is the slow path
 			// justified, and it is two more requests to the Git host.
 			var fetchErr error
+			w.recordFetch(fetchReasonContention)
 			remoteHash, fetchErr = fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
 			if fetchErr != nil {
 				return err
@@ -1421,6 +1424,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		}
 		w.recordPushRetry(pushRetryRemoteMoved)
 
+		w.recordFetch(fetchReasonContention)
 		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 		if syncErr != nil {
 			return fmt.Errorf("sync remote during replay: %w", syncErr)
@@ -1507,6 +1511,7 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(ctx context.Context,
 		return fmt.Errorf("open repository: %w", err)
 	}
 
+	w.recordFetch(fetchReasonForcedRecheck)
 	pullReport, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
 		return fmt.Errorf("sync remote before replay: %w", err)
@@ -1647,6 +1652,29 @@ const (
 	pushRetryRemoteMoved = "remote_moved"
 )
 
+// Fetch reasons. Every call that runs SmartFetch is counted under exactly one of these, and the
+// set is deliberately split finer than the call sites: `publication` and `recovery` both come out
+// of commitPendingWrites, and keeping them apart is what lets the steady-state claim be asserted
+// at zero without the assertion failing the first time a push fails.
+const (
+	// fetchReasonBootstrap is the worker's first contact with the repository.
+	fetchReasonBootstrap = "bootstrap"
+	// fetchReasonPublication is the fetch at the head of a publication cycle.
+	fetchReasonPublication = "publication"
+	// fetchReasonRecovery is a cycle that had to re-establish a base it could not trust.
+	//
+	// Reserved: nothing produces it yet, because the base is trusted unconditionally today. It is
+	// declared here so the series exists in the documentation and in the reason set before the
+	// change that starts producing it, rather than appearing unannounced. A `recovery` series
+	// that climbs is a bug report, not a cost.
+	fetchReasonRecovery = "recovery"
+	// fetchReasonContention is a rejected push learning where the remote went, and the reset that
+	// follows it.
+	fetchReasonContention = "contention"
+	// fetchReasonForcedRecheck is an operator or controller asking the worker to re-read Git.
+	fetchReasonForcedRecheck = "forced_recheck"
+)
+
 // Commit-failure kinds and reasons. A failure here is work that was accepted, routed, and then
 // died before it could reach the remote: the window is dropped and its events are gone until the
 // next resync re-derives them.
@@ -1739,6 +1767,23 @@ func (w *BranchWorker) recordPushRetry(reason string) {
 		ctx = context.Background()
 	}
 	telemetry.GitPushRetriesTotal.Add(ctx, 1,
+		metric.WithAttributes(w.providerAttrs(attribute.String("reason", reason))...))
+}
+
+// recordFetch counts one call that reaches the remote through SmartFetch.
+//
+// It is recorded BEFORE the call, not after it: the connection to the Git host is spent whether
+// or not the fetch succeeds, and this counter measures what we asked of the remote, not what came
+// back. A fetch that fails is exactly the one an operator most wants counted.
+func (w *BranchWorker) recordFetch(reason string) {
+	if telemetry.GitFetchesTotal == nil {
+		return
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	telemetry.GitFetchesTotal.Add(ctx, 1,
 		metric.WithAttributes(w.providerAttrs(attribute.String("reason", reason))...))
 }
 
@@ -1910,6 +1955,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	// PrepareBranch handles both initial and update cases
+	w.recordFetch(fetchReasonForcedRecheck)
 	report, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync with remote: %w", err)

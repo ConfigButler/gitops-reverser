@@ -147,11 +147,15 @@ func (f *ledgerFixture) contend(file, content string) {
 	simulateClientCommitOnDisk(f.t, f.repoDir, "main", file, content)
 }
 
-// createLedgerTarget declares a GitTarget for the paths these operations write to.
-func (f *ledgerFixture) createLedgerTarget(name, path string, prune *configv1alpha3.PrunePolicy) {
+// createLedgerTarget declares the GitTarget the operations that need one write through. There is
+// only ever one: these rows are about the cost of talking to the remote, and a second target on
+// the same branch shares the same worker and the same connections.
+const ledgerTargetName = "target-a"
+
+func (f *ledgerFixture) createLedgerTarget(path string, prune *configv1alpha3.PrunePolicy) {
 	f.t.Helper()
 	require.NoError(f.t, f.worker.Client.Create(f.worker.ctx, &configv1alpha3.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: ledgerTargetName, Namespace: "default"},
 		Spec: configv1alpha3.GitTargetSpec{
 			GitProviderRef: meta.LocalObjectReference{Name: f.worker.GitProviderRef},
 			Branch:         f.worker.Branch,
@@ -183,7 +187,7 @@ func ledgerOperations() []ledgerOp {
 			slug:   "start-empty",
 			seeded: false,
 			run: func(f *ledgerFixture) {
-				f.createLedgerTarget("target-a", "team-a", nil)
+				f.createLedgerTarget("team-a", nil)
 				require.NoError(f.t, f.worker.EnsurePathBootstrapped("team-a", "target-a", "default"))
 			},
 		},
@@ -192,7 +196,7 @@ func ledgerOperations() []ledgerOp {
 			slug:   "start-populated",
 			seeded: true,
 			run: func(f *ledgerFixture) {
-				f.createLedgerTarget("target-a", "team-a", nil)
+				f.createLedgerTarget("team-a", nil)
 				require.NoError(f.t, f.worker.EnsurePathBootstrapped("team-a", "target-a", "default"))
 			},
 		},
@@ -289,7 +293,7 @@ func ledgerOperations() []ledgerOp {
 			seeded: true,
 			prime: func(f *ledgerFixture) {
 				f.worker.mapper = configMapMapper()
-				f.createLedgerTarget("target-a", "live", &configv1alpha3.PrunePolicy{
+				f.createLedgerTarget("live", &configv1alpha3.PrunePolicy{
 					Mode: configv1alpha3.PruneAlways,
 				})
 				f.publish("prime")

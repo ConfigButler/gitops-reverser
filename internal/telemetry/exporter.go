@@ -249,6 +249,23 @@ var (
 	// GitPushesTotal. A retry is not a terminal outcome, which is why it is its own counter rather
 	// than a third value there; rate(retries)/rate(pushes) is the contention signal.
 	GitPushRetriesTotal metric.Int64Counter
+	// GitFetchesTotal counts every call that runs a SmartFetch against the remote, labelled by
+	// {provider_namespace, provider_name, branch, reason}. reason is `bootstrap` (the worker's
+	// first contact with the repository), `publication` (the fetch at the head of a publication
+	// cycle), `recovery` (a cycle that had to re-establish its base), `contention` (a rejected
+	// push learning where the remote went, and the reset that follows) or `forced_recheck` (an
+	// operator or controller asking the worker to re-read Git).
+	//
+	// Nothing else in the metric surface can tell you whether a fetch happened. GitPushesTotal
+	// counts cycles and GitPushRetriesTotal counts replays, and both read identically whether the
+	// worker pulls the branch on every write or never pulls it at all — so "is my mirror still
+	// fetching on every write?" had no answer, for an operator or for CI.
+	//
+	// It counts every call that runs SmartFetch, which deliberately includes
+	// fetchRemoteBranchHash. That one looks like a ref lookup and is named like one, but
+	// SmartFetch lists refs AND transfers objects, so excluding it would make the metric flattest
+	// exactly on the contention path an operator is looking hardest at.
+	GitFetchesTotal metric.Int64Counter
 	// GitPushDurationSeconds records one push cycle's wall time, labelled by
 	// {provider_namespace, provider_name, branch}. Retries are inside the measurement on purpose:
 	// what an operator wants is how long it took the mirror to accept the work, not how fast one
@@ -511,6 +528,7 @@ func registerCounters() error {
 		{"gitopsreverser_git_commit_failures_total", &GitCommitFailuresTotal},
 		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
 		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
+		{"gitopsreverser_git_fetches_total", &GitFetchesTotal},
 		{"gitopsreverser_git_queue_drops_total", &GitQueueDropsTotal},
 		{"gitopsreverser_placements_total", &PlacementsTotal},
 		{"gitopsreverser_placement_refusals_total", &PlacementRefusalsTotal},

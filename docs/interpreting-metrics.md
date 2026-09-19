@@ -199,6 +199,7 @@ boundary, the commit, the push. Background:
 | `git_pushes_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per push cycle: `pushed` or `failed`. |
 | `git_push_retries_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
 | `git_push_duration_seconds` | histogram | `provider_namespace`, `provider_name`, `branch` | One cycle end to end, retries included. |
+| `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (first contact with the repository) / `publication` (the head of a publication cycle) / `recovery` (a cycle re-establishing a base it could not trust) / `contention` (a rejected push finding the remote, and the reset after it) / `forced_recheck` (somebody asked the worker to re-read Git). See the note below. |
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync`. Every increment is lost work. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
@@ -208,6 +209,34 @@ boundary, the commit, the push. Background:
 | `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined. Every increment is a resource **absent** from the mirror. |
 | `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | `added` / `no_change` / `failed`. |
 | `git_resync_failures_total` | counter | `gittarget_namespace`, `gittarget_name` | Rule-change resyncs whose apply failed **after** enqueue. |
+
+### Reading `git_fetches_total`
+
+Nothing else here answers "is my mirror pulling the branch on every write?". `git_pushes_total`
+counts cycles and `git_push_retries_total` counts replays, and both read the same whether the
+worker fetches constantly or never.
+
+One increment is one `SmartFetch`, which is **two or three requests** to the Git host: it lists
+refs in a session of its own and then fetches objects in another. So the counter measures how
+often the worker decided to read the remote, which is the thing an operator can act on; it is not
+a wire-level request count.
+
+`fetchRemoteBranchHash` is counted, under `contention`. It reads like a ref lookup and is named
+like one, but it runs the same `SmartFetch` and transfers objects. Leaving it out would flatten
+the metric precisely where contention is being investigated.
+
+The reasons are split finer than the call sites on purpose. `publication` and `recovery` both come
+out of the head of a publication cycle, and separating them is what lets steady-state traffic be
+read at a glance:
+
+```promql
+sum by (reason) (rate(gitopsreverser_git_fetches_total[5m]))
+```
+
+A steady `publication` rate that tracks `git_pushes_total` is the worker fetching once per cycle.
+A climbing `recovery` rate is a worker repeatedly losing confidence in its checkout, which is a bug
+report rather than a cost. `contention` moving with `git_push_retries_total` is other writers on
+the branch, and `forced_recheck` moving with nothing else is reconcile traffic.
 
 ### Sizing the branch worker queue against `git_queue_drops_total`
 
