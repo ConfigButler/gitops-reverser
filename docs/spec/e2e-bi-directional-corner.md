@@ -79,7 +79,7 @@ The last three lines together are the interesting part. See
 Git revision is noticed on a 120s poll. Whatever GitOps Reverser writes to Git,
 self-heal will overwrite the cluster from the *stale cached revision* long before
 Argo looks at the new commit. This is the causality failure from
-[`bi-directional.md`](../bi-directional.md#when-two-people-change-things-at-almost-the-same-time),
+[`bi-directional.md`](../bi-directional.md#there-are-no-timing-guarantees),
 except Argo's numbers make it a near-certainty rather than a race.
 
 ### Install shape
@@ -457,7 +457,7 @@ syncOptions: ["RespectIgnoreDifferences=true"]
 6. After an Argo refresh, assert still `Synced`, still `MintChip`, commit count stable.
 
 This is the Argo CD analogue of split ownership (mode 3 in
-[`bi-directional.md`](../bi-directional.md#recommended-modes)) — and it is **not**
+[`bi-directional.md`](../bi-directional.md#the-split-ownership-alternative)) — and it is **not**
 bi-directional, which the spec asserts precisely so no one mistakes it for one.
 `ignoreDifferences` removes `/spec/scoops` from Argo's comparison in *both*
 directions: the API can now own it, but a **Git-side** change to `/spec/scoops`
