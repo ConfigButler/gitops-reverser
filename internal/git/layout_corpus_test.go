@@ -51,8 +51,12 @@ import (
 //
 // Run with -update to rewrite the expected patches from the observed diff.
 
-var updateLayoutCorpus = flag.Bool("update", false,
-	"rewrite test/fixtures/layout-corpus expected-*.patch fixtures from the observed diff")
+// updateGoldens is this package's single -update flag. It is declared here because the layout
+// corpus was its first consumer, and it is shared rather than duplicated: two flag.Bool calls with
+// the same name in one package panic at registration, and one flag means one command regenerates
+// every golden the package owns (the corpus patches and the round-trip ledger).
+var updateGoldens = flag.Bool("update", false,
+	"rewrite this package's golden fixtures (layout-corpus expected-*.patch, the git round-trip ledger)")
 
 // layoutCorpusRoot is test/fixtures/layout-corpus/ as reached from this package's directory. The
 // fixtures are read in place rather than copied into testdata/: a copy would drift from the
@@ -347,7 +351,7 @@ func requireCorpusRefusal(
 // instead when -update is given.
 func assertCorpusPatch(t *testing.T, path, got string) {
 	t.Helper()
-	if *updateLayoutCorpus {
+	if *updateGoldens {
 		require.NoError(t, os.WriteFile(path, []byte(got), 0o600))
 		return
 	}
