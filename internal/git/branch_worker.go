@@ -1403,9 +1403,16 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		}
 		lastErr = err
 
-		remoteHash, fetchErr := fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
-		if fetchErr != nil {
-			return err
+		remoteHash, known := advertisedRootHash(err, rootBranch)
+		if !known {
+			// The push failed without the remote ever telling us where the branch is — a dropped
+			// connection, an auth failure, a server-side rejection. Only then is the slow path
+			// justified, and it is two more requests to the Git host.
+			var fetchErr error
+			remoteHash, fetchErr = fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
+			if fetchErr != nil {
+				return err
+			}
 		}
 		if remoteHash == rootHash {
 			// The remote has not moved, so the rejection was not contention and replaying would
@@ -1429,6 +1436,25 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 	}
 
 	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// advertisedRootHash reads the remote's own answer out of a failed push, when the push got one.
+//
+// A compare-and-swap rejection is the remote telling us where the branch is: validatePushState
+// compared the advertised hash for the cycle's root branch, so the number the replay needs was
+// already on the wire. Learning it again with fetchRemoteBranchHash is a whole SmartFetch — two
+// more requests to the Git host on the most expensive path in the system — for a fact we had.
+//
+// The branch check is not ceremony. The error carries the branch its advertisement was read for,
+// and the caller's rootBranch can differ from it across a retry (a new branch is rooted on the
+// default branch until the first push creates it), so a hash for a different ref would be a wrong
+// answer rather than a missing one.
+func advertisedRootHash(err error, rootBranch plumbing.ReferenceName) (plumbing.Hash, bool) {
+	var moved *RemoteMovedError
+	if !errors.As(err, &moved) || moved.Branch != rootBranch {
+		return plumbing.ZeroHash, false
+	}
+	return moved.Advertised, true
 }
 
 func (w *BranchWorker) rebuildPendingWrites(

@@ -73,6 +73,27 @@ func advertisedHashes(refs *transport.RemoteRefs) map[plumbing.ReferenceName]plu
 	return out
 }
 
+// RemoteMovedError reports a compare-and-swap that cannot proceed: the cycle's root branch is no
+// longer at the hash the local commits were based on.
+//
+// It carries Advertised, which is the hash the push session's OWN advertisement named. That is the
+// point of the type. The caller has to know where the remote is before it can replay, and without
+// this it learned the same number a second time over the network — a whole SmartFetch, which is
+// two more requests to the Git host, for a fact the rejected push already had in hand.
+//
+// The message is unchanged from the error this replaces, deliberately: it is the string in the
+// logs operators have been reading, and the type is the new information, not the wording.
+type RemoteMovedError struct {
+	// Branch is the cycle's root branch, the one whose advertised hash was compared.
+	Branch plumbing.ReferenceName
+	// Expected is the hash the local commits were based on (the cycle's root hash).
+	Expected plumbing.Hash
+	// Advertised is where the remote says that branch is now.
+	Advertised plumbing.Hash
+}
+
+func (e *RemoteMovedError) Error() string { return "remote received unknown updates" }
+
 // validatePushState checks if the push can proceed based on remote state.
 func validatePushState(
 	ctx context.Context,
@@ -118,7 +139,11 @@ func validatePushState(
 		// Check if the remoteHash is what we based our work on
 		if rootHash != currentRootHash {
 			logger.Info("Remote branch not in expected state", "branch", branchName)
-			return plumbing.ZeroHash, plumbing.ZeroHash, errors.New("remote received unknown updates")
+			return plumbing.ZeroHash, plumbing.ZeroHash, &RemoteMovedError{
+				Branch:     rootBranch,
+				Expected:   rootHash,
+				Advertised: currentRootHash,
+			}
 		}
 	}
 

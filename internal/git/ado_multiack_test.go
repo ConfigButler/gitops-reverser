@@ -217,11 +217,12 @@ func setRemoteURL(tb testing.TB, repo *git.Repository, url string) {
 	require.NoError(tb, repo.SetConfig(cfg))
 }
 
-// revParse returns the hash a ref points at in an on-disk repository, read with canonical git so
-// the assertion does not depend on the library under test.
-func revParse(tb testing.TB, repoDir, ref string) string {
+// revParseMain returns the hash refs/heads/main points at in an on-disk repository, read with
+// canonical git so the assertion does not depend on the library under test.
+func revParseMain(tb testing.TB, repoDir string) string {
 	tb.Helper()
 
+	const ref = "refs/heads/main"
 	out, err := exec.Command("git", "-C", repoDir, "rev-parse", ref).Output()
 	require.NoError(tb, err, "git rev-parse %s", ref)
 
@@ -320,7 +321,7 @@ func TestADO_PushAtomic_NeedsNoMultiAck(t *testing.T) {
 	assert.Zero(t, sim.uploadPackPosts.Load(), "a push must not touch git-upload-pack")
 
 	// Confirm the remote actually moved to our commit.
-	remoteHash := revParse(t, repoDir, "refs/heads/main")
+	remoteHash := revParseMain(t, repoDir)
 	assert.Equal(t, newHash.String(), remoteHash, "the remote must be at the pushed commit")
 }
 
@@ -345,7 +346,7 @@ func TestADO_SmartFetch_RequiresMultiAck(t *testing.T) {
 
 	// Move the remote on, so there is something to fetch.
 	simulateClientCommitOnDisk(t, repoDir, "main", "second.yaml", "kind: Second\n")
-	wantHash := revParse(t, repoDir, "refs/heads/main")
+	wantHash := revParseMain(t, repoDir)
 
 	branch, err := SmartFetch(
 		context.Background(), repo, plumbing.ReferenceName("refs/heads/main"), nil)
