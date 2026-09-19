@@ -125,6 +125,21 @@ type BranchWorker struct {
 	// repoMu serializes repository/worktree operations within this worker.
 	repoMu sync.Mutex
 
+	// baseTrustedState and worktreeDirtyState carry the invariant "the worktree sits at the
+	// remote tip of the target branch, or the worker knows it does not", plus the separate
+	// question of whether the worktree is clean. They are read through baseTrusted() and
+	// worktreeDirty() and written through setBaseTrusted, invalidateBase and markWorktreeDirty.
+	//
+	// They are atomics rather than repoMu-protected fields because the loss points are spread
+	// across every error return on the write path, and a lock there would put a second ordering
+	// constraint on code whose only job is to record that something went wrong.
+	//
+	// Nothing reads them to make a decision yet: the head-of-cycle fetch still runs
+	// unconditionally. See the package's design note in
+	// docs/design/inbound-push-notification.md §3 and §3.1.
+	baseTrustedState   atomic.Bool
+	worktreeDirtyState atomic.Bool
+
 	// branchBufferMaxBytes caps the retained in-memory event data; tripped on
 	// event arrival, an immediate finalize bypasses the commit window.
 	branchBufferMaxBytes int64
@@ -237,6 +252,9 @@ func NewBranchWorker(
 		writer = newContentWriter(itypes.SensitiveResourcePolicy{})
 	}
 	limits = limits.withDefaults()
+	// Both flags start at their zero values, which is the state §3 requires of a new worker:
+	// nothing has looked at the remote, so the base is untrusted, and nothing has written, so
+	// the worktree is clean.
 	return &BranchWorker{
 		GitProviderRef:       providerName,
 		GitProviderNamespace: providerNamespace,
@@ -1269,6 +1287,77 @@ func (l *branchWorkerEventLoop) stopTimers() {
 // without pushing them. When hasPendingCommits is false (no commits retained
 // from earlier in the current push cycle), it first fetches and resets to the
 // remote tip so the new commits are based on the latest remote state.
+// trustGainEnabled hard-wires the base-trust state machine off.
+//
+// Every transition in §3 is implemented and exercised, but in production the flag can never
+// become true, so commitPendingWrites' unconditional fetch is still unconditional and behavior is
+// bit-identical to before this state machine existed. The golden round-trip ledger not moving is
+// the acceptance test.
+//
+// It is a var rather than a const for one reason: the tests of the GAIN transitions would
+// otherwise assert nothing, because setBaseTrusted could never store what they are checking. No
+// production code writes it. The commit that flips this deletes the variable and the guard in
+// setBaseTrusted together, which is a one-line change precisely because the hard part — finding
+// every place trust must be dropped — was done here, against a suite that still passes for the
+// old reasons.
+//
+//nolint:gochecknoglobals
+var trustGainEnabled = false
+
+// baseTrusted reports whether the worktree is known to sit at the remote tip of the target
+// branch.
+//
+// The failure direction is the safe one. A stale false costs one fetch. A stale true is caught by
+// the compare-and-swap on the next push, which is the mechanism the write path already relies on.
+func (w *BranchWorker) baseTrusted() bool { return w.baseTrustedState.Load() }
+
+// worktreeDirty reports whether the worktree may hold a partial write.
+//
+// This is NOT the same question as baseTrusted, and collapsing the two is a bug rather than a
+// simplification. A write can fail part-way through executePendingWrites and leave staged changes
+// behind while an earlier write is still retained; if the push that follows were allowed to
+// declare everything well, the next cycle would plan on top of those leftovers and commit them
+// under an unrelated author. So a successful push may make the base trusted, and must never make
+// the worktree clean. Only a reset does that.
+func (w *BranchWorker) worktreeDirty() bool { return w.worktreeDirtyState.Load() }
+
+// setBaseTrusted records whether the base can be trusted.
+//
+// Trust is GAINED in exactly two places, and both are here rather than scattered: a reset to the
+// fetched tip (updateBranchMetadataFromPullReport, whose every call site is a PrepareBranch or a
+// syncToRemote, and which both fetch and reset), and a successful push (the uploaded commits are
+// now the remote tip). fetchRemoteBranchHash pointedly does not call it: that one fetches without
+// resetting, so it learns where the remote is without making the worktree match.
+func (w *BranchWorker) setBaseTrusted(trusted bool) {
+	w.baseTrustedState.Store(trusted && trustGainEnabled)
+}
+
+// invalidateBase records that the worktree can no longer be assumed to sit at the remote tip.
+//
+// reason is logged rather than stored: what an operator needs is the sequence, and what the code
+// needs is only the boolean.
+func (w *BranchWorker) invalidateBase(reason string) {
+	if w.baseTrustedState.Swap(false) {
+		w.Log.V(1).Info("Base no longer trusted", "reason", reason, "branch", w.Branch)
+	}
+}
+
+// markWorktreeDirty records that the worktree may hold a partial write. Only a reset clears it.
+func (w *BranchWorker) markWorktreeDirty(reason string) {
+	if !w.worktreeDirtyState.Swap(true) {
+		w.Log.V(1).Info("Worktree may hold a partial write", "reason", reason, "branch", w.Branch)
+	}
+}
+
+// markWorktreeClean records that a reset has just discarded whatever the worktree held. It is
+// called only from updateBranchMetadataFromPullReport, because that is the one place a reset is
+// known to have happened.
+func (w *BranchWorker) markWorktreeClean() {
+	if w.worktreeDirtyState.Swap(false) {
+		w.Log.V(1).Info("Worktree reset to the fetched tip", "branch", w.Branch)
+	}
+}
+
 func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPendingCommits bool) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
@@ -1308,6 +1397,10 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 
 	baseBranch, baseHash, err := w.ensureWriteBranch(repo)
 	if err != nil {
+		// From here on the worktree has been touched, so every failure leaves it in a state
+		// nobody has verified. Dropping trust makes the next cycle fetch and reset, which is the
+		// same cleanup the unconditional fetch performs today as a side effect.
+		w.invalidateBase("ensure write branch failed")
 		return err
 	}
 
@@ -1318,6 +1411,7 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 
 	commitsCreated, err := w.executePendingWrites(w.ctx, repo, pendingWrites)
 	if err != nil {
+		w.invalidateBase("execute pending writes failed")
 		return fmt.Errorf("execute pending writes: %w", err)
 	}
 	if commitsCreated == 0 {
@@ -1393,6 +1487,18 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 
 		err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
 		if err == nil {
+			// The uploaded commits are the remote tip now, so the worktree is at it. A nil
+			// return also covers "already up to date", which implies the same thing — and a
+			// third case that does not: an unborn branch with nothing to push, where
+			// validatePushState returns zero/zero without having confirmed anything.
+			// branchExists is what separates them.
+			//
+			// This must NOT clear worktreeDirty. An earlier write can have failed part-way
+			// through executePendingWrites and left staged changes behind while this write was
+			// retained; a successful push says where the remote is, and says nothing about that.
+			if branchExists, _, _ := w.GetBranchMetadata(); branchExists {
+				w.setBaseTrusted(true)
+			}
 			w.pushCycleRootBranch = ""
 			w.pushCycleRootHash = plumbing.ZeroHash
 			w.firsts.push.Do(func() {
@@ -1404,22 +1510,11 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			return nil
 		}
 		lastErr = err
+		// A rejection is a moved remote; any other push error may have died mid-upload. Either
+		// way the remote state is no longer something we can claim to know.
+		w.invalidateBase("push failed or was rejected")
 
-		remoteHash, known := advertisedRootHash(err, rootBranch)
-		if !known {
-			// The push failed without the remote ever telling us where the branch is — a dropped
-			// connection, an auth failure, a server-side rejection. Only then is the slow path
-			// justified, and it is two more requests to the Git host.
-			var fetchErr error
-			w.recordFetch(fetchReasonContention)
-			remoteHash, fetchErr = fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
-			if fetchErr != nil {
-				return err
-			}
-		}
-		if remoteHash == rootHash {
-			// The remote has not moved, so the rejection was not contention and replaying would
-			// hit the same wall.
+		if !w.remoteMovedDuringPush(repo, err, rootBranch, rootHash, auth) {
 			return err
 		}
 		w.recordPushRetry(pushRetryRemoteMoved)
@@ -1427,12 +1522,14 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		w.recordFetch(fetchReasonContention)
 		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 		if syncErr != nil {
+			w.invalidateBase("sync during replay failed")
 			return fmt.Errorf("sync remote during replay: %w", syncErr)
 		}
 		w.updateBranchMetadataFromPullReport(pullReport)
 
 		rootBranch, rootHash, err = w.rebuildPendingWrites(repo, pendingWrites)
 		if err != nil {
+			w.invalidateBase("replay rebuild failed")
 			return err
 		}
 		w.pushCycleRootBranch = rootBranch
@@ -1440,6 +1537,37 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 	}
 
 	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// remoteMovedDuringPush reports whether a failed push was contention — the remote branch no
+// longer sitting at the hash our commits were based on — which is the only push failure a replay
+// can fix.
+//
+// It prefers the rejection's own advertisement and reaches the network only when the push
+// produced none: a dropped connection, an auth failure, a server-side refusal. That fallback is a
+// whole SmartFetch, which is why it is the exception rather than the path.
+//
+// A fetch that itself fails is reported as "not moved". The caller surfaces the original push
+// error either way, and replaying onto a tree nobody has read would be guessing at contention
+// rather than observing it.
+func (w *BranchWorker) remoteMovedDuringPush(
+	repo *gogit.Repository,
+	pushErr error,
+	rootBranch plumbing.ReferenceName,
+	rootHash plumbing.Hash,
+	auth []gitclient.Option,
+) bool {
+	remoteHash, known := advertisedRootHash(pushErr, rootBranch)
+	if !known {
+		var fetchErr error
+		w.recordFetch(fetchReasonContention)
+		remoteHash, fetchErr = fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
+		if fetchErr != nil {
+			w.invalidateBase("remote-state fetch failed")
+			return false
+		}
+	}
+	return remoteHash != rootHash
 }
 
 // advertisedRootHash reads the remote's own answer out of a failed push, when the push got one.
@@ -1495,6 +1623,10 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(ctx context.Context,
 		return nil
 	}
 
+	// Somebody stated that the remote moved, which is exactly the claim baseTrusted makes and can
+	// no longer support. The sync below re-establishes it.
+	w.invalidateBase("forced recheck requested")
+
 	provider, err := w.getGitProvider(ctx)
 	if err != nil {
 		return fmt.Errorf("get GitProvider: %w", err)
@@ -1514,12 +1646,14 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(ctx context.Context,
 	w.recordFetch(fetchReasonForcedRecheck)
 	pullReport, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
+		w.invalidateBase("forced recheck sync failed")
 		return fmt.Errorf("sync remote before replay: %w", err)
 	}
 	w.updateBranchMetadataFromPullReport(pullReport)
 
 	rootBranch, rootHash, err := w.rebuildPendingWrites(repo, pendingWrites)
 	if err != nil {
+		w.invalidateBase("forced recheck rebuild failed")
 		return fmt.Errorf("rebuild pending writes: %w", err)
 	}
 	w.pushCycleRootBranch = rootBranch
@@ -1954,6 +2088,9 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) 
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
+	// Somebody stated that the remote moved: see refreshRemoteAndRebuildPendingWrites.
+	w.invalidateBase("forced recheck requested")
+
 	// PrepareBranch handles both initial and update cases
 	w.recordFetch(fetchReasonForcedRecheck)
 	report, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
@@ -2022,6 +2159,18 @@ func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	w.branchExists = report.ExistsOnRemote
 	w.lastCommitSHA = report.HEAD.Sha
 	w.lastFetchTime = time.Now()
+
+	// This is the ONE place trust can be gained by a fetch, because it is the one place a fetch
+	// is known to have been followed by a reset: every call site is a PrepareBranch or a
+	// syncToRemote, and both paths inside syncToRemote leave a clean worktree — checkoutAndReset
+	// passes Force, and makeHeadUnborn clears the index and the tree.
+	//
+	// The condition handles two rows of §3's loss table by construction. SmartFetch falls back to
+	// the remote's default branch when the target branch does not exist, and syncToRemote reports
+	// that as ExistsOnRemote=false, so a worktree based on the wrong branch is never trusted;
+	// neither is an unborn one.
+	w.setBaseTrusted(report.ExistsOnRemote && !report.HEAD.Unborn)
+	w.markWorktreeClean()
 
 	// Log if this was an unborn branch
 	if report.HEAD.Unborn {
