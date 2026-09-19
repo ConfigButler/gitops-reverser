@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.48.0...v0.48.1) (2026-09-18)
+
+
+### Documentation
+
+* **bi-directional:** document the workflow that exists, and record the inbound-trigger gap ([#378](https://github.com/ConfigButler/gitops-reverser/issues/378)) ([2adf4b5](https://github.com/ConfigButler/gitops-reverser/commit/2adf4b5b6467a862d450fb866438f8c162f1d523))
+
 ## [0.48.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.47.0...v0.48.0) (2026-09-16)
 
 
