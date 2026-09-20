@@ -42,21 +42,32 @@ Five call sites reach the remote, none on a timer and none triggered by the remo
 
 | Call site | Trigger | Cost |
 | --- | --- | --- |
-| [`ensureRepositoryInitialized`](../../internal/git/branch_worker.go) | worker start | clone, once |
-| `bootstrapPathIfNeeded` | first-time path bootstrap | once |
+| [`prepareBootstrapRepository`](../../internal/git/branch_worker.go) | a GitTarget declaring its path | **list, fetch, reset** |
 | `commitPendingWrites` via `PrepareBranch` | first commit of every publication cycle | **list, fetch, reset** |
 | `PushAtomic` | every publication cycle | list, then packfile |
 | `fetchRemoteBranchHash` + `syncToRemote` | a rejected push | list, fetch, reset |
 | `syncWithRemote` / `refreshRemoteAndRebuildPendingWrites` | a forced recheck | list, fetch, reset |
 
-The third row is the target of this page. It is gated on `hasPendingCommits`, so it fires once per
+The second row is the target of this page. It is gated on `hasPendingCommits`, so it fires once per
 cycle rather than once per event, and an idle target pays nothing. Under sustained edits, with a
 `5s` commit window and a `5s` push cooldown, it is roughly one fetch-and-reset per push.
 
-**Count these in connections, because one call is not one round trip.** A `SmartFetch` opens
-**two**: `listRemoteRefs` runs a session of its own, and `repo.Fetch` then opens another that
-re-reads the advertisement before it transfers anything. A `PushAtomic` opens one, and reads its
-advertisement inside that same session, which is the whole reason the compare-and-swap is free.
+Note what is NOT in that table. `ensureRepositoryInitialized` looks like the worker's clone and an
+earlier draft listed it as one; it has no caller outside a test. There is no clone anywhere —
+`PrepareBranch` initialises an empty repository and fetches into it.
+
+**Count these in HTTP requests, because one call is not one round trip.** A `SmartFetch` costs
+**two** requests when it transfers nothing and **three** when it does: `listRemoteRefs` opens a
+conversation of its own, and `repo.Fetch` opens another that re-reads the advertisement before
+deciding whether to ask for objects. A `PushAtomic` costs **one** when it is rejected or already up
+to date and **two** when it sends a packfile.
+
+Those are measurements, from §4.1, and they replace a flat "SmartFetch is 2, PushAtomic is 1" that
+this page asserted before anything ran. The unit is the HTTP request. A go-git *session* is one
+connection and reads its advertisement inside it, which is what makes the compare-and-swap free of
+an extra handshake — but on smart HTTP that session is two requests, so over SSH these numbers
+would be lower. The harness measures requests against an HTTP remote and does not measure latency
+or TCP connections.
 
 | Operation | Connections to the Git host |
 | --- | --- |
@@ -137,7 +148,10 @@ This is independent of the rest of the page and could ship on its own.
 > **The worktree sits at the remote tip of the target branch, or the worker knows it does not.**
 
 One boolean on `BranchWorker` carries it. Call it `baseTrusted`. `commitPendingWrites` calls
-`PrepareBranch` when, and only when, `!hasPendingCommits && !baseTrusted`.
+`PrepareBranch` when, and only when,
+`!hasPendingCommits && (!baseTrusted || worktreeDirty)` — both flags, because §3.1 shows why one
+is not enough. (An earlier draft of this line said `!hasPendingCommits && !baseTrusted`, which
+contradicted §3.1 and commit 4 three paragraphs later.)
 
 The two flags are independent, and only a reset clears the second one:
 
@@ -243,34 +257,55 @@ case !hasPendingCommits && (!w.baseTrusted() || w.worktreeDirty()):
 this: `syncToRemote` then `rebuildPendingWrites`. Reusing it means dirty-state recovery adds a
 branch, not a mechanism.
 
-## 4. What it costs after the change
+## 4. What it costs
 
-**Every number below is a prediction, derived by reading the code. None of it has been measured,
-and none of it should be trusted until §4.1's harness says so.** They are written as a table
-because a prediction you can check beats a paragraph you cannot, not because they are results.
+**These are measurements.** Every row comes from
+[`testdata/git-roundtrip-ledger.golden`](../../internal/git/testdata/git-roundtrip-ledger.golden),
+produced by the harness in §4.1 against canonical git's `http-backend`. Only the last column is a
+prediction, and it is labelled as one.
 
-Connections to the Git host, which is the number that matters:
+The unit is **HTTP requests to the Git host**. Not TCP connections, not latency: the harness
+counts what the server was asked to serve.
 
-| Situation | Today | After the flip | With §2.2 | With the notification |
+| Situation | Before | After §2.2 | After the flip | With the notification (predicted) |
 | --- | --- | --- | --- | --- |
-| Idle target | 0 | 0 | 0 | 0 |
-| Uncontended publication | 3 | **1** | 1 | 1 |
-| Publication that commits nothing | 3 | **1** | 1 | 1 |
-| Contended publication | 8 | 6 | **4** | **3** |
-| Worker start | clone | clone | clone | clone |
+| Idle target | 0 | 0 | **0** | 0 |
+| Uncontended publication | 4 | 4 | **2** | 2 |
+| Publication that commits nothing | 3 | 3 | **1** | 1 |
+| Several commits in one cycle | 4 | 4 | **2** | 2 |
+| Contended publication, one rejection | 10 | 8 | **6** | 3 |
+| Contended publication, two rejections | 16 | 12 | **10** | 4 |
+| Resync snapshot | 4 | 4 | **4** | 4 |
+| Forced recheck | 2 | 2 | **2** | 2 |
+| Worker start, populated remote | 3 | 3 | **3** | 3 |
 
-Three results worth reading separately.
+Four results worth reading separately, two of which contradict what this page predicted before
+the harness existed.
 
-**The uncontended case drops threefold**, not by half. The fetch was two connections, not one, and
-removing it leaves only the push the cycle was making anyway.
+**An uncontended publication halves, from four requests to two.** The page predicted three before
+and one after, and was wrong twice in the same way: it costed a `SmartFetch` at a flat two and a
+`PushAtomic` at a flat one. A push that sends a packfile is two requests on smart HTTP — the
+advertisement, then the pack — so the floor is two, not one, and the fetch that was removed was
+two of the original four.
 
-**The contended case is where the money is.** It costs eight connections today. §2.2's deletion
-takes it to four. A notification that arrives before we try to push takes it to three, because
-the cycle already knows to fetch and never spends a connection on a push that cannot succeed.
+**A publication that commits nothing now costs a single request.** It still opens the push
+conversation, reads the advertisement, finds the remote already correct and sends nothing. That
+one request is what makes removing the fetch safe: §2's whole argument is that a no-op cycle still
+consults the remote, and this row is that argument measured.
 
-**That last column is the real argument for the notification**, and it is a better one than
-status freshness. A push webhook does not have to make us fresher. It has to stop us from
-spending five connections discovering something the Git host was willing to tell us for free.
+**A rejection cost ten, not the eight predicted.** Two of the errors above cancelled and a third
+did not: when the remote HAS moved, the `SmartFetch` that discovers it transfers objects, so it
+costs three requests rather than two. §2.2's deletion removed two of those ten and the flip
+removed two more.
+
+**The resync row does not move, deliberately.** §2.1 and §11's commit 3 explain why: a resync that
+finds nothing to change never reaches a push, so nothing would ever catch a stale base. It keeps
+its fetch.
+
+**The last column remains the argument for the notification**, and it is still a prediction. A
+push webhook does not have to make us fresher. It has to stop us spending requests discovering
+something the Git host was willing to tell us for free — and §8.1 must be read with the retained
+write caveat there before that column can be believed.
 
 ## 4.1 Measure it first
 
@@ -497,8 +532,26 @@ overhaul and its conclusions hold unchanged. Three of them matter here:
 | --- | --- | --- | --- |
 | equals believed tip | any | We are already there | Ignore |
 | a SHA we published | equals believed tip | Force-push back onto one of ours | Invalidate |
-| a SHA we published | anything else | Delayed delivery for an older push of ours | Ignore |
+| a SHA we published | a SHA we published, and NOT the believed tip | Delayed delivery for an older push of ours | Ignore |
 | anything else | any | Somebody else moved the branch | Invalidate |
+| anything else not covered above | — | Cannot be classified | **Invalidate** |
+
+**Row three is narrower than it looks, and an earlier draft had it wrong.** It originally ignored
+any delivery whose `after` we had published and whose `before` was not the believed tip, which
+throws away a real rollback. Believe the tip is B and have published A. Somebody pushes B -> C,
+then C -> A. If the `C -> A` delivery arrives first, `after` is A (published) and `before` is C
+(not the believed tip), so the old rule ignored it — leaving the worker trusting B when the branch
+is at A.
+
+Requiring `before` to ALSO be a SHA we published is what separates the two: our own delayed
+delivery is `ours -> ours`, while a rollback performed by somebody else passes through a SHA we
+never wrote. Anything that does not fit a row invalidates, which costs a fetch and never costs
+correctness.
+
+The ordering assumption has to go too. Deliveries can arrive out of order, be duplicated, or not
+arrive at all, so the receiver must be correct under all three and the fallback must be
+invalidation. The tests for this are reordered delivery, dropped delivery, and a force-push back
+to a previously published SHA.
 
   A host that omits `before` falls back to invalidating, which costs a fetch rather than
   correctness. Keeping a bounded set of recently published SHAs is what makes row three possible,
@@ -539,6 +592,21 @@ All the receiver needs to do is **invalidate**: clear `baseTrusted`, and record 
 as the believed tip. That costs zero connections. The next publication cycle then finds an
 untrusted base and fetches once, which it now has a real reason to do, and pushes onto the
 correct tip instead of discovering the move through a rejection.
+
+**Clearing the flag is not sufficient on its own, and the saving in §4's last column depends on
+what is added here.** `ensureBaseForCycle` only consults `baseTrusted` when `hasPendingCommits` is
+false, because a reset would destroy local commits the retained writes already produced. So a
+target that is holding retained work will not act on the invalidation: it pushes the stale base
+first and earns exactly the rejection the notification existed to prevent.
+
+The receiver therefore needs a second effect for that case, and it belongs on the worker rather
+than in the handler: when writes are retained and the base has been invalidated, refresh and
+replay before the next push, the way `recoverDirtyWorktree` already does for a dirty worktree.
+That keeps §8.1's rule intact — the RECEIVER still performs no round trip; the worker does, at the
+moment it was going to talk to the remote anyway.
+
+Until that exists, the notification is worth one column less than §4 claims on any target with
+retained writes.
 
 This is what turns the contended case from eight connections into three, and it is why the
 notification earns its place. It does not buy freshness. It buys the *absence* of a doomed push
@@ -622,6 +690,10 @@ for the no-retained-writes half of a forced recheck.
 
 ## 11. Implementation plan
 
+**Status: commits 0 through 4 have shipped.** The fetch is conditional, the state machine is live,
+and §4's table is measured rather than predicted. What remains is commit 5, the receiver, plus the
+two follow-ups under "deliberately not in this plan".
+
 Seven commits. Commit 0 is measurement and must come first: the rest of this page argues from
 numbers that nobody has checked. Commits 0b, 1 and 2 change no observable behavior between them,
 which is what makes the flip a one-line argument rather than a leap, and commit 3 pays off the
@@ -700,15 +772,32 @@ follows. The only sound resolution point is after the remote has spoken.
 ### Commit 4: trust the base
 
 ```go
-if !hasPendingCommits && (!w.baseTrusted() || w.worktreeDirty()) {
+if hasPendingCommits || (w.baseTrusted() && !w.worktreeDirty()) {
+    return nil // plan on the worktree
+}
 ```
 
-at [`branch_worker.go`](../../internal/git/branch_worker.go) `commitPendingWrites`, wrapping the
-auth resolution and the `PrepareBranch` call that currently run unconditionally. Remove the
-hard-wiring from commit 2.
+in `ensureBaseForCycle`, extracted from
+[`commitPendingWrites`](../../internal/git/branch_worker.go), which now calls it in place of the
+unconditional auth resolution and `PrepareBranch`. The hard-wiring from commit 2 is gone.
 
-This is the whole behavioral change. The counter's `publication` series goes to zero and the
-unit assertion from commit 1 flips.
+**It was not the one-line flip this section promised.** Three things had to be corrected first,
+and shipping only the condition would have introduced two bugs:
+
+- **Recovery cannot live in `commitPendingWrites`.** §3.1's pseudocode calls
+  `refreshRemoteAndRebuildPendingWrites` from inside it. That deadlocks — both take `repoMu` —
+  and it would replay the wrong batch, because `commitPendingWrites` is handed the INCOMING
+  writes while the ones needing replay are the retained slice the event loop owns.
+  `recoverDirtyWorktree` is a loop method, called before every commit the loop makes.
+- **The reset did not clean what the state machine assumed.** `checkoutAndReset` restores tracked
+  files and nothing else: a file a failed write created — staged or not — and any directory it
+  created both survived it, which is the common case rather than the rare one, because our writes
+  mostly create documents. Clearing `worktreeDirty` after such a reset was a lie.
+  `discardWorktreeLeftovers` now makes §5's claim true.
+- **A resync keeps its fetch**, per commit 3, so the measured resync row does not move.
+
+The counter's `publication` series goes to one per worker lifetime rather than zero — a new
+worker has never seen the remote — and every cycle after that is silent.
 
 ### Commit 5: the receiver
 

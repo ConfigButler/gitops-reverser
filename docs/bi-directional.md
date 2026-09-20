@@ -13,11 +13,16 @@ API, and it spends its budget on **round trips to the Git host**, because those 
 an operator waits through. Local work is not in that budget: recomputing a change against a
 moved branch happens on a checkout that is already on disk and costs nothing worth naming.
 
-That ordering explains the design. The write path talks to the remote once per publication and
-learns everything it needs on that one connection. A foreign push is not a problem and not lost
-work; it costs one extra exchange and a recomputation, and the branch ends up correct. If your
-workload is mostly Git-side edits with occasional live changes, this guide still applies, but
-you are using the tool against its grain.
+That ordering explains the design. A publication talks to the remote **twice**: it opens the push,
+reads where the branch is, and sends the commits — and it learns everything it needs from that one
+exchange, so it does not read the branch beforehand. A publication that turns out to have nothing
+to change costs a single request. A foreign push is not a problem and not lost work; it costs a
+handful of extra requests and a recomputation, and the branch ends up correct. If your workload is
+mostly Git-side edits with occasional live changes, this guide still applies, but you are using
+the tool against its grain.
+
+Those numbers are measured rather than estimated, and the per-operation table lives in
+[`git-roundtrip-ledger.golden`](../internal/git/testdata/git-roundtrip-ledger.golden).
 
 ```mermaid
 flowchart LR
@@ -63,9 +68,15 @@ advertisement and refuses a moved branch before uploading a single object, so co
 caught on a connection the cycle was making anyway.
 
 **Reverser never polls the remote and holds no timer against it**, so an idle target generates no
-Git traffic at all. What it does do today is fetch once at the head of each publication cycle,
-before it plans the first commit. That fetch is per cycle and not per event, and the design for
-removing it is [inbound push notification](design/inbound-push-notification.md).
+Git traffic at all — measurably none, not approximately none.
+
+A publishing target does not read the branch before planning either. It plans on the checkout it
+already has and lets the compare-and-swap catch it if the branch moved, which is the one case
+where it pays to re-read and replay. The exceptions are a worker that has not yet seen the
+remote, a previous write that failed and left the checkout in an unknown state, and a resync,
+which keeps reading because it can finish without ever opening a push. What is still missing is
+anything that tells an *idle* target its branch moved; that is
+[inbound push notification](design/inbound-push-notification.md).
 
 ## What happens when somebody else pushed first
 
