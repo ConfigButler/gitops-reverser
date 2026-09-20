@@ -46,10 +46,13 @@ func fetchCount(t *testing.T, reader *sdkmetric.ManualReader, worker *BranchWork
 	return value
 }
 
-// TestGitFetchesTotal_PublicationFetchesEveryCycle is the assertion the flip inverts. Today a
-// publication cycle fetches before it plans, once per cycle; after the change it will be zero on
-// a healthy steady-state target.
-func TestGitFetchesTotal_PublicationFetchesEveryCycle(t *testing.T) {
+// TestGitFetchesTotal_SteadyStatePublicationDoesNotFetch is the assertion the flip inverted, and
+// the headline claim of the whole design: a healthy target that is publishing does not read the
+// remote at all.
+//
+// The first cycle still fetches, because a new worker has never looked at the remote and its base
+// is untrusted by construction. Every cycle after that plans on the tip its own push established.
+func TestGitFetchesTotal_SteadyStatePublicationDoesNotFetch(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
@@ -57,22 +60,46 @@ func TestGitFetchesTotal_PublicationFetchesEveryCycle(t *testing.T) {
 
 	f.publish("first")
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonPublication),
-		"the head of a publication cycle fetches")
+		"a worker that has never seen the remote fetches once to establish its base")
 
 	f.publish("second")
-	assert.Equal(t, int64(2), fetchCount(t, reader, f.worker, fetchReasonPublication),
-		"and does so once per cycle")
+	f.publish("third")
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonPublication),
+		"every cycle after that plans on the tip its own push established")
 
-	// Once per CYCLE, not once per commit: the later commits of a cycle build on the local repo.
-	f.commit(false, "third")
-	f.commit(true, "fourth")
+	// And still once per CYCLE rather than per commit, which is the property the guard must not
+	// have broken on its way to becoming conditional.
+	f.commit(false, "fourth")
 	f.commit(true, "fifth")
+	f.commit(true, "sixth")
 	f.push()
-	assert.Equal(t, int64(3), fetchCount(t, reader, f.worker, fetchReasonPublication),
-		"three commits in one cycle are still one fetch")
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonPublication))
 
 	assert.Zero(t, fetchCount(t, reader, f.worker, fetchReasonRecovery),
-		"nothing produces the recovery reason yet")
+		"nothing failed, so nothing had to recover")
+}
+
+// TestGitFetchesTotal_DirtyWorktreeFetchesUnderRecovery is the other side of the guard: a base
+// that cannot be trusted still fetches, and a worktree left dirty by a failed write is counted
+// apart from the ordinary case so it reads as the bug report it is.
+func TestGitFetchesTotal_DirtyWorktreeFetchesUnderRecovery(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	f := newLedgerFixture(t, "metric-recovery", true)
+	f.publish("first")
+	before := fetchCount(t, reader, f.worker, fetchReasonPublication)
+
+	// A write failed part-way and left the worktree dirty. Nothing is retained, so the next
+	// cycle's own guard is what has to clean up.
+	f.worker.markWorktreeDirty("a write failed part-way")
+
+	f.publish("second")
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonRecovery),
+		"a dirty worktree must be reset before the next cycle plans on it")
+	assert.Equal(t, before, fetchCount(t, reader, f.worker, fetchReasonPublication),
+		"and it is not counted as an ordinary publication fetch")
+	assert.False(t, f.worker.worktreeDirty(), "the reset cleared it")
 }
 
 // TestGitFetchesTotal_ContentionIsCountedSeparately pins the label that makes the steady-state
@@ -95,8 +122,8 @@ func TestGitFetchesTotal_ContentionIsCountedSeparately(t *testing.T) {
 		"a rejection resets to the remote tip, and that reset is a fetch")
 	assert.Zero(t, fetchCount(t, reader, f.worker, fetchReasonPushFailureProbe),
 		"the push said where the remote was, so nothing had to probe for it")
-	assert.Equal(t, int64(2), fetchCount(t, reader, f.worker, fetchReasonPublication),
-		"the two publication cycles are counted under their own reason, not contention")
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonPublication),
+		"only the worker's first cycle fetched; the second planned on a trusted base")
 }
 
 // TestGitFetchesTotal_PushFailureProbeIsNotContention separates the two ways a push can fail.

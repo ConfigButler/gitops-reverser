@@ -115,6 +115,29 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		}
 	}
 
+	if err := l.recoverDirtyWorktree(); err != nil {
+		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
+		req.reply(ResyncResult{Err: err})
+		return
+	}
+
+	// A resync keeps fetching, deliberately, even now that a publication does not.
+	//
+	// The rest of the write path is safe without one because it always reaches the push, whose
+	// advertisement catches a base that turned out to be stale. A resync does not: applyResync
+	// retains its write only `if committed` and schedules a push only `if committed ||
+	// closedWindow`, so a resync that finds nothing to change never opens a connection at all.
+	// It would conclude "Git already matches the cluster" against a tree nobody had checked, and
+	// nothing downstream would ever contradict it. Dropping trust here is what keeps the
+	// conclusion honest; the round trip this design removes is the PUBLICATION one, and a resync
+	// is not a publication.
+	//
+	// Skipped when RefreshRemote already fetched a moment ago, which would otherwise make a
+	// forced recheck pay twice.
+	if !req.RefreshRemote {
+		l.w.invalidateBase("resync snapshot")
+	}
+
 	stats := &ResyncStats{}
 	committed := false
 	pendingWrite, err := l.w.buildResyncPendingWrite(l.w.ctx, req, stats)

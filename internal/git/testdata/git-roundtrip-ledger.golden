@@ -20,11 +20,11 @@ operation                                                   conn  fetch-open    
 ------------------------------------------------------------------------------------------------------------------------------
 1. worker start, empty remote                                  1  1 -/<1K       0             0             0           
 2. worker start, populated remote                              3  2 -/<1K       1 <1K/<1K     0             0           
-3. one publication, one commit                                 4  2 -/<1K       0             1 -/<1K       1 <1K/<1K   
-4. one publication, several commits in one cycle               4  2 -/<1K       0             1 -/<1K       1 <4K/<1K   
-5. a publication that commits nothing                          3  2 -/<1K       0             1 -/<1K       0           
-6. a publication whose push is rejected once, then succeeds     8  4 -/<4K       1 <1K/<4K     2 -/<1K       1 <1K/<1K   
-7. a publication rejected twice                               12  6 -/<4K       2 <1K/<4K     3 -/<1K       1 <1K/<1K   
+3. one publication, one commit                                 2  0             0             1 -/<1K       1 <1K/<1K   
+4. one publication, several commits in one cycle               2  0             0             1 -/<1K       1 <4K/<1K   
+5. a publication that commits nothing                          1  0             0             1 -/<1K       0           
+6. a publication whose push is rejected once, then succeeds     6  2 -/<1K       1 <1K/<4K     2 -/<1K       1 <1K/<1K   
+7. a publication rejected twice                               10  4 -/<4K       2 <1K/<4K     3 -/<1K       1 <1K/<1K   
 8. forced recheck, no retained writes                          2  2 -/<1K       0             0             0           
 9. forced recheck, with retained writes                        2  2 -/<1K       0             0             0           
 10. a resync (snapshot)                                        4  2 -/<1K       0             1 -/<1K       1 <1K/<1K   

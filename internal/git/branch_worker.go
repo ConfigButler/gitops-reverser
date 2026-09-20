@@ -1059,6 +1059,35 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 	l.commitTimer.Reset(l.commitWindow)
 }
 
+// recoverDirtyWorktree resets and replays when a previous write left the worktree dirty AND work
+// is still retained. It runs before any commit the loop makes.
+//
+// It has to live on the LOOP, not inside commitPendingWrites, for two reasons an earlier draft of
+// the design got wrong. commitPendingWrites already holds repoMu and
+// refreshRemoteAndRebuildPendingWrites takes it, so calling one from the other deadlocks; and
+// commitPendingWrites is handed the INCOMING batch, while the writes that need replaying are the
+// retained ones the loop owns. Recovering from inside it would deadlock on the way to replaying
+// the wrong slice.
+//
+// The case only arises with retained work. With nothing retained, commitPendingWrites' own guard
+// resets for us, and it can do that safely because there is nothing to lose.
+func (l *branchWorkerEventLoop) recoverDirtyWorktree() error {
+	if len(l.pendingWrites) == 0 || !l.w.worktreeDirty() {
+		return nil
+	}
+
+	l.w.Log.Info("Resetting a dirty worktree and replaying retained writes onto the remote tip",
+		"pendingWrites", len(l.pendingWrites))
+
+	// Reset, then rebuild the retained writes on top. Nothing is lost: a replay re-plans from the
+	// retained writes rather than from the worktree, which is exactly why discarding the worktree
+	// here is safe.
+	if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites); err != nil {
+		return fmt.Errorf("recover dirty worktree: %w", err)
+	}
+	return nil
+}
+
 // finalizeOpenWindow closes the live event window using the generated
 // grouped-commit message. It returns true when a commit-shaped pending write
 // was produced and retained.
@@ -1100,6 +1129,14 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		"pendingWrites", len(l.pendingWrites),
 		"messageOverride", effectiveMessage != "",
 		"attachedCR", pendingCR != nil)
+
+	if err := l.recoverDirtyWorktree(); err != nil {
+		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
+		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping open window",
+			"reason", string(reason), "windowTarget", windowTarget)
+		l.dropOpenWindow(pendingCR, err)
+		return false
+	}
 
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
@@ -1148,17 +1185,16 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	l.windowBytes = 0
 
 	if pendingCR != nil {
-		if batch[0].CommitSHA.IsZero() {
-			// No diff: the change already matches the remote, so no commit was made and
-			// there is nothing to push. Resolve AlreadyPresent now rather than wait on a
-			// push that never comes (§6.7).
-			l.pendingWrites[len(l.pendingWrites)-1].CommitRequest = nil
-			l.resolveCommitRequest(*pendingCR, FinalizeResult{Outcome: FinalizeAlreadyPresent})
-		} else {
-			// A real commit: resolution moves to the push success path (§6.5). It is no
-			// longer window-pending — it now rides the retained write.
-			delete(l.pendingCRs, *pendingCR)
-		}
+		// Resolution moves to the push success path either way (§6.5), including for a no-diff
+		// window. It is no longer window-pending — it now rides the retained write.
+		//
+		// A no-diff window used to resolve AlreadyPresent right here, on the strength of the
+		// local plan finding nothing to change. That was only safe while every cycle fetched
+		// first. It is not safe now: the plan may have run against a tree the remote has moved
+		// past, and the replay after the rejection can produce a real commit for a request that
+		// has already told its caller there was nothing to do. "Already present" is a claim
+		// about the REMOTE, so only the remote can settle it, and the push is where it speaks.
+		delete(l.pendingCRs, *pendingCR)
 	}
 
 	l.w.Log.Info("Open commit window finalized",
@@ -1233,14 +1269,23 @@ func (l *branchWorkerEventLoop) pushPending() {
 	l.stopPushTimer()
 }
 
-// resolvePushedCommitRequests resolves Committed every CommitRequest carried by a
-// just-pushed write, using that write's own commit SHA (per-write, not branch HEAD,
-// since a batched push may stack a later commit on top). A write with no commit (a
-// zero SHA, e.g. a no-diff window) is never sent here — it was resolved at finalize.
+// resolvePushedCommitRequests settles every CommitRequest carried by a just-pushed write, now
+// that the remote has spoken.
+//
+// Two outcomes, decided by whether the write ended up with a commit of its own. A real SHA is
+// Committed, read per-write rather than from the branch HEAD because a batched push may stack a
+// later commit on top. A zero SHA is AlreadyPresent: the plan found nothing to change AND the
+// push confirmed the remote agreed, which is the difference between this and resolving at
+// finalize time. If the remote had moved, the replay would have turned this write into a real
+// commit before we got here, and it would resolve Committed instead.
 func (l *branchWorkerEventLoop) resolvePushedCommitRequests() {
 	for i := range l.pendingWrites {
 		pw := l.pendingWrites[i]
-		if pw.CommitRequest == nil || pw.CommitSHA.IsZero() {
+		if pw.CommitRequest == nil {
+			continue
+		}
+		if pw.CommitSHA.IsZero() {
+			l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{Outcome: FinalizeAlreadyPresent})
 			continue
 		}
 		l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{
@@ -1287,23 +1332,6 @@ func (l *branchWorkerEventLoop) stopTimers() {
 // without pushing them. When hasPendingCommits is false (no commits retained
 // from earlier in the current push cycle), it first fetches and resets to the
 // remote tip so the new commits are based on the latest remote state.
-// trustGainEnabled hard-wires the base-trust state machine off.
-//
-// Every transition in §3 is implemented and exercised, but in production the flag can never
-// become true, so commitPendingWrites' unconditional fetch is still unconditional and behavior is
-// bit-identical to before this state machine existed. The golden round-trip ledger not moving is
-// the acceptance test.
-//
-// It is a var rather than a const for one reason: the tests of the GAIN transitions would
-// otherwise assert nothing, because setBaseTrusted could never store what they are checking. No
-// production code writes it. The commit that flips this deletes the variable and the guard in
-// setBaseTrusted together, which is a one-line change precisely because the hard part — finding
-// every place trust must be dropped — was done here, against a suite that still passes for the
-// old reasons.
-//
-//nolint:gochecknoglobals
-var trustGainEnabled = false
-
 // baseTrusted reports whether the worktree is known to sit at the remote tip of the target
 // branch.
 //
@@ -1329,7 +1357,7 @@ func (w *BranchWorker) worktreeDirty() bool { return w.worktreeDirtyState.Load()
 // now the remote tip). fetchRemoteBranchHash pointedly does not call it: that one fetches without
 // resetting, so it learns where the remote is without making the worktree match.
 func (w *BranchWorker) setBaseTrusted(trusted bool) {
-	w.baseTrustedState.Store(trusted && trustGainEnabled)
+	w.baseTrustedState.Store(trusted)
 }
 
 // invalidateBase records that the worktree can no longer be assumed to sit at the remote tip.
@@ -1358,6 +1386,50 @@ func (w *BranchWorker) markWorktreeClean() {
 	}
 }
 
+// ensureBaseForCycle performs the head-of-cycle fetch, which is now conditional.
+//
+// The push session reads the remote's ref advertisement on a connection the cycle was making
+// anyway, and a cycle that commits nothing still reaches it, so a trusted base needs no fetch to
+// plan against. That is the whole saving. See docs/design/inbound-push-notification.md §2 and §3.
+//
+// Only the first commit of a cycle may fetch at all: a reset would destroy the local commits the
+// retained writes already produced. When those exist AND the worktree is dirty, recovery is the
+// event loop's job instead — see recoverDirtyWorktree, which resets and replays rather than
+// resetting alone.
+func (w *BranchWorker) ensureBaseForCycle(
+	provider *configv1alpha3.GitProvider,
+	repoPath string,
+	hasPendingCommits bool,
+) error {
+	if hasPendingCommits || (w.baseTrusted() && !w.worktreeDirty()) {
+		return nil
+	}
+
+	// Resolve credentials only on the branch that touches the remote. A cycle planning on a
+	// trusted base never reads the credentials Secret at all, which is a saved API GET per cycle
+	// now that the Secret cache is disabled. See docs/rbac.md §5.
+	auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
+	if err != nil {
+		return fmt.Errorf("resolve auth: %w", err)
+	}
+
+	// A dirty worktree is a previous write that failed part-way; an untrusted base is the
+	// ordinary "nothing has looked at the remote yet". The first is a bug report, the second is a
+	// cost, so they are not the same series.
+	reason := fetchReasonPublication
+	if w.worktreeDirty() {
+		reason = fetchReasonRecovery
+	}
+	w.recordFetch(reason)
+
+	pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	if err != nil {
+		return fmt.Errorf("prepare repository: %w", err)
+	}
+	w.updateBranchMetadataFromPullReport(pullReport)
+	return nil
+}
+
 func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPendingCommits bool) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
@@ -1372,22 +1444,8 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 	}
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
-	if !hasPendingCommits {
-		// Resolve credentials only on the first commit of a push cycle — the one branch
-		// that touches the remote (PrepareBranch fetches the tip). Later commits in the
-		// same cycle build on the local repo and never use auth, so re-reading the
-		// credentials Secret here would be a wasted API GET per commit now that the
-		// Secret cache is disabled. See docs/rbac.md §5.
-		auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
-		if err != nil {
-			return fmt.Errorf("resolve auth: %w", err)
-		}
-		w.recordFetch(fetchReasonPublication)
-		pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
-		if err != nil {
-			return fmt.Errorf("prepare repository: %w", err)
-		}
-		w.updateBranchMetadataFromPullReport(pullReport)
+	if err := w.ensureBaseForCycle(provider, repoPath, hasPendingCommits); err != nil {
+		return err
 	}
 
 	repo, err := gogit.PlainOpen(repoPath)

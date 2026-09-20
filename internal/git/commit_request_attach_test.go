@@ -458,10 +458,20 @@ func TestFinalizeOpenWindow_ReturnsCommittedFlag(t *testing.T) {
 	assert.Nil(t, loop.openWindow)
 }
 
-// TestAttach_NoDiffResolvesAlreadyPresentPromptly is the §8.4 pin: a finalize whose
-// events re-assert already-present state produces no diff, so the request resolves
-// AlreadyPresent at finalize — promptly, never blocking on a push that never comes.
-func TestAttach_NoDiffResolvesAlreadyPresentPromptly(t *testing.T) {
+// TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms pins the corrected contract: a
+// finalize whose events re-assert already-present state produces no diff, and the request
+// resolves AlreadyPresent only once the PUSH has confirmed it.
+//
+// It used to resolve at finalize, on the strength of the local plan finding nothing to change.
+// That was safe only while every cycle fetched first. Now that a cycle can plan on a trusted
+// base, the plan may have run against a tree the remote has moved past, and the replay after a
+// rejection can produce a real commit for a request that has already reported there was nothing
+// to do. "Already present" is a claim about the REMOTE, so only the remote can settle it.
+//
+// The push always comes: a no-diff write is still retained and still reaches PushAtomic, which
+// reads the advertisement and returns its up-to-date signal. What the caller pays is the push
+// cooldown, not an unbounded wait.
+func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
@@ -478,7 +488,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentPromptly(t *testing.T) {
 	loop.pushPending()
 	require.Empty(t, loop.pendingWrites)
 
-	// Defer any further push so we can prove the resolution does NOT wait on one.
+	// Hold the push back, so the next assertion is about the finalize and nothing else.
 	loop.lastPushAt = time.Now()
 
 	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
@@ -490,11 +500,22 @@ func TestAttach_NoDiffResolvesAlreadyPresentPromptly(t *testing.T) {
 	require.NotNil(t, loop.openWindow)
 	serviceAttach(loop, attachReq("alice", 0))
 
+	_, ok := outcome(t, worker)
+	require.False(t, ok,
+		"a no-diff finalize must NOT resolve before the remote has been consulted")
+	require.Len(t, loop.pendingWrites, 1, "the no-diff write is retained so it reaches the push")
+	require.True(t, loop.pendingWrites[0].CommitSHA.IsZero(), "no diff means no commit of its own")
+	require.NotNil(t, loop.pendingWrites[0].CommitRequest, "the request rides the retained write")
+
+	// The push reads the advertisement, finds the remote already holds this state, and that is
+	// what settles the request.
+	loop.pushPending()
+
 	res, ok := outcome(t, worker)
-	require.True(t, ok, "a no-diff finalize must resolve promptly, not wait on a push")
+	require.True(t, ok, "the push confirmed the state, so the request must now be resolved")
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeAlreadyPresent, res.Outcome,
-		"a finalize that produces no diff resolves AlreadyPresent")
+		"the remote agreed there was nothing to add")
 	assert.Empty(t, res.SHA, "no commit was made, so there is no SHA")
 }
 

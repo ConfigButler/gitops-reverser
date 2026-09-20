@@ -10,10 +10,9 @@ package git
 // the suite still passes for the old reasons. When the flip lands, these tests are what say the
 // transitions were already right.
 //
-// A test of a LOSS transition seeds the flag directly and watches it drop, which works whatever
-// the hard-wiring says. A test of a GAIN transition has to lift the hard-wiring for its duration,
-// or setBaseTrusted could never store the value it is checking; enableTrustGain does that, and
-// TestBaseTrust_SetterIsHardWiredOff is the one test that should pass because of the wiring.
+// The machine is live: commitPendingWrites now skips its fetch on a trusted, clean base. These
+// tests pin each transition directly, so a regression names the transition that broke rather than
+// showing up as a round-trip count moving in the golden ledger.
 
 import (
 	"context"
@@ -27,15 +26,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBaseTrust_SetterIsHardWiredOff is the acceptance test for this commit: the whole state
-// machine exists, and the flag still cannot become true, so the head-of-cycle fetch still runs
-// every cycle and the golden ledger does not move.
-func TestBaseTrust_SetterIsHardWiredOff(t *testing.T) {
+// TestBaseTrust_SetterRoundTrips is the smallest statement that the machine is live.
+func TestBaseTrust_SetterRoundTrips(t *testing.T) {
 	w := newMetricsTestWorker()
 
 	w.setBaseTrusted(true)
-	assert.False(t, w.baseTrusted(),
-		"trustGainEnabled is false, so nothing may make the base trusted yet")
+	assert.True(t, w.baseTrusted())
 
 	w.setBaseTrusted(false)
 	assert.False(t, w.baseTrusted())
@@ -77,8 +73,6 @@ func TestBaseTrust_GainedOnlyByAResetThatLandedOnTheTargetBranch(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			enableTrustGain(t)
-
 			w := newMetricsTestWorker()
 			w.updateBranchMetadataFromPullReport(tc.report)
 			assert.Equal(t, tc.want, w.baseTrusted())
@@ -170,7 +164,6 @@ func TestBaseTrust_SuccessfulPushDoesNotLaunderADirtyWorktree(t *testing.T) {
 	f.worker.markWorktreeDirty("write B failed part-way")
 
 	// 3. The push timer fires and A pushes successfully.
-	enableTrustGain(t)
 	f.push()
 
 	assert.True(t, f.worker.baseTrusted(),
@@ -220,12 +213,3 @@ func TestBaseTrust_LostWhenAWriteFails(t *testing.T) {
 // worktreeStillDirty reads the flag through the fixture, so the §3.1 assertion reads as the
 // English claim it is making.
 func (f *ledgerFixture) worktreeStillDirty() bool { return f.worker.worktreeDirty() }
-
-// enableTrustGain lifts the hard-wiring for one test, so the GAIN transitions can be observed
-// through the production setter rather than around it. Restored on cleanup.
-func enableTrustGain(t *testing.T) {
-	t.Helper()
-	previous := trustGainEnabled
-	trustGainEnabled = true
-	t.Cleanup(func() { trustGainEnabled = previous })
-}
