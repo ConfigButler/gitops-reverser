@@ -11,8 +11,13 @@ package git
 // measures requests; this measures intent, which is what an operator's query is about.
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -84,12 +89,77 @@ func TestGitFetchesTotal_ContentionIsCountedSeparately(t *testing.T) {
 	f.contend("OUTSIDE.md", "from-another-writer\n")
 	f.push()
 
-	// One rejection is one contention fetch now, not two: the rejected push carried the remote's
-	// hash, so only the reset that follows has to reach the network. See §2.2.
+	// One rejection is one contention fetch: the rejected push carried the remote's hash, so only
+	// the reset that follows has to reach the network. See §2.2.
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonContention),
 		"a rejection resets to the remote tip, and that reset is a fetch")
+	assert.Zero(t, fetchCount(t, reader, f.worker, fetchReasonPushFailureProbe),
+		"the push said where the remote was, so nothing had to probe for it")
 	assert.Equal(t, int64(2), fetchCount(t, reader, f.worker, fetchReasonPublication),
 		"the two publication cycles are counted under their own reason, not contention")
+}
+
+// TestGitFetchesTotal_PushFailureProbeIsNotContention separates the two ways a push can fail.
+//
+// An auth failure or a dropped connection produces no advertisement, so the worker has to look up
+// where the remote is. Counting that as contention would inflate the series an operator reads as
+// "other writers are fighting me over this branch" on a target that has no other writers.
+func TestGitFetchesTotal_PushFailureProbeIsNotContention(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	f := newLedgerFixture(t, "metric-probe", true)
+	f.publish("prime")
+	f.commit(false, "mine")
+
+	// A push that dies before the remote says anything, on every attempt.
+	original := pushAtomicFn
+	pushAtomicFn = func(
+		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
+		_ plumbing.ReferenceName, _ []gitclient.Option,
+	) error {
+		return errors.New("dial tcp: connection reset by peer")
+	}
+	defer func() { pushAtomicFn = original }()
+
+	require.Error(t, f.worker.pushPendingCommits(f.pending))
+
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonPushFailureProbe),
+		"the failure had to ask where the remote was, and that is one fetch")
+	assert.Zero(t, fetchCount(t, reader, f.worker, fetchReasonContention),
+		"the remote had not moved, so nothing contended and nothing reset")
+}
+
+// TestGitFetchesTotal_ProbeThenResetWhenTheRemoteDidMove is the other half: a push that produced
+// no advertisement AND a remote that really moved costs one probe plus one reset.
+func TestGitFetchesTotal_ProbeThenResetWhenTheRemoteDidMove(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	f := newLedgerFixture(t, "metric-probe-moved", true)
+	f.publish("prime")
+	f.commit(false, "mine")
+
+	original := pushAtomicFn
+	pushes := 0
+	pushAtomicFn = func(
+		ctx context.Context, repo *gogit.Repository, rootHash plumbing.Hash,
+		rootBranch plumbing.ReferenceName, auth []gitclient.Option,
+	) error {
+		pushes++
+		if pushes == 1 {
+			return errors.New("dial tcp: connection reset by peer")
+		}
+		return original(ctx, repo, rootHash, rootBranch, auth)
+	}
+	defer func() { pushAtomicFn = original }()
+
+	f.contend("OUTSIDE.md", "from-another-writer\n")
+	require.NoError(t, f.worker.pushPendingCommits(f.pending))
+
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonPushFailureProbe))
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonContention),
+		"the probe confirmed movement, so the reset that follows is contention")
 }
 
 // TestGitFetchesTotal_ForcedRecheckAndBootstrap covers the two reasons that must keep counting
@@ -142,6 +212,7 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 		fetchReasonPublication,
 		fetchReasonRecovery,
 		fetchReasonContention,
+		fetchReasonPushFailureProbe,
 		fetchReasonForcedRecheck,
 	} {
 		want := int64(0)
@@ -157,12 +228,14 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 // constant is either produced by a call site above or documented as reserved, and this is the
 // list docs/interpreting-metrics.md publishes.
 func TestGitFetchesTotal_ReasonSetMatchesTheDocumentedOne(t *testing.T) {
-	assert.Equal(t, []string{"bootstrap", "publication", "recovery", "contention", "forced_recheck"},
+	assert.Equal(t,
+		[]string{"bootstrap", "publication", "recovery", "contention", "push_failure_probe", "forced_recheck"},
 		[]string{
 			fetchReasonBootstrap,
 			fetchReasonPublication,
 			fetchReasonRecovery,
 			fetchReasonContention,
+			fetchReasonPushFailureProbe,
 			fetchReasonForcedRecheck,
 		},
 		"the documented reason set and the constants must not drift")

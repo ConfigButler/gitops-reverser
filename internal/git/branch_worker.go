@@ -1560,7 +1560,7 @@ func (w *BranchWorker) remoteMovedDuringPush(
 	remoteHash, known := advertisedRootHash(pushErr, rootBranch)
 	if !known {
 		var fetchErr error
-		w.recordFetch(fetchReasonContention)
+		w.recordFetch(fetchReasonPushFailureProbe)
 		remoteHash, fetchErr = fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
 		if fetchErr != nil {
 			w.invalidateBase("remote-state fetch failed")
@@ -1802,9 +1802,18 @@ const (
 	// change that starts producing it, rather than appearing unannounced. A `recovery` series
 	// that climbs is a bug report, not a cost.
 	fetchReasonRecovery = "recovery"
-	// fetchReasonContention is a rejected push learning where the remote went, and the reset that
-	// follows it.
+	// fetchReasonContention is the reset onto the remote tip after a push was rejected because
+	// somebody else moved the branch. One confirmed rejection is exactly one of these.
 	fetchReasonContention = "contention"
+	// fetchReasonPushFailureProbe is the fallback lookup after a push that failed WITHOUT the
+	// remote ever saying where the branch is — a dropped connection, an auth failure, a
+	// server-side refusal.
+	//
+	// It is not contention, and counting it as such was wrong: an auth failure would inflate the
+	// series an operator reads as "other writers are fighting me over this branch", on a target
+	// with no other writers at all. The probe often finds the remote unmoved, in which case no
+	// reset follows and this is the only fetch the failure costs.
+	fetchReasonPushFailureProbe = "push_failure_probe"
 	// fetchReasonForcedRecheck is an operator or controller asking the worker to re-read Git.
 	fetchReasonForcedRecheck = "forced_recheck"
 )

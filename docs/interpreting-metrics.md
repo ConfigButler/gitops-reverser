@@ -199,7 +199,7 @@ boundary, the commit, the push. Background:
 | `git_pushes_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per push cycle: `pushed` or `failed`. |
 | `git_push_retries_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
 | `git_push_duration_seconds` | histogram | `provider_namespace`, `provider_name`, `branch` | One cycle end to end, retries included. |
-| `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (first contact with the repository) / `publication` (the head of a publication cycle) / `recovery` (a cycle re-establishing a base it could not trust) / `contention` (a rejected push finding the remote, and the reset after it) / `forced_recheck` (somebody asked the worker to re-read Git). See the note below. |
+| `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (first contact with the repository) / `publication` (the head of a publication cycle) / `recovery` (a cycle re-establishing a base it could not trust) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (somebody asked the worker to re-read Git). See the note below. |
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync`. Every increment is lost work. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
@@ -221,9 +221,17 @@ refs in a session of its own and then fetches objects in another. So the counter
 often the worker decided to read the remote, which is the thing an operator can act on; it is not
 a wire-level request count.
 
-`fetchRemoteBranchHash` is counted, under `contention`. It reads like a ref lookup and is named
-like one, but it runs the same `SmartFetch` and transfers objects. Leaving it out would flatten
-the metric precisely where contention is being investigated.
+`fetchRemoteBranchHash` is counted, under `push_failure_probe`. It reads like a ref lookup and is
+named like one, but it runs the same `SmartFetch` and transfers objects, so leaving it out would
+flatten the metric precisely where a push problem is being investigated.
+
+**`contention` and `push_failure_probe` are separate because the two failures mean different
+things.** A rejected push already carries the remote's hash, so it costs exactly one fetch: the
+reset onto the new tip, counted as `contention`. A push that failed before the remote said
+anything — an auth failure, a dropped connection — has to look the hash up first, and that lookup
+is the probe. Most probes find the remote unmoved, and then no reset follows and the probe is the
+only fetch the failure cost. Folding the two together would make an expired credential read as
+other writers fighting you over the branch.
 
 The reasons are split finer than the call sites on purpose. `publication` and `recovery` both come
 out of the head of a publication cycle, and separating them is what lets steady-state traffic be
@@ -235,8 +243,10 @@ sum by (reason) (rate(gitopsreverser_git_fetches_total[5m]))
 
 A steady `publication` rate that tracks `git_pushes_total` is the worker fetching once per cycle.
 A climbing `recovery` rate is a worker repeatedly losing confidence in its checkout, which is a bug
-report rather than a cost. `contention` moving with `git_push_retries_total` is other writers on
-the branch, and `forced_recheck` moving with nothing else is reconcile traffic.
+report rather than a cost. `contention` tracks `git_push_retries_total` one-for-one, because both
+count a confirmed moved remote. `push_failure_probe` moving on its own is pushes failing for a
+reason that is not another writer — check credentials and connectivity, not the branch.
+`forced_recheck` moving with nothing else is reconcile traffic.
 
 ### Sizing the branch worker queue against `git_queue_drops_total`
 
