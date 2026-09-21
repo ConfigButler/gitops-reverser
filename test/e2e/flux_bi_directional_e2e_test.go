@@ -370,6 +370,10 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 
 		// The SECOND order, because no earlier spec has edited it: Git and the cluster both hold
 		// it at Cup, so the value to revert to is not a leftover from another assertion.
+		//
+		// WaffleBowl rather than any other string: spec.container carries
+		// enum: ["Cup", "Cone", "WaffleBowl"], so an invented value is rejected by the API server
+		// and the spec fails at the patch having proven nothing.
 		By("drifting the live object away from what Git says")
 		Expect(run.gitPull()).To(Succeed())
 		baselineCommitCount, err := run.gitMainCommitCount()
@@ -377,10 +381,10 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 
 		_, err = kubectlRunInNamespace(testNs, "patch",
 			iceCreamCRDName(crdGroupBiDirectional), run.secondOrderName,
-			"--type=merge", "-p", `{"spec":{"container":"Waffle"}}`)
+			"--type=merge", "-p", `{"spec":{"container":"WaffleBowl"}}`)
 		Expect(err).NotTo(HaveOccurred(), "failed to drift the live IceCreamOrder")
 		Eventually(func(g Gomega) {
-			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Waffle"),
+			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("WaffleBowl"),
 				"the drift must be live before the empty commit is pushed")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
