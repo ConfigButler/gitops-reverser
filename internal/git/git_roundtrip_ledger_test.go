@@ -284,7 +284,7 @@ func ledgerOperations() []ledgerOp {
 			},
 			run: func(f *ledgerFixture) {
 				require.NoError(f.t,
-					f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending))
+					f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending, fetchReasonForcedRecheck))
 			},
 		},
 		{

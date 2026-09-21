@@ -857,12 +857,12 @@ than reality exactly where an operator is looking hardest.
 | --- | --- | --- |
 | `bootstrap` | `prepareBootstrapRepository` | Unchanged, once per worker |
 | `publication` | `commitPendingWrites`, head of cycle | **Zero on a healthy steady-state target** |
-| `recovery` | `commitPendingWrites` when the base is untrusted or the tree is dirty | New series; nonzero means §3 lost trust |
+| `recovery` | `commitPendingWrites` when the base is untrusted or the tree is dirty, AND the loop's reset-and-replay for the same tree with work retained | New series; nonzero means §3 lost trust |
 | `contention` | the `syncToRemote` in `runPushCycle` after a confirmed moved remote | Unchanged; one confirmed rejection costs exactly **one** of these |
 | `push_failure_probe` | `fetchRemoteBranchHash`, when a push failed without the remote saying anything | A push that died before the advertisement: credentials, connectivity |
-| `forced_recheck` | `syncWithRemote`, `refreshRemoteAndRebuildPendingWrites` | Unchanged, plus the receiver's traffic once §8 lands |
+| `forced_recheck` | `syncWithRemote`, and the resync snapshot's refresh | Unchanged, plus the receiver's traffic once §8 lands |
 
-Three things in that table are corrections rather than choices.
+Four things in that table are corrections rather than choices.
 
 **The clone site is `prepareBootstrapRepository`, not `ensureRepositoryInitialized`.** The latter
 has no caller outside a test, so instrumenting it would have produced a series that never moves
@@ -875,6 +875,13 @@ needs no lookup at all, so it costs exactly one `contention` fetch, the reset. T
 only for a push that failed BEFORE the remote said anything, which is an auth or connectivity
 problem and not another writer. Counting it as contention would make an expired credential read as
 somebody fighting you over the branch. Golden row 6 is the measurement.
+
+**`recovery` has to cover BOTH ways a dirty worktree is cleaned up, and an earlier implementation
+got that wrong.** `commitPendingWrites` resets when nothing is retained; the loop resets and
+replays when something is. Those are one event, and which happens depends only on whether a push
+was in cooldown. The replay path hard-wired `forced_recheck`, which is how half of every recovery
+went missing from the series this table tells operators to read as a bug report. The fetch reason
+is now a parameter of `refreshRemoteAndRebuildPendingWrites` for exactly that reason.
 
 **`publication` and `recovery` have to be separate reasons.** After the flip,
 `commitPendingWrites` still fetches when the base is untrusted or the tree is dirty, so a single

@@ -192,7 +192,8 @@ func TestBaseTrust_LostWhenSomebodySaysTheRemoteMoved(t *testing.T) {
 	f.commit(false, "retained")
 
 	f.worker.baseTrustedState.Store(true)
-	require.ErrorIs(t, f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending), syncFailed)
+	err := f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending, fetchReasonForcedRecheck)
+	require.ErrorIs(t, err, syncFailed)
 
 	assert.False(t, f.worker.baseTrusted(),
 		"somebody said the remote moved and the fetch that would have proved otherwise failed")

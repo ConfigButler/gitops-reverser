@@ -1113,7 +1113,10 @@ func (l *branchWorkerEventLoop) recoverDirtyWorktree() error {
 
 	l.w.Log.Info("Resetting a dirty worktree and replaying retained writes onto the remote tip",
 		"pendingWrites", len(l.pendingWrites))
-	return l.invalidateAndRefresh("worktree left dirty by a failed write")
+	// fetchReasonRecovery, the same series the no-retained-writes case records in
+	// ensureBaseForCycle: this is one event, and which half of it an operator sees must not depend
+	// on whether a push happened to be in cooldown at the time.
+	return l.invalidateAndRefresh("worktree left dirty by a failed write", fetchReasonRecovery)
 }
 
 // invalidateAndRefresh drops base trust and, when writes are retained, acts on that invalidation
@@ -1129,12 +1132,12 @@ func (l *branchWorkerEventLoop) recoverDirtyWorktree() error {
 //
 // This is the second effect the inbound push receiver needs as well (§8.1): the handler itself
 // performs no round trip, the worker does, at the moment it was going to talk to the remote anyway.
-func (l *branchWorkerEventLoop) invalidateAndRefresh(reason string) error {
+func (l *branchWorkerEventLoop) invalidateAndRefresh(reason, fetchReason string) error {
 	l.w.invalidateBase(reason)
 	if len(l.pendingWrites) == 0 {
 		return nil
 	}
-	if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites); err != nil {
+	if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites, fetchReason); err != nil {
 		return fmt.Errorf("refresh after %s: %w", reason, err)
 	}
 	return nil
@@ -1729,9 +1732,21 @@ func (w *BranchWorker) rebuildPendingWrites(
 }
 
 // refreshRemoteAndRebuildPendingWrites moves the local checkout to the current remote tip, then
-// replays retained pending writes on top of it without pushing. It is used by forced GitTarget
-// rechecks so the acceptance gate evaluates the newest remote tree instead of a stale local clone.
-func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(ctx context.Context, pendingWrites []PendingWrite) error {
+// replays retained pending writes on top of it without pushing, so whatever judges the tree next
+// judges the newest remote one instead of a stale local clone.
+//
+// reason is the fetch series this costs. It is a parameter rather than a constant because three
+// different things end up here — a forced recheck, a dirty-worktree recovery, and the snapshot a
+// resync judges against — and hard-wiring one of them made the OTHER two report as forced
+// rechecks. That split the `recovery` series in half on the one axis it must not depend on:
+// whether writes happened to be retained. A dirty worktree recovered with work in hand and one
+// recovered without it are the same event, and §12's "a climbing recovery series is a bug report"
+// only means anything if they land in the same series.
+func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
+	ctx context.Context,
+	pendingWrites []PendingWrite,
+	reason string,
+) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
@@ -1739,9 +1754,9 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(ctx context.Context,
 		return nil
 	}
 
-	// Somebody stated that the remote moved, which is exactly the claim baseTrusted makes and can
-	// no longer support. The sync below re-establishes it.
-	w.invalidateBase("forced recheck requested")
+	// Whatever brought us here, the base is no longer something we can claim to know. The sync
+	// below re-establishes it.
+	w.invalidateBase(reason)
 
 	provider, err := w.getGitProvider(ctx)
 	if err != nil {
@@ -1759,17 +1774,17 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(ctx context.Context,
 		return fmt.Errorf("open repository: %w", err)
 	}
 
-	w.recordFetch(fetchReasonForcedRecheck)
+	w.recordFetch(reason)
 	pullReport, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
-		w.invalidateBase("forced recheck sync failed")
+		w.invalidateBase("sync before replay failed")
 		return fmt.Errorf("sync remote before replay: %w", err)
 	}
 	w.updateBranchMetadataFromPullReport(pullReport)
 
 	rootBranch, rootHash, err := w.rebuildPendingWrites(repo, pendingWrites)
 	if err != nil {
-		w.invalidateBase("forced recheck rebuild failed")
+		w.invalidateBase("rebuild before replay failed")
 		return fmt.Errorf("rebuild pending writes: %w", err)
 	}
 	w.pushCycleRootBranch = rootBranch

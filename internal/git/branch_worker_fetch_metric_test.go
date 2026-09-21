@@ -212,7 +212,7 @@ func TestGitFetchesTotal_ForcedRecheckAndBootstrap(t *testing.T) {
 		"a forced recheck with nothing retained fetches through syncWithRemote")
 
 	f.commit(false, "retained")
-	require.NoError(t, f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending))
+	require.NoError(t, f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending, fetchReasonForcedRecheck))
 	assert.Equal(t, int64(2), fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
 		"and with retained writes it fetches through refreshRemoteAndRebuildPendingWrites")
 }
@@ -314,4 +314,43 @@ func TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote(t *testing.
 
 	assert.Greater(t, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck), before,
 		"a resync judging the tree must have read the remote, retained writes or not")
+}
+
+// TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained is the label bug that made
+// the `recovery` series unreadable.
+//
+// A dirty worktree is recovered two different ways: commitPendingWrites resets when nothing is
+// retained, and the event loop resets and replays when something is. Those are the same event, and
+// which one happens depends only on whether a push was in cooldown at the time. The replay path
+// reported them as `forced_recheck` — nobody asked for anything — so half of every recovery
+// vanished from the series §12 tells operators to read as a bug report.
+func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	f := newLedgerFixture(t, "metric-recovery-retained", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	// Retained work, so the loop's replay path is the one that recovers.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("retained", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.True(t, loop.finalizeOpenWindow())
+	require.Len(t, loop.pendingWrites, 1)
+
+	forcedBefore := fetchCount(t, reader, f.worker, fetchReasonForcedRecheck)
+	f.worker.markWorktreeDirty("a write failed part-way")
+	require.NoError(t, loop.recoverDirtyWorktree())
+
+	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonRecovery),
+		"a recovery is a recovery whether or not a push happened to be in cooldown")
+	assert.Equal(t, forcedBefore, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
+		"and nobody asked the worker to re-read Git, so it is not a forced recheck")
+	assert.False(t, f.worker.worktreeDirty(), "the reset cleared it")
 }

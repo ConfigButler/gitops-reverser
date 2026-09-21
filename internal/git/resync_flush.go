@@ -99,7 +99,7 @@ func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
 		if err := l.refreshRemoteForResync(req); err != nil {
 			return err
 		}
-	} else if err := l.invalidateAndRefresh("resync snapshot"); err != nil {
+	} else if err := l.invalidateAndRefresh("resync snapshot", fetchReasonForcedRecheck); err != nil {
 		l.w.Log.Error(err, "Failed to refresh the remote before resync", "resources", len(req.Desired))
 		return err
 	}
@@ -117,7 +117,8 @@ func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
 // a replay keeps them, a plain sync is enough without them.
 func (l *branchWorkerEventLoop) refreshRemoteForResync(req *ResyncRequest) error {
 	if len(l.pendingWrites) > 0 {
-		if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites); err != nil {
+		if err := l.w.refreshRemoteAndRebuildPendingWrites(
+			l.w.ctx, l.pendingWrites, fetchReasonForcedRecheck); err != nil {
 			l.w.Log.Error(err, "Failed to refresh remote before resync and replay pending writes",
 				"resources", len(req.Desired),
 				"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
