@@ -430,6 +430,17 @@ type ResyncRequest struct {
 	Result chan ResyncResult
 }
 
+// refusalCell is the watched cell this request speaks for: its scope's cell for a per-type
+// reconcile, and the ZERO cell for a whole-GitTarget resync, which speaks for every cell the
+// target holds rather than for one of them. It is what keys a refusal's dedupe memory and its
+// queued commit, so that one watched type's success neither clears nor re-arms another's.
+func (r *ResyncRequest) refusalCell() types.CellKey {
+	if r == nil || r.Scope == nil {
+		return types.CellKey{}
+	}
+	return r.Scope.Cell
+}
+
 // resyncKey identifies the slice of a mirror a resync reconciles: one GitTarget,
 // and the scope within it. Two requests sharing a key are interchangeable in the
 // sense that matters — the newer one's desired set wholly supersedes the older's —

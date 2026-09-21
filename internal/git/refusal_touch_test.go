@@ -61,6 +61,14 @@ func editingRef() itypes.ResourceReference {
 	return itypes.NewResourceReference("editing", "team-a")
 }
 
+// refusalKeyFor is the (target, cell) a refusal is filed under. Most tests care about one cell and
+// name it here so the key they arm is the key they assert on.
+func refusalKeyFor(target itypes.ResourceReference, resource string) refusalKey {
+	return refusalKey{target: target, cell: itypes.CellKey{Resource: resource, Namespace: target.Namespace}}
+}
+
+func editingKey() refusalKey { return refusalKeyFor(editingRef(), "deployments") }
+
 // TestRefusalTouch_OffByDefault. The action deletes objects where the reconciler prunes, so the
 // default has to be the one that does nothing.
 func TestRefusalTouch_OffByDefault(t *testing.T) {
@@ -214,11 +222,11 @@ func TestRefusalTouch_RateLimitedRefusalIsCoalescedNotDropped(t *testing.T) {
 	limited, _ := w.refusalRateLimited(editingRef())
 	require.False(t, limited)
 
-	loop.armTrailingRefusalTouch(editingRef(), "a second refusal", "observation-2", time.Minute)
+	loop.armTrailingRefusalTouch(editingKey(), "a second refusal", "observation-2", time.Minute)
 
 	assert.NotNil(t, loop.refusalTimer, "a coalesced refusal must leave a trailing commit armed")
-	require.Contains(t, loop.refusalPending, editingRef().String())
-	assert.Equal(t, "a second refusal", loop.refusalPending[editingRef().String()].detail)
+	require.Contains(t, loop.refusalPending, editingKey())
+	assert.Equal(t, "a second refusal", loop.refusalPending[editingKey()].detail)
 }
 
 // TestRefusalTouch_TrailingCommitRechecksConsent. A minute is long enough for the target to be
@@ -230,7 +238,7 @@ func TestRefusalTouch_TrailingCommitRechecksConsent(t *testing.T) {
 	})
 	loop := newBranchWorkerEventLoop(w, time.Minute)
 	t.Cleanup(loop.stopTimers)
-	loop.armTrailingRefusalTouch(editingRef(), "queued while consent still stood", "observation-1", 0)
+	loop.armTrailingRefusalTouch(editingKey(), "queued while consent still stood", "observation-1", 0)
 
 	setSpec := func(spec configv1alpha3.GitTargetSpec) {
 		target := &configv1alpha3.GitTarget{}
@@ -472,8 +480,8 @@ func TestRefusalTouch_OneTargetDoesNotDropAnothersPendingCommit(t *testing.T) {
 
 	// A zero wait makes both entries due the moment they are recorded, so the flush below cannot
 	// race their deadlines. The deadline itself is covered by its own test.
-	loop.armTrailingRefusalTouch(alpha, "alpha was refused", "alpha-observation", 0)
-	loop.armTrailingRefusalTouch(bravo, "bravo was refused", "bravo-observation", 0)
+	loop.armTrailingRefusalTouch(refusalKeyFor(alpha, "deployments"), "alpha was refused", "alpha-observation", 0)
+	loop.armTrailingRefusalTouch(refusalKeyFor(bravo, "deployments"), "bravo was refused", "bravo-observation", 0)
 
 	require.Len(t, loop.refusalPending, 2,
 		"two targets on one worker must hold two pending commits, not one")
@@ -503,8 +511,8 @@ func TestRefusalTouch_TheTimerTracksTheEarliestDeadline(t *testing.T) {
 	late := itypes.NewResourceReference("late", "team-a")
 	soon := itypes.NewResourceReference("soon", "team-a")
 
-	loop.armTrailingRefusalTouch(late, "later", "late-observation", time.Hour)
-	loop.armTrailingRefusalTouch(soon, "sooner", "soon-observation", 50*time.Millisecond)
+	loop.armTrailingRefusalTouch(refusalKeyFor(late, "deployments"), "later", "late-observation", time.Hour)
+	loop.armTrailingRefusalTouch(refusalKeyFor(soon, "deployments"), "sooner", "soon-observation", 50*time.Millisecond)
 
 	require.Len(t, loop.refusalPending, 2)
 	select {

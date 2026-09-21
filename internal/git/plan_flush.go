@@ -92,6 +92,13 @@ func (w *BranchWorker) flushEventsToWorktree(
 	if err := batch.sourceNamespaceRefusal(); err != nil {
 		return false, err
 	}
+	// Before the first event is folded in, not as they are reached: an upsert that refuses aborts
+	// the batch, and a DELETE queued behind it would never be seen by the eligibility evidence the
+	// refusal carries. Gated on the same prune mode applyDelete consults, because a suppressed
+	// delete removes nothing and so disqualifies nothing.
+	if batch.pruneMode.OrDefault().AppliesEventDeletes() {
+		batch.declarePlannedRemovals(countDeleteEvents(events))
+	}
 	for _, event := range events {
 		if err := batch.applyEvent(ctx, event); err != nil {
 			return false, err
@@ -101,6 +108,17 @@ func (w *BranchWorker) flushEventsToWorktree(
 	// and every base it reads. The write jail (writeSubdir) is enforced inside the batch, so
 	// a planned write outside spec.path is refused even though the scan reached past it.
 	return batch.flush(ctx, worktree, root, scoped.renderBase)
+}
+
+// countDeleteEvents counts the events in a batch that remove a document.
+func countDeleteEvents(events []Event) int {
+	count := 0
+	for _, event := range events {
+		if !event.IsFieldPatch() && event.Operation == "DELETE" {
+			count++
+		}
+	}
+	return count
 }
 
 // writeBatch is the commit-scoped plan-then-flush working set for one GitTarget
@@ -123,6 +141,14 @@ type writeBatch struct {
 	// Nothing about the write plan reads it — it is evidence for spec.onRefusal, which must never
 	// answer a refused removal with a commit that asks the reconciler to put the object back.
 	removedDocuments int
+	// plannedRemovals counts the removals this flush INTENDS before it starts applying anything.
+	//
+	// Counting executions alone was not enough, and a review found where: both paths apply their
+	// upserts first and abort on the first refusal, so an unplaceable edit raises its issue — and
+	// captures its evidence — before the sweep that would have removed a document is ever
+	// reached. The flush is all-or-nothing, so what the batch MEANT to do decides eligibility, and
+	// it has to be known before the first operation can return early.
+	plannedRemovals int
 	// putToKustomize records that this flush touched a kustomize render root — it edited a
 	// governed document, or placed a new one into a kustomization's resources:. It is what
 	// turns the oracle on, and it is deliberately NOT the same question as WriteIntent.Governed:
@@ -304,8 +330,14 @@ func (wb *writeBatch) holdsExistingDocument(b *fileBuffer) bool {
 	if b.original == nil || b.deleted() || b.removedDocument {
 		return false
 	}
-	return wb.removedDocuments == 0
+	return wb.removedDocuments == 0 && wb.plannedRemovals == 0
 }
+
+// declarePlannedRemovals records how many documents this flush means to remove, before it applies
+// anything. Both callers know the answer up front — the resync from its plan, the live path from
+// the DELETE events in its batch — and must say so there, because an operation that refuses early
+// captures its evidence before any removal has run. See plannedRemovals.
+func (wb *writeBatch) declarePlannedRemovals(count int) { wb.plannedRemovals += count }
 
 // buffer returns the hydrated working copy for a base-relative path, reading the
 // worktree bytes into Original/Current on first touch. A path with no worktree

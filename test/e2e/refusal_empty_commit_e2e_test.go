@@ -98,8 +98,13 @@ var _ = Describe("Manager Refusal Empty Commit", Label("manager", "refusal-commi
 			Namespace       string
 			DestinationName string
 			Resources       string
-		}{Name: ruleName, Namespace: testNs, DestinationName: destName, Resources: `"deployments"`},
-			testNs)).To(Succeed(), "failed to apply the Deployment WatchRule")
+		}{Name: ruleName, Namespace: testNs, DestinationName: destName,
+			// ConfigMaps ride along so this target has an ACCEPTED watched type beside the refused
+			// one. A review found the interaction: a reconcile of one type succeeding is not
+			// evidence about another that is still refused, and reading it as recovery re-armed
+			// the standing refusal once per pass.
+			Resources: `"deployments","configmaps"`},
+			testNs)).To(Succeed(), "failed to apply the WatchRule")
 
 		By("the write is refused at the BOUNDARY, which is the kind that earns a commit")
 		waitForGitTargetGitPathRefused(destName, testNs, "WriteBoundaryRefused")
@@ -131,10 +136,36 @@ var _ = Describe("Manager Refusal Empty Commit", Label("manager", "refusal-commi
 		// the second of them can legitimately be a first observation of its own. What must never
 		// grow is the count per interval after that.
 		By("and it settles past two trailing intervals instead of committing on a loop")
+		emptyBefore := emptyCommitCount(repo.CheckoutDir)
 		Consistently(func(g Gomega) {
-			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(BeNumerically("<=", seedCount+2),
+			g.Expect(emptyCommitCount(repo.CheckoutDir)).To(BeNumerically("<=", emptyBefore+1),
 				"a standing refusal must not produce a commit per interval forever")
 		}, 150*time.Second, 10*time.Second).Should(Succeed())
+
+		// The accepted sibling type, exercised while the Deployment is still refused. Its write is
+		// ordinary and makes an ordinary commit; what it must NOT do is make the unchanged
+		// Deployment refusal look new again, which is why the assertions above and below count
+		// EMPTY commits rather than commits.
+		By("a ConfigMap on the same target is mirrored normally")
+		Expect(applyFromTemplate("test/e2e/templates/manager/configmap.tmpl", struct {
+			Name      string
+			Namespace string
+		}{Name: "refusal-sibling", Namespace: testNs},
+			testNs)).To(Succeed(), "failed to apply the sibling ConfigMap")
+
+		afterSibling := emptyCommitCount(repo.CheckoutDir)
+		Eventually(func(g Gomega) {
+			g.Expect(runGitIn(repo.CheckoutDir, "fetch", "origin", "main")).To(Succeed())
+			g.Expect(gitShowFiles(repo.CheckoutDir)).To(ContainSubstring("refusal-sibling"),
+				"the accepted type must reach Git, or this proves nothing about it")
+		}, 120*time.Second, 2*time.Second).Should(Succeed())
+
+		By("without re-arming the refusal that is still standing")
+		Consistently(func(g Gomega) {
+			g.Expect(emptyCommitCount(repo.CheckoutDir)).To(Equal(afterSibling),
+				"a reconcile of one watched type succeeding must not turn another type's unchanged "+
+					"refusal into a new trigger")
+		}, 90*time.Second, 10*time.Second).Should(Succeed())
 
 		// A quiet branch on its own is two readings, and only one of them is the feature: the
 		// refusal was recognised as one already answered, or the target stopped evaluating
@@ -149,22 +180,20 @@ var _ = Describe("Manager Refusal Empty Commit", Label("manager", "refusal-commi
 		// exactly where it is. What is provable here is that the operator keeps evaluating and
 		// still distinguishes a new edit from a repeat.
 		By("editing the same field again, to a value nobody has been refused for yet")
-		beforeSecondEdit := remoteCommitCount(repo.CheckoutDir)
+		beforeSecondEdit := emptyCommitCount(repo.CheckoutDir)
 		_, err = kubectlRunInNamespace(testNs, "set", "env", "deployment/checkout", "LOG_LEVEL=trace")
 		Expect(err).NotTo(HaveOccurred(), "failed to make the second drifting edit")
 
-		By("which earns a commit of its own")
+		By("which earns an empty commit of its own")
 		Eventually(func(g Gomega) {
-			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(BeNumerically(">", beforeSecondEdit),
+			g.Expect(emptyCommitCount(repo.CheckoutDir)).To(BeNumerically(">", beforeSecondEdit),
 				"a genuinely new refused edit must still move the branch")
-			g.Expect(emptyDiffAtSHA(repo.CheckoutDir, remoteHead(g, repo.CheckoutDir))).To(BeTrue(),
-				"and it must still be a commit that changes no file")
 		}, 120*time.Second, 2*time.Second).Should(Succeed())
 
 		By("and then settles again, rather than resuming the loop")
-		settled := remoteCommitCount(repo.CheckoutDir)
+		settled := emptyCommitCount(repo.CheckoutDir)
 		Consistently(func(g Gomega) {
-			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(BeNumerically("<=", settled+1),
+			g.Expect(emptyCommitCount(repo.CheckoutDir)).To(BeNumerically("<=", settled+1),
 				"a second standing refusal must settle exactly as the first one did")
 		}, 150*time.Second, 10*time.Second).Should(Succeed())
 	})
@@ -236,6 +265,32 @@ func remoteCommitCount(checkoutDir string) int {
 	_, scanErr := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
 	Expect(scanErr).NotTo(HaveOccurred())
 	return count
+}
+
+// emptyCommitCount counts the commits on the remote branch whose diff is empty, which is what the
+// refusal action produces. Once a second watched type writes ordinary commits to the same branch,
+// counting commits stops answering "did the refusal fire again" and this does.
+func emptyCommitCount(checkoutDir string) int {
+	GinkgoHelper()
+	Expect(runGitIn(checkoutDir, "fetch", "origin", "main")).To(Succeed())
+	out, err := exec.Command("git", "-C", checkoutDir, "rev-list", "origin/main").CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "git rev-list: %s", out)
+	count := 0
+	for _, sha := range strings.Fields(string(out)) {
+		if emptyDiffAtSHA(checkoutDir, sha) {
+			count++
+		}
+	}
+	return count
+}
+
+// gitShowFiles lists every path the remote branch holds, so a spec can say what reached Git.
+func gitShowFiles(checkoutDir string) string {
+	GinkgoHelper()
+	out, err := exec.Command("git", "-C", checkoutDir, "ls-tree", "-r", "--name-only", "origin/main").
+		CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "git ls-tree: %s", out)
+	return string(out)
 }
 
 func remoteHead(g Gomega, checkoutDir string) string {

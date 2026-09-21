@@ -19,10 +19,15 @@ import (
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -64,10 +69,12 @@ func refuseResync(t *testing.T, f *ledgerFixture, l *branchWorkerEventLoop, imag
 	l.lastPushAt = time.Now()
 
 	event := overridesDeploymentEvent(image, 3)
+	scope := deploymentResyncScope()
 	result := make(chan ResyncResult, 1)
 	l.applyResync(&ResyncRequest{
 		GitTargetName:      ledgerTargetName,
 		GitTargetNamespace: "default",
+		Scope:              &scope,
 		// Held constant on purpose: a re-list gives every snapshot a fresh collection version, so
 		// a version is not what tells one observation from another.
 		ResourceVersion: "unchanged-123",
@@ -82,6 +89,14 @@ func refuseResync(t *testing.T, f *ledgerFixture, l *branchWorkerEventLoop, imag
 	require.NoError(t, f.worker.pushPendingCommits(l.pendingWrites))
 	l.pendingWrites = nil
 	l.pendingWritesBytes = 0
+}
+
+// deploymentResyncScope is the per-type reconcile a refused Deployment arrives on. Every refusal
+// in these tests is filed under a cell, because that is what the real path carries and what the
+// dedupe is keyed by.
+func deploymentResyncScope() ResyncScope {
+	return ResyncScopeFor(
+		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "default")
 }
 
 func remoteCommits(t *testing.T, f *ledgerFixture) int {
@@ -174,42 +189,91 @@ func TestRefusalObservation_NothingIsCoveredUntilACommitIsMade(t *testing.T) {
 		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
 	})
 
-	assert.False(t, w.refusalAlreadyCovered(editingRef(), "observation-1"))
-	w.recordRefusalObservation(editingRef(), "observation-1")
-	assert.True(t, w.refusalAlreadyCovered(editingRef(), "observation-1"))
-	assert.False(t, w.refusalAlreadyCovered(editingRef(), "observation-2"),
+	assert.False(t, w.refusalAlreadyCovered(editingKey(), "observation-1"))
+	w.recordRefusalObservation(editingKey(), "observation-1")
+	assert.True(t, w.refusalAlreadyCovered(editingKey(), "observation-1"))
+	assert.False(t, w.refusalAlreadyCovered(editingKey(), "observation-2"),
 		"a different observation is never covered by this one")
-	assert.False(t, w.refusalAlreadyCovered(itypes.NewResourceReference("other", "team-a"), "observation-1"),
+	other := refusalKeyFor(itypes.NewResourceReference("other", "team-a"), "deployments")
+	assert.False(t, w.refusalAlreadyCovered(other, "observation-1"),
 		"the memory is per target, like the rate limit and the consent check")
 
 	// An unidentifiable observation must never be treated as covered, in either direction.
-	w.recordRefusalObservation(editingRef(), "")
-	assert.False(t, w.refusalAlreadyCovered(editingRef(), ""))
-	assert.True(t, w.refusalAlreadyCovered(editingRef(), "observation-1"),
+	w.recordRefusalObservation(editingKey(), "")
+	assert.False(t, w.refusalAlreadyCovered(editingKey(), ""))
+	assert.True(t, w.refusalAlreadyCovered(editingKey(), "observation-1"),
 		"and it must not overwrite what is covered")
 }
 
-// TestRefusalObservation_AnAcceptedWriteMakesTheNextRefusalNew is the recovery half.
+// TestRefusalObservation_RecoveryIsScopedToTheCellThatRecovered is the recovery half, and the
+// regression a review found in it.
 //
-// Without it the fence would be a permanent mute: a user re-making the same live edit after the
-// reconciler reverted it produces byte-identical content, so only the acceptance in between can
-// tell the second edit from the first.
-func TestRefusalObservation_AnAcceptedWriteMakesTheNextRefusalNew(t *testing.T) {
+// Without any recovery the fence would be a permanent mute: a user re-making the same live edit
+// after the reconciler reverted it produces byte-identical content, so only the acceptance in
+// between can tell the second edit from the first. But recovery that clears the whole TARGET is
+// the loop coming back by another door: a GitTarget watches several types, a no-op ConfigMap
+// resync succeeds every time it runs, and the still-refused Deployment would be re-armed by every
+// one of them. A successful evaluation may only speak for what it evaluated.
+func TestRefusalObservation_RecoveryIsScopedToTheCellThatRecovered(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
 		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
 	})
-	w.recordRefusalObservation(editingRef(), "observation-1")
-	require.True(t, w.refusalAlreadyCovered(editingRef(), "observation-1"))
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
 
-	w.clearRefusalObservationFor("editing", "team-a")
+	deployments := editingKey()
+	configMaps := refusalKeyFor(editingRef(), "configmaps")
+	w.recordRefusalObservation(deployments, "observation-1")
+	w.recordRefusalObservation(configMaps, "observation-2")
 
-	assert.False(t, w.refusalAlreadyCovered(editingRef(), "observation-1"),
-		"an accepted write ends the refusal the last commit covered")
+	loop.refusalRecovered(editingRef(), configMaps.cell)
 
-	// An unattributable write clears nothing rather than clearing a key no GitTarget reads.
-	w.recordRefusalObservation(editingRef(), "observation-1")
-	w.clearRefusalObservationFor("editing", "")
-	assert.True(t, w.refusalAlreadyCovered(editingRef(), "observation-1"))
+	assert.True(t, w.refusalAlreadyCovered(deployments, "observation-1"),
+		"one watched type succeeding is no evidence about another that is still refused")
+	assert.False(t, w.refusalAlreadyCovered(configMaps, "observation-2"),
+		"the cell that was accepted has nothing outstanding")
+
+	loop.refusalRecovered(editingRef(), deployments.cell)
+	assert.False(t, w.refusalAlreadyCovered(deployments, "observation-1"),
+		"and once its own cell is accepted, the next refusal there is new again")
+
+	// The ZERO cell is a whole-GitTarget evaluation, which does speak for every cell it holds.
+	w.recordRefusalObservation(deployments, "observation-1")
+	w.recordRefusalObservation(configMaps, "observation-2")
+	loop.refusalRecovered(editingRef(), itypes.CellKey{})
+	assert.False(t, w.refusalAlreadyCovered(deployments, "observation-1"))
+	assert.False(t, w.refusalAlreadyCovered(configMaps, "observation-2"))
+}
+
+// TestRefusalObservation_RecoveryCancelsTheQueuedCommitForThatCell is the other half of the same
+// regression.
+//
+// Dropping the digest is not enough: a commit already queued for that cell finds nothing covering
+// it when its timer fires and moves the branch anyway, for a refusal that has since been accepted.
+// The obligation has to go with the memory — and only that cell's obligation.
+func TestRefusalObservation_RecoveryCancelsTheQueuedCommitForThatCell(t *testing.T) {
+	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+	})
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
+
+	deployments := editingKey()
+	configMaps := refusalKeyFor(editingRef(), "configmaps")
+	loop.armTrailingRefusalTouch(deployments, "the deployment was refused", "observation-1", 0)
+	loop.armTrailingRefusalTouch(configMaps, "the configmap was refused", "observation-2", 0)
+	require.Len(t, loop.refusalPending, 2)
+
+	loop.refusalRecovered(editingRef(), deployments.cell)
+
+	assert.NotContains(t, loop.refusalPending, deployments,
+		"a queued commit must not survive the acceptance of the object it was queued for")
+	assert.Contains(t, loop.refusalPending, configMaps,
+		"and the cell that is still refused keeps its obligation")
+
+	// Nothing was committed for the cancelled entry, so it must not have spent the window either.
+	limited, _ := w.refusalRateLimited(editingRef())
+	assert.False(t, limited)
 }
 
 // TestRefusalTouch_RemovingOneDocumentFromASharedFileIsNotCommittedFor is the second regression
@@ -279,11 +343,11 @@ func TestRefusalTouch_AQueuedCommitIsDroppedOnceSomethingElseCoveredIt(t *testin
 	loop := newBranchWorkerEventLoop(w, time.Minute)
 	t.Cleanup(loop.stopTimers)
 
-	loop.armTrailingRefusalTouch(editingRef(), "refused while the window was closed", "observation-1", 0)
-	require.Contains(t, loop.refusalPending, editingRef().String())
+	loop.armTrailingRefusalTouch(editingKey(), "refused while the window was closed", "observation-1", 0)
+	require.Contains(t, loop.refusalPending, editingKey())
 
 	// Whatever else ran in the meantime covered exactly this.
-	w.recordRefusalObservation(editingRef(), "observation-1")
+	w.recordRefusalObservation(editingKey(), "observation-1")
 
 	loop.stopRefusalTimer()
 	loop.flushPendingRefusalTouch()
@@ -292,4 +356,211 @@ func TestRefusalTouch_AQueuedCommitIsDroppedOnceSomethingElseCoveredIt(t *testin
 	limited, _ := w.refusalRateLimited(editingRef())
 	assert.False(t, limited,
 		"a covered entry must not spend the rate-limit window on a commit nobody needed")
+}
+
+// TestRefusalTouch_AnAcceptedSiblingTypeDoesNotRearmAStandingRefusal is the interaction a review
+// found, driven through the real resync handler against a real Git remote.
+//
+// A GitTarget watches more than one type. The Deployment stays refused; a ConfigMap reconcile for
+// the same target succeeds, as an empty or unchanged one does every time it runs. If that success
+// is read as recovery for the whole target, the next identical Deployment observation becomes a
+// new trigger, and one commit per ConfigMap pass is the loop again wearing a different hat.
+func TestRefusalTouch_AnAcceptedSiblingTypeDoesNotRearmAStandingRefusal(t *testing.T) {
+	f := standingRefusalFixture(t, "standing-refusal-sibling-type")
+	l := newBranchWorkerEventLoop(f.worker, time.Hour)
+	t.Cleanup(l.stopTimers)
+
+	before := remoteCommits(t, f)
+	refuseResync(t, f, l, "ghcr.io/example/podinfo:9.9.9")
+	require.Equal(t, before+1, remoteCommits(t, f), "the first refusal earns its commit")
+
+	// A different watched cell, with nothing to write and nothing to refuse.
+	configMaps := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "default")
+	result := make(chan ResyncResult, 1)
+	l.applyResync(&ResyncRequest{
+		GitTargetName: ledgerTargetName, GitTargetNamespace: "default",
+		Scope: &configMaps, Result: result,
+	})
+	require.NoError(t, (<-result).Err, "an empty ConfigMap snapshot is accepted")
+	require.NoError(t, f.worker.pushPendingCommits(l.pendingWrites))
+	l.pendingWrites, l.pendingWritesBytes = nil, 0
+
+	refuseResync(t, f, l, "ghcr.io/example/podinfo:9.9.9")
+
+	assert.Equal(t, before+1, remoteCommits(t, f),
+		"a ConfigMap reconcile succeeding says nothing about a Deployment that is still refused")
+}
+
+// TestRefusalTouch_AnEarlyRefusalStillSeesThePlannedRemoval is the third interaction.
+//
+// Both flush paths apply their upserts first and abort on the first refusal, so a sweep that would
+// have removed a document is never reached — and the refusal, raised before it, used to carry
+// evidence saying this flush removes nothing. The commit that evidence earns asks the reconciler
+// to re-apply what Git holds, which recreates the object the sweep was about to delete.
+//
+// The shape: one Deployment whose args a kustomize patch and the live object both changed, which
+// cannot be placed, and a second document absent from the snapshot, which PruneAlways sweeps.
+func TestRefusalTouch_AnEarlyRefusalStillSeesThePlannedRemoval(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+	base := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/example/app:1.0.0
+          args: ["--from-the-base"]
+`
+	for name, content := range map[string]string{
+		"deployment.yaml": base,
+		// Absent from the desired snapshot below, so the plan sweeps it.
+		"orphan.yaml":        strings.ReplaceAll(base, "web", "orphan"),
+		"kustomization.yaml": "resources:\n  - deployment.yaml\n  - orphan.yaml\npatches:\n  - path: patch.yaml\n",
+		"patch.yaml": `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          args: ["--from-the-patch"]
+`,
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(content), 0o600))
+	}
+
+	var live map[string]interface{}
+	require.NoError(t, yaml.Unmarshal([]byte(strings.ReplaceAll(base, "--from-the-base", "--from-live")), &live))
+	desired := []manifestanalyzer.DesiredResource{{
+		Resource: itypes.ResourceIdentifier{
+			Group: "apps", Version: "v1", Resource: "deployments", Namespace: "default", Name: "web"},
+		Object: &unstructured.Unstructured{Object: live},
+	}}
+
+	w := &BranchWorker{contentWriter: newContentWriter(itypes.SensitiveResourcePolicy{}), mapper: deploymentMapper()}
+	_, _, err := w.applyResyncToWorktree(t.Context(), worktree, "",
+		ResolvedTargetMetadata{PruneMode: configv1alpha3.PruneAlways, Namespace: "default", Name: "target"},
+		desired, nil)
+
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused, "the unplaceable edit must refuse the flush")
+	require.Contains(t, issueKinds(refused.Issues), manifestanalyzer.IssueUnplaceableEdit)
+	assert.False(t, refusalIsAWriteBoundary(refused),
+		"the same flush planned to remove the orphan, even though the upsert refused before the sweep ran: %+v",
+		refused.Issues)
+}
+
+// overlayRefusalFixture is the write-boundary shape the feature exists for, seeded into a real
+// HTTP Git remote: a pure overlay whose Deployment comes from ../../base, where an edit to a
+// base-owned field has nowhere in the overlay to land. Unlike the diamond, this shape ACCEPTS the
+// rendered object unchanged, which is what lets a test drive a refusal and then a recovery.
+func overlayRefusalFixture(t *testing.T, slug string) *ledgerFixture {
+	t.Helper()
+	f := newLedgerFixture(t, slug, false)
+
+	seed := filepath.Join(t.TempDir(), "seed")
+	repo, worktree := initLocalRepo(t, seed, f.sim.RepoURL, "main")
+	seedOverlayWorktree(t, seed)
+	_, err := worktree.Add(".")
+	require.NoError(t, err)
+	_, err = worktree.Commit("seed overlay", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.Push(&gogit.PushOptions{
+		RefSpecs: []config.RefSpec{"refs/heads/main:refs/heads/main"},
+	}))
+
+	f.createLedgerTarget(overlayGitPath, nil)
+	target := &configv1alpha3.GitTarget{}
+	require.NoError(t, f.worker.Client.Get(f.worker.ctx,
+		client.ObjectKey{Name: ledgerTargetName, Namespace: "default"}, target))
+	target.Spec.OnRefusal = configv1alpha3.RefusalActionPushEmptyCommit
+	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
+	f.worker.mapper = deploymentMapper()
+	return f
+}
+
+// TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCell is the handler-level regression for
+// recovery: the same transition as the focused state test, but driven through the real applyResync
+// hook against a real Git remote, so it holds the hook's PLACEMENT and not only the state it
+// writes. It is the case a review reproduced.
+//
+// The sequence is the one an operator actually produces: an edit is refused and earns a commit, a
+// second edit inside the rate-limit window queues a trailing commit, and then the object is put
+// back to what the folder renders and is accepted. The queued commit is now asking the reconciler
+// to re-apply on account of a refusal that no longer exists, so it must not fire.
+func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCell(t *testing.T) {
+	f := overlayRefusalFixture(t, "recovery-cancels-queued")
+	l := newBranchWorkerEventLoop(f.worker, time.Hour)
+	t.Cleanup(l.stopTimers)
+	l.lastPushAt = time.Now()
+
+	scope := ResyncScopeFor(
+		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "production")
+	key := refusalKey{
+		target: itypes.NewResourceReference(ledgerTargetName, "default"),
+		cell:   scope.Cell,
+	}
+	// observe mirrors one per-type reconcile. An empty logLevel is the object exactly as the
+	// folder renders it; anything else is a base-owned field edit with nowhere to land.
+	observe := func(logLevel string) error {
+		event := overlayDeploymentEvent("ghcr.io/example/podinfo:6.4.0")
+		if logLevel != "" {
+			containers, _, err := unstructured.NestedSlice(
+				event.Object.Object, "spec", "template", "spec", "containers")
+			require.NoError(t, err)
+			containers[0].(map[string]interface{})["env"] = []interface{}{
+				map[string]interface{}{"name": "LOG_LEVEL", "value": logLevel},
+			}
+			require.NoError(t, unstructured.SetNestedSlice(
+				event.Object.Object, containers, "spec", "template", "spec", "containers"))
+		}
+		result := make(chan ResyncResult, 1)
+		l.applyResync(&ResyncRequest{
+			GitTargetName: ledgerTargetName, GitTargetNamespace: "default", Scope: &scope,
+			Desired: []manifestanalyzer.DesiredResource{{Resource: event.Identifier, Object: event.Object}},
+			Result:  result,
+		})
+		err := (<-result).Err
+		require.NoError(t, f.worker.pushPendingCommits(l.pendingWrites))
+		l.pendingWrites, l.pendingWritesBytes = nil, 0
+		return err
+	}
+
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, observe("debug"), &refused, "a base-owned field edit has nowhere to land")
+	require.ErrorAs(t, observe("trace"), &refused, "and so does a different value for it")
+	require.Contains(t, l.refusalPending, key,
+		"the second edit arrived inside the window, so it must be queued behind a trailing commit")
+
+	require.NoError(t, observe(""), "the object is put back to what the folder renders, and accepted")
+	require.NotContains(t, l.refusalPending, key,
+		"accepting the object cancels the commit that was queued for its refusal")
+
+	// Fire the timer as the loop would, with both clocks advanced past their deadlines.
+	before := remoteCommits(t, f)
+	f.worker.refusalTouchMu.Lock()
+	f.worker.lastRefusalTouch["default/"+ledgerTargetName] = time.Now().Add(-2 * refusalTouchInterval)
+	f.worker.refusalTouchMu.Unlock()
+	l.stopRefusalTimer()
+	l.flushPendingRefusalTouch()
+	require.NoError(t, f.worker.pushPendingCommits(l.pendingWrites))
+
+	assert.Equal(t, before, remoteCommits(t, f),
+		"a queued refusal must not move the branch after the same object was accepted")
 }

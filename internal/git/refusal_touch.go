@@ -31,6 +31,27 @@ import (
 // a second apart are served by one commit, and the reconcile it triggers covers both.
 const refusalTouchInterval = time.Minute
 
+// refusalKey identifies ONE unresolved refusal: the GitTarget that owns it, and the watched cell
+// it is about.
+//
+// The cell is in the key because a review found what a target-wide key gets wrong in both
+// directions. A target watches several types; a successful ConfigMap resync says nothing about a
+// Deployment that is still refused, so clearing the whole target on it re-armed the standing
+// refusal and the commit loop came back. And a queued commit for one cell must survive another
+// cell recovering. This is the same granularity the GitPathAccepted condition already uses — the
+// watch layer blocks and clears per cell — so the memory and the status now agree about what is
+// still refused.
+//
+// The zero cell is the whole-GitTarget evaluation, which speaks for everything the target holds.
+type refusalKey struct {
+	target itypes.ResourceReference
+	cell   itypes.CellKey
+}
+
+func (k refusalKey) String() string {
+	return k.target.String() + " " + sourceCellForLog(k.cell)
+}
+
 // executeRefusalTouch creates the empty commit. The tree is untouched on purpose, so
 // AllowEmptyCommits is what makes it a commit at all.
 //
@@ -164,6 +185,7 @@ func (l *branchWorkerEventLoop) touchBranchForRefusal(
 	targetName, targetNamespace, detail string,
 	refused *manifestanalyzer.AcceptanceRefusedError,
 	observation string,
+	cell itypes.CellKey,
 ) {
 	if targetName == "" || targetNamespace == "" {
 		return
@@ -177,14 +199,15 @@ func (l *branchWorkerEventLoop) touchBranchForRefusal(
 	if !l.w.refusalConsent(l.w.ctx, target) {
 		return
 	}
+	key := refusalKey{target: target, cell: cell}
 
-	// An observation this target's last commit already covered is not a new trigger. Checked here,
+	// An observation this cell's last commit already covered is not a new trigger. Checked here,
 	// after consent and before the rate limit, so a recheck of unchanged input neither commits nor
 	// arms the trailing timer: arming it would turn the rate limit into a schedule, which is the
 	// loop this fence exists to close.
-	if l.w.refusalAlreadyCovered(target, observation) {
+	if l.w.refusalAlreadyCovered(key, observation) {
 		l.w.Log.V(1).Info("Refusal unchanged since the last empty commit; not committing again",
-			"gitTarget", target.String(), "branch", l.w.Branch)
+			"gitTarget", target.String(), "sourceCell", sourceCellForLog(cell), "branch", l.w.Branch)
 		return
 	}
 
@@ -193,11 +216,11 @@ func (l *branchWorkerEventLoop) touchBranchForRefusal(
 	// completed, so nothing would ever cover this refusal and the live edit would stay for good.
 	// One trailing commit covers every refusal that arrived during the window.
 	if limited, wait := l.w.refusalRateLimited(target); limited {
-		l.armTrailingRefusalTouch(target, detail, observation, wait)
+		l.armTrailingRefusalTouch(key, detail, observation, wait)
 		return
 	}
 
-	l.commitRefusalTouch(target, detail, observation)
+	l.commitRefusalTouch(key, detail, observation)
 }
 
 // refusalObservation digests what was refused: the objects the write would have produced, and the
@@ -273,55 +296,75 @@ func refusalObservationForDesired(
 //
 // An empty observation (nothing to digest, or an object that would not encode) is never covered:
 // the fence must not silence a refusal it cannot identify.
-func (w *BranchWorker) refusalAlreadyCovered(target itypes.ResourceReference, observation string) bool {
+func (w *BranchWorker) refusalAlreadyCovered(key refusalKey, observation string) bool {
 	if observation == "" {
 		return false
 	}
 	w.refusalTouchMu.Lock()
 	defer w.refusalTouchMu.Unlock()
-	return w.coveredRefusal[target.String()] == observation
+	return w.coveredRefusal[key] == observation
 }
 
 // recordRefusalObservation remembers what the commit just made covers.
-func (w *BranchWorker) recordRefusalObservation(target itypes.ResourceReference, observation string) {
+func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation string) {
 	if observation == "" {
 		return
 	}
 	w.refusalTouchMu.Lock()
 	defer w.refusalTouchMu.Unlock()
 	if w.coveredRefusal == nil {
-		w.coveredRefusal = map[string]string{}
+		w.coveredRefusal = map[refusalKey]string{}
 	}
-	w.coveredRefusal[target.String()] = observation
+	w.coveredRefusal[key] = observation
 }
 
-// clearRefusalObservationFor is clearRefusalObservation over a (name, namespace) pair, which is
-// the shape every write path has in hand. An unattributable write clears nothing rather than
-// clearing a key no GitTarget reads.
-func (w *BranchWorker) clearRefusalObservationFor(targetName, targetNamespace string) {
-	if targetName == "" || targetNamespace == "" {
+// refusalRecovered records that an evaluation for this target and cell was ACCEPTED, so whatever
+// refusal was outstanding there is over: the memory of what the last commit covered is dropped,
+// and any commit still queued for it is cancelled.
+//
+// **Only a resync calls this, and only for its own scope.** That is the rule the GitPathAccepted
+// condition already follows, for the same reason: a live write that happens to avoid the offending
+// file proves nothing about the rest of the subtree, and one watched type succeeding proves
+// nothing about another. Clearing more widely than the evidence supports is what let a no-op
+// ConfigMap resync re-arm a standing Deployment refusal, and the commit loop with it.
+//
+// Dropping the memory is what keeps the fence from becoming a permanent mute: a refused live edit
+// earns a commit, the reconciler reverts it, and the same edit is made again — sanitized content
+// cannot tell the second from the first, so only the acceptance in between can. Cancelling the
+// queued commit is the other half: an obligation whose object has since been accepted has nothing
+// left to ask for, and firing it anyway would move the branch for a refusal that no longer exists.
+func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference, cell itypes.CellKey) {
+	if target.Name == "" || target.Namespace == "" {
 		return
 	}
-	w.clearRefusalObservation(itypes.NewResourceReference(targetName, targetNamespace))
+	l.w.clearRefusalObservations(target, cell)
+	for _, key := range sortedRefusalKeys(l.refusalPending) {
+		if key.target == target && (cell == (itypes.CellKey{}) || key.cell == cell) {
+			delete(l.refusalPending, key)
+		}
+	}
+	l.rearmRefusalTimer()
 }
 
-// clearRefusalObservation forgets what this target's last empty commit covered, and is called
-// wherever a write for it was ACCEPTED.
-//
-// This is the other half of the dedupe, and without it the fence would be a permanent mute. The
-// case it serves: a refused live edit earns a commit, the reconciler reverts the edit, and the
-// same edit is then made again. Sanitized content cannot tell the second edit from the first — it
-// is the same bytes — so only the acceptance in between distinguishes them. An accepted write is
-// the evidence that the refusal was gone, which is what makes the next one new.
-func (w *BranchWorker) clearRefusalObservation(target itypes.ResourceReference) {
+// clearRefusalObservations forgets what this cell's last empty commit covered. The ZERO cell is a
+// whole-GitTarget evaluation, which does speak for every cell, so it clears all of them.
+func (w *BranchWorker) clearRefusalObservations(target itypes.ResourceReference, cell itypes.CellKey) {
 	w.refusalTouchMu.Lock()
 	defer w.refusalTouchMu.Unlock()
-	delete(w.coveredRefusal, target.String())
+	if cell != (itypes.CellKey{}) {
+		delete(w.coveredRefusal, refusalKey{target: target, cell: cell})
+		return
+	}
+	for key := range w.coveredRefusal {
+		if key.target == target {
+			delete(w.coveredRefusal, key)
+		}
+	}
 }
 
 // pendingRefusalTouch is one target's coalesced commit: what to say, and when it may run.
 type pendingRefusalTouch struct {
-	target itypes.ResourceReference
+	key    refusalKey
 	detail string
 	// observation is what this entry's commit will cover. It is carried rather than re-derived
 	// because the refusal that queued it is long gone by the time the timer fires.
@@ -337,14 +380,13 @@ type pendingRefusalTouch struct {
 // interval instead of starving while refusals keep arriving. A refusal for a DIFFERENT target
 // never displaces one already recorded, which is the bug this map exists for.
 func (l *branchWorkerEventLoop) armTrailingRefusalTouch(
-	target itypes.ResourceReference, detail, observation string, wait time.Duration,
+	key refusalKey, detail, observation string, wait time.Duration,
 ) {
 	if l.refusalPending == nil {
-		l.refusalPending = map[string]pendingRefusalTouch{}
+		l.refusalPending = map[refusalKey]pendingRefusalTouch{}
 	}
-	key := target.String()
 	entry, existing := l.refusalPending[key]
-	entry.target, entry.detail, entry.observation = target, detail, observation
+	entry.key, entry.detail, entry.observation = key, detail, observation
 	if !existing {
 		entry.dueAt = time.Now().Add(wait)
 	}
@@ -382,38 +424,40 @@ func (l *branchWorkerEventLoop) flushPendingRefusalTouch() {
 		}
 		delete(l.refusalPending, key)
 
-		if !l.w.refusalConsent(l.w.ctx, entry.target) {
+		if !l.w.refusalConsent(l.w.ctx, entry.key.target) {
 			continue
 		}
-		// Re-checked here as well as on arrival: another commit for this target may have been made
+		// Re-checked here as well as on arrival: another commit for this cell may have been made
 		// while this entry waited, and if it covered the same observation this one has nothing
-		// left to ask for.
-		if l.w.refusalAlreadyCovered(entry.target, entry.observation) {
+		// left to ask for. An entry whose cell RECOVERED in the meantime is not here at all —
+		// refusalRecovered removed it.
+		if l.w.refusalAlreadyCovered(entry.key, entry.observation) {
 			continue
 		}
-		if limited, wait := l.w.refusalRateLimited(entry.target); limited {
+		if limited, wait := l.w.refusalRateLimited(entry.key.target); limited {
 			// The window moved under us (another refusal for this target committed while this one
 			// waited). Re-arm rather than commit early.
-			l.armTrailingRefusalTouch(entry.target, entry.detail, entry.observation, wait)
+			l.armTrailingRefusalTouch(entry.key, entry.detail, entry.observation, wait)
 			continue
 		}
-		l.commitRefusalTouch(entry.target, entry.detail, entry.observation)
+		l.commitRefusalTouch(entry.key, entry.detail, entry.observation)
 	}
 	l.rearmRefusalTimer()
 }
 
 // sortedRefusalKeys makes the flush order deterministic, so a test that queues two targets sees
 // the same one committed first every run.
-func sortedRefusalKeys(pending map[string]pendingRefusalTouch) []string {
-	keys := make([]string, 0, len(pending))
+func sortedRefusalKeys(pending map[refusalKey]pendingRefusalTouch) []refusalKey {
+	keys := make([]refusalKey, 0, len(pending))
 	for key := range pending {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
 	return keys
 }
 
-func (l *branchWorkerEventLoop) commitRefusalTouch(target itypes.ResourceReference, detail, observation string) {
+func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, observation string) {
+	target := key.target
 	pendingWrite, err := l.w.buildRefusalTouchWrite(l.w.ctx, target, detail)
 	if err != nil {
 		l.w.Log.Error(err, "Cannot build the empty commit for a refused write",
@@ -435,7 +479,7 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(target itypes.ResourceReferen
 	// Recorded once the commit exists, beside the rate-limit stamp and for the same reason: a
 	// build or commit failure has produced no trigger, so it must leave the next observation of
 	// the same refusal free to make one.
-	l.w.recordRefusalObservation(target, observation)
+	l.w.recordRefusalObservation(key, observation)
 	l.maybeSchedulePush()
 }
 

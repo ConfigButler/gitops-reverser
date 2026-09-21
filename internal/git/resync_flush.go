@@ -17,6 +17,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // handleResyncRequest applies one revision-pinned resync in order on the worker goroutine, or —
@@ -181,18 +182,21 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		var refused *manifestanalyzer.AcceptanceRefusedError
 		if errors.As(err, &refused) {
 			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
-				refusalObservationForDesired(req.Desired, refused))
+				refusalObservationForDesired(req.Desired, refused), req.refusalCell())
 		}
 		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
 		req.reply(ResyncResult{Err: err})
 		return
 	}
 
-	// The plan was accepted, so this target's standing refusal is over and the observation the
-	// last empty commit covered is forgotten. This is the recovery path the dedupe depends on: a
-	// per-type reconcile runs after the reconciler reverts the edit, and it is what makes the NEXT
-	// refusal — including a re-made, byte-identical one — a new trigger rather than a repeat.
-	l.w.clearRefusalObservationFor(req.GitTargetName, req.GitTargetNamespace)
+	// The plan was accepted, so the refusal standing over THIS SCOPE is over: the observation the
+	// last empty commit covered is forgotten and any commit still queued for it is cancelled. This
+	// is the recovery path the dedupe depends on — a per-type reconcile runs after the reconciler
+	// reverts the edit, and it is what makes the NEXT refusal, including a re-made byte-identical
+	// one, a new trigger rather than a repeat. Scoped to the cell this request evaluated, because
+	// a ConfigMap resync succeeding is no evidence about a Deployment that is still refused.
+	l.refusalRecovered(
+		itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace), req.refusalCell())
 
 	// Only retain the resync's own pending write when it actually committed. A no-op
 	// resync (e.g. the empty initial snapshot before any rule selects a resource)
@@ -512,6 +516,10 @@ func (wb *writeBatch) applyResyncPlan(
 	plan manifestanalyzer.Plan,
 ) (ResyncStats, error) {
 	var stats ResyncStats
+	// Declared from the PLAN, before the first upsert: an upsert that refuses returns immediately,
+	// and the sweep below it would never run, so the refusal would carry evidence saying this
+	// flush removes nothing while the plan says otherwise. See writeBatch.plannedRemovals.
+	wb.declarePlannedRemovals(plan.Counts()[manifestanalyzer.PlanDropOrphan])
 	for _, dr := range desired {
 		if dr.Object == nil {
 			// A malformed snapshot entry is not a delete; BuildPlan already protected

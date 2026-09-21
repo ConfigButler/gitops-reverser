@@ -154,13 +154,14 @@ type BranchWorker struct {
 	// borrowing the repository lock for it would order the two for no reason.
 	refusalTouchMu   sync.Mutex
 	lastRefusalTouch map[string]time.Time
-	// coveredRefusal records, per GitTarget, the refusal observation the last empty commit was
-	// made for: a digest of the objects that were refused together with the issues raised about
-	// them. A recheck that observes exactly the same thing is already covered by that commit, so
-	// it is not another trigger. It is dropped again the moment the target writes successfully —
-	// see clearRefusalObservation, which is what makes a live edit re-made after a revert count
-	// as new. Guarded by refusalTouchMu with the rate limit, because the two are read together.
-	coveredRefusal map[string]string
+	// coveredRefusal records, per GitTarget AND WATCHED CELL, the refusal observation the last
+	// empty commit was made for: a digest of the objects that were refused together with the
+	// issues raised about them. A recheck that observes exactly the same thing is already covered
+	// by that commit, so it is not another trigger. It is dropped when a resync for that cell is
+	// ACCEPTED — see refusalRecovered, which is what makes a live edit re-made after a revert
+	// count as new, and what keeps one watched type's success from speaking for another's.
+	// Guarded by refusalTouchMu with the rate limit, because the two are read together.
+	coveredRefusal map[refusalKey]string
 
 	// replayRequiredState records that a reset has discarded the local commits behind the retained
 	// writes while the replay that rebuilds them did not finish.
@@ -854,8 +855,9 @@ type branchWorkerEventLoop struct {
 	// the rate limit and the consent check are both per target. A single slot let one target
 	// overwrite another's pending work: A queues, B replaces it, B is then suspended, and A's
 	// authorized commit is gone with nothing to report it. Execution still coalesces — one commit
-	// on the branch satisfies every entry due at that moment — but the INTENT is kept per target.
-	refusalPending map[string]pendingRefusalTouch
+	// on the branch satisfies every entry due at that moment — but the INTENT is kept per target
+	// and per watched cell, so one cell recovering cancels only its own obligation.
+	refusalPending map[refusalKey]pendingRefusalTouch
 
 	// attachTimer fires at the earliest pending finalize deadline, so an attached
 	// window is finalized at the end of its grace even with no further events.
@@ -1090,18 +1092,13 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 			err, name, namespace, request.sourceCell()); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
 			l.touchBranchForRefusal(name, namespace, err.Error(), refused,
-				refusalObservationForEvents(request.Events, refused))
+				refusalObservationForEvents(request.Events, refused), request.sourceCell())
 		} else {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
 		}
 		return
 	}
-
-	// The write was accepted, so whatever refusal this target last earned a commit for is over.
-	// Forgetting it here is what lets an identical live edit made after a revert earn its own
-	// commit: the content alone cannot tell the two apart, and the acceptance in between can.
-	l.w.clearRefusalObservationFor(atomicRefusalTarget(request))
 
 	l.pendingWrites = append(l.pendingWrites, batch[0])
 	l.pendingWritesBytes += batch[0].ByteSize
@@ -1322,7 +1319,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 			err, targetName, targetNamespace, sourceCellForEvents(events)); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
 			l.touchBranchForRefusal(targetName, targetNamespace, err.Error(), refused,
-				refusalObservationForEvents(events, refused))
+				refusalObservationForEvents(events, refused), sourceCellForEvents(events))
 		} else {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",
@@ -1334,9 +1331,6 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		l.dropOpenWindow(pendingCR, fmt.Errorf("commit failed: %w", err))
 		return false
 	}
-
-	// See the atomic path: an accepted write ends the refusal the last empty commit covered.
-	l.w.clearRefusalObservationFor(targetName, targetNamespace)
 
 	l.pendingWrites = append(l.pendingWrites, batch[0])
 	l.pendingWritesBytes += batch[0].ByteSize
