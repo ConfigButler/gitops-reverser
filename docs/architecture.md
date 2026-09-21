@@ -1091,14 +1091,19 @@ write side is shared with live writes):
   (a path-based strategic-merge `patches:` entry is tolerated as read-only build context, and an
   overlay reading `../../base` is rendered by reading that base, and neither refuses the folder)
   the whole apply is **refused**: nothing is committed, `GitPathAccepted=False`, `Stalled=True`, and
-  `Ready=False` with reason `UnsupportedContent` until a human cleans the path (a target that opted
-  into [`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-specconrefusal)
-  additionally pushes a commit with no file change, to ask the reconciler to revert the live edit);
+  `Ready=False` with reason `UnsupportedContent` until a human cleans the path;
 - desired resources are upserted through the same content derived path as live writes;
 - existing managed documents that are watched but absent from the desired set are deleted;
 - the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
   YAML are retained, not materialised and not refused;
 - nothing is committed if the apply cannot complete safely.
+
+A **write-boundary** refusal is a different thing and is scoped accordingly: the folder is
+accepted, and one edit had nowhere to land in it. Only those can earn the empty commit a target
+opts into with
+[`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-specconrefusal), and
+only when the edit is to a document the folder already holds. A folder-level refusal above is
+excluded deliberately: an empty commit cannot repair a folder, and only a human can.
 
 The acceptance gate is **structure-only on purpose**: it never refuses on a discovery-derived
 followability fact (unwatched / out-of-scope), which can blink on a discovery wobble; only facts that are
