@@ -321,6 +321,11 @@ stop being trustworthy, and it now runs before the **push** as well as before ev
 rebuild that fails again keeps the writes retained rather than publishing a lie, which is what a
 transient error deserves.
 
+**And it is visible while it lasts.** Each retry costs one fetch, counted under
+`reason="recovery"` (§12), so a rebuild that keeps failing shows up as that series climbing rather
+than as silence. That is the series §12 already tells operators to read as a bug report, and this
+is the case it was named for: the writes are safe, the mirror is stalled, and the metric says so.
+
 Two failure points, not one. A replay can die before its first write (the prune-policy re-read is
 the realistic trigger) or partway through a batch. The second is worth its own test because
 `executePendingWrites` stamps each write's new SHA as it goes, so the retained slice is left
