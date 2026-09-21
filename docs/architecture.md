@@ -61,6 +61,36 @@ fails; there is no plaintext opt-out.
 `(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one branch.
 Every write to that branch goes through the worker's single event loop and commit window.
 
+**The worktree sits at the remote tip, or the worker knows it does not.** The write path used to
+fetch and hard-reset before the first commit of every publication cycle. It no longer does: the push
+session reads the remote's ref advertisement on a connection the cycle was making anyway, and a cycle
+that commits nothing still reaches it, so a base the worker can vouch for needs no fetch to plan
+against. Two flags on the worker carry that claim, and they are separate on purpose: `baseTrusted`
+is dropped by anything that can no longer prove where the remote is, while `worktreeDirty` records
+that a write failed part-way and is cleared **only by a reset** (a third, `replayRequired`, marks
+retained writes whose local commits a reset discarded before the replay could rebuild them).
+Collapsing them would let one kind of doubt clear another. Either flag makes the next cycle fetch. The
+failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
+is caught by the compare-and-swap on the next push. **The corollary is the rule to keep in your head
+when adding code here:** anything that resolves, commits, or concludes without reaching a push
+advertisement must either fetch, or refuse to conclude. See
+[inbound push notification](design/inbound-push-notification.md) §3.
+
+That trust belongs to **one repository**. A worker is keyed by
+`(GitProvider namespace, GitProvider name, branch)`, while `spec.url` is immutable
+and repointed by deleting and recreating the `GitProvider`, so the same worker can meet a new
+repository without anything restarting it. Each remote has its own clone, so trust carried across
+that change would skip establishing the new checkout entirely; `noteRemoteIdentity` drops it
+instead.
+
+**Nothing tells an idle target that its branch moved.** A target that is not writing makes no round
+trip, so it holds its previous view of the folder until it next publishes, resyncs, or is asked to
+re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
+ten seconds because it is not converged; a healthy idle one does not. Closing that is the inbound
+receiver's job, and it is designed but not built:
+[§8.3](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it) is the
+request shape it will accept.
+
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
 Redis stores watch resume cursors (warm restarts) and the small coordination records used by
@@ -492,15 +522,18 @@ flowchart TD
     UNRESOLVED --> WINDOW
 
     WINDOW --> TIMER{Close trigger}
-    TIMER -->|silence timer| FLUSH[Plan YAML edits + commit]
-    TIMER -->|buffer limit or resync boundary| FLUSH
+    TIMER -->|silence timer| BASE
+    TIMER -->|buffer limit or resync boundary| BASE
 
     CR[CommitRequest persisted] --> ADMISSION[Admission submitter lookup<br/>named or unnamed]
     ADMISSION --> ATTACH[Attach to matching open window]
-    ATTACH -->|same author + GitTarget| FLUSH
+    ATTACH -->|same author + GitTarget| BASE
     ATTACH -->|no matching window| BENIGN[Ready=True, Pushed=False]
 
-    FLUSH --> PUSH[PushAtomic]
+    BASE{Base trusted<br/>and worktree clean?} -->|yes| FLUSH
+    BASE -->|no| FETCH[Fetch and reset first]
+    FETCH --> FLUSH[Plan YAML edits + commit]
+    FLUSH --> PUSH[PushAtomic<br/>reads the advertisement]
     PUSH --> DONE[Remote branch updated]
 ```
 
@@ -1112,6 +1145,29 @@ remote diverged it smart fetches the latest tip, hard resets the local clone, re
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
 
+A branch whose remote has been **deleted** takes the same path. The advertisement does not carry the
+branch at all, which is reported as a moved remote with a zero hash, so the replay re-roots on the remote's
+default branch and the retry re-creates the branch with the retained writes on top.
+
+**When the cycle fetches at all.** Only the first commit of a cycle may fetch, and only when the base
+is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans
+straight onto its own last push. Once writes are retained the guard flips off entirely, because a
+reset would destroy the local commits those writes already produced. Anything that needs a fresh
+tree with work in hand therefore resets **and replays**
+([`refreshRemoteAndRebuildPendingWrites`](../internal/git/branch_worker.go)) rather than resetting
+alone, re-planning the retained writes onto the new tip. Three things reach it: a forced recheck
+calls it directly, while a worktree a failed write left dirty and the snapshot a resync judges
+against go through `invalidateAndRefresh`, which drops base trust first because nothing has asked
+the remote anything yet.
+
+**What a reset has to leave behind, now that it is the only cleanup.** A hard reset restores tracked
+files and stops there, so a document a failed write created, and the placement directory it created
+for it, both survive one. While every cycle fetched, the next one swept them up by accident; a cycle
+that plans on a trusted base would instead commit them under whoever wrote next. So the reset
+explicitly discards untracked and newly staged leftovers and prunes the directories that held them
+([`discardWorktreeLeftovers`](../internal/git/git.go)), and a write that fails while creating
+directories removes the ones it made on its way out. Only then is `worktreeDirty` cleared.
+
 ### Durability of the write queue (planned)
 
 A BranchWorker's queue (the open commit window's retained writes plus any local commits not yet pushed)
@@ -1230,7 +1286,13 @@ immediately. That is not a failure:
    stranded.
 4. Outcomes resolve on push and are reported as conditions: a pushed commit sets `Ready=True` /
    `Pushed=True` with `branch`/`sha`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
-   `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message.
+   `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message. **Between the window's
+   finalize and that push the request is still in flight**, which matters because the controller keeps
+   re-sending its attach until it reads an outcome: the worker marks the request committed rather than
+   forgetting it, so a re-send is recognized as the same request and cannot resolve early or claim a
+   later window. A worker that stops without pushing fails the request instead of leaving it to time out.
+   `AlreadyPresent` therefore means the remote confirmed there was nothing to add, not that a local plan
+   found no diff.
 
 The CommitRequest submitter is not recoverable from object state alone, so without an admission record the
 request cannot claim an actor. The final Git author remains the attached watch window's author: configured
@@ -1338,6 +1400,12 @@ as one funnel and its loss paths as one selector:
   counts commits that **reached the remote**, and `_git_pushes_total{outcome}`,
   `_git_push_retries_total{reason}` and `_git_push_duration_seconds` cover the cycle that puts them
   there. `author_kind="unresolved"` means attribution ran and could not name an actor.
+  `_git_fetches_total{reason}` is the other direction: it counts every call that runs a `SmartFetch`
+  (a push reads the remote's advertisement too, and is deliberately not counted here),
+  and it is the only way to answer "is the mirror still pulling on every write?", because the push
+  counters read identically whether the worker fetches constantly or never. On a healthy publishing
+  target `reason="publication"` is flat at zero. See
+  [Interpreting metrics](interpreting-metrics.md#reading-git_fetches_total).
 
 **Authorship**, when `--author-attribution` is on:
 

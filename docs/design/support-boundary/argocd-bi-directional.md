@@ -109,7 +109,7 @@ But removing a field from Argo's diff removes it in **both** directions. A field
 Argo ignores is a field Argo will **never apply from Git**. So the moment you
 carve `/spec/scoops` out to protect an API-side edit, a *Git-side* change to
 `/spec/scoops` silently stops reaching the cluster. That is precisely **not**
-bi-directional — it is [split ownership](../../bi-directional.md#recommended-modes):
+bi-directional — it is [split ownership](../../bi-directional.md#the-split-ownership-alternative):
 "this field belongs to the cluster, Git never drives it." Split ownership is a
 legitimate mode, and `ignoreDifferences` implements it well. It is just not the
 thing we are trying to build, and presenting it as "safe self-heal" is misleading:

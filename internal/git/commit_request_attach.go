@@ -106,8 +106,8 @@ func (a AttachCommitRequest) id() commitRequestID {
 }
 
 // pendingCommitRequest is a CommitRequest registered with the worker and not yet
-// resolved: either waiting for a same-author window to attach to, or already
-// attached and awaiting its finalize deadline.
+// resolved: waiting for a same-author window to attach to, attached and awaiting its finalize
+// deadline, or committed locally and awaiting the push that settles it.
 type pendingCommitRequest struct {
 	id                 commitRequestID
 	author             string
@@ -120,6 +120,17 @@ type pendingCommitRequest struct {
 	finalizeAt time.Time
 	// attached is true once this request's message is bound to the open window.
 	attached bool
+	// committed is true once the window this request claimed has been finalized into a local
+	// commit. The request now rides that retained write and only the push can settle it, which is
+	// why it is `committed` and not `published`: the work exists locally and is nowhere else yet.
+	//
+	// The flag exists because the request must stay IDENTIFIABLE while it waits. The controller
+	// re-sends its attach every couple of seconds until it reads an outcome, and forgetting the
+	// request at finalize made that re-send look like a brand-new one: it would register again,
+	// expire against its fresh grace, and report NoOpenWindow for work that was sitting in
+	// pendingWrites waiting for the push cooldown — or, worse, claim the next same-author window
+	// and stamp this request's message onto a commit somebody else authored.
+	committed bool
 	// sawForeignWindow is set when a window was open during this request's grace that it could
 	// not claim, because the window belonged to a different author or GitTarget.
 	//

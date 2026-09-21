@@ -186,6 +186,13 @@ func (l *branchWorkerEventLoop) processDueCommitRequests() {
 	now := time.Now()
 	var due []commitRequestID
 	for id, pcr := range l.pendingCRs {
+		if pcr.committed {
+			// Its window is already a local commit, so its grace has nothing left to decide. It
+			// is waiting on the push, and resolvePushedCommitRequests settles it from the write
+			// it rides. Treating it as due here is what produced a NoOpenWindow for work that
+			// was only waiting out the push cooldown.
+			continue
+		}
 		if !pcr.finalizeAt.After(now) {
 			due = append(due, id)
 		}
@@ -200,8 +207,11 @@ func (l *branchWorkerEventLoop) processDueCommitRequests() {
 			// resolves the request from the window's pendingCR; push so the commit lands.
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonFinalizeSignal)
 			l.maybeSchedulePush()
-			// Belt-and-suspenders: a window it claimed always resolves it on finalize.
-			if _, still := l.pendingCRs[id]; still {
+			// Belt-and-suspenders: a window it claimed always either commits it or fails it.
+			// A committed request is NOT covered by this — it is waiting on the push, which is
+			// the only thing that can settle it, and resolving it here would be the very
+			// premature NoOpenWindow this whole path exists to avoid.
+			if pcr := l.pendingCRs[id]; pcr != nil && !pcr.committed {
 				l.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeNoOpenWindow})
 			}
 			continue
@@ -233,6 +243,11 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 func (l *branchWorkerEventLoop) rearmAttachTimer() {
 	var earliest time.Time
 	for _, pcr := range l.pendingCRs {
+		if pcr.committed {
+			// Its deadline is spent and processDueCommitRequests skips it, so arming on it would
+			// re-fire at zero on every wake for as long as the push takes.
+			continue
+		}
 		if earliest.IsZero() || pcr.finalizeAt.Before(earliest) {
 			earliest = pcr.finalizeAt
 		}

@@ -32,6 +32,11 @@ func (w *BranchWorker) executePendingWrites(
 	for i := range pendingWrites {
 		created, hash, source, err := w.executePendingWrite(ctx, repo, worktree, pendingWrites[i])
 		if err != nil {
+			// A write can fail after it has staged part of its change, so the worktree may now
+			// hold content nobody asked for. Only a reset clears this: a later successful push
+			// says where the remote is and says nothing about these leftovers, and a cycle that
+			// planned on top of them would commit them under an unrelated author.
+			w.markWorktreeDirty("execute pending write failed")
 			return commitsCreated, err
 		}
 		pendingWrites[i].CommitSHA = hash

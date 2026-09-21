@@ -368,7 +368,7 @@ func TestRefreshRemoteAndRebuildPendingWrites_ReplaysWithoutPushing(t *testing.T
 	contendingRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
 
-	require.NoError(t, worker.refreshRemoteAndRebuildPendingWrites(worker.ctx, pendingWrites))
+	require.NoError(t, worker.refreshRemoteAndRebuildPendingWrites(worker.ctx, pendingWrites, fetchReasonForcedRecheck))
 
 	remoteRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)

@@ -1752,10 +1752,13 @@ be open already.
 
 A request attaches to at most one matching open window. Normal flush triggers may close it early;
 its message travels with that window. It cannot rename a finalized commit, including a local commit
-waiting for push. Applying resources and a request together gives no ordering guarantee between
-controllers and watch streams. Use a non-zero commit window when custom save messages matter:
-`0s` leaves little opportunity to attach, and a request delay does not reserve a transaction or
-extend every normal flush timer. See the [request contract](spec/commitrequest-design.md).
+waiting for push. Between that finalize and the push the request is still in flight, and the
+controller keeps re-sending its attach until it reads an outcome; the worker recognizes the re-send
+as the same request rather than treating it as a new one, so a request does not resolve
+`NoOpenWindow` while its commit is waiting out the push cooldown. Applying resources and a request
+together gives no ordering guarantee between controllers and watch streams. Use a non-zero commit
+window when custom save messages matter: `0s` leaves little opportunity to attach, and a request
+delay does not reserve a transaction or extend every normal flush timer. See the [request contract](spec/commitrequest-design.md).
 
 Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
 `kubectl get commitrequest` surfaces `Ready`, `AuthorAttributed`, and `Pushed`. Automation must stop
@@ -1767,6 +1770,12 @@ terminal failures. `Ready=True` includes successful no-commit outcomes. Require 
   condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.sha` set),
   or a benign no-commit: `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. A failed finalize is
   `Ready=False` with reason `FinalizeFailed`.
+
+  `AlreadyPresent` means **the remote confirmed there was nothing to add**, so it is reported after
+  the push rather than when the local plan found no difference. That costs a few seconds and buys a
+  true answer: a competing Git-side edit can turn the same captured object into a real commit when
+  the worker replays onto the moved branch, and such a request resolves `Committed` instead. A
+  worker that stops before the push fails the request rather than leaving it to time out.
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
   request is finalizing or waiting through `closeDelaySeconds`; `Stalled=True` when the finalize failed
   and needs attention (kstatus reports the object Failed).

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	billyutil "github.com/go-git/go-billy/v6/util"
@@ -525,7 +526,88 @@ func checkoutAndReset(ctx context.Context, repo *git.Repository, branch plumbing
 		}
 	}
 
+	if err := discardWorktreeLeftovers(repo); err != nil {
+		return plumbing.ZeroHash, err
+	}
+
 	return branchRemoteRef.Hash(), nil
+}
+
+// discardWorktreeLeftovers removes whatever the reset did not.
+//
+// A hard reset restores tracked files and nothing else: a file the previous cycle CREATED — staged
+// or not — and any directory it created for a new placement both survive it. That is most of what
+// a half-finished write leaves behind, because our writes usually create documents rather than
+// modify them, so the "Force: true discards dirty files" the reset relies on covers the rare case
+// and misses the common one.
+//
+// This matters beyond tidiness: the base-trust state machine clears worktreeDirty on a reset, and
+// the next cycle then plans on top of the worktree. A surviving half-written document would be
+// committed under whichever author happened to arrive next.
+func discardWorktreeLeftovers(repo *git.Repository) error {
+	w, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	status, err := w.Status()
+	if err != nil {
+		return fmt.Errorf("failed to read worktree status: %w", err)
+	}
+
+	var removed []string
+	for filePath, state := range status {
+		// Untracked, or added to the index but absent from the commit we just reset to. Anything
+		// the commit does contain has already been restored by the reset.
+		if state.Worktree != git.Untracked && state.Staging != git.Added {
+			continue
+		}
+		if err := w.Filesystem().Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to discard leftover %q: %w", filePath, err)
+		}
+		if state.Staging == git.Added {
+			if _, err := w.Remove(filePath); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
+				return fmt.Errorf("failed to unstage leftover %q: %w", filePath, err)
+			}
+		}
+		removed = append(removed, filePath)
+	}
+
+	// Removing the files can leave the directories that held them.
+	pruneEmptyDirs(w, removed)
+	return nil
+}
+
+// pruneEmptyDirs removes the directories that held the discarded leftovers, deepest first and
+// only while they are empty, so a placement folder created by a failed write does not persist and
+// make the next scan see a directory Git does not have.
+//
+// Scoped to the paths just removed rather than to the whole tree on purpose: an empty directory
+// nobody touched is none of this function's business.
+func pruneEmptyDirs(w *git.Worktree, removed []string) {
+	dirs := map[string]struct{}{}
+	for _, p := range removed {
+		for dir := path.Dir(p); dir != "." && dir != "/"; dir = path.Dir(dir) {
+			dirs[dir] = struct{}{}
+		}
+	}
+
+	ordered := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		ordered = append(ordered, dir)
+	}
+	// Deepest first, so a child is already gone when its parent is tested.
+	sort.Slice(ordered, func(i, j int) bool {
+		return strings.Count(ordered[i], "/") > strings.Count(ordered[j], "/")
+	})
+
+	for _, dir := range ordered {
+		entries, err := w.Filesystem().ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			continue
+		}
+		_ = w.Filesystem().Remove(dir)
+	}
 }
 
 // resolveDefaultBranch uses the List output to find out all the required info of the default branch.

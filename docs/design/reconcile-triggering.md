@@ -279,6 +279,15 @@ flowchart LR
     H -- yes --> R2[reconcile affected GitTargets]
 ```
 
+> **The middle step of that flow has since been ruled out, and the rest of this section stands.**
+> [inbound push notification](inbound-push-notification.md) §7 shows that `requestedAt` drives a
+> full cluster-to-Git snapshot, so a receiver that patches it can publish pre-push cluster state
+> over the very change it was told about, before Flux or Argo CD has applied it. The receiver needs
+> a request shape of its own: invalidate the base, record the new tip, replay retained work, and
+> never snapshot. §8.3 of that page is the wire contract. Read everything below (the signature
+> validation, the self-push dedupe in §5.3, the reuse question in §5.4) as still current; read
+> "patch the annotation" as the one step that was replaced.
+
 ### 5.1 Can we reuse the Flux component?
 
 Two separable things, opposite answers:

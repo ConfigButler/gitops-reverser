@@ -1,436 +1,379 @@
 # Bi-directional usage guide
 
-GitOps Reverser publishes **live → Git**. Flux or Argo CD supplies **Git → cluster**.
-Together, they let operators edit resources through the Kubernetes API and through Git.
+GitOps Reverser publishes live cluster state to Git. Flux or Argo CD applies Git back to the
+cluster. Run both and a resource can be changed from either side. This guide covers what that
+costs, how to configure the two reconcilers for it, and which parts are proven by tests.
 
-**Whether that is safe depends on who owns each field.** Give every field a single
-writer and the two directions never compete. Let API edits and Git edits reach the same
-field and nothing in this system arbitrates between them: a push webhook shortens the
-window in which a reconciler applies stale desired state, but it only notifies, and it
-reserves nothing. Shared-field operation is therefore experimental, and it needs an
-operating procedure that people follow.
+**The short version.** Point your Git host's push webhook at the reconciler, turn Argo CD's
+`selfHeal` off, and accept that for anything edited live the Kubernetes API is the source of
+truth. There is no merge, no lock, and no timing guarantee.
 
-If every field has one writer, read [Recommended modes](#recommended-modes) and
-[Configure the reconciler](#configure-the-reconciler), then stop. The rest of the guide
-is about shared fields: the [handoff](#operate-a-shared-field) that makes them workable,
-and the [mechanics](#when-two-people-change-things-at-almost-the-same-time) that decide
-which value survives when two writes overlap.
+**What the system is optimized for.** Reverser assumes most changes arrive through the Kubernetes
+API, and it spends its budget on **round trips to the Git host**, because those are the seconds
+an operator waits through. Local work is not in that budget: recomputing a change against a
+moved branch happens on a checkout that is already on disk and costs nothing worth naming.
 
-## Recommended modes
+That ordering explains the design. A publication talks to the remote **twice**: it opens the push,
+reads where the branch is, and sends the commits — and it learns everything it needs from that one
+exchange, so it does not read the branch beforehand. A publication that turns out to have nothing
+to change costs a single request. A foreign push is not a problem and not lost work; it costs a
+handful of extra requests and a recomputation, and the branch ends up correct. If your workload is
+mostly Git-side edits with occasional live changes, this guide still applies, but you are using
+the tool against its grain.
 
-Choose the ownership model before configuring reconciliation.
+Those numbers are measured rather than estimated, and the per-operation table lives in
+[`git-roundtrip-ledger.golden`](../internal/git/testdata/git-roundtrip-ledger.golden).
 
-| Mode | Ownership | Typical use |
-| --- | --- | --- |
-| **1. Audit only** | Reverser captures live changes; no reconciler writes the captured path back. | Audit trails and discovery |
-| **2. Human in the loop** | Reverser captures changes; a human reviews or promotes them. | Hotfix capture and migration |
-| **3. Split ownership** | Each field has one writer; API and Git workflows own different fields. | Interactive operations alongside GitOps |
-| **4. Controlled bi-directional** | API and Git workflows share fields and coordinate when they write. | Experimental editing environments |
+```mermaid
+flowchart LR
+    subgraph CLUSTER["Kubernetes cluster"]
+        API["Kubernetes API"]
+        REV["GitOps Reverser"]
+        REC["Flux / Argo CD"]
+    end
+    GIT[("Git branch")]
 
-Modes 1–3 avoid competing writes when their ownership boundaries are enforced.
-The rest of this guide focuses on mode 4.
+    API -->|"watch event"| REV
+    REV -->|"commit, then compare-and-swap push"| GIT
+    GIT -->|"push webhook"| REC
+    REC -->|"apply"| API
+    GIT -. "push webhook: not built yet" .-> REV
 
-## How the webhook loop works
+    style REV fill:#e8f4fd,stroke:#2196f3
+    style REC fill:#fff3e0,stroke:#ff9800
+```
 
-**A configured Git push webhook removes the need for a direct trigger from Reverser
-after each successful push.** GitHub or Gitea sends the notification to Flux or Argo CD:
+Both solid legs are configuration you control. The dashed leg does not exist: nothing tells
+Reverser that somebody else moved the branch. [Telling Reverser that somebody else
+pushed](#telling-reverser-that-somebody-else-pushed) covers what that costs and how to work
+around it.
+
+## One queue per branch
+
+Every watched event for a given `GitProvider` and branch lands on one queue owned by one branch
+worker. Events are applied in arrival order and never overtake each other. Two `GitTarget`
+objects on the same provider and branch share that worker, so they share the ordering too.
+
+The worker does two things with the queue:
+
+1. **Commit.** Events are collapsed into one local commit per author after
+   [`spec.commit.window`](configuration.md#the-commit-window-speccommitwindow) of silence,
+   `5s` by default. `0s` gives one commit per event.
+2. **Push.** Local commits go to the remote at most once every five seconds, as a
+   compare-and-swap. The push declares the SHA it expects the branch to be at, and the Git host
+   refuses the update if the branch has moved off the commits' base.
+
+That compare-and-swap is what detects a foreign push. The push session reads the remote's ref
+advertisement and refuses a moved branch before uploading a single object, so contention is
+caught on a connection the cycle was making anyway.
+
+**Reverser never polls the remote and holds no timer against it**, so an idle target generates no
+Git traffic at all — measurably none, not approximately none.
+
+A publishing target does not read the branch before planning either. It plans on the checkout it
+already has and lets the compare-and-swap catch it if the branch moved, which is the one case
+where it pays to re-read and replay. The exceptions are a worker that has not yet seen the
+remote, a previous write that failed and left the checkout in an unknown state, and a resync,
+which keeps reading because it can finish without ever opening a push. What is still missing is
+anything that tells an *idle* target its branch moved; that is
+[inbound push notification](design/inbound-push-notification.md).
+
+## What happens when somebody else pushed first
+
+The push is rejected and the worker **replays**: it fetches the new tip, re-plans every retained
+write against it, and pushes again. Three attempts, then the writes stay retained for a later
+try.
+
+Replaying is the cheap half. The re-planning is local and the branch ends up correct either way.
+What a rejection actually costs is the extra conversations with the Git host that surround it,
+which is why a push webhook pointed back at Reverser is worth having: told in advance that the
+branch moved, it can fetch once and push onto the right tip instead of discovering the move by
+being turned away. That receiver is designed but not yet built, and
+[Telling Reverser that somebody else pushed](#telling-reverser-that-somebody-else-pushed) covers
+where that leaves you today.
+
+```mermaid
+flowchart TD
+    PUSH["Push, declaring the SHA the commits were based on"] --> MOVED{"Is the branch still at that SHA?"}
+    MOVED -->|yes| DONE["Accepted"]
+    MOVED -->|"no: somebody else pushed"| FETCH["Fetch the new tip"]
+    FETCH --> REPLAN["Re-plan every retained write against the new tree"]
+    REPLAN --> DIFF{"Does the captured object still differ from what Git now holds?"}
+    DIFF -->|no| NOOP["No commit. The other writer's value stands."]
+    DIFF -->|yes| COMMIT["Commit on top, then push again"]
+    COMMIT --> MOVED
+
+    style DONE fill:#e8f5e9,stroke:#43a047
+    style NOOP fill:#e8f5e9,stroke:#43a047
+```
+
+Replay re-plans, it does not rebase a diff. Each retained write still carries the object as the
+watch captured it, and writing that object onto the new tree has one of two outcomes:
+
+- **No change, so no commit.** The file in Git already says what the captured object says,
+  because whoever pushed made the same change. Git had it first and that is the end of it.
+- **A change, committed on top.** The captured object is written over the other writer's value,
+  and the branch ends at the API side's value.
+
+There is no third outcome, and there is no merge. An ordinary watch event carries the object's
+whole state, not a diff against a known base, so there is nothing to three-way merge with. The
+Kubernetes API decides what is live, and replay writes what the cluster said.
+
+### What a write does to the file
+
+The write is an in-place edit of the existing document, not a wholesale overwrite, so the
+distinction that matters is between fields rather than files. For a plain manifest:
+
+| In the file | What a replay does to it |
+| --- | --- |
+| A field the live object also carries | Set to the live value |
+| A field in Git that the live object does not have | **Removed** |
+| Comments, key order, other documents in the file | Preserved |
+| An edit that cannot be placed safely | Refused, and the file is left untouched |
+
+In a kustomize layout the live object is the rendered result rather than the contents of any one
+file, so the edit is projected back through the build first and only the fields that document is
+responsible for are touched. An edit the projection cannot place is refused rather than guessed
+at, which is why the last row exists.
+
+**The consequence to plan around.** If Alice changes `replicas` through the API while Bob changes
+`image` in Git on the same object, replaying Alice's captured object writes her `replicas` and
+also the `image` she was looking at. Bob's change to a different field of the same object does
+not survive, and a field Bob added that the cluster never had is removed outright. Separate
+objects are independent of each other. Separate fields of one object are not.
+
+## There are no timing guarantees
+
+Committing and pushing to a remote takes on the order of a second at best, and the Kubernetes API
+accepts a great many changes in a second. Nothing paces the two against each other and nothing
+reserves a window, so treat live editing as a different way of making changes rather than a
+faster `git push`:
+
+- You make a change and then observe that it arrived. You do not save and receive a confirmation.
+- Intermediate values may never reach Git. Two edits inside one commit window produce one commit
+  holding the later value.
+- Git history records the states the worker captured and published. Expect gaps between them.
+
+When a specific change has to be confirmed in Git, use a
+[`CommitRequest`](configuration.md#commitrequest). `Pushed=True` with `status.sha` and
+`status.branch` names the commit it produced.
+
+## Why the loop stops
+
+The obvious fear is a feedback loop: Reverser commits, the reconciler applies, the apply produces
+a watch event, Reverser commits again. It does not happen.
 
 ```mermaid
 sequenceDiagram
-    actor User
-    participant K8s as Cluster
+    actor Alice
+    participant API as Kubernetes API
     participant Rev as GitOps Reverser
-    participant Git as Git host (GitHub / Gitea)
-    participant Recon as Flux / Argo CD
+    participant Git as Git branch
+    participant Rec as Flux / Argo CD
 
-    User->>K8s: edit through the Kubernetes API
-    K8s-->>Rev: watch event
+    Alice->>API: set replicas to 5
+    API-->>Rev: watch event, replicas 5
     Rev->>Git: commit and push
-    Git-->>Recon: push webhook (Flux Receiver / Argo CD api/webhook)
-    Recon->>Git: refresh tracked branch
-    Recon->>K8s: apply new desired state if needed
-    K8s-->>Rev: watch events if objects changed
-    Note over Rev: matching content produces no new commit
+    Git-->>Rec: push webhook
+    Rec->>Git: fetch the new revision
+    Rec->>API: apply, replicas 5
+    Note over API: live value is already 5,<br/>so the apply changes nothing
+    API-->>Rev: watch event, if one is produced at all
+    Note over Rev: sanitized content equals<br/>the file in Git, so no commit
 ```
 
-Flux's `Receiver` requests a source refresh; the new artifact revision triggers dependent
-`Kustomization` objects. Argo CD's webhook requests an application refresh; automated sync
-applies changed desired state. Reverser itself neither triggers these controllers nor waits
-for their applied revisions.
+When the reconciler applies a commit Reverser wrote, the live object already holds those values,
+because they were read from that object in the first place. The apply changes nothing, so the
+event it produces carries content identical to the file already in Git, and no commit is made.
 
-The webhook carries a notification, not a lock or an apply acknowledgment. A reconciler
-can fetch a later branch tip when pushes arrive close together. It need not apply each
-intermediate commit, and it can already be applying another revision when an API edit lands.
+This is worth stating in its general form, because it answers a question people reasonably ask
+about the Git to cluster leg: **applying a resource that already matches does not produce a
+change.** Only a differing value counts as a write here.
 
-## Configure the reconciler
+What can break that reasoning is controller bookkeeping, which is why the next section exists.
 
-| Setting | Flux Kustomization | Argo CD Application |
+## Keep controller bookkeeping out of Git
+
+Argo CD stamps `argocd.argoproj.io/tracking-id` on every non-CRD object it applies, Flux stamps
+`kustomize.toolkit.fluxcd.io/` labels and annotations, and a client-side apply writes
+`kubectl.kubernetes.io/last-applied-configuration`. None of it is user intent. If it reached Git
+the sanitized live object would stop matching the committed file, and every reconciler sync would
+produce a commit.
+
+Reverser strips all of it before writing, along with `argocd.argoproj.io/installation-id`,
+`kro.run/`, `applyset.kubernetes.io/`, and `kcp.io/cluster`. The rules and the reasoning for each
+are in [`internal/sanitize/types.go`](../internal/sanitize/types.go).
+
+Argo CD's tracking annotations are matched by exact key, never by prefix, because sibling
+annotations under `argocd.argoproj.io/` (`sync-wave`, `sync-options`, `hook`) are user intent
+that belongs in Git.
+
+**Leave Argo CD on its default `annotation` resource tracking for Reverser-managed paths.** The
+`label` and `annotation+label` methods stamp `app.kubernetes.io/instance`, which is
+indistinguishable from the standard recommended label that Helm and Kustomize set for real
+reasons. Reverser therefore does not strip it, and label tracking would put Argo's bookkeeping
+into your commits.
+
+## Configure Argo CD
+
+`selfHeal` is the entire decision.
+
+| `selfHeal` | What happens to a live edit | Use when |
 | --- | --- | --- |
-| Push notification | `Receiver` targets the `GitRepository` | Git host calls `/api/webhook` |
-| Shared-field operation | Unsuspended, long apply interval | Automated sync enabled, `selfHeal: false` |
-| Remaining overwrite triggers | Timer, source/configuration changes, retries, restart, explicit reconcile | New desired revision, application changes, retries, explicit sync |
-| Convergence check | `Ready=True` and `status.lastAppliedRevision` | `Synced` and `status.sync.revision` |
+| `true` | Reverted before Reverser can publish it. The edit is lost and Git records two commits. | The path is Git-owned and drift is an error |
+| `false` | Left in place, captured to Git, and applied onward. Both directions work on the same field. | Anything edited through the API |
 
-### Flux
+Self-heal is watch-driven and the first revert of a fresh drift has zero backoff, so it lands
+sub-second. The e2e corner measures about one second. Meanwhile Argo notices a new Git revision
+only on its timed refresh (`timeout.reconciliation`, 120s plus up to 60s of jitter) or when a
+webhook tells it. So with `selfHeal: true` Argo replays its cached desired revision over your
+live edit long before it looks at what Reverser committed.
 
-Configure a [Flux webhook Receiver](https://fluxcd.io/flux/guides/webhook-receivers/)
-for the **`GitRepository`**. Source-controller fetches Git before the artifact revision
-change wakes dependent Kustomizations. Targeting only the Kustomization could apply the
-source artifact that Flux already has cached.
-
-For a shared editing path, start with **`Kustomization.spec.interval: 24h`** and a
-shorter **`GitRepository.spec.interval: 1m`** as a fallback for missed webhooks:
-
-```yaml
-# Fields on the GitRepository:
-spec:
-  interval: 1m
----
-# Fields on the Kustomization for the shared editing path:
-spec:
-  interval: 24h
-  retryInterval: 1m
-  timeout: 2m
-  suspend: false
-```
-
-These are pilot settings. The long apply interval reduces periodic correction of live
-edits, while the source interval bounds the usual polling delay after a missed webhook.
-New source revisions still trigger applies immediately. Failures retry at `retryInterval`,
-which can also interrupt an editing session.
-
-**Flux has no separate maximum interval in hours in the current Kustomization API.**
-The [interval implementation](https://github.com/fluxcd/kustomize-controller/blob/main/api/v1/kustomization_types.go)
-uses a Go duration without an additional hours-based cap. `24h` is an operating recommendation.
-Controller-runtime's [10-hour cache resync](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/cache/cache.go)
-is not a hard apply limit: Flux's
-[watch predicates](https://github.com/fluxcd/kustomize-controller/blob/main/internal/controller/kustomization_manager.go)
-filter unchanged generation/request tokens and unchanged source revisions.
-
-An active Kustomization still reconciles periodically, and source changes, configuration
-changes, retries, or controller restarts can cause earlier applies. A long interval does
-not reserve an editing window. See the
-[Flux reconciliation contract](https://fluxcd.io/flux/components/kustomize/kustomizations/#interval).
-
-Keep the Kustomization **unsuspended** for the automatic webhook loop. Suspension blocks
-source-triggered applies too. A workflow that suspends it must explicitly resume it after
-publishing, wait for convergence, and suspend it again before accepting another edit.
-A manual reconcile request does not bypass suspension.
-
-For an unsuspended path, a manual source-first trigger is:
-
-```bash
-flux reconcile kustomization editing -n flux-system --with-source
-```
-
-### Argo CD
-
-Enable automated sync and disable self-heal on the shared path:
+There is no knob that delays that first revert.
+[Why `selfHeal` cannot be made selective](design/support-boundary/argocd-bi-directional.md) walks
+the code paths, including the options that look like they would work.
 
 ```yaml
 spec:
   syncPolicy:
     automated:
-      enabled: true
       selfHeal: false
       prune: true
 ```
 
-Use `prune: true` only when Git deletions should delete live objects. Configure the
-Git host's [Argo CD webhook](https://argo-cd.readthedocs.io/en/stable/operator-manual/webhook/)
-to `https://<argocd-server>/api/webhook`, with a shared secret. A refresh can lead to an
-apply only when a sync is permitted; configuring a webhook does not enable automated sync.
+Use `prune: true` only when a deletion in Git should delete the live object. Then configure the
+[Argo CD webhook](https://argo-cd.readthedocs.io/en/stable/operator-manual/webhook/) on your Git
+host, pointing at `https://<argocd-server>/api/webhook` with a shared secret. In the e2e corner
+that path drives a sync about four seconds after the push. Without it you wait for the timed
+refresh.
 
-With self-heal off, live drift alone does not trigger another automated sync after a
-successful sync of the same revision and parameters. Polling still discovers new Git
-commits without a webhook; the default period is `120s` plus up to `60s` jitter. See
-[automated sync semantics](https://argo-cd.readthedocs.io/en/stable/user-guide/auto_sync/).
+A webhook only requests a refresh. An apply follows only where a sync is permitted, so the
+webhook does not substitute for automated sync.
 
-**`selfHeal: false` permits live editing; it does not freeze deployments.** A new commit,
-a changed application parameter, or an explicit sync can still overwrite an unpublished
-edit. A change to another source in a multi-source application can also trigger a sync.
+### The split-ownership alternative
 
-For split ownership, `ignoreDifferences` excludes fields from drift comparison. It does
-not alone protect them during a sync triggered for another reason.
-[`RespectIgnoreDifferences=true`](https://argo-cd.readthedocs.io/en/stable/user-guide/sync-options/#respect-ignore-differences-configs)
-also preserves the live value during sync for existing resources. Those fields become
-API-owned, so this setting does not suit fields that Git must also drive.
+`ignoreDifferences` on a field, with `RespectIgnoreDifferences=true`, keeps `selfHeal: true`
+everywhere else and hands that one field to the API. The field stops registering as drift, so
+self-heal never fires on it and the Application stays `Synced`.
 
-[Why `selfHeal` cannot be made selective](design/support-boundary/argocd-bi-directional.md)
-records the remaining alternatives, including the ones that look like they would work.
+The cost is that the field is no longer GitOps-driven in either direction: a later Git commit to
+it will not reach the cluster. That is the difference between the two configurations, and the
+e2e corner proves both halves of it on the same field.
 
-## Operate a shared field
+## Configure Flux
 
-For shared fields, establish a handoff between API editing and Git deployments:
+Flux has no self-heal. The apply interval is its drift-correction clock: kustomize-controller
+re-applies the built manifests on each reconcile, so a live edit survives until the next apply of
+a revision that still carries the old value. The two settings that matter are therefore the apply
+interval and how quickly a push reaches Flux.
 
-1. Keep conflicting Git deployments and manual reconciles out of the editing session.
-   A webhook or a long interval alone does not enforce this rule.
-2. Let API edits reach the remote branch and check for refused writes or push failures.
-3. Have the Git-side writer fetch that updated branch before preparing a deployment.
-4. Apply the intended revision, confirm convergence, and then reopen API editing.
-
-This is an operating procedure, held up by the people and pipelines that follow it.
-Reverser implements no edit lock and reserves no transaction when a `CommitRequest` is
-submitted. For unattended concurrent operation, prefer split ownership or separate
-reconciliation scopes. Use Kubernetes preconditions for competing API editors and normal
-Git review for competing Git authors. Treat simultaneous API and Git writes to shared
-fields as a case that requires an explicit conflict policy.
-
-## When two people change things at almost the same time
-
-**Reverser publishes one branch's writes in order, one at a time.** Its own commits never
-race each other, and its retained writes replay in the order they were accepted.
-
-That ordering is the only guarantee on offer, and it covers only Reverser's own work.
-Bob's direct Git push and the reconciler's fetch and apply run outside that queue
-entirely. Knowing whose push reached Git first does not establish when the reconciler
-applied it, or where the resulting watch event sits in Reverser's queue. No shared
-transaction spans those operations.
-
-The timelines use one notation throughout. Alice edits through the Kubernetes API and Bob
-pushes to Git. `E5` is a captured watch event carrying `replicas: 5`, and `B`, `C`, and
-`D` are commits on the tracked branch, named in the order they are created.
-
-| Concurrent actions | What handles the collision | What remains unprotected |
-| --- | --- | --- |
-| Two API edits to one object | Kubernetes update preconditions and field ownership | Unconditional patches can overwrite the same field |
-| Two API edits to different objects | Independent API writes; Reverser's branch worker serializes its commits | No atomic transaction across the objects |
-| Two pushes to one Git branch | Git branch update checks; Reverser retries its own rejected push | Conflicting application intent still needs a decision |
-| One API edit and one Git deployment | Each side has its own local checks | No ordering barrier prevents the deployment from overwriting the live edit |
-
-### Two people edit through the Kubernetes API
-
-Alice and Bob both read `replicas: 3`. Alice requests `5`; Bob requests `7`.
-
-- If both submit updates with the resource version they read, Alice's accepted update
-  changes that version. Bob's stale update gets `409 Conflict`; he must read again and
-  decide whether to overwrite Alice's value.
-- If both submit unconditional patches to `spec.replicas`, both can succeed. If Bob's
-  patch is accepted last, the live value is `7`, until another writer changes it.
-- Patches to different fields can preserve both edits. Replacing a list or parent object
-  can overwrite another person's change.
-
-Use `resourceVersion` preconditions or conditional JSON Patch when the user should decide
-whether to overwrite a concurrent edit. These checks apply within Kubernetes. See
-[Kubernetes update semantics](https://kubernetes.io/docs/reference/using-api/api-concepts/#updates-to-existing-resources).
-[Server-side apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts)
-adds field-ownership conflicts between managers, but forced ownership changes can overwrite
-values. It does not coordinate publishing to Git.
-
-Reverser observes accepted live state. A request rejected by Kubernetes does not become
-a state change to publish. Separate objects can be captured independently; editing two
-objects together does not make their API updates or their eventual applies atomic.
-
-### What appears in Git history
-
-**Two accepted API edits do not necessarily produce two commits.**
-[`spec.commit.window`](configuration.md#the-commit-window-speccommitwindow) defaults to a
-rolling `5s` silence window. Within one window, Reverser keeps the latest event for each
-resource path. If `replicas: 5` is followed by `replicas: 7` in that window, the commit can
-contain only `7`.
-
-A window contains one target, author identity, and attribution outcome. A change to any
-of those closes it. When attribution identifies Alice and Bob separately, their changes
-split windows. Shared credentials or events without distinct attribution can place both
-people's changes in the same window. Git history therefore is not a complete record of
-every accepted API write.
-
-Setting `window: 0s` requests per-event local commits in normal operation. It does not
-make each push immediate: the branch worker has a separate push cooldown. No-op writes
-need no commit, and replay after a moved remote can change unpublished commit SHAs.
-Neither a shorter window nor more commits creates a lock against Flux or Argo CD.
-
-The [commit-window specification](spec/commit-window-refactor.md) defines the flush rules.
-
-### What sits between an edit and an apply
-
-**A captured event, a local commit, a published commit, and an applied revision are
-different states, and a change can be waiting in any of them.** Three behaviors follow,
-and they are the ones that decide who wins:
-
-- **Reverser fetches the branch tip before it writes.** A publication cycle starts with a
-  fetch, so the commit is built on the branch as it stood at that moment. If a competing
-  push moves the branch afterward, the push is rejected, and Reverser fetches again and
-  replays its retained writes in order.
-- **Replay uses the captured object.** It does not reread the live value or compare
-  timestamps to pick a winner. What the watch event captured is what gets
-  written onto the new base.
-- **Nothing paces this end to end.** The commit window is a rolling `5s` silence timer, a
-  branch worker pushes at most once every `5s`, and webhook delivery, source refresh, and
-  apply each have their own queues and retries. There is no "five seconds to commit, then
-  five to push".
-
-A failed push keeps its writes for a later retry. A successful one clears what it
-published, and says nothing about whether more work is already queued behind it.
-
-### Two writers push to Git
-
-For ordinary human Git clients, a competing push can make the local branch stop being a
-fast-forward of the remote. The rejected writer fetches and integrates the new commits
-before retrying. Git can merge independent changes, but conflicting edits to one field
-require a choice. See [Git push behavior](https://git-scm.com/docs/git-push).
-
-Reverser resolves its own rejected push by fetching the new tip, rebuilding its
-unpublished commits on top of it, and retrying. That preserves the other writer's commits
-in branch history. It **does not guarantee that both writers' field values survive in the
-final manifests**, because replaying a captured live object can supersede a Git-side
-change to the same object.
-
-Different fields of one object need the same care. If Alice changes replicas in the
-cluster while Bob updates an image in Git, Alice's captured object still carries the old
-image, and replaying it against Bob's revision can replace his value. Supported-layout and
-render checks can refuse a write. They do not merge two people's intentions.
-
-### Timeline: a captured live value wins publication
-
-**Within a successful publish, a retained live snapshot can overwrite a newer Git-side
-value because Reverser writes it after fetching that Git revision.** Suppose both sides
-start at `replicas: 3`. Alice's event contains `5`; Bob subsequently pushes `7`. Assume
-the write is supported, no later event replaces Alice's snapshot, and the reconciler
-has not yet applied Bob's revision:
-
-```mermaid
-sequenceDiagram
-    actor Alice
-    actor Bob
-    participant K8s as Cluster
-    participant Rev as GitOps Reverser
-    participant Git as Git host
-    participant Recon as Flux / Argo CD
-
-    Alice->>K8s: set replicas to 5
-    K8s-->>Rev: capture event E5
-    Bob->>Git: push commit B with replicas 7
-    Git-->>Recon: push webhook for B
-    Note over Recon: B has not been applied
-    Note over Rev: window closes with no retained pending writes
-    Rev->>Git: fetch current branch tip
-    Git-->>Rev: commit B with replicas 7
-    Rev->>Rev: write captured E5 onto B and create C
-    Rev->>Git: push C with replicas 5, parent B
-    Git-->>Recon: push webhook for C
-    Recon->>Git: refresh tracked branch
-    Git-->>Recon: current tip C
-    Recon->>K8s: reconcile C (live replicas already 5)
+```yaml
+# GitRepository: short, so a missed webhook becomes a delay rather than a stall.
+spec:
+  interval: 1m
+---
+# Kustomization on the shared path: long, so the timer is not what reverts live edits.
+spec:
+  interval: 24h
+  retryInterval: 1m
+  suspend: false
 ```
 
-The published history is `B (7) → C (5)`. Bob's commit remains in history, but Alice's
-older snapshot supplies the value at the new tip. The reconciler can skip applying `B`.
-Reverser's fetch and the reconciler's source fetch are independent operations; neither
-waits for the other to finish.
+Configure a [Flux `Receiver`](https://fluxcd.io/flux/guides/webhook-receivers/) against the
+**`GitRepository`**, not the Kustomization. Source-controller fetches Git and publishes a new
+artifact revision, which wakes the dependent Kustomizations. A Receiver aimed at the
+Kustomization can re-apply the artifact Flux already has cached, which is the old content.
 
-The same outcome is possible if Bob pushes after Reverser's initial fetch: the conditional
-push rejects the stale base, then Reverser fetches `B`, replays `E5`, and retries.
-For this single retained edit, the boundaries are:
+A long interval delays periodic correction. It reserves nothing: a new source revision, a
+configuration change, a retry, or a controller restart all trigger an apply sooner.
 
-| When Bob's `7` reaches the branch | Reverser's response | Tip after the successful publication described |
-| --- | --- | --- |
-| Before Reverser's initial fetch | Write `E5` onto Bob's revision | Reverser's `5` |
-| After that fetch, before Reverser's branch update | Fetch and replay `E5` after a rejected push | Reverser's `5` |
-| After Reverser's successful push | Bob can push a new commit based on the updated branch | Bob's `7` |
+Keep the Kustomization **unsuspended**. Suspension blocks source-triggered applies as well, and a
+manual reconcile request does not bypass it. To trigger the source and the apply together:
 
-The final row requires Bob to integrate the new branch tip; an ordinary stale push can
-be rejected. Continued contention or a refused replay can prevent Reverser's publication.
-“The event wins” therefore describes a successful publication of that retained snapshot,
-not a permanent priority for API edits over Git edits.
+```bash
+flux reconcile kustomization editing -n flux-system --with-source
+```
 
-### When the reconciler's own apply comes back as an event
+## Telling Reverser that somebody else pushed
 
-A reconciler's apply produces a watch event like any other write. **That event is a no-op
-when its captured content matches the checkout used to build its commit**, which is the
-ordinary case: Bob pushes `7`, the reconciler applies `7`, Reverser sees `7`, Git already
-says `7`, and no commit is made. This is why a healthy loop does not ring forever.
+Everything above points a webhook from the Git host at the reconciler. The other direction does
+not exist yet: nothing tells Reverser that a branch it tracks moved, so it finds out when it next
+pushes.
 
-It stops being a no-op when Reverser still holds unpublished work for the same field. If
-Alice's `E5` is pending when the reconciler's `E7` arrives, the worker publishes `E5`
-first, moving Git to `5`. By the time `E7` is finalized it is a real change, so it earns
-its own commit. History reads `B (7) → C (5) → D (7)`, and both sides settle at `7`.
+For a target that is actively writing, nothing breaks: the compare-and-swap catches the move and
+replay handles it. It is slower than it needs to be, because the move is discovered by a push
+that was always going to fail, and that is the cost the receiver removes.
 
-Two consequences belong in an operating procedure:
+A **refused** target also recovers on its own. While `GitPathAccepted` is `False` the target is
+not converged, so it requeues every 10 seconds and each pass forces a re-read. Fix an unsupported
+folder in Git and the condition clears within about ten seconds without anyone doing anything.
 
-- **A push webhook does not prove the resulting event will be a no-op.** To establish that
-  the loop has settled, check the reconciler's applied revision, the live object, and
-  whether Reverser still has outstanding work. A commit that only announces a branch
-  update is not the same as the value you asked for.
-- **Editing different objects is not isolation** when they share a Kustomization or an
-  Application. A deployment triggered by Bob's commit can reapply Alice's object too.
-  Isolation requires controlling the apply scope.
+The case that does not recover is a **healthy, idle** target. It is converged, so it requeues
+every 5 minutes, and those passes publish status without touching Git. Somebody changes the
+folder underneath it and it holds its previous answer until it next writes. You can force a
+re-read:
 
-## Confirm that a change is published and applied
+```bash
+kubectl annotate gittarget editing -n gitops-reverser \
+  reconcile.configbutler.ai/requestedAt="$(date +%s)" --overwrite
+```
 
-Publishing and applying are separate observations. A successful Kubernetes edit confirms
-only the API write; a successful webhook delivery confirms only receipt of a notification.
+A receiver that does this automatically is designed in
+[inbound push notification](design/inbound-push-notification.md). The other half of that
+design, removing the head-of-cycle fetch, has shipped; the receiver is what remains.
+That design deliberately does **not** wire the webhook to the annotation above: the
+annotation asks for a full resync, which publishes cluster state, and that is the one
+thing a push notification must not do.
 
-For an explicit save workflow, a [`CommitRequest`](configuration.md#commitrequest) with
-`Pushed=True`, `status.sha`, and `status.branch` identifies its published commit.
-`Ready=True` also includes successful no-commit outcomes. Ordinary watch-driven commits
-do not automatically create a `CommitRequest`.
+If you are building that receiver, or a relay to call it, the request shape is specified in
+[§8.3, the wire contract](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it):
+one signed `POST /git-push/<route>` carrying the repository, the branch, and the SHA the branch now
+points at. It deliberately does not take a Git host's native payload, so the mapping from your
+host's webhook belongs in the host's own configuration or in the relay.
 
-Then check the reconciler:
+One property that design fixes in advance, and that matters if you build anything similar
+yourself: **a notification that a branch moved must not trigger a fresh cluster snapshot.** Our
+handler and the reconciler's both fire on the same push, and ours has less work to do, so it
+would reliably publish the pre-push cluster state over the incoming change before the reconciler
+ever applied it. A push tells you about Git. It says nothing about the cluster.
 
-- **Flux:** require `Ready=True` and match the SHA in `status.lastAppliedRevision`.
-  The revision is formatted like `main@sha1:<sha>`, rather than a bare SHA.
-- **Argo CD:** require `status.sync.status: Synced` at the intended `status.sync.revision`.
-  If Git already matches live state, no new sync operation is needed. For an explicit sync,
-  check that the new operation succeeded at the requested revision.
+## When a write is refused or a push fails
 
-If a later commit supersedes the one you are waiting for, inspect the new revision and
-its content. A later descendant can revert the edit; ancestry alone does not prove it
-survived. Workflows requiring an exact apply must coordinate or pin the revision.
+A live edit can succeed while its publication does not. The cluster holds the change and Git does
+not, and **a refused write produces no commit and therefore no push webhook**. Watch push
+failures and the target's write-acceptance conditions: a successful Kubernetes edit confirms the
+API write and nothing beyond it.
 
-## Handle failed pushes and refused edits
+Retained writes are held in worker memory. They do not survive a restart, and an edit that failed
+before becoming a pending write is gone from Reverser's side. Recovery is a resync, which derives
+state from the cluster as it exists at that moment, so it cannot reproduce an intermediate value
+that has since been overwritten.
 
-A live edit can succeed while its publication fails. The cluster already contains the
-change; Git does not yet contain it. Reverser retains pending writes after push failures,
-but that does not stop a reconciler from applying older or competing desired state.
-Monitor push failures and the target's write-acceptance conditions.
+Reverser performs no restoration of its own. With Argo `selfHeal` off, refreshing an
+already-synced revision will not put the approved value back; that needs an explicit sync. Flux
+restores it on its next apply, which a 24h interval can leave hours away.
 
-**Retained work is not a durable event log.** It does not survive a process restart, and
-an edit that failed before it became a pending write is gone from Reverser's side
-entirely. Recovery is a resync, which derives state from the cluster as it exists then, so
-it cannot reproduce an intermediate value that has since been overwritten. Nor does a
-failure retry on a fixed schedule.
+## What the tests prove
 
-If Reverser refuses to publish an edit, **there is no commit and no push webhook**.
-Choose whether to repair the destination so the edit can be saved or restore the approved
-Git state. With Argo self-heal off, refreshing an unchanged, already-synced revision does
-not restore the live object; restoration needs an explicit sync. Flux can restore it on
-reconciliation, but a long apply interval can leave the edit live for hours.
+The bi-directional corner runs against real Flux and real Argo CD.
 
-Reverser has no automatic restoration and no applied-revision barrier. It also has no
-inbound Git push receiver, so nothing tells it that somebody else moved the branch: it
-finds out when it next writes. That gap and its consequences are worked out in
-[inbound push notification](design/inbound-push-notification.md), and the broader
-coordination question in the
-[orchestrator integration design](design/support-boundary/orchestrator-reconcile-trigger.md).
-The admission and audit webhooks it does serve are for validation and attribution.
+| Covered | Where |
+| --- | --- |
+| Argo bookkeeping never reaches Git, asserted as zero commits during a sync | [Argo phase 1](../test/e2e/argocd_bi_directional_e2e_test.go) |
+| `selfHeal: true` loses the API edit, and the flap is exactly two commits | Argo phase 2 |
+| `ignoreDifferences` keeps the edit and holds the Application `Synced` | Argo phase 3 |
+| `selfHeal: false` keeps the API edit and still applies a Git-side change to the same field | Argo phase 4 |
+| Git to cluster to Git round trip settles without a commit loop | [Flux](../test/e2e/flux_bi_directional_e2e_test.go) |
+| A SOPS-encrypted Secret round-trips without a reverse commit | Flux |
+| A Git revert removes the live object and the committed file | Flux |
 
-## Keep controller metadata out of Git
-
-Reverser strips Flux's operational `kustomize.toolkit.fluxcd.io/` labels and annotations,
-Argo CD's `argocd.argoproj.io/tracking-id` and `installation-id`, and
-`kubectl.kubernetes.io/last-applied-configuration`. This avoids commits caused only by
-controller bookkeeping. The rules are in [`internal/sanitize/types.go`](../internal/sanitize/types.go).
-
-Use **annotation resource tracking** for Argo CD on Reverser-managed paths.
-`app.kubernetes.io/instance` is preserved because it can be meaningful user metadata;
-Argo label tracking can therefore introduce reverse commits.
-
-## What the e2e tests cover
-
-The bi-directional corner exercises controlled round trips against both reconcilers:
-Git/API round trips, commit counts, applied revisions, a SOPS Secret, revert and prune for
-[Flux](../test/e2e/flux_bi_directional_e2e_test.go); metadata cleanup, explicit sync,
-self-heal, ignored fields, and one shared field edited from both sides for
-[Argo CD](../test/e2e/argocd_bi_directional_e2e_test.go).
-
-**Neither test establishes safe simultaneous API and Git editing on a shared field.** Both
-run with settling windows of a few seconds and long reconciler intervals, so a later
-scheduled loop is out of scope. Push-conflict tests verify the rebuild-and-retry
-mechanism; they do not establish a conflict policy. Treat the corner as regression
-coverage for the configurations above, and look elsewhere for evidence about mode 4.
+Two gaps worth knowing. The **Flux spec drives reconciliation manually** with 30m intervals, so
+the Flux `Receiver` path above is recommended from Flux's documented behavior rather than
+exercised here; only the Argo webhook is. And **no spec tests simultaneous writes to one field
+from both sides**, because the outcome depends on arrival order that the corner does not control.
+The replay mechanism is covered; a conflict policy is not, because there is not one.
 
 Run `task test-e2e-bi-directional` for the corner, which is also a CI job. `task test-e2e`
 excludes it, and `task argocd-ui` opens the installed Argo CD UI. The
-[corner specification](spec/e2e-bi-directional-corner.md) describes the setup and the
-coverage still missing.
+[corner specification](spec/e2e-bi-directional-corner.md) describes the setup and the coverage
+still missing.

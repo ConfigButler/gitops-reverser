@@ -1691,20 +1691,84 @@ func (wb *writeBatch) fanInPrecondition() error {
 
 // writeAndStageFile writes a file's bytes to disk (creating parent directories) and
 // stages it in the worktree.
+//
+// A write that fails removes the directories it had just created for it. Nothing downstream can:
+// Git does not track empty directories, so they produce no worktree status entry, and
+// discardWorktreeLeftovers therefore never learns they exist — a later reset would leave the
+// folder sitting there while the state machine reported the worktree clean. It is cheaper to undo
+// it here, where the set of directories this write created is still known, than to carry that set
+// across the reset boundary.
 func writeAndStageFile(worktree *gogit.Worktree, worktreePath, fullPath string, content []byte) error {
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
+	created, err := mkdirAllTrackingCreated(filepath.Dir(fullPath))
+	if err != nil {
 		return wrapPathErr("create directory for", worktreePath, err)
 	}
 	// fullPath is an internally derived repo path: the GitTarget segment is run
 	// through sanitizePath and the rest comes from the resource's API identity or a
 	// content-indexed worktree file, joined under the worktree root — not external input.
 	if err := os.WriteFile(fullPath, content, 0o600); err != nil {
+		removeCreatedDirs(created)
 		return wrapPathErr("write file", worktreePath, err)
 	}
 	if _, err := worktree.Add(worktreePath); err != nil {
 		return wrapPathErr("add file", worktreePath, err)
 	}
 	return nil
+}
+
+// mkdirAllTrackingCreated is os.MkdirAll that reports which directories it actually had to make,
+// deepest first, so a failed write can undo exactly its own additions and nothing else.
+func mkdirAllTrackingCreated(dir string) ([]string, error) {
+	var missing []string
+	for probe := dir; ; probe = filepath.Dir(probe) {
+		if _, err := os.Stat(probe); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		missing = append(missing, probe)
+		if parent := filepath.Dir(probe); parent == probe {
+			break
+		}
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		// MkdirAll creates ancestors before the path it was asked for, so a failure deeper down
+		// can still have left some of `missing` behind. Undo whatever it managed before giving up:
+		// the caller only learns about the error, and an empty directory produces no worktree
+		// status entry for anything later to find.
+		removeCreatedDirs(missing)
+		return nil, err
+	}
+	return missing, nil
+}
+
+// removeCreatedDirs deletes the directories a failed write created, deepest first and only while
+// they are empty. A directory that something else has since put a file in is left alone.
+func removeCreatedDirs(created []string) {
+	for _, dir := range created {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			// Not there, not readable, or not a name this filesystem can hold. Every one of those
+			// says there is nothing HERE to remove and says nothing about the ancestors above it,
+			// so keep walking rather than stopping.
+			//
+			// Stopping was a real bug: the deepest entry is the one MkdirAll failed on, and when
+			// it failed because the name was too long, ReadDir answers ENAMETOOLONG rather than
+			// ENOENT. Treating that as "something else is in there" abandoned every ancestor the
+			// call had just created, which is precisely the state this function exists to undo.
+			//
+			// Walking past it is safe because os.Remove is the real guard: it refuses a directory
+			// that is not empty, so a directory somebody else filled survives whatever this loop
+			// believes about it.
+			continue
+		}
+		if len(entries) > 0 {
+			// Something else is in there, so neither this directory nor any ancestor of it is
+			// empty, and none of them are ours to remove.
+			return
+		}
+		_ = os.Remove(dir)
+	}
 }
 
 // scanWorktreeSubtree walks the GitTarget subtree into a FolderScan, applying the SAME

@@ -54,6 +54,11 @@ type adoSimulator struct {
 	// uploadPackPosts counts POSTs to git-upload-pack; rejected counts those answered 400.
 	uploadPackPosts atomic.Int64
 	rejected        atomic.Int64
+
+	// ledger tallies every request the backend sees, with bytes, so an operation's cost in
+	// round trips to the Git host can be measured rather than guessed. See
+	// git_request_ledger_test.go and docs/design/inbound-push-notification.md §4.1.
+	ledger *gitRequestLedger
 }
 
 // gitHTTPBackend locates canonical git's CGI server, skipping the test when it is unavailable.
@@ -106,7 +111,7 @@ func startGitHTTPServer(tb testing.TB, projectRoot, repoDir string, enforceMulti
 	tb.Helper()
 
 	backendPath := gitHTTPBackend(tb)
-	sim := &adoSimulator{}
+	sim := &adoSimulator{ledger: newGitRequestLedger()}
 
 	backend := &cgi.Handler{
 		Path: backendPath,
@@ -121,24 +126,35 @@ func startGitHTTPServer(tb testing.TB, projectRoot, repoDir string, enforceMulti
 		// Force protocol v0: see the doc comment above.
 		r.Header.Del("Git-Protocol")
 
+		// Count what crosses the wire, in both directions, for every request. The counting
+		// wrappers are installed before anything else touches the request so a rejection is
+		// measured too: a conversation that ends in an error still cost a connection.
+		kind := classifyGitRequest(r.Method, r.URL.Path, r.URL.RawQuery)
+		body := &countingReadCloser{inner: r.Body}
+		r.Body = body
+		counted := &countingResponseWriter{ResponseWriter: w}
+		w = counted
+		defer func() { sim.ledger.record(kind, body.n, counted.n) }()
+
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-upload-pack") {
 			sim.uploadPackPosts.Add(1)
 
-			body, err := io.ReadAll(r.Body)
+			raw, err := io.ReadAll(r.Body)
 			if err != nil {
 				http.Error(w, "read body: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 
-			if enforceMultiAck && !requestOffersMultiAck(body, r.Header.Get("Content-Encoding")) {
+			if enforceMultiAck && !requestOffersMultiAck(raw, r.Header.Get("Content-Encoding")) {
 				sim.rejected.Add(1)
 				http.Error(w, adoRejectionBody, http.StatusBadRequest)
 				return
 			}
 
-			// Rewind for the backend.
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			r.ContentLength = int64(len(body))
+			// Rewind for the backend. The bytes are already counted by the reader above, so the
+			// replacement deliberately does not count again.
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			r.ContentLength = int64(len(raw))
 		}
 
 		backend.ServeHTTP(w, r)
@@ -201,11 +217,12 @@ func setRemoteURL(tb testing.TB, repo *git.Repository, url string) {
 	require.NoError(tb, repo.SetConfig(cfg))
 }
 
-// revParse returns the hash a ref points at in an on-disk repository, read with canonical git so
-// the assertion does not depend on the library under test.
-func revParse(tb testing.TB, repoDir, ref string) string {
+// revParseMain returns the hash refs/heads/main points at in an on-disk repository, read with
+// canonical git so the assertion does not depend on the library under test.
+func revParseMain(tb testing.TB, repoDir string) string {
 	tb.Helper()
 
+	const ref = "refs/heads/main"
 	out, err := exec.Command("git", "-C", repoDir, "rev-parse", ref).Output()
 	require.NoError(tb, err, "git rev-parse %s", ref)
 
@@ -304,7 +321,7 @@ func TestADO_PushAtomic_NeedsNoMultiAck(t *testing.T) {
 	assert.Zero(t, sim.uploadPackPosts.Load(), "a push must not touch git-upload-pack")
 
 	// Confirm the remote actually moved to our commit.
-	remoteHash := revParse(t, repoDir, "refs/heads/main")
+	remoteHash := revParseMain(t, repoDir)
 	assert.Equal(t, newHash.String(), remoteHash, "the remote must be at the pushed commit")
 }
 
@@ -329,7 +346,7 @@ func TestADO_SmartFetch_RequiresMultiAck(t *testing.T) {
 
 	// Move the remote on, so there is something to fetch.
 	simulateClientCommitOnDisk(t, repoDir, "main", "second.yaml", "kind: Second\n")
-	wantHash := revParse(t, repoDir, "refs/heads/main")
+	wantHash := revParseMain(t, repoDir)
 
 	branch, err := SmartFetch(
 		context.Background(), repo, plumbing.ReferenceName("refs/heads/main"), nil)

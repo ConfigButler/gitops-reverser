@@ -213,8 +213,9 @@ watch (re)establishment the operator enqueues a scoped mark-and-sweep ahead of l
 the `replaying` flag, all on one FIFO so order is preserved
 ([`target_watch.go`](../../../internal/watch/target_watch.go),
 [`resync_flush.go`](../../../internal/git/resync_flush.go)). Two additions turn it into what we need: a
-new **trigger** (proactive origin-drift detection — see *The trigger*, below; the groundwork method
-`SyncAndGetMetadata` exists but is dormant, uncalled today), and a stronger **wait** (the barrier's
+new **trigger** (proactive origin-drift detection — see *The trigger*, below; there is no groundwork
+method for it — `SyncAndGetMetadata` looked like one and was dead code, now deleted), and a
+stronger **wait** (the barrier's
 "reconcile" step now waits for the *orchestrator* to apply Git → cluster, not only the operator's own
 sweep).
 
@@ -230,8 +231,11 @@ Today the operator has **no proactive drift signal at all.** It notices a moved 
 time* — when `PushAtomic`'s compare-and-swap is rejected and `pushPendingCommits` rebases by replay —
 and a push only happens after a *cluster* edit produces a commit. So a foreign push into an otherwise
 quiet branch stays invisible until the next cluster edit collides with it: the conflict path *is* the
-discovery mechanism. (`SyncAndGetMetadata` was meant to be a cached remote-drift check, but it is
-dormant — nothing calls it, and the steady 5-minute reconcile never fetches the remote.)
+discovery mechanism. (`SyncAndGetMetadata` was meant to be a cached remote-drift check. Nothing
+ever called it, so it has been deleted; the steady 5-minute reconcile still never fetches the
+remote. Since [inbound push notification](../inbound-push-notification.md) made the
+head-of-cycle fetch conditional, a healthy publishing target does not read the remote at all
+between rejections, which sharpens this paragraph rather than changing it.)
 
 The better trigger is the one the orchestrator already consumes: the **Git host's push webhook.** The
 same event that tells Flux/Argo "apply this revision now" is exactly the signal the operator needs —
@@ -246,8 +250,10 @@ common case to a rarely-hit backstop.** Three properties make it a clean fit:
   correctness net, and **a kept e2e must exercise the drift-recovery path with the webhook switched
   off** — proving a foreign push is still absorbed correctly on the next push attempt with no webhook in
   play. If that test is ever allowed to lapse, a webhook regression turns silently into a data-loss bug.
-  (An optional periodic poll, reviving `SyncAndGetMetadata`, is a reasonable middle fallback, but it
-  replaces neither the backstop nor its test.)
+  (An optional periodic poll is a reasonable middle fallback, but it replaces neither the backstop
+  nor its test. Build it as a maximum age on `baseTrusted`, which is
+  [inbound push notification](../inbound-push-notification.md) §8 option B, rather than as a
+  second mechanism of its own.)
 - **It must suppress our own push.** The operator's own commit fires the very same webhook. The
   receiver has to compare the webhook's new revision against the SHA it last pushed for that
   `(provider, branch)`: equal ⇒ our own commit, ignore; different ⇒ foreign drift, engage. Without this
@@ -360,7 +366,10 @@ off by default and enabled per GitTarget, separately from
   the handshake the guide describes), or defer to the webhook? Likely: trigger only where the webhook
   cannot help — refusal and drift — and let the push webhook cover the happy path.
 - **Webhook delivery and trust** (the drift trigger, §3). Delivery is best-effort: how is a missed
-  webhook caught up — a poll fallback cadence (reviving `SyncAndGetMetadata`), or a fetch on the next
-  reconcile — so the CAS-replay backstop is not the *only* thing that ever notices a lost notification?
+  webhook caught up — a poll fallback cadence, or a fetch on the next reconcile — so the CAS-replay
+  backstop is not the *only* thing that ever notices a lost notification? (Not by reviving
+  `SyncAndGetMetadata`: [inbound push notification](../inbound-push-notification.md) §10 retires that
+  dead wrapper, and its §8 option B answers the same question as a maximum age on `baseTrusted`, so
+  there is one mechanism rather than two.)
   And how is the receiver authenticated per provider (shared secret, signature scheme) so a forged push
   notification cannot make the operator barrier or replay on demand?
