@@ -987,6 +987,18 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 	// then atomic) rather than letting the atomic overtake it.
 	l.applyDeferredHeals()
 
+	// Recover here too, and not only inside the finalize above: that call returns at its first
+	// line when no window is open, which is the ordinary case for an atomic write. Without this,
+	// an atomic arriving while work is retained and the worktree is dirty would commit a failed
+	// write's leftovers — commitPendingWrites cannot reset for us, because retained local commits
+	// are exactly what a reset would destroy.
+	if err := l.recoverDirtyWorktree(); err != nil {
+		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
+		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping atomic request",
+			"events", len(request.Events))
+		return
+	}
+
 	pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, request)
 	if err != nil {
 		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
@@ -1080,7 +1092,10 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 }
 
 // recoverDirtyWorktree resets and replays when a previous write left the worktree dirty AND work
-// is still retained. It runs before any commit the loop makes.
+// is still retained. It runs before any commit the loop makes, which today means three callers:
+// finalizeOpenWindowWithReason, handleAtomicRequest, and applyResync. A fourth path that reaches
+// commitPendingWrites without calling this can commit a failed write's leftovers;
+// TestEveryLoopCommitPathRecoversADirtyWorktree is what makes adding one fail loudly.
 //
 // It has to live on the LOOP, not inside commitPendingWrites, for two reasons an earlier draft of
 // the design got wrong. commitPendingWrites already holds repoMu and
