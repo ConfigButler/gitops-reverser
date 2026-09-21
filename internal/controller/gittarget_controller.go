@@ -133,13 +133,20 @@ type GitTargetReconciler struct {
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
 
-	// baseTrustEpochs records the last base-trust epoch each GitTarget forced a re-read for, so a
-	// worker shared by several targets fans one expiry out to all of them instead of letting the
-	// first reconcile consume it.
-	baseTrustEpochs baseTrustEpochTracker
+	// baseTrustReads records when each GitTarget last forced a re-read of its own folder, and the
+	// base-trust epoch that re-read answered. It is what makes one expiry reach every target on a
+	// shared worker, and what bounds a quiet target's staleness when a busy sibling means nothing
+	// ever expires.
+	baseTrustReads baseTrustReadTracker
 
-	// BaseTrustMaxAge bounds how long a branch worker may keep believing its checkout sits at the
-	// remote tip. Zero disables it, which is the default.
+	// BaseTrustMaxAge bounds two things with one duration: how long a branch worker may keep
+	// believing its checkout sits at the remote tip, and how long a GitTarget may go without
+	// re-reading its own folder. Zero disables it, which is the default.
+	//
+	// They are not the same clock, and treating them as one leaves the second unbounded. Every
+	// push renews the shared checkout, so a branch-wide age expires only on a branch nobody is
+	// publishing to; a target that has gone quiet beside a busy sibling would never come up. See
+	// baseTrustReadTracker.
 	//
 	// It is enforced here rather than by a timer inside the worker because the target that needs
 	// it is the IDLE one, and an idle worker has nothing arriving to check the clock on. This
@@ -794,19 +801,20 @@ func (r *GitTargetReconciler) expireStaleBaseTrust(
 	if !exists || worker == nil {
 		return false
 	}
-	// Expire first, then compare epochs. Whether THIS reconcile is the one that expired the shared
+	// Expire first, then ask the tracker. Whether THIS reconcile is the one that expired the shared
 	// flag does not matter: what decides a re-read is whether this target has acted on the current
 	// epoch, so a sibling that arrives after the expiry still forces its own.
 	worker.ExpireBaseTrust(r.BaseTrustMaxAge)
 	epoch := worker.BaseTrustEpoch()
-	if epoch == 0 {
-		return false
-	}
 	ref := types.NewResourceReference(target.Name, target.Namespace)
-	if !r.baseTrustEpochs.take(ref, epoch) {
+	// maxAge is passed as well as the epoch because an expiry is not the only way to go stale, and
+	// waiting for one would leave the worst case unbounded: the shared timestamp is renewed by
+	// EVERY target's push, so one busy target keeps it fresh and nothing ever expires, while the
+	// quiet target beside it is never re-evaluated at all. See baseTrustReadTracker.
+	if !r.baseTrustReads.take(ref, epoch, r.BaseTrustMaxAge, time.Now()) {
 		return false
 	}
-	log.Info("Base trust expired; forcing a re-read of the Git folder",
+	log.Info("Forcing a re-read of the Git folder for this GitTarget",
 		"branch", target.Spec.Branch, "maxAge", r.BaseTrustMaxAge.String(), "epoch", epoch)
 	return true
 }
@@ -1168,9 +1176,9 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// condition gauge is released on the same terms and for a sharper reason: a condition series
 	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
-	// Same terms: the epoch tracker is the reconciler's own memory too, and a record for a deleted
-	// target would otherwise sit in the map for the lifetime of the process.
-	r.baseTrustEpochs.forget(gitDest)
+	// Same terms: the base-trust read tracker is the reconciler's own memory too, and a record for
+	// a deleted target would otherwise sit in the map for the lifetime of the process.
+	r.baseTrustReads.forget(gitDest)
 	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
 	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
 	// branch's push failures to an object that no longer exists.

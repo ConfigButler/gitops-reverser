@@ -598,14 +598,16 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
 			"at the cost of commit latency.")
 	fs.DurationVar(&cfg.baseTrustMaxAge, "base-trust-max-age", 0,
-		"How long a branch worker may keep believing its checkout sits at the remote tip before it "+
-			"re-reads Git (duration string; 0, the default, never expires it). Nothing else moves an IDLE "+
-			"target's view of Git: it is converged, so its periodic passes publish status without touching "+
-			"the remote, and it holds its previous answer about a folder somebody has since changed. This "+
-			"bounds that staleness: an expired base forces the same re-read the reconcile-request "+
-			"annotation does, because merely clearing the flag would be a no-op on an idle target that "+
-			"never publishes. So it costs a resync per branch per interval on targets that are silent; "+
-			"a target that is publishing re-reads on every push and is never expired by it.")
+		"How long a GitTarget may go without re-reading its Git folder, and how long a branch worker "+
+			"may keep believing its checkout sits at the remote tip (duration string; 0, the default, "+
+			"never expires either). Nothing else moves an IDLE target's view of Git: it is converged, so "+
+			"its periodic passes publish status without touching the remote, and it holds its previous "+
+			"answer about a folder somebody has since changed. This bounds that staleness: an expired "+
+			"base forces the same re-read the reconcile-request annotation does, because merely clearing "+
+			"the flag would be a no-op on an idle target that never publishes. The age is per GITTARGET, "+
+			"not per branch: one worker serves every target on its (provider, branch) and every push "+
+			"renews the shared checkout, so a branch-wide age would let one busy target postpone a quiet "+
+			"one beside it for ever. It therefore costs a folder re-read per target per interval.")
 	fs.StringVar(&cfg.auditRouteAnnotationKey, "author-attribution-audit-route-annotation-key", "",
 		"Audit-event annotation naming the AUDIT ROUTE each event belongs to. Setting it enables the "+
 			"bare /audit-webhook endpoint for a SHARED audit stream carrying several logical clusters: the "+

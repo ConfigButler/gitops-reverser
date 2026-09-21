@@ -364,10 +364,21 @@ clock on.
 no-op on precisely the target the age exists for: an idle target is converged, nothing publishes,
 and so nothing ever spends the fetch the cleared flag allows. So expiry joins `forceRecheck` and
 drives the same chain the reconcile-request annotation does. That makes the real cost a resync per
-target per interval on otherwise silent targets, not a bare fetch, and it is the honest price of
-moving what an operator can see. The stamp is written on every gain of trust, not only on the transition into it, so a
-target that keeps publishing keeps resetting the clock and is never expired out from under a busy
-branch.
+target per interval, not a bare fetch, and it is the honest price of moving what an operator can
+see.
+
+**The age is per `GitTarget`, not per branch,** and a review found why that distinction is
+load-bearing rather than pedantic. Two different things go stale. The CHECKOUT expires on a
+timestamp the worker stamps on every gain of trust, which every push renews — so a target that
+keeps publishing is never expired by it, and an expiry fans out to every target on the worker
+through an epoch counter rather than being consumed by whichever target reconciles first. But what
+an operator reads is the TARGET's own observation: what its folder holds, whether the acceptance
+gate passes, where its documents are placed. A fetch a busy sibling earned updates the checkout and
+says nothing about that. If the age were the shared timestamp alone, one target publishing inside
+the interval would renew it for ever, nothing would expire, and the quiet target beside it would
+never be re-evaluated at all — postponed indefinitely rather than merely late. So each target also
+carries its own last-re-read time, and owes a re-read once that is older than the age, whether or
+not anything expired.
 
 ### Option 2: tell the reconciler after we push
 

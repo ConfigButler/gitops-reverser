@@ -153,8 +153,53 @@ func TestExpireStaleBaseTrust_ForgetsADeletedTarget(t *testing.T) {
 	ref := itypes.NewResourceReference(target.Name, target.Namespace)
 
 	require.True(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()))
-	r.baseTrustEpochs.forget(ref)
+	r.baseTrustReads.forget(ref)
 
 	assert.True(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()),
 		"a forgotten target is a new one, and is owed the current epoch")
+}
+
+// TestExpireStaleBaseTrust_ABusySiblingCannotPostponeAQuietTarget is the regression a second review
+// found, and it is the case the epoch fan-out above cannot reach.
+//
+// The shared trust timestamp is renewed by EVERY target's successful push. One target publishing
+// inside the maximum age therefore keeps it fresh for ever, no expiry happens, no epoch advances,
+// and the quiet target beside it is never asked to re-read its own folder — postponed
+// indefinitely rather than merely late. Freshness per TARGET is what bounds that, and it has to
+// hold whether or not the shared checkout ever went stale.
+func TestExpireStaleBaseTrust_ABusySiblingCannotPostponeAQuietTarget(t *testing.T) {
+	const maxAge = 20 * time.Millisecond
+	r, quiet, worker := baseTrustExpiryFixture(t, maxAge)
+	quiet.Name = "quiet-sibling"
+	worker.SeedBaseTrustForTest(time.Now())
+
+	// Nothing is owed yet: the target has just been seen, and it reads its folder anyway.
+	require.False(t, r.expireStaleBaseTrust(quiet, "team-a", logr.Discard()))
+
+	forced := false
+	for start := time.Now(); time.Since(start) < 10*maxAge; {
+		// The busy sibling's push, over and over, which is all it takes to keep the shared stamp
+		// fresh and the epoch still.
+		worker.SeedBaseTrustForTest(time.Now())
+		forced = r.expireStaleBaseTrust(quiet, "team-a", logr.Discard()) || forced
+		time.Sleep(time.Millisecond)
+	}
+	require.True(t, worker.BaseTrustedForTest(), "the sibling's activity must indeed hold the flag")
+	assert.True(t, forced,
+		"a quiet target must re-read its own folder within the maximum age, busy sibling or not")
+}
+
+// TestExpireStaleBaseTrust_AForcedReadStartsTheClockAgain is the other half: bounding staleness
+// must not become forcing a re-read on every reconcile, which would drag the folder over the
+// network on the steady pass.
+func TestExpireStaleBaseTrust_AForcedReadStartsTheClockAgain(t *testing.T) {
+	r, target, worker := baseTrustExpiryFixture(t, time.Hour)
+	worker.SeedBaseTrustForTest(time.Now().Add(-2 * time.Hour))
+
+	require.True(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()),
+		"an expired base is owed a re-read")
+	for range 5 {
+		assert.False(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()),
+			"a target that has just re-read owes nothing until the age passes again")
+	}
 }
