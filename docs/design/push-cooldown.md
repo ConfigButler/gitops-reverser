@@ -10,11 +10,17 @@
 into one commit, which is most of what the cooldown was invented to do. Is the cooldown still
 earning its place, and would removing it simplify the worker?
 
-**The short answer.** At the defaults it is provably inert for the most common configuration, so
-the instinct is right. But removing it deletes about thirty lines and two fields and **none** of
-the state that makes this worker complicated, because that state exists for push *failure*, not for
-the cooldown. The interesting move is not deleting it: it is swapping a timer that mostly does
-nothing for the timer that is actually missing.
+**The short answer.** For a single author writing a single target it is provably inert at the
+defaults, so the instinct that it is redundant has a real basis. But that is the *quiet* case. The
+moment a second identity touches the branch the commit window stops spacing commits entirely (§3)
+and the cooldown becomes the only thing batching. On a multi-user cluster with attribution enabled,
+which is what this product is for, that is the normal case rather than the exception.
+
+Removing it would also delete about thirty lines and two fields and **none** of the state that makes
+this worker complicated, because that state exists for push *failure*, not for push cadence.
+
+So the clear win is not removal. It is that the worker has a timer on the path that mostly does not
+need one and **no timer on the path that does**.
 
 ## 1. What it is today
 
@@ -61,36 +67,60 @@ one, and the cooldown is measured from the push that followed that previous comm
 **So the general rule is:** the cooldown only does work when the commit window is *shorter* than
 it, or when several identities share the branch. At the shipped defaults those are equal.
 
-## 3. Where it does still work
+## 3. Where it does still work, and it is the normal case
 
-Commits reach the worker back to back whenever the window does not apply:
+There is exactly **one** open window per worker. An event that does not belong to it does not open
+a second window: it **finalizes the open one immediately** and a new one opens in its place
+([`branch_worker.go`](../../internal/git/branch_worker.go), `canAppend` and
+`windowFinalizeReasonIdentityChange`).
+
+That has a consequence worth stating plainly: **under alternating authors the silence timer never
+fires at all.** Every commit is produced by the identity boundary, at the moment the next event
+arrives. The window provides no spacing whatsoever, and the cooldown becomes the only thing
+batching anything.
+
+```mermaid
+sequenceDiagram
+    participant E as Events
+    participant W as The one open window
+    participant P as Push
+
+    Note over E,P: Alternating authors on one branch<br/>window 5s, cooldown 5s, previous push finished at t=0
+
+    E->>W: t=1 Alice edits
+    Note over W: window opens for Alice
+    E->>W: t=2 Bob edits
+    Note over W: identity change: Alice's window<br/>finalizes NOW, not at t=6
+    W->>P: commit 1 at t=2
+    Note over P: cooldown active, timer armed for t=5
+    E->>W: t=3 Alice edits
+    W->>P: commit 2 at t=3
+    E->>W: t=4 Bob edits
+    W->>P: commit 3 at t=4
+    P->>P: t=5: one push carries all three
+    Note over E,P: 2 requests. Without the cooldown: 6
+```
+
+The same shape applies to several `GitTarget`s sharing a branch, and to an unattributed event
+arriving against an attributed window (a `/status` change with no audit fact is the common cause,
+which is why that log line exists).
 
 | Source | Why the window does not space it |
 | --- | --- |
-| An author or target change | The identity boundary closes the open window immediately |
-| Several `GitTarget`s on one branch | One worker, several windows, each on its own timer |
+| An author or target change | The identity boundary finalizes the open window on arrival of the next event |
+| Several `GitTarget`s on one branch | One window, so every switch between them is an identity change |
 | `commit.window: 0s` | Every event commits on arrival |
 | Atomic writes | They bypass the window by contract |
 | Resync snapshots | They finalize and commit outside the window |
 
-Ledger row 4 already prices this: three commits published together cost **2** HTTP requests. Three
+Ledger row 4 prices the batching: three commits published together cost **2** HTTP requests. Three
 separate publications would cost **6**.
 
-```mermaid
-sequenceDiagram
-    participant A as Alice's window
-    participant B as Bob's window
-    participant P as Push
-
-    Note over A,P: Two authors on one branch, window 5s, cooldown 5s
-    A->>P: commit at t=5
-    P->>P: push at t=5, cooldown to t=10
-    B->>P: commit at t=6 (different identity, own window)
-    Note over P: held by the cooldown
-    A->>P: commit at t=8
-    P->>P: t=10: one push carries all three
-    Note over A,P: 2 requests instead of 6
-```
+**This matters more than the first draft of this page assumed.** An earlier version drew two
+concurrent windows and had Alice's commit waiting for her silence timer, which is not how the
+worker behaves. Once the mechanism is right, the multi-identity case is not an edge: a multi-user
+cluster with attribution enabled, the configuration this product is built for, produces one commit
+per identity change, which is close to one commit per event.
 
 ## 4. What removing it would actually simplify
 
@@ -176,19 +206,28 @@ push completes before the next commit appears.
 | Option | What it is | Complexity | Verdict |
 | --- | --- | --- | --- |
 | **A. Keep it** | Status quo | Unchanged | Honest default. It is inert where it is inert and useful where it is not |
-| **B. Delete it** | Push after every commit; rely on serialization to batch | **-30 lines, -2 fields, -1 timer** | Tempting, but pays a request bill on multi-identity branches and leaves the real gap unfixed |
-| **C. Swap it for a failure backoff** | No wait on success. A bounded backoff timer after a **failed** push or recovery, cleared when nothing is retained | Net **~neutral in lines**, one timer either way, but the timer now guards something | **Recommended to investigate first** |
-| **D. Make it conditional or configurable** | Engage only when more than one identity is active, or expose it on `GitProvider` | **+complexity, +API surface** | Rejected unless B or C measurably fails |
+| **B. Delete it** | Push after every commit; rely on serialization to batch | **-30 lines, -2 fields, -1 timer** | **Riskiest.** §3 means this is one push per identity change on a multi-user branch |
+| **C. Add a failure backoff, keep the cooldown** | A bounded backoff after a **failed** push or recovery, cleared when nothing is retained | **+1 timer**, but it guards a real gap | **Recommended, and independent of the rest** |
+| **D. Add the backoff AND shorten or drop the success cooldown** | C, plus reducing the `5s` wait once §9 has priced it | Depends on the outcome | The measured follow-up to C |
+| **E. Make it conditional or configurable** | Engage only when more than one identity is active, or expose it on `GitProvider` | **+complexity, +API surface** | Rejected unless D measurably fails |
 
-### Why C is the interesting one
+### Why C is the one to take first, and why it is not what this page started out recommending
 
-Today the worker has a timer on the path that mostly does not need one (success) and **no timer on
-the path that does** (failure). [`../api-first-publication.md`](../api-first-publication.md) and the
-PR #382 review both record the gap: `pushPending` stops its timer on failure and arms no
-replacement, so a branch that goes quiet after a failed push retains its work indefinitely and a
-flat `recovery` counter cannot prove progress.
+An earlier draft of this page recommended removing the wait on success and replacing it with a
+failure backoff, on the strength of the cooldown being inert. §3's correction undermines the first
+half of that: the cooldown is inert only while one identity is writing, and it is load-bearing as
+soon as two are. Dropping the success wait is therefore a **measured** decision, not an obvious one,
+and it belongs in option D behind the numbers §9 asks for.
 
-Swapping them is not "one more mechanism". It is the same single timer, armed when it matters:
+What survives the correction intact is the second half, and it is worth doing on its own. Today the
+worker has a timer on success and **none on failure**.
+[`../api-first-publication.md`](../api-first-publication.md) and the PR #382 review both record the
+gap: `pushPending` stops its timer on failure and arms no replacement, so a branch that goes quiet
+after a failed push retains its work indefinitely and a flat `recovery` counter cannot prove
+progress. The mirror-image problem is that because `lastPushAt` advances only on success, an expired
+cooldown does not space failed attempts, so continued arrivals against a down remote provoke a
+failed push per commit. One bounded backoff answers both, and it neither needs nor blocks any
+decision about the success cooldown:
 
 ```mermaid
 stateDiagram-v2
@@ -206,10 +245,6 @@ stateDiagram-v2
         A healthy quiet branch is silent.
     end note
 ```
-
-It also fixes the second half of the current failure behavior, which is the mirror image: because
-`lastPushAt` only advances on success, an expired cooldown does **not** space failed attempts, so
-continued arrivals against a down remote provoke a failed push per commit. One backoff answers both.
 
 ## 8. Risks
 
@@ -255,14 +290,19 @@ exist yet and is most of the work in answering this question.
 
 1. **Do not change it as part of PR #382.** That branch is green and reviewed; this alters
    publication cadence and deserves its own change and its own e2e run.
-2. **Build the event-loop ledger rows in §9 first.** They are useful on their own: nothing currently
-   measures scheduling, only the cost of a single cycle.
-3. **Then take option C rather than B.** The cooldown's redundancy is real but narrow, while the
-   missing failure backoff is a documented gap with no upside. Swapping them keeps one timer,
-   removes a wait that does nothing at the defaults, and fixes a hole.
-4. **Revisit B only if rows 2 to 4 come back cheap.** If shared branches turn out to be rare or the
-   amplification small, deleting outright becomes defensible and is the smaller tree.
+2. **Take option C on its own.** Add a bounded failure backoff. It closes a documented gap with no
+   upside, it needs no measurement to justify, and it does not depend on any decision about the
+   success cooldown.
+3. **Build the event-loop ledger rows in §9 next.** Nothing currently measures scheduling, only the
+   cost of one cycle, so the multi-identity question cannot be answered today. Row 2 is the
+   important one: it prices the case §3 says is normal.
+4. **Only then consider option D.** If the numbers show the multi-identity case is rare in practice
+   or the amplification is small, shortening or dropping the success cooldown becomes defensible.
+   If they show what §3 predicts, keep it and the question is settled with evidence.
 
-The honest summary: the cooldown is not the source of this worker's complexity, so removing it is
-not the simplification it looks like. The saving is thirty lines. The *opportunity* is that the
-worker currently times the wrong event.
+The honest summary, after §3's correction: the cooldown is redundant only while one identity is
+writing, and load-bearing as soon as two are. It is also not the source of this worker's
+complexity, so removing it was never the simplification it looked like: the saving is thirty lines
+against the retained-write machinery that stays either way. The unambiguous finding is
+narrower and more useful: **the worker times the wrong event.** Adding the missing failure timer is
+worth doing whatever happens to the cooldown.
