@@ -183,7 +183,7 @@ type ledgerOp struct {
 func ledgerOperations() []ledgerOp {
 	return []ledgerOp{
 		{
-			name:   "1. worker start, empty remote",
+			name:   "1. bootstrap helper, empty remote",
 			slug:   "start-empty",
 			seeded: false,
 			run: func(f *ledgerFixture) {
@@ -192,7 +192,7 @@ func ledgerOperations() []ledgerOp {
 			},
 		},
 		{
-			name:   "2. worker start, populated remote",
+			name:   "2. bootstrap helper, populated remote",
 			slug:   "start-populated",
 			seeded: true,
 			run: func(f *ledgerFixture) {

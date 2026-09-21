@@ -204,7 +204,8 @@ func TestGitFetchesTotal_ForcedRecheckAndBootstrap(t *testing.T) {
 
 	require.NoError(t, f.worker.EnsurePathBootstrapped("team-a", "target-a", "default"))
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonBootstrap),
-		"the bootstrap is instrumented at prepareBootstrapRepository, the site with a caller")
+		"the bootstrap is instrumented at prepareBootstrapRepository. NOTE: its only caller is\n"+
+			"EnsurePathBootstrapped, which has no production caller, so this series is test-only today")
 
 	err = f.worker.syncWithRemote(f.worker.ctx, fetchReasonForcedRecheck)
 	require.NoError(t, err)

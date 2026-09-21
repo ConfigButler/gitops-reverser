@@ -1,6 +1,9 @@
 # Inbound push notification, and removing the pre-push fetch
 
-> **design**: open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: partly shipped. The conditional fetch and its state machine are implemented (§11);
+> the inbound receiver in §8 is still a proposal. Sections before §11 keep the reasoning as it was
+> argued, including behavior this change has since fixed, and say so where it matters.
+> Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-19.
 > Related: [`reconcile-triggering.md`](reconcile-triggering.md) (§5 is the general mechanism this
 > page narrows), [`../bi-directional.md`](../bi-directional.md),
@@ -9,8 +12,10 @@
 **The budget this page spends.** The scarce resource is the **round trip to the Git host**, and
 nothing else on this page is close. A connection to GitHub costs a noticeable fraction of a
 second before it has transferred anything, and it is in front of a user waiting to see their
-edit land. Local recomputation is not in the same category: replaying retained writes re-plans
-against a tree that is already on disk, and it costs microseconds.
+edit land. Local recomputation is not in the same category: replaying retained writes re-plans against a tree
+that is already on disk, with no network in the path. How long that takes is unmeasured (the
+ledger counts HTTP requests and benchmarks nothing), so read this as an ordering claim rather than
+a number.
 
 So the rule this page optimizes by, in order:
 
@@ -346,10 +351,13 @@ That is also why the two cannot be merged into one. They bracket different spans
 operation: `worktreeDirty` ends where the reset lands, `replayRequired` begins there and ends where
 the replay lands. One flag cannot have two clearing points.
 
-**And it is visible while it lasts.** Each retry costs one fetch, counted under
-`reason="recovery"` (§12), so a rebuild that keeps failing shows up as that series climbing rather
-than as silence. That is the series §12 already tells operators to read as a bug report, and this
-is the case it was named for: the writes are safe, the mirror is stalled, and the metric says so.
+**Visible while something keeps driving the loop, and this is a real caveat.** Each retry costs one
+fetch counted under `reason="recovery"` (§12), so on a branch that is still receiving edits a
+rebuild that keeps failing shows up as that series climbing. On a branch that then goes **quiet**,
+nothing retries at all: `pushPending` stops its timer on failure and arms no replacement, and a
+`CommitRequest` poll does not schedule a push. The work stays retained and safe, but a flat
+`recovery` series does not prove progress. Read it with `git_queue_depth` and the request outcomes.
+A bounded retry timer for outstanding work is the fix and is not part of this change.
 
 Two failure points, not one. A replay can die before its first write (the prune-policy re-read is
 the realistic trigger) or partway through a batch. The second is worth its own test because
@@ -382,11 +390,11 @@ counts what the server was asked to serve.
 | Uncontended publication | 4 | 4 | **2** | 2 |
 | Publication that commits nothing | 3 | 3 | **1** | 1 |
 | Several commits in one cycle | 4 | 4 | **2** | 2 |
-| Contended publication, one rejection | 10 | 8 | **6** | 3 |
-| Contended publication, two rejections | 16 | 12 | **10** | 4 |
+| Contended publication, one rejection | 10 | 8 | **6** | 5 |
+| Contended publication, two rejections | 16 | 12 | **10** | unspecified |
 | Resync snapshot | 4 | 4 | **4** | 4 |
 | Forced recheck | 2 | 2 | **2** | 2 |
-| Worker start, populated remote | 3 | 3 | **3** | 3 |
+| Bootstrap helper, populated remote | 3 | 3 | **3** | 3 |
 
 Four results worth reading separately, two of which contradict what this page predicted before
 the harness existed.
@@ -411,10 +419,18 @@ removed two more.
 finds nothing to change never reaches a push, so nothing would ever catch a stale base. It keeps
 its fetch.
 
-**The last column remains the argument for the notification**, and it is still a prediction. A
-push webhook does not have to make us fresher. It has to stop us spending requests discovering
-something the Git host was willing to tell us for free — and §8.1 must be read with the retained
-write caveat there before that column can be believed.
+**The last column is the argument for the notification, and it is much weaker than an earlier
+draft claimed.** That draft predicted three requests for one rejection and four for two. Neither
+follows from the measured primitives on this page. Told in advance, the worker still has to fetch
+the moved branch, and a fetch that transfers objects costs three; the push that follows costs two.
+Five, not three. The notification buys exactly one request on that path: the rejected
+advertisement it avoids.
+
+For two moves the answer depends on when notifications arrive and whether they coalesce, so there
+is no honest fixed number to put there yet. A push webhook does not have to make us fresher, and
+on this evidence it does not buy much traffic either. Its real argument is §6's idle-target gap.
+Anything better than "one request per avoided rejection" needs a transport change, specified and
+measured.
 
 ## 4.1 Measure it first
 
@@ -450,8 +466,8 @@ Each of these is one test, driving the worker through the real server and assert
 
 | # | Operation | Why it is on the list |
 | --- | --- | --- |
-| 1 | Worker start on an empty remote | The bootstrap floor |
-| 2 | Worker start on a populated remote | The realistic floor |
+| 1 | Bootstrap helper on an empty remote | The preparation floor. NOT operator startup: `EnsurePathBootstrapped` has no production caller |
+| 2 | Bootstrap helper on a populated remote | The same, against a remote with history |
 | 3 | One publication, one commit | The number the whole page is about |
 | 4 | One publication, several commits in one cycle | Confirms the fetch is per cycle, not per commit |
 | 5 | A publication that commits nothing | §2's no-op path |
@@ -720,11 +736,12 @@ had the identical bug (§11), and `recoverRetainedWrites` is one entry condition
 receiver calls it and is done; §4's last column no longer depends on work that has not been
 written.
 
-This is what turns the contended case from six requests into three, and it is why the
-notification earns its place. (Six, not eight: §2.2 and the flip have already taken four off the
-measured ten. The "eight into three" an earlier draft claimed here was arithmetic from the
-prediction §4 replaced.) It does not buy freshness. It buys the *absence* of a doomed push
-and the cascade behind it.
+This is what turns the contended case from six requests into five: the rejected advertisement is
+the one request an early notification avoids, and the fetch and push that follow it are unchanged.
+An earlier draft claimed three, then six-into-three, and neither followed from §4's measurements.
+The notification earns its place on §6's idle-target gap, not on this arithmetic. What it buys on
+the write path is the absence of a doomed push, which is worth having for its own sake even though
+it is one request rather than three.
 
 So the receiver's request invalidates, and optionally replays retained work onto the tip once
 something has fetched it. It must not run §7's step 2, and it needs a request shape of its own
@@ -989,9 +1006,15 @@ than reality exactly where an operator is looking hardest.
 
 Four things in that table are corrections rather than choices.
 
-**The clone site is `prepareBootstrapRepository`, not `ensureRepositoryInitialized`.** The latter
-has no caller outside a test, so instrumenting it would have produced a series that never moves
-and an operator who concludes the worker never cloned.
+**`bootstrap` has no production call path at all, and this page said otherwise twice.** It first
+named `ensureRepositoryInitialized` as the clone site, then corrected that to
+`prepareBootstrapRepository` on the grounds that the first had no caller outside a test. The
+correction was half of one: `prepareBootstrapRepository`'s only caller is `EnsurePathBootstrapped`,
+which has no production caller either. So the series is exercised by the ledger and by nothing
+else, and the two ledger rows that drive it measure repository preparation through a test entry
+point rather than operator startup. Either give the helper a real caller or say plainly, in
+`interpreting-metrics.md`, that the series is currently test-only. Do not leave an operator to
+conclude the worker never bootstrapped.
 
 **`contention` and `push_failure_probe` have to be separate too, and an earlier version of this
 table conflated them.** It named `fetchRemoteBranchHash` as a `contention` call site and said one

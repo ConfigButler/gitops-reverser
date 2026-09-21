@@ -134,9 +134,9 @@ sequenceDiagram
     participant C as Local commits
     participant P as Remote publication
 
-    Note over E,P: Illustrative times; commit.window = 2s<br/>Previous successful push finished at t=0
+    Note over E,P: Illustrative times, commit.window = 2s<br/>Previous successful push finished at t=0
     E->>C: t=1: Alice edits
-    E->>C: t=2: Alice edits again; silence deadline moves to t=4
+    E->>C: t=2: Alice edits again, silence deadline moves to t=4
     C->>C: t=4: Finalize one commit
     Note over C,P: One second of cooldown remains
     C->>P: t=5: Start one push
@@ -147,6 +147,26 @@ The silence window has no independent maximum age. Continuous matching edits can
 until another closing condition occurs, such as a `CommitRequest`, identity change, or byte
 threshold. A five-second window therefore does not promise publication within five seconds of
 the first edit. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
+
+## What can stop a write before it reaches Git
+
+Three gates sit between a captured object and a commit. Each fails differently, and only one of
+them is retried automatically, so it is worth knowing which one you are looking at.
+
+| Gate | What it protects | What happens when it closes |
+| --- | --- | --- |
+| Sensitive-resource encryption | Secrets and configured sensitive types must never reach Git in plaintext | The write fails rather than falling back to plaintext. There is no opt-out |
+| Acceptance of the Git path | The target's folder must be content the writer can edit safely | The plan is refused and reported as `GitPathAccepted=False` on the `GitTarget`. A human changes the folder; the target re-checks roughly every ten seconds |
+| Render fidelity | A target whose render-vs-live epoch is pending or divergent must not take live writes | Live events and atomic writes are dropped while the gate is closed. Resync stays allowed so it can measure and repair Git |
+
+A refusal is not a transient error and is not retried into success. It is the common reason a live
+edit never appears in Git while the worker looks healthy, so check the `GitTarget` conditions before
+the worker logs.
+
+Separately, a window whose finalize fails is **dropped**, not retried: its events are gone until
+the next resync re-derives them from the current live state. That is a deliberate choice, because
+the events are already lost to the failed flush and replaying a broken state every cycle helps
+nobody. It is counted by `gitopsreverser_git_commit_failures_total`.
 
 ## Story 2: another writer moves the remote branch
 
@@ -177,10 +197,12 @@ a write into a no-op. It retains the captured author, target, and resolved write
 prune permissions can tighten before replay. It does not perform a three-way field merge.
 
 For example, Alice changes `replicas` through the API while Bob changes `image` in Git on the
-same object. Alice's captured object contains both fields. Replaying it can restore the image
-Alice saw as well as her new replica count. Bob's commit remains in history, but its image value
-can be superseded. Independent objects and unrelated files are preserved within the supported
-layout rules. See [shared-path behavior](bi-directional.md#what-a-write-does-to-the-file).
+same object. Alice's captured object contains both fields. Replaying it writes her `replicas` and
+also the `image` she was looking at, so **Bob's change to that object does not survive**, and a
+field Bob added that the cluster never had is removed outright. Bob's commit remains in history.
+Separate objects are independent; separate fields of one object are not. Unrelated files are
+preserved within the supported layout rules. See
+[shared-path behavior](bi-directional.md#what-a-write-does-to-the-file).
 
 This is the consequence of API-first ownership: the captured API object drives the supported
 manifest edit. A Git-side change reaches the cluster through a separate reconciler such as Flux
@@ -220,7 +242,7 @@ sequenceDiagram
 
     C->>W: Attach request to a matching window
     Note over W: First receipt fixes the close deadline<br/>Default collection delay: 2s
-    W->>W: Finalize window; keep request with retained write
+    W->>W: Finalize window, keep request with retained write
     C->>W: Poll / repeat attach every 2s
     W-->>C: Still pending while awaiting publication
     W->>G: Push or verify a no-op
@@ -230,6 +252,9 @@ sequenceDiagram
 
 A local no-diff result still consults the remote before reporting `AlreadyPresent`. A competing
 Git edit can make that same captured API object require a real commit after replay.
+
+A worker that stops while still holding the write fails the request with an error rather than
+leaving it to time out, so a shutdown mid-publication is reported as a failure and not as silence.
 
 Use `Pushed=True` plus `status.sha` when a particular commit must exist in Git. `Ready=True` also
 covers successful outcomes with no commit. Status visibility follows the controller's polling

@@ -47,6 +47,7 @@ import (
 // case that is already safe.
 func failGitTargetReads(t *testing.T, worker *BranchWorker, cause error) func() {
 	t.Helper()
+	seen := 0
 	inner, ok := worker.Client.(client.WithWatch)
 	require.True(t, ok, "the fixture's fake client supports Watch")
 	restore := func() { worker.Client = inner }
@@ -56,6 +57,7 @@ func failGitTargetReads(t *testing.T, worker *BranchWorker, cause error) func() 
 			opts ...client.GetOption,
 		) error {
 			if _, isTarget := obj.(*configv1alpha3.GitTarget); isTarget {
+				seen++
 				return cause
 			}
 			return c.Get(ctx, key, obj, opts...)
@@ -166,14 +168,18 @@ func remoteFileNames(t *testing.T, repoDir string) string {
 	return string(out)
 }
 
-// TestReplayFailure_PartwayThroughTheBatchIsAlsoHeld covers the second failure point the reviewer
-// named: not before the first replayed write, but in the middle of a batch.
+// TestReplayFailure_HoldsAWholeBatchNotJustItsFirstWrite checks that a failed replay holds every
+// retained write, not only the one that happened to be first.
 //
-// It is worth its own case because the retained slice is left in a mixed state. executePendingWrites
-// stamps each write's new CommitSHA as it goes, so the entries before the failure carry fresh
-// hashes and the ones after it still carry hashes from before the reset. A rule that keyed off
-// "does this write still have a SHA" would pass half of them.
-func TestReplayFailure_PartwayThroughTheBatchIsAlsoHeld(t *testing.T) {
+// An earlier version of this test was named for a mid-batch failure and did not produce one. The
+// injection point is a GitTarget read, and `rebuildPendingWrites` runs `tightenPendingPruneModes`
+// to completion BEFORE `executePendingWrites` starts, caching one read per target — so failing
+// those reads always aborts before the first write, whatever the batch size. There is no seam that
+// fails between two writes, and adding one to production code to reach a state the flag already
+// covers by construction is not worth it: `replayRequired` is per-worker, not per-write, so a
+// partly-rebuilt batch cannot be settled either. This test pins the batch behaviour that IS
+// reachable, and the comment records why the other shape is not.
+func TestReplayFailure_HoldsAWholeBatchNotJustItsFirstWrite(t *testing.T) {
 	f := newLedgerFixture(t, "replay-failure-midbatch", true)
 	f.createLedgerTarget("team-a", nil)
 	f.publish("prime")

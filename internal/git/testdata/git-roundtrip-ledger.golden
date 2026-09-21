@@ -18,8 +18,8 @@
 
 operation                                                   conn  fetch-open    fetch-xfer    push-open     push-xfer   
 ------------------------------------------------------------------------------------------------------------------------------
-1. worker start, empty remote                                  1  1 -/<1K       0             0             0           
-2. worker start, populated remote                              3  2 -/<1K       1 <1K/<1K     0             0           
+1. bootstrap helper, empty remote                              1  1 -/<1K       0             0             0           
+2. bootstrap helper, populated remote                          3  2 -/<1K       1 <1K/<1K     0             0           
 3. one publication, one commit                                 2  0             0             1 -/<1K       1 <1K/<1K   
 4. one publication, several commits in one cycle               2  0             0             1 -/<1K       1 <4K/<1K   
 5. a publication that commits nothing                          1  0             0             1 -/<1K       0           
