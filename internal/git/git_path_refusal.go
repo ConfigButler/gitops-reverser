@@ -47,22 +47,26 @@ type PathRefusalReporter func(
 // Recovery is the resync path's job: once the human fixes the Git path, the next successful resync
 // for the same cell clears the condition. A live write never clears it, because a live write that
 // happens to avoid the offending file proves nothing about the rest of the subtree.
+//
+// The *AcceptanceRefusedError is returned alongside so the caller can decide what the refusal
+// earns beyond a status transition: spec.onRefusal only commits for a write-boundary refusal,
+// which needs the issue kinds rather than the message. It is nil when this was not a refusal.
 func (w *BranchWorker) reportPathRefusal(
 	err error,
 	targetName string,
 	targetNamespace string,
 	cell itypes.CellKey,
-) bool {
+) (bool, *manifestanalyzer.AcceptanceRefusedError) {
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	if !errors.As(err, &refused) {
-		return false
+		return false, nil
 	}
 	if targetName == "" || targetNamespace == "" {
 		w.Log.Error(err, "Live write refused but no GitTarget could be attributed; "+
 			"the refusal is NOT surfaced in status",
 			"gitTargetName", targetName, "gitTargetNamespace", targetNamespace,
 			"detail", refused.Error())
-		return true
+		return true, refused
 	}
 	target := itypes.NewResourceReference(targetName, targetNamespace)
 	w.Log.Info("Live write refused: unsupported GitTarget path content",
@@ -70,7 +74,7 @@ func (w *BranchWorker) reportPathRefusal(
 	if w.pathRefusal != nil {
 		w.pathRefusal(target, cell, refused)
 	}
-	return true
+	return true, refused
 }
 
 // atomicRefusalTarget names the GitTarget an atomic request writes for. Request-level target

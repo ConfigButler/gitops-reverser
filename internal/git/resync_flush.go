@@ -172,6 +172,16 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	pendingWrite.Committed = &committed
 
 	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
+		// A refusal reaches the caller on ResyncResult.Err, where the watch layer classifies it
+		// and blocks the cell. spec.onRefusal needs it HERE too, and this is the path that
+		// matters: a per-type reconcile evaluates the same objects a live write would, so it is
+		// normally what discovers a write-boundary refusal first. Hooking only the live-event path
+		// left the action almost unreachable, because by the time an edit arrives the cell this
+		// refusal blocks is already blocked.
+		var refused *manifestanalyzer.AcceptanceRefusedError
+		if errors.As(err, &refused) {
+			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused)
+		}
 		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
 		req.reply(ResyncResult{Err: err})
 		return

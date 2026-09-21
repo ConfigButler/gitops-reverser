@@ -60,7 +60,9 @@ func TestReportPathRefusal_ReportsAttributedRefusalWithSourceCell(t *testing.T) 
 		assert.Equal(t, cell, gotCell)
 	}
 
-	assert.True(t, w.reportPathRefusal(refusedError(), "podinfo-test", "team-a", cell))
+	isRefusal, refused := w.reportPathRefusal(refusedError(), "podinfo-test", "team-a", cell)
+	assert.True(t, isRefusal)
+	assert.NotNil(t, refused, "a refusal must hand its issues back for the caller to act on")
 	require.Len(t, *seen, 1)
 	assert.Equal(t, types.NewResourceReference("podinfo-test", "team-a"), (*seen)[0])
 }
@@ -71,7 +73,9 @@ func TestReportPathRefusal_PassesThroughNonRefusal(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	seen := captureRefusals(w)
 
-	assert.False(t, w.reportPathRefusal(errors.New("remote hung up"), "podinfo-test", "team-a", types.CellKey{}))
+	isRefusal, refused := w.reportPathRefusal(errors.New("remote hung up"), "podinfo-test", "team-a", types.CellKey{})
+	assert.False(t, isRefusal)
+	assert.Nil(t, refused)
 	assert.Empty(t, *seen, "a transient write fault must not be reported as a Git path refusal")
 }
 
@@ -88,7 +92,8 @@ func TestReportPathRefusal_UnattributableRefusalIsNotRecorded(t *testing.T) {
 		w := &BranchWorker{Log: logr.Discard()}
 		seen := captureRefusals(w)
 
-		assert.True(t, w.reportPathRefusal(refusedError(), c.name, c.ns, types.CellKey{}),
+		gotRefusal, _ := w.reportPathRefusal(refusedError(), c.name, c.ns, types.CellKey{})
+		assert.True(t, gotRefusal,
 			"an unattributable refusal is still a refusal, not a write fault")
 		assert.Empty(t, *seen,
 			"a refusal with an incomplete target reference must never be recorded (%q/%q)", c.ns, c.name)

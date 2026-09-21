@@ -1065,9 +1065,10 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		// logged as a write fault; nothing was committed either way, so the request is
 		// dropped in both cases.
 		name, namespace := atomicRefusalTarget(request)
-		if l.w.reportPathRefusal(err, name, namespace, request.sourceCell()) {
+		if isRefusal, refused := l.w.reportPathRefusal(
+			err, name, namespace, request.sourceCell()); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
-			l.touchBranchForRefusal(name, namespace, err.Error(), request.Events)
+			l.touchBranchForRefusal(name, namespace, err.Error(), refused)
 		} else {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
@@ -1290,9 +1291,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// GitPathAccepted=False instead of being logged as a transient write fault. The
 		// window is dropped either way — the events are already lost to the failed flush,
 		// and the next resync re-derives them.
-		if l.w.reportPathRefusal(err, targetName, targetNamespace, sourceCellForEvents(events)) {
+		if isRefusal, refused := l.w.reportPathRefusal(
+			err, targetName, targetNamespace, sourceCellForEvents(events)); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
-			l.touchBranchForRefusal(targetName, targetNamespace, err.Error(), events)
+			l.touchBranchForRefusal(targetName, targetNamespace, err.Error(), refused)
 		} else {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",

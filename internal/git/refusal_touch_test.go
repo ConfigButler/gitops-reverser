@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -249,37 +250,56 @@ func TestRefusalTouch_TrailingCommitRechecksConsent(t *testing.T) {
 	assert.Nil(t, loop.refusalTimer, "and nothing must be re-armed for a target that said no")
 }
 
-// TestRefusalTouch_SkipsObjectsGitDoesNotManage is the pruning fence.
+// TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit is the pruning fence.
 //
-// An empty commit makes the reconciler re-apply. For an object Git does not manage that either
-// does nothing (Flux prunes its inventory and Argo CD the resources it tracks, and a live-created
-// object is in neither) or prunes it, when the object was managed and has since been removed from
-// Git. The second is the reconciler's decision to make on its own schedule, not ours to hurry, so
-// both are excluded.
-func TestRefusalTouch_SkipsObjectsGitDoesNotManage(t *testing.T) {
-	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
-		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
-	})
+// A write-boundary refusal means the edit had nowhere safe to land while the FOLDER IS ACCEPTED,
+// which carries both things the fence needs: the folder renders, so the object is one the
+// reconciler produces and re-applying reverts it; and nothing is being removed from Git, so
+// re-applying cannot prune. Every other refusal means the folder is unusable, which an empty
+// commit cannot fix and which the reconciler may be mid-way through correcting.
+//
+// An earlier version of this fence stat-ed the object's canonical file under the write path
+// instead. It disabled the feature for its main case, because a kustomize overlay's base-owned
+// field lives outside the write scope and so read as unmanaged.
+func TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit(t *testing.T) {
+	cases := []struct {
+		name string
+		kind manifestanalyzer.IssueKind
+		want bool
+	}{
+		{name: "an edit that escapes the write scope", kind: manifestanalyzer.IssueWriteEscapesScope, want: true},
+		{name: "an edit with nowhere to land", kind: manifestanalyzer.IssueUnplaceableEdit, want: true},
+		{name: "an edit fanning into several files", kind: manifestanalyzer.IssueWriteFanIn, want: true},
+		{name: "a render the folder refuses", kind: manifestanalyzer.IssueRenderRefused, want: true},
+		{name: "a foreign file in the folder", kind: manifestanalyzer.IssueForeignFile, want: false},
+		{name: "yaml the folder cannot parse", kind: manifestanalyzer.IssueInvalidYAML, want: false},
+		{name: "a kustomization we do not support", kind: manifestanalyzer.IssueUnsupportedKustomize, want: false},
+	}
 
-	assert.False(t, w.refusedObjectsAreManagedInGit(nil),
-		"no events means nothing is known to be managed")
-	assert.False(t, w.refusedObjectsAreManagedInGit([]Event{configMapEvent("never-in-git", "alice", "team-a")}),
-		"an object with no file in the folder must not trigger a commit")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			refused := &manifestanalyzer.AcceptanceRefusedError{
+				Issues: []manifestanalyzer.AcceptanceIssue{{Kind: tc.kind, Path: "x.yaml"}},
+			}
+			assert.Equal(t, tc.want, refusalIsAWriteBoundary(refused))
+		})
+	}
 }
 
-// TestRefusalTouch_CommitsForAnObjectGitManages is the positive half of the fence: an object that
-// does have a file is drift the reconciler can correct, which is the case the feature exists for.
-func TestRefusalTouch_CommitsForAnObjectGitManages(t *testing.T) {
-	f := newLedgerFixture(t, "refusal-fence", true)
-	f.createLedgerTarget("team-a", nil)
-	f.publish("managed")
+// TestRefusalTouch_MixedRefusalDoesNotCommit. A batch carrying any folder-level issue is a folder
+// problem, so it is left alone even though a write-boundary issue rides along with it.
+func TestRefusalTouch_MixedRefusalDoesNotCommit(t *testing.T) {
+	refused := &manifestanalyzer.AcceptanceRefusedError{
+		Issues: []manifestanalyzer.AcceptanceIssue{
+			{Kind: manifestanalyzer.IssueUnplaceableEdit, Path: "a.yaml"},
+			{Kind: manifestanalyzer.IssueForeignFile, Path: "secrets.txt"},
+		},
+	}
 
-	assert.True(t, f.worker.refusedObjectsAreManagedInGit(
-		[]Event{configMapEvent("managed", "alice", "team-a")}),
-		"an object already written to the folder is drift the reconciler can correct")
-	assert.False(t, f.worker.refusedObjectsAreManagedInGit(
-		[]Event{configMapEvent("managed", "alice", "team-a"), configMapEvent("absent", "alice", "team-a")}),
-		"a batch is only safe when every object in it is managed")
+	assert.False(t, refusalIsAWriteBoundary(refused))
+	assert.False(t, refusalIsAWriteBoundary(nil), "a non-refusal never commits")
+	assert.False(t, refusalIsAWriteBoundary(&manifestanalyzer.AcceptanceRefusedError{}),
+		"a refusal with no issues says nothing about the folder")
 }
 
 // TestRefusalTouch_ReplayKeepsAcceptedWritesAndTheEmptyDiff is the contention case a review asked

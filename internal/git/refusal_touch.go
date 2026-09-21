@@ -5,9 +5,9 @@ package git
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -156,18 +156,18 @@ func refusalCommitMessage(target itypes.ResourceReference, detail string) string
 // top of that is a missed acceleration, not a second fault, so every failure here is logged and
 // swallowed rather than escalated into the caller's error path.
 func (l *branchWorkerEventLoop) touchBranchForRefusal(
-	targetName, targetNamespace, detail string, events []Event,
+	targetName, targetNamespace, detail string, refused *manifestanalyzer.AcceptanceRefusedError,
 ) {
 	if targetName == "" || targetNamespace == "" {
 		return
 	}
-	target := itypes.NewResourceReference(targetName, targetNamespace)
-	if !l.w.refusalConsent(l.w.ctx, target) {
+	// Checked BEFORE consent and the rate limit, so a refusal we would never commit for does not
+	// consume the window and starve one we would.
+	if !refusalIsAWriteBoundary(refused) {
 		return
 	}
-	// Checked BEFORE the rate limit, so an object we would never commit for does not consume the
-	// window and starve one we would.
-	if !l.w.refusedObjectsAreManagedInGit(events) {
+	target := itypes.NewResourceReference(targetName, targetNamespace)
+	if !l.w.refusalConsent(l.w.ctx, target) {
 		return
 	}
 
@@ -242,48 +242,35 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(target itypes.ResourceReferen
 	l.maybeSchedulePush()
 }
 
-// refusedObjectsAreManagedInGit reports whether every refused object already has a file in the
-// GitTarget's folder.
+// refusalIsAWriteBoundary reports whether this refusal is one where the FOLDER is accepted and
+// only the edit had nowhere to land.
 //
-// **This is the pruning fence, and it is the reason the action is narrower than it first looked.**
-// An empty commit makes the reconciler re-apply, and what re-applying does depends entirely on
-// whether the object is one Git manages:
+// **This is the pruning fence, and it replaces an earlier one that got it wrong.** The first
+// version stat-ed the object's canonical file under the GitTarget's write path, on the reasoning
+// that an object Git does not manage must not be committed for. It disabled the feature for its
+// main case: a kustomize overlay's base-owned field lives in `../../base`, outside the write
+// scope, so the canonical case read as "not managed" and was skipped.
 //
-//   - Already in Git: re-applying rewrites it, which reverts the refused live edit. This is the
-//     case the whole feature is for.
-//   - Never managed: Flux prunes from its inventory and Argo CD from the resources it tracks, so a
-//     live-created object belongs to neither. Re-applying does nothing to it, and the commit was
-//     pointless noise on the branch.
-//   - Previously managed and since removed from Git: re-applying PRUNES it. The reconciler was
-//     going to do that on its own schedule, and making it happen sooner is us taking responsibility
-//     for the timing of somebody else's delete. That is not ours to take.
+// The refusal kind answers the same question better, because the analyzer has already decided it.
+// A write-boundary refusal means, in the analyzer's own words, that the edit had nowhere safe to
+// land while **the folder itself is accepted**. That carries two things this needs:
 //
-// The second and third cases are indistinguishable from here, and only one of them is harmless, so
-// both are excluded. The check errs toward NOT committing: the file path it tests is the canonical
-// one, so an object placed somewhere else by a placement template reads as absent and is skipped.
-// A missed commit costs the freshness this feature adds; a wrong one costs somebody an object.
-func (w *BranchWorker) refusedObjectsAreManagedInGit(events []Event) bool {
-	if len(events) == 0 {
-		return false
-	}
-	provider, err := w.getGitProvider(w.ctx)
-	if err != nil {
-		w.Log.V(1).Info("Cannot resolve the repository to check Git-managed status; not committing",
-			"error", err.Error())
-		return false
-	}
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
-
-	for _, event := range events {
-		relative := windowPathKey(event, w.contentWriter)
-		if relative == "" {
-			return false
-		}
-		if _, statErr := os.Stat(filepath.Join(repoPath, relative)); statErr != nil {
-			w.Log.V(1).Info("A refused object is not managed in Git; not committing",
-				"path", relative, "reason", "re-applying would prune it or do nothing")
-			return false
-		}
-	}
-	return true
+//   - The folder renders, so the object is one the reconciler produces. Re-applying rewrites it,
+//     which reverts the live edit. That is the case the feature exists for.
+//   - Nothing about the object is being removed from Git, so re-applying cannot prune it. Hurrying
+//     somebody else's delete is what we are avoiding, and a write-boundary refusal cannot cause
+//     one.
+//
+// Every other refusal means the folder is unusable. An empty commit cannot fix a folder, only a
+// human can, and the reconciler may be mid-way through its own corrections there, so those are
+// left alone. They also reach a different reporter entirely: a folder-level refusal is normally
+// found by the per-type reconcile, which blocks the cell through the event router rather than
+// coming through here at all.
+func refusalIsAWriteBoundary(refused *manifestanalyzer.AcceptanceRefusedError) bool {
+	return refused != nil && refused.AllIssuesOfKinds(
+		manifestanalyzer.IssueWriteEscapesScope,
+		manifestanalyzer.IssueWriteFanIn,
+		manifestanalyzer.IssueRenderRefused,
+		manifestanalyzer.IssueUnplaceableEdit,
+	)
 }
