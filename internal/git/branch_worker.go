@@ -1700,7 +1700,11 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			w.invalidateBase("sync during replay failed")
 			return fmt.Errorf("sync remote during replay: %w", syncErr)
 		}
+		// Same destructive-then-constructive shape as refreshRemoteAndRebuildPendingWrites, and
+		// the same window: the reset above has discarded the local commits behind these writes,
+		// so nothing may publish them until the rebuild below has put them back. See §3.2.
 		w.updateBranchMetadataFromPullReport(pullReport)
+		w.markReplayRequired()
 
 		rootBranch, rootHash, err = w.rebuildPendingWrites(repo, pendingWrites)
 		if err != nil {
@@ -1709,6 +1713,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		}
 		w.pushCycleRootBranch = rootBranch
 		w.pushCycleRootHash = rootHash
+		w.markReplayComplete()
 	}
 
 	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)

@@ -243,3 +243,49 @@ func TestReplayFailure_RecoveryRunsBeforeEveryCommitPathToo(t *testing.T) {
 	assert.Contains(t, names, "retained-across-replay")
 	assert.Contains(t, names, "arrived-after-replay")
 }
+
+// TestReplayFailure_OnTheContentionPathIsAlsoHeld covers the second place a reset is followed by a
+// rebuild, which is easy to miss because it does not go through
+// refreshRemoteAndRebuildPendingWrites at all.
+//
+// runPushCycle resets and replays inline when a push is rejected. The two halves are the same two
+// halves, so the same window exists: if the rebuild fails there, the retained writes are stranded
+// with their pre-reset hashes and the NEXT push finds the branch already at the tip.
+func TestReplayFailure_OnTheContentionPathIsAlsoHeld(t *testing.T) {
+	f := newLedgerFixture(t, "replay-failure-contention", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("lost-to-contention", "alice", ledgerTargetName)},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.True(t, loop.finalizeOpenWindow())
+	require.Len(t, loop.pendingWrites, 1)
+
+	// Somebody else moves the branch, so our push is rejected and the replay runs inline.
+	f.contend("from-another-writer.txt", "hello\n")
+
+	// The replay's rebuild fails on the prune-policy re-read, after its reset has landed.
+	restoreAPI := failGitTargetReads(t, f.worker, errors.New("etcdserver: request timed out"))
+	loop.pushPending()
+	require.Len(t, loop.pendingWrites, 1, "the rejected push retains its writes")
+
+	// The reset inside the replay put us at the contending writer's tip, so a push now has
+	// nothing to send and would report success.
+	loop.pushPending()
+	require.Len(t, loop.pendingWrites, 1,
+		"a push that sent nothing must not settle writes the replay's reset discarded")
+
+	restoreAPI()
+	loop.pushPending()
+
+	names := remoteFileNames(t, f.repoDir)
+	assert.Contains(t, names, "lost-to-contention", "the write survives the failed replay")
+	assert.Contains(t, names, "from-another-writer.txt", "and the other writer's commit is kept")
+	assert.Empty(t, loop.pendingWrites)
+}

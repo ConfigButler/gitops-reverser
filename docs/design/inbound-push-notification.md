@@ -327,6 +327,15 @@ the realistic trigger) or partway through a batch. The second is worth its own t
 holding a mix of fresh and pre-reset hashes: a rule that asked "does this write still have a SHA"
 would pass half of them.
 
+**And two reset sites, not one**, which is the part that is easy to miss.
+`refreshRemoteAndRebuildPendingWrites` is the obvious one; `runPushCycle` resets and replays
+INLINE when a push is rejected, without going through it at all. Same two halves, same window,
+same silent settle afterwards. Auditing the rest: `prepareBootstrapRepository` and
+`ensureBaseForCycle` cannot have retained writes (the latter is gated on `!hasPendingCommits` for
+precisely that reason), `syncWithRemote` is only reached when nothing is retained, and
+`ensureRepositoryInitialized` has no caller. So the flag belongs at exactly those two places, and
+the audit is the reason to believe that rather than a hope.
+
 ## 4. What it costs
 
 **These are measurements.** Every row comes from
