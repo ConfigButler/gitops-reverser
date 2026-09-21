@@ -137,6 +137,13 @@ type BranchWorker struct {
 	// only so ExpireBaseTrust can put a maximum age on that trust. Zero means "never trusted".
 	baseTrustedAt atomic.Int64
 
+	// lastRefusalTouch records when this worker last pushed an empty commit for a GitTarget, keyed
+	// by "namespace/name", so refusalTouchInterval can floor the rate. It is guarded by its own
+	// mutex rather than repoMu: the decision is taken before any repository work starts, and
+	// borrowing the repository lock for it would order the two for no reason.
+	refusalTouchMu   sync.Mutex
+	lastRefusalTouch map[string]time.Time
+
 	// replayRequiredState records that a reset has discarded the local commits behind the retained
 	// writes while the replay that rebuilds them did not finish.
 	//
@@ -1044,6 +1051,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		name, namespace := atomicRefusalTarget(request)
 		if l.w.reportPathRefusal(err, name, namespace, request.sourceCell()) {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
+			l.touchBranchForRefusal(name, namespace, err.Error())
 		} else {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
@@ -1268,6 +1276,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// and the next resync re-derives them.
 		if l.w.reportPathRefusal(err, targetName, targetNamespace, sourceCellForEvents(events)) {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
+			l.touchBranchForRefusal(targetName, targetNamespace, err.Error())
 		} else {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",
