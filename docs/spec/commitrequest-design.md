@@ -82,11 +82,32 @@ object is visible.
 |---|---|
 | Commit pushed | `Ready=True`, `Pushed=True`, reason `Committed`; `status.sha` and `status.branch` are set |
 | No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindowInGrace` or `WindowMismatch` |
-| Window produced no diff | `Ready=True`, `Pushed=False`, reason `AlreadyPresent` |
+| Window produced no diff, and the remote agreed | `Ready=True`, `Pushed=False`, reason `AlreadyPresent` |
 | Finalize or push error | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
 
 `Reconciling=True` with reason `WaitingForCloseDelay` is the normal in-progress state. The controller fails
 with `FinalizeFailed` only if the worker does not resolve the request within its bounded safety window; it
 never polls indefinitely.
+
+**Every outcome above the error row is decided by the push, including the no-commit one.** A window
+that produced no diff used to resolve `AlreadyPresent` at finalize, on the strength of the local
+plan. That was only sound while every cycle fetched before it planned. It no longer does (see
+[inbound push notification](../design/inbound-push-notification.md) §3), so the plan may have run
+against a tree the remote has moved past, and the replay that follows a rejected push can turn the
+same captured object into a real commit. "Already present" is a claim about the remote, so the
+remote settles it: a no-diff request resolves `AlreadyPresent` when the push confirms there was
+nothing to add, and `Committed` when the replay produced a commit after all.
+
+**A request whose window has committed stays identifiable until then.** It is neither pending nor
+resolved in that interval, and the controller keeps re-sending its attach every couple of seconds
+until it reads an outcome. The worker marks such a request committed rather than forgetting it, so
+the re-send is recognized as the same request: it cannot register afresh and expire into
+`NoOpenWindow` while its commit waits out the push cooldown, and it cannot claim the next
+same-author window and stamp its message on somebody else's commit. Its close deadline is spent and
+no longer arms anything.
+
+**A worker that stops while still holding the write fails the request**, rather than leaving the
+controller to poll until its own safety window expires: a timeout says nothing about what happened,
+and "the worker stopped before the commit reached the remote" does.
 
 The complete status vocabulary is in the [status conditions guide](status-conditions-guide.md).
