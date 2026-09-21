@@ -129,8 +129,11 @@ Then [`runPushCycle`](../../internal/git/branch_worker.go) throws it away and ca
 `SmartFetch`, which is two more connections. Only after that does it call `syncToRemote` to
 reset, which is two more again.
 
-A rejection therefore costs **eight connections today**: two for the head-of-cycle fetch, one for
-the rejected push, two to re-learn a hash we already had, two to reset, and one for the retry.
+A rejection therefore costs **ten requests** before any of this page's changes: two for the
+head-of-cycle fetch, one for the rejected push, two to re-learn a hash we already had, three to
+reset (the fetch that finds a moved remote transfers objects, so it is three and not two), and two
+for the retry that sends a packfile. §4 measures it; an earlier draft of this paragraph predicted
+eight, and §4 explains which prediction was wrong.
 
 Propagating the observed hash out of `PushAtomic` as a typed error removes the middle two
 outright. It needs a fallback, because a push can also fail for reasons that produce no
@@ -253,6 +256,76 @@ case !hasPendingCommits && (!w.baseTrusted() || w.worktreeDirty()):
 `refreshRemoteAndRebuildPendingWrites` is written for the forced-recheck path and does precisely
 this: `syncToRemote` then `rebuildPendingWrites`. Reusing it means dirty-state recovery adds a
 branch, not a mechanism.
+
+### 3.2 A reset is destructive before it is constructive
+
+Resetting and replaying is one operation with two halves, and the halves are not symmetric. The
+reset discards the local commits the retained writes produced; the replay rebuilds them. Between
+those two, the retained writes describe work that exists **nowhere** (not on the remote, and no
+longer in the worktree) while still carrying the commit hashes they had before the reset.
+
+If the replay fails there, the two flags above both say the wrong thing, and they say it honestly:
+
+| Flag | Value | Why it is no help |
+| --- | --- | --- |
+| `baseTrusted` | **true** | And correctly so. The worktree IS at the remote tip. That is the problem, not the reassurance |
+| `worktreeDirty` | **false** | And correctly so. The reset cleared it, and the worktree really is clean |
+
+What is stale is neither the base nor the tree. It is the retained writes, which is a third
+question and needs a third flag: `replayRequired`, set the moment the reset lands and cleared only
+once every retained write has been replayed.
+
+**The failure is silent, which is what makes it worth a flag rather than a comment.** A push in
+that state does not fail. The local branch equals the remote tip, so `validatePushState` answers
+"already up to date" and returns *before* it compares the cycle's root hash. `PushAtomic` returns
+`nil`, the worker counts the writes as published, clears them, and resolves any `CommitRequest`
+riding one as `Committed`, naming a SHA that is not on the remote and never will be. A user is
+told their save landed.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant L as Event loop
+    participant W as Worktree
+    participant R as Git remote
+
+    Note over L,W: a write is committed locally and retained<br/>pendingWrites = [ {CommitSHA: abc123} ]
+
+    rect rgb(255, 235, 235)
+        Note over L,R: something asks for a refresh<br/>(dirty tree, resync snapshot, forced recheck)
+        L->>R: fetch
+        R-->>L: remote tip
+        L->>W: hard reset to the remote tip
+        Note over W: abc123 is gone.<br/>pendingWrites still says CommitSHA: abc123
+        L->>L: rebuild: re-read the GitTarget policy
+        Note over L: transient API error: replay aborts
+    end
+
+    Note over W: worktreeDirty = false (the reset cleared it)<br/>baseTrusted = true (we ARE at the tip)
+
+    rect rgb(255, 205, 210)
+        Note over L,R: the push timer fires
+        L->>R: open receive-pack, read advertisement
+        R-->>L: branch SHA == our local HEAD
+        Note over L: "already up to date": returns nil<br/>BEFORE comparing the cycle root hash
+        Note over L: writes cleared, CommitRequest resolved<br/>Committed at abc123, which is on no remote
+    end
+```
+
+The invariant that closes it:
+
+> **Retained writes may not be published until the replay that rebuilds them has completed.**
+
+`recoverRetainedWrites` (formerly `recoverDirtyWorktree`) carries both reasons retained work can
+stop being trustworthy, and it now runs before the **push** as well as before every commit. A
+rebuild that fails again keeps the writes retained rather than publishing a lie, which is what a
+transient error deserves.
+
+Two failure points, not one. A replay can die before its first write (the prune-policy re-read is
+the realistic trigger) or partway through a batch. The second is worth its own test because
+`executePendingWrites` stamps each write's new SHA as it goes, so the retained slice is left
+holding a mix of fresh and pre-reset hashes: a rule that asked "does this write still have a SHA"
+would pass half of them.
 
 ## 4. What it costs
 
@@ -608,8 +681,10 @@ had the identical bug (§11), and `recoverDirtyWorktree` is one entry condition 
 receiver calls it and is done; §4's last column no longer depends on work that has not been
 written.
 
-This is what turns the contended case from eight connections into three, and it is why the
-notification earns its place. It does not buy freshness. It buys the *absence* of a doomed push
+This is what turns the contended case from six requests into three, and it is why the
+notification earns its place. (Six, not eight: §2.2 and the flip have already taken four off the
+measured ten. The "eight into three" an earlier draft claimed here was arithmetic from the
+prediction §4 replaced.) It does not buy freshness. It buys the *absence* of a doomed push
 and the cascade behind it.
 
 So the receiver's request invalidates, and optionally replays retained work onto the tip once
@@ -711,11 +786,19 @@ as a rule rather than as a list:
 | An atomic write | `handleAtomicRequest` reached `commitPendingWrites` with no recovery: the finalize it calls first returns immediately when no window is open, and `commitPendingWrites` cannot reset while work is retained. It committed a failed write's leftovers | Call `recoverDirtyWorktree` explicitly, and enumerate the loop's commit entry points in a table-driven test |
 | A deleted remote branch | The push reported it as an untyped error, and the fallback probe answered from a remote-tracking ref `SmartFetch` cannot prune for a branch the remote no longer has. "Not moved", no replay, and the retained writes then made every later cycle skip its fetch too, and the worker pushed the same doomed commits forever | `RemoteMovedError.Missing`, and a probe that reports zero when `SmartFetch` fell back |
 | A resync holding retained writes | Commit 3's `invalidateBase` reached nothing, because `ensureBaseForCycle` consults the flag only when nothing is retained: the exact flag `commitPendingWrites` is called with two lines later | `invalidateAndRefresh`, which drops trust AND acts on it |
+| A replay that failed after its reset | The reset had already discarded the local commits; the retained writes still carried their pre-reset hashes. The next push found the branch already at the tip, answered "already up to date" before comparing the root hash, and settled work that existed nowhere, telling a `CommitRequest` it was `Committed` at a SHA on no remote | `replayRequired` (§3.2), and `recoverRetainedWrites` running before the push as well as before every commit |
 
 The fourth is the one worth remembering, because §8.1 already names the same trap for the receiver
 and an earlier draft of this page walked into it anyway: **clearing `baseTrusted` and acting on it
 are different things.** `invalidateAndRefresh` is now the single mechanism for both, so commit 5
 inherits it rather than rediscovering it.
+
+The fifth arrived with the fix for the fourth, and it is the sharper lesson. Every one of the
+first four was a path that skipped the advertisement. The fifth **reaches** the advertisement and
+is still wrong, because "the remote is already where we are" and "our work is on the remote" are
+different statements and the up-to-date path conflates them. So the rule at the top of this
+section needs its companion, and §3.2 is it: reaching the advertisement is necessary and not
+sufficient. Also ask whether the thing you are about to settle still exists.
 
 Seven commits. Commit 0 is measurement and must come first: the rest of this page argues from
 numbers that nobody has checked. Commits 0b, 1 and 2 change no observable behavior between them,
@@ -944,7 +1027,10 @@ each is a named test rather than a case inside another one, because every failur
 a re-sent attach during the push cooldown and during a failed push; an atomic write that must
 recover a dirty worktree, table-driven across every loop path that commits; a deleted remote
 branch, both the typed error and the probe that must not answer from a ref nothing could refresh;
-and a resync holding retained writes, which must still read the remote. The deleted-branch test
+a resync holding retained writes, which must still read the remote; and a replay that failed after
+its reset, which must leave its writes retained rather than let the next push settle them (§3.2),
+covering both a failure before the first replayed write and one partway through a batch. The
+deleted-branch test
 has to FETCH before the deletion, because a push does not advance `refs/remotes/origin/<branch>`, so
 without that the stale hash differs from the cycle root and the worker recovers by luck rather
 than by design.
