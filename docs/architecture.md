@@ -61,6 +61,18 @@ fails; there is no plaintext opt-out.
 `(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one branch.
 Every write to that branch goes through the worker's single event loop and commit window.
 
+**The worktree sits at the remote tip, or the worker knows it does not.** The write path used to
+fetch and hard-reset before the first commit of every publication cycle. It no longer does: the push
+session reads the remote's ref advertisement on a connection the cycle was making anyway, and a cycle
+that commits nothing still reaches it, so a base the worker can vouch for needs no fetch to plan
+against. Two flags on the worker carry that claim (`baseTrusted`, and `worktreeDirty` for a write that
+failed part-way), and anything that cannot prove it clears them, which makes the next cycle fetch. The
+failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
+is caught by the compare-and-swap on the next push. **The corollary is the rule to keep in your head
+when adding code here:** anything that resolves, commits, or concludes without reaching a push
+advertisement must either fetch, or refuse to conclude. See
+[inbound push notification](design/inbound-push-notification.md) §3.
+
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
 Redis stores watch resume cursors (warm restarts) and the small coordination records used by
@@ -492,15 +504,18 @@ flowchart TD
     UNRESOLVED --> WINDOW
 
     WINDOW --> TIMER{Close trigger}
-    TIMER -->|silence timer| FLUSH[Plan YAML edits + commit]
-    TIMER -->|buffer limit or resync boundary| FLUSH
+    TIMER -->|silence timer| BASE
+    TIMER -->|buffer limit or resync boundary| BASE
 
     CR[CommitRequest persisted] --> ADMISSION[Admission submitter lookup<br/>named or unnamed]
     ADMISSION --> ATTACH[Attach to matching open window]
-    ATTACH -->|same author + GitTarget| FLUSH
+    ATTACH -->|same author + GitTarget| BASE
     ATTACH -->|no matching window| BENIGN[Ready=True, Pushed=False]
 
-    FLUSH --> PUSH[PushAtomic]
+    BASE{Base trusted<br/>and worktree clean?} -->|yes| FLUSH
+    BASE -->|no| FETCH[Fetch and reset first]
+    FETCH --> FLUSH[Plan YAML edits + commit]
+    FLUSH --> PUSH[PushAtomic<br/>reads the advertisement]
     PUSH --> DONE[Remote branch updated]
 ```
 
@@ -1112,6 +1127,19 @@ remote diverged it smart fetches the latest tip, hard resets the local clone, re
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
 
+A branch whose remote has been **deleted** takes the same path. The advertisement does not carry the
+branch at all, which is reported as a moved remote with a zero hash, so the replay re-roots on the remote's
+default branch and the retry re-creates the branch with the retained writes on top.
+
+**When the cycle fetches at all.** Only the first commit of a cycle may fetch, and only when the base
+is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans
+straight onto its own last push. Once writes are retained the guard flips off entirely, because a
+reset would destroy the local commits those writes already produced. Anything that needs a fresh
+tree with work in hand therefore resets **and replays**
+([`invalidateAndRefresh`](../internal/git/branch_worker.go)) rather than resetting alone. That is one
+mechanism with three entry conditions: a worktree a failed write left dirty, the snapshot a resync
+judges against, and a forced recheck.
+
 ### Durability of the write queue (planned)
 
 A BranchWorker's queue (the open commit window's retained writes plus any local commits not yet pushed)
@@ -1230,7 +1258,13 @@ immediately. That is not a failure:
    stranded.
 4. Outcomes resolve on push and are reported as conditions: a pushed commit sets `Ready=True` /
    `Pushed=True` with `branch`/`sha`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
-   `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message.
+   `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message. **Between the window's
+   finalize and that push the request is still in flight**, which matters because the controller keeps
+   re-sending its attach until it reads an outcome: the worker marks the request committed rather than
+   forgetting it, so a re-send is recognized as the same request and cannot resolve early or claim a
+   later window. A worker that stops without pushing fails the request instead of leaving it to time out.
+   `AlreadyPresent` therefore means the remote confirmed there was nothing to add, not that a local plan
+   found no diff.
 
 The CommitRequest submitter is not recoverable from object state alone, so without an admission record the
 request cannot claim an actor. The final Git author remains the attached watch window's author: configured

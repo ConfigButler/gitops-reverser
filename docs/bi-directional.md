@@ -319,10 +319,11 @@ kubectl annotate gittarget editing -n gitops-reverser \
 ```
 
 A receiver that does this automatically is designed in
-[inbound push notification](design/inbound-push-notification.md), together with removing the
-head-of-cycle fetch that it makes unnecessary. That design deliberately does **not** wire the
-webhook to the annotation above: the annotation asks for a full resync, which publishes cluster
-state, and that is the one thing a push notification must not do.
+[inbound push notification](design/inbound-push-notification.md). The other half of that
+design, removing the head-of-cycle fetch, has shipped; the receiver is what remains.
+That design deliberately does **not** wire the webhook to the annotation above: the
+annotation asks for a full resync, which publishes cluster state, and that is the one
+thing a push notification must not do.
 
 One property that design fixes in advance, and that matters if you build anything similar
 yourself: **a notification that a branch moved must not trigger a fresh cluster snapshot.** Our

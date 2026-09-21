@@ -360,7 +360,10 @@ off by default and enabled per GitTarget, separately from
   the handshake the guide describes), or defer to the webhook? Likely: trigger only where the webhook
   cannot help — refusal and drift — and let the push webhook cover the happy path.
 - **Webhook delivery and trust** (the drift trigger, §3). Delivery is best-effort: how is a missed
-  webhook caught up — a poll fallback cadence (reviving `SyncAndGetMetadata`), or a fetch on the next
-  reconcile — so the CAS-replay backstop is not the *only* thing that ever notices a lost notification?
+  webhook caught up — a poll fallback cadence, or a fetch on the next reconcile — so the CAS-replay
+  backstop is not the *only* thing that ever notices a lost notification? (Not by reviving
+  `SyncAndGetMetadata`: [inbound push notification](../inbound-push-notification.md) §10 retires that
+  dead wrapper, and its §8 option B answers the same question as a maximum age on `baseTrusted`, so
+  there is one mechanism rather than two.)
   And how is the receiver authenticated per provider (shared secret, signature scheme) so a forged push
   notification cannot make the operator barrier or replay on demand?
