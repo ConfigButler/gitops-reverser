@@ -1747,13 +1747,22 @@ func mkdirAllTrackingCreated(dir string) ([]string, error) {
 func removeCreatedDirs(created []string) {
 	for _, dir := range created {
 		entries, err := os.ReadDir(dir)
-		if os.IsNotExist(err) {
-			// Never created, or already gone. Its ancestors may still exist and still be ours, so
-			// keep walking up rather than stopping here — that matters when MkdirAll failed
-			// part-way and the deepest entries were never made at all.
+		if err != nil {
+			// Not there, not readable, or not a name this filesystem can hold. Every one of those
+			// says there is nothing HERE to remove and says nothing about the ancestors above it,
+			// so keep walking rather than stopping.
+			//
+			// Stopping was a real bug: the deepest entry is the one MkdirAll failed on, and when
+			// it failed because the name was too long, ReadDir answers ENAMETOOLONG rather than
+			// ENOENT. Treating that as "something else is in there" abandoned every ancestor the
+			// call had just created, which is precisely the state this function exists to undo.
+			//
+			// Walking past it is safe because os.Remove is the real guard: it refuses a directory
+			// that is not empty, so a directory somebody else filled survives whatever this loop
+			// believes about it.
 			continue
 		}
-		if err != nil || len(entries) > 0 {
+		if len(entries) > 0 {
 			// Something else is in there, so neither this directory nor any ancestor of it is
 			// empty, and none of them are ours to remove.
 			return

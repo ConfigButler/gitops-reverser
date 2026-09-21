@@ -179,25 +179,41 @@ func TestRemoveCreatedDirs_LeavesADirectorySomethingElseFilled(t *testing.T) {
 // TestMkdirAllTrackingCreated_UndoesAPartialCreation covers the failure inside the creation itself,
 // rather than in the write that follows it.
 //
-// os.MkdirAll builds ancestors before the path it was asked for, so a failure deeper down can still
-// leave some of them behind. The caller only sees an error and has no set to clean up, and an empty
-// directory produces no worktree status entry, so nothing later would ever find them.
+// os.MkdirAll builds ancestors before the path it was asked for, so a failure deeper down leaves
+// them behind. The caller only sees an error and has no set to clean up, and an empty directory
+// produces no worktree status entry, so nothing later would ever find them.
+//
+// Reaching that state takes a failure the PROBE cannot see coming, which is narrower than it looks:
+// a component longer than the filesystem allows is one, because the stat that walks the path up
+// answers ENOENT at the first absent ancestor and never evaluates the long name. MkdirAll then
+// creates every ancestor and fails on the last element alone. An earlier version of this test used
+// a file blocking a component instead, which stat reports as ENOTDIR, so the function returned
+// before MkdirAll ran and the undo below was never exercised. That case is worth keeping, and is
+// the test underneath.
 func TestMkdirAllTrackingCreated_UndoesAPartialCreation(t *testing.T) {
 	root := t.TempDir()
 
-	// A FILE where a directory component needs to be: MkdirAll creates "a" and "a/b", then fails
-	// on "a/b/blocker" because that name is already taken by a file.
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "a", "b"), 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "a", "b", "blocker"), []byte("x"), 0o600))
-	require.NoError(t, os.RemoveAll(filepath.Join(root, "a")))
+	target := filepath.Join(root, "a", "b", strings.Repeat("x", 256))
 
-	// Re-create only the blocking file, with its parents absent, so this call has to make them.
+	created, err := mkdirAllTrackingCreated(target)
+	require.Error(t, err, "a component longer than the filesystem allows fails the mkdir")
+	assert.Empty(t, created, "a failed creation reports nothing for the caller to undo")
+	assert.NoDirExists(t, filepath.Join(root, "a"),
+		"and undoes every ancestor it made on the way down, not just the deepest")
+}
+
+// TestMkdirAllTrackingCreated_RefusesAPathBlockedByAFile is the other failure shape, and it fails
+// EARLIER: stat answers ENOTDIR while walking the path up, so nothing is created and there is
+// nothing to undo. It is here because that early return is what makes the test above the only
+// place the undo runs.
+func TestMkdirAllTrackingCreated_RefusesAPathBlockedByAFile(t *testing.T) {
+	root := t.TempDir()
+
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "a", "b"), 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "a", "b", "blocker"), []byte("x"), 0o600))
-	require.NoError(t, os.RemoveAll(filepath.Join(root, "keep-me")))
 
 	created, err := mkdirAllTrackingCreated(filepath.Join(root, "a", "b", "blocker", "deeper"))
-	require.Error(t, err, "a file in the path makes MkdirAll fail")
+	require.Error(t, err, "a file where a directory component belongs is not a path we can make")
 	assert.Empty(t, created, "a failed creation reports nothing for the caller to undo")
 	assert.NoDirExists(t, filepath.Join(root, "a", "b", "blocker", "deeper"),
 		"and leaves nothing of its own behind")
