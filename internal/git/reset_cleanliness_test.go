@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -98,4 +99,81 @@ func TestReset_DiscardsEveryKindOfLeftover(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(repoPath, "team-a"), "a directory the write created must not survive")
 
 	_ = remoteURL
+}
+
+// TestWriteAndStageFile_RemovesTheDirectoriesItCreatedWhenTheWriteFails covers the one leftover a
+// reset provably cannot reach.
+//
+// Every case above produces a worktree status entry, which is how discardWorktreeLeftovers finds
+// it. A write that dies between MkdirAll and WriteFile produces none: Git does not track empty
+// directories, so the folder is invisible to status, survives the reset, and sits in the worktree
+// while the state machine reports it clean. scanWorktreeSubtree walks the real filesystem, so a
+// directory Git does not have is a difference somebody eventually trips over.
+//
+// The cleanup therefore belongs at the failure, where the set of directories this write created is
+// still known, rather than being carried across the reset boundary.
+//
+// The write is made to fail with a name longer than NAME_MAX, which needs no permissions games and
+// happens after the directories exist — which is the whole point.
+func TestWriteAndStageFile_RemovesTheDirectoriesItCreatedWhenTheWriteFails(t *testing.T) {
+	repoPath, _ := seedResetFixture(t)
+
+	repo, err := gogit.PlainOpen(repoPath)
+	require.NoError(t, err)
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	newDir := filepath.Join(repoPath, "team-a", "nested")
+	tooLong := strings.Repeat("x", 300) + ".yaml"
+
+	err = writeAndStageFile(worktree,
+		"team-a/nested/"+tooLong, filepath.Join(newDir, tooLong), []byte("kind: ConfigMap\n"))
+	require.Error(t, err, "a name past NAME_MAX cannot be written")
+
+	assert.NoDirExists(t, newDir, "the directory this write created must not outlive it")
+	assert.NoDirExists(t, filepath.Join(repoPath, "team-a"),
+		"nor the parent it created on the way there")
+
+	status, err := worktree.Status()
+	require.NoError(t, err)
+	assert.True(t, status.IsClean(),
+		"an empty directory produces no status entry, which is exactly why a later reset "+
+			"cannot clean it up; status was:\n%s", status)
+}
+
+// TestMkdirAllTrackingCreated_ReportsOnlyWhatItMade pins the half that decides what cleanup is
+// allowed to touch. A directory somebody else put there is not this write's to remove.
+func TestMkdirAllTrackingCreated_ReportsOnlyWhatItMade(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "existing"), 0o750))
+
+	created, err := mkdirAllTrackingCreated(filepath.Join(root, "existing", "a", "b"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		filepath.Join(root, "existing", "a", "b"),
+		filepath.Join(root, "existing", "a"),
+	}, created, "deepest first, and never the directory that was already there")
+
+	again, err := mkdirAllTrackingCreated(filepath.Join(root, "existing", "a", "b"))
+	require.NoError(t, err)
+	assert.Empty(t, again, "nothing was created the second time, so nothing may be removed")
+
+	removeCreatedDirs(created)
+	assert.NoDirExists(t, filepath.Join(root, "existing", "a"))
+	assert.DirExists(t, filepath.Join(root, "existing"), "and the pre-existing directory survives")
+}
+
+// TestRemoveCreatedDirs_LeavesADirectorySomethingElseFilled is the guard that keeps the cleanup
+// from deleting a neighbour's work when two writes share a new folder.
+func TestRemoveCreatedDirs_LeavesADirectorySomethingElseFilled(t *testing.T) {
+	root := t.TempDir()
+	created, err := mkdirAllTrackingCreated(filepath.Join(root, "shared", "deep"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "shared", "deep", "written-by-someone-else.yaml"), []byte("x"), 0o600))
+
+	removeCreatedDirs(created)
+
+	assert.DirExists(t, filepath.Join(root, "shared", "deep"),
+		"a directory that is no longer empty belongs to whoever filled it")
 }
