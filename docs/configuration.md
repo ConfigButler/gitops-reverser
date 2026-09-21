@@ -937,6 +937,66 @@ unaffected: they are edited where they already live. The fix is to point the tar
 `apps/checkout/overlays/prod`, and declare the other environments as their own `GitTarget` objects:
 one target is one environment is one write partition.
 
+### Reverting a refused edit (`spec.onRefusal`)
+
+A live edit can be refused: the acceptance gate or a write-boundary check decides it has no legal
+destination in the folder, nothing is committed, and `GitPathAccepted` goes `False`. The edit stays
+in the cluster. Nothing reverts it, because reverting is the reconciler's job and the reconciler has
+no reason to act: with Argo CD `selfHeal` off it holds the Application `OutOfSync`, and Flux
+corrects it only on its next apply interval, which a long interval leaves hours away.
+
+```yaml
+spec:
+  path: apps/checkout
+  onRefusal: PushEmptyCommit   # default: Ignore
+```
+
+`PushEmptyCommit` pushes a commit that changes no file. That moves the branch, and a new revision is
+all either reconciler needs: Flux publishes a new artifact revision and re-applies, and Argo CD sees
+a revision it has not synced, so the skip that `selfHeal: false` installs does not apply and
+automated sync reverts the edit. The commit message says what was refused and why its diff is empty.
+
+Reverser deliberately does not name the `Kustomization` or `Application` that renders the folder.
+Neither tool derives that mapping itself, so deriving it here to write into somebody else's object
+would be guessing on their behalf. Moving the branch asks them instead.
+
+**It only fires for an edit to a document the folder already holds, and never for a write that
+removes one.** That is the pruning fence, and it is why the action is narrower than it first looks.
+Re-applying corrects drift on an object Git manages, which is the point. For an object Git does not
+manage, re-applying either does nothing (
+[Flux prunes from its inventory](https://fluxcd.io/flux/components/kustomize/kustomizations/#prune)
+and Argo CD from the resources it tracks, and a live-created object is in neither) or, if the object
+was managed and has since been removed from Git, prunes it. **Hurrying along somebody else's delete
+is not this operator's call**, and the two cases cannot be told apart from here, so both are
+excluded.
+
+Establishing that takes more than the refusal's kind, and more than the file. A render refusal fires
+for a brand-new resource an `images:` entry would override; removing one document from a file that
+holds two leaves the file in place, which looks exactly like an edit. Eligibility is therefore
+decided per document, and a write that removes one anywhere in the same flush is excluded whole.
+
+**Read this before enabling it.**
+
+| | What to expect |
+| --- | --- |
+| Blast radius | The commit wakes **everything** watching the branch, not the refused object alone, so it can hurry unrelated work including another target's pending prune |
+| Unpublished edits | An allowed edit still waiting in the commit window can be reverted along with the refused one |
+| Argo CD exception | An `Application` with `argocd.argoproj.io/manifest-generate-paths` ignores the commit, because no file under its refresh paths changed |
+
+Three more guards. A suspended target never commits, because an empty commit is a write. A
+`GitTarget` that cannot be read is treated as `Ignore`, since missing evidence is not consent. And
+the commit is rate-limited per target, because a controller rewriting a base-owned field refuses on
+every one of its own reconciles; a refusal arriving inside that window is **coalesced into one
+trailing commit rather than dropped**, since the reconcile an earlier commit triggered may already
+have finished.
+
+**A refusal nobody corrects is committed for once, not once per interval.** The target keeps
+re-reading its folder and keeps refusing, and an observation of the same objects with the same
+issues is already covered by the commit made for it. Anything different (a new value, another
+object, a different refusal) is a new trigger and earns its own commit. So is the same edit made a
+second time after the reconciler reverted it, because a reconcile of that resource type was accepted
+in between.
+
 ### Deletion policy (`spec.prune.mode`)
 
 A target removes a document from Git for one of two very different reasons, and `spec.prune.mode`

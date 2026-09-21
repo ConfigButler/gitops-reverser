@@ -157,6 +157,16 @@ type AcceptanceIssue struct {
 	// for structural acceptance issues, which predate the render-vs-live gate.
 	Field string `json:"field,omitempty"`
 	Token string `json:"token,omitempty"`
+	// ExistingDocument says the refused write targets a document the folder ALREADY holds, and
+	// is not removing it. It is evidence rather than a description, and only a check that had the
+	// pre-write buffer in hand may set it: false therefore means "not established", never "absent".
+	//
+	// It exists for GitTarget spec.onRefusal, which asks the reconciler to re-apply. Re-applying
+	// corrects an object the folder renders; for one it does not, it either does nothing or prunes,
+	// and neither is the operator's call to hurry. The refusal KIND cannot answer that question —
+	// a render refusal fires for a brand-new resource an images: entry would override, and a write
+	// that is REMOVING a document had one before — so the answer is carried from where it is known.
+	ExistingDocument bool `json:"existingDocument,omitempty"`
 }
 
 // Report is the full result of analyzing a tree.

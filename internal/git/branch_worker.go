@@ -129,9 +129,39 @@ type BranchWorker struct {
 	// across every error return on the write path, and a lock there would put a second ordering
 	// constraint on code whose only job is to record that something went wrong.
 	//
-	// See the package's design note in docs/design/inbound-push-notification.md §3 and §3.1.
+	// See the package's design note in docs/design/push-notification-and-reconcile-trigger.md §1.5.
 	baseTrustedState   atomic.Bool
 	worktreeDirtyState atomic.Bool
+
+	// baseTrustedAt is when baseTrustedState last became true, as Unix nanoseconds, and it exists
+	// only so ExpireBaseTrust can put a maximum age on that trust. Zero means "never trusted".
+	baseTrustedAt atomic.Int64
+
+	// baseTrustEpoch counts expiries. It exists because one worker serves EVERY GitTarget on its
+	// (provider, branch), while the flag it guards is one shared boolean: the first target to
+	// reconcile after an expiry consumed the whole transition, and its sibling saw either an
+	// already-cleared flag or the fresh timestamp from that target's fetch, so the sibling never
+	// re-evaluated its own folder and could stay stale indefinitely.
+	//
+	// A counter fans the one event out. Each target compares the epoch it last acted on against
+	// this one and forces its own re-read when they differ, so the transition is consumed once PER
+	// TARGET rather than once per worker.
+	baseTrustEpoch atomic.Uint64
+
+	// lastRefusalTouch records when this worker last pushed an empty commit for a GitTarget, keyed
+	// by "namespace/name", so refusalTouchInterval can floor the rate. It is guarded by its own
+	// mutex rather than repoMu: the decision is taken before any repository work starts, and
+	// borrowing the repository lock for it would order the two for no reason.
+	refusalTouchMu   sync.Mutex
+	lastRefusalTouch map[string]time.Time
+	// coveredRefusal records, per GitTarget AND WATCHED CELL, the refusal observation the last
+	// empty commit was made for: a digest of the objects that were refused together with the
+	// issues raised about them. A recheck that observes exactly the same thing is already covered
+	// by that commit, so it is not another trigger. It is dropped when a resync for that cell is
+	// ACCEPTED — see refusalRecovered, which is what makes a live edit re-made after a revert
+	// count as new, and what keeps one watched type's success from speaking for another's.
+	// Guarded by refusalTouchMu with the rate limit, because the two are read together.
+	coveredRefusal map[refusalKey]string
 
 	// replayRequiredState records that a reset has discarded the local commits behind the retained
 	// writes while the replay that rebuilds them did not finish.
@@ -147,7 +177,7 @@ type BranchWorker struct {
 	// cycle's root hash; the worker then counts the writes as published and resolves any
 	// CommitRequest riding one as Committed, naming a SHA that is not on the remote.
 	//
-	// See docs/design/inbound-push-notification.md §3.2.
+	// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
 	replayRequiredState atomic.Bool
 
 	// trustedRemote is the repository the flags above are ABOUT: the remote URL the worker last
@@ -817,6 +847,18 @@ type branchWorkerEventLoop struct {
 	// window opens (then it attaches to it) and until its finalize deadline fires.
 	// Loop-goroutine only.
 	pendingCRs map[commitRequestID]*pendingCommitRequest
+	// refusalTimer fires at the earliest deadline in refusalPending. See refusal_touch.go.
+	refusalTimer *time.Timer
+	// refusalPending holds one entry per GitTarget with a coalesced commit due.
+	//
+	// It is a MAP because one branch worker serves every target on its (provider, branch), while
+	// the rate limit and the consent check are both per target. A single slot let one target
+	// overwrite another's pending work: A queues, B replaces it, B is then suspended, and A's
+	// authorized commit is gone with nothing to report it. Execution still coalesces — one commit
+	// on the branch satisfies every entry due at that moment — but the INTENT is kept per target
+	// and per watched cell, so one cell recovering cancels only its own obligation.
+	refusalPending map[refusalKey]pendingRefusalTouch
+
 	// attachTimer fires at the earliest pending finalize deadline, so an attached
 	// window is finalized at the end of its grace even with no further events.
 	attachTimer *time.Timer
@@ -835,7 +877,7 @@ func (l *branchWorkerEventLoop) run() {
 
 	l.syncUnpushedWorkFlag()
 	for {
-		commitC, pushC, attachC := l.timerChannels()
+		commitC, pushC, attachC, refusalC := l.timerChannels()
 		select {
 		case <-l.w.ctx.Done():
 			l.handleShutdown()
@@ -855,6 +897,9 @@ func (l *branchWorkerEventLoop) run() {
 			l.attachTimer = nil
 			// The work (attach waiting requests, finalize due ones) is done by
 			// serviceCommitRequests below.
+		case <-refusalC:
+			l.refusalTimer = nil
+			l.flushPendingRefusalTouch()
 		}
 		// After every wake: bind any waiting CommitRequest to an open window,
 		// finalize/reject any whose grace has elapsed, and re-arm the deadline timer.
@@ -886,8 +931,10 @@ func (l *branchWorkerEventLoop) syncUnpushedWorkFlag() {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
 }
 
-func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time, <-chan time.Time) {
-	var commitC, pushC, attachC <-chan time.Time
+func (l *branchWorkerEventLoop) timerChannels() (
+	<-chan time.Time, <-chan time.Time, <-chan time.Time, <-chan time.Time,
+) {
+	var commitC, pushC, attachC, refusalC <-chan time.Time
 	if l.commitTimer != nil {
 		commitC = l.commitTimer.C
 	}
@@ -897,7 +944,10 @@ func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.T
 	if l.attachTimer != nil {
 		attachC = l.attachTimer.C
 	}
-	return commitC, pushC, attachC
+	if l.refusalTimer != nil {
+		refusalC = l.refusalTimer.C
+	}
+	return commitC, pushC, attachC, refusalC
 }
 
 // totalRetainedBytes is what the operator-level byte cap is enforced against:
@@ -1038,8 +1088,11 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		// logged as a write fault; nothing was committed either way, so the request is
 		// dropped in both cases.
 		name, namespace := atomicRefusalTarget(request)
-		if l.w.reportPathRefusal(err, name, namespace, request.sourceCell()) {
+		if isRefusal, refused := l.w.reportPathRefusal(
+			err, name, namespace, request.sourceCell()); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
+			l.touchBranchForRefusal(name, namespace, err.Error(), refused,
+				refusalObservationForEvents(request.Events, refused), request.sourceCell())
 		} else {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
@@ -1262,8 +1315,11 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// GitPathAccepted=False instead of being logged as a transient write fault. The
 		// window is dropped either way — the events are already lost to the failed flush,
 		// and the next resync re-derives them.
-		if l.w.reportPathRefusal(err, targetName, targetNamespace, sourceCellForEvents(events)) {
+		if isRefusal, refused := l.w.reportPathRefusal(
+			err, targetName, targetNamespace, sourceCellForEvents(events)); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
+			l.touchBranchForRefusal(targetName, targetNamespace, err.Error(), refused,
+				refusalObservationForEvents(events, refused), sourceCellForEvents(events))
 		} else {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",
@@ -1446,6 +1502,14 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopCommitTimer()
 	l.stopPushTimer()
 	l.stopAttachTimer()
+	l.stopRefusalTimer()
+}
+
+func (l *branchWorkerEventLoop) stopRefusalTimer() {
+	if l.refusalTimer != nil {
+		l.refusalTimer.Stop()
+		l.refusalTimer = nil
+	}
 }
 
 // baseTrusted reports whether the worktree is known to sit at the remote tip of the target
@@ -1473,8 +1537,41 @@ func (w *BranchWorker) worktreeDirty() bool { return w.worktreeDirtyState.Load()
 // now the remote tip). fetchRemoteBranchHash pointedly does not call it: that one fetches without
 // resetting, so it learns where the remote is without making the worktree match.
 func (w *BranchWorker) setBaseTrusted(trusted bool) {
+	if trusted {
+		// Stamped on every gain rather than only on the transition, because the age this feeds is
+		// "how long since we last read the remote", not "how long since we first believed it". A
+		// target publishing steadily re-gains trust on every push and should keep resetting the
+		// clock; otherwise a busy target would be invalidated on a schedule for no reason.
+		w.baseTrustedAt.Store(time.Now().UnixNano())
+	}
 	w.baseTrustedState.Store(trusted)
 }
+
+// ExpireBaseTrust drops base trust that is older than maxAge, and reports whether it did.
+//
+// This is the scheduled half of the maximum-age backstop. Nothing else moves an idle target's view
+// of Git: it is converged, so it requeues on the steady interval and those passes publish status
+// without touching the remote. A target that IS publishing re-stamps the clock on every push, so
+// this only ever fires on one that has gone quiet, which is exactly the target it exists for.
+//
+// maxAge <= 0 disables it, which is the default. Enabling it trades requests for freshness, and
+// the request cost is one fetch per branch per maxAge on otherwise silent targets.
+func (w *BranchWorker) ExpireBaseTrust(maxAge time.Duration) bool {
+	if maxAge <= 0 || !w.baseTrusted() {
+		return false
+	}
+	at := w.baseTrustedAt.Load()
+	if at == 0 || time.Since(time.Unix(0, at)) < maxAge {
+		return false
+	}
+	w.invalidateBase("base trust older than the configured maximum age")
+	w.baseTrustEpoch.Add(1)
+	return true
+}
+
+// BaseTrustEpoch is the number of times this worker's base trust has expired. A GitTarget forces
+// its own re-read when this differs from the epoch it last acted on. See baseTrustEpoch.
+func (w *BranchWorker) BaseTrustEpoch() uint64 { return w.baseTrustEpoch.Load() }
 
 // invalidateBase records that the worktree can no longer be assumed to sit at the remote tip.
 //
@@ -1552,7 +1649,7 @@ func (w *BranchWorker) noteRemoteIdentity(remoteURL string) {
 //
 // The push session reads the remote's ref advertisement on a connection the cycle was making
 // anyway, and a cycle that commits nothing still reaches it, so a trusted base needs no fetch to
-// plan against. That is the whole saving. See docs/design/inbound-push-notification.md §2 and §3.
+// plan against. That is the whole saving. See docs/design/push-notification-and-reconcile-trigger.md §1.3 and §1.5.
 //
 // Only the first commit of a cycle may fetch at all: a reset would destroy the local commits the
 // retained writes already produced. When those exist AND the worktree is dirty, recovery is the
@@ -2406,11 +2503,19 @@ func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	// syncToRemote, and both paths inside syncToRemote leave a clean worktree — checkoutAndReset
 	// passes Force, and makeHeadUnborn clears the index and the tree.
 	//
-	// The condition handles two rows of §3's loss table by construction. SmartFetch falls back to
-	// the remote's default branch when the target branch does not exist, and syncToRemote reports
-	// that as ExistsOnRemote=false, so a worktree based on the wrong branch is never trusted;
-	// neither is an unborn one.
-	w.setBaseTrusted(report.ExistsOnRemote && !report.HEAD.Unborn)
+	// Trust is gained unconditionally, including when the target branch does not exist on the
+	// remote (SmartFetch fell back to the default branch) and when it is unborn. An earlier
+	// version excluded both, on the reasoning that such a worktree is "not based on the target
+	// branch". That reasoning inverts the invariant: the invariant is that the worktree matches
+	// the remote's state for this branch, and for a branch the remote does not have, a worktree
+	// based on the default branch (or an empty one) IS that state. There is nothing on the remote
+	// left to learn, so a fetch per cycle could only ever return the same answer.
+	//
+	// What makes it safe is the same thing that makes it safe everywhere else: the
+	// compare-and-swap. A push onto a branch we believe is absent declares Old = zero, which the
+	// server rejects if somebody has since created it, and the rejection invalidates the base and
+	// fetches. So the cost of being wrong is one rejection, not a bad write.
+	w.setBaseTrusted(true)
 	w.markWorktreeClean()
 
 	// Log if this was an unborn branch
@@ -2434,3 +2539,13 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 }
 
 // getAuthFromSecret is defined in helpers.go
+
+// SeedBaseTrustForTest marks the base trusted as of `at`. It exists so a test in another package
+// can build a worker in a known trust state; nothing in production calls it.
+func (w *BranchWorker) SeedBaseTrustForTest(at time.Time) {
+	w.baseTrustedState.Store(true)
+	w.baseTrustedAt.Store(at.UnixNano())
+}
+
+// BaseTrustedForTest exposes the flag to tests in another package.
+func (w *BranchWorker) BaseTrustedForTest() bool { return w.baseTrusted() }

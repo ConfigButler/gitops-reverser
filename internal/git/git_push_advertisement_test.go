@@ -6,7 +6,7 @@ package git
 // the worker now listens, and that it still falls back to the network when the remote said
 // nothing.
 //
-// See docs/design/inbound-push-notification.md §2.2.
+// See docs/design/push-notification-and-reconcile-trigger.md §1.3.
 
 import (
 	"context"

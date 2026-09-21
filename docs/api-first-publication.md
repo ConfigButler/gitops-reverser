@@ -11,10 +11,10 @@ competing Git writer. The push already checks the remote branch, so a healthy wo
 locally and spend its network budget on publication.
 
 This guide describes the shipped behavior. The inbound Git push receiver remains a proposal: see
-[how to call the receiver](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it)
+[how to call the receiver](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it)
 for the request shape it will accept. The one scheduling limitation to know about is that retained
 work has no retry timer of its own; [failure timing](#failure-timing-and-memory-limits) says what
-that means in practice. The [inbound notification design](design/inbound-push-notification.md)
+that means in practice. The [inbound notification design](design/push-notification-and-reconcile-trigger.md)
 contains the implementation history and the proposed receiver; [architecture](architecture.md)
 covers the wider operator.
 

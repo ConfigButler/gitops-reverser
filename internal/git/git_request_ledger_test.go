@@ -10,7 +10,7 @@ package git
 // every row carries request and response bytes beside its count, and the golden file publishes a
 // coarse size class for them — see sizeClass for why the class rather than the number.
 //
-// See docs/design/inbound-push-notification.md §4.1, which specifies this ledger.
+// See docs/design/push-notification-and-reconcile-trigger.md §1.6, which specifies this ledger.
 
 import (
 	"fmt"

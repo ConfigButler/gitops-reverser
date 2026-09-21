@@ -65,6 +65,55 @@ type GitTargetSpec struct {
 	// +optional
 	Encryption *EncryptionSpec `json:"encryption,omitempty"`
 
+	// Why this is an empty commit rather than a direct trigger of the reconciler: naming the
+	// Kustomization or Application that renders a folder would mean deriving a mapping neither
+	// Flux nor Argo CD derives (Argo refreshes every Application whose repository matches and
+	// narrows only on an annotation; a Flux Receiver names its resources by hand), and then
+	// writing to somebody else's object on the strength of it. Moving the branch asks each tool
+	// instead of modelling it. See docs/design/push-notification-and-reconcile-trigger.md, part 3
+	// option 7.
+
+	// OnRefusal decides what happens when a live edit is refused because it has no legal
+	// destination in the Git folder. A refusal produces no commit, so nothing normally reverts
+	// the edit: with Argo CD selfHeal off it stays OutOfSync until a human acts, and under Flux
+	// it survives until the next apply interval.
+	//
+	// "Ignore", the default, records the refusal in conditions and events and does nothing else.
+	//
+	// "PushEmptyCommit" pushes a commit that changes no file, which moves the branch. Flux then
+	// sees a new artifact revision and re-applies; Argo CD sees a revision it has not synced, so
+	// its selfHeal=false skip does not apply and automated sync reverts the edit.
+	//
+	// It fires only when the refused write was an edit to a document the folder ALREADY holds and
+	// is not removing. An object Git does not manage is left alone deliberately: re-applying would
+	// do nothing to it (Flux prunes from its inventory and Argo CD from the resources it tracks,
+	// and a live-created object is in neither), or, if it was managed and has since been removed
+	// from Git, would prune it. That second one is the reconciler's decision to take on its own
+	// schedule, not this operator's to hurry. Eligibility is per document, not per file: a write
+	// that removes a document from a file other documents keep alive is still a removal, and a
+	// flush that removes one anywhere is excluded whole.
+	//
+	// A standing refusal earns one commit, not one per recheck. The target re-reads its folder and
+	// refuses again for as long as nobody corrects the edit, and an observation of the same objects
+	// with the same issues is already covered by the commit that was made for it. A different
+	// refused edit is a new commit, as is the same edit re-made after the target accepted a write
+	// in between.
+	//
+	// It also fires only for a refusal where the folder itself is accepted and this one write had
+	// nowhere to land. A folder-level refusal (unparseable YAML, a foreign file) is left alone: an
+	// empty commit cannot repair a folder, and the reconciler may be mid-way through its own
+	// corrections there.
+	//
+	// Two consequences remain to weigh. The commit wakes EVERYTHING watching the branch, not just
+	// the refused object, so it can hurry along unrelated work including another target's pending
+	// prune. And it can revert allowed live edits that are still waiting in the commit window. An
+	// Argo CD Application carrying argocd.argoproj.io/manifest-generate-paths ignores the commit
+	// entirely, because no file under its refresh paths changed.
+	// +optional
+	// +kubebuilder:validation:Enum=Ignore;PushEmptyCommit
+	// +kubebuilder:default=Ignore
+	OnRefusal RefusalAction `json:"onRefusal,omitempty"`
+
 	// Why a "{label:key|fallback}" may start with "_" where a label value may not: a
 	// fallback that is itself label-legal shares its bucket with the resources genuinely
 	// labeled it, and nothing downstream can separate the two again. A leading "_" is the
@@ -535,4 +584,25 @@ type GitTargetList struct {
 
 func init() {
 	SchemeBuilder.Register(&GitTarget{}, &GitTargetList{})
+}
+
+// RefusalAction is the action taken when a live write is refused. See GitTargetSpec.OnRefusal.
+type RefusalAction string
+
+const (
+	// RefusalActionIgnore records the refusal and does nothing else. It is the default.
+	RefusalActionIgnore RefusalAction = "Ignore"
+	// RefusalActionPushEmptyCommit pushes a commit that changes no file, so the branch moves and
+	// the reconciler re-applies the desired state, reverting the refused edit.
+	RefusalActionPushEmptyCommit RefusalAction = "PushEmptyCommit"
+)
+
+// EffectiveOnRefusal returns the refusal action, resolving an omitted field to the default. The
+// CRD default makes this redundant for objects that went through the API server, and not for a
+// literal built in a test or by an older client.
+func (g *GitTarget) EffectiveOnRefusal() RefusalAction {
+	if g.Spec.OnRefusal == "" {
+		return RefusalActionIgnore
+	}
+	return g.Spec.OnRefusal
 }

@@ -16,7 +16,7 @@ package git
 // before the push, so the push simply re-created the branch. These tests are what keep that
 // recovery once the prefetch is conditional.
 //
-// See docs/design/inbound-push-notification.md §2 and §3.
+// See docs/design/push-notification-and-reconcile-trigger.md §1.3 and §1.5.
 
 import (
 	"context"

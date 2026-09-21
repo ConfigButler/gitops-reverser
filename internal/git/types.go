@@ -211,6 +211,12 @@ const (
 	// content-derived mark-and-sweep against the worktree (upsert every desired
 	// resource, drop every watched managed document the snapshot did not contain).
 	PendingWriteResync PendingWriteKind = "resync"
+	// PendingWriteRefusalTouch carries no content at all. It exists to move the branch after a
+	// refused write, so the reconciler re-applies the desired state and reverts the live edit a
+	// refusal left in place. It is the only write kind that deliberately produces a commit with
+	// an empty tree diff, and it is created only for a GitTarget with
+	// spec.onRefusal: PushEmptyCommit.
+	PendingWriteRefusalTouch PendingWriteKind = "refusal_touch"
 )
 
 type pendingTargetKey struct {
@@ -422,6 +428,17 @@ type ResyncRequest struct {
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult
+}
+
+// refusalCell is the watched cell this request speaks for: its scope's cell for a per-type
+// reconcile, and the ZERO cell for a whole-GitTarget resync, which speaks for every cell the
+// target holds rather than for one of them. It is what keys a refusal's dedupe memory and its
+// queued commit, so that one watched type's success neither clears nor re-arms another's.
+func (r *ResyncRequest) refusalCell() types.CellKey {
+	if r == nil || r.Scope == nil {
+		return types.CellKey{}
+	}
+	return r.Scope.Cell
 }
 
 // resyncKey identifies the slice of a mirror a resync reconciles: one GitTarget,

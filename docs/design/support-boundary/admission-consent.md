@@ -10,13 +10,14 @@
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md)
 > — the write boundary; fan-in = 1; base read-only by L1,
 > [render-attribution.md](render-attribution.md) §5 — attribution may be heuristic, verification may not,
-> [orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md) — **the sibling half: what
-> reverts a refusal that lands anyway**,
+> [the reconcile trigger options](../push-notification-and-reconcile-trigger.md#part-3-the-options)
+> — **the sibling half: what reverts a refusal that lands anyway**,
 > [support-contract.md](support-contract.md)
 
 This is one half of a two-part design. This half is about turning a *refusal* into a *yes* at the
-moment of the edit; the other half — [the reconcile trigger](orchestrator-reconcile-trigger.md) — is
-about making the *outcome* of a "no" prompt and visible. They compose, but they are separate topics
+moment of the edit; the other half —
+[the reconcile trigger](../push-notification-and-reconcile-trigger.md#option-6-trigger-a-reconcile-to-revert-a-refused-edit)
+— is about making the *outcome* of a "no" prompt and visible. They compose, but they are separate topics
 and separate documents.
 
 Today a write the operator cannot place is refused, correctly, but the refusal is **binary and
@@ -194,7 +195,7 @@ Two limits retained from the preflight design:
   flush-time oracle re-verifies the *whole batch* against the declared intents — including the
   consented ones — and still refuses if the consented set does not actually converge. So a stale or
   mistaken admission-time "yes" cannot cause a bad write. Worst case it lands, the flush refuses it,
-  and the affected target enters error. The [reconcile trigger](orchestrator-reconcile-trigger.md)
+  and the affected target enters error. The [reconcile trigger](../push-notification-and-reconcile-trigger.md#option-6-trigger-a-reconcile-to-revert-a-refused-edit)
   is a separate proposed recovery mechanism; automatic rollback is not part of preflight.
 
 ---

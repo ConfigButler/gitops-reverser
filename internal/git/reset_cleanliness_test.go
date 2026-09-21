@@ -12,7 +12,7 @@ package git
 // reaches the server, so the compare-and-swap caveat that forces other tests onto
 // startRealGitServer does not apply.
 //
-// See docs/design/inbound-push-notification.md §3.1 and §5.
+// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
 
 import (
 	"context"

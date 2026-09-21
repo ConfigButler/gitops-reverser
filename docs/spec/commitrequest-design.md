@@ -94,7 +94,7 @@ never polls indefinitely.
 so there is nothing for a push to say.) A window that produced no diff used to resolve
 `AlreadyPresent` at finalize, on the strength of the local plan. That was only sound while every
 cycle fetched before it planned. It no longer does (see
-[inbound push notification](../design/inbound-push-notification.md) §3), so the plan may have run
+[inbound push notification](../design/push-notification-and-reconcile-trigger.md) §3), so the plan may have run
 against a tree the remote has moved past, and the replay that follows a rejected push can turn the
 same captured object into a real commit. "Already present" is a claim about the remote, so the
 remote settles it: a no-diff request resolves `AlreadyPresent` when the push confirms there was

@@ -74,7 +74,7 @@ failure direction is safe by construction: a stale "untrusted" costs one fetch, 
 is caught by the compare-and-swap on the next push. **The corollary is the rule to keep in your head
 when adding code here:** anything that resolves, commits, or concludes without reaching a push
 advertisement must either fetch, or refuse to conclude. See
-[inbound push notification](design/inbound-push-notification.md) §3.
+[inbound push notification](design/push-notification-and-reconcile-trigger.md) §3.
 
 That trust belongs to **one repository**. A worker is keyed by
 `(GitProvider namespace, GitProvider name, branch)`, while `spec.url` is immutable
@@ -86,9 +86,11 @@ instead.
 **Nothing tells an idle target that its branch moved.** A target that is not writing makes no round
 trip, so it holds its previous view of the folder until it next publishes, resyncs, or is asked to
 re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
-ten seconds because it is not converged; a healthy idle one does not. Closing that is the inbound
-receiver's job, and it is designed but not built:
-[§8.3](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it) is the
+ten seconds because it is not converged; a healthy idle one does not. `--base-trust-max-age` (off by
+default) bounds how stale that view may get, per `GitTarget` rather than per branch: every push
+renews the shared checkout, so a branch-wide age would let one busy target postpone a quiet one
+indefinitely. Closing the gap properly is the inbound receiver's job, designed but not built:
+[§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
 request shape it will accept.
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
@@ -1095,6 +1097,13 @@ write side is shared with live writes):
 - the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
   YAML are retained, not materialised and not refused;
 - nothing is committed if the apply cannot complete safely.
+
+A **write-boundary** refusal is a different thing and is scoped accordingly: the folder is
+accepted, and one edit had nowhere to land in it. Only those can earn the empty commit a target
+opts into with
+[`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-specconrefusal), and
+only when the edit is to a document the folder already holds. A folder-level refusal above is
+excluded deliberately: an empty commit cannot repair a folder, and only a human can.
 
 The acceptance gate is **structure-only on purpose**: it never refuses on a discovery-derived
 followability fact (unwatched / out-of-scope), which can blink on a discovery wobble; only facts that are

@@ -3,7 +3,7 @@
 > **design**: open, nothing built. Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-21.
 > Related: [`../api-first-publication.md`](../api-first-publication.md),
-> [`inbound-push-notification.md`](inbound-push-notification.md),
+> [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../spec/commit-window-refactor.md`](../spec/commit-window-refactor.md)
 
 **The question.** `PushCooldown` predates the commit window. The window now groups an editing burst
@@ -253,7 +253,7 @@ Ordered by how much they should worry you.
 1. **Request amplification on shared branches.** The architecture explicitly supports several
    `GitTarget`s per branch, and multi-tenant installs are the case where the cooldown is load-bearing.
    Option B turns row 4's `2` into `6`. This contradicts the premise of
-   [`inbound-push-notification.md`](inbound-push-notification.md), which spent a whole change
+   [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md), which spent a whole change
    removing two requests per publication.
 2. **Hosted Git rate limits.** With serialization the bound is one push per push-duration, which on
    a fast remote is several per second sustained. GitHub's secondary rate limits are real and are
