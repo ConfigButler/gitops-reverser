@@ -663,6 +663,81 @@ needs no webhook to be correct, only to be fast.
 matters and waking the branch is unacceptable, and that case now has to argue for the interpreters
 on its own rather than inheriting the need from gap B.
 
+### Option 8: hand the action to the installer
+
+**What it is.** Stop deciding what a refusal should cause. Emit the fact, with enough detail to act
+on, and let whoever installed the operator decide. We then need to know nothing about Argo CD or
+Flux for gap B at all.
+
+**The instinct is right and it is the same one behind options 4 and 7:** do not model somebody
+else's system, hand them the decision. What it turns on is the *mechanism*, and the three candidates
+are not equivalent.
+
+#### 8a. Execute a script mounted from a ConfigMap: declined
+
+The obvious shape: mount a script, run it on refusal, pass the `GitTarget` and the destination as
+arguments. It is declined, and recorded here so it is not re-proposed.
+
+**It is arbitrary code execution as the operator.** The operator process holds Git push credentials,
+SSH private keys, SOPS and age keys, and the kubeconfigs of every mirrored remote cluster, and its
+service account watches the whole cluster. A script mounted from a ConfigMap runs with all of that.
+Anyone who can write that one ConfigMap can exfiltrate every credential the operator holds. That is
+a privilege escalation from "edit a ConfigMap in one namespace" to "own every Git repository and
+cluster this operator touches", and no amount of care in the handler changes it.
+
+**Argo CD already ran this experiment.** Config management plugins were configured in `argocd-cm`,
+were deprecated in 2.4 and **removed completely in 2.8**, and the replacement is a sidecar container
+with its own image and security context, not a mounted script. Flux does not offer the pattern at
+all.
+
+Three smaller objections, any one of which would still need answering:
+
+- **It blocks the branch queue.** Publication for a branch is one serialized worker. A script that
+  hangs stalls every write for that branch, so this needs timeouts, concurrency limits and an answer
+  for "the script is broken" before it is a feature.
+- **It fixes the base image.** The runtime is `distroless/static:debug`, whose shell is busybox from
+  the debug tag. Depending on that for a product feature pins the image to `:debug` and turns every
+  future attack-surface review into a conversation about it.
+- **We cannot test the outcome.** Our e2e could assert that the hook was called and nothing about
+  what it did, so the product's promise for gap B would shrink to "we told someone".
+
+#### 8b. Emit a structured event: recommended, and nearly free
+
+The operator already has an `EventRecorder` and already emits Events on condition transitions
+([`status.go`](../../internal/controller/status.go)). A refusal already sets `GitPathAccepted=False`.
+What is missing is an Event carrying enough to act on.
+
+**The payload has to say more than which target refused.** A handler that knows only the `GitTarget`
+and the destination cannot do anything specific. It needs the refused object (group, kind, namespace,
+name), the reason, and the author, because the useful actions are all per-object: revert this one
+resource, notify the person who made the edit, open a ticket naming the field.
+
+The installer then wires whatever they want to it, with no new privilege anywhere: a small
+controller watching Events, a Prometheus alert into Alertmanager, or a Flux `Alert` in
+notification-controller. This is the idiomatic Kubernetes seam, it costs us one call, and it is
+testable on our side because "we emitted this Event with these fields" is an assertion.
+
+The honest trade against 8a: the installer has to run *something*, rather than dropping a shell
+script into a ConfigMap. That is the price of not putting an RCE in the operator.
+
+#### 8c. Notify an endpoint the installer configures
+
+The same idea over HTTP, and it is **option 2's outbound leg with a second event type**: the same
+configuration object, the same HMAC, the same retry and the same rule that a failed notification
+never fails a publication. Point it at a Flux `Receiver` after a push, or at the installer's own
+endpoint after a refusal.
+
+Worth building only once option 2 exists, at which point it is small. Until then 8b covers the same
+ground without any new machinery.
+
+#### How this composes
+
+Option 7 is the sensible **default** action for a refusal and option 8 is the **escape hatch** for
+installers who want something else, so they are not competitors. Between them, gap B is covered
+without the operator ever naming a `Kustomization` or an `Application`, which is what option 6
+needed the ownership interpreters for. **On this reading option 6 may never be built at all**, and
+the interpreters would then have to justify themselves on some other feature rather than on this one.
+
 ### 3.7 Summary
 
 | | Closes gap | New inbound surface | New outbound call | Git-host config | Needs ownership interpreters |
@@ -675,6 +750,8 @@ on its own rather than inheriting the need from gap B.
 | **5. Hold the push** | neither | no | no | unchanged | no |
 | **6. Trigger on refusal** | B | no | yes | unchanged | **yes** |
 | **7. Push an empty commit** | B | no | no | **none** | no |
+| **8b. Emit a structured Event** | B, by delegation | no | no | **none** | no |
+| **8c. Notify an endpoint** | B, by delegation | no | yes | **none** | no |
 
 Options 2, 3 and 4 share one configuration object and one piece of bookkeeping (`lastCommitSHA`
 advancing on a successful push), so whichever is built first should shape both.
@@ -683,6 +760,11 @@ advancing on a successful push), so whichever is built first should shape both.
 this page expected to end up: gap B was the one that looked like it needed the ownership
 interpreters. It adds no configuration at all. Read its four costs before believing that, in
 particular what it does under `prune: true`.
+
+**Options 7 and 8 together are why option 6 may never be built.** One gives a sensible default
+action and the other gives installers a seam for anything else, and neither requires the operator to
+name an orchestrator object. Option 6 remains the only way to wake exactly one object rather than
+the branch, and that is now the whole of its case.
 
 ---
 
