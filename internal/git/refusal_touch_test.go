@@ -281,3 +281,56 @@ func TestRefusalTouch_CommitsForAnObjectGitManages(t *testing.T) {
 		[]Event{configMapEvent("managed", "alice", "team-a"), configMapEvent("absent", "alice", "team-a")}),
 		"a batch is only safe when every object in it is managed")
 }
+
+// TestRefusalTouch_ReplayKeepsAcceptedWritesAndTheEmptyDiff is the contention case a review asked
+// for, and it lives here rather than in e2e on purpose: the property is about ARRIVAL ORDER
+// between our push and somebody else's, and the bi-directional corner does not control that.
+// Here the contending commit is made on disk, between our commit and our push, so the rejection is
+// deterministic instead of hoped for.
+//
+// The three things it pins, which is what makes a mixed batch safe:
+//
+//   - The accepted write survives the replay. A refusal must not cost the writes that were fine.
+//   - The empty commit is still empty after being replanned onto a moved tree. Replay re-plans
+//     each retained write, and a write with no content must come back with no content rather than
+//     picking anything up from the new base.
+//   - The other writer's file is still there. We rebase onto their work, never over it.
+func TestRefusalTouch_ReplayKeepsAcceptedWritesAndTheEmptyDiff(t *testing.T) {
+	f := newLedgerFixture(t, "refusal-replay", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+
+	// An ordinary accepted write, committed and retained but not yet pushed.
+	f.commit(false, "accepted")
+	require.Len(t, f.pending, 1)
+
+	// The refusal's empty commit joins the same retained batch, exactly as the event loop would
+	// append it while an earlier write is still waiting for the push cooldown.
+	touch, err := f.worker.buildRefusalTouchWrite(
+		f.worker.ctx, itypes.NewResourceReference("target-a", "default"), "unsupported folder content")
+	require.NoError(t, err)
+	batch := []PendingWrite{*touch}
+	require.NoError(t, f.worker.commitPendingWrites(batch, true))
+	f.pending = append(f.pending, batch...)
+
+	// Somebody else moves the branch before our push, so the compare-and-swap rejects it and the
+	// worker replays BOTH retained writes onto their tip.
+	f.contend("OUTSIDE.md", "from-another-writer\n")
+
+	f.push()
+
+	head := gitOut(t, f.repoDir, "rev-parse", "main")
+	tip, parent := head, gitOut(t, f.repoDir, "rev-parse", head+"^")
+
+	// Identify the commits by their messages rather than trusting the replay's ordering, so a
+	// reordering shows up as a failure here instead of silently retargeting the assertions below.
+	assert.Contains(t, gitOut(t, f.repoDir, "log", "-1", "--format=%B", tip), "refused write",
+		"the tip must be the refusal commit")
+	assert.Empty(t, gitOut(t, f.repoDir, "diff-tree", "--no-commit-id", "--name-only", "-r", tip),
+		"the refusal commit must still be empty after being replayed onto a moved branch")
+	assert.Contains(t, gitOut(t, f.repoDir, "diff-tree", "--no-commit-id", "--name-only", "-r", parent),
+		"accepted", "the accepted write must survive the replay")
+	assert.Equal(t, "from-another-writer",
+		gitOut(t, f.repoDir, "show", "main:OUTSIDE.md"),
+		"the other writer's commit must be rebased onto, never over")
+}

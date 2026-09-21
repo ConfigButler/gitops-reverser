@@ -934,6 +934,18 @@ must never be allowed to lapse:
    `GitTarget` is suspended first, or the operator publishes the drift and there is nothing left to
    revert; and the `Kustomization` is never reconciled by hand, or it would apply for a reason that
    has nothing to do with the new revision. **Built**, in the Flux corner.
+0b. **The whole loop, with nothing staged but the broken folder.** A loose non-YAML file makes the
+   folder unacceptable to the operator and not to Flux, a live edit to a managed object is refused
+   for real, and the operator makes its OWN empty commit, which Flux then acts on. It also asserts
+   the thing a triggered write most needs to prove: that it **settles**. Flux's revert is itself a
+   watch event and is refused too, so it earns one more commit once the rate limit allows, and then
+   stops, because the revert restores the value Git already holds. **Built**, in the Flux corner.
+0c. **A refusal alongside accepted work, under contention.** Deliberately NOT an e2e: the property
+   is about arrival order between our push and somebody else's, which the corner does not control.
+   Over a real Git server the contending commit lands between our commit and our push, so the
+   rejection is deterministic, and the replay must keep the accepted write, bring the empty commit
+   back still empty, and rebase onto the other writer rather than over them. **Built**, in
+   `internal/git`.
 1. **The hazard cell.** A push changes an object we hold no pending write for. It survives in Git
    and reaches the cluster. This is §2.2 written as a test.
 2. **The contested cell, as decided.** A push changes an object we do hold a captured write for, and

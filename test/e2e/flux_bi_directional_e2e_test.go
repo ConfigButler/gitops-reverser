@@ -423,7 +423,94 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 				"a new revision must be enough to make Flux re-apply and revert the drift")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
+	// The whole option, end to end, with nothing staged by the test except the broken folder:
+	// a REAL refused live write, the operator's OWN empty commit, and Flux correcting the edit.
+	//
+	// The sibling spec above isolates the mechanism (a new revision is enough) by pushing the
+	// commit by hand. This one proves the operator gets there on its own, and that it settles.
+	It("commits for a real refusal, Flux reverts the edit, and it settles", func() {
+		By("asking this GitTarget to commit on refusal")
+		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName,
+			"--type=merge", "-p", `{"spec":{"onRefusal":"PushEmptyCommit"}}`)
+		Expect(err).NotTo(HaveOccurred(), "failed to set spec.onRefusal")
+		DeferCleanup(func() {
+			_, _ = kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName,
+				"--type=merge", "-p", `{"spec":{"onRefusal":"Ignore"}}`)
+		})
+
+		// A loose non-YAML file makes the folder unacceptable to the operator, which is how a
+		// live write gets refused for real. Flux is unaffected: it scans the path for manifests
+		// and a .txt file is not one, so it keeps applying the folder throughout.
+		By("making the folder unacceptable to the operator, but not to Flux")
+		Expect(run.gitPull()).To(Succeed())
+		Expect(os.WriteFile(run.repoPath(run.livePath, "secrets.txt"),
+			[]byte("not a manifest\n"), 0o600)).To(Succeed())
+		Expect(run.commitAllAndPush("bi-directional: add foreign content to the live path")).To(Succeed())
+
+		// Force the re-read rather than waiting for one: the operator does not poll, so an idle
+		// target would not notice the new file until it next wrote.
+		_, err = kubectlRunInNamespace(testNs, "annotate", "gittarget", run.gitTargetName,
+			fmt.Sprintf("reconcile.configbutler.ai/requestedAt=%d", time.Now().UnixNano()), "--overwrite")
+		Expect(err).NotTo(HaveOccurred(), "failed to request a re-read")
+		waitForGitTargetGitPathRefused(run.gitTargetName, testNs, "UnsupportedContent")
+
+		Expect(run.gitPull()).To(Succeed())
+		refusedCount, err := run.gitMainCommitCount()
+		Expect(err).NotTo(HaveOccurred())
+		refusedHead := run.gitHEAD()
+
+		By("editing the managed object through the Kubernetes API, which is now refused")
+		_, err = kubectlRunInNamespace(testNs, "patch",
+			iceCreamCRDName(crdGroupBiDirectional), run.secondOrderName,
+			"--type=merge", "-p", `{"spec":{"container":"Cone"}}`)
+		Expect(err).NotTo(HaveOccurred(), "failed to edit the managed IceCreamOrder")
+
+		By("the operator commits an empty commit of its own")
+		var touchHead string
+		Eventually(func(g Gomega) {
+			g.Expect(run.gitPull()).To(Succeed())
+			count, countErr := run.gitMainCommitCount()
+			g.Expect(countErr).NotTo(HaveOccurred())
+			g.Expect(count).To(BeNumerically(">", refusedCount),
+				"the refused write must produce a commit from the operator")
+			touchHead = run.gitHEAD()
+			g.Expect(touchHead).NotTo(Equal(refusedHead))
+		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
+
+		Expect(run.emptyDiffAt(touchHead)).To(BeTrue(),
+			"the operator's commit must change no file; a refused write writes nothing")
+		Expect(run.commitMessageAt(touchHead)).To(ContainSubstring(run.gitTargetName),
+			"the commit must name the GitTarget whose write was refused")
+
+		By("Flux corrects the edit from that commit, without the Kustomization being asked")
+		run.reconcileFluxSource()
+		Eventually(func(g Gomega) {
+			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Cup"),
+				"the refused live edit must be reverted by the reconcile the operator triggered")
+		}, 3*time.Minute, biPollInterval).Should(Succeed())
+
+		// Flux's revert is itself a watch event, and the folder is still unacceptable, so it is
+		// refused too and earns one more commit once the per-target rate limit allows. The
+		// property that matters is that this TERMINATES: the revert restores the value Git
+		// already holds, so no further event follows it.
+		By("and it settles instead of looping")
+		settled := run.waitForStableRemoteCommitCount(90 * time.Second)
+		Expect(settled).To(BeNumerically("<=", refusedCount+2),
+			"a refused edit and the revert that follows it must cost at most one commit each")
+	})
+
 })
+
+// commitMessageAt returns the full message of one commit, so a spec can assert the operator said
+// why it made a commit nobody can read a diff from.
+func (r biDirectionalRun) commitMessageAt(sha string) string {
+	GinkgoHelper()
+	cmd := exec.Command("git", "log", "-1", "--format=%B", sha)
+	cmd.Dir = r.checkoutDir
+	out, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "git log: %s", out)
+	return string(out)
+}
 
 // emptyDiffAt reports whether the commit changed no file, which is the property that separates
 // this from an ordinary Git-side change driving an ordinary sync.
