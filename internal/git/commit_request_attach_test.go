@@ -4,12 +4,14 @@ package git
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -763,4 +765,183 @@ func TestMatchesWindow_GitTargetAlwaysScopes(t *testing.T) {
 			Attribution: o, GitTarget: crTarget, GitTargetNamespace: "other",
 		}), "outcome %q must not match across GitTarget namespaces", o)
 	}
+}
+
+// The re-attach contract. A CommitRequest is settled by the push and by nothing else, so between
+// its window's finalize and that push it is neither pending nor resolved. The controller re-sends
+// its attach every couple of seconds throughout that gap, and these four tests pin what the worker
+// must do with those re-sends.
+
+// TestAttach_ReSentAttachDuringPushCooldownDoesNotResolve is the gap at its narrowest: one push
+// cooldown. Forgetting the request at finalize made the re-send look like a new request, which
+// expired against its own fresh grace and reported NoOpenWindow for a commit that was sitting in
+// pendingWrites waiting for the cooldown to elapse.
+func TestAttach_ReSentAttachDuringPushCooldownDoesNotResolve(t *testing.T) {
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	// The cooldown is active, so the finalize below commits locally and does not push.
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+	serviceAttach(loop, attachReq("alice", 0))
+
+	require.Len(t, loop.pendingWrites, 1, "the window committed locally and is retained")
+	require.NotNil(t, loop.pendingWrites[0].CommitRequest, "the request rides that write")
+	_, resolved := outcome(t, worker)
+	require.False(t, resolved, "nothing has reached the remote yet")
+
+	// The controller re-sends, twice, exactly as it does every commitRequestPollInterval while it
+	// has no outcome to read.
+	for range 2 {
+		serviceAttach(loop, attachReq("alice", 0))
+		_, resolved = outcome(t, worker)
+		require.False(t, resolved,
+			"a re-sent attach for a request that is already committed locally must not resolve it")
+	}
+	assert.Len(t, loop.pendingWrites, 1, "and it must not register a second write")
+
+	// The push is what settles it, with the SHA that landed.
+	loop.pushPending()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok, "the push settles it")
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeCommitted, res.Outcome)
+
+	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, ref.Hash().String(), res.SHA, "the reported SHA is the commit on the remote")
+}
+
+// TestAttach_ReSentAttachDuringAFailedPushDoesNotResolve is the same gap unbounded. A cooldown is
+// five seconds; a push that keeps failing retains the write indefinitely, and the controller
+// re-sends for as long as that lasts.
+func TestAttach_ReSentAttachDuringAFailedPushDoesNotResolve(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	serviceAttach(loop, attachReq("alice", 0))
+	require.Len(t, loop.pendingWrites, 1)
+
+	originalPush := pushAtomicFn
+	pushAtomicFn = func(
+		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
+		_ plumbing.ReferenceName, _ []gitclient.Option,
+	) error {
+		return errors.New("dial tcp: connection reset by peer")
+	}
+	defer func() { pushAtomicFn = originalPush }()
+
+	originalFetch := fetchRemoteBranchHashFn
+	fetchRemoteBranchHashFn = func(
+		_ context.Context, _ *gogit.Repository, _ plumbing.ReferenceName, _ []gitclient.Option,
+	) (plumbing.Hash, error) {
+		return worker.pushCycleRootHash, nil // unmoved: not contention, so no replay
+	}
+	defer func() { fetchRemoteBranchHashFn = originalFetch }()
+
+	for range 3 {
+		loop.pushPending()
+		require.Len(t, loop.pendingWrites, 1, "a failed push retains the write")
+		serviceAttach(loop, attachReq("alice", 0))
+		_, resolved := outcome(t, worker)
+		require.False(t, resolved,
+			"the request is still in flight: the remote has not accepted or refused it")
+	}
+}
+
+// TestAttach_ACommittedRequestNeverClaimsAnotherWindow is the second, worse failure the forgotten
+// request caused. A re-registered request is waiting and unattached, so the next same-author
+// window would bind it — stamping this request's message onto a commit its author never made, and
+// then resolving the request with that unrelated commit's SHA.
+func TestAttach_ACommittedRequestNeverClaimsAnotherWindow(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	const message = "save: only my own window"
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("mine", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	req := attachReq("alice", 0)
+	req.Message = message
+	serviceAttach(loop, req)
+	require.Len(t, loop.pendingWrites, 1)
+
+	// The controller re-sends, and a fresh window of alice's opens while the push is still held.
+	serviceAttach(loop, attachReq("alice", 0))
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("someone-elses-save", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+	loop.serviceCommitRequests()
+
+	assert.Nil(t, loop.openWindow.pendingCR,
+		"a request whose window is already committed must not claim a second window")
+	assert.Empty(t, loop.openWindow.pendingMessage,
+		"and must not lend its message to a commit its author did not make")
+}
+
+// TestAttach_ShutdownFailsACommittedRequestThatNeverPushed closes the hole that keeping the
+// request in flight opens. Only a push settles it, so a loop that exits with the write still
+// retained must say so — otherwise the controller polls out its whole safety window and fails
+// closed on a timeout, which explains nothing.
+func TestAttach_ShutdownFailsACommittedRequestThatNeverPushed(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("stranded", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	serviceAttach(loop, attachReq("alice", 0))
+	require.Len(t, loop.pendingWrites, 1)
+
+	originalPush := pushAtomicFn
+	pushAtomicFn = func(
+		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
+		_ plumbing.ReferenceName, _ []gitclient.Option,
+	) error {
+		return errors.New("dial tcp: connection reset by peer")
+	}
+	defer func() { pushAtomicFn = originalPush }()
+
+	originalFetch := fetchRemoteBranchHashFn
+	fetchRemoteBranchHashFn = func(
+		_ context.Context, _ *gogit.Repository, _ plumbing.ReferenceName, _ []gitclient.Option,
+	) (plumbing.Hash, error) {
+		return worker.pushCycleRootHash, nil
+	}
+	defer func() { fetchRemoteBranchHashFn = originalFetch }()
+
+	loop.handleShutdown()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok, "a shutdown that could not push must still resolve the request")
+	require.Error(t, res.Err, "and must say the commit never reached the remote")
+	assert.Contains(t, res.Err.Error(), "worker stopped")
 }

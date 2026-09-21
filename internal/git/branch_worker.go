@@ -1027,7 +1027,27 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 		// the worker exits, even if a push was just sent.
 		l.pushPending()
 	}
+	l.failUnpushedCommitRequests()
 	l.drainUnhandledQueueItems()
+}
+
+// failUnpushedCommitRequests settles every CommitRequest still riding a write the exiting loop
+// could not push.
+//
+// A request that reached a local commit is resolved by the push and by nothing else, so a
+// shutdown whose final push failed would leave it in flight with no loop left to settle it. The
+// controller would poll until its own safety window expired and then fail closed on a timeout,
+// which says nothing about what happened. Say what happened instead.
+func (l *branchWorkerEventLoop) failUnpushedCommitRequests() {
+	for i := range l.pendingWrites {
+		id := l.pendingWrites[i].CommitRequest
+		if id == nil {
+			continue
+		}
+		l.resolveCommitRequest(*id, FinalizeResult{
+			Err: errors.New("worker stopped before the commit reached the remote"),
+		})
+	}
 }
 
 // drainUnhandledQueueItems clears items the exiting loop will never handle. Each was counted into
@@ -1194,7 +1214,13 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// past, and the replay after the rejection can produce a real commit for a request that
 		// has already told its caller there was nothing to do. "Already present" is a claim
 		// about the REMOTE, so only the remote can settle it, and the push is where it speaks.
-		delete(l.pendingCRs, *pendingCR)
+		//
+		// It is MARKED rather than forgotten. Dropping it here left the worker unable to tell a
+		// re-sent attach for this very request from a new one, which resolved it NoOpenWindow
+		// during the push cooldown — the one window where it is neither pending nor resolved.
+		if pcr := l.pendingCRs[*pendingCR]; pcr != nil {
+			pcr.committed = true
+		}
 	}
 
 	l.w.Log.Info("Open commit window finalized",
