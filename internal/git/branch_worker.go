@@ -828,6 +828,14 @@ type branchWorkerEventLoop struct {
 	// window opens (then it attaches to it) and until its finalize deadline fires.
 	// Loop-goroutine only.
 	pendingCRs map[commitRequestID]*pendingCommitRequest
+	// refusalTimer fires when a refusal arrived inside the rate-limit window and was coalesced
+	// into a trailing commit. See refusal_touch.go.
+	refusalTimer *time.Timer
+	// refusalPending names the target that trailing commit is for, empty when none is due.
+	refusalPending itypes.ResourceReference
+	// refusalPendingDetail is the most recent refusal's detail, for the commit message.
+	refusalPendingDetail string
+
 	// attachTimer fires at the earliest pending finalize deadline, so an attached
 	// window is finalized at the end of its grace even with no further events.
 	attachTimer *time.Timer
@@ -846,7 +854,7 @@ func (l *branchWorkerEventLoop) run() {
 
 	l.syncUnpushedWorkFlag()
 	for {
-		commitC, pushC, attachC := l.timerChannels()
+		commitC, pushC, attachC, refusalC := l.timerChannels()
 		select {
 		case <-l.w.ctx.Done():
 			l.handleShutdown()
@@ -866,6 +874,9 @@ func (l *branchWorkerEventLoop) run() {
 			l.attachTimer = nil
 			// The work (attach waiting requests, finalize due ones) is done by
 			// serviceCommitRequests below.
+		case <-refusalC:
+			l.refusalTimer = nil
+			l.flushPendingRefusalTouch()
 		}
 		// After every wake: bind any waiting CommitRequest to an open window,
 		// finalize/reject any whose grace has elapsed, and re-arm the deadline timer.
@@ -897,8 +908,10 @@ func (l *branchWorkerEventLoop) syncUnpushedWorkFlag() {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
 }
 
-func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time, <-chan time.Time) {
-	var commitC, pushC, attachC <-chan time.Time
+func (l *branchWorkerEventLoop) timerChannels() (
+	<-chan time.Time, <-chan time.Time, <-chan time.Time, <-chan time.Time,
+) {
+	var commitC, pushC, attachC, refusalC <-chan time.Time
 	if l.commitTimer != nil {
 		commitC = l.commitTimer.C
 	}
@@ -908,7 +921,10 @@ func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.T
 	if l.attachTimer != nil {
 		attachC = l.attachTimer.C
 	}
-	return commitC, pushC, attachC
+	if l.refusalTimer != nil {
+		refusalC = l.refusalTimer.C
+	}
+	return commitC, pushC, attachC, refusalC
 }
 
 // totalRetainedBytes is what the operator-level byte cap is enforced against:
@@ -1051,7 +1067,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		name, namespace := atomicRefusalTarget(request)
 		if l.w.reportPathRefusal(err, name, namespace, request.sourceCell()) {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
-			l.touchBranchForRefusal(name, namespace, err.Error())
+			l.touchBranchForRefusal(name, namespace, err.Error(), request.Events)
 		} else {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
@@ -1276,7 +1292,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// and the next resync re-derives them.
 		if l.w.reportPathRefusal(err, targetName, targetNamespace, sourceCellForEvents(events)) {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
-			l.touchBranchForRefusal(targetName, targetNamespace, err.Error())
+			l.touchBranchForRefusal(targetName, targetNamespace, err.Error(), events)
 		} else {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",
@@ -1459,6 +1475,14 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopCommitTimer()
 	l.stopPushTimer()
 	l.stopAttachTimer()
+	l.stopRefusalTimer()
+}
+
+func (l *branchWorkerEventLoop) stopRefusalTimer() {
+	if l.refusalTimer != nil {
+		l.refusalTimer.Stop()
+		l.refusalTimer = nil
+	}
 }
 
 // baseTrusted reports whether the worktree is known to sit at the remote tip of the target
@@ -2483,3 +2507,13 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 }
 
 // getAuthFromSecret is defined in helpers.go
+
+// SeedBaseTrustForTest marks the base trusted as of `at`. It exists so a test in another package
+// can build a worker in a known trust state; nothing in production calls it.
+func (w *BranchWorker) SeedBaseTrustForTest(at time.Time) {
+	w.baseTrustedState.Store(true)
+	w.baseTrustedAt.Store(at.UnixNano())
+}
+
+// BaseTrustedForTest exposes the flag to tests in another package.
+func (w *BranchWorker) BaseTrustedForTest() bool { return w.baseTrusted() }

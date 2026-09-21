@@ -84,12 +84,18 @@ type GitTargetSpec struct {
 	// sees a new artifact revision and re-applies; Argo CD sees a revision it has not synced, so
 	// its selfHeal=false skip does not apply and automated sync reverts the edit.
 	//
-	// Three consequences to weigh before enabling it. The commit wakes EVERYTHING watching the
-	// branch, not just the refused object. It can revert allowed live edits that are still
-	// waiting in the commit window. And where the reconciler prunes, an object that was refused
-	// because it has no home in Git is DELETED rather than reverted. An Argo CD Application
-	// carrying argocd.argoproj.io/manifest-generate-paths ignores the commit entirely, because no
-	// file under its refresh paths changed.
+	// It fires only for objects the Git folder already holds a file for. An object Git does not
+	// manage is left alone deliberately: re-applying would do nothing to it (Flux prunes from its
+	// inventory and Argo CD from the resources it tracks, and a live-created object is in
+	// neither), or, if it was managed and has since been removed from Git, would prune it. That
+	// second one is the reconciler's decision to take on its own schedule, not this operator's to
+	// hurry.
+	//
+	// Two consequences remain to weigh. The commit wakes EVERYTHING watching the branch, not just
+	// the refused object, so it can hurry along unrelated work including another target's pending
+	// prune. And it can revert allowed live edits that are still waiting in the commit window. An
+	// Argo CD Application carrying argocd.argoproj.io/manifest-generate-paths ignores the commit
+	// entirely, because no file under its refresh paths changed.
 	// +optional
 	// +kubebuilder:validation:Enum=Ignore;PushEmptyCommit
 	// +kubebuilder:default=Ignore

@@ -248,16 +248,17 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, sourceProviderErr
 	}
 
-	// Expire base trust that has gone stale BEFORE the data plane is observed, so a target whose
-	// trust this pass drops fetches on its next cycle rather than the one after. This performs no
-	// round trip of its own: it clears a flag, and the next publication is what pays for the
-	// fetch, which by then has a reason to make it.
-	r.expireStaleBaseTrust(&target, providerNS, log)
+	// Expiring base trust has to SCHEDULE the re-read, not merely permit it. Clearing the flag
+	// only helps a target that is about to publish, and the target this exists for is the idle
+	// one: it is converged, nothing is arriving, and no cycle will come along to spend the fetch
+	// the cleared flag allows. So expiry joins forceRecheck below and drives the same chain the
+	// reconcile-request annotation does.
+	trustExpired := r.expireStaleBaseTrust(&target, providerNS, log)
 
 	// A standing reconcile request forces the same re-check a refused Git path does: the watch
 	// plane re-anchors the target's streams, which is what makes it re-read the folder rather than
 	// wait for the periodic pass. Taken once per distinct annotation value.
-	forceRecheck := gitPathWasRefused || r.reconcileRequests.take(
+	forceRecheck := gitPathWasRefused || trustExpired || r.reconcileRequests.take(
 		types.NewResourceReference(target.Name, target.Namespace), reconcileRequestedAt(&target))
 	observed := r.observeDataPlane(&target, sourceProvider, forceRecheck, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
@@ -765,27 +766,35 @@ func gitTargetReadinessGates(
 		"Stream declaration has not landed yet; the data-plane surface is not observable")
 }
 
-// expireStaleBaseTrust is the scheduled half of --base-trust-max-age. See BaseTrustMaxAge.
+// expireStaleBaseTrust is the scheduled half of --base-trust-max-age (see BaseTrustMaxAge), and
+// reports whether this pass expired anything so the caller can force the re-read.
 //
-// A missing worker is not an error here: nothing has been published for this target yet, so there
-// is no trust to expire and the next publication will read the remote anyway.
+// **Returning the boolean is the whole point.** Dropping the flag on its own would be a no-op on
+// exactly the target the age exists for: an idle target is converged, so nothing publishes, so
+// nothing ever spends the fetch that the cleared flag merely permits. Git would stay unread until
+// some unrelated write came along, which is the staleness this was meant to bound.
+//
+// A missing worker is not an error: nothing has been published for this target yet, so there is no
+// trust to expire and the first publication will read the remote anyway.
 func (r *GitTargetReconciler) expireStaleBaseTrust(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	log logr.Logger,
-) {
+) bool {
 	if r.BaseTrustMaxAge <= 0 || r.WorkerManager == nil {
-		return
+		return false
 	}
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
 		target.Spec.GitProviderRef.Name, providerNS, target.Spec.Branch)
 	if !exists || worker == nil {
-		return
+		return false
 	}
-	if worker.ExpireBaseTrust(r.BaseTrustMaxAge) {
-		log.Info("Base trust expired; the next publication will re-read the remote",
-			"branch", target.Spec.Branch, "maxAge", r.BaseTrustMaxAge.String())
+	if !worker.ExpireBaseTrust(r.BaseTrustMaxAge) {
+		return false
 	}
+	log.Info("Base trust expired; forcing a re-read of the Git folder",
+		"branch", target.Spec.Branch, "maxAge", r.BaseTrustMaxAge.String())
+	return true
 }
 
 func (r *GitTargetReconciler) ensureEventStream(

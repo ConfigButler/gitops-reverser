@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -62,7 +63,7 @@ func editingRef() itypes.ResourceReference {
 func TestRefusalTouch_OffByDefault(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{})
 
-	assert.False(t, w.refusalTouchAllowed(w.ctx, editingRef()),
+	assert.False(t, w.refusalConsent(w.ctx, editingRef()),
 		"a GitTarget that did not ask for an empty commit must not get one")
 }
 
@@ -72,7 +73,7 @@ func TestRefusalTouch_ExplicitIgnoreIsAlsoOff(t *testing.T) {
 		OnRefusal: configv1alpha3.RefusalActionIgnore,
 	})
 
-	assert.False(t, w.refusalTouchAllowed(w.ctx, editingRef()))
+	assert.False(t, w.refusalConsent(w.ctx, editingRef()))
 }
 
 // TestRefusalTouch_AllowedWhenAskedFor is the positive case.
@@ -81,7 +82,7 @@ func TestRefusalTouch_AllowedWhenAskedFor(t *testing.T) {
 		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
 	})
 
-	assert.True(t, w.refusalTouchAllowed(w.ctx, editingRef()))
+	assert.True(t, w.refusalConsent(w.ctx, editingRef()))
 }
 
 // TestRefusalTouch_SuspendedTargetIsNeverTouched. An empty commit is a write, and it drives
@@ -92,28 +93,33 @@ func TestRefusalTouch_SuspendedTargetIsNeverTouched(t *testing.T) {
 		Suspend:   true,
 	})
 
-	assert.False(t, w.refusalTouchAllowed(w.ctx, editingRef()),
+	assert.False(t, w.refusalConsent(w.ctx, editingRef()),
 		"a suspended target must not drive the reconciler")
 }
 
-// TestRefusalTouch_DebouncedPerTarget. A controller rewriting a base-owned field produces a
+// TestRefusalTouch_RateLimitedPerTarget. A controller rewriting a base-owned field produces a
 // refusal on every one of its reconciles; without a floor the branch fills with empty commits and
 // every one of them wakes every reconciler watching it.
-func TestRefusalTouch_DebouncedPerTarget(t *testing.T) {
+func TestRefusalTouch_RateLimitedPerTarget(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
 		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
 	})
 
-	require.True(t, w.refusalTouchAllowed(w.ctx, editingRef()), "the first refusal commits")
-	assert.False(t, w.refusalTouchAllowed(w.ctx, editingRef()), "an immediate second one does not")
+	limited, _ := w.refusalRateLimited(editingRef())
+	require.False(t, limited, "the first refusal commits")
+
+	limited, wait := w.refusalRateLimited(editingRef())
+	assert.True(t, limited, "an immediate second one is rate limited")
+	assert.Positive(t, wait, "a rate-limited refusal must say when it may be retried")
+	assert.LessOrEqual(t, wait, refusalTouchInterval)
 
 	// Age the record past the floor: the next refusal is allowed again.
 	w.refusalTouchMu.Lock()
 	w.lastRefusalTouch[editingRef().String()] = time.Now().Add(-2 * refusalTouchInterval)
 	w.refusalTouchMu.Unlock()
 
-	assert.True(t, w.refusalTouchAllowed(w.ctx, editingRef()),
-		"the floor is a rate, not a one-shot")
+	limited, _ = w.refusalRateLimited(editingRef())
+	assert.False(t, limited, "the floor is a rate, not a one-shot")
 }
 
 // TestRefusalTouch_UnreadableTargetIsNotConsent. An unreadable GitTarget is missing evidence, not
@@ -123,7 +129,7 @@ func TestRefusalTouch_UnreadableTargetIsNotConsent(t *testing.T) {
 		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
 	})
 
-	assert.False(t, w.refusalTouchAllowed(w.ctx, itypes.NewResourceReference("absent", "team-a")),
+	assert.False(t, w.refusalConsent(w.ctx, itypes.NewResourceReference("absent", "team-a")),
 		"a GitTarget that cannot be read must not be treated as opted in")
 }
 
@@ -186,4 +192,92 @@ func gitOut(t *testing.T, repoDir string, args ...string) string {
 	out, err := exec.Command("git", append([]string{"-C", repoDir}, args...)...).CombinedOutput()
 	require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))
+}
+
+// TestRefusalTouch_RateLimitedRefusalIsCoalescedNotDropped is the regression for a review finding.
+//
+// Dropping a rate-limited refusal is a correctness bug, not a missed optimisation. The reconcile
+// the previous commit triggered may already have finished by the time the second refusal happens,
+// so nothing would ever cover it and the live edit would stay in the cluster for good. The second
+// refusal has to leave a trailing commit armed.
+func TestRefusalTouch_RateLimitedRefusalIsCoalescedNotDropped(t *testing.T) {
+	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+	})
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
+
+	// Consume the window, as a first refusal that committed would.
+	limited, _ := w.refusalRateLimited(editingRef())
+	require.False(t, limited)
+
+	loop.armTrailingRefusalTouch(editingRef(), "a second refusal", time.Minute)
+
+	assert.NotNil(t, loop.refusalTimer, "a coalesced refusal must leave a trailing commit armed")
+	assert.Equal(t, editingRef(), loop.refusalPending)
+	assert.Equal(t, "a second refusal", loop.refusalPendingDetail)
+}
+
+// TestRefusalTouch_TrailingCommitRechecksConsent. A minute is long enough for the target to be
+// suspended or set back to Ignore, and acting on consent captured a minute ago is exactly what a
+// delayed action gets wrong.
+func TestRefusalTouch_TrailingCommitRechecksConsent(t *testing.T) {
+	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+	})
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
+	loop.armTrailingRefusalTouch(editingRef(), "queued while consent still stood", time.Millisecond)
+
+	setSpec := func(spec configv1alpha3.GitTargetSpec) {
+		target := &configv1alpha3.GitTarget{}
+		require.NoError(t, w.Client.Get(w.ctx, client.ObjectKey{Name: "editing", Namespace: "team-a"}, target))
+		spec.GitProviderRef = target.Spec.GitProviderRef
+		spec.Branch, spec.Path = target.Spec.Branch, target.Spec.Path
+		target.Spec = spec
+		require.NoError(t, w.Client.Update(w.ctx, target))
+	}
+	setSpec(configv1alpha3.GitTargetSpec{OnRefusal: configv1alpha3.RefusalActionIgnore})
+
+	// The select arm owns the timer (it nils it before dispatching), so the flush is called here
+	// the way the loop calls it.
+	loop.stopRefusalTimer()
+	loop.flushPendingRefusalTouch()
+
+	assert.Empty(t, loop.refusalPending.Name,
+		"a target set back to Ignore must not get the commit queued under the old setting")
+	assert.Nil(t, loop.refusalTimer, "and nothing must be re-armed for a target that said no")
+}
+
+// TestRefusalTouch_SkipsObjectsGitDoesNotManage is the pruning fence.
+//
+// An empty commit makes the reconciler re-apply. For an object Git does not manage that either
+// does nothing (Flux prunes its inventory and Argo CD the resources it tracks, and a live-created
+// object is in neither) or prunes it, when the object was managed and has since been removed from
+// Git. The second is the reconciler's decision to make on its own schedule, not ours to hurry, so
+// both are excluded.
+func TestRefusalTouch_SkipsObjectsGitDoesNotManage(t *testing.T) {
+	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+	})
+
+	assert.False(t, w.refusedObjectsAreManagedInGit(nil),
+		"no events means nothing is known to be managed")
+	assert.False(t, w.refusedObjectsAreManagedInGit([]Event{configMapEvent("never-in-git", "alice", "team-a")}),
+		"an object with no file in the folder must not trigger a commit")
+}
+
+// TestRefusalTouch_CommitsForAnObjectGitManages is the positive half of the fence: an object that
+// does have a file is drift the reconciler can correct, which is the case the feature exists for.
+func TestRefusalTouch_CommitsForAnObjectGitManages(t *testing.T) {
+	f := newLedgerFixture(t, "refusal-fence", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("managed")
+
+	assert.True(t, f.worker.refusedObjectsAreManagedInGit(
+		[]Event{configMapEvent("managed", "alice", "team-a")}),
+		"an object already written to the folder is drift the reconciler can correct")
+	assert.False(t, f.worker.refusedObjectsAreManagedInGit(
+		[]Event{configMapEvent("managed", "alice", "team-a"), configMapEvent("absent", "alice", "team-a")}),
+		"a batch is only safe when every object in it is managed")
 }

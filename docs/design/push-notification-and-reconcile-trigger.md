@@ -358,7 +358,14 @@ the same age rather than as a second mechanism.
 expires anything, which keeps §1.6's measured zero-fetch idle target true for anyone who does not
 opt in. The age is enforced on the `GitTarget` reconcile rather than by a timer in the worker,
 because the target it exists for is the idle one and an idle worker has nothing arriving to check a
-clock on. The stamp is written on every gain of trust, not only on the transition into it, so a
+clock on.
+
+**Expiry forces the re-read; it does not merely permit one.** Clearing the flag alone would be a
+no-op on precisely the target the age exists for: an idle target is converged, nothing publishes,
+and so nothing ever spends the fetch the cleared flag allows. So expiry joins `forceRecheck` and
+drives the same chain the reconcile-request annotation does. That makes the real cost a resync per
+target per interval on otherwise silent targets, not a bare fetch, and it is the honest price of
+moving what an operator can see. The stamp is written on every gain of trust, not only on the transition into it, so a
 target that keeps publishing keeps resetting the clock and is never expired out from under a busy
 branch.
 
@@ -664,11 +671,16 @@ operator is already looking.
 - **It can revert live edits we have not published yet.** An allowed edit sitting in an open commit
   window is reverted along with the refused one. Landing pending intent before the empty commit
   shrinks the window to the length of the apply; it does not close it.
-- **With `prune: true` it deletes rather than reverts.** If the refusal was "this live-created object
-  has no home in Git", then re-applying a revision that does not contain it, with pruning on, removes
-  it. That is a much larger action than reverting a field, taken on our initiative and from a commit
-  that changed nothing. Either this option is gated off where pruning is enabled, or the refusal
-  kinds that mean "absent from Git" are excluded from it.
+- **Pruning is not ours to hurry, and that decides the scope.** Re-applying only corrects drift on
+  an object Git manages. For one it does not, re-applying does nothing (Flux prunes from its
+  inventory and Argo CD from the resources it tracks, so a live-created object is in neither), or
+  prunes it, when the object was managed and has since been removed from Git. The two are
+  indistinguishable from here and only one is harmless, so **the commit fires only when the folder
+  already holds a file for every refused object**. An earlier version of this page said the action
+  deletes such objects and left that as a warning; it is now a fence.
+- **The blast radius still reaches other people's prunes.** The commit moves the branch, so
+  everything watching it re-applies, including another target's pending delete. The fence bounds
+  what we commit FOR, not what a moved branch causes, and nothing in a branch-wide trigger can.
 - **A flapping refusal writes a stream of empty commits.** Debounce per object, and cap it.
 
 **What it does not do.** Nothing for gap A, which is about learning that somebody else pushed.
@@ -685,8 +697,12 @@ on its own rather than inheriting the need from gap B.
 with it, and the first two are the ones this section argued for:
 
 - **Off unless asked for**, because of the `prune` row above.
-- **Debounced per target.** A controller rewriting a base-owned field refuses on every one of its
-  own reconciles, and every commit wakes every reconciler watching the branch.
+- **Rate limited per target, and COALESCED rather than dropped.** A controller rewriting a
+  base-owned field refuses on every one of its own reconciles, and every commit wakes every
+  reconciler watching the branch. But a refusal discarded inside that window is lost: the reconcile
+  an earlier commit triggered may already have finished, so nothing would ever cover it. One
+  trailing commit covers every refusal that arrived during the window, and re-checks consent when
+  it fires.
 - **Never for a suspended target.** An empty commit is a write, and it is the one write that
   reaches outside this operator, so the state that means "write nothing" has to stop it.
 - **A GitTarget that cannot be read is treated as opted out.** Missing evidence is not consent for

@@ -960,19 +960,30 @@ Reverser deliberately does not name the `Kustomization` or `Application` that re
 Neither tool derives that mapping itself, so deriving it here to write into somebody else's object
 would be guessing on their behalf. Moving the branch asks them instead.
 
+**It only fires for objects Git already manages,** meaning the folder holds a file for them. That
+is the pruning fence, and it is why the action is narrower than it first looks. Re-applying corrects
+drift on an object Git manages, which is the whole point. For an object it does not manage,
+re-applying either does nothing (because
+[Flux prunes from its inventory](https://fluxcd.io/flux/components/kustomize/kustomizations/#prune)
+and Argo CD from the resources it tracks, and a live-created object is in neither) or, if the
+object was managed and has since been removed from Git, prunes it. **Hurrying along somebody else's
+delete is not this operator's call**, and the two cases cannot be told apart from here, so both are
+excluded.
+
 **Read this before enabling it.**
 
 | | What to expect |
 | --- | --- |
-| Blast radius | The commit wakes **everything** watching the branch, not the refused object alone |
+| Blast radius | The commit wakes **everything** watching the branch, not the refused object alone, so it can hurry unrelated work including another target's pending prune |
 | Unpublished edits | An allowed edit still waiting in the commit window can be reverted along with the refused one |
-| Pruning | Where the reconciler prunes, an object refused for having **no home in Git** is **deleted**, not reverted |
 | Argo CD exception | An `Application` with `argocd.argoproj.io/manifest-generate-paths` ignores the commit, because no file under its refresh paths changed |
 
-Three guards are built in. A suspended target never commits, because an empty commit is a write.
-A `GitTarget` that cannot be read is treated as `Ignore`, since missing evidence is not consent. And
-the commit is rate-limited per target, because a controller rewriting a base-owned field refuses on
-every one of its own reconciles.
+Three more guards are built in. A suspended target never commits, because an empty commit is a
+write. A `GitTarget` that cannot be read is treated as `Ignore`, since missing evidence is not
+consent. And the commit is rate-limited per target, because a controller rewriting a base-owned
+field refuses on every one of its own reconciles. A refusal that arrives inside that window is
+**coalesced into one trailing commit rather than dropped**: the reconcile an earlier commit
+triggered may already have finished, so dropping it would leave that edit uncorrected for good.
 
 ### Deletion policy (`spec.prune.mode`)
 
