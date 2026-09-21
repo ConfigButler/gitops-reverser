@@ -319,7 +319,18 @@ func ledgerOperations() []ledgerOp {
 			},
 		},
 		{
-			name:   "11. an idle target held across several commit windows",
+			// The remote has no branch of ours to fetch, and cannot grow one while we are the
+			// only writer, so a second cycle must cost exactly what a normal one does. This row
+			// is the measurement behind "an absent branch is trusted right away": before that
+			// change every cycle here paid for a fetch that could only re-learn the absence.
+			name:   "11. publication onto a branch the remote does not have",
+			slug:   "publish-absent-branch",
+			seeded: false,
+			prime:  func(f *ledgerFixture) { f.publish("prime") },
+			run:    func(f *ledgerFixture) { f.publish("second") },
+		},
+		{
+			name:   "12. an idle target held across several commit windows",
 			slug:   "idle",
 			seeded: true,
 			prime:  func(f *ledgerFixture) { f.publish("prime") },
@@ -414,17 +425,17 @@ func TestGitRoundTripLedger(t *testing.T) {
 	}
 
 	// A harness that measures nothing measures nothing consistently, and a golden file is happy
-	// to record that. Row 11 is meant to be zero; everything else is not.
+	// to record that. Row 12 is meant to be zero; everything else is not.
 	for _, row := range rows[:len(rows)-1] {
 		require.Positive(t, row.Snapshot.connections(),
 			"%s recorded no traffic at all, so the harness — not the code — is what this row is "+
 				"describing", row.Operation)
 	}
 
-	// Row 11 is a property, not a measurement: an idle target is silent. It is asserted here
+	// Row 12 is a property, not a measurement: an idle target is silent. It is asserted here
 	// directly so it can never be "accepted" by regenerating the golden file.
 	idle := rows[len(rows)-1]
-	require.Equal(t, "11. an idle target held across several commit windows", idle.Operation)
+	require.Equal(t, "12. an idle target held across several commit windows", idle.Operation)
 	require.Zero(t, idle.Snapshot.connections(),
 		"an idle target must not talk to the Git host at all; it opened %s", idle.Snapshot.exactBytes())
 

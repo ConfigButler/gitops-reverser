@@ -45,29 +45,34 @@ func TestBaseTrust_NewWorkerStartsUntrustedAndClean(t *testing.T) {
 	assert.False(t, w.worktreeDirty(), "nothing has written")
 }
 
-// TestBaseTrust_GainedOnlyByAResetThatLandedOnTheTargetBranch walks the gain point. A fetch that
-// fell back to the default branch, or found the branch unborn, leaves a worktree that is not
-// based on the target branch, and §3 requires both to stay untrusted.
-func TestBaseTrust_GainedOnlyByAResetThatLandedOnTheTargetBranch(t *testing.T) {
+// TestBaseTrust_GainedByAnyResetIncludingAnAbsentBranch walks the gain point.
+//
+// A reset lands the worktree on whatever the remote has for this branch, and that is true in all
+// three shapes: the branch exists, the branch does not exist so SmartFetch fell back to the
+// default branch, and the branch is unborn. An earlier version withheld trust for the last two
+// and charged a fetch per cycle for it, which could only ever re-learn that the branch is still
+// absent. The compare-and-swap is what keeps that safe: a push declaring Old = zero is rejected
+// if somebody created the branch meanwhile.
+func TestBaseTrust_GainedByAnyResetIncludingAnAbsentBranch(t *testing.T) {
 	cases := []struct {
 		name   string
 		report *PullReport
-		want   bool
 	}{
 		{
 			name:   "reset onto the target branch",
 			report: &PullReport{ExistsOnRemote: true, HEAD: BranchInfo{Sha: "abc", ShortName: "main"}},
-			want:   true,
 		},
 		{
 			name:   "fell back to the remote's default branch",
 			report: &PullReport{ExistsOnRemote: false, HEAD: BranchInfo{Sha: "abc", ShortName: "main"}},
-			want:   false,
 		},
 		{
 			name:   "branch is unborn",
 			report: &PullReport{ExistsOnRemote: true, HEAD: BranchInfo{ShortName: "main", Unborn: true}},
-			want:   false,
+		},
+		{
+			name:   "branch is absent and the remote has no default branch either",
+			report: &PullReport{ExistsOnRemote: false, HEAD: BranchInfo{ShortName: "main", Unborn: true}},
 		},
 	}
 
@@ -75,7 +80,7 @@ func TestBaseTrust_GainedOnlyByAResetThatLandedOnTheTargetBranch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newMetricsTestWorker()
 			w.updateBranchMetadataFromPullReport(tc.report)
-			assert.Equal(t, tc.want, w.baseTrusted())
+			assert.True(t, w.baseTrusted(), "a reset always leaves the worktree at the remote's state")
 		})
 	}
 }

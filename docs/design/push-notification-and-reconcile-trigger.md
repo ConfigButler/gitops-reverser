@@ -182,6 +182,7 @@ produced against canonical git's `http-backend`. The unit is **HTTP requests to 
 | Contended publication, two rejections | 16 | **10** |
 | Resync snapshot | 4 | **4** |
 | Forced recheck | 2 | **2** |
+| Publication onto a branch the remote does not have | 4 | **2** |
 
 Three of those are worth reading twice.
 
@@ -193,6 +194,15 @@ fetch that discovers it transfers objects, so it costs three requests rather tha
 
 **The resync row does not move, deliberately.** A resync that finds nothing to change never reaches
 a push, so nothing would catch a stale base. It keeps its fetch.
+
+**A branch the remote does not have is trusted right away**, which is the last row and a later
+change than the rest of the table. A reset lands the worktree on whatever the remote has for the
+branch, and for a branch it does not have, a worktree based on the default branch (or an empty one)
+**is** that state. There is nothing left to learn, so the two `fetch-open` requests that cycle used
+to pay could only re-learn the absence. The compare-and-swap is what makes it safe: a push onto a
+branch we believe is absent declares `Old = zero`, which the server rejects if somebody created it
+meanwhile, and the rejection invalidates and fetches. The cost of being wrong is one rejection, not
+a bad write.
 
 ### 1.7 The instrument
 
@@ -901,10 +911,11 @@ must never be allowed to lapse:
 3. **Under option 4, what about repositories we do not track?** The host has one webhook now, so
    deliveries arrive for repositories only the reconciler cares about. They must be forwarded, which
    makes the configuration per route rather than per `GitProvider`.
-4. **Should `baseTrusted` survive a worker restart?** It cannot today, because the clone may not
-   either. Worth nothing until the clone is known to be durable.
+4. **Should `baseTrusted` survive a worker restart?** **Answered: no, and the question is closed.**
+   Repositories are cloned into an empty directory, so every restart starts from a fresh checkout
+   with nothing to carry forward. Keeping the flag alive across a pod replacement would mean making
+   the clone durable first, and one fetch is not expensive enough to justify that.
 5. **How confident must an ownership claim be before we *write* on it?** Option 6 only. A wrong
    claim triggers the wrong controller, and this is a higher bar than a claim used to read.
-6. **Does the default-branch fallback deserve better than untrusted?** `SmartFetch` bases an unborn
-   target branch on the remote's default branch. Treating that as untrusted costs one fetch per
-   cycle until the first push creates the branch, which is a bootstrap-only cost.
+6. **Does the default-branch fallback deserve better than untrusted?** **Answered: yes, and it is
+   now trusted.** See §1.6's last row: it was four requests per cycle and is two.

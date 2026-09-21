@@ -2406,11 +2406,19 @@ func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	// syncToRemote, and both paths inside syncToRemote leave a clean worktree — checkoutAndReset
 	// passes Force, and makeHeadUnborn clears the index and the tree.
 	//
-	// The condition handles two rows of §3's loss table by construction. SmartFetch falls back to
-	// the remote's default branch when the target branch does not exist, and syncToRemote reports
-	// that as ExistsOnRemote=false, so a worktree based on the wrong branch is never trusted;
-	// neither is an unborn one.
-	w.setBaseTrusted(report.ExistsOnRemote && !report.HEAD.Unborn)
+	// Trust is gained unconditionally, including when the target branch does not exist on the
+	// remote (SmartFetch fell back to the default branch) and when it is unborn. An earlier
+	// version excluded both, on the reasoning that such a worktree is "not based on the target
+	// branch". That reasoning inverts the invariant: the invariant is that the worktree matches
+	// the remote's state for this branch, and for a branch the remote does not have, a worktree
+	// based on the default branch (or an empty one) IS that state. There is nothing on the remote
+	// left to learn, so a fetch per cycle could only ever return the same answer.
+	//
+	// What makes it safe is the same thing that makes it safe everywhere else: the
+	// compare-and-swap. A push onto a branch we believe is absent declares Old = zero, which the
+	// server rejects if somebody has since created it, and the rejection invalidates the base and
+	// fetches. So the cost of being wrong is one rejection, not a bad write.
+	w.setBaseTrusted(true)
 	w.markWorktreeClean()
 
 	// Log if this was an unborn branch
