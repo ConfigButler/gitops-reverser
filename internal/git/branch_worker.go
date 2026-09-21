@@ -150,6 +150,17 @@ type BranchWorker struct {
 	// See docs/design/inbound-push-notification.md §3.2.
 	replayRequiredState atomic.Bool
 
+	// trustedRemote is the repository the flags above are ABOUT: the remote URL the worker last
+	// planned a cycle against.
+	//
+	// Trust is a claim concerning one checkout, and each remote gets its own on-disk clone
+	// (repoPathForRemote), so a claim carried across a change of destination is not merely stale —
+	// it points at a directory that may not exist. Workers are keyed by (GitProvider namespace,
+	// GitProvider name, branch) and never by URL, while spec.url is immutable and repointed by
+	// deleting and recreating the GitProvider, so a live worker really does meet a new repository
+	// without anything restarting it. See noteRemoteIdentity.
+	trustedRemote atomic.Pointer[string]
+
 	// branchBufferMaxBytes caps the retained in-memory event data; tripped on
 	// event arrival, an immediate finalize bypasses the commit window.
 	branchBufferMaxBytes int64
@@ -710,6 +721,9 @@ func (w *BranchWorker) prepareBootstrapRepository(
 	}
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	// This fetch establishes a checkout for whatever the provider names now, so record which
+	// repository that is — see noteRemoteIdentity.
+	w.noteRemoteIdentity(provider.Spec.URL)
 	w.recordFetch(fetchReasonBootstrap)
 	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
@@ -1331,7 +1345,13 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 // pushPending publishes any retained pending writes that already exist as local
 // commits. On success, pendingWrites is cleared and lastPushAt advances. On
 // failure (transient or after exhausting replay retries), pendingWrites stays
-// in place and a future commit/timer will retry.
+// in place, safe but unpublished.
+//
+// Nothing schedules its own retry: the push timer is stopped on failure and no replacement is
+// armed, so the work moves again only when the next commit calls maybeSchedulePush. On a branch
+// that then goes quiet, it waits indefinitely. That gap predates the conditional fetch and is not
+// fixed here; docs/design/push-cooldown.md §7 option C is the bounded failure backoff that closes
+// it, and says why it is a change of its own.
 func (l *branchWorkerEventLoop) pushPending() {
 	if len(l.pendingWrites) == 0 {
 		l.stopPushTimer()
@@ -1428,10 +1448,6 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopAttachTimer()
 }
 
-// commitPendingWrites creates local commits for the provided pending writes
-// without pushing them. When hasPendingCommits is false (no commits retained
-// from earlier in the current push cycle), it first fetches and resets to the
-// remote tip so the new commits are based on the latest remote state.
 // baseTrusted reports whether the worktree is known to sit at the remote tip of the target
 // branch.
 //
@@ -1504,6 +1520,34 @@ func (w *BranchWorker) markReplayRequired() {
 // markReplayComplete is called only when a rebuild has replayed every retained write.
 func (w *BranchWorker) markReplayComplete() { w.replayRequiredState.Store(false) }
 
+// noteRemoteIdentity binds the base trust to the repository it was gained against, and drops it
+// when the GitProvider now names a different one.
+//
+// `spec.url` is immutable and repointed by deleting the GitProvider and creating it again (see
+// GitProviderSpec). That does not restart the worker: workers are keyed by (GitProvider namespace,
+// GitProvider name, branch), and the GitTarget that owns this one is untouched. So the same worker
+// meets the new repository still holding the trust its last push to the OLD one established.
+//
+// Without this, the head-of-cycle guard believes that trust, skips the PrepareBranch that would
+// have initialised the new clone — each remote has its own, keyed by URL — and every write from
+// then on fails at `open repository: repository does not exist`, dropping live windows for as long
+// as the worker lives.
+//
+// It runs before the guard rather than inside it, so a worker holding retained writes (which skips
+// the guard entirely, because a reset would destroy the local commits those writes produced) still
+// records the change instead of carrying the old trust into the cycle after the retained work
+// clears.
+func (w *BranchWorker) noteRemoteIdentity(remoteURL string) {
+	key := repoCacheKey(remoteURL)
+	previous := w.trustedRemote.Swap(&key)
+	if previous == nil || *previous == key {
+		return
+	}
+	w.Log.Info("GitProvider now names a different repository; the checkout for it must be established",
+		"branch", w.Branch)
+	w.invalidateBase("remote repository changed")
+}
+
 // ensureBaseForCycle performs the head-of-cycle fetch, which is now conditional.
 //
 // The push session reads the remote's ref advertisement on a connection the cycle was making
@@ -1519,6 +1563,10 @@ func (w *BranchWorker) ensureBaseForCycle(
 	repoPath string,
 	hasPendingCommits bool,
 ) error {
+	// Before the guard, not inside it: a repointed GitProvider must invalidate even on a cycle
+	// this guard is going to skip.
+	w.noteRemoteIdentity(provider.Spec.URL)
+
 	if hasPendingCommits || (w.baseTrusted() && !w.worktreeDirty()) {
 		return nil
 	}
@@ -1548,6 +1596,12 @@ func (w *BranchWorker) ensureBaseForCycle(
 	return nil
 }
 
+// commitPendingWrites creates local commits for the provided pending writes without pushing them.
+//
+// hasPendingCommits reports whether commits from earlier in the current push cycle are retained.
+// It gates the head-of-cycle base check: only the first commit of a cycle may fetch and reset,
+// because a reset would destroy exactly those retained commits. See ensureBaseForCycle, which
+// decides whether that fetch is needed at all.
 func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPendingCommits bool) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
@@ -2275,6 +2329,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context, reason string) error 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	// Somebody stated that the remote moved: see refreshRemoteAndRebuildPendingWrites.
+	w.noteRemoteIdentity(provider.Spec.URL)
 	w.invalidateBase(reason)
 
 	// PrepareBranch handles both initial and update cases
