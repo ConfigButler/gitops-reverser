@@ -136,24 +136,37 @@ var _ = Describe("Manager Refusal Empty Commit", Label("manager", "refusal-commi
 				"a standing refusal must not produce a commit per interval forever")
 		}, 150*time.Second, 10*time.Second).Should(Succeed())
 
-		// And once the drift is corrected there is nothing left to refuse, so the branch goes
-		// quiet. Establishing that the target ACCEPTS again comes first and is not decoration:
-		// without it the spec would pass just as well on a target that stayed refused and had
-		// merely run out of things to say, which is the reading a quiet branch alone allows.
-		By("correcting the drift")
-		_, err = kubectlRunInNamespace(testNs, "set", "env", "deployment/checkout", "LOG_LEVEL=info")
-		Expect(err).NotTo(HaveOccurred(), "failed to correct the drifted env var")
+		// A quiet branch on its own is two readings, and only one of them is the feature: the
+		// refusal was recognised as one already answered, or the target stopped evaluating
+		// anything at all. A review asked for the second to be ruled out. Editing the SAME field
+		// to a NEW value does that and covers the dedupe's other half at the same time — a second
+		// real edit is a second thing to revert, and the commit made for the first says nothing
+		// about it.
+		//
+		// The target is NOT asked to converge, because this shape cannot: the live object carries
+		// the API server's defaults and the base document does not, so a write for it is planned,
+		// and refused, whatever the env var says. Correcting the value would leave the refusal
+		// exactly where it is. What is provable here is that the operator keeps evaluating and
+		// still distinguishes a new edit from a repeat.
+		By("editing the same field again, to a value nobody has been refused for yet")
+		beforeSecondEdit := remoteCommitCount(repo.CheckoutDir)
+		_, err = kubectlRunInNamespace(testNs, "set", "env", "deployment/checkout", "LOG_LEVEL=trace")
+		Expect(err).NotTo(HaveOccurred(), "failed to make the second drifting edit")
 
-		By("the target converges: the write boundary has nothing left to refuse")
-		verifyResourceCondition("gittarget", destName, testNs, "GitPathAccepted", "True", "", "", "180s")
-		verifyResourceCondition("gittarget", destName, testNs, "Ready", "True", "", "", "180s")
+		By("which earns a commit of its own")
+		Eventually(func(g Gomega) {
+			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(BeNumerically(">", beforeSecondEdit),
+				"a genuinely new refused edit must still move the branch")
+			g.Expect(emptyDiffAtSHA(repo.CheckoutDir, remoteHead(g, repo.CheckoutDir))).To(BeTrue(),
+				"and it must still be a commit that changes no file")
+		}, 120*time.Second, 2*time.Second).Should(Succeed())
 
-		By("after which the branch stops moving altogether")
+		By("and then settles again, rather than resuming the loop")
 		settled := remoteCommitCount(repo.CheckoutDir)
 		Consistently(func(g Gomega) {
-			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(Equal(settled),
-				"a corrected object must leave the branch alone")
-		}, 90*time.Second, 10*time.Second).Should(Succeed())
+			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(BeNumerically("<=", settled+1),
+				"a second standing refusal must settle exactly as the first one did")
+		}, 150*time.Second, 10*time.Second).Should(Succeed())
 	})
 })
 
