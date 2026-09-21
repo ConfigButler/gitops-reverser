@@ -360,12 +360,11 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 // resync guarantee, and it is worth pinning separately because the fetch is not where you would
 // look for it.
 //
-// applyResync itself does not fetch on this path: invalidateAndRefresh only drops base trust when
-// nothing is retained, and recoverRetainedWrites returns immediately. The fetch happens one layer
-// down, in commitPendingWrites — which is called with hasPendingCommits=false, so
-// ensureBaseForCycle consults the flag that was just cleared and resets before the snapshot is
-// judged. Ledger row 10 measures the same thing as requests on the wire; this states it as the
-// intent.
+// prepareBaseForResync owns the fetch on this path. With nothing retained, invalidateAndRefresh
+// drops base trust and then calls syncWithRemote directly rather than leaving the reset to the
+// commit that follows, which is what makes the reason `forced_recheck` instead of `publication`:
+// the fetch belongs to the snapshot that asked for it, not to a live publication. Ledger row 10
+// measures the same operation as requests on the wire; this pins which series it lands in.
 func TestGitFetchesTotal_ResyncWithNoRetainedWritesAlsoReadsTheRemote(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)

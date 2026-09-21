@@ -89,9 +89,11 @@ object is visible.
 with `FinalizeFailed` only if the worker does not resolve the request within its bounded safety window; it
 never polls indefinitely.
 
-**Every outcome above the error row is decided by the push, including the no-commit one.** A window
-that produced no diff used to resolve `AlreadyPresent` at finalize, on the strength of the local
-plan. That was only sound while every cycle fetched before it planned. It no longer does (see
+**`Committed` and `AlreadyPresent` are decided by the push, including the no-commit one.**
+(`NoWindowInGrace` and `WindowMismatch` are decided locally, at the deadline: no window was claimed,
+so there is nothing for a push to say.) A window that produced no diff used to resolve
+`AlreadyPresent` at finalize, on the strength of the local plan. That was only sound while every
+cycle fetched before it planned. It no longer does (see
 [inbound push notification](../design/inbound-push-notification.md) §3), so the plan may have run
 against a tree the remote has moved past, and the replay that follows a rejected push can turn the
 same captured object into a real commit. "Already present" is a claim about the remote, so the
