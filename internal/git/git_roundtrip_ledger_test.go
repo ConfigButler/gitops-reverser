@@ -270,7 +270,7 @@ func ledgerOperations() []ledgerOp {
 			seeded: true,
 			prime:  func(f *ledgerFixture) { f.publish("prime") },
 			run: func(f *ledgerFixture) {
-				_, err := f.worker.syncWithRemote(f.worker.ctx)
+				err := f.worker.syncWithRemote(f.worker.ctx)
 				require.NoError(f.t, err)
 			},
 		},

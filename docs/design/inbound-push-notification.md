@@ -657,9 +657,10 @@ option B's maximum age is the backstop if it is not.
 ## 9. Status surface
 
 An operator who can no longer assume a fetch per cycle needs to see when the remote was last read.
-The worker already tracks exactly that and throws it away: `updateBranchMetadataFromPullReport` sets
-`lastCommitSHA` and `lastFetchTime`, and `GetBranchMetadata` that exposes them has no caller outside
-a test.
+The worker already tracks exactly that and does not surface it:
+`updateBranchMetadataFromPullReport` sets `lastCommitSHA` and `lastFetchTime`, and
+`GetBranchMetadata` exposes them. (That accessor was dead when this page was written; the flip gave
+it its first real caller, the `branchExists` guard on gaining trust after a push.)
 
 Propose `GitTarget.status.remote`:
 
@@ -678,12 +679,13 @@ quiet target.
 A successful push also advances the local view of the tip, so `revision` should update there too, or
 it will read as stale on a target that is publishing steadily.
 
-## 10. Also delete `SyncAndGetMetadata`
+## 10. Also delete `SyncAndGetMetadata` (done)
 
-It is a 30-second caching wrapper around `syncWithRemote` with no caller anywhere in the tree, and
-its comment claims "This is now called by `SyncAndGetMetadata()` during controller reconciliation",
-which is false. A plausible-looking poller sitting in the tree is how §6 stayed invisible. `§9` takes
-the two fields it was caching and surfaces them properly; the wrapper itself should go.
+It was a 30-second caching wrapper around `syncWithRemote` with no caller anywhere in the tree, and
+its comment claimed "This is now called by `SyncAndGetMetadata()` during controller reconciliation",
+which was false. A plausible-looking poller sitting in the tree is how §6 stayed invisible. It is
+gone, along with `metadataCacheDuration`, its only remaining user. `§9` still owes the two fields it
+was caching a proper status surface.
 
 `syncWithRemote` is live and stays: [`resync_flush.go`](../../internal/git/resync_flush.go) calls it
 for the no-retained-writes half of a forced recheck.

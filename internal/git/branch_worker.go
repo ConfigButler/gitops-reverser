@@ -32,11 +32,6 @@ import (
 )
 
 const (
-	// metadataCacheDuration is how long metadata is considered fresh before re-fetching.
-	// This optimization prevents redundant Git fetches when multiple GitTargets
-	// share the same branch and reconcile within a short time window.
-	metadataCacheDuration = 30 * time.Second
-
 	// DefaultCommitWindow is the default rolling silence window used to coalesce
 	// events into one commit per (author, gitTarget). Applied when
 	// GitTarget.spec.commit.window is unset or unparseable.
@@ -2183,55 +2178,20 @@ func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
 	return w.branchExists, w.lastCommitSHA, w.lastFetchTime
 }
 
-// SyncAndGetMetadata fetches latest metadata from remote Git repository.
-// Uses caching to avoid redundant fetches within 30 seconds (optimization for
-// multiple GitTargets sharing the same branch).
-// Returns PullReport containing branch existence, HEAD SHA, and other metadata.
-func (w *BranchWorker) SyncAndGetMetadata(ctx context.Context) (*PullReport, error) {
-	w.metaMu.RLock()
-	// Use cached data if fetched recently (< 30 seconds ago)
-	if time.Since(w.lastFetchTime) < metadataCacheDuration {
-		// Return cached metadata as a minimal PullReport
-		report := &PullReport{
-			ExistsOnRemote: w.branchExists,
-			HEAD: BranchInfo{
-				Sha:       w.lastCommitSHA,
-				ShortName: w.Branch,
-				Unborn:    w.lastCommitSHA == "",
-			},
-			IncomingChanges: false, // No fetch occurred
-		}
-		w.metaMu.RUnlock()
-		w.Log.V(1).Info("Using cached metadata", "age", time.Since(w.lastFetchTime))
-		return report, nil
-	}
-	w.metaMu.RUnlock()
-
-	// Cache is stale, fetch fresh data
-	w.Log.Info("Fetching fresh metadata from remote")
-	report, err := w.syncWithRemote(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sync with remote: %w", err)
-	}
-
-	// Return fresh PullReport (metadata already updated by syncWithRemote)
-	return report, nil
-}
-
-// syncWithRemote fetches latest changes from remote to detect drift.
-// This is now called by SyncAndGetMetadata() during controller reconciliation.
-func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) {
+// syncWithRemote fetches latest changes from remote to detect drift. It is the
+// no-retained-writes half of a forced recheck; resync_flush.go is its caller.
+func (w *BranchWorker) syncWithRemote(ctx context.Context) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
 	provider, err := w.getGitProvider(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get GitProvider: %w", err)
+		return fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
 	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get auth: %w", err)
+		return fmt.Errorf("failed to get auth: %w", err)
 	}
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
@@ -2243,7 +2203,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) 
 	w.recordFetch(fetchReasonForcedRecheck)
 	report, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sync with remote: %w", err)
+		return fmt.Errorf("failed to sync with remote: %w", err)
 	}
 
 	w.updateBranchMetadataFromPullReport(report)
@@ -2255,7 +2215,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) 
 			"newSHA", report.HEAD.Sha)
 	}
 
-	return report, nil
+	return nil
 }
 
 // ensureRepositoryInitialized ensures the worker's repository is cloned and ready.

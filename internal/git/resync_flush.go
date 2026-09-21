@@ -127,7 +127,7 @@ func (l *branchWorkerEventLoop) refreshRemoteForResync(req *ResyncRequest) error
 		}
 		return nil
 	}
-	if _, err := l.w.syncWithRemote(l.w.ctx); err != nil {
+	if err := l.w.syncWithRemote(l.w.ctx); err != nil {
 		l.w.Log.Error(err, "Failed to refresh remote before resync", "resources", len(req.Desired))
 		return fmt.Errorf("refresh remote before resync: %w", err)
 	}

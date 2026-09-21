@@ -206,7 +206,7 @@ func TestGitFetchesTotal_ForcedRecheckAndBootstrap(t *testing.T) {
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonBootstrap),
 		"the bootstrap is instrumented at prepareBootstrapRepository, the site with a caller")
 
-	_, err = f.worker.syncWithRemote(f.worker.ctx)
+	err = f.worker.syncWithRemote(f.worker.ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
 		"a forced recheck with nothing retained fetches through syncWithRemote")

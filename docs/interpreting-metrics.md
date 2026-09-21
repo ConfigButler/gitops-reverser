@@ -241,7 +241,11 @@ read at a glance:
 sum by (reason) (rate(gitopsreverser_git_fetches_total[5m]))
 ```
 
-A steady `publication` rate that tracks `git_pushes_total` is the worker fetching once per cycle.
+On a healthy publishing target `publication` is **flat at zero** after the worker's first cycle:
+the base it plans on is the tip its own last push established. A `publication` rate that tracks
+`git_pushes_total` is the pre-change behavior and now means the base is being invalidated every
+cycle, so read it together with `recovery` rather than as the normal state.
+
 A climbing `recovery` rate is a worker repeatedly losing confidence in its checkout, which is a bug
 report rather than a cost. **`recovery` covers a dirty worktree whichever way it is cleaned up:**
 the plain reset when nothing is retained, and the reset-and-replay when something is. Which of the
