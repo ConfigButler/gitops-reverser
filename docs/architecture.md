@@ -86,8 +86,10 @@ instead.
 **Nothing tells an idle target that its branch moved.** A target that is not writing makes no round
 trip, so it holds its previous view of the folder until it next publishes, resyncs, or is asked to
 re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
-ten seconds because it is not converged; a healthy idle one does not. Closing that is the inbound
-receiver's job, and it is designed but not built:
+ten seconds because it is not converged; a healthy idle one does not. `--base-trust-max-age` (off by
+default) bounds how stale that view may get, per `GitTarget` rather than per branch: every push
+renews the shared checkout, so a branch-wide age would let one busy target postpone a quiet one
+indefinitely. Closing the gap properly is the inbound receiver's job, designed but not built:
 [§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
 request shape it will accept.
 
@@ -1089,7 +1091,9 @@ write side is shared with live writes):
   (a path-based strategic-merge `patches:` entry is tolerated as read-only build context, and an
   overlay reading `../../base` is rendered by reading that base, and neither refuses the folder)
   the whole apply is **refused**: nothing is committed, `GitPathAccepted=False`, `Stalled=True`, and
-  `Ready=False` with reason `UnsupportedContent` until a human cleans the path;
+  `Ready=False` with reason `UnsupportedContent` until a human cleans the path (a target that opted
+  into [`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-specconrefusal)
+  additionally pushes a commit with no file change, to ask the reconciler to revert the live edit);
 - desired resources are upserted through the same content derived path as live writes;
 - existing managed documents that are watched but absent from the desired set are deleted;
 - the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary

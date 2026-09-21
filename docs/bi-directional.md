@@ -75,8 +75,10 @@ already has and lets the compare-and-swap catch it if the branch moved, which is
 where it pays to re-read and replay. The exceptions are a worker that has not yet seen the
 remote, a previous write that failed and left the checkout in an unknown state, and a resync,
 which keeps reading because it can finish without ever opening a push. What is still missing is
-anything that tells an *idle* target its branch moved; that is
-[inbound push notification](design/push-notification-and-reconcile-trigger.md).
+anything that *tells* an idle target its branch moved; that is
+[inbound push notification](design/push-notification-and-reconcile-trigger.md). `--base-trust-max-age`
+puts a ceiling on how long it can be wrong in the meantime; see
+[Telling Reverser that somebody else pushed](#telling-reverser-that-somebody-else-pushed).
 
 ## What happens when somebody else pushed first
 
@@ -318,6 +320,14 @@ kubectl annotate gittarget editing -n gitops-reverser \
   reconcile.configbutler.ai/requestedAt="$(date +%s)" --overwrite
 ```
 
+To bound it instead of watching for it, set `--base-trust-max-age` on the controller: a `GitTarget`
+that has not re-read its folder within that age is made to, whether or not it has anything to
+publish. It is off by default, because it trades requests for freshness: one folder re-read per
+target per interval, including targets that are perfectly quiet. The age is per target rather than
+per branch: one worker serves every target on a `(provider, branch)` and every push renews the
+shared checkout, so a branch-wide age would let one busy target postpone a quiet one beside it
+indefinitely.
+
 A receiver that does this automatically is designed in
 [inbound push notification](design/push-notification-and-reconcile-trigger.md). The other half of that
 design, removing the head-of-cycle fetch, has shipped; the receiver is what remains.
@@ -340,18 +350,22 @@ ever applied it. A push tells you about Git. It says nothing about the cluster.
 ## When a write is refused or a push fails
 
 A live edit can succeed while its publication does not. The cluster holds the change and Git does
-not, and **a refused write produces no commit and therefore no push webhook**. Watch push
-failures and the target's write-acceptance conditions: a successful Kubernetes edit confirms the
-API write and nothing beyond it.
+not, and **a refused write writes no file, so nothing reaches the reconciler through the ordinary
+path**. Watch push failures and the target's write-acceptance conditions: a successful Kubernetes
+edit confirms the API write and nothing beyond it.
 
 Retained writes are held in worker memory. They do not survive a restart, and an edit that failed
 before becoming a pending write is gone from Reverser's side. Recovery is a resync, which derives
 state from the cluster as it exists at that moment, so it cannot reproduce an intermediate value
 that has since been overwritten.
 
-Reverser performs no restoration of its own. With Argo `selfHeal` off, refreshing an
-already-synced revision will not put the approved value back; that needs an explicit sync. Flux
-restores it on its next apply, which a 24h interval can leave hours away.
+Reverser performs no restoration of its own, with one opt-in exception:
+[`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-specconrefusal) answers
+a refused edit with a commit that changes no file, which moves the branch and so asks both
+reconcilers to re-apply. It is off by default and its blast radius is the branch, not the object.
+Otherwise, with Argo `selfHeal` off, refreshing an already-synced revision will not put the
+approved value back; that needs an explicit sync, and Flux restores it on its next apply, which a
+24h interval can leave hours away.
 
 ## What the tests prove
 
@@ -366,12 +380,15 @@ The bi-directional corner runs against real Flux and real Argo CD.
 | Git to cluster to Git round trip settles without a commit loop | [Flux](../test/e2e/flux_bi_directional_e2e_test.go) |
 | A SOPS-encrypted Secret round-trips without a reverse commit | Flux |
 | A Git revert removes the live object and the committed file | Flux |
+| Waking only the `GitRepository` makes the Kustomization apply a new revision by itself, reverting live drift, with an **empty** commit as that revision | Flux |
 
-Two gaps worth knowing. The **Flux spec drives reconciliation manually** with 30m intervals, so
-the Flux `Receiver` path above is recommended from Flux's documented behavior rather than
-exercised here; only the Argo webhook is. And **no spec tests simultaneous writes to one field
-from both sides**, because the outcome depends on arrival order that the corner does not control.
-The replay mechanism is covered; a conflict policy is not, because there is not one.
+Two gaps worth knowing. The **Flux spec drives reconciliation manually** with 30m intervals, so no
+spec delivers a webhook to a `Receiver`; only the Argo webhook is exercised. The mechanism that
+path depends on is, though: the last row above wakes the `GitRepository` alone and the Kustomization
+applies on its own, which is exactly what a Receiver aimed at the source produces. And **no spec
+tests simultaneous writes to one field from both sides**, because the outcome depends on arrival
+order that the corner does not control. The replay mechanism is covered; a conflict policy is not,
+because there is not one.
 
 Run `task test-e2e-bi-directional` for the corner, which is also a CI job. `task test-e2e`
 excludes it, and `task argocd-ui` opens the installed Argo CD UI. The
