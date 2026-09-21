@@ -252,9 +252,12 @@ var (
 	// GitFetchesTotal counts every call that runs a SmartFetch against the remote, labelled by
 	// {provider_namespace, provider_name, branch, reason}. reason is `bootstrap` (the worker's
 	// first contact with the repository), `publication` (the fetch at the head of a publication
-	// cycle), `recovery` (a cycle that had to re-establish its base), `contention` (a rejected
-	// push learning where the remote went, and the reset that follows) or `forced_recheck` (an
-	// operator or controller asking the worker to re-read Git).
+	// cycle), `recovery` (a cycle that had to re-establish its base), `contention` (the reset onto the
+	// new tip after a rejection, which is one per confirmed rejection because the rejection itself
+	// carries the remote's hash), `push_failure_probe` (the
+	// lookup after a push that failed before the remote said anything, which is credentials or
+	// connectivity rather than another writer) or `forced_recheck` (an operator or controller
+	// asking the worker to re-read Git, and the snapshot a resync judges against).
 	//
 	// Nothing else in the metric surface can tell you whether a fetch happened. GitPushesTotal
 	// counts cycles and GitPushRetriesTotal counts replays, and both read identically whether the
