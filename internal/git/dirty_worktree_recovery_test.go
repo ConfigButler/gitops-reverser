@@ -7,7 +7,7 @@ package git
 // The head-of-cycle fetch used to launder the worktree as a side effect (§5). Now that a trusted,
 // clean base skips it, the cleanup has to be deliberate — and commitPendingWrites cannot perform
 // it once work is retained, because a reset is exactly what would destroy the local commits those
-// writes already produced. recoverDirtyWorktree resets and REPLAYS instead, which is why it lives
+// writes already produced. recoverRetainedWrites resets and REPLAYS instead, which is why it lives
 // on the event loop, and why every loop path that reaches commitPendingWrites has to call it.
 //
 // See docs/design/inbound-push-notification.md §3.1 and §5.
@@ -132,7 +132,7 @@ func TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers(t *testing.T) {
 // TestEveryLoopCommitPathRecoversADirtyWorktree enumerates the loop's commit entry points against
 // one dirty fixture.
 //
-// It is written as a table on purpose. recoverDirtyWorktree has to be called by every path that
+// It is written as a table on purpose. recoverRetainedWrites has to be called by every path that
 // reaches commitPendingWrites, and nothing in the type system says so — a fifth entry point added
 // later would silently commit leftovers. Adding its row here is the cheapest way to make that
 // omission fail loudly.

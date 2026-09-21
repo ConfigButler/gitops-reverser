@@ -346,7 +346,7 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 
 	forcedBefore := fetchCount(t, reader, f.worker, fetchReasonForcedRecheck)
 	f.worker.markWorktreeDirty("a write failed part-way")
-	require.NoError(t, loop.recoverDirtyWorktree())
+	require.NoError(t, loop.recoverRetainedWrites())
 
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonRecovery),
 		"a recovery is a recovery whether or not a push happened to be in cooldown")

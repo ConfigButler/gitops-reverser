@@ -106,7 +106,7 @@ func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
 
 	// The refresh above already reset and replayed when anything was retained, so this is a no-op
 	// on that path; it still covers a dirty tree with nothing to replay.
-	if err := l.recoverDirtyWorktree(); err != nil {
+	if err := l.recoverRetainedWrites(); err != nil {
 		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
 		return err
 	}

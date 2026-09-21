@@ -129,11 +129,26 @@ type BranchWorker struct {
 	// across every error return on the write path, and a lock there would put a second ordering
 	// constraint on code whose only job is to record that something went wrong.
 	//
-	// Nothing reads them to make a decision yet: the head-of-cycle fetch still runs
-	// unconditionally. See the package's design note in
-	// docs/design/inbound-push-notification.md §3 and §3.1.
+	// See the package's design note in docs/design/inbound-push-notification.md §3 and §3.1.
 	baseTrustedState   atomic.Bool
 	worktreeDirtyState atomic.Bool
+
+	// replayRequiredState records that a reset has discarded the local commits behind the retained
+	// writes while the replay that rebuilds them did not finish.
+	//
+	// It is a THIRD flag because it is a third question, and the other two answer it wrongly.
+	// baseTrusted is true — the worktree is exactly at the remote tip, which is the problem.
+	// worktreeDirty is false — the reset cleared it, and the worktree really is clean. What is
+	// stale is the retained writes: they still carry the commit hashes they had before the reset,
+	// and those commits are gone.
+	//
+	// Pushing in that state fails silently rather than loudly. The local branch equals the remote
+	// tip, so validatePushState answers "already up to date" and returns before it compares the
+	// cycle's root hash; the worker then counts the writes as published and resolves any
+	// CommitRequest riding one as Committed, naming a SHA that is not on the remote.
+	//
+	// See docs/design/inbound-push-notification.md §3.2.
+	replayRequiredState atomic.Bool
 
 	// branchBufferMaxBytes caps the retained in-memory event data; tripped on
 	// event arrival, an immediate finalize bypasses the commit window.
@@ -987,7 +1002,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 	// an atomic arriving while work is retained and the worktree is dirty would commit a failed
 	// write's leftovers — commitPendingWrites cannot reset for us, because retained local commits
 	// are exactly what a reset would destroy.
-	if err := l.recoverDirtyWorktree(); err != nil {
+	if err := l.recoverRetainedWrites(); err != nil {
 		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping atomic request",
 			"events", len(request.Events))
@@ -1086,10 +1101,13 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 	l.commitTimer.Reset(l.commitWindow)
 }
 
-// recoverDirtyWorktree resets and replays when a previous write left the worktree dirty AND work
-// is still retained. It runs before any commit the loop makes, which today means three callers:
-// finalizeOpenWindowWithReason, handleAtomicRequest, and applyResync. A fourth path that reaches
-// commitPendingWrites without calling this can commit a failed write's leftovers;
+// recoverRetainedWrites resets and replays when retained work can no longer be trusted, for either
+// of two reasons: a previous write left the worktree dirty, or a reset discarded the local commits
+// behind the retained writes and the replay that should have rebuilt them did not finish.
+//
+// It runs before any commit the loop makes — finalizeOpenWindowWithReason, handleAtomicRequest and
+// applyResync — and before any push it makes. A path that reaches commitPendingWrites without
+// calling this can commit a failed write's leftovers;
 // TestEveryLoopCommitPathRecoversADirtyWorktree is what makes adding one fail loudly.
 //
 // It has to live on the LOOP, not inside commitPendingWrites, for two reasons an earlier draft of
@@ -1101,17 +1119,31 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 //
 // The case only arises with retained work. With nothing retained, commitPendingWrites' own guard
 // resets for us, and it can do that safely because there is nothing to lose.
-func (l *branchWorkerEventLoop) recoverDirtyWorktree() error {
-	if len(l.pendingWrites) == 0 || !l.w.worktreeDirty() {
+func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
+	if len(l.pendingWrites) == 0 {
+		// Nothing is retained, so there is nothing a stale replay could strand. A replay only
+		// ever marks itself required while writes are retained, but clear it here too so the flag
+		// can never outlive the work it was about.
+		l.w.markReplayComplete()
+		return nil
+	}
+	dirty, needsReplay := l.w.worktreeDirty(), l.w.replayRequired()
+	if !dirty && !needsReplay {
 		return nil
 	}
 
-	l.w.Log.Info("Resetting a dirty worktree and replaying retained writes onto the remote tip",
-		"pendingWrites", len(l.pendingWrites))
+	l.w.Log.Info("Rebuilding retained writes onto the remote tip",
+		"pendingWrites", len(l.pendingWrites),
+		"worktreeDirty", dirty,
+		"replayRequired", needsReplay)
+	reason := "worktree left dirty by a failed write"
+	if !dirty {
+		reason = "an earlier replay reset these writes away without rebuilding them"
+	}
 	// fetchReasonRecovery, the same series the no-retained-writes case records in
 	// ensureBaseForCycle: this is one event, and which half of it an operator sees must not depend
 	// on whether a push happened to be in cooldown at the time.
-	return l.invalidateAndRefresh("worktree left dirty by a failed write", fetchReasonRecovery)
+	return l.invalidateAndRefresh(reason, fetchReasonRecovery)
 }
 
 // invalidateAndRefresh drops base trust and, when writes are retained, acts on that invalidation
@@ -1180,7 +1212,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		"messageOverride", effectiveMessage != "",
 		"attachedCR", pendingCR != nil)
 
-	if err := l.recoverDirtyWorktree(); err != nil {
+	if err := l.recoverRetainedWrites(); err != nil {
 		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping open window",
 			"reason", string(reason), "windowTarget", windowTarget)
@@ -1301,6 +1333,17 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 // in place and a future commit/timer will retry.
 func (l *branchWorkerEventLoop) pushPending() {
 	if len(l.pendingWrites) == 0 {
+		l.stopPushTimer()
+		return
+	}
+
+	// A reset may have discarded the local commits behind these writes while the replay that
+	// rebuilds them did not finish. Pushing now would find the branch already at the remote tip,
+	// report success without sending anything, and settle work that exists nowhere. Rebuild first,
+	// and keep the writes rather than publish a lie if that fails.
+	if err := l.recoverRetainedWrites(); err != nil {
+		l.w.Log.Error(err, "Cannot publish until the retained writes are rebuilt; keeping them",
+			"pendingWrites", len(l.pendingWrites))
 		l.stopPushTimer()
 		return
 	}
@@ -1442,6 +1485,24 @@ func (w *BranchWorker) markWorktreeClean() {
 	}
 }
 
+// replayRequired reports that a reset discarded the local commits behind the retained writes and
+// the replay that rebuilds them has not completed. Until it clears, those writes may not be
+// pushed: the push would succeed against a branch that already equals the remote tip and settle
+// work that exists nowhere.
+func (w *BranchWorker) replayRequired() bool { return w.replayRequiredState.Load() }
+
+// markReplayRequired is called the moment a reset lands inside a replay, BEFORE the rebuild is
+// attempted, so an abort anywhere in the rebuild leaves the flag set.
+func (w *BranchWorker) markReplayRequired() {
+	if !w.replayRequiredState.Swap(true) {
+		w.Log.V(1).Info("Retained writes need rebuilding: their local commits were reset away",
+			"branch", w.Branch)
+	}
+}
+
+// markReplayComplete is called only when a rebuild has replayed every retained write.
+func (w *BranchWorker) markReplayComplete() { w.replayRequiredState.Store(false) }
+
 // ensureBaseForCycle performs the head-of-cycle fetch, which is now conditional.
 //
 // The push session reads the remote's ref advertisement on a connection the cycle was making
@@ -1450,7 +1511,7 @@ func (w *BranchWorker) markWorktreeClean() {
 //
 // Only the first commit of a cycle may fetch at all: a reset would destroy the local commits the
 // retained writes already produced. When those exist AND the worktree is dirty, recovery is the
-// event loop's job instead — see recoverDirtyWorktree, which resets and replays rather than
+// event loop's job instead — see recoverRetainedWrites, which resets and replays rather than
 // resetting alone.
 func (w *BranchWorker) ensureBaseForCycle(
 	provider *configv1alpha3.GitProvider,
@@ -1775,7 +1836,11 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 		w.invalidateBase("sync before replay failed")
 		return fmt.Errorf("sync remote before replay: %w", err)
 	}
+	// The reset has landed, which means the local commits behind these writes are gone. From here
+	// until the rebuild finishes they describe work that exists nowhere, so nothing may publish
+	// them. Marked BEFORE the rebuild so any abort inside it leaves the flag set.
 	w.updateBranchMetadataFromPullReport(pullReport)
+	w.markReplayRequired()
 
 	rootBranch, rootHash, err := w.rebuildPendingWrites(repo, pendingWrites)
 	if err != nil {
@@ -1784,6 +1849,7 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 	}
 	w.pushCycleRootBranch = rootBranch
 	w.pushCycleRootHash = rootHash
+	w.markReplayComplete()
 	return nil
 }
 
