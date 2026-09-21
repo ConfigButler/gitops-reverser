@@ -681,6 +681,20 @@ needs no webhook to be correct, only to be fast.
 matters and waking the branch is unacceptable, and that case now has to argue for the interpreters
 on its own rather than inheriting the need from gap B.
 
+**Built, as `GitTarget.spec.onRefusal: PushEmptyCommit`,** defaulting to `Ignore`. Four guards ship
+with it, and the first two are the ones this section argued for:
+
+- **Off unless asked for**, because of the `prune` row above.
+- **Debounced per target.** A controller rewriting a base-owned field refuses on every one of its
+  own reconciles, and every commit wakes every reconciler watching the branch.
+- **Never for a suspended target.** An empty commit is a write, and it is the one write that
+  reaches outside this operator, so the state that means "write nothing" has to stop it.
+- **A GitTarget that cannot be read is treated as opted out.** Missing evidence is not consent for
+  an action that deletes where the reconciler prunes.
+
+The commit message explains its own empty diff, so `git log` does not show what looks like a stray
+no-op.
+
 ### Option 8: hand the action to the installer
 
 **What it is.** Stop deciding what a refusal should cause. Emit the fact, with enough detail to act
@@ -898,6 +912,12 @@ The [bi-directional corner](../../test/e2e/flux_bi_directional_e2e_test.go) is t
 both reconcilers against a real remote. Whatever is built from part 3 needs these, and the last one
 must never be allowed to lapse:
 
+0. **A new revision is enough** (option 7's load-bearing claim, and the only part of it real Flux
+   can answer). Drift a live object, push a commit that changes no file, wake only the
+   `GitRepository`, and assert the `Kustomization` applies on its own and reverts the drift. The
+   `GitTarget` is suspended first, or the operator publishes the drift and there is nothing left to
+   revert; and the `Kustomization` is never reconciled by hand, or it would apply for a reason that
+   has nothing to do with the new revision. **Built**, in the Flux corner.
 1. **The hazard cell.** A push changes an object we hold no pending write for. It survives in Git
    and reaches the cluster. This is §2.2 written as a test.
 2. **The contested cell, as decided.** A push changes an object we do hold a captured write for, and

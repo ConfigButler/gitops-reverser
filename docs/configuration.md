@@ -937,6 +937,43 @@ unaffected: they are edited where they already live. The fix is to point the tar
 `apps/checkout/overlays/prod`, and declare the other environments as their own `GitTarget` objects:
 one target is one environment is one write partition.
 
+### Reverting a refused edit (`spec.onRefusal`)
+
+A live edit can be refused: the acceptance gate or a write-boundary check decides it has no legal
+destination in the folder, nothing is committed, and `GitPathAccepted` goes `False`. The edit stays
+in the cluster. Nothing reverts it, because reverting is the reconciler's job and the reconciler has
+no reason to act: with Argo CD `selfHeal` off it holds the Application `OutOfSync`, and Flux
+corrects it only on its next apply interval, which a long interval leaves hours away.
+
+```yaml
+spec:
+  path: apps/checkout
+  onRefusal: PushEmptyCommit   # default: Ignore
+```
+
+`PushEmptyCommit` pushes a commit that changes no file. That moves the branch, and a new revision is
+all either reconciler needs: Flux publishes a new artifact revision and re-applies, and Argo CD sees
+a revision it has not synced, so the skip that `selfHeal: false` installs does not apply and
+automated sync reverts the edit. The commit message says what was refused and why its diff is empty.
+
+Reverser deliberately does not name the `Kustomization` or `Application` that renders the folder.
+Neither tool derives that mapping itself, so deriving it here to write into somebody else's object
+would be guessing on their behalf. Moving the branch asks them instead.
+
+**Read this before enabling it.**
+
+| | What to expect |
+| --- | --- |
+| Blast radius | The commit wakes **everything** watching the branch, not the refused object alone |
+| Unpublished edits | An allowed edit still waiting in the commit window can be reverted along with the refused one |
+| Pruning | Where the reconciler prunes, an object refused for having **no home in Git** is **deleted**, not reverted |
+| Argo CD exception | An `Application` with `argocd.argoproj.io/manifest-generate-paths` ignores the commit, because no file under its refresh paths changed |
+
+Three guards are built in. A suspended target never commits, because an empty commit is a write.
+A `GitTarget` that cannot be read is treated as `Ignore`, since missing evidence is not consent. And
+the commit is rate-limited per target, because a controller rewriting a base-owned field refuses on
+every one of its own reconciles.
+
 ### Deletion policy (`spec.prune.mode`)
 
 A target removes a document from Git for one of two very different reasons, and `spec.prune.mode`

@@ -336,7 +336,115 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 		run.waitForOrderDeleted(run.revertedOrderName)
 		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+2, biStableCountMediumWait)
 	})
+
+	// The mechanism behind GitTarget spec.onRefusal: PushEmptyCommit
+	// (docs/design/push-notification-and-reconcile-trigger.md, part 3 option 7).
+	//
+	// The wiring from a refused write to the commit is unit-tested, including that the commit
+	// lands with an empty tree diff. What only real Flux can answer is the claim the whole option
+	// rests on: **a new revision is enough**, on its own, to make the reconciler re-apply and
+	// revert live drift, even though the manifests it builds are byte-identical to the ones it
+	// applied last time.
+	//
+	// So this spec isolates exactly that claim and nothing else. It pushes the empty commit by
+	// hand rather than provoking a refusal, because combining the two would test the mechanism
+	// LESS precisely: a failure would not say which half broke.
+	//
+	// Two details carry the argument, and removing either makes the spec pass for the wrong
+	// reason:
+	//
+	//   - The GitTarget is SUSPENDED first. Otherwise the operator publishes the drift to Git and
+	//     there is no drift left for Flux to correct, so the revert would prove nothing.
+	//   - Only the GitRepository is reconciled, never the Kustomization. The Kustomization is on
+	//     a 30m interval, so if it applies inside this spec it is because a new source revision
+	//     woke it, which is the property a push webhook would supply in production.
+	It("reverts live drift from an empty commit, because a new revision is enough", func() {
+		By("suspending the GitTarget so the drift stays drift instead of being published")
+		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName,
+			"--type=merge", "-p", `{"spec":{"suspend":true}}`)
+		Expect(err).NotTo(HaveOccurred(), "failed to suspend the GitTarget")
+		DeferCleanup(func() {
+			_, _ = kubectlRunInNamespace(testNs, "patch", "gittarget", run.gitTargetName,
+				"--type=merge", "-p", `{"spec":{"suspend":false}}`)
+		})
+
+		// The SECOND order, because no earlier spec has edited it: Git and the cluster both hold
+		// it at Cup, so the value to revert to is not a leftover from another assertion.
+		By("drifting the live object away from what Git says")
+		Expect(run.gitPull()).To(Succeed())
+		baselineCommitCount, err := run.gitMainCommitCount()
+		Expect(err).NotTo(HaveOccurred(), "failed to capture the baseline commit count")
+
+		_, err = kubectlRunInNamespace(testNs, "patch",
+			iceCreamCRDName(crdGroupBiDirectional), run.secondOrderName,
+			"--type=merge", "-p", `{"spec":{"container":"Waffle"}}`)
+		Expect(err).NotTo(HaveOccurred(), "failed to drift the live IceCreamOrder")
+		Eventually(func(g Gomega) {
+			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Waffle"),
+				"the drift must be live before the empty commit is pushed")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+		By("confirming the suspended operator leaves the drift alone")
+		run.consistentlyExpectRemoteCommitCount(baselineCommitCount, biStableCountMediumWait)
+
+		By("pushing a commit that changes no file")
+		Expect(run.commitAllAndPush("bi-directional: empty commit to trigger a reconcile")).To(Succeed())
+		emptyHead := run.gitHEAD()
+		Expect(run.emptyDiffAt(emptyHead)).To(BeTrue(),
+			"the commit under test must change no file, or this spec is measuring an ordinary sync")
+
+		By("waking only the source, never the Kustomization")
+		run.reconcileFluxSource()
+		run.waitForFluxGitRepositoryRevision(emptyHead)
+
+		// A longer budget than the shared helper's, and deliberately so: every other caller has
+		// just reconciled the Kustomization by hand, while this one is waiting for Flux to notice
+		// the new artifact on its own. That is the property under test, so it gets room.
+		By("the Kustomization applies on its own and the drift is reverted")
+		Eventually(func(g Gomega) {
+			output, err := kubectlRunInNamespace("flux-system",
+				"get", "kustomization", run.fluxLiveName, "-o", "json")
+			g.Expect(err).NotTo(HaveOccurred())
+			var obj unstructured.Unstructured
+			g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+			revision, found, revErr := unstructured.NestedString(
+				obj.Object, "status", "lastAppliedRevision")
+			g.Expect(revErr).NotTo(HaveOccurred())
+			g.Expect(found).To(BeTrue())
+			g.Expect(revision).To(ContainSubstring(emptyHead),
+				"the Kustomization must reach the empty commit without being reconciled by hand")
+		}, 3*time.Minute, biPollInterval).Should(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(liveOrderContainer(g, run, run.secondOrderName)).To(Equal("Cup"),
+				"a new revision must be enough to make Flux re-apply and revert the drift")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
 })
+
+// emptyDiffAt reports whether the commit changed no file, which is the property that separates
+// this from an ordinary Git-side change driving an ordinary sync.
+func (r biDirectionalRun) emptyDiffAt(sha string) bool {
+	GinkgoHelper()
+	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+	cmd.Dir = r.checkoutDir
+	out, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "git diff-tree: %s", out)
+	return strings.TrimSpace(string(out)) == ""
+}
+
+// liveOrderContainer reads one field of the live object, which is all this spec's drift needs.
+func liveOrderContainer(g Gomega, r biDirectionalRun, name string) string {
+	output, err := kubectlRunInNamespace(r.testNs,
+		"get", iceCreamCRDName(crdGroupBiDirectional), name, "-o", "json")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var obj unstructured.Unstructured
+	g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+	value, found, err := unstructured.NestedString(obj.Object, "spec", "container")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	return value
+}
 
 func newBiDirectionalRun(testNs string) biDirectionalRun {
 	testID := strconv.FormatInt(time.Now().UnixNano(), 10)
