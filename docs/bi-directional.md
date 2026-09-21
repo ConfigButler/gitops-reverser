@@ -325,6 +325,12 @@ That design deliberately does **not** wire the webhook to the annotation above: 
 annotation asks for a full resync, which publishes cluster state, and that is the one
 thing a push notification must not do.
 
+If you are building that receiver, or a relay to call it, the request shape is specified in
+[§8.3, the wire contract](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it):
+one signed `POST /git-push/<route>` carrying the repository, the branch, and the SHA the branch now
+points at. It deliberately does not take a Git host's native payload, so the mapping from your
+host's webhook belongs in the host's own configuration or in the relay.
+
 One property that design fixes in advance, and that matters if you build anything similar
 yourself: **a notification that a branch moved must not trigger a fresh cluster snapshot.** Our
 handler and the reconciler's both fire on the same push, and ours has less work to do, so it

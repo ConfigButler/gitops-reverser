@@ -76,6 +76,21 @@ when adding code here:** anything that resolves, commits, or concludes without r
 advertisement must either fetch, or refuse to conclude. See
 [inbound push notification](design/inbound-push-notification.md) §3.
 
+That trust belongs to **one repository**. A worker is keyed by
+`(GitProvider namespace, GitProvider name, branch)`, while `spec.url` is immutable
+and repointed by deleting and recreating the `GitProvider`, so the same worker can meet a new
+repository without anything restarting it. Each remote has its own clone, so trust carried across
+that change would skip establishing the new checkout entirely; `noteRemoteIdentity` drops it
+instead.
+
+**Nothing tells an idle target that its branch moved.** A target that is not writing makes no round
+trip, so it holds its previous view of the folder until it next publishes, resyncs, or is asked to
+re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
+ten seconds because it is not converged; a healthy idle one does not. Closing that is the inbound
+receiver's job, and it is designed but not built:
+[§8.3](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it) is the
+request shape it will accept.
+
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
 Redis stores watch resume cursors (warm restarts) and the small coordination records used by
@@ -1144,6 +1159,14 @@ alone, re-planning the retained writes onto the new tip. Three things reach it: 
 calls it directly, while a worktree a failed write left dirty and the snapshot a resync judges
 against go through `invalidateAndRefresh`, which drops base trust first because nothing has asked
 the remote anything yet.
+
+**What a reset has to leave behind, now that it is the only cleanup.** A hard reset restores tracked
+files and stops there, so a document a failed write created, and the placement directory it created
+for it, both survive one. While every cycle fetched, the next one swept them up by accident; a cycle
+that plans on a trusted base would instead commit them under whoever wrote next. So the reset
+explicitly discards untracked and newly staged leftovers and prunes the directories that held them
+([`discardWorktreeLeftovers`](../internal/git/git.go)), and a write that fails while creating
+directories removes the ones it made on its way out. Only then is `worktreeDirty` cleared.
 
 ### Durability of the write queue (planned)
 

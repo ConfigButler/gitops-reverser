@@ -10,11 +10,13 @@ requiring a fetch before every push would charge every API edit for the less com
 competing Git writer. The push already checks the remote branch, so a healthy worker can plan
 locally and spend its network budget on publication.
 
-This guide describes the implementation reviewed at `74558c42` in PR #382. The inbound Git push
-receiver remains a proposal. The [review record](finished/pr-382-review.md) identifies a remaining
-reset failure defect and the limits of the current retry scheduling. The
-[inbound notification design](design/inbound-push-notification.md) contains the implementation
-history and proposed receiver; [architecture](architecture.md) covers the wider operator.
+This guide describes the shipped behavior. The inbound Git push receiver remains a proposal: see
+[how to call the receiver](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it)
+for the request shape it will accept. The one scheduling limitation to know about is that retained
+work has no retry timer of its own; [failure timing](#failure-timing-and-memory-limits) says what
+that means in practice. The [inbound notification design](design/inbound-push-notification.md)
+contains the implementation history and the proposed receiver; [architecture](architecture.md)
+covers the wider operator.
 
 ## The structures and their responsibilities
 
@@ -223,10 +225,17 @@ about its local checkout.
 that change is the compare-and-swap's job. Similarly, a clean checkout can still be missing the
 commits represented by retained writes.
 
-The intended recovery rule is to fetch, reset, and replay before proceeding with retained work
-whose local representation is unsafe. The reviewed code protects a failed rebuild after a
-successful reset. The review record describes a remaining hole when the reset itself partly
-succeeds and then returns an error.
+The recovery rule is to fetch, reset, and replay before proceeding with retained work whose local
+representation is unsafe. `replayRequired` is set **before** the reset rather than after it,
+because a reset can move the branch reference and then fail while rewriting the worktree: the
+commits behind the retained writes are already unreachable at that point, and a flag set only on
+the success path would miss exactly that case. The cost of setting it too eagerly is one fetch on
+the next cycle.
+
+A fourth piece of state is not a flag: the trust above is bound to the repository it was gained
+against. A `GitProvider` is repointed by deleting and recreating it, which does not restart the
+worker, so trust from the previous repository must not be carried into the new one — it would
+skip establishing the new checkout entirely.
 
 ## Story 3: save now, and know what reached Git
 
@@ -391,7 +400,7 @@ provider and branch so different workers do not hide one another's behavior.
 | Same counter, reason `contention` | Fetch/reset after confirmed remote movement |
 | Same counter, reason `push_failure_probe` | Remote-state lookup after an unclassified push failure |
 | Same counter, reason `recovery` | Attempts to rebuild unsafe retained work or clean a dirty checkout |
-| Same counter, reason `forced_recheck` | Explicit refresh and some snapshot paths; see the classification gap below |
+| Same counter, reason `forced_recheck` | Explicit refresh, and the snapshot a resync judges against |
 | Same counter, reason `bootstrap` | Instrumented bootstrap helper; currently called only by tests |
 | `gitopsreverser_git_pushes_total` and `gitopsreverser_git_push_retries_total` | Completed publication cycles and contention retries within them |
 | `gitopsreverser_git_push_duration_seconds` | Time inside a push cycle, including its inline replays |
@@ -405,7 +414,7 @@ the cycle. It cannot by itself answer “how long from my API edit until Git acc
 A flat recovery counter also cannot prove progress: the worker may be retaining work without a
 retry timer. Check queue depth, failure logs, and `CommitRequest` outcomes alongside rates.
 
-There is also a classification gap in this revision: an ordinary resync with `RefreshRemote=false`
-and no retained writes increments `publication`, while the equivalent resync with retained writes
-increments `forced_recheck`. Until that is corrected, a growing `publication` series requires
-checking resync activity before concluding that healthy live publication is fetching again.
+A resync's fetch lands under `forced_recheck` whether or not the branch happened to hold retained
+writes, so a growing `publication` series means live publication is fetching again and nothing
+else. That was worth getting right: the two cases differ only in push timing, and while they
+reported differently the central diagnostic on this page could not be read at face value.

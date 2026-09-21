@@ -1,7 +1,8 @@
 # Inbound push notification, and removing the pre-push fetch
 
 > **design**: partly shipped. The conditional fetch and its state machine are implemented (§11);
-> the inbound receiver in §8 is still a proposal. Sections before §11 keep the reasoning as it was
+> the inbound receiver in §8 is still a proposal, and §8.3 is the request shape it will accept, for
+> whoever builds it or points something at it. Sections before §11 keep the reasoning as it was
 > argued, including behavior this change has since fixed, and say so where it matters.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-19.
@@ -785,6 +786,177 @@ For a refused target they do not have to, because §6 shows it re-reads every 10
 For a healthy idle target the stale marker plus the manual annotation is probably enough, and
 option B's maximum age is the backstop if it is not.
 
+### 8.3 The wire contract for whoever calls it
+
+Everything above says what the receiver must *do*. This section says how it is **called**, because
+that is what a Git host, a relay, or the person wiring one up has to get right, and because two
+readers need it before any code exists: whoever builds the handler, and whoever points something at
+it.
+
+Nothing here is built. It is the contract to build, and the parts that are still open are marked as
+open rather than left for an implementer to guess at.
+
+#### Where it listens
+
+The operator runs **two** HTTPS listeners today, and which one serves this matters more than it
+looks: it decides the certificate, the `Service`, and what a network policy has to allow.
+
+| Listener | Serves | Who calls it |
+| --- | --- | --- |
+| The controller-runtime webhook server | admission and conversion | the API server, in-cluster |
+| The audit server (`--audit-bind-address`, its own `Service` and certificate) | `/audit-webhook/<route>` | the API server's audit backend, which may be off-cluster |
+
+**The receiver belongs on the audit listener.** It is the same shape of traffic: an inbound POST
+from something that is not the Kubernetes API server, authenticated by a shared secret rather than
+by admission's client certificate, with its own timeouts. Putting it on the admission server would
+mean exposing the listener the API server trusts to a Git host, which is a larger change than this
+feature is worth.
+
+That is a recommendation rather than a settled decision, and an implementer who disagrees should
+record why here. What must not happen is landing it on the admission server by default because that
+is where `Register` was easiest to call.
+
+#### The request
+
+```text
+POST /git-push/<route>
+Content-Type: application/json
+X-Reverser-Signature: sha256=<hex HMAC of the exact request body>
+```
+
+`<route>` names a receiver configuration the same way `/audit-webhook/<audit-route>` names an audit
+route today, so several Git hosts (or several organizations on one host) can deliver to one operator
+with separate secrets. It is a path segment rather than a query parameter so that a proxy can route
+on it and a log line identifies the sender without a body.
+
+The body is small on purpose. A push notification is three facts:
+
+```json
+{
+  "repository": "https://github.com/acme/infra.git",
+  "branch": "main",
+  "after": "9f7fc13494903993371f49caa67bd08051987cd3"
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `repository` | yes | The repository the branch belongs to, in any form the host uses (HTTPS, SSH, with or without `.git`). Matched against `GitProvider.spec.url` after normalization, never by string equality |
+| `branch` | yes | The short branch name, `main`, not `refs/heads/main` |
+| `after` | yes | The SHA the branch now points at, or forty zeros for a deletion |
+
+**There is no `before`, and that is a decision rather than an omission.** §8 explains why: a set of
+SHAs we published cannot distinguish our own delayed delivery from somebody rolling the branch back
+through commits we published, because both are pairs drawn from the same set. One comparison against
+the believed tip is the whole rule.
+
+**A host-native payload is not accepted directly.** GitHub, GitLab, Gitea and Azure DevOps each send
+a different envelope, and parsing four of them (plus whatever a fifth host does next year) is a
+compatibility surface this feature does not need: the three fields above are trivially derivable
+from all of them. Whoever wires a host up writes that mapping once: in the host's own webhook
+configuration where it is expressible, or in whatever already sits in front of the operator, which
+for most installs is the Flux `Receiver` or Argo endpoint §5.4 wants to piggyback on. Accepting a
+native envelope is a later convenience, and if it is added it belongs behind a per-route declaration
+of which host's shape to expect, never behind sniffing.
+
+**A deletion is a movement like any other.** Forty zeros in `after` says the branch is gone, and the
+handler does the same thing it does for any other value it does not believe: invalidate. The worker
+already recovers from a deleted branch on its next cycle by re-rooting on the default branch and
+re-creating it (see §11), so the notification changes when that is discovered rather than what
+happens.
+
+#### Authentication
+
+The signature header carries `sha256=` followed by the hex HMAC-SHA256 of the **exact** request
+body, keyed by the route's shared secret. Compare in constant time, and compute over the raw bytes
+before any JSON decoding: re-serializing the parsed body changes it.
+
+This is the same shape GitHub, GitLab and Gitea already produce for their own receivers, so a relay
+usually re-signs rather than invents.
+
+Three rules the handler does not get to soften:
+
+- **An unsigned or wrongly signed request is refused**, and nothing about it is acted on. An
+  invalidation costs nothing to serve, but a forged one is free work an attacker can aim at a
+  branch, and an endpoint that accepts anonymous "this moved" claims is a way to make a target
+  fetch on demand.
+- **A route with no configured secret does not serve.** Fail closed at configuration time, so the
+  gap shows up while somebody is looking at it.
+- **Verification happens before the body is parsed for anything else**, including before the
+  repository is looked up, so an unsigned request cannot be used to probe which repositories this
+  operator tracks.
+
+#### What it answers
+
+| Status | When | What the caller should do |
+| --- | --- | --- |
+| `202 Accepted` | The signature verified and the notification was applied, **including when it matched no branch worker** | Nothing. This is the success case |
+| `400 Bad Request` | The body is not JSON, or a required field is missing or malformed | Fix the payload. Retrying is pointless |
+| `401 Unauthorized` | The signature is absent or wrong | Fix the secret. Retrying is pointless |
+| `404 Not Found` | No such route | Fix the URL |
+| `503 Service Unavailable` | The operator is not ready to serve | Retry with backoff |
+
+**A delivery that matches nothing is a success, not a 404.** A `GitTarget` may be suspended, the
+branch may be one nobody mirrors, or the repository may simply not be ours: none of those is the
+caller's fault, and answering with an error teaches a Git host to disable the hook after enough
+failures. The body of the `202` says how many workers it reached, which is what makes a misconfigured
+hook debuggable:
+
+```json
+{"matched": 0}
+```
+
+A `matched: 0` that the operator expected to be nonzero is the one thing worth alerting on while
+setting this up, and it is also the argument for a counter labeled by route.
+
+#### Matching a delivery to a worker
+
+The receiver resolves `(repository, branch)` to every branch worker for that pair. That is a
+many-to-one relation in both directions: several `GitTarget`s can share one branch, and one
+repository can be named by several `GitProvider` objects in different namespaces.
+
+Normalization is where this goes wrong, so state it: compare `scheme`-insensitively on host and
+path, case-fold the host, strip a trailing `.git`, strip a leading `git@` or `ssh://git@`, and
+ignore a port that is the default for the scheme. `git@github.com:acme/infra.git` and
+`https://github.com/acme/infra` are the same repository, and an operator who wrote one form in
+`GitProvider.spec.url` while the host sends the other must not silently get nothing.
+
+**Which object carries the receiver's configuration is still open** (§14, question 2). The mapping
+above is a function of the `(repository, branch)` pair either way, so it does not block building the
+handler, but the secret has to hang somewhere and the candidates differ in blast radius: a
+`GitProvider` already names the repository, while a cluster-scoped receiver object would serve
+several providers with one secret.
+
+#### Delivery is unreliable, and the handler is built for that
+
+Deliveries arrive out of order, arrive twice, or never arrive. The handler is idempotent because
+invalidation is: applying it twice is applying it once, and the only state it writes is "this base
+can no longer be vouched for" plus the believed tip.
+
+A missed delivery costs freshness, never correctness. The compare-and-swap push is still the thing
+that makes a stale base safe, which is why §8 puts a maximum age on `baseTrusted` in option B as the
+backstop rather than making the webhook a dependency.
+
+#### Calling it by hand
+
+The contract is small enough to exercise with `curl`, which is how an implementer tests the handler
+and how an operator confirms a route before pointing a host at it:
+
+```bash
+BODY='{"repository":"https://github.com/acme/infra.git","branch":"main","after":"9f7fc134..."}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$RECEIVER_SECRET" -hex | awk '{print $2}')
+
+curl -sS -X POST "https://reverser.example.com/git-push/acme" \
+  -H 'Content-Type: application/json' \
+  -H "X-Reverser-Signature: sha256=$SIG" \
+  --data "$BODY"
+```
+
+Until the receiver exists, the supported way to tell an idle target to go and look at Git is the
+annotation in §7, which runs the full snapshot path on purpose. Do not build the webhook against
+that annotation: §7 explains why a push notification that publishes a cluster snapshot can revert
+the very change it was told about.
+
 ## 9. Status surface
 
 An operator who can no longer assume a fetch per cycle needs to see when the remote was last read.
@@ -826,6 +998,13 @@ for the no-retained-writes half of a forced recheck.
 **Status: commits 0 through 4 have shipped, plus the corrections below.** The fetch is
 conditional, the state machine is live, and §4's table is measured rather than predicted. What
 remains is commit 5, the receiver, plus the two follow-ups under "deliberately not in this plan".
+
+Two pieces of §12 are also outstanding, and neither blocks the change. The **e2e Prometheus
+assertion** is not written: the claim that `reason="publication"` stays flat on a healthy target is
+proven by the unit ledger and the per-reason fetch tests, and against a real cluster by nothing. And
+retained work still has **no retry timer of its own** after a failed push or a failed rebuild, which
+§3.2 notes as a caveat on reading the `recovery` series; [push-cooldown.md](push-cooldown.md) §7
+option C is where that is argued.
 
 ### What the flip broke, and what fixed it
 
@@ -964,9 +1143,11 @@ worker has never seen the remote — and every cycle after that is silent.
 
 ### Commit 5: the receiver
 
-§8 option C, subject to §8.1: refresh and replay, never snapshot. Its mandatory companion is
-advancing the published-SHA bookkeeping on a successful push (§8, `lastCommitSHA`), without which
-the dedupe cannot work and the feature pays back the round trip it saved.
+§8 option C, subject to §8.1: refresh and replay, never snapshot. §8.3 is its wire contract: one
+signed `POST /git-push/<route>` carrying `{repository, branch, after}`, answered `202` even when it
+matches nothing. Its mandatory companion is advancing the published-SHA bookkeeping on a successful
+push (§8, `lastCommitSHA`), without which the dedupe cannot work and the feature pays back the round
+trip it saved.
 
 ### What is deliberately not in this plan
 
