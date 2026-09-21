@@ -257,30 +257,35 @@ case !hasPendingCommits && (!w.baseTrusted() || w.worktreeDirty()):
 this: `syncToRemote` then `rebuildPendingWrites`. Reusing it means dirty-state recovery adds a
 branch, not a mechanism.
 
-### 3.2 A reset is destructive before it is constructive
+### 3.2 A push that sent nothing proves nothing
 
-Resetting and replaying is one operation with two halves, and the halves are not symmetric. The
-reset discards the local commits the retained writes produced; the replay rebuilds them. Between
-those two, the retained writes describe work that exists **nowhere** (not on the remote, and no
-longer in the worktree) while still carrying the commit hashes they had before the reset.
+**The promise.** A `CommitRequest` resolves `Committed` only once its work is on the remote. Nothing
+before the push can make that claim: everything earlier in the pipeline can promise at most that the
+work is queued.
 
-If the replay fails there, the two flags above both say the wrong thing, and they say it honestly:
+**How it broke.** The worker read "`PushAtomic` returned no error" as "my work is on the remote".
+Those are not the same, because a push returns no error in two different situations:
 
-| Flag | Value | Why it is no help |
-| --- | --- | --- |
-| `baseTrusted` | **true** | And correctly so. The worktree IS at the remote tip. That is the problem, not the reassurance |
-| `worktreeDirty` | **false** | And correctly so. The reset cleared it, and the worktree really is clean |
+| The push returned nil because | Does our work exist on the remote? |
+| --- | --- |
+| it sent our commits and the remote took them | **Yes.** This is the case the promise is about |
+| there was nothing to send: the local branch already equals the remote | **Unknown.** It depends entirely on how we got here |
 
-What is stale is neither the base nor the tree. It is the retained writes, which is a third
-question and needs a third flag: `replayRequired`, set the moment the reset lands and cleared only
-once every retained write has been replayed.
+The second is good news if we arrived at "local equals remote" by *pushing to* the remote. It is
+the opposite of good news if we arrived there by being *reset to* it, because a reset is how the
+local branch reaches the remote tip while carrying none of our work.
 
-**The failure is silent, which is what makes it worth a flag rather than a comment.** A push in
-that state does not fail. The local branch equals the remote tip, so `validatePushState` answers
-"already up to date" and returns *before* it compares the cycle's root hash. `PushAtomic` returns
-`nil`, the worker counts the writes as published, clears them, and resolves any `CommitRequest`
-riding one as `Committed`, naming a SHA that is not on the remote and never will be. A user is
-told their save landed.
+And a reset is exactly what a replay does first.
+
+**Where the reset comes from.** Resetting and replaying is one operation with two halves, and only
+the second is constructive. The reset discards the local commits behind the retained writes; the
+replay rebuilds them. Land in between (any error in the rebuild will do, and a transient API failure
+on the prune-policy re-read is enough) and the retained writes still name commits that no longer
+exist, on a branch that now equals the remote exactly.
+
+The next push then sends nothing, returns nil, and the worker settles the work: clears the retained
+writes, counts the commits, and tells the `CommitRequest` it landed, naming a SHA that is on no
+remote. A user is told their save succeeded. Nothing logs an error.
 
 ```mermaid
 sequenceDiagram
@@ -316,10 +321,30 @@ The invariant that closes it:
 
 > **Retained writes may not be published until the replay that rebuilds them has completed.**
 
-`recoverRetainedWrites` (formerly `recoverDirtyWorktree`) carries both reasons retained work can
-stop being trustworthy, and it now runs before the **push** as well as before every commit. A
-rebuild that fails again keeps the writes retained rather than publishing a lie, which is what a
-transient error deserves.
+The push cannot enforce that by itself, and this is the whole reason a flag exists. Looking at the
+wire, a no-op push is indistinguishable from a successful one: both see "local equals remote". The
+difference is in how we got there, which happened earlier and left no trace on the branch. So
+something has to remember it. `replayRequired` is that note and nothing more: "the commits these
+writes claim do not exist right now". It is set when the reset lands and cleared when the replay
+finishes.
+
+`recoverRetainedWrites` (formerly `recoverDirtyWorktree`) repairs it, and now runs before the
+**push** as well as before every commit. A rebuild that fails again keeps the writes retained
+rather than publishing a lie, which is what a transient error deserves.
+
+**Why `worktreeDirty` cannot do this job**, which is the first thing to try and the thing that does
+not work. Two reasons, and the second is decisive:
+
+1. It answers a different question. `worktreeDirty` means "a failed write may have left files in
+   the tree that nobody asked for", and after a reset the honest answer to that is **no**. The tree
+   really is clean. What is stale is the retained writes.
+2. **It clears at the wrong moment.** `worktreeDirty` is cleared by the reset, inside
+   `updateBranchMetadataFromPullReport`. The reset is precisely when this problem STARTS. A flag
+   that clears at the start of the window cannot mark the window.
+
+That is also why the two cannot be merged into one. They bracket different spans of the same
+operation: `worktreeDirty` ends where the reset lands, `replayRequired` begins there and ends where
+the replay lands. One flag cannot have two clearing points.
 
 **And it is visible while it lasts.** Each retry costs one fetch, counted under
 `reason="recovery"` (§12), so a rebuild that keeps failing shows up as that series climbing rather

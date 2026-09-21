@@ -1136,14 +1136,10 @@ func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
 		"pendingWrites", len(l.pendingWrites),
 		"worktreeDirty", dirty,
 		"replayRequired", needsReplay)
-	reason := "worktree left dirty by a failed write"
-	if !dirty {
-		reason = "an earlier replay reset these writes away without rebuilding them"
-	}
 	// fetchReasonRecovery, the same series the no-retained-writes case records in
 	// ensureBaseForCycle: this is one event, and which half of it an operator sees must not depend
 	// on whether a push happened to be in cooldown at the time.
-	return l.invalidateAndRefresh(reason, fetchReasonRecovery)
+	return l.invalidateAndRefresh("retained writes cannot be trusted", fetchReasonRecovery)
 }
 
 // invalidateAndRefresh drops base trust and, when writes are retained, acts on that invalidation
