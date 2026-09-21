@@ -96,8 +96,12 @@ func closeDelaySeconds(spec configbutleraiv1alpha3.CommitRequestSpec) int32 {
 //     is the same lag that makes reconcileStatus lose its optimistic lock in the first place.
 //   - The policies are opposites, and reconcileStatus's is the wrong one here. It drops a losing
 //     write and asks the caller to come back and recompute; a re-run of THIS reconcile would
-//     re-finalize an already-flushed window and mis-report the outcome as NoOpenWindow. So
-//     writeTerminalStatus retries in place, bounded, and gives up rather than requeue.
+//     re-finalize an already-flushed window. So writeTerminalStatus retries in place, bounded, and
+//     gives up rather than requeue. (The worker now defends the same boundary from its side: a
+//     request whose window has committed stays identifiable until the push settles it, so a
+//     re-sent attach is recognized rather than registered afresh. This policy is still the right
+//     one, but a re-run is no longer the only thing standing between a flushed window and a
+//     NoOpenWindow that never happened.)
 //
 // CommitRequestReconciler drives a CommitRequest through its state machine
 // (docs/spec/commitrequest-design.md and
