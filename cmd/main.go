@@ -342,11 +342,12 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.GitTargetReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		WorkerManager: workerManager,
-		EventRouter:   eventRouter,
-		Recorder:      mgr.GetEventRecorderFor("gittarget"),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		WorkerManager:   workerManager,
+		EventRouter:     eventRouter,
+		Recorder:        mgr.GetEventRecorderFor("gittarget"),
+		BaseTrustMaxAge: cfg.baseTrustMaxAge,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
@@ -441,6 +442,7 @@ type appConfig struct {
 	attributionTransport        string
 	attributionFactTTL          time.Duration
 	attributionGrace            time.Duration
+	baseTrustMaxAge             time.Duration
 	attributionMaxFactsPerType  int
 	attributionMaxFacts         int
 	attributionCollectionWindow time.Duration
@@ -595,6 +597,13 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
 			"at the cost of commit latency.")
+	fs.DurationVar(&cfg.baseTrustMaxAge, "base-trust-max-age", 0,
+		"How long a branch worker may keep believing its checkout sits at the remote tip before it "+
+			"re-reads Git (duration string; 0, the default, never expires it). Nothing else moves an IDLE "+
+			"target's view of Git: it is converged, so its periodic passes publish status without touching "+
+			"the remote, and it holds its previous answer about a folder somebody has since changed. This "+
+			"bounds that staleness. It costs one fetch per branch per interval on targets that are silent; "+
+			"a target that is publishing re-reads on every push and is never expired by it.")
 	fs.StringVar(&cfg.auditRouteAnnotationKey, "author-attribution-audit-route-annotation-key", "",
 		"Audit-event annotation naming the AUDIT ROUTE each event belongs to. Setting it enables the "+
 			"bare /audit-webhook endpoint for a SHARED audit stream carrying several logical clusters: the "+

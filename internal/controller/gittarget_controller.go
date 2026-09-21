@@ -132,7 +132,17 @@ type GitTargetReconciler struct {
 
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
-	EventRouter   *watch.EventRouter
+
+	// BaseTrustMaxAge bounds how long a branch worker may keep believing its checkout sits at the
+	// remote tip. Zero disables it, which is the default.
+	//
+	// It is enforced here rather than by a timer inside the worker because the target that needs
+	// it is the IDLE one, and an idle worker has nothing arriving to check the clock on. This
+	// reconcile is already a scheduled tick — a converged GitTarget requeues on
+	// RequeueSteadyInterval and that pass publishes status without touching Git — so it is the
+	// wake-up the age needs, with no second mechanism to own.
+	BaseTrustMaxAge time.Duration
+	EventRouter     *watch.EventRouter
 	// Recorder emits a Kubernetes Event on every persisted Ready transition. It may be nil in
 	// tests, in which case no Event is recorded and nothing else changes.
 	Recorder record.EventRecorder
@@ -237,6 +247,12 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if sourceProviderErr != nil {
 		return ctrl.Result{}, sourceProviderErr
 	}
+
+	// Expire base trust that has gone stale BEFORE the data plane is observed, so a target whose
+	// trust this pass drops fetches on its next cycle rather than the one after. This performs no
+	// round trip of its own: it clears a flag, and the next publication is what pays for the
+	// fetch, which by then has a reason to make it.
+	r.expireStaleBaseTrust(&target, providerNS, log)
 
 	// A standing reconcile request forces the same re-check a refused Git path does: the watch
 	// plane re-anchors the target's streams, which is what makes it re-read the folder rather than
@@ -747,6 +763,29 @@ func gitTargetReadinessGates(
 	rd.progressingIf(observed.declare.Pending && observed.declare.Failures == 0,
 		metav1.ConditionFalse, ReasonProgressing,
 		"Stream declaration has not landed yet; the data-plane surface is not observable")
+}
+
+// expireStaleBaseTrust is the scheduled half of --base-trust-max-age. See BaseTrustMaxAge.
+//
+// A missing worker is not an error here: nothing has been published for this target yet, so there
+// is no trust to expire and the next publication will read the remote anyway.
+func (r *GitTargetReconciler) expireStaleBaseTrust(
+	target *configbutleraiv1alpha3.GitTarget,
+	providerNS string,
+	log logr.Logger,
+) {
+	if r.BaseTrustMaxAge <= 0 || r.WorkerManager == nil {
+		return
+	}
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		target.Spec.GitProviderRef.Name, providerNS, target.Spec.Branch)
+	if !exists || worker == nil {
+		return
+	}
+	if worker.ExpireBaseTrust(r.BaseTrustMaxAge) {
+		log.Info("Base trust expired; the next publication will re-read the remote",
+			"branch", target.Spec.Branch, "maxAge", r.BaseTrustMaxAge.String())
+	}
 }
 
 func (r *GitTargetReconciler) ensureEventStream(

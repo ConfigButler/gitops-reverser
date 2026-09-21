@@ -354,6 +354,14 @@ interval alongside a `Receiver`.
 **Consequence worth stating.** If any option below is built, this one should be too, expressed as
 the same age rather than as a second mechanism.
 
+**Built, and off by default.** `--base-trust-max-age` takes a duration and `0`, the default, never
+expires anything, which keeps §1.6's measured zero-fetch idle target true for anyone who does not
+opt in. The age is enforced on the `GitTarget` reconcile rather than by a timer in the worker,
+because the target it exists for is the idle one and an idle worker has nothing arriving to check a
+clock on. The stamp is written on every gain of trust, not only on the transition into it, so a
+target that keeps publishing keeps resetting the clock and is never expired out from under a busy
+branch.
+
 ### Option 2: tell the reconciler after we push
 
 **What it is.** After a successful `PushAtomic`, ask the downstream to reconcile. Outbound only.

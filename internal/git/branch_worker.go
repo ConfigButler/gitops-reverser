@@ -133,6 +133,10 @@ type BranchWorker struct {
 	baseTrustedState   atomic.Bool
 	worktreeDirtyState atomic.Bool
 
+	// baseTrustedAt is when baseTrustedState last became true, as Unix nanoseconds, and it exists
+	// only so ExpireBaseTrust can put a maximum age on that trust. Zero means "never trusted".
+	baseTrustedAt atomic.Int64
+
 	// replayRequiredState records that a reset has discarded the local commits behind the retained
 	// writes while the replay that rebuilds them did not finish.
 	//
@@ -1473,7 +1477,35 @@ func (w *BranchWorker) worktreeDirty() bool { return w.worktreeDirtyState.Load()
 // now the remote tip). fetchRemoteBranchHash pointedly does not call it: that one fetches without
 // resetting, so it learns where the remote is without making the worktree match.
 func (w *BranchWorker) setBaseTrusted(trusted bool) {
+	if trusted {
+		// Stamped on every gain rather than only on the transition, because the age this feeds is
+		// "how long since we last read the remote", not "how long since we first believed it". A
+		// target publishing steadily re-gains trust on every push and should keep resetting the
+		// clock; otherwise a busy target would be invalidated on a schedule for no reason.
+		w.baseTrustedAt.Store(time.Now().UnixNano())
+	}
 	w.baseTrustedState.Store(trusted)
+}
+
+// ExpireBaseTrust drops base trust that is older than maxAge, and reports whether it did.
+//
+// This is the scheduled half of the maximum-age backstop. Nothing else moves an idle target's view
+// of Git: it is converged, so it requeues on the steady interval and those passes publish status
+// without touching the remote. A target that IS publishing re-stamps the clock on every push, so
+// this only ever fires on one that has gone quiet, which is exactly the target it exists for.
+//
+// maxAge <= 0 disables it, which is the default. Enabling it trades requests for freshness, and
+// the request cost is one fetch per branch per maxAge on otherwise silent targets.
+func (w *BranchWorker) ExpireBaseTrust(maxAge time.Duration) bool {
+	if maxAge <= 0 || !w.baseTrusted() {
+		return false
+	}
+	at := w.baseTrustedAt.Load()
+	if at == 0 || time.Since(time.Unix(0, at)) < maxAge {
+		return false
+	}
+	w.invalidateBase("base trust older than the configured maximum age")
+	return true
 }
 
 // invalidateBase records that the worktree can no longer be assumed to sit at the remote tip.
