@@ -245,6 +245,9 @@ is the stakes: a notification is now the only thing that would move an idle targ
 which bi-directional editing requires, the live edit stays `OutOfSync` until a human intervenes.
 Under Flux it is reverted on the next apply interval, which a long interval leaves hours away.
 
+Note the shape of that sentence, because option 7 turns on it: the reconciler is idle here not
+because it lacks permission to apply, but because **nothing has changed the revision**.
+
 ### 2.2 Why the obvious fix for A is dangerous
 
 The chain to make an idle target re-read Git already exists and a human can drive it:
@@ -581,6 +584,85 @@ and has to be scoped so it can only ever revert the specific refused object.
 mirror: we do not get to drive somebody's orchestrator because our mirror is lossy. And an absent
 orchestrator is a no-op, not an error.
 
+### Option 7: push an empty commit
+
+**What it is.** Gap B again, with none of option 6's machinery. On a refusal, commit nothing and
+push it: `git commit --allow-empty` with a message naming what was refused. The branch moves, both
+reconcilers notice a new revision, and each applies the same desired state it already had, which
+reverts the drift as a side effect.
+
+```mermaid
+sequenceDiagram
+    participant Rev as GitOps Reverser
+    participant Git
+    participant Rec as Flux or Argo CD
+    participant K8s as Cluster
+
+    Note over Rev: a write is REFUSED:<br/>no legal destination in Git
+    Rev->>Git: empty commit, message names the refusal
+    Note over Git: content identical, SHA is new
+    Git-->>Rec: new revision (webhook, or the next poll)
+    Rec->>Rec: build: manifests unchanged
+    Rec->>K8s: apply anyway
+    Note over K8s: the refused live edit is reverted
+    K8s-->>Rev: watch event, content now matches Git
+    Note over Rev: no commit, so no loop
+```
+
+**It is the same move as option 4.** We do not name the object that syncs the folder, we move the
+branch and let each tool decide what that means. Option 6 has to patch a specific `Kustomization` or
+`Application`; this patches nothing and needs no claim about anybody's topology.
+
+**It works, and here is why, per tool.**
+
+*Flux is unconditional.* A new commit is a new `GitRepository` artifact revision, which wakes the
+dependent Kustomizations, and kustomize-controller server-side-applies the built manifests, which
+corrects drift whether or not the build changed.
+
+*Argo CD works by default and has one exception worth knowing.* The `selfHeal: false` skip in
+`autoSync` sits inside `if alreadyAttempted`, and `alreadyAttemptedSync` compares the desired
+revision against the last sync's revision (`controller/appcontroller.go`). A new SHA makes them
+differ, so the skip never runs and automated sync proceeds. **This is the whole trick: `selfHeal`
+gates drift at an unchanged revision, and an empty commit is a changed revision.**
+
+The exception is `argocd.argoproj.io/manifest-generate-paths`. With it set, `evaluateRevisionChanges`
+asks the repo server whether any file under the refresh paths changed between the two revisions
+(`controller/state.go`). For an empty commit nothing did, so `revisionsMayHaveChanges` is false, the
+revision comparison is skipped, and the sync is treated as already attempted. **An empty commit is
+ignored by an Application carrying that annotation.** It is the same annotation option 4 discusses,
+which is a coincidence worth remembering rather than a connection.
+
+**What it buys, and it is a lot for the price.** Option 6's entire cost disappears: no ownership
+interpreters, no patching another controller's object, and above all **no Argo CD sync authority**,
+which was its worst problem. It needs no webhook, no secret, no URL, and no new configuration of any
+kind, because we already hold push credentials. It is the only option on this page that adds zero
+configuration surface. The commit message is also an audit trail of refusals, in the place an
+operator is already looking.
+
+**Four costs, and the third is the one to be careful about.**
+
+- **The blast radius is the branch, not the object.** Everything watching that repository re-applies.
+  Option 6 wakes one object; this wakes all of them. That is usually harmless and occasionally not.
+- **It can revert live edits we have not published yet.** An allowed edit sitting in an open commit
+  window is reverted along with the refused one. Landing pending intent before the empty commit
+  shrinks the window to the length of the apply; it does not close it.
+- **With `prune: true` it deletes rather than reverts.** If the refusal was "this live-created object
+  has no home in Git", then re-applying a revision that does not contain it, with pruning on, removes
+  it. That is a much larger action than reverting a field, taken on our initiative and from a commit
+  that changed nothing. Either this option is gated off where pruning is enabled, or the refusal
+  kinds that mean "absent from Git" are excluded from it.
+- **A flapping refusal writes a stream of empty commits.** Debounce per object, and cap it.
+
+**What it does not do.** Nothing for gap A, which is about learning that somebody else pushed.
+
+**How it degrades.** Without a Git-host webhook it still works, on the reconciler's own clock:
+Flux notices within its `GitRepository` interval, Argo CD within `timeout.reconciliation`. So it
+needs no webhook to be correct, only to be fast.
+
+**Where this leaves option 6.** Mostly superseded. It survives only where waking exactly one object
+matters and waking the branch is unacceptable, and that case now has to argue for the interpreters
+on its own rather than inheriting the need from gap B.
+
 ### 3.7 Summary
 
 | | Closes gap | New inbound surface | New outbound call | Git-host config | Needs ownership interpreters |
@@ -592,9 +674,15 @@ orchestrator is a no-op, not an error.
 | **4. Take over and forward** | A | yes | yes | **replaces one** | no |
 | **5. Hold the push** | neither | no | no | unchanged | no |
 | **6. Trigger on refusal** | B | no | yes | unchanged | **yes** |
+| **7. Push an empty commit** | B | no | no | **none** | no |
 
 Options 2, 3 and 4 share one configuration object and one piece of bookkeeping (`lastCommitSHA`
 advancing on a successful push), so whichever is built first should shape both.
+
+**Option 7 is the cheapest thing on this page and it closes gap B on its own**, which is not where
+this page expected to end up: gap B was the one that looked like it needed the ownership
+interpreters. It adds no configuration at all. Read its four costs before believing that, in
+particular what it does under `prune: true`.
 
 ---
 
