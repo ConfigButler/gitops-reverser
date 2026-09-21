@@ -5,6 +5,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -183,41 +184,89 @@ func (l *branchWorkerEventLoop) touchBranchForRefusal(
 	l.commitRefusalTouch(target, detail)
 }
 
-// armTrailingRefusalTouch schedules the coalesced commit. A second refusal inside the same window
-// refreshes the detail and keeps the existing deadline rather than pushing it out, so a steady
-// stream of refusals still produces a commit every interval instead of starving while they keep
-// arriving.
+// pendingRefusalTouch is one target's coalesced commit: what to say, and when it may run.
+type pendingRefusalTouch struct {
+	target itypes.ResourceReference
+	detail string
+	dueAt  time.Time
+}
+
+// armTrailingRefusalTouch records one target's coalesced commit and arms the shared timer for the
+// earliest deadline among all of them.
+//
+// A second refusal for the SAME target inside its window refreshes the detail and keeps that
+// target's deadline rather than pushing it out, so a steady stream still produces a commit every
+// interval instead of starving while refusals keep arriving. A refusal for a DIFFERENT target
+// never displaces one already recorded, which is the bug this map exists for.
 func (l *branchWorkerEventLoop) armTrailingRefusalTouch(
 	target itypes.ResourceReference, detail string, wait time.Duration,
 ) {
-	l.refusalPending = target
-	l.refusalPendingDetail = detail
-	if l.refusalTimer == nil {
-		l.refusalTimer = time.NewTimer(wait)
+	if l.refusalPending == nil {
+		l.refusalPending = map[string]pendingRefusalTouch{}
 	}
+	key := target.String()
+	entry, existing := l.refusalPending[key]
+	entry.target, entry.detail = target, detail
+	if !existing {
+		entry.dueAt = time.Now().Add(wait)
+	}
+	l.refusalPending[key] = entry
+	l.rearmRefusalTimer()
 }
 
-// flushPendingRefusalTouch runs the coalesced commit when its timer fires.
+// rearmRefusalTimer points the one timer at the earliest deadline still outstanding.
+func (l *branchWorkerEventLoop) rearmRefusalTimer() {
+	l.stopRefusalTimer()
+	var earliest time.Time
+	for _, entry := range l.refusalPending {
+		if earliest.IsZero() || entry.dueAt.Before(earliest) {
+			earliest = entry.dueAt
+		}
+	}
+	if earliest.IsZero() {
+		return
+	}
+	l.refusalTimer = time.NewTimer(max(time.Until(earliest), 0))
+}
+
+// flushPendingRefusalTouch runs every coalesced commit that has come due.
 //
-// Consent is re-checked here rather than trusted from when the refusal arrived, because a minute
-// is long enough for the target to have been suspended or set back to Ignore, and acting on stale
-// consent is exactly the kind of thing a delayed action gets wrong.
+// Consent is re-checked per entry rather than trusted from when the refusal arrived, because a
+// minute is long enough for a target to have been suspended or set back to Ignore, and acting on
+// stale consent is exactly what a delayed action gets wrong. One target withdrawing consent drops
+// only its own entry: every other target's stays, which is the whole point of keeping them apart.
 func (l *branchWorkerEventLoop) flushPendingRefusalTouch() {
-	target, detail := l.refusalPending, l.refusalPendingDetail
-	l.refusalPending, l.refusalPendingDetail = itypes.ResourceReference{}, ""
-	if target.Name == "" || target.Namespace == "" {
-		return
+	now := time.Now()
+	for _, key := range sortedRefusalKeys(l.refusalPending) {
+		entry := l.refusalPending[key]
+		if entry.dueAt.After(now) {
+			continue
+		}
+		delete(l.refusalPending, key)
+
+		if !l.w.refusalConsent(l.w.ctx, entry.target) {
+			continue
+		}
+		if limited, wait := l.w.refusalRateLimited(entry.target); limited {
+			// The window moved under us (another refusal for this target committed while this one
+			// waited). Re-arm rather than commit early.
+			l.armTrailingRefusalTouch(entry.target, entry.detail, wait)
+			continue
+		}
+		l.commitRefusalTouch(entry.target, entry.detail)
 	}
-	if !l.w.refusalConsent(l.w.ctx, target) {
-		return
+	l.rearmRefusalTimer()
+}
+
+// sortedRefusalKeys makes the flush order deterministic, so a test that queues two targets sees
+// the same one committed first every run.
+func sortedRefusalKeys(pending map[string]pendingRefusalTouch) []string {
+	keys := make([]string, 0, len(pending))
+	for key := range pending {
+		keys = append(keys, key)
 	}
-	if limited, wait := l.w.refusalRateLimited(target); limited {
-		// The window moved under us (another refusal committed while this one waited). Re-arm
-		// rather than commit early.
-		l.armTrailingRefusalTouch(target, detail, wait)
-		return
-	}
-	l.commitRefusalTouch(target, detail)
+	sort.Strings(keys)
+	return keys
 }
 
 func (l *branchWorkerEventLoop) commitRefusalTouch(target itypes.ResourceReference, detail string) {
@@ -267,10 +316,25 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(target itypes.ResourceReferen
 // found by the per-type reconcile, which blocks the cell through the event router rather than
 // coming through here at all.
 func refusalIsAWriteBoundary(refused *manifestanalyzer.AcceptanceRefusedError) bool {
-	return refused != nil && refused.AllIssuesOfKinds(
+	if refused == nil || !refused.AllIssuesOfKinds(
 		manifestanalyzer.IssueWriteEscapesScope,
 		manifestanalyzer.IssueWriteFanIn,
-		manifestanalyzer.IssueRenderRefused,
 		manifestanalyzer.IssueUnplaceableEdit,
-	)
+	) {
+		return false
+	}
+	// The kind is not enough on its own, and a review found the hole: IssueRenderRefused fires for
+	// a BRAND-NEW resource whose image an existing images: entry would override, and a write that
+	// is removing a document had one before it. Both would have been committed for. So every issue
+	// must additionally carry evidence, set only where the pre-write buffer was in hand, that the
+	// folder already holds this document and this write is not removing it.
+	//
+	// IssueRenderRefused is gone from the list entirely rather than relying on that evidence: it
+	// is raised for the batch and names no path, so there is nowhere for the evidence to come from.
+	for _, issue := range refused.Issues {
+		if !issue.ExistingDocument {
+			return false
+		}
+	}
+	return true
 }

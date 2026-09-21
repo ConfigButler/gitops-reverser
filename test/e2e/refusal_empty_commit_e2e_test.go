@@ -119,11 +119,28 @@ var _ = Describe("Manager Refusal Empty Commit", Label("manager", "refusal-commi
 		Expect(commitMessageAtSHA(repo.CheckoutDir, head)).To(ContainSubstring(destName),
 			"the commit must name the GitTarget whose write was refused, or git log reads as a stray no-op")
 
-		By("and it does not keep committing: one refusal is one commit")
+		// Past the one-minute trailing interval, not inside it. A shorter window only proves there
+		// was no IMMEDIATE second commit, which the rate limit guarantees for free; what needs
+		// proving is that the coalesced timer settles rather than firing forever. The refusal is
+		// still standing here, so this also covers the worst case: a target that keeps being
+		// refused must not keep committing.
+		By("and it settles past the trailing interval instead of committing on a loop")
 		Consistently(func(g Gomega) {
-			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(Equal(seedCount+1),
-				"a single refusal must not produce a stream of commits")
-		}, 20*time.Second, 4*time.Second).Should(Succeed())
+			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(BeNumerically("<=", seedCount+2),
+				"a standing refusal must not produce a commit per interval forever")
+		}, 100*time.Second, 10*time.Second).Should(Succeed())
+
+		// And once the drift is corrected there is nothing left to refuse, so the branch goes
+		// quiet. Without this the spec could pass on a target that simply never converges.
+		By("correcting the drift, after which the branch stops moving altogether")
+		_, err = kubectlRunInNamespace(testNs, "set", "env", "deployment/checkout", "LOG_LEVEL=info")
+		Expect(err).NotTo(HaveOccurred(), "failed to correct the drifted env var")
+
+		settled := remoteCommitCount(repo.CheckoutDir)
+		Consistently(func(g Gomega) {
+			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(Equal(settled),
+				"a corrected object must leave the branch alone")
+		}, 90*time.Second, 10*time.Second).Should(Succeed())
 	})
 })
 

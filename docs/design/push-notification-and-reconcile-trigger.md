@@ -697,6 +697,10 @@ on its own rather than inheriting the need from gap B.
 with it, and the first two are the ones this section argued for:
 
 - **Off unless asked for**, because of the `prune` row above.
+- **Only for a refusal carrying evidence the document exists.** The refusal KIND is not enough, and
+  a review found the hole: a render refusal fires for a brand-new resource an `images:` entry would
+  override, and a write that is REMOVING a document had one before it. Both would have been
+  committed for. The evidence is set where the pre-write buffer is in hand and carried on the issue.
 - **Rate limited per target, and COALESCED rather than dropped.** A controller rewriting a
   base-owned field refuses on every one of its own reconciles, and every commit wakes every
   reconciler watching the branch. But a refusal discarded inside that window is lost: the reconcile
@@ -934,12 +938,15 @@ must never be allowed to lapse:
    `GitTarget` is suspended first, or the operator publishes the drift and there is nothing left to
    revert; and the `Kustomization` is never reconciled by hand, or it would apply for a reason that
    has nothing to do with the new revision. **Built**, in the Flux corner.
-0b. **The whole loop, with nothing staged but the broken folder.** A loose non-YAML file makes the
-   folder unacceptable to the operator and not to Flux, a live edit to a managed object is refused
-   for real, and the operator makes its OWN empty commit, which Flux then acts on. It also asserts
-   the thing a triggered write most needs to prove: that it **settles**. Flux's revert is itself a
-   watch event and is refused too, so it earns one more commit once the rate limit allows, and then
-   stops, because the revert restores the value Git already holds. **Built**, in the Flux corner.
+0b. **A real refusal producing the operator's own empty commit.** Not the foreign-file refusal an
+   earlier version of this page described: that is folder-level, the filter excludes it, and it is
+   normally found by the per-type reconcile rather than by a write. The spec uses a **write-boundary**
+   refusal instead, from corpus shape 8: an overlay whose Deployment comes from `../../base`, and a
+   drifted env var that no overlay declaration can express. It asserts the refusal kind and message,
+   the commit, its empty diff, and that the commit names the `GitTarget`. It then asserts settling
+   **past** the one-minute trailing interval, and that a corrected object leaves the branch alone,
+   because a shorter window only proves the rate limit works. **Built**, as its own manager spec,
+   not in the Flux corner.
 0c. **A refusal alongside accepted work, under contention.** Deliberately NOT an e2e: the property
    is about arrival order between our push and somebody else's, which the corner does not control.
    Over a real Git server the contending commit lands between our commit and our push, so the

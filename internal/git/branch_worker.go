@@ -137,6 +137,17 @@ type BranchWorker struct {
 	// only so ExpireBaseTrust can put a maximum age on that trust. Zero means "never trusted".
 	baseTrustedAt atomic.Int64
 
+	// baseTrustEpoch counts expiries. It exists because one worker serves EVERY GitTarget on its
+	// (provider, branch), while the flag it guards is one shared boolean: the first target to
+	// reconcile after an expiry consumed the whole transition, and its sibling saw either an
+	// already-cleared flag or the fresh timestamp from that target's fetch, so the sibling never
+	// re-evaluated its own folder and could stay stale indefinitely.
+	//
+	// A counter fans the one event out. Each target compares the epoch it last acted on against
+	// this one and forces its own re-read when they differ, so the transition is consumed once PER
+	// TARGET rather than once per worker.
+	baseTrustEpoch atomic.Uint64
+
 	// lastRefusalTouch records when this worker last pushed an empty commit for a GitTarget, keyed
 	// by "namespace/name", so refusalTouchInterval can floor the rate. It is guarded by its own
 	// mutex rather than repoMu: the decision is taken before any repository work starts, and
@@ -828,13 +839,16 @@ type branchWorkerEventLoop struct {
 	// window opens (then it attaches to it) and until its finalize deadline fires.
 	// Loop-goroutine only.
 	pendingCRs map[commitRequestID]*pendingCommitRequest
-	// refusalTimer fires when a refusal arrived inside the rate-limit window and was coalesced
-	// into a trailing commit. See refusal_touch.go.
+	// refusalTimer fires at the earliest deadline in refusalPending. See refusal_touch.go.
 	refusalTimer *time.Timer
-	// refusalPending names the target that trailing commit is for, empty when none is due.
-	refusalPending itypes.ResourceReference
-	// refusalPendingDetail is the most recent refusal's detail, for the commit message.
-	refusalPendingDetail string
+	// refusalPending holds one entry per GitTarget with a coalesced commit due.
+	//
+	// It is a MAP because one branch worker serves every target on its (provider, branch), while
+	// the rate limit and the consent check are both per target. A single slot let one target
+	// overwrite another's pending work: A queues, B replaces it, B is then suspended, and A's
+	// authorized commit is gone with nothing to report it. Execution still coalesces — one commit
+	// on the branch satisfies every entry due at that moment — but the INTENT is kept per target.
+	refusalPending map[string]pendingRefusalTouch
 
 	// attachTimer fires at the earliest pending finalize deadline, so an attached
 	// window is finalized at the end of its grace even with no further events.
@@ -1540,8 +1554,13 @@ func (w *BranchWorker) ExpireBaseTrust(maxAge time.Duration) bool {
 		return false
 	}
 	w.invalidateBase("base trust older than the configured maximum age")
+	w.baseTrustEpoch.Add(1)
 	return true
 }
+
+// BaseTrustEpoch is the number of times this worker's base trust has expired. A GitTarget forces
+// its own re-read when this differs from the epoch it last acted on. See baseTrustEpoch.
+func (w *BranchWorker) BaseTrustEpoch() uint64 { return w.baseTrustEpoch.Load() }
 
 // invalidateBase records that the worktree can no longer be assumed to sit at the remote tip.
 //

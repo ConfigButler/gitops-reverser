@@ -133,6 +133,11 @@ type GitTargetReconciler struct {
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
 
+	// baseTrustEpochs records the last base-trust epoch each GitTarget forced a re-read for, so a
+	// worker shared by several targets fans one expiry out to all of them instead of letting the
+	// first reconcile consume it.
+	baseTrustEpochs baseTrustEpochTracker
+
 	// BaseTrustMaxAge bounds how long a branch worker may keep believing its checkout sits at the
 	// remote tip. Zero disables it, which is the default.
 	//
@@ -789,11 +794,20 @@ func (r *GitTargetReconciler) expireStaleBaseTrust(
 	if !exists || worker == nil {
 		return false
 	}
-	if !worker.ExpireBaseTrust(r.BaseTrustMaxAge) {
+	// Expire first, then compare epochs. Whether THIS reconcile is the one that expired the shared
+	// flag does not matter: what decides a re-read is whether this target has acted on the current
+	// epoch, so a sibling that arrives after the expiry still forces its own.
+	worker.ExpireBaseTrust(r.BaseTrustMaxAge)
+	epoch := worker.BaseTrustEpoch()
+	if epoch == 0 {
+		return false
+	}
+	ref := types.NewResourceReference(target.Name, target.Namespace)
+	if !r.baseTrustEpochs.take(ref, epoch) {
 		return false
 	}
 	log.Info("Base trust expired; forcing a re-read of the Git folder",
-		"branch", target.Spec.Branch, "maxAge", r.BaseTrustMaxAge.String())
+		"branch", target.Spec.Branch, "maxAge", r.BaseTrustMaxAge.String(), "epoch", epoch)
 	return true
 }
 
@@ -1154,6 +1168,9 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// condition gauge is released on the same terms and for a sharper reason: a condition series
 	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
+	// Same terms: the epoch tracker is the reconciler's own memory too, and a record for a deleted
+	// target would otherwise sit in the map for the lifetime of the process.
+	r.baseTrustEpochs.forget(gitDest)
 	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
 	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
 	// branch's push failures to an object that no longer exists.

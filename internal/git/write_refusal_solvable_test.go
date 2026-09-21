@@ -58,7 +58,7 @@ func assertClassified(t *testing.T, issues []manifestanalyzer.AcceptanceIssue) {
 // measurably wrong rather than merely risky.
 func TestUnplaceableEditRefusalIsNotSolvable(t *testing.T) {
 	err := sourceFormRefusal("apps/web/deploy.yaml",
-		manifestedit.Identity{Kind: "Deployment", Name: "web"}, assert.AnError)
+		manifestedit.Identity{Kind: "Deployment", Name: "web"}, true, assert.AnError)
 
 	issues := refusalIssues(t, err)
 	require.Len(t, issues, 1)

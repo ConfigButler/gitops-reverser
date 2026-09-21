@@ -84,12 +84,17 @@ type GitTargetSpec struct {
 	// sees a new artifact revision and re-applies; Argo CD sees a revision it has not synced, so
 	// its selfHeal=false skip does not apply and automated sync reverts the edit.
 	//
-	// It fires only for objects the Git folder already holds a file for. An object Git does not
-	// manage is left alone deliberately: re-applying would do nothing to it (Flux prunes from its
-	// inventory and Argo CD from the resources it tracks, and a live-created object is in
-	// neither), or, if it was managed and has since been removed from Git, would prune it. That
-	// second one is the reconciler's decision to take on its own schedule, not this operator's to
-	// hurry.
+	// It fires only when the refused write was an edit to a document the folder ALREADY holds and
+	// is not removing. An object Git does not manage is left alone deliberately: re-applying would
+	// do nothing to it (Flux prunes from its inventory and Argo CD from the resources it tracks,
+	// and a live-created object is in neither), or, if it was managed and has since been removed
+	// from Git, would prune it. That second one is the reconciler's decision to take on its own
+	// schedule, not this operator's to hurry.
+	//
+	// It also fires only for a refusal where the folder itself is accepted and this one write had
+	// nowhere to land. A folder-level refusal (unparseable YAML, a foreign file) is left alone: an
+	// empty commit cannot repair a folder, and the reconciler may be mid-way through its own
+	// corrections there.
 	//
 	// Two consequences remain to weigh. The commit wakes EVERYTHING watching the branch, not just
 	// the refused object, so it can hurry along unrelated work including another target's pending

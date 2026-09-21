@@ -960,8 +960,11 @@ Reverser deliberately does not name the `Kustomization` or `Application` that re
 Neither tool derives that mapping itself, so deriving it here to write into somebody else's object
 would be guessing on their behalf. Moving the branch asks them instead.
 
-**It only fires for objects Git already manages,** meaning the folder holds a file for them. That
-is the pruning fence, and it is why the action is narrower than it first looks. Re-applying corrects
+**It only fires when the refused write was an edit to a document the folder already holds** and is
+not removing. That is the pruning fence, and it is why the action is narrower than it first looks.
+The refusal's kind is not enough on its own to establish that: a render refusal fires for a
+brand-new resource an `images:` entry would override, and a write that is removing a document had
+one before it. Re-applying corrects
 drift on an object Git manages, which is the whole point. For an object it does not manage,
 re-applying either does nothing (because
 [Flux prunes from its inventory](https://fluxcd.io/flux/components/kustomize/kustomizations/#prune)

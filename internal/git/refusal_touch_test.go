@@ -11,7 +11,9 @@ package git
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -215,8 +217,8 @@ func TestRefusalTouch_RateLimitedRefusalIsCoalescedNotDropped(t *testing.T) {
 	loop.armTrailingRefusalTouch(editingRef(), "a second refusal", time.Minute)
 
 	assert.NotNil(t, loop.refusalTimer, "a coalesced refusal must leave a trailing commit armed")
-	assert.Equal(t, editingRef(), loop.refusalPending)
-	assert.Equal(t, "a second refusal", loop.refusalPendingDetail)
+	require.Contains(t, loop.refusalPending, editingRef().String())
+	assert.Equal(t, "a second refusal", loop.refusalPending[editingRef().String()].detail)
 }
 
 // TestRefusalTouch_TrailingCommitRechecksConsent. A minute is long enough for the target to be
@@ -228,7 +230,7 @@ func TestRefusalTouch_TrailingCommitRechecksConsent(t *testing.T) {
 	})
 	loop := newBranchWorkerEventLoop(w, time.Minute)
 	t.Cleanup(loop.stopTimers)
-	loop.armTrailingRefusalTouch(editingRef(), "queued while consent still stood", time.Millisecond)
+	loop.armTrailingRefusalTouch(editingRef(), "queued while consent still stood", 0)
 
 	setSpec := func(spec configv1alpha3.GitTargetSpec) {
 		target := &configv1alpha3.GitTarget{}
@@ -245,22 +247,13 @@ func TestRefusalTouch_TrailingCommitRechecksConsent(t *testing.T) {
 	loop.stopRefusalTimer()
 	loop.flushPendingRefusalTouch()
 
-	assert.Empty(t, loop.refusalPending.Name,
+	assert.Empty(t, loop.refusalPending,
 		"a target set back to Ignore must not get the commit queued under the old setting")
 	assert.Nil(t, loop.refusalTimer, "and nothing must be re-armed for a target that said no")
 }
 
-// TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit is the pruning fence.
-//
-// A write-boundary refusal means the edit had nowhere safe to land while the FOLDER IS ACCEPTED,
-// which carries both things the fence needs: the folder renders, so the object is one the
-// reconciler produces and re-applying reverts it; and nothing is being removed from Git, so
-// re-applying cannot prune. Every other refusal means the folder is unusable, which an empty
-// commit cannot fix and which the reconciler may be mid-way through correcting.
-//
-// An earlier version of this fence stat-ed the object's canonical file under the write path
-// instead. It disabled the feature for its main case, because a kustomize overlay's base-owned
-// field lives outside the write scope and so read as unmanaged.
+// TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit is the first half of the pruning fence: the
+// refusal has to be one where the edit had nowhere to land while the folder itself is accepted.
 func TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit(t *testing.T) {
 	cases := []struct {
 		name string
@@ -270,7 +263,10 @@ func TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit(t *testing.T) {
 		{name: "an edit that escapes the write scope", kind: manifestanalyzer.IssueWriteEscapesScope, want: true},
 		{name: "an edit with nowhere to land", kind: manifestanalyzer.IssueUnplaceableEdit, want: true},
 		{name: "an edit fanning into several files", kind: manifestanalyzer.IssueWriteFanIn, want: true},
-		{name: "a render the folder refuses", kind: manifestanalyzer.IssueRenderRefused, want: true},
+		// Excluded even though it is a write-boundary refusal: it is raised for the BATCH and
+		// names no path, so nothing can establish that a document exists behind it. A review
+		// found it firing for a brand-new resource an images: entry would override.
+		{name: "a render the batch refuses", kind: manifestanalyzer.IssueRenderRefused, want: false},
 		{name: "a foreign file in the folder", kind: manifestanalyzer.IssueForeignFile, want: false},
 		{name: "yaml the folder cannot parse", kind: manifestanalyzer.IssueInvalidYAML, want: false},
 		{name: "a kustomization we do not support", kind: manifestanalyzer.IssueUnsupportedKustomize, want: false},
@@ -279,11 +275,43 @@ func TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			refused := &manifestanalyzer.AcceptanceRefusedError{
-				Issues: []manifestanalyzer.AcceptanceIssue{{Kind: tc.kind, Path: "x.yaml"}},
+				Issues: []manifestanalyzer.AcceptanceIssue{
+					{Kind: tc.kind, Path: "x.yaml", ExistingDocument: true},
+				},
 			}
 			assert.Equal(t, tc.want, refusalIsAWriteBoundary(refused))
 		})
 	}
+}
+
+// TestRefusalTouch_RequiresEvidenceTheDocumentExists is the second half, and the one a review
+// found missing. The refusal KIND cannot establish that the folder holds the object: a write that
+// is REMOVING a document is a write-boundary refusal too, and so is one for an object that was
+// never there. Re-applying does nothing for the second and prunes the first, and hurrying somebody
+// else's delete is what the fence exists to prevent.
+func TestRefusalTouch_RequiresEvidenceTheDocumentExists(t *testing.T) {
+	boundary := manifestanalyzer.IssueWriteEscapesScope
+
+	withEvidence := &manifestanalyzer.AcceptanceRefusedError{
+		Issues: []manifestanalyzer.AcceptanceIssue{{Kind: boundary, Path: "a.yaml", ExistingDocument: true}},
+	}
+	assert.True(t, refusalIsAWriteBoundary(withEvidence))
+
+	noEvidence := &manifestanalyzer.AcceptanceRefusedError{
+		Issues: []manifestanalyzer.AcceptanceIssue{{Kind: boundary, Path: "a.yaml"}},
+	}
+	assert.False(t, refusalIsAWriteBoundary(noEvidence),
+		"an object the folder does not already hold must not be committed for")
+
+	// A batch is only safe when EVERY issue carries the evidence: one unestablished document is
+	// enough to make the commit a guess.
+	mixedEvidence := &manifestanalyzer.AcceptanceRefusedError{
+		Issues: []manifestanalyzer.AcceptanceIssue{
+			{Kind: boundary, Path: "a.yaml", ExistingDocument: true},
+			{Kind: boundary, Path: "b.yaml"},
+		},
+	}
+	assert.False(t, refusalIsAWriteBoundary(mixedEvidence))
 }
 
 // TestRefusalTouch_MixedRefusalDoesNotCommit. A batch carrying any folder-level issue is a folder
@@ -291,8 +319,8 @@ func TestRefusalTouch_OnlyWriteBoundaryRefusalsCommit(t *testing.T) {
 func TestRefusalTouch_MixedRefusalDoesNotCommit(t *testing.T) {
 	refused := &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{
-			{Kind: manifestanalyzer.IssueUnplaceableEdit, Path: "a.yaml"},
-			{Kind: manifestanalyzer.IssueForeignFile, Path: "secrets.txt"},
+			{Kind: manifestanalyzer.IssueUnplaceableEdit, Path: "a.yaml", ExistingDocument: true},
+			{Kind: manifestanalyzer.IssueForeignFile, Path: "secrets.txt", ExistingDocument: true},
 		},
 	}
 
@@ -353,4 +381,135 @@ func TestRefusalTouch_ReplayKeepsAcceptedWritesAndTheEmptyDiff(t *testing.T) {
 	assert.Equal(t, "from-another-writer",
 		gitOut(t, f.repoDir, "show", "main:OUTSIDE.md"),
 		"the other writer's commit must be rebased onto, never over")
+}
+
+// TestRefusalTouch_ANewResourceAnEntryWouldOverrideIsNotCommittedFor drives the fence through the
+// REAL analyzer rather than a hand-built issue, because that is how a review found the hole.
+//
+// A brand-new Deployment whose image an existing images: entry would override is refused, and the
+// refusal is a write-boundary one. Nothing in Git holds that object, so re-applying would not
+// correct it: with pruning on it is removed, and otherwise nothing happens. Committing for it was
+// the promise in spec.onRefusal's own documentation being false.
+func TestRefusalTouch_ANewResourceAnEntryWouldOverrideIsNotCommittedFor(t *testing.T) {
+	writer := newContentWriter(itypes.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem().Root()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "web.yaml"),
+		[]byte(sharedImageDeploymentYAML("web")), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte(
+		`apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: default
+resources:
+  - web.yaml
+images:
+  - name: ghcr.io/example/shared
+    newTag: "1.0.0"
+`), 0o600))
+
+	_, err := flushEventsForTest(t, writer, worktree, deploymentMapper(),
+		newCacheDeploymentEvent("ghcr.io/example/shared:2.0.0"))
+
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused, "the analyzer must still refuse this write")
+	assert.False(t, refusalIsAWriteBoundary(refused),
+		"an object Git does not hold must not earn a commit, whatever the refusal kind says")
+}
+
+// TestRefusalTouch_AnEditToAnExistingDocumentIsCommittedFor is the positive control for the test
+// above: the same machinery, an object the folder DOES hold, and the fence opens.
+//
+// Without this, the fence could pass its negative tests by never opening at all.
+func TestRefusalTouch_AnEditToAnExistingDocumentIsCommittedFor(t *testing.T) {
+	issue := manifestanalyzer.AcceptanceIssue{
+		Kind: manifestanalyzer.IssueWriteEscapesScope,
+		Path: "base/deployment.yaml",
+	}
+
+	// The shape the e2e produces: a base-owned field, refused because the write would leave the
+	// GitTarget's scope, with the document plainly present in the folder.
+	issue.ExistingDocument = true
+	assert.True(t, refusalIsAWriteBoundary(
+		&manifestanalyzer.AcceptanceRefusedError{Issues: []manifestanalyzer.AcceptanceIssue{issue}}))
+}
+
+// TestRefusalTouch_OneTargetDoesNotDropAnothersPendingCommit is the regression a review found.
+//
+// One branch worker serves every GitTarget on its (provider, branch), while the rate limit and
+// the consent check are both per target. With a single pending slot, B's refusal replaced A's; B
+// was then suspended, its consent check dropped it, and A's authorized commit was gone with
+// nothing left to report it. Keeping the intent per target is what makes coalesced EXECUTION safe.
+func TestRefusalTouch_OneTargetDoesNotDropAnothersPendingCommit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+
+	newTarget := func(name string, suspend bool) *configv1alpha3.GitTarget {
+		target := &configv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
+			Spec: configv1alpha3.GitTargetSpec{
+				Branch: "main", Path: "apps/" + name,
+				OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+				Suspend:   suspend,
+			},
+		}
+		target.Spec.GitProviderRef.Name = "test-provider"
+		return target
+	}
+	// B is suspended, so its delayed commit must be declined when the timer fires. A is not.
+	client := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(newTarget("alpha", false), newTarget("bravo", true)).Build()
+
+	w := newMetricsTestWorker()
+	w.Client = client
+	w.ctx = context.Background()
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
+
+	alpha := itypes.NewResourceReference("alpha", "team-a")
+	bravo := itypes.NewResourceReference("bravo", "team-a")
+
+	// A zero wait makes both entries due the moment they are recorded, so the flush below cannot
+	// race their deadlines. The deadline itself is covered by its own test.
+	loop.armTrailingRefusalTouch(alpha, "alpha was refused", 0)
+	loop.armTrailingRefusalTouch(bravo, "bravo was refused", 0)
+
+	require.Len(t, loop.refusalPending, 2,
+		"two targets on one worker must hold two pending commits, not one")
+
+	// bravo's consent is withdrawn; alpha's is not, and alpha must survive it.
+	loop.stopRefusalTimer()
+	loop.flushPendingRefusalTouch()
+
+	assert.Empty(t, loop.refusalPending, "every due entry is consumed exactly once")
+	limitedAlpha, _ := w.refusalRateLimited(alpha)
+	assert.True(t, limitedAlpha,
+		"alpha's commit must have run, consuming its rate-limit window")
+	limitedBravo, _ := w.refusalRateLimited(bravo)
+	assert.False(t, limitedBravo,
+		"bravo's was declined for lack of consent, so it must not have consumed a window")
+}
+
+// TestRefusalTouch_TheTimerTracksTheEarliestDeadline. One timer serves every pending target, so it
+// has to wake for whichever is due first or a later entry would delay an earlier one.
+func TestRefusalTouch_TheTimerTracksTheEarliestDeadline(t *testing.T) {
+	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+	})
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
+
+	late := itypes.NewResourceReference("late", "team-a")
+	soon := itypes.NewResourceReference("soon", "team-a")
+
+	loop.armTrailingRefusalTouch(late, "later", time.Hour)
+	loop.armTrailingRefusalTouch(soon, "sooner", 50*time.Millisecond)
+
+	require.Len(t, loop.refusalPending, 2)
+	select {
+	case <-loop.refusalTimer.C:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the shared timer must wake for the earliest deadline, not the last one armed")
+	}
 }

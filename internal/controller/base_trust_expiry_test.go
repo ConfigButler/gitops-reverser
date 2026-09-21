@@ -105,3 +105,56 @@ func TestExpireStaleBaseTrust_DisabledIsAlwaysQuiet(t *testing.T) {
 	assert.False(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()))
 	assert.True(t, worker.BaseTrustedForTest())
 }
+
+// TestExpireStaleBaseTrust_FansOutToEveryTargetOnTheWorker is the regression a review found.
+//
+// One branch worker serves every GitTarget on its (provider, branch), and the trust it guards is a
+// single boolean. The first target to reconcile after an expiry used to consume the whole
+// transition: its sibling then saw an already-cleared flag, or the fresh timestamp left by that
+// target's own fetch, and never re-evaluated its own folder. With stable reconcile ordering the
+// sibling could stay stale indefinitely, and an active target could keep renewing the shared trust
+// over a quiet one beside it.
+func TestExpireStaleBaseTrust_FansOutToEveryTargetOnTheWorker(t *testing.T) {
+	r, first, worker := baseTrustExpiryFixture(t, time.Minute)
+	worker.SeedBaseTrustForTest(time.Now().Add(-time.Hour))
+
+	second := first.DeepCopy()
+	second.Name = "editing-sibling"
+
+	// The first target consumes the expiry, as it always did.
+	require.True(t, r.expireStaleBaseTrust(first, "team-a", logr.Discard()))
+
+	// The sibling shares the worker, so the flag is already clear and nothing is left to expire.
+	// It must still force its OWN re-read: the fetch the first target earns updates the checkout,
+	// not this target's acceptance, placement or render observations.
+	assert.True(t, r.expireStaleBaseTrust(second, "team-a", logr.Discard()),
+		"a sibling on the same worker must force its own re-read from the same expiry")
+}
+
+// TestExpireStaleBaseTrust_ForcesOncePerTargetPerEpoch is the other half. Fanning out must not
+// become "force on every reconcile", or a steady target would fetch on every periodic pass.
+func TestExpireStaleBaseTrust_ForcesOncePerTargetPerEpoch(t *testing.T) {
+	r, target, worker := baseTrustExpiryFixture(t, time.Minute)
+	worker.SeedBaseTrustForTest(time.Now().Add(-time.Hour))
+
+	require.True(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()))
+	assert.False(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()),
+		"the same target must not force a re-read twice for one expiry")
+
+	// A second expiry is a new epoch, and is owed to the target again.
+	worker.SeedBaseTrustForTest(time.Now().Add(-time.Hour))
+	assert.True(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()))
+}
+
+// TestExpireStaleBaseTrust_ForgetsADeletedTarget keeps the tracker from growing without bound.
+func TestExpireStaleBaseTrust_ForgetsADeletedTarget(t *testing.T) {
+	r, target, worker := baseTrustExpiryFixture(t, time.Minute)
+	worker.SeedBaseTrustForTest(time.Now().Add(-time.Hour))
+	ref := itypes.NewResourceReference(target.Name, target.Namespace)
+
+	require.True(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()))
+	r.baseTrustEpochs.forget(ref)
+
+	assert.True(t, r.expireStaleBaseTrust(target, "team-a", logr.Discard()),
+		"a forgotten target is a new one, and is owed the current epoch")
+}

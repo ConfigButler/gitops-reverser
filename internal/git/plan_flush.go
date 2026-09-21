@@ -274,6 +274,11 @@ type fileBuffer struct {
 func (b *fileBuffer) dirty() bool   { return b.current != nil && !bytes.Equal(b.current, b.original) }
 func (b *fileBuffer) deleted() bool { return b.current == nil && b.original != nil }
 
+// holdsExistingDocument reports that the folder ALREADY held this file and this write is not
+// removing it. It is the evidence AcceptanceIssue.ExistingDocument carries, and it is a method so
+// every raise site asks the same question the same way.
+func (b *fileBuffer) holdsExistingDocument() bool { return b.original != nil && !b.deleted() }
+
 // buffer returns the hydrated working copy for a base-relative path, reading the
 // worktree bytes into Original/Current on first touch. A path with no worktree
 // bytes is a new file (Original nil).
@@ -853,7 +858,7 @@ func (wb *writeBatch) patchExisting(
 		// The projection could not place the edit. Refusing the whole flush is the point: the
 		// alternative is to write the live object through and silently absorb the build's own
 		// output into the file that feeds it.
-		return upsertNoChange, sourceFormRefusal(filePath, id, err)
+		return upsertNoChange, sourceFormRefusal(filePath, id, buf.holdsExistingDocument(), err)
 	}
 	c := manifestedit.Comparison{
 		Git:     gitDoc,
@@ -959,11 +964,17 @@ func (e *renderFidelityRefusedError) Error() string {
 // refusal every other write-boundary violation surfaces as: GitPathAccepted=False / Stalled=True,
 // naming the file and the object. It is not an internal error — the folder is fine and the
 // operator is fine; the EDIT had nowhere honest to land, and saying so is the whole contract.
-func sourceFormRefusal(filePath string, id manifestedit.Identity, err error) error {
+func sourceFormRefusal(
+	filePath string, id manifestedit.Identity, existingDocument bool, err error,
+) error {
 	return &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind: manifestanalyzer.IssueUnplaceableEdit,
 			Path: filePath,
+			// Evidence for spec.onRefusal, threaded from the buffer rather than assumed from the
+			// name: an unplaceable EDIT usually does have a document behind it, but the caller is
+			// the only place that knows, and guessing here is what the field exists to avoid.
+			ExistingDocument: existingDocument,
 			// Not solvable, and deliberately so: the alternative to refusing is aligning
 			// two lists by position, which is measurably wrong rather than merely risky
 			// (see the IssueUnplaceableEdit comment). Nobody can act on it.
@@ -1624,6 +1635,9 @@ func (wb *writeBatch) pathScopePrecondition() error {
 			issues = append(issues, manifestanalyzer.AcceptanceIssue{
 				Kind: manifestanalyzer.IssueWriteEscapesScope,
 				Path: rel,
+				// Evidence for spec.onRefusal: the folder already holds this document and this
+				// write is not removing it, so re-applying corrects rather than prunes.
+				ExistingDocument: buf.holdsExistingDocument(),
 				// Widening spec.path, or re-placing the write, is the GitTarget owner's call.
 				Solvable: true,
 				Actor:    manifestanalyzer.ActorPlatformOperator,
@@ -1672,6 +1686,8 @@ func (wb *writeBatch) fanInPrecondition() error {
 			issues = append(issues, manifestanalyzer.AcceptanceIssue{
 				Kind: manifestanalyzer.IssueWriteFanIn,
 				Path: rel,
+				// See pathScopePrecondition: evidence, not a description.
+				ExistingDocument: buf.holdsExistingDocument(),
 				// Nobody can solve this from the repository or the GitTarget: the edit
 				// has nowhere safe to land while two render roots share the file.
 				Solvable: false,
