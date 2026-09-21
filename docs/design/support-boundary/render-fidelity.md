@@ -356,7 +356,7 @@ divergence, and an incoming Git repair does not start one yet.
 The missing transition is intentional and visible: the controller does **not** yet observe an incoming
 Git revision, refresh the source, and begin a complete epoch. Therefore a human Git repair cannot by
 itself reopen a false gate. Adding that transition requires the retained-intent ordering barrier in
-[orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md), so a source refresh cannot
+[the reconcile trigger options](../push-notification-and-reconcile-trigger.md#part-3-the-options), so a source refresh cannot
 discard or race an open live-edit window. The enforcement check already belongs in the branch worker,
 not status projection: the worker rejects a `WriteRequest` before it opens a commit window. The
 controller projects the same state as `Ready=False` / `Stalled=True` for `False`, and as
@@ -450,8 +450,8 @@ It is recomputable only when a complete fresh epoch begins. Today that happens w
 installed or their scope set is replaced. Removing postBuild configuration or changing the source in Git
 does **not** yet start that epoch automatically, so it does not automatically reopen writes. The planned
 remote-revision transition must refresh safely behind the barrier in
-[orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md); once that exists, a full clean
-replay can reopen the gate without manual acknowledgement.
+[the reconcile trigger options](../push-notification-and-reconcile-trigger.md#part-3-the-options);
+once that exists, a full clean replay can reopen the gate without manual acknowledgement.
 
 ---
 

@@ -129,7 +129,7 @@ type BranchWorker struct {
 	// across every error return on the write path, and a lock there would put a second ordering
 	// constraint on code whose only job is to record that something went wrong.
 	//
-	// See the package's design note in docs/design/inbound-push-notification.md §3 and §3.1.
+	// See the package's design note in docs/design/push-notification-and-reconcile-trigger.md §1.5.
 	baseTrustedState   atomic.Bool
 	worktreeDirtyState atomic.Bool
 
@@ -147,7 +147,7 @@ type BranchWorker struct {
 	// cycle's root hash; the worker then counts the writes as published and resolves any
 	// CommitRequest riding one as Committed, naming a SHA that is not on the remote.
 	//
-	// See docs/design/inbound-push-notification.md §3.2.
+	// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
 	replayRequiredState atomic.Bool
 
 	// trustedRemote is the repository the flags above are ABOUT: the remote URL the worker last
@@ -1552,7 +1552,7 @@ func (w *BranchWorker) noteRemoteIdentity(remoteURL string) {
 //
 // The push session reads the remote's ref advertisement on a connection the cycle was making
 // anyway, and a cycle that commits nothing still reaches it, so a trusted base needs no fetch to
-// plan against. That is the whole saving. See docs/design/inbound-push-notification.md §2 and §3.
+// plan against. That is the whole saving. See docs/design/push-notification-and-reconcile-trigger.md §1.3 and §1.5.
 //
 // Only the first commit of a cycle may fetch at all: a reset would destroy the local commits the
 // retained writes already produced. When those exist AND the worktree is dirty, recovery is the

@@ -2,7 +2,7 @@
 
 package git
 
-// The base-trust state machine from docs/design/inbound-push-notification.md §3 and §3.1.
+// The base-trust state machine from docs/design/push-notification-and-reconcile-trigger.md §1.5.
 //
 // Nothing reads these flags to make a decision yet and the setter is hard-wired off, so none of
 // this can change behavior — which is exactly why the tests are written now. The hard part of the

@@ -76,7 +76,7 @@ where it pays to re-read and replay. The exceptions are a worker that has not ye
 remote, a previous write that failed and left the checkout in an unknown state, and a resync,
 which keeps reading because it can finish without ever opening a push. What is still missing is
 anything that tells an *idle* target its branch moved; that is
-[inbound push notification](design/inbound-push-notification.md).
+[inbound push notification](design/push-notification-and-reconcile-trigger.md).
 
 ## What happens when somebody else pushed first
 
@@ -319,14 +319,14 @@ kubectl annotate gittarget editing -n gitops-reverser \
 ```
 
 A receiver that does this automatically is designed in
-[inbound push notification](design/inbound-push-notification.md). The other half of that
+[inbound push notification](design/push-notification-and-reconcile-trigger.md). The other half of that
 design, removing the head-of-cycle fetch, has shipped; the receiver is what remains.
 That design deliberately does **not** wire the webhook to the annotation above: the
 annotation asks for a full resync, which publishes cluster state, and that is the one
 thing a push notification must not do.
 
 If you are building that receiver, or a relay to call it, the request shape is specified in
-[§8.3, the wire contract](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it):
+[§8.3, the wire contract](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it):
 one signed `POST /git-push/<route>` carrying the repository, the branch, and the SHA the branch now
 points at. It deliberately does not take a Git host's native payload, so the mapping from your
 host's webhook belongs in the host's own configuration or in the relay.

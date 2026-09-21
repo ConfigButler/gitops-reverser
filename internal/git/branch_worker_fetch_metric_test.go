@@ -2,7 +2,7 @@
 
 package git
 
-// Red-first, per docs/design/inbound-push-notification.md §12: today's behavior is pinned as a
+// Red-first, per docs/design/push-notification-and-reconcile-trigger.md §1.7: today's behavior is pinned as a
 // passing assertion, so the change that removes the head-of-cycle fetch is proved by this
 // assertion flipping rather than by argument.
 //

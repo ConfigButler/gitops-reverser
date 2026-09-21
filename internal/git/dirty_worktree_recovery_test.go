@@ -10,7 +10,7 @@ package git
 // writes already produced. recoverRetainedWrites resets and REPLAYS instead, which is why it lives
 // on the event loop, and why every loop path that reaches commitPendingWrites has to call it.
 //
-// See docs/design/inbound-push-notification.md §3.1 and §5.
+// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
 
 import (
 	"errors"

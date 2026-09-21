@@ -74,7 +74,7 @@ failure direction is safe by construction: a stale "untrusted" costs one fetch, 
 is caught by the compare-and-swap on the next push. **The corollary is the rule to keep in your head
 when adding code here:** anything that resolves, commits, or concludes without reaching a push
 advertisement must either fetch, or refuse to conclude. See
-[inbound push notification](design/inbound-push-notification.md) §3.
+[inbound push notification](design/push-notification-and-reconcile-trigger.md) §3.
 
 That trust belongs to **one repository**. A worker is keyed by
 `(GitProvider namespace, GitProvider name, branch)`, while `spec.url` is immutable
@@ -88,7 +88,7 @@ trip, so it holds its previous view of the folder until it next publishes, resyn
 re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
 ten seconds because it is not converged; a healthy idle one does not. Closing that is the inbound
 receiver's job, and it is designed but not built:
-[§8.3](design/inbound-push-notification.md#83-the-wire-contract-for-whoever-calls-it) is the
+[§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
 request shape it will accept.
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
