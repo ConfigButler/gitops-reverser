@@ -89,7 +89,15 @@ type GitTargetSpec struct {
 	// do nothing to it (Flux prunes from its inventory and Argo CD from the resources it tracks,
 	// and a live-created object is in neither), or, if it was managed and has since been removed
 	// from Git, would prune it. That second one is the reconciler's decision to take on its own
-	// schedule, not this operator's to hurry.
+	// schedule, not this operator's to hurry. Eligibility is per document, not per file: a write
+	// that removes a document from a file other documents keep alive is still a removal, and a
+	// flush that removes one anywhere is excluded whole.
+	//
+	// A standing refusal earns one commit, not one per recheck. The target re-reads its folder and
+	// refuses again for as long as nobody corrects the edit, and an observation of the same objects
+	// with the same issues is already covered by the commit that was made for it. A different
+	// refused edit is a new commit, as is the same edit re-made after the target accepted a write
+	// in between.
 	//
 	// It also fires only for a refusal where the folder itself is accepted and this one write had
 	// nowhere to land. A folder-level refusal (unparseable YAML, a foreign file) is left alone: an

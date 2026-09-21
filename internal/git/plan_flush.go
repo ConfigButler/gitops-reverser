@@ -118,6 +118,11 @@ type writeBatch struct {
 	// render precondition can tell a change the flush MEANT from one it merely caused.
 	// Anything not named here has to come out of the re-render untouched.
 	intents []manifestanalyzer.WriteIntent
+	// removedDocuments counts the documents this flush takes out of the subtree, by any route:
+	// an explicit DELETE, a mark-and-sweep drop, or a $patch: delete authored into an overlay.
+	// Nothing about the write plan reads it — it is evidence for spec.onRefusal, which must never
+	// answer a refused removal with a commit that asks the reconciler to put the object back.
+	removedDocuments int
 	// putToKustomize records that this flush touched a kustomize render root — it edited a
 	// governed document, or placed a new one into a kustomization's resources:. It is what
 	// turns the oracle on, and it is deliberately NOT the same question as WriteIntent.Governed:
@@ -269,15 +274,38 @@ type fileBuffer struct {
 	rel      string
 	original []byte
 	current  []byte
+	// removedDocument records that this flush took a document OUT of this file. The two byte
+	// slices cannot say so: removing one document from a multi-document file leaves the file
+	// present and its bytes non-nil, which is byte-for-byte the shape of an ordinary edit. It is
+	// set by every path that removes a document, and it is only ever read as evidence for
+	// spec.onRefusal (see writeBatch.holdsExistingDocument).
+	removedDocument bool
 }
 
 func (b *fileBuffer) dirty() bool   { return b.current != nil && !bytes.Equal(b.current, b.original) }
 func (b *fileBuffer) deleted() bool { return b.current == nil && b.original != nil }
 
-// holdsExistingDocument reports that the folder ALREADY held this file and this write is not
-// removing it. It is the evidence AcceptanceIssue.ExistingDocument carries, and it is a method so
-// every raise site asks the same question the same way.
-func (b *fileBuffer) holdsExistingDocument() bool { return b.original != nil && !b.deleted() }
+// holdsExistingDocument reports that the folder ALREADY held the DOCUMENT this write edits, and
+// that the flush removes no document anywhere. It is the evidence AcceptanceIssue.ExistingDocument
+// carries, and it is a method on the batch so every raise site asks the same question the same way.
+//
+// **File survival is not the question, and a review found the hole where it was.** The first
+// version asked only whether the file existed and survived, so deleting one document out of a
+// two-document file answered yes — another document kept the file alive — and a refused deletion
+// qualified for an empty commit. An empty commit asks the reconciler to re-apply what Git holds,
+// and Git still holds the document the refusal failed to remove, so that commit would RECREATE an
+// object somebody deliberately deleted from the cluster.
+//
+// The batch-wide arm is deliberate rather than per-file: the flush is all-or-nothing, so a refusal
+// aborts the removal along with everything else, and the commit it would earn wakes the reconciler
+// over the whole folder rather than over one file. A batch that meant to remove anything therefore
+// earns no commit at all.
+func (wb *writeBatch) holdsExistingDocument(b *fileBuffer) bool {
+	if b.original == nil || b.deleted() || b.removedDocument {
+		return false
+	}
+	return wb.removedDocuments == 0
+}
 
 // buffer returns the hydrated working copy for a base-relative path, reading the
 // worktree bytes into Original/Current on first touch. A path with no worktree
@@ -858,7 +886,7 @@ func (wb *writeBatch) patchExisting(
 		// The projection could not place the edit. Refusing the whole flush is the point: the
 		// alternative is to write the live object through and silently absorb the build's own
 		// output into the file that feeds it.
-		return upsertNoChange, sourceFormRefusal(filePath, id, buf.holdsExistingDocument(), err)
+		return upsertNoChange, sourceFormRefusal(filePath, id, wb.holdsExistingDocument(buf), err)
 	}
 	c := manifestedit.Comparison{
 		Git:     gitDoc,
@@ -1053,6 +1081,15 @@ func (wb *writeBatch) renderPrecondition() error {
 // intend records what one document of this flush must render to, so the oracle can tell a
 // change the flush MEANT from a change it merely caused. Everything not intended has to
 // come out of the render untouched.
+// recordDocumentRemoval marks one document leaving the subtree: on the file it left, and on the
+// batch. Both are evidence for spec.onRefusal and nothing else — see holdsExistingDocument.
+func (wb *writeBatch) recordDocumentRemoval(buf *fileBuffer) {
+	if buf != nil {
+		buf.removedDocument = true
+	}
+	wb.removedDocuments++
+}
+
 func (wb *writeBatch) intend(in manifestanalyzer.WriteIntent) {
 	if in.Kind == "" || in.Name == "" {
 		return // nothing addressable to check; the render comparison keys on kind+name
@@ -1310,6 +1347,7 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 		wb.putToKustomize = true
 	}
 	wb.tallyDocument(event.Identifier, documentDeletedLive)
+	wb.recordDocumentRemoval(buf)
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if !res.FileEmpty {
 		buf.current = res.Content
@@ -1369,6 +1407,10 @@ func (wb *writeBatch) authorInheritedDelete(
 		Name:       target.id.Name,
 		Removed:    true,
 	})
+	// A $patch: delete leaves every file in place and still takes the object out of the render,
+	// so it counts as a removal for spec.onRefusal exactly as an outright deletion does: if this
+	// flush is refused, re-applying what Git holds puts the object back.
+	wb.recordDocumentRemoval(patchBuf)
 	wb.putToKustomize = true
 }
 
@@ -1637,7 +1679,7 @@ func (wb *writeBatch) pathScopePrecondition() error {
 				Path: rel,
 				// Evidence for spec.onRefusal: the folder already holds this document and this
 				// write is not removing it, so re-applying corrects rather than prunes.
-				ExistingDocument: buf.holdsExistingDocument(),
+				ExistingDocument: wb.holdsExistingDocument(buf),
 				// Widening spec.path, or re-placing the write, is the GitTarget owner's call.
 				Solvable: true,
 				Actor:    manifestanalyzer.ActorPlatformOperator,
@@ -1687,7 +1729,7 @@ func (wb *writeBatch) fanInPrecondition() error {
 				Kind: manifestanalyzer.IssueWriteFanIn,
 				Path: rel,
 				// See pathScopePrecondition: evidence, not a description.
-				ExistingDocument: buf.holdsExistingDocument(),
+				ExistingDocument: wb.holdsExistingDocument(buf),
 				// Nobody can solve this from the repository or the GitTarget: the edit
 				// has nowhere safe to land while two render roots share the file.
 				Solvable: false,

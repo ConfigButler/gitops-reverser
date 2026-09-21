@@ -180,12 +180,19 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		// refusal blocks is already blocked.
 		var refused *manifestanalyzer.AcceptanceRefusedError
 		if errors.As(err, &refused) {
-			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused)
+			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
+				refusalObservationForDesired(req.Desired, refused))
 		}
 		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
 		req.reply(ResyncResult{Err: err})
 		return
 	}
+
+	// The plan was accepted, so this target's standing refusal is over and the observation the
+	// last empty commit covered is forgotten. This is the recovery path the dedupe depends on: a
+	// per-type reconcile runs after the reconciler reverts the edit, and it is what makes the NEXT
+	// refusal — including a re-made, byte-identical one — a new trigger rather than a repeat.
+	l.w.clearRefusalObservationFor(req.GitTargetName, req.GitTargetNamespace)
 
 	// Only retain the resync's own pending write when it actually committed. A no-op
 	// resync (e.g. the empty initial snapshot before any rule selects a resource)
@@ -646,6 +653,7 @@ func (wb *writeBatch) dropDocument(filePath string, id manifestedit.Identity) bo
 	if !ok {
 		return false
 	}
+	wb.recordDocumentRemoval(buf)
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if res.FileEmpty {
 		buf.current = nil

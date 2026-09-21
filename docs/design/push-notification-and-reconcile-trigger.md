@@ -701,6 +701,21 @@ with it, and the first two are the ones this section argued for:
   a review found the hole: a render refusal fires for a brand-new resource an `images:` entry would
   override, and a write that is REMOVING a document had one before it. Both would have been
   committed for. The evidence is set where the pre-write buffer is in hand and carried on the issue.
+  It is evidence about the DOCUMENT, not the file, which a second review found the hole in too:
+  removing one document from a two-document file leaves the file present, so file survival answered
+  "an edit to a surviving document" for what was plainly a removal. A flush that removes a document
+  by any route — an explicit `DELETE`, a mark-and-sweep drop, a `$patch: delete` authored into an
+  overlay — earns no commit at all, because the refusal means Git still holds the document and
+  re-applying would put back an object somebody deliberately deleted.
+- **An unchanged refusal is one trigger, not one per recheck.** The rate limit decides how often a
+  commit may be made; it cannot tell whether the refusal is the same one. A forced recheck re-lists
+  every interval, so a refused edit nobody corrects is observed over and over, and each observation
+  used to be another commit. Each commit carries the digest of what it covered — the objects the
+  refused write would have produced, and the issues raised about them — and an observation matching
+  it is dropped. The digest is CONTENT: a re-list gives every snapshot a fresh collection version,
+  so a version would make every recheck look new. The memory is dropped again as soon as a write
+  for that target is ACCEPTED, which is what makes an identical edit, re-made after the reconciler
+  reverted the first one, a new trigger rather than a repeat.
 - **Rate limited per target, and COALESCED rather than dropped.** A controller rewriting a
   base-owned field refuses on every one of its own reconciles, and every commit wakes every
   reconciler watching the branch. But a refusal discarded inside that window is lost: the reconcile

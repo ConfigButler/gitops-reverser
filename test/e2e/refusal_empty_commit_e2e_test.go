@@ -119,23 +119,36 @@ var _ = Describe("Manager Refusal Empty Commit", Label("manager", "refusal-commi
 		Expect(commitMessageAtSHA(repo.CheckoutDir, head)).To(ContainSubstring(destName),
 			"the commit must name the GitTarget whose write was refused, or git log reads as a stray no-op")
 
-		// Past the one-minute trailing interval, not inside it. A shorter window only proves there
-		// was no IMMEDIATE second commit, which the rate limit guarantees for free; what needs
-		// proving is that the coalesced timer settles rather than firing forever. The refusal is
-		// still standing here, so this also covers the worst case: a target that keeps being
-		// refused must not keep committing.
-		By("and it settles past the trailing interval instead of committing on a loop")
+		// Past TWO full trailing intervals, not one. A window that ends inside the second interval
+		// only proves there was no immediate repeat, which the rate limit guarantees for free; a
+		// commit-per-interval loop is not visible until the third commit would be due. The refusal
+		// is still standing throughout, and a forced recheck re-observes it every minute, so this
+		// is the worst case the dedupe exists for: rechecking an unchanged refusal must not keep
+		// moving the branch.
+		//
+		// The bound is the initial commit plus one trailing commit. Two, not one, because the live
+		// write and the per-type reconcile observe the same refusal from different populations, so
+		// the second of them can legitimately be a first observation of its own. What must never
+		// grow is the count per interval after that.
+		By("and it settles past two trailing intervals instead of committing on a loop")
 		Consistently(func(g Gomega) {
 			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(BeNumerically("<=", seedCount+2),
 				"a standing refusal must not produce a commit per interval forever")
-		}, 100*time.Second, 10*time.Second).Should(Succeed())
+		}, 150*time.Second, 10*time.Second).Should(Succeed())
 
 		// And once the drift is corrected there is nothing left to refuse, so the branch goes
-		// quiet. Without this the spec could pass on a target that simply never converges.
-		By("correcting the drift, after which the branch stops moving altogether")
+		// quiet. Establishing that the target ACCEPTS again comes first and is not decoration:
+		// without it the spec would pass just as well on a target that stayed refused and had
+		// merely run out of things to say, which is the reading a quiet branch alone allows.
+		By("correcting the drift")
 		_, err = kubectlRunInNamespace(testNs, "set", "env", "deployment/checkout", "LOG_LEVEL=info")
 		Expect(err).NotTo(HaveOccurred(), "failed to correct the drifted env var")
 
+		By("the target converges: the write boundary has nothing left to refuse")
+		verifyResourceCondition("gittarget", destName, testNs, "GitPathAccepted", "True", "", "", "180s")
+		verifyResourceCondition("gittarget", destName, testNs, "Ready", "True", "", "", "180s")
+
+		By("after which the branch stops moving altogether")
 		settled := remoteCommitCount(repo.CheckoutDir)
 		Consistently(func(g Gomega) {
 			g.Expect(remoteCommitCount(repo.CheckoutDir)).To(Equal(settled),

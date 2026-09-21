@@ -214,7 +214,7 @@ func TestRefusalTouch_RateLimitedRefusalIsCoalescedNotDropped(t *testing.T) {
 	limited, _ := w.refusalRateLimited(editingRef())
 	require.False(t, limited)
 
-	loop.armTrailingRefusalTouch(editingRef(), "a second refusal", time.Minute)
+	loop.armTrailingRefusalTouch(editingRef(), "a second refusal", "observation-2", time.Minute)
 
 	assert.NotNil(t, loop.refusalTimer, "a coalesced refusal must leave a trailing commit armed")
 	require.Contains(t, loop.refusalPending, editingRef().String())
@@ -230,7 +230,7 @@ func TestRefusalTouch_TrailingCommitRechecksConsent(t *testing.T) {
 	})
 	loop := newBranchWorkerEventLoop(w, time.Minute)
 	t.Cleanup(loop.stopTimers)
-	loop.armTrailingRefusalTouch(editingRef(), "queued while consent still stood", 0)
+	loop.armTrailingRefusalTouch(editingRef(), "queued while consent still stood", "observation-1", 0)
 
 	setSpec := func(spec configv1alpha3.GitTargetSpec) {
 		target := &configv1alpha3.GitTarget{}
@@ -472,8 +472,8 @@ func TestRefusalTouch_OneTargetDoesNotDropAnothersPendingCommit(t *testing.T) {
 
 	// A zero wait makes both entries due the moment they are recorded, so the flush below cannot
 	// race their deadlines. The deadline itself is covered by its own test.
-	loop.armTrailingRefusalTouch(alpha, "alpha was refused", 0)
-	loop.armTrailingRefusalTouch(bravo, "bravo was refused", 0)
+	loop.armTrailingRefusalTouch(alpha, "alpha was refused", "alpha-observation", 0)
+	loop.armTrailingRefusalTouch(bravo, "bravo was refused", "bravo-observation", 0)
 
 	require.Len(t, loop.refusalPending, 2,
 		"two targets on one worker must hold two pending commits, not one")
@@ -503,8 +503,8 @@ func TestRefusalTouch_TheTimerTracksTheEarliestDeadline(t *testing.T) {
 	late := itypes.NewResourceReference("late", "team-a")
 	soon := itypes.NewResourceReference("soon", "team-a")
 
-	loop.armTrailingRefusalTouch(late, "later", time.Hour)
-	loop.armTrailingRefusalTouch(soon, "sooner", 50*time.Millisecond)
+	loop.armTrailingRefusalTouch(late, "later", "late-observation", time.Hour)
+	loop.armTrailingRefusalTouch(soon, "sooner", "soon-observation", 50*time.Millisecond)
 
 	require.Len(t, loop.refusalPending, 2)
 	select {

@@ -964,7 +964,9 @@ would be guessing on their behalf. Moving the branch asks them instead.
 not removing. That is the pruning fence, and it is why the action is narrower than it first looks.
 The refusal's kind is not enough on its own to establish that: a render refusal fires for a
 brand-new resource an `images:` entry would override, and a write that is removing a document had
-one before it. Re-applying corrects
+one before it. Nor is the FILE: removing one document from a file that holds two leaves the file
+in place, which looks exactly like an edit, so eligibility is decided per document and a write
+that removes one anywhere in the same flush is excluded whole. Re-applying corrects
 drift on an object Git manages, which is the whole point. For an object it does not manage,
 re-applying either does nothing (because
 [Flux prunes from its inventory](https://fluxcd.io/flux/components/kustomize/kustomizations/#prune)
@@ -987,6 +989,13 @@ consent. And the commit is rate-limited per target, because a controller rewriti
 field refuses on every one of its own reconciles. A refusal that arrives inside that window is
 **coalesced into one trailing commit rather than dropped**: the reconcile an earlier commit
 triggered may already have finished, so dropping it would leave that edit uncorrected for good.
+
+**A refusal that nobody corrects is committed for once, not once per interval.** The target keeps
+re-reading its folder and keeps refusing, so the same refusal is observed again and again; each
+commit records what it covered, and a later observation of the same objects and the same issues
+adds nothing and is dropped. Anything different (a new value, another object, a different refusal)
+is a new trigger and gets its own commit. So is the same edit made a second time after the
+reconciler reverted it, because the target accepted a write in between.
 
 ### Deletion policy (`spec.prune.mode`)
 
