@@ -1922,10 +1922,9 @@ const (
 	fetchReasonPublication = "publication"
 	// fetchReasonRecovery is a cycle that had to re-establish a base it could not trust.
 	//
-	// Reserved: nothing produces it yet, because the base is trusted unconditionally today. It is
-	// declared here so the series exists in the documentation and in the reason set before the
-	// change that starts producing it, rather than appearing unannounced. A `recovery` series
-	// that climbs is a bug report, not a cost.
+	// Kept apart from `publication` so the steady-state claim can be asserted at zero without the
+	// assertion failing the first time a push fails. A `recovery` series that climbs is a bug
+	// report, not a cost.
 	fetchReasonRecovery = "recovery"
 	// fetchReasonContention is the reset onto the remote tip after a push was rejected because
 	// somebody else moved the branch. One confirmed rejection is exactly one of these.

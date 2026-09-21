@@ -36,7 +36,7 @@ unnecessary rather than merely skippable.
 This page specifies both, the invariant that connects them, and the cases where a fetch must still
 happen.
 
-## 1. What the remote costs today
+## 1. What the remote cost before this change
 
 Five call sites reach the remote, none on a timer and none triggered by the remote changing.
 
@@ -48,9 +48,14 @@ Five call sites reach the remote, none on a timer and none triggered by the remo
 | `fetchRemoteBranchHash` + `syncToRemote` | a rejected push | list, fetch, reset |
 | `syncWithRemote` / `refreshRemoteAndRebuildPendingWrites` | a forced recheck | list, fetch, reset |
 
-The second row is the target of this page. It is gated on `hasPendingCommits`, so it fires once per
-cycle rather than once per event, and an idle target pays nothing. Under sustained edits, with a
-`5s` commit window and a `5s` push cooldown, it is roughly one fetch-and-reset per push.
+The second row is the target of this page. It was gated on `hasPendingCommits`, so it fired once
+per cycle rather than once per event, and an idle target paid nothing. Under sustained edits, with
+a `5s` commit window and a `5s` push cooldown, that was roughly one fetch-and-reset per push.
+
+**Those two sentences are the baseline, not current behavior.** After commit 4,
+`ensureBaseForCycle` skips `PrepareBranch` (and therefore the whole fetch-and-reset) whenever the
+base is trusted and the worktree is clean, which on a healthy publishing target is every cycle
+after the first. §4 measures what is left.
 
 Note what is NOT in that table. `ensureRepositoryInitialized` looks like the worker's clone and an
 earlier draft listed it as one; it has no caller outside a test. There is no clone anywhere —
@@ -68,14 +73,6 @@ connection and reads its advertisement inside it, which is what makes the compar
 an extra handshake — but on smart HTTP that session is two requests, so over SSH these numbers
 would be lower. The harness measures requests against an HTTP remote and does not measure latency
 or TCP connections.
-
-| Operation | Connections to the Git host |
-| --- | --- |
-| `SmartFetch` (so: `PrepareBranch`, `syncToRemote`, `fetchRemoteBranchHash`) | 2 |
-| `PushAtomic` | 1 |
-
-So one uncontended publication costs **three connections today**, and only one of them is the
-push.
 
 ## 2. The push already does the detection
 
@@ -518,44 +515,46 @@ overhaul and its conclusions hold unchanged. Three of them matter here:
   a successful push is therefore mandatory receiver work, not the optional `status.remote` polish
   of §9.
 
-  A membership test on its own is not enough, and neither is comparing against the believed tip
-  on its own. Publish A, publish B, then somebody force-pushes the branch back to A: that is a
-  real movement to a SHA we have published before, so a set would drop it. Meanwhile a delayed
-  delivery for our own A, arriving when our tip is B, differs from the tip and so would earn a
-  fetch we do not need.
+  **The rule is one comparison, and the bookkeeping behind it is one SHA.**
 
-  **The push payload already carries what separates them.** Every host we care about sends both
-  the previous and the new head (`before` and `after` on GitHub, Gitea, Forgejo and GitLab), so
-  read `before` rather than inferring it:
+| `after` | Meaning | Action |
+| --- | --- | --- |
+| equals the believed tip | Our own push coming back to us | Ignore |
+| anything else | Somebody moved the branch, or we cannot tell | **Invalidate** |
 
-| `after` | `before` | Meaning | Action |
-| --- | --- | --- | --- |
-| equals believed tip | any | We are already there | Ignore |
-| a SHA we published | equals believed tip | Force-push back onto one of ours | Invalidate |
-| a SHA we published | a SHA we published, and NOT the believed tip | Delayed delivery for an older push of ours | Ignore |
-| anything else | any | Somebody else moved the branch | Invalidate |
-| anything else not covered above | — | Cannot be classified | **Invalidate** |
+  An earlier draft of this page had five rows, a `before` field read from four Git hosts, and a
+  bounded set of recently published SHAs "as deep as the delivery lag". It was wrong, and the way
+  it was wrong is the argument for deleting it rather than repairing it.
 
-**Row three is narrower than it looks, and an earlier draft had it wrong.** It originally ignored
-any delivery whose `after` we had published and whose `before` was not the believed tip, which
-throws away a real rollback. Believe the tip is B and have published A. Somebody pushes B -> C,
-then C -> A. If the `C -> A` delivery arrives first, `after` is A (published) and `before` is C
-(not the believed tip), so the old rule ignored it — leaving the worker trusting B when the branch
-is at A.
+  The row it got wrong ignored a delivery whose `after` AND `before` were both SHAs we had
+  published, on the reasoning that our own delayed delivery is `ours -> ours` while somebody
+  else's rollback passes through a SHA we never wrote. It does not have to. Believe the tip is C,
+  having published A, B and C. Somebody force-pushes `C -> B`, then `B -> A`. Every delivery in
+  that rollback is `ours -> ours`, and if `B -> A` arrives first the rule ignores a branch that
+  has genuinely moved to A.
 
-Requiring `before` to ALSO be a SHA we published is what separates the two: our own delayed
-delivery is `ours -> ours`, while a rollback performed by somebody else passes through a SHA we
-never wrote. Anything that does not fit a row invalidates, which costs a fetch and never costs
-correctness.
+  That row cannot be patched. A *set* of published SHAs cannot distinguish a replay from a
+  rollback, because both are pairs drawn from the same set: the information the distinction needs
+  is ORDER, which a set has thrown away. So the set goes, and with it the `before` field, the
+  per-host compatibility question, the fallback for hosts that omit it, and the depth tuning.
 
-The ordering assumption has to go too. Deliveries can arrive out of order, be duplicated, or not
-arrive at all, so the receiver must be correct under all three and the fallback must be
-invalidation. The tests for this are reordered delivery, dropped delivery, and a force-push back
-to a previously published SHA.
+  What that costs is one `SmartFetch` per out-of-order delivery of our own push, because `after` is a SHA
+  we published but no longer believe is the tip, so it invalidates. The worst case is one fetch per
+  cycle, which is precisely the behavior this page removes. The feature degrades to the status quo
+  rather than to a wrong answer.
 
-  A host that omits `before` falls back to invalidating, which costs a fetch rather than
-  correctness. Keeping a bounded set of recently published SHAs is what makes row three possible,
-  and the set only has to be as deep as the delivery lag.
+  **If measurement later shows those false invalidations matter, the escalation is an ORDERED
+  record of what we published, not a set.** Our own pushes are always fast-forward in our own
+  publication order, so a genuine delayed delivery moves forward through that record while a
+  rollback runs backwards through it. Build that, and only that, and only with a number in hand.
+
+  Advancing `lastCommitSHA` on a successful push stays mandatory either way: it is what makes the
+  one remaining comparison mean anything.
+
+  Deliveries can arrive out of order, be duplicated, or not arrive at all, so the receiver must be
+  correct under all three and the fallback must be invalidation. The tests are reordered delivery,
+  dropped delivery, a duplicate delivery, and a rollback that passes only through SHAs we
+  published.
 
 - **§5.4: piggyback on the webhook the user already has.** Most Flux and Argo CD users already point
   their Git host at a receiver. A second git-host webhook is the config cost this feature has to
@@ -601,12 +600,13 @@ first and earns exactly the rejection the notification existed to prevent.
 
 The receiver therefore needs a second effect for that case, and it belongs on the worker rather
 than in the handler: when writes are retained and the base has been invalidated, refresh and
-replay before the next push, the way `recoverDirtyWorktree` already does for a dirty worktree.
-That keeps §8.1's rule intact — the RECEIVER still performs no round trip; the worker does, at the
-moment it was going to talk to the remote anyway.
+replay before the next push. That keeps §8.1's rule intact: the RECEIVER still performs no round
+trip; the worker does, at the moment it was going to talk to the remote anyway.
 
-Until that exists, the notification is worth one column less than §4 claims on any target with
-retained writes.
+**That mechanism now exists**, as `invalidateAndRefresh`. It was built for the resync path, which
+had the identical bug (§11), and `recoverDirtyWorktree` is one entry condition into it. The
+receiver calls it and is done; §4's last column no longer depends on work that has not been
+written.
 
 This is what turns the contended case from eight connections into three, and it is why the
 notification earns its place. It does not buy freshness. It buys the *absence* of a doomed push
@@ -690,9 +690,30 @@ for the no-retained-writes half of a forced recheck.
 
 ## 11. Implementation plan
 
-**Status: commits 0 through 4 have shipped.** The fetch is conditional, the state machine is live,
-and §4's table is measured rather than predicted. What remains is commit 5, the receiver, plus the
-two follow-ups under "deliberately not in this plan".
+**Status: commits 0 through 4 have shipped, plus the corrections below.** The fetch is
+conditional, the state machine is live, and §4's table is measured rather than predicted. What
+remains is commit 5, the receiver, plus the two follow-ups under "deliberately not in this plan".
+
+### What the flip broke, and what fixed it
+
+§2.1 found two paths that never reach a push advertisement and gated the change on handling them.
+It found two. Review found three more, all the same shape, and the generalisation is worth stating
+as a rule rather than as a list:
+
+> **Anything that resolves, commits, or concludes without reaching a push advertisement must
+> either fetch, or refuse to conclude.**
+
+| Path | What went wrong | Fix |
+| --- | --- | --- |
+| A re-sent `CommitRequest` attach | Between its window's finalize and the push, the request was neither pending nor resolved, so the controller's two-second re-send looked like a new request and resolved `NoOpenWindow`, or claimed the next same-author window and stamped its message on somebody else's commit | Mark it `committed` instead of forgetting it; the push settles it, and a shutdown that cannot push fails it |
+| An atomic write | `handleAtomicRequest` reached `commitPendingWrites` with no recovery: the finalize it calls first returns immediately when no window is open, and `commitPendingWrites` cannot reset while work is retained. It committed a failed write's leftovers | Call `recoverDirtyWorktree` explicitly, and enumerate the loop's commit entry points in a table-driven test |
+| A deleted remote branch | The push reported it as an untyped error, and the fallback probe answered from a remote-tracking ref `SmartFetch` cannot prune for a branch the remote no longer has. "Not moved", no replay, and the retained writes then made every later cycle skip its fetch too, and the worker pushed the same doomed commits forever | `RemoteMovedError.Missing`, and a probe that reports zero when `SmartFetch` fell back |
+| A resync holding retained writes | Commit 3's `invalidateBase` reached nothing, because `ensureBaseForCycle` consults the flag only when nothing is retained: the exact flag `commitPendingWrites` is called with two lines later | `invalidateAndRefresh`, which drops trust AND acts on it |
+
+The fourth is the one worth remembering, because §8.1 already names the same trap for the receiver
+and an earlier draft of this page walked into it anyway: **clearing `baseTrusted` and acting on it
+are different things.** `invalidateAndRefresh` is now the single mechanism for both, so commit 5
+inherits it rather than rediscovering it.
 
 Seven commits. Commit 0 is measurement and must come first: the rest of this page argues from
 numbers that nobody has checked. Commits 0b, 1 and 2 change no observable behavior between them,
@@ -837,14 +858,23 @@ than reality exactly where an operator is looking hardest.
 | `bootstrap` | `prepareBootstrapRepository` | Unchanged, once per worker |
 | `publication` | `commitPendingWrites`, head of cycle | **Zero on a healthy steady-state target** |
 | `recovery` | `commitPendingWrites` when the base is untrusted or the tree is dirty | New series; nonzero means §3 lost trust |
-| `contention` | `fetchRemoteBranchHash` and the `syncToRemote` that follows it in `runPushCycle` | Unchanged; note one rejection costs **two** of these |
+| `contention` | the `syncToRemote` in `runPushCycle` after a confirmed moved remote | Unchanged; one confirmed rejection costs exactly **one** of these |
+| `push_failure_probe` | `fetchRemoteBranchHash`, when a push failed without the remote saying anything | A push that died before the advertisement: credentials, connectivity |
 | `forced_recheck` | `syncWithRemote`, `refreshRemoteAndRebuildPendingWrites` | Unchanged, plus the receiver's traffic once §8 lands |
 
-Two things in that table are corrections rather than choices.
+Three things in that table are corrections rather than choices.
 
 **The clone site is `prepareBootstrapRepository`, not `ensureRepositoryInitialized`.** The latter
 has no caller outside a test, so instrumenting it would have produced a series that never moves
 and an operator who concludes the worker never cloned.
+
+**`contention` and `push_failure_probe` have to be separate too, and an earlier version of this
+table conflated them.** It named `fetchRemoteBranchHash` as a `contention` call site and said one
+rejection cost two of them. Once §2.2 landed, a rejection carries the remote's hash on the wire and
+needs no lookup at all, so it costs exactly one `contention` fetch, the reset. The lookup remains
+only for a push that failed BEFORE the remote said anything, which is an auth or connectivity
+problem and not another writer. Counting it as contention would make an expired credential read as
+somebody fighting you over the branch. Golden row 6 is the measurement.
 
 **`publication` and `recovery` have to be separate reasons.** After the flip,
 `commitPendingWrites` still fetches when the base is untrusted or the tree is dirty, so a single
@@ -899,6 +929,16 @@ produce a first commit that fails for the wrong reason.
 the fetch count goes *up*. The two that matter most are the ones §5 identifies as silent jobs of
 the old fetch: a worker whose `executePendingWrites` failed mid-batch must fetch on the next
 cycle (the laundering), and a rejected push must fetch before replaying (the correctness).
+
+**Unit, for the paths that never reach an advertisement.** These are the four the flip broke, and
+each is a named test rather than a case inside another one, because every failure here is silent:
+a re-sent attach during the push cooldown and during a failed push; an atomic write that must
+recover a dirty worktree, table-driven across every loop path that commits; a deleted remote
+branch, both the typed error and the probe that must not answer from a ref nothing could refresh;
+and a resync holding retained writes, which must still read the remote. The deleted-branch test
+has to FETCH before the deletion, because a push does not advance `refs/remotes/origin/<branch>`, so
+without that the stale hash differs from the cycle root and the worker recovers by luck rather
+than by design.
 
 **e2e, through Prometheus.** The helpers exist: `queryPrometheus` and `waitForMetricWithTimeout`
 in [`test/e2e/helpers.go`](../../test/e2e/helpers.go). The assertion belongs in the
