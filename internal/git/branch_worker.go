@@ -1113,12 +1113,29 @@ func (l *branchWorkerEventLoop) recoverDirtyWorktree() error {
 
 	l.w.Log.Info("Resetting a dirty worktree and replaying retained writes onto the remote tip",
 		"pendingWrites", len(l.pendingWrites))
+	return l.invalidateAndRefresh("worktree left dirty by a failed write")
+}
 
-	// Reset, then rebuild the retained writes on top. Nothing is lost: a replay re-plans from the
-	// retained writes rather than from the worktree, which is exactly why discarding the worktree
-	// here is safe.
+// invalidateAndRefresh drops base trust and, when writes are retained, acts on that invalidation
+// at once by resetting to the remote tip and replaying them.
+//
+// Clearing the flag on its own is not enough, and the asymmetry is easy to miss: ensureBaseForCycle
+// consults baseTrusted only when NOTHING is retained, because a reset would destroy the local
+// commits retained writes already produced. A target holding work therefore ignores a bare
+// invalidation completely and plans its next cycle on the stale base anyway.
+//
+// Nothing is lost by resetting here: a replay re-PLANS from the retained writes rather than from
+// the worktree, which is exactly what makes discarding the worktree safe.
+//
+// This is the second effect the inbound push receiver needs as well (§8.1): the handler itself
+// performs no round trip, the worker does, at the moment it was going to talk to the remote anyway.
+func (l *branchWorkerEventLoop) invalidateAndRefresh(reason string) error {
+	l.w.invalidateBase(reason)
+	if len(l.pendingWrites) == 0 {
+		return nil
+	}
 	if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites); err != nil {
-		return fmt.Errorf("recover dirty worktree: %w", err)
+		return fmt.Errorf("refresh after %s: %w", reason, err)
 	}
 	return nil
 }

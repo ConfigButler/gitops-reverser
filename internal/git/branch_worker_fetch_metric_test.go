@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -22,6 +23,8 @@ import (
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
@@ -266,4 +269,49 @@ func TestGitFetchesTotal_ReasonSetMatchesTheDocumentedOne(t *testing.T) {
 			fetchReasonForcedRecheck,
 		},
 		"the documented reason set and the constants must not drift")
+}
+
+// TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote is the escape hatch §2.1 names,
+// driven through the case that used to slip past it.
+//
+// A resync keeps its fetch because it does not always reach a push: applyResync retains its write
+// only if it committed, so a resync that finds nothing to change never opens a connection and
+// would conclude "Git already matches the cluster" against a tree nobody had read. Dropping base
+// trust is what was supposed to prevent that — but ensureBaseForCycle consults the flag only when
+// nothing is retained, so on a target holding work the invalidation reached nothing at all.
+func TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	f := newLedgerFixture(t, "metric-resync-retained", true)
+	f.worker.mapper = configMapMapper()
+	f.createLedgerTarget("live", &configv1alpha3.PrunePolicy{Mode: configv1alpha3.PruneAlways})
+	f.publish("prime")
+
+	// A live write is committed and retained: the push cooldown has not elapsed, so it is sitting
+	// in pendingWrites when the resync arrives.
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("retained", "alice", "live")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.True(t, loop.finalizeOpenWindow())
+	require.Len(t, loop.pendingWrites, 1, "the resync must arrive with work retained")
+
+	before := fetchCount(t, reader, f.worker, fetchReasonForcedRecheck)
+
+	req := &ResyncRequest{
+		Desired:            []manifestanalyzer.DesiredResource{desiredCM("keep", "blue")},
+		ResourceVersion:    "42",
+		GitTargetName:      ledgerTargetName,
+		GitTargetNamespace: "default",
+		Result:             make(chan ResyncResult, 1),
+	}
+	loop.applyResync(req)
+	require.NoError(t, (<-req.Result).Err)
+
+	assert.Greater(t, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck), before,
+		"a resync judging the tree must have read the remote, retained writes or not")
 }

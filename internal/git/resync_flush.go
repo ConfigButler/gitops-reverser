@@ -115,12 +115,6 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		}
 	}
 
-	if err := l.recoverDirtyWorktree(); err != nil {
-		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
-		req.reply(ResyncResult{Err: err})
-		return
-	}
-
 	// A resync keeps fetching, deliberately, even now that a publication does not.
 	//
 	// The rest of the write path is safe without one because it always reaches the push, whose
@@ -134,8 +128,27 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	//
 	// Skipped when RefreshRemote already fetched a moment ago, which would otherwise make a
 	// forced recheck pay twice.
+	//
+	// It has to be invalidateAndRefresh rather than a bare invalidateBase. commitPendingWrites is
+	// called below with hasPendingCommits set from the retained slice, and ensureBaseForCycle
+	// returns early on that flag — so on a target holding work the invalidation reached nothing at
+	// all, and the snapshot judged a tree nobody had read. That is the exact hazard this paragraph
+	// claims to close.
 	if !req.RefreshRemote {
-		l.w.invalidateBase("resync snapshot")
+		if err := l.invalidateAndRefresh("resync snapshot"); err != nil {
+			l.w.Log.Error(err, "Failed to refresh the remote before resync", "resources", len(req.Desired))
+			req.reply(ResyncResult{Err: err})
+			return
+		}
+	}
+
+	// The refresh above already reset and replayed when anything was retained, so this is a no-op
+	// on that path; it still covers the RefreshRemote branch and a dirty tree with nothing to
+	// replay.
+	if err := l.recoverDirtyWorktree(); err != nil {
+		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
+		req.reply(ResyncResult{Err: err})
+		return
 	}
 
 	stats := &ResyncStats{}
