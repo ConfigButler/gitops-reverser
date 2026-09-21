@@ -65,8 +65,11 @@ Every write to that branch goes through the worker's single event loop and commi
 fetch and hard-reset before the first commit of every publication cycle. It no longer does: the push
 session reads the remote's ref advertisement on a connection the cycle was making anyway, and a cycle
 that commits nothing still reaches it, so a base the worker can vouch for needs no fetch to plan
-against. Two flags on the worker carry that claim (`baseTrusted`, and `worktreeDirty` for a write that
-failed part-way), and anything that cannot prove it clears them, which makes the next cycle fetch. The
+against. Two flags on the worker carry that claim, and they are separate on purpose: `baseTrusted`
+is dropped by anything that can no longer prove where the remote is, while `worktreeDirty` records
+that a write failed part-way and is cleared **only by a reset** (a third, `replayRequired`, marks
+retained writes whose local commits a reset discarded before the replay could rebuild them).
+Collapsing them would let one kind of doubt clear another. Either flag makes the next cycle fetch. The
 failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
 is caught by the compare-and-swap on the next push. **The corollary is the rule to keep in your head
 when adding code here:** anything that resolves, commits, or concludes without reaching a push
@@ -1374,7 +1377,8 @@ as one funnel and its loss paths as one selector:
   counts commits that **reached the remote**, and `_git_pushes_total{outcome}`,
   `_git_push_retries_total{reason}` and `_git_push_duration_seconds` cover the cycle that puts them
   there. `author_kind="unresolved"` means attribution ran and could not name an actor.
-  `_git_fetches_total{reason}` is the other direction: it counts every call that reads the remote,
+  `_git_fetches_total{reason}` is the other direction: it counts every call that runs a `SmartFetch`
+  (a push reads the remote's advertisement too, and is deliberately not counted here),
   and it is the only way to answer "is the mirror still pulling on every write?", because the push
   counters read identically whether the worker fetches constantly or never. On a healthy publishing
   target `reason="publication"` is flat at zero. See

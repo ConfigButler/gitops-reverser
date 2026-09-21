@@ -716,7 +716,7 @@ replay before the next push. That keeps §8.1's rule intact: the RECEIVER still 
 trip; the worker does, at the moment it was going to talk to the remote anyway.
 
 **That mechanism now exists**, as `invalidateAndRefresh`. It was built for the resync path, which
-had the identical bug (§11), and `recoverDirtyWorktree` is one entry condition into it. The
+had the identical bug (§11), and `recoverRetainedWrites` is one entry condition into it. The
 receiver calls it and is done; §4's last column no longer depends on work that has not been
 written.
 
@@ -822,7 +822,7 @@ as a rule rather than as a list:
 | Path | What went wrong | Fix |
 | --- | --- | --- |
 | A re-sent `CommitRequest` attach | Between its window's finalize and the push, the request was neither pending nor resolved, so the controller's two-second re-send looked like a new request and resolved `NoOpenWindow`, or claimed the next same-author window and stamped its message on somebody else's commit | Mark it `committed` instead of forgetting it; the push settles it, and a shutdown that cannot push fails it |
-| An atomic write | `handleAtomicRequest` reached `commitPendingWrites` with no recovery: the finalize it calls first returns immediately when no window is open, and `commitPendingWrites` cannot reset while work is retained. It committed a failed write's leftovers | Call `recoverDirtyWorktree` explicitly, and enumerate the loop's commit entry points in a table-driven test |
+| An atomic write | `handleAtomicRequest` reached `commitPendingWrites` with no recovery: the finalize it calls first returns immediately when no window is open, and `commitPendingWrites` cannot reset while work is retained. It committed a failed write's leftovers | Call `recoverRetainedWrites` explicitly, and enumerate the loop's commit entry points in a table-driven test |
 | A deleted remote branch | The push reported it as an untyped error, and the fallback probe answered from a remote-tracking ref `SmartFetch` cannot prune for a branch the remote no longer has. "Not moved", no replay, and the retained writes then made every later cycle skip its fetch too, and the worker pushed the same doomed commits forever | `RemoteMovedError.Missing`, and a probe that reports zero when `SmartFetch` fell back |
 | A resync holding retained writes | Commit 3's `invalidateBase` reached nothing, because `ensureBaseForCycle` consults the flag only when nothing is retained: the exact flag `commitPendingWrites` is called with two lines later | `invalidateAndRefresh`, which drops trust AND acts on it |
 | A replay that failed after its reset | The reset had already discarded the local commits; the retained writes still carried their pre-reset hashes. The next push found the branch already at the tip, answered "already up to date" before comparing the root hash, and settled work that existed nowhere, telling a `CommitRequest` it was `Committed` at a SHA on no remote | `replayRequired` (§3.2), and `recoverRetainedWrites` running before the push as well as before every commit |
@@ -933,7 +933,8 @@ and shipping only the condition would have introduced two bugs:
   `refreshRemoteAndRebuildPendingWrites` from inside it. That deadlocks — both take `repoMu` —
   and it would replay the wrong batch, because `commitPendingWrites` is handed the INCOMING
   writes while the ones needing replay are the retained slice the event loop owns.
-  `recoverDirtyWorktree` is a loop method, called before every commit the loop makes.
+  `recoverRetainedWrites` is a loop method, called before every commit the loop makes (and,
+  since §3.2, before every push).
 - **The reset did not clean what the state machine assumed.** `checkoutAndReset` restores tracked
   files and nothing else: a file a failed write created — staged or not — and any directory it
   created both survived it, which is the common case rather than the rare one, because our writes
@@ -1061,8 +1062,8 @@ the fetch count goes *up*. The two that matter most are the ones §5 identifies 
 the old fetch: a worker whose `executePendingWrites` failed mid-batch must fetch on the next
 cycle (the laundering), and a rejected push must fetch before replaying (the correctness).
 
-**Unit, for the paths that never reach an advertisement.** These are the four the flip broke, and
-each is a named test rather than a case inside another one, because every failure here is silent:
+**Unit, for the paths the flip broke.** Five of them, and each is a named test rather than a case
+inside another one, because every failure here is silent:
 a re-sent attach during the push cooldown and during a failed push; an atomic write that must
 recover a dirty worktree, table-driven across every loop path that commits; a deleted remote
 branch, both the typed error and the probe that must not answer from a ref nothing could refresh;

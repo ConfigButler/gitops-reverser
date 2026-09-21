@@ -354,3 +354,46 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 		"and nobody asked the worker to re-read Git, so it is not a forced recheck")
 	assert.False(t, f.worker.worktreeDirty(), "the reset cleared it")
 }
+
+// TestGitFetchesTotal_ResyncWithNoRetainedWritesAlsoReadsTheRemote is the other half of the
+// resync guarantee, and it is worth pinning separately because the fetch is not where you would
+// look for it.
+//
+// applyResync itself does not fetch on this path: invalidateAndRefresh only drops base trust when
+// nothing is retained, and recoverRetainedWrites returns immediately. The fetch happens one layer
+// down, in commitPendingWrites — which is called with hasPendingCommits=false, so
+// ensureBaseForCycle consults the flag that was just cleared and resets before the snapshot is
+// judged. Ledger row 10 measures the same thing as requests on the wire; this states it as the
+// intent.
+func TestGitFetchesTotal_ResyncWithNoRetainedWritesAlsoReadsTheRemote(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	f := newLedgerFixture(t, "metric-resync-unretained", true)
+	f.worker.mapper = configMapMapper()
+	f.createLedgerTarget("live", &configv1alpha3.PrunePolicy{Mode: configv1alpha3.PruneAlways})
+	f.publish("prime")
+	require.True(t, f.worker.baseTrusted(), "the publish leaves the base trusted")
+
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	defer loop.stopTimers()
+	require.Empty(t, loop.pendingWrites, "this is the nothing-retained path")
+
+	before := fetchCount(t, reader, f.worker, fetchReasonPublication) +
+		fetchCount(t, reader, f.worker, fetchReasonRecovery)
+
+	req := &ResyncRequest{
+		Desired:            []manifestanalyzer.DesiredResource{desiredCM("keep", "blue")},
+		ResourceVersion:    "42",
+		GitTargetName:      ledgerTargetName,
+		GitTargetNamespace: "default",
+		Result:             make(chan ResyncResult, 1),
+	}
+	loop.applyResync(req)
+	require.NoError(t, (<-req.Result).Err)
+
+	after := fetchCount(t, reader, f.worker, fetchReasonPublication) +
+		fetchCount(t, reader, f.worker, fetchReasonRecovery)
+	assert.Greater(t, after, before,
+		"a resync must read the remote before judging the tree, retained writes or not")
+}

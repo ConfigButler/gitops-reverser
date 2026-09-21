@@ -299,6 +299,7 @@ Start with the stable docs surface:
 
 - [`docs/README.md`](docs/README.md)
 - [`docs/configuration.md`](docs/configuration.md)
+- [`docs/api-first-publication.md`](docs/api-first-publication.md): API-first design, replay, and timing
 - [`docs/attribution-setup-guide.md`](docs/attribution-setup-guide.md)
 - [`docs/security-model.md`](docs/security-model.md)
 - [`docs/rbac.md`](docs/rbac.md): the two ClusterRoles, and how to stop the reverser enumerating Secrets

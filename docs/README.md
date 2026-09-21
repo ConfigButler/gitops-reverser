@@ -11,6 +11,8 @@ If you only want the supported product docs, start with the files below.
 
 - [`../README.md`](../README.md): product overview and end-to-end quick start
 - [`configuration.md`](configuration.md): core configuration objects and how they fit together
+- [`api-first-publication.md`](api-first-publication.md): why API edits drive publication, how
+  replay handles remote changes, and how commit windows and push timing fit together
 - [`installing-apps-as-krm.md`](installing-apps-as-krm.md): installing an app is adding a KRM
   document: Flux `HelmRelease`, Argo CD `Application`, KRO, and core resources all mirror and edit alike
 - [`commit-signing.md`](commit-signing.md): how valid Git signatures map to platform verification
@@ -33,7 +35,7 @@ If you only want the supported product docs, start with the files below.
 
 ## Maintainer notes
 
-**Start at [`INDEX.md`](INDEX.md).** It names the ~35 documents that actually bind, out of the
+**Start at [`INDEX.md`](INDEX.md).** It names the ~35 documents that bind, out of the
 117 here. Everything else is a user guide (above) or history.
 
 The maintainer folders are organised by **lifecycle**, not by topic. Pick a folder by asking

@@ -175,3 +175,49 @@ func TestRemoveCreatedDirs_LeavesADirectorySomethingElseFilled(t *testing.T) {
 	assert.DirExists(t, filepath.Join(root, "shared", "deep"),
 		"a directory that is no longer empty belongs to whoever filled it")
 }
+
+// TestMkdirAllTrackingCreated_UndoesAPartialCreation covers the failure inside the creation itself,
+// rather than in the write that follows it.
+//
+// os.MkdirAll builds ancestors before the path it was asked for, so a failure deeper down can still
+// leave some of them behind. The caller only sees an error and has no set to clean up, and an empty
+// directory produces no worktree status entry, so nothing later would ever find them.
+func TestMkdirAllTrackingCreated_UndoesAPartialCreation(t *testing.T) {
+	root := t.TempDir()
+
+	// A FILE where a directory component needs to be: MkdirAll creates "a" and "a/b", then fails
+	// on "a/b/blocker" because that name is already taken by a file.
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "a", "b"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a", "b", "blocker"), []byte("x"), 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(root, "a")))
+
+	// Re-create only the blocking file, with its parents absent, so this call has to make them.
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "a", "b"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a", "b", "blocker"), []byte("x"), 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(root, "keep-me")))
+
+	created, err := mkdirAllTrackingCreated(filepath.Join(root, "a", "b", "blocker", "deeper"))
+	require.Error(t, err, "a file in the path makes MkdirAll fail")
+	assert.Empty(t, created, "a failed creation reports nothing for the caller to undo")
+	assert.NoDirExists(t, filepath.Join(root, "a", "b", "blocker", "deeper"),
+		"and leaves nothing of its own behind")
+	assert.FileExists(t, filepath.Join(root, "a", "b", "blocker"),
+		"while what was already there is untouched")
+}
+
+// TestRemoveCreatedDirs_WalksPastDirectoriesThatWereNeverMade is the behaviour the partial-failure
+// cleanup depends on: the deepest entries may not exist, and stopping there would strand the
+// ancestors that DO exist and ARE ours.
+func TestRemoveCreatedDirs_WalksPastDirectoriesThatWereNeverMade(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "made", "also-made"), 0o750))
+
+	removeCreatedDirs([]string{
+		filepath.Join(root, "made", "also-made", "never-made"), // deepest first, absent
+		filepath.Join(root, "made", "also-made"),
+		filepath.Join(root, "made"),
+	})
+
+	assert.NoDirExists(t, filepath.Join(root, "made"),
+		"an absent deepest entry must not stop the walk up")
+}

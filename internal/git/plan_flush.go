@@ -1732,6 +1732,11 @@ func mkdirAllTrackingCreated(dir string) ([]string, error) {
 		}
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
+		// MkdirAll creates ancestors before the path it was asked for, so a failure deeper down
+		// can still have left some of `missing` behind. Undo whatever it managed before giving up:
+		// the caller only learns about the error, and an empty directory produces no worktree
+		// status entry for anything later to find.
+		removeCreatedDirs(missing)
 		return nil, err
 	}
 	return missing, nil
@@ -1742,7 +1747,15 @@ func mkdirAllTrackingCreated(dir string) ([]string, error) {
 func removeCreatedDirs(created []string) {
 	for _, dir := range created {
 		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			// Never created, or already gone. Its ancestors may still exist and still be ours, so
+			// keep walking up rather than stopping here — that matters when MkdirAll failed
+			// part-way and the deepest entries were never made at all.
+			continue
+		}
 		if err != nil || len(entries) > 0 {
+			// Something else is in there, so neither this directory nor any ancestor of it is
+			// empty, and none of them are ours to remove.
 			return
 		}
 		_ = os.Remove(dir)
