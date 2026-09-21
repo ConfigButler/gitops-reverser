@@ -263,3 +263,33 @@ func TestRefusalTouch_ARemovalAnywhereInTheFlushDisqualifiesIt(t *testing.T) {
 	assert.False(t, wb.holdsExistingDocument(edited),
 		"a flush that removes a document anywhere earns no commit, whichever file was refused")
 }
+
+// TestRefusalTouch_AQueuedCommitIsDroppedOnceSomethingElseCoveredIt closes the gap between arming
+// a trailing commit and running it.
+//
+// A minute passes between the two, and another commit for the same target can be made in it. If
+// that commit covered the same observation, this entry is asking for a second one that says
+// exactly the same thing to the same reconcilers, so it is dropped rather than run. Consent is
+// re-checked at the same point and for the same reason: a delayed action must act on what is true
+// when it fires.
+func TestRefusalTouch_AQueuedCommitIsDroppedOnceSomethingElseCoveredIt(t *testing.T) {
+	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+	})
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
+
+	loop.armTrailingRefusalTouch(editingRef(), "refused while the window was closed", "observation-1", 0)
+	require.Contains(t, loop.refusalPending, editingRef().String())
+
+	// Whatever else ran in the meantime covered exactly this.
+	w.recordRefusalObservation(editingRef(), "observation-1")
+
+	loop.stopRefusalTimer()
+	loop.flushPendingRefusalTouch()
+
+	assert.Empty(t, loop.refusalPending, "the entry is consumed either way")
+	limited, _ := w.refusalRateLimited(editingRef())
+	assert.False(t, limited,
+		"a covered entry must not spend the rate-limit window on a commit nobody needed")
+}
