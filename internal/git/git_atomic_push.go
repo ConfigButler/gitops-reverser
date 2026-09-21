@@ -90,9 +90,28 @@ type RemoteMovedError struct {
 	Expected plumbing.Hash
 	// Advertised is where the remote says that branch is now.
 	Advertised plumbing.Hash
+	// Missing records that the branch was absent from the advertisement rather than sitting at a
+	// different hash. Advertised is then the zero hash, which is the honest answer: there is
+	// nothing there.
+	//
+	// A deleted branch IS the remote moving, and typing it as one is what lets the worker recover
+	// from it. Reported as an untyped error, it fell through to the fallback probe — which reads
+	// refs/remotes/origin/<branch>, a ref SmartFetch cannot prune because it builds no refspec for
+	// a branch the remote no longer has. The probe therefore answered with the branch's old hash,
+	// that hash matched the cycle's root, and the worker concluded the remote had not moved. No
+	// replay followed, and the retained writes then made every later cycle skip its fetch as well,
+	// so the worker pushed the same doomed commits forever.
+	Missing bool
 }
 
-func (e *RemoteMovedError) Error() string { return "remote received unknown updates" }
+func (e *RemoteMovedError) Error() string {
+	if e.Missing {
+		// Unchanged from the untyped error this replaces: it is the string in the logs operators
+		// have been reading.
+		return "remote went missing"
+	}
+	return "remote received unknown updates"
+}
 
 // validatePushState checks if the push can proceed based on remote state.
 func validatePushState(
@@ -123,7 +142,12 @@ func validatePushState(
 	remoteHash, found := refs[branch]
 	currentRootHash, rootFound := refs[rootBranch]
 	if !rootFound && !rootHash.IsZero() {
-		return plumbing.ZeroHash, plumbing.ZeroHash, errors.New("remote went missing")
+		return plumbing.ZeroHash, plumbing.ZeroHash, &RemoteMovedError{
+			Branch:     rootBranch,
+			Expected:   rootHash,
+			Advertised: plumbing.ZeroHash,
+			Missing:    true,
+		}
 	}
 
 	if found {

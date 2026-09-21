@@ -1841,8 +1841,17 @@ func fetchRemoteBranchHash(
 	branch plumbing.ReferenceName,
 	auth []gitclient.Option,
 ) (plumbing.Hash, error) {
-	if _, err := SmartFetch(ctx, repo, branch, auth); err != nil {
+	fetched, err := SmartFetch(ctx, repo, branch, auth)
+	if err != nil {
 		return plumbing.ZeroHash, err
+	}
+	if fetched != branch {
+		// SmartFetch fell back to the remote's default branch, which is how it reports that the
+		// target branch is not there. It built no refspec for it, so prune left
+		// refs/remotes/origin/<branch> exactly where it was, and reading that ref now would
+		// report a branch that no longer exists — at the hash it held before somebody deleted it.
+		// Zero is what the remote is actually advertising.
+		return plumbing.ZeroHash, nil
 	}
 
 	remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branch.Short()), true)
