@@ -206,7 +206,7 @@ func TestGitFetchesTotal_ForcedRecheckAndBootstrap(t *testing.T) {
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonBootstrap),
 		"the bootstrap is instrumented at prepareBootstrapRepository, the site with a caller")
 
-	err = f.worker.syncWithRemote(f.worker.ctx)
+	err = f.worker.syncWithRemote(f.worker.ctx, fetchReasonForcedRecheck)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
 		"a forced recheck with nothing retained fetches through syncWithRemote")
@@ -379,8 +379,8 @@ func TestGitFetchesTotal_ResyncWithNoRetainedWritesAlsoReadsTheRemote(t *testing
 	defer loop.stopTimers()
 	require.Empty(t, loop.pendingWrites, "this is the nothing-retained path")
 
-	before := fetchCount(t, reader, f.worker, fetchReasonPublication) +
-		fetchCount(t, reader, f.worker, fetchReasonRecovery)
+	pubBefore := fetchCount(t, reader, f.worker, fetchReasonPublication)
+	forcedBefore := fetchCount(t, reader, f.worker, fetchReasonForcedRecheck)
 
 	req := &ResyncRequest{
 		Desired:            []manifestanalyzer.DesiredResource{desiredCM("keep", "blue")},
@@ -392,8 +392,9 @@ func TestGitFetchesTotal_ResyncWithNoRetainedWritesAlsoReadsTheRemote(t *testing
 	loop.applyResync(req)
 	require.NoError(t, (<-req.Result).Err)
 
-	after := fetchCount(t, reader, f.worker, fetchReasonPublication) +
-		fetchCount(t, reader, f.worker, fetchReasonRecovery)
-	assert.Greater(t, after, before,
+	assert.Equal(t, forcedBefore+1, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
 		"a resync must read the remote before judging the tree, retained writes or not")
+	assert.Equal(t, pubBefore, fetchCount(t, reader, f.worker, fetchReasonPublication),
+		"and it must NOT be filed under the series this design asserts at zero on a healthy "+
+			"target: a snapshot resync is not a live publication fetching again")
 }

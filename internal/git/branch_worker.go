@@ -1158,7 +1158,12 @@ func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
 func (l *branchWorkerEventLoop) invalidateAndRefresh(reason, fetchReason string) error {
 	l.w.invalidateBase(reason)
 	if len(l.pendingWrites) == 0 {
-		return nil
+		// Nothing to replay, so fetch and reset directly. Leaving it to ensureBaseForCycle would
+		// work, but that call records `publication`, so the fetch would be attributed to the very
+		// series this design asserts at zero on a healthy target: a snapshot resync would read as
+		// a regression to fetching on every publication. This does NOT fetch twice — the reset
+		// leaves the base trusted, so ensureBaseForCycle skips its own.
+		return l.w.syncWithRemote(l.w.ctx, fetchReason)
 	}
 	if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites, fetchReason); err != nil {
 		return fmt.Errorf("refresh after %s: %w", reason, err)
@@ -1690,17 +1695,19 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		}
 		w.recordPushRetry(pushRetryRemoteMoved)
 
+		// Marked BEFORE the reset, not after it. A reset moves the branch ref and then rewrites
+		// the worktree, so it can fail with the ref already moved and the commits behind these
+		// writes already unreachable. Marking afterwards misses exactly that case, and the cost of
+		// marking too eagerly is one fetch on the next cycle if the reset turns out to have
+		// changed nothing.
+		w.markReplayRequired()
 		w.recordFetch(fetchReasonContention)
 		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 		if syncErr != nil {
 			w.invalidateBase("sync during replay failed")
 			return fmt.Errorf("sync remote during replay: %w", syncErr)
 		}
-		// Same destructive-then-constructive shape as refreshRemoteAndRebuildPendingWrites, and
-		// the same window: the reset above has discarded the local commits behind these writes,
-		// so nothing may publish them until the rebuild below has put them back. See §3.2.
 		w.updateBranchMetadataFromPullReport(pullReport)
-		w.markReplayRequired()
 
 		rootBranch, rootHash, err = w.rebuildPendingWrites(repo, pendingWrites)
 		if err != nil {
@@ -1831,17 +1838,17 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 		return fmt.Errorf("open repository: %w", err)
 	}
 
+	// Marked BEFORE the reset: see the note at the other reset site. A reset that fails with the
+	// branch ref already moved leaves these writes' commits unreachable while worktreeDirty stays
+	// false, which is precisely the state no other flag describes.
+	w.markReplayRequired()
 	w.recordFetch(reason)
 	pullReport, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
 		w.invalidateBase("sync before replay failed")
 		return fmt.Errorf("sync remote before replay: %w", err)
 	}
-	// The reset has landed, which means the local commits behind these writes are gone. From here
-	// until the rebuild finishes they describe work that exists nowhere, so nothing may publish
-	// them. Marked BEFORE the rebuild so any abort inside it leaves the flag set.
 	w.updateBranchMetadataFromPullReport(pullReport)
-	w.markReplayRequired()
 
 	rootBranch, rootHash, err := w.rebuildPendingWrites(repo, pendingWrites)
 	if err != nil {
@@ -2245,9 +2252,13 @@ func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
 	return w.branchExists, w.lastCommitSHA, w.lastFetchTime
 }
 
-// syncWithRemote fetches latest changes from remote to detect drift. It is the
-// no-retained-writes half of a forced recheck; resync_flush.go is its caller.
-func (w *BranchWorker) syncWithRemote(ctx context.Context) error {
+// syncWithRemote fetches latest changes from remote and resets onto them. It is the
+// no-retained-writes half of a refresh; resync_flush.go and invalidateAndRefresh are its callers.
+//
+// reason is a parameter for the same purpose it is on refreshRemoteAndRebuildPendingWrites: the
+// caller knows why it is reading the remote, and a hard-wired constant here would file somebody
+// else's fetch under `forced_recheck`.
+func (w *BranchWorker) syncWithRemote(ctx context.Context, reason string) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
@@ -2264,10 +2275,10 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) error {
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	// Somebody stated that the remote moved: see refreshRemoteAndRebuildPendingWrites.
-	w.invalidateBase("forced recheck requested")
+	w.invalidateBase(reason)
 
 	// PrepareBranch handles both initial and update cases
-	w.recordFetch(fetchReasonForcedRecheck)
+	w.recordFetch(reason)
 	report, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return fmt.Errorf("failed to sync with remote: %w", err)

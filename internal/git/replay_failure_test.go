@@ -27,6 +27,9 @@ import (
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -288,4 +291,70 @@ func TestReplayFailure_OnTheContentionPathIsAlsoHeld(t *testing.T) {
 	assert.Contains(t, names, "lost-to-contention", "the write survives the failed replay")
 	assert.Contains(t, names, "from-another-writer.txt", "and the other writer's commit is kept")
 	assert.Empty(t, loop.pendingWrites)
+}
+
+// TestReplayFailure_AResetThatDiesHalfwayIsAlsoHeld is the window one step earlier than the rest of
+// this file: not a rebuild that failed after a good reset, but a RESET that failed having already
+// moved the branch ref.
+//
+// checkoutAndReset moves HEAD and then rewrites the worktree, so those two can come apart: the
+// commits behind the retained writes become unreachable while the call still returns an error.
+// None of the three flags described that state until the mark moved ahead of the reset —
+// baseTrusted is cleared, but worktreeDirty is false (no write failed) and the reset never
+// reported success, so nothing downstream knew the commits were gone.
+//
+// The failure is injected through the syncToRemoteFn seam rather than by making a directory
+// read-only. The point is not which errno gets there; it is that a reset can move the ref and then
+// fail, and disk exhaustion or a volume remounting read-only after an I/O error reach that state
+// without anyone touching permissions.
+func TestReplayFailure_AResetThatDiesHalfwayIsAlsoHeld(t *testing.T) {
+	f := newLedgerFixture(t, "replay-failure-halfway-reset", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("must-survive", "alice", ledgerTargetName)},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.True(t, loop.finalizeOpenWindow())
+	require.Len(t, loop.pendingWrites, 1)
+
+	// The reset moves the branch ref onto the remote tip and THEN fails, exactly as a hard reset
+	// does when it runs out of disk part-way through rewriting the worktree.
+	original := syncToRemoteFn
+	syncToRemoteFn = func(
+		ctx context.Context, repo *gogit.Repository,
+		branch plumbing.ReferenceName, auth []gitclient.Option,
+	) (*PullReport, error) {
+		if _, err := SmartFetch(ctx, repo, branch, auth); err != nil {
+			return nil, err
+		}
+		remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branch.Short()), true)
+		require.NoError(t, err)
+		// Move the local branch onto the remote tip, discarding our commit, then report failure.
+		require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(branch, remoteRef.Hash())))
+		return nil, errors.New("write /repo/team-a/cm.yaml: no space left on device")
+	}
+	defer func() { syncToRemoteFn = original }()
+
+	require.Error(t, f.worker.refreshRemoteAndRebuildPendingWrites(
+		f.worker.ctx, loop.pendingWrites, fetchReasonForcedRecheck))
+
+	require.False(t, f.worker.worktreeDirty(),
+		"no write failed, so the dirty flag is false and cannot describe this")
+	require.True(t, f.worker.replayRequired(),
+		"but the commits behind the retained writes are gone, and that must be recorded")
+
+	// Without the flag, this push finds the branch already at the remote tip, sends nothing,
+	// reports success and clears the write.
+	syncToRemoteFn = original
+	loop.pushPending()
+
+	assert.Empty(t, loop.pendingWrites, "recovery rebuilt the write and published it")
+	assert.Contains(t, remoteFileNames(t, f.repoDir), "must-survive",
+		"the write must reach the remote rather than vanish with the failed reset")
 }
