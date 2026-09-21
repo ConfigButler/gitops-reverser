@@ -3,7 +3,10 @@
 > **design** — direction-setting; no orchestrator trigger or origin-drift barrier described here is
 > implemented. `RenderMatchesLive` is shipped, but it deliberately stays closed after a Git repair
 > until this document's safe remote-revision path exists.
-> Captured: 2026-07-15; implementation status updated: 2026-07-15.
+> §4's prerequisite is narrower than it was written: for §3's barrier it can be avoided entirely by
+> relaying the push webhook rather than patching an orchestrator object, which
+> [inbound push notification](../inbound-push-notification.md) §8.4 specifies. §2 still needs it.
+> Captured: 2026-07-15; implementation status updated: 2026-09-21.
 > Related:
 > [README.md](README.md),
 > [../../bi-directional.md](../../bi-directional.md) — **the user-facing model this expands: the
@@ -265,6 +268,31 @@ common case to a rarely-hit backstop.** Three properties make it a clean fit:
   trigger — though it is still a new inbound surface (a Service plus a shared secret to validate
   signatures), opt-in like everything else here.
 
+#### Receiving the webhook is not the same as being the only one who receives it
+
+This section assumes the Git host delivers to the orchestrator and to us in parallel, so the
+diagram above draws the operator racing to raise the barrier. That race is real and this document
+cannot win it by design.
+
+[Inbound push notification](../inbound-push-notification.md) §8.4 takes the other position: the Git
+host delivers **only** to the operator, which forwards onward. Two consequences land here.
+
+- **§4 stops gating §3.** Argo CD's `/api/webhook` matches a delivery against every `Application`
+  whose source repository matches, and a Flux `Receiver` fans out to the objects in its
+  `spec.resources`. Forwarding hands routing to the tool that owns it, so the drift barrier needs no
+  claim of the form "object O reconciles path P". §2's revert still does, because a refusal produces
+  no push and therefore nothing to forward.
+- **The barrier drops from a correctness mechanism to an optimization,** and §8.4 is blunt about
+  why: commit windows do not merge across authors, window timers fire during a hold, retained
+  writes sit outside any window, and nothing in the tree observes an apply converging. So it saves
+  a doomed commit and push, and correctness stays with compare-and-swap and replay.
+
+Forwarding also does not make the operator first in general, because a source poll or a refresh
+timer reaches Git without it. It removes the race between two webhook deliveries, which is the one
+this section had no other answer for. The cost is that the operator becomes the only thing
+triggering the orchestrator, so that timer has to stay a real backstop; §8.4 says what that means
+for the intervals [bi-directional.md](../../bi-directional.md) recommends.
+
 ### The hazard: pending intent vs. the reconcile that overwrites it
 
 There is a real ordering trap, drawn as the first `Rev->>Git` step above. When origin drifts, the
@@ -332,6 +360,23 @@ read/claim vocabulary. It needs one new claim — *"object O reconciles path P"*
 patch O. So this feature does not stand alone: **it is gated on the ownership interpreters landing
 first.** Stated as a dependency, not smuggled as an assumption.
 
+**That gate applies to §2 and not to §3, and this section overstated it.** Reverting a refused edit
+has no push to ride on, so there is no alternative to naming the object and writing to it. Origin
+drift does have one: the delivery that reports it can be forwarded, and both orchestrators route a
+forwarded push themselves. So the barrier can be built before the interpreters exist, by relaying
+rather than patching ([inbound push notification](../inbound-push-notification.md) §8.4). Splitting
+the dependency this way is what makes §3 reachable on its own.
+
+**And it is worth asking how good that claim could ever be.** Neither orchestrator derives the
+mapping. Argo CD refreshes every `Application` whose repository matches and narrows only on a
+user-written `argocd.argoproj.io/manifest-generate-paths` annotation; a Flux `Receiver` names its
+resources by hand. Both either ask the user or fan out, because a redundant refresh is cheap for
+the tool that owns the cache. An interpreter that derived the answer would be claiming something
+neither tool claims, to drive a write rather than a refresh, against `resources:` lines and
+`ApplicationSet` generators that move without telling us. That does not make §2's interpreter
+unbuildable, and §6's third question already asks how confident it must be. It does mean the
+confidence bar is higher than "we read the `spec.path`".
+
 ---
 
 ## 5. The boundary: opt-in, and never on a mirror
@@ -359,12 +404,21 @@ off by default and enabled per GitTarget, separately from
   fallback (resume anyway, or stay blocked?); how to observe "done" without depending on the
   orchestrator's Go types (its status conditions over `unstructured` — e.g.
   `Kustomization.status.lastAppliedRevision`, `Application.status.sync.revision`).
+  [Inbound push notification](../inbound-push-notification.md) §8.4 answers it by removing the
+  question: with the hold demoted to an optimization, a plain ceiling is enough and no convergence
+  evidence is needed. Building real evidence means comparing live objects against a rendered
+  revision, deletions included, which is its own piece of work and is not
+  `skipUnchangedLiveUpdate`: that helper compares successive live events, never Git.
 - **How confident must the ownership claim be before we *write* on it?** A wrong "object O reconciles
   path P" claim triggers the wrong controller. This is a higher bar than a claim used only to *read*.
 - **Interaction with the happy path.** When a commit *does* land, `bi-directional.md`'s webhook already
   triggers the apply. Does the operator still issue an explicit trigger (and wait for the SHA, closing
   the handshake the guide describes), or defer to the webhook? Likely: trigger only where the webhook
   cannot help — refusal and drift — and let the push webhook cover the happy path.
+  Weaker than it looked: [inbound push notification](../inbound-push-notification.md) §8.4 argues the
+  explicit trigger is worth issuing on the happy path too, because it is the cheapest piece of the
+  whole feature (`flux trigger receiver` is an HMAC and a POST), it needs no ownership claim, and it
+  removes the delivery lag from the leg the product is optimized for.
 - **Webhook delivery and trust** (the drift trigger, §3). Delivery is best-effort: how is a missed
   webhook caught up — a poll fallback cadence, or a fetch on the next reconcile — so the CAS-replay
   backstop is not the *only* thing that ever notices a lost notification? (Not by reviving

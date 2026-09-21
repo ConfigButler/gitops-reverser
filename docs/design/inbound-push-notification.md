@@ -2,8 +2,10 @@
 
 > **design**: partly shipped. The conditional fetch and its state machine are implemented (§11);
 > the inbound receiver in §8 is still a proposal, and §8.3 is the request shape it will accept, for
-> whoever builds it or points something at it. Sections before §11 keep the reasoning as it was
-> argued, including behavior this change has since fixed, and say so where it matters.
+> whoever builds it or points something at it. §8.4 is a later option, added 2026-09-21: serve the
+> Git host's webhook ourselves and forward it onward, which removes the one race §7 cannot order
+> and states which side wins where they still meet. Sections before §11 keep the reasoning as it was argued,
+> including behavior this change has since fixed, and say so where it matters.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-19.
 > Related: [`reconcile-triggering.md`](reconcile-triggering.md) (§5 is the general mechanism this
@@ -695,8 +697,13 @@ overhaul and its conclusions hold unchanged. Three of them matter here:
 | **B. Poll** | Fetch on the steady cadence | small, ongoing | Bounded staleness, no Git-host config, and a fetch per target per interval whether or not anything changed. |
 | **C. Receiver** | Our own validated push endpoint | one handler plus a config surface | Fresh within a second. Needs secret handling, URL-to-target mapping, and the §5.3 dedupe. |
 | **D. Forward an existing trigger** | A user's Flux `Receiver` or Argo webhook fans out to us | smallest user-facing config | Depends on those tools being able to call us. See the open questions. |
+| **E. Take over the webhook** | We are the Git host's endpoint, and we forward each delivery to Flux or Argo CD | C plus an outbound leg and a payload parser | D with the arrow reversed, so it needs nothing from those tools. Removes a Git-host webhook rather than adding one, and removes the race between two deliveries (not every race). §8.4. |
 
-C is the target. B is not exclusive with it and is the safety net that turns a missed webhook into a
+C is the target, and E is C's continuation rather than a competitor: everything C builds, E
+reuses. Read §8.4 before building C's configuration surface, because the two want the same
+per-route object and it is cheaper to shape it once.
+
+B is not exclusive with either and is the safety net that turns a missed webhook into a
 latency problem rather than a stuck one, which is the same argument Flux makes for keeping a short
 `GitRepository.spec.interval` alongside a `Receiver`. If B is built, express it as a maximum age on
 `baseTrusted` rather than as a separate poller, so there is one mechanism and not two.
@@ -715,6 +722,10 @@ the cluster, and it must not be turned into a statement about the cluster.
 **And it must not fetch either.** That looks like the obvious thing for it to do, and under the
 budget in the opening paragraph it is the wrong thing: the notification would spend two
 connections immediately, on a target that may have nothing to publish for the next hour.
+
+That rule holds for a receiver that only listens. §8.4 bends it one notch for a receiver that also
+*forwards*, which may fetch to land pending intent before it forwards. That avoids a flap rather
+than making an outcome correct, and the budget is unchanged: an idle target still fetches nothing.
 
 All the receiver needs to do is **invalidate**: clear `baseTrusted`, and record the `after` SHA
 as the believed tip. That costs zero connections. The next publication cycle then finds an
@@ -957,6 +968,195 @@ annotation in §7, which runs the full snapshot path on purpose. Do not build th
 that annotation: §7 explains why a push notification that publishes a cluster snapshot can revert
 the very change it was told about.
 
+### 8.4 Option E: serve the webhook ourselves, and forward it
+
+The Git host talks only to us, and we forward each delivery to Flux or Argo CD. That is D with the
+arrow reversed, so it needs nothing from those tools. Recorded 2026-09-21 after §8.3, and revised
+the same day against review. Nothing here is built.
+
+#### Which side wins, stated before anything else
+
+Two directions, two different answers, and they meet in one cell.
+
+- **Cluster to Git.** The Kubernetes API is the editing surface. A write we captured from it is
+  intent and it wins over what Git holds. That is shipped behavior and not a proposal here: replay
+  re-plans the captured object onto the new tip and writes it
+  ([`../bi-directional.md`](../bi-directional.md)).
+- **Git to cluster.** A push we did not author is new truth. We do not get to overrule it, and
+  getting it applied quickly is the point.
+
+| | We hold a captured write for it | We hold nothing |
+| --- | --- | --- |
+| **The push changed the object** | API wins, silently. Unchanged | **The hazard.** We must never publish here |
+| **The push did not** | Ordinary publication | Nothing to do |
+
+The top-left cell is the only genuine conflict, and it is decided: the API value wins, with no new
+signal raised. The cell that matters is the top right. We hold no intent there, so anything we
+publish for that object is a stale reading rather than a decision, and publishing it reverts a push
+for no reason at all. **§7 is about that cell and nothing else**, which also says what the relay is
+not: a conflict-resolution mechanism, since in the only contested cell there is nothing to resolve.
+
+#### The routing problem stops being ours
+
+The reason to forward rather than to trigger an orchestrator object directly is that **we never
+have to work out which object syncs the folder.**
+
+[`support-boundary/orchestrator-reconcile-trigger.md`](support-boundary/orchestrator-reconcile-trigger.md)
+§4 needs exactly that claim, of the form "object O reconciles path P", and gates its drift barrier
+on building it. Deriving it is worse than it sounds. An Argo CD `Application` can carry several
+sources, a recursing directory, or a path that a `kustomization.yaml` reaches out of, and an
+`ApplicationSet` generates Applications that do not exist when we look. A Flux `Kustomization` has
+a `spec.path`, but its `resources:` can name anything in the repository and a `HelmRelease` can
+point back at the same `GitRepository`. The answer also changes when somebody adds one line to one
+file, and nothing tells us it changed. A stale claim does not fail loudly: it triggers the wrong
+controller, or none.
+
+**Neither orchestrator derives it either, and that is the part worth knowing.** Argo CD refreshes
+every `Application` whose repository matches, and narrows only when the user supplies the
+`argocd.argoproj.io/manifest-generate-paths` annotation. With no annotation, or with a payload that
+did not list changed files, `AppFilesHaveChanged` returns true and it refreshes
+(`util/app/path/path.go`). A Flux `Receiver` derives nothing at all: `spec.resources` is written by
+hand. So both tools either ask the user or fan out, and an interpreter that derived the mapping
+would be inventing a capability neither of them has, in order to drive a write rather than a
+refresh.
+
+Forwarding asks instead of modeling, which is the move this repository has already made once: the
+write path stopped re-implementing kustomize's transformers and now asks kustomize what a folder
+renders to. Three shipped bugs went with that change, each one a case where we believed a folder
+rendered something kustomize did not ([`../UPGRADING.md`](../UPGRADING.md)). An ownership
+interpreter is the same bet on the same kind of question, against two moving targets instead of
+one.
+
+#### What the relay changes, and what it does not
+
+One thing: the reconciler learns about a push when we tell it, so the two deliveries §7 cannot
+order become one delivery we order.
+
+It does not make us first in general. A `GitRepository` poll, an Argo CD refresh timer, a retry, or
+an operator running `flux reconcile` all reach Git without us, and option B's maximum age is a
+backstop this page asks for on purpose. So **nothing may depend on being first.** Forwarding
+removes the race between two webhook deliveries, which is the one race that had no other answer.
+
+What keeps us out of the hazard cell is §8.1's existing rule, that a notification never triggers a
+snapshot: publication happens only for captured writes, so the snapshot is the only path that can
+manufacture a pre-push value for an object we hold nothing about. The relay does not replace that
+rule. It makes breaking it harder to do by accident.
+
+#### The hold is an optimization, and cannot be a barrier
+
+The instinct is to stop producing commits while an apply is in flight, since anything produced
+there is replayed anyway. Worth doing, and worth being honest about: it saves a commit and a doomed
+push. It cannot carry correctness, for four reasons already in the tree.
+
+- **Windows do not merge across authors.** `canAppend`
+  ([`open_window.go`](../../internal/git/open_window.go)) requires a matching author, attribution
+  and target, so an apply under the orchestrator's service account closes the user's window and
+  opens its own. An earlier draft claimed the post-apply event collapses over the pre-push one
+  inside a single window. It does not.
+- **Timers finalize during a hold.** A commit window closes on silence, not on our permission.
+- **Retained writes are already separate** from any open window, and a hold does not reach them.
+- **Nothing observes the apply.** Knowing a revision converged means comparing live objects against
+  a rendered revision, deletions included. `skipUnchangedLiveUpdate`
+  ([`target_watch.go`](../../internal/watch/target_watch.go)) is not that: it caches the last
+  sanitized hash per object and compares successive **live** events, never Git. An earlier draft
+  cited it as the exit condition. That comparison does not exist.
+
+So: a bounded pause on the **push**, never on the watch, expiring on a timer, with compare-and-swap
+and replay unchanged underneath. The test of whether it stayed an optimization is that skipping it
+entirely changes no outcome.
+
+Landing pending intent before forwarding is the same kind of thing. It avoids a flap, where the
+apply overwrites a live edit that then wins anyway on the next push. It is not what makes the
+outcome correct, and §8.1's no-fetch rule bends only that far.
+
+#### Forwarding is transparent, and that is the whole requirement
+
+Each downstream authenticates in its own way, and the schemes are not one scheme:
+
+| Argo CD parser | What it verifies |
+| --- | --- |
+| GitHub, Gogs, Bitbucket Server | HMAC over the raw body |
+| GitLab | a token compared against the configured secret |
+| Azure DevOps | HTTP Basic |
+| Bitbucket Cloud | a UUID |
+
+(`util/webhook/scm.go`; a Flux `Receiver` is keyed by its token.) An earlier draft said they all
+verify a raw-body HMAC, which is wrong.
+
+What they share is the property the relay needs: each checks the request as the host sent it, and
+none asks the relay to hold a secret. So copy the bytes and the headers, sign nothing, re-serialize
+nothing. Adoption is changing a URL at the Git host and keeping the secret.
+
+Three constraints follow:
+
+- **Cap the buffered body at or above the downstream's.** Argo CD enforces
+  `maxWebhookPayloadSizeB`; a smaller cap makes the relay the limit, and the failure reads as a Git
+  host problem.
+- **The forward target is configuration, never the payload.** A Flux `Receiver` path carries a
+  digest of its token, so there is nothing to assemble, and taking a destination from the body
+  would make this an open relay.
+- **We parse host-native payloads after all,** for our own `(repository, ref, after)`. §8.3 refuses
+  them on the grounds that something in front of us does the mapping; under option E we are that
+  something. §8.3's guard rail becomes load-bearing: behind a per-route declaration of the host's
+  shape, never sniffing. A parse failure forwards anyway.
+
+A bad signature answers `401` and forwards nothing, since the downstream would reject it too. A
+failure in our own processing forwards regardless.
+
+#### Step A is worth building first, and on its own
+
+Calling a reconciler does not need the front door. After a successful push, ask the downstream to
+reconcile.
+
+Flux ships the client: `flux trigger receiver` is an HMAC and a POST against a `generic-hmac`
+`Receiver` (`cmd/flux/trigger_receiver.go`), needing no Flux Go types and no ownership claim,
+because the `Receiver` already names what to wake. Start there. Argo CD has no generic type, so
+reaching it means synthesizing a host-shaped signed event, which is the relay's inverse and can
+wait for the relay.
+
+Four properties it has to have:
+
+- **It requests reconciliation.** The POST says the reconciler was asked, never that the revision
+  was applied. No status, log line or metric may claim otherwise.
+- **It is asynchronous and bounded,** off the publication path.
+- **It retries and reports on its own.**
+- **A failed notification never fails a successful publication.** The commit is in Git either way,
+  and the reconciler's timer is the backstop.
+
+| | What | Buys | New risk |
+| --- | --- | --- | --- |
+| **A** | Ask the downstream to reconcile after a successful push | Removes the delivery lag from the leg the product is built for | None |
+| **B** | §8.3's receiver, invalidating only | §6's idle-target gap | One inbound endpoint |
+| **C** | Relay, and the optional hold | §7's ordering, and §4 of the barrier page collapses | We become the only webhook |
+
+A and B share the push-side `lastCommitSHA` bookkeeping §8 already calls mandatory.
+
+#### We become the only trigger, and that is the cost of C
+
+Today an operator outage stops Git from being updated. Under C it stops deployments, so the
+reconciler's timer has to stay a real backstop. [`../bi-directional.md`](../bi-directional.md)
+already has the right shape for Flux and for the right reason: `GitRepository.spec.interval: 1m`
+with a long `Kustomization` interval, because a new source revision wakes the dependent
+Kustomizations. That poll survives C untouched. Argo CD's `timeout.reconciliation` does not, since
+`0` disables the timed refresh outright, and "long intervals" must never be read as "no intervals".
+
+Forwarding on any internal error, a ceiling on the hold, and serving the forward before the
+controller is otherwise ready all belong in the feature rather than after it.
+
+#### What has to be proven
+
+In the [bi-directional corner](../../test/e2e/flux_bi_directional_e2e_test.go), the only place with
+both reconcilers against a real remote:
+
+1. **The hazard cell.** A push changes an object we hold no pending write for. It survives in Git
+   and reaches the cluster. This is §7 written as a test.
+2. **The contested cell, as decided.** A push changes an object we do hold a captured write for,
+   and the API value wins. This pins the policy instead of discovering it.
+3. **Somebody else gets there first.** The reconciler learns the revision from its own poll while
+   the relay is holding, or before it forwards. Nothing breaks, because nothing depends on order.
+
+The barrier page's two drift specs, with and without the webhook, stay required.
+
 ## 9. Status surface
 
 An operator who can no longer assume a fetch per cycle needs to see when the remote was last read.
@@ -1148,6 +1348,12 @@ signed `POST /git-push/<route>` carrying `{repository, branch, after}`, answered
 matches nothing. Its mandatory companion is advancing the published-SHA bookkeeping on a successful
 push (§8, `lastCommitSHA`), without which the dedupe cannot work and the feature pays back the round
 trip it saved.
+
+**Read §8.4 before shaping this commit's configuration surface.** Option E continues C rather than
+replacing it, and wants the same per-route object with two more fields on it. Shaping that object
+twice is the avoidable cost here. §8.4 also names a step worth taking before C: the outbound
+trigger after a successful push, which is where the timing control lives for changes that
+originate in the cluster, and which has no inbound surface at all.
 
 ### What is deliberately not in this plan
 
@@ -1363,6 +1569,14 @@ worktree that holds unpushed commits.
 3. **Should `baseTrusted` survive a worker restart?** It cannot today, because the clone may not
    either. If the repo directory is persistent, a recorded tip SHA could let a restarted worker skip
    the first fetch. This is worth nothing until the clone is known to be durable.
-4. **Does the default-branch fallback deserve better than `false`?** `SmartFetch` bases an unborn
+4. **Under option E, does the relay serve from every replica or only the leader?** Forwarding is
+   idempotent and needs no worker; the barrier needs the replica that owns the branch worker. Serving
+   the forward everywhere keeps a non-leader from being a black hole, at the cost of routing the
+   barrier effect. Unanswered, and it does not block §8.4's outbound leg.
+5. **What does option E do with a repository we do not track?** The Git host has one webhook now, so
+   deliveries arrive for repositories only the reconciler cares about. They must be forwarded, which
+   means the relay's configuration is per route rather than per `GitProvider`, and that pulls on
+   question 2.
+6. **Does the default-branch fallback deserve better than `false`?** `SmartFetch` bases an unborn
    target branch on the remote's default branch. Treating that as untrusted costs one fetch per cycle
    until the first push creates the branch, which is a bootstrap-only cost and probably fine.
