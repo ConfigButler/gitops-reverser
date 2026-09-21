@@ -1136,9 +1136,11 @@ is untrusted or the worktree is dirty (see the ground rule above); a healthy pub
 straight onto its own last push. Once writes are retained the guard flips off entirely, because a
 reset would destroy the local commits those writes already produced. Anything that needs a fresh
 tree with work in hand therefore resets **and replays**
-([`invalidateAndRefresh`](../internal/git/branch_worker.go)) rather than resetting alone. That is one
-mechanism with three entry conditions: a worktree a failed write left dirty, the snapshot a resync
-judges against, and a forced recheck.
+([`refreshRemoteAndRebuildPendingWrites`](../internal/git/branch_worker.go)) rather than resetting
+alone, re-planning the retained writes onto the new tip. Three things reach it: a forced recheck
+calls it directly, while a worktree a failed write left dirty and the snapshot a resync judges
+against go through `invalidateAndRefresh`, which drops base trust first because nothing has asked
+the remote anything yet.
 
 ### Durability of the write queue (planned)
 
