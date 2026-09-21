@@ -76,6 +76,63 @@ func resyncHealKey(req *ResyncRequest) healKey {
 	}
 }
 
+// prepareBaseForResync gets the worktree into a state the snapshot may honestly be judged against,
+// which is three things in order: the RefreshRemote prelude when one was asked for, the fetch a
+// resync keeps regardless, and recovery from a worktree a failed write left dirty.
+//
+// A resync keeps fetching, deliberately, even now that a publication does not. The rest of the
+// write path is safe without one because it always reaches the push, whose advertisement catches a
+// base that turned out to be stale. A resync does not: applyResync retains its write only
+// `if committed` and schedules a push only `if committed || closedWindow`, so a resync that finds
+// nothing to change never opens a connection at all. It would conclude "Git already matches the
+// cluster" against a tree nobody had checked, and nothing downstream would ever contradict it. The
+// round trip this design removes is the PUBLICATION one, and a resync is not a publication.
+//
+// It has to be invalidateAndRefresh rather than a bare invalidateBase. commitPendingWrites is
+// called with hasPendingCommits set from the retained slice, and ensureBaseForCycle returns early
+// on that flag, so on a target holding work a bare invalidation reached nothing at all and the
+// snapshot judged a tree nobody had read. That is the exact hazard this function exists to close.
+func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
+	// The invalidation is skipped when RefreshRemote already fetched a moment ago, which would
+	// otherwise make a forced recheck pay twice.
+	if req.RefreshRemote {
+		if err := l.refreshRemoteForResync(req); err != nil {
+			return err
+		}
+	} else if err := l.invalidateAndRefresh("resync snapshot"); err != nil {
+		l.w.Log.Error(err, "Failed to refresh the remote before resync", "resources", len(req.Desired))
+		return err
+	}
+
+	// The refresh above already reset and replayed when anything was retained, so this is a no-op
+	// on that path; it still covers a dirty tree with nothing to replay.
+	if err := l.recoverDirtyWorktree(); err != nil {
+		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
+		return err
+	}
+	return nil
+}
+
+// refreshRemoteForResync runs the RefreshRemote prelude, branching on whether writes are retained:
+// a replay keeps them, a plain sync is enough without them.
+func (l *branchWorkerEventLoop) refreshRemoteForResync(req *ResyncRequest) error {
+	if len(l.pendingWrites) > 0 {
+		if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites); err != nil {
+			l.w.Log.Error(err, "Failed to refresh remote before resync and replay pending writes",
+				"resources", len(req.Desired),
+				"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
+				"pendingWrites", len(l.pendingWrites))
+			return fmt.Errorf("refresh remote before resync: %w", err)
+		}
+		return nil
+	}
+	if _, err := l.w.syncWithRemote(l.w.ctx); err != nil {
+		l.w.Log.Error(err, "Failed to refresh remote before resync", "resources", len(req.Desired))
+		return fmt.Errorf("refresh remote before resync: %w", err)
+	}
+	return nil
+}
+
 // applyResync applies one revision-pinned resync in order on the worker goroutine. It mirrors the
 // atomic-commit path: for a non-heal resync any open live window is finalized first so arrival order
 // is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
@@ -98,55 +155,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	if !req.Heal {
 		closedWindow = l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 	}
-	if req.RefreshRemote {
-		if len(l.pendingWrites) > 0 {
-			if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites); err != nil {
-				l.w.Log.Error(err, "Failed to refresh remote before resync and replay pending writes",
-					"resources", len(req.Desired),
-					"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
-					"pendingWrites", len(l.pendingWrites))
-				req.reply(ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
-				return
-			}
-		} else if _, err := l.w.syncWithRemote(l.w.ctx); err != nil {
-			l.w.Log.Error(err, "Failed to refresh remote before resync", "resources", len(req.Desired))
-			req.reply(ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
-			return
-		}
-	}
-
-	// A resync keeps fetching, deliberately, even now that a publication does not.
-	//
-	// The rest of the write path is safe without one because it always reaches the push, whose
-	// advertisement catches a base that turned out to be stale. A resync does not: applyResync
-	// retains its write only `if committed` and schedules a push only `if committed ||
-	// closedWindow`, so a resync that finds nothing to change never opens a connection at all.
-	// It would conclude "Git already matches the cluster" against a tree nobody had checked, and
-	// nothing downstream would ever contradict it. Dropping trust here is what keeps the
-	// conclusion honest; the round trip this design removes is the PUBLICATION one, and a resync
-	// is not a publication.
-	//
-	// Skipped when RefreshRemote already fetched a moment ago, which would otherwise make a
-	// forced recheck pay twice.
-	//
-	// It has to be invalidateAndRefresh rather than a bare invalidateBase. commitPendingWrites is
-	// called below with hasPendingCommits set from the retained slice, and ensureBaseForCycle
-	// returns early on that flag — so on a target holding work the invalidation reached nothing at
-	// all, and the snapshot judged a tree nobody had read. That is the exact hazard this paragraph
-	// claims to close.
-	if !req.RefreshRemote {
-		if err := l.invalidateAndRefresh("resync snapshot"); err != nil {
-			l.w.Log.Error(err, "Failed to refresh the remote before resync", "resources", len(req.Desired))
-			req.reply(ResyncResult{Err: err})
-			return
-		}
-	}
-
-	// The refresh above already reset and replayed when anything was retained, so this is a no-op
-	// on that path; it still covers the RefreshRemote branch and a dirty tree with nothing to
-	// replay.
-	if err := l.recoverDirtyWorktree(); err != nil {
-		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
+	if err := l.prepareBaseForResync(req); err != nil {
 		req.reply(ResyncResult{Err: err})
 		return
 	}

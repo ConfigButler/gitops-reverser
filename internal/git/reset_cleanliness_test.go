@@ -28,8 +28,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// seedResetFixture builds a bare remote with one commit and a local clone of it.
-func seedResetFixture(t *testing.T) (string, string) {
+// seedResetFixture builds a bare remote with one commit and returns a local clone of it.
+func seedResetFixture(t *testing.T) string {
 	t.Helper()
 
 	tempDir := t.TempDir()
@@ -47,7 +47,7 @@ func seedResetFixture(t *testing.T) (string, string) {
 	repoPath := filepath.Join(tempDir, "work")
 	_, err := PrepareBranch(context.Background(), remoteURL, repoPath, "main", nil)
 	require.NoError(t, err)
-	return repoPath, remoteURL
+	return repoPath
 }
 
 // TestReset_DiscardsEveryKindOfLeftover is the claim §5 makes, tested against each way a failed
@@ -57,7 +57,7 @@ func seedResetFixture(t *testing.T) (string, string) {
 // new file it staged before dying, a brand new file it had not staged yet, and a whole directory
 // it created for a new placement.
 func TestReset_DiscardsEveryKindOfLeftover(t *testing.T) {
-	repoPath, remoteURL := seedResetFixture(t)
+	repoPath := seedResetFixture(t)
 
 	repo, err := gogit.PlainOpen(repoPath)
 	require.NoError(t, err)
@@ -97,8 +97,6 @@ func TestReset_DiscardsEveryKindOfLeftover(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(repoPath, "staged-new.yaml"), "a staged new file must not survive")
 	assert.NoFileExists(t, filepath.Join(repoPath, "unstaged-new.yaml"), "an unstaged new file must not survive")
 	assert.NoDirExists(t, filepath.Join(repoPath, "team-a"), "a directory the write created must not survive")
-
-	_ = remoteURL
 }
 
 // TestWriteAndStageFile_RemovesTheDirectoriesItCreatedWhenTheWriteFails covers the one leftover a
@@ -116,7 +114,7 @@ func TestReset_DiscardsEveryKindOfLeftover(t *testing.T) {
 // The write is made to fail with a name longer than NAME_MAX, which needs no permissions games and
 // happens after the directories exist — which is the whole point.
 func TestWriteAndStageFile_RemovesTheDirectoriesItCreatedWhenTheWriteFails(t *testing.T) {
-	repoPath, _ := seedResetFixture(t)
+	repoPath := seedResetFixture(t)
 
 	repo, err := gogit.PlainOpen(repoPath)
 	require.NoError(t, err)

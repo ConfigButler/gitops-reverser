@@ -13,6 +13,7 @@ package git
 // See docs/design/inbound-push-notification.md §3.1 and §5.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,8 +61,8 @@ func stageLeftoverFromAFailedWrite(t *testing.T, worker *BranchWorker) {
 	worker.markWorktreeDirty("test: a write failed part-way through its batch")
 }
 
-// headTreeContains reports whether the worker's current HEAD commit carries the given path.
-func headTreeContains(t *testing.T, worker *BranchWorker, repoPath, path string) bool {
+// headTreeContains reports whether the checkout's current HEAD commit carries the given path.
+func headTreeContains(t *testing.T, repoPath, path string) bool {
 	t.Helper()
 
 	repo, err := gogit.PlainOpen(repoPath)
@@ -72,15 +73,11 @@ func headTreeContains(t *testing.T, worker *BranchWorker, repoPath, path string)
 	require.NoError(t, err)
 
 	_, err = commit.File(path)
-	switch {
-	case err == nil:
-		return true
-	case err == object.ErrFileNotFound:
-		return false
-	default:
-		require.NoError(t, err)
+	if errors.Is(err, object.ErrFileNotFound) {
 		return false
 	}
+	require.NoError(t, err)
+	return true
 }
 
 // TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers is the §3.1 interleaving driven through the
@@ -125,9 +122,9 @@ func TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers(t *testing.T) {
 	})
 
 	require.Len(t, loop.pendingWrites, 2, "C committed: A is retained alongside it")
-	assert.False(t, headTreeContains(t, worker, repoPath, leftoverPath),
+	assert.False(t, headTreeContains(t, repoPath, leftoverPath),
 		"C's commit must not carry the file a failed write left staged")
-	assert.True(t, headTreeContains(t, worker, repoPath, "team-a/default/configmaps/write-a.yaml"),
+	assert.True(t, headTreeContains(t, repoPath, "team-a/default/configmaps/write-a.yaml"),
 		"the replay must rebuild A: a recovery resets, and re-plans rather than discarding work")
 	assert.False(t, worker.worktreeDirty(), "the reset inside the recovery clears the flag")
 }
@@ -209,7 +206,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 			stageLeftoverFromAFailedWrite(t, worker)
 			tc.commit(t, loop)
 
-			assert.False(t, headTreeContains(t, worker, repoPath, leftoverPath),
+			assert.False(t, headTreeContains(t, repoPath, leftoverPath),
 				"this path committed a failed write's leftovers: it must recover first")
 			assert.False(t, worker.worktreeDirty(),
 				"a recovery resets, and a reset clears the flag")
