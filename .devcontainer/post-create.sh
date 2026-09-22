@@ -56,6 +56,22 @@ else
   sudo chown -R vscode:vscode /home/vscode || true
 fi
 
+# envtest binaries, and the bin/k8s/current symlink that KUBEBUILDER_ASSETS points at.
+# Doing it here means a controller test run from the Test Explorer works on a fresh
+# container, before anyone has run `task test` to create the link as a side effect.
+#
+# Non-fatal on purpose: it needs the network to fetch the binaries, and an environment
+# that is otherwise usable should not fail to come up because that fetch did not. The
+# task is idempotent, so `task test` repairs it later either way.
+if command -v task >/dev/null 2>&1; then
+  log "Linking envtest assets for KUBEBUILDER_ASSETS"
+  if ! (cd "${workspace_dir}" && task link-envtest-assets); then
+    log "WARNING: could not prepare envtest assets. Run 'task link-envtest-assets' once you"
+    log "WARNING: have network; until then IDE-run controller tests will fail on a missing"
+    log "WARNING: KUBEBUILDER_ASSETS path."
+  fi
+fi
+
 # Persist the ~/.claude.json file by making it a symlink (this trick can be used for other potenial config file in the home folder as well)
 touch /home/vscode/persisted-home/.claude.json
 rm -f /home/vscode/.claude.json && ln -s /home/vscode/persisted-home/.claude.json /home/vscode/.claude.json

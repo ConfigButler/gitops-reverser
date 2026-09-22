@@ -106,6 +106,12 @@
     "HOST_PROJECT_PATH": "${localWorkspaceFolder}",
     "PROJECT_PATH": "/workspaces/${localWorkspaceFolderBasename}",
     "GIT_USER_NAME": "${localEnv:GIT_USER_NAME}",
-    "GIT_USER_EMAIL": "${localEnv:GIT_USER_EMAIL}"
+    "GIT_USER_EMAIL": "${localEnv:GIT_USER_EMAIL}",
+    // Same path as go.testEnvVars above, so a plain `go test ./internal/controller/...`
+    // in the terminal works too and not only a test launched from the Go extension.
+    // post-create.sh creates the symlink; `task link-envtest-assets` repairs it. Note
+    // `task test` does NOT read this: it exports the path from setup-envtest itself, so
+    // the gate is unaffected by a stale link.
+    "KUBEBUILDER_ASSETS": "${containerWorkspaceFolder}/bin/k8s/current"
   }
 }

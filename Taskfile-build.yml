@@ -137,6 +137,35 @@ tasks:
         {{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path
         touch '{{.ENVTEST_STAMP}}'
 
+  link-envtest-assets:
+    desc: Point bin/k8s/current at the envtest binaries, which is what the IDE sets KUBEBUILDER_ASSETS to
+    # .devcontainer/devcontainer.json sets go.testEnvVars.KUBEBUILDER_ASSETS to
+    # ${workspaceFolder}/bin/k8s/current, so a controller test run from the Test
+    # Explorer or the CodeLens resolves through this symlink. Nothing used to create
+    # it, and envtest does not say "assets missing" when the path is wrong: the specs
+    # just fail. That cost an investigation once already.
+    #
+    # `task test` does NOT depend on this symlink — it exports the path from
+    # setup-envtest directly, so the gate keeps working if the link is stale or gone.
+    # This exists for the editor.
+    #
+    # There is deliberately no status check. The obvious one — does bin/k8s/current
+    # resolve? — is true of a link left pointing at a previous version, because
+    # setup-envtest keeps every version it has ever downloaded, so the old directory
+    # is still there after a k8s.io/api bump moves ENVTEST_K8S_VERSION. The link
+    # would then keep resolving to the old apiserver and the editor would silently
+    # test against it. A status that compared the link against the selected path
+    # would have to run setup-envtest to learn that path, which is the whole cost of
+    # just relinking, so relinking every time is both cheaper and correct.
+    deps:
+      - setup-envtest
+    cmds:
+      - |
+        set -eu
+        assets="$({{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path)"
+        ln -sfn "${assets}" "$(pwd)/bin/k8s/current"
+        echo "bin/k8s/current -> ${assets}"
+
   test:
     desc: Run unit tests
     deps:
@@ -144,6 +173,7 @@ tasks:
       - fmt
       - vet
       - setup-envtest
+      - link-envtest-assets
       # cmd's chart-args test runs `helm template`, which evaluates every template —
       # including rbac.yaml, which reads the gitignored chart/config/role.yaml this
       # syncs. Without it a fresh checkout fails the unit suite.
@@ -222,10 +252,11 @@ tasks:
     # The four checks do not overlap and each is bad at the others' job, so they stay
     # four tasks and this aggregates them. See docs/design/docs-linting.md.
     #
-    #   lint-doc-links    references resolve, including doc paths inside Go comments
-    #   lint-markdown     markdown structure: fences, headings, lists, blank lines
-    #   lint-prose        English against docs/style-guide.md
-    #   lint-metric-names every gitopsreverser_ metric named in the tree is registered
+    #   lint-doc-links     references resolve, including doc paths inside Go comments
+    #   lint-markdown      markdown structure: fences, headings, lists, blank lines
+    #   lint-prose         English against docs/style-guide.md
+    #   lint-metric-names  every gitopsreverser_ metric named in the tree is registered
+    #   lint-settings-index the settings table matches the CRDs it claims to describe
     #
     # This kept the name `lint-docs` because AGENTS.md, docs/style-guide.md, and the
     # CI cache assertion all name it. It is now a superset of what it used to do, so
@@ -235,6 +266,7 @@ tasks:
       - lint-markdown
       - lint-prose
       - lint-metric-names
+      - lint-settings-index
 
   lint-doc-links:
     desc: Check that every doc reference resolves — markdown links, and docs/**.md cited in Go comments
@@ -261,6 +293,39 @@ tasks:
     # The whole check takes ~0.2s. That is not worth a cache that can be wrong.
     cmds:
       - go run ./hack/doccheck
+
+  settings-index:
+    desc: Regenerate the settings index in docs/configuration.md from the CRD schemas
+    # The writer half of lint-settings-index. Run it after `task manifests` changes an
+    # API, then commit docs/configuration.md with the change that caused it.
+    cmds:
+      - go run ./hack/crdfields
+
+  lint-settings-index:
+    desc: Check that the settings index in docs/configuration.md matches the CRDs
+    deps:
+      # Task runs deps in parallel, and this one reaches `lint` through lint-docs
+      # while lint-golang reaches manifests through its own branch. Without this,
+      # the check can read config/crd/bases while controller-gen is rewriting it
+      # and pass against the previous CRDs — in the one run that matters, the one
+      # where an API field was just added.
+      - manifests
+    # Unlike its four neighbours this one CAN be fingerprinted: its inputs are three
+    # named paths, not "every tracked file", so there is no unrooted `**` to walk and
+    # no hand-maintained list to drift. That keeps it out of the CI cache exemption.
+    #
+    # It exists because the table it guards was written by hand once and got three
+    # defaults backwards, each in the direction that costs a reader an outage:
+    # accessFrom omitted DENIES every namespace, serializeNamespace omitted INFERS
+    # per document rather than meaning false, and qps/burst fall back to the
+    # operator-wide flags. The schema knew all three. Nothing was asking it.
+    sources:
+      - config/crd/bases/*.yaml
+      - hack/crdfields/*.go
+      - hack/crdfields/fields.yaml
+      - docs/configuration.md
+    cmds:
+      - go run ./hack/crdfields -check
 
   lint-metric-names:
     desc: Check that every gitopsreverser_ metric named anywhere in the tree is actually registered

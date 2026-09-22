@@ -384,6 +384,12 @@ linters:
       # opens nothing it was handed by a reference, and writes nothing at all.
       - path: 'hack/doccheck/.*\.go'
         linters: [forbidigo, gosec]
+      # The settings-index generator is a standalone dev CLI too: it reports what it
+      # rewrote to the console (forbidigo), and it reads the CRD glob and writes the
+      # one document named by the targetFile constant (gosec G304/G703). The only
+      # caller that supplies a different path is its own test, into t.TempDir().
+      - path: 'hack/crdfields/.*\.go'
+        linters: [forbidigo, gosec]
       # Allow fmt.Println in metrics exporter (initialization logs)
       - path: 'internal/telemetry/.*\.go'
         linters: [forbidigo]

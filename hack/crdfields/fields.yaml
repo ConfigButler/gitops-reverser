@@ -1,0 +1,192 @@
+# Prose for the settings index in docs/configuration.md. `task settings-index`
+# joins it with config/crd/bases and rewrites the generated block.
+#
+# This file owns the DESCRIPTION and the link to the section that explains a
+# field. It does not own whether a field is required or what it defaults to:
+# those come from the CRD schema, because a hand-written default is a claim that
+# can be wrong, and three of them were.
+#
+# `default:` here describes what omitting a field DOES when the schema declares
+# no default of its own ("anonymous access"). Setting it for a field the schema
+# already defaults is an error.
+#
+# A path listed here is a leaf: its children are not required. A top-level field
+# with no entry must have every child described, or the run fails naming it. That
+# is how `commit.window` stays in the table while the message templates do not.
+
+preamble: |
+  ## Field overview
+
+  Ready-made manifests for all six objects live in [`config/samples/`](../config/samples/). They
+  cross-reference the same `example-provider` / `example-target` names, so the set can be applied
+  together and edited down, rather than assembled from the fragments below.
+
+  Every field not marked **required** may be omitted. Sections linked from the tables explain the
+  fields that need more than a line.
+
+kinds:
+  - kind: GitProvider
+    title: "`GitProvider` (namespaced): where and how to push"
+    fields:
+      - path: url
+        doc: Repository URL, SSH or HTTPS
+      - path: allowedBranches
+        doc: Branches a `GitTarget` may write. A target naming any other is rejected
+      - path: secretRef
+        default: anonymous access
+        doc: >-
+          Secret holding the write credential. See
+          [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret)
+      - path: knownHostsRef
+        default: the Secret's own `known_hosts`
+        doc: >-
+          Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification
+          fails closed either way
+      - path: commit.committer
+        default: the operator's built-in identity
+        doc: >-
+          Name and email written as the commit committer. See
+          [committer identity](#committer-identity)
+      - path: commit.signing
+        default: "off"
+        doc: SSH commit signing. See [commit signing](#commit-signing)
+
+  - kind: ClusterProvider
+    title: "`ClusterProvider` (cluster-scoped): the source cluster"
+    fields:
+      - path: kubeConfig
+        default: the operator's own cluster
+        doc: Points at a remote source cluster instead of the one the operator runs in
+      - path: accessFrom
+        default: "**no namespace**"
+        doc: >-
+          Deny-by-default list of control-cluster namespaces that may reference this provider.
+          Omitted, none may; an empty `selector: {}` admits every namespace
+      - path: allowAnySourceNamespace
+        doc: Whether rules may watch namespaces other than their own, `*` included
+      - path: attribution.auditRoute
+        default: the provider's own name
+        doc: >-
+          Audit route this provider joins. See
+          [audit route](#audit-route-and-auditfactsreceived)
+      - path: qps
+        default: the operator-wide flag
+        doc: Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted
+      - path: burst
+        default: the operator-wide flag
+        doc: Client burst for this source cluster. Ignored when `kubeConfig` is omitted
+
+  - kind: GitTarget
+    title: "`GitTarget` (namespaced): which branch and folder"
+    intro: "The destination fields are immutable: to move a target, delete it and create a new one."
+    fields:
+      - path: gitProviderRef
+        doc: The `GitProvider` backing this target, in the same namespace
+      - path: branch
+        doc: Branch to write. Must be in the provider's `allowedBranches`
+      - path: path
+        doc: Folder within the repository. `.` targets the root; empty is rejected
+      - path: clusterProviderRef
+        doc: "Source cluster to mirror from. The default names a `ClusterProvider` called `default`"
+      - path: commit.window
+        default: "`5s`"
+        doc: >-
+          How long to coalesce changes into one commit. `0s` commits per event. See
+          [the commit window](#the-commit-window-speccommitwindow)
+      - path: commit.message
+        default: the built-in templates
+        doc: How commits are phrased. See [commit messages](commit-messages.md)
+      - path: placement.byType
+        default: the canonical path
+        doc: >-
+          Per-type path templates for new documents. See
+          [where new resources are written](#where-new-resources-are-written-specplacement)
+      - path: placement.default
+        default: the canonical path
+        doc: Catch-all path template for types with no `byType` entry
+      - path: placement.useKustomize
+        default: "off"
+        doc: >-
+          Keep the folder a kustomize folder. See
+          [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize)
+      - path: serializeNamespace
+        default: inferred per document
+        doc: >-
+          Whether a committed document carries its own `metadata.namespace`. An explicit `false`
+          admits exactly one source namespace. See
+          [whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace)
+      - path: prune.mode
+        doc: >-
+          Which deletions reach Git. See
+          [deletion policy](#deletion-policy-specprunemode)
+      - path: onRefusal
+        doc: >-
+          What happens to an edit with no legal destination. See
+          [reverting a refused edit](#reverting-a-refused-edit-speconrefusal)
+      - path: encryption
+        default: "off"
+        doc: SOPS + age encryption for sensitive resources
+      - path: suspend
+        default: "`false`"
+        doc: >-
+          Stop writing without deleting the target. See
+          [stopping a target from writing](#stopping-a-target-from-writing-specsuspend)
+
+  - kind: WatchRule
+    title: "`WatchRule` (namespaced): what to capture"
+    fields:
+      - path: gitTargetRef
+        doc: The `GitTarget` these rules feed
+      - path: rules.resources
+        doc: Plural resource names to watch
+      - path: rules.apiGroups
+        default: resolved from the resource name
+        doc: >-
+          API groups to match. `[""]` is the core group. Omitted resolves the named resource across
+          the served surface, and selects nothing when more than one group serves that name
+      - path: rules.apiVersions
+        default: the preferred served version
+        doc: API versions to match. `["*"]` watches every served version
+      - path: rules.operations
+        default: "`CREATE`, `UPDATE`, `DELETE`"
+        doc: Which operations produce a write
+      - path: rules.sourceNamespace
+        default: the rule's own namespace
+        doc: >-
+          Namespace to watch in the source cluster, or `*`. See
+          [watching a different source namespace](#watching-a-different-source-namespace)
+
+  - kind: ClusterWatchRule
+    title: "`ClusterWatchRule` (cluster-scoped): what to capture, cluster-wide"
+    intro: >-
+      The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespaces, so it has
+      no `sourceNamespace`.
+    fields:
+      - path: gitTargetRef
+        doc: The `GitTarget` these rules feed
+      - path: rules.resources
+        doc: Plural cluster-scoped resource names to watch
+      - path: rules.apiGroups
+        default: resolved from the resource name
+        doc: >-
+          API groups to match. Omitted resolves the named resource across the served surface, and
+          selects nothing when more than one group serves that name
+      - path: rules.apiVersions
+        default: the preferred served version
+        doc: API versions to match. `["*"]` watches every served version
+      - path: rules.operations
+        default: "`CREATE`, `UPDATE`, `DELETE`"
+        doc: Which operations produce a write
+
+  - kind: CommitRequest
+    title: "`CommitRequest` (namespaced): save now"
+    fields:
+      - path: gitTargetRef
+        doc: The target whose open window to close
+      - path: message
+        default: the target's templates
+        doc: Commit message, committed verbatim unless `requestTemplate` frames it
+      - path: closeDelaySeconds
+        doc: >-
+          How long to wait for pending events. See
+          [sizing `closeDelaySeconds`](#sizing-closedelayseconds)

@@ -7,15 +7,15 @@ This guide covers the simplest GitHub path for the chart's starter configuration
 - a starter `GitTarget`
 - a starter `WatchRule`
 
-The root [`README.md`](../README.md) already covers the full operator install. This guide starts
-after GitOps Reverser is running and kube-apiserver audit delivery is configured.
+The [quickstart](quickstart.md) covers the full operator install. This guide starts after
+GitOps Reverser is running. Audit delivery is optional and only needed for actor attribution.
 
 ## Assumptions
 
 - GitOps Reverser is installed
-- the audit webhook is already wired into kube-apiserver
 - you will use the chart `quickstart` path
-- the quickstart namespace is `default` unless you override it
+- this guide overrides `quickstart.namespace` to `default`; the chart default is
+  `gitops-reverser-quickstart-demo`
 
 ## Recommended path: SSH deploy key
 
@@ -112,7 +112,7 @@ kubectl -n default create secret generic git-creds \
 
 A `bearerToken` key is also accepted for token auth without a username (handy for fine-grained PATs
 and GitLab access tokens). Already have a Flux or Argo CD Git credentials Secret? It is accepted
-as-is — just make sure its key or token has **write** access, since GitOps Reverser pushes commits
+as-is. Make sure its key or token has **write** access, since GitOps Reverser pushes commits
 (Flux/Argo only clone, so their credentials are often read-only). See
 [`configuration.md`](configuration.md#reusing-a-flux-or-argo-cd-credentials-secret) for the full key
 mapping.
