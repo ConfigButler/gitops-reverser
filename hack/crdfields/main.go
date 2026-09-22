@@ -24,8 +24,9 @@
 //
 // What makes it a gate rather than a convenience is the coverage check. Adding a
 // field to the API and not describing it fails the build, and so does describing
-// one that no longer exists. The tool cannot write the sentence for you; it can
-// refuse to let the table pretend the field is not there.
+// one that no longer exists, and so does a whole CRD kind that fields.yaml never
+// mentions. The tool cannot write the sentence for you; it can refuse to let the
+// table pretend the field is not there.
 //
 // Depth is decided by fields.yaml, not by a fixed limit. A path listed there is a
 // leaf: the walk stops and its children are not required. A top-level property
@@ -265,6 +266,27 @@ func render(index *indexDoc, schemas map[string]*schema) (string, error) {
 	buf.WriteString(strings.TrimRight(index.Preamble, "\n") + "\n\n")
 
 	var problems []error
+
+	// The loop below catches a described kind whose CRD is gone. This is the other
+	// direction: a CRD that fields.yaml never mentions. Without it a new kind ships
+	// with no index entry at all and -check still passes, because a walk driven by
+	// index.Kinds never reaches a kind nobody listed.
+	described := make(map[string]bool, len(index.Kinds))
+	for _, kd := range index.Kinds {
+		described[kd.Kind] = true
+	}
+	var undescribed []string
+	for kind := range schemas {
+		if !described[kind] {
+			undescribed = append(undescribed, kind)
+		}
+	}
+	sort.Strings(undescribed)
+	for _, kind := range undescribed {
+		problems = append(problems, fmt.Errorf(
+			"%s: a CRD defines this kind and %s does not describe it", kind, fieldsFile))
+	}
+
 	for _, kd := range index.Kinds {
 		spec, ok := schemas[kd.Kind]
 		if !ok {
