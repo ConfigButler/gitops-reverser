@@ -54,7 +54,7 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
 
 ## Principles
 
-- **We never commit a Kubernetes `Secret` unencrypted. Ever.** A resource classified as sensitive is
+- **We never commit secret content unencrypted. Ever.** A resource classified as sensitive is
   encrypted before it can reach a commit. If encryption fails, or no encryptor is configured, the
   write is rejected. There is no plaintext fallback.
 - **We only write one way: Kubernetes to Git.** Deploying Git back into a cluster is Flux's and
@@ -66,8 +66,12 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
 - **We refuse a folder we cannot support.** An unsupported layout is refused before anything is
   written, with `Stalled=True` and a reason naming the problem. We will not write the half we
   understood and leave you the rest. See [status conditions](docs/spec/status-conditions-guide.md).
-- **We assume changes arrive through the API.** Publication is driven by API writes. CI tests with
-  Flux and Argo CD verify that the round trip settles without a commit loop.
+- **We assume changes arrive through the API.** Publication is driven by API writes, and a branch
+  that moved underneath is an expected exception rather than a failure. CI tests with Flux and Argo
+  CD verify that the round trip settles without a commit loop.
+- **We never merge. We replay.** When the branch has moved, we fetch the new base and replay the
+  writes we have not published onto it. There is no three-way field merge, so a replay can overwrite
+  a concurrent Git edit to the same object. See [API-first publication](docs/api-first-publication.md).
 
 ## Features
 
@@ -84,15 +88,16 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
   every candidate folder under a repository root, read-only and with no cluster, so you can see what
   a target could adopt before creating one. See [`cmd/manifest-analyzer/`](cmd/manifest-analyzer/).
 - **SOPS and age, set up on the fly.** The operator creates the encryption configuration and can
-  generate a missing age key in your chosen Kubernetes `Secret`. Back up generated keys before
-  relying on them. See [SOPS and age](docs/sops-age-guide.md).
+  generate a missing age key in your chosen Kubernetes `Secret`. Private keys stay in the cluster,
+  never in Git; back up a generated key before relying on it. See [SOPS and age](docs/sops-age-guide.md).
 - **Signed commits.** SSH signing through `GitProvider.spec.commit.signing`, including what it takes
   to earn a verified badge on your Git host. See [commit signing](docs/commit-signing.md).
 - **Commit messages you control.** Separate templates for live windows, reconciles, and save
   requests. A bad template holds the target at `Validated=False` instead of surfacing at commit
   time. See [message templates](docs/commit-messages.md).
 - **Status you can wait on.** Conditions follow the kstatus convention, so `Ready`, `Reconciling`,
-  and `Stalled` mean what `kubectl wait` and GitOps tooling expect.
+  and `Stalled` mean what `kubectl wait` and GitOps tooling expect, asserted in tests against the
+  kstatus library rather than against our own reading of it.
 - **Metrics.** A Prometheus surface with copy-pasteable PromQL for the questions operators ask, and
   a named list of what is deliberately not instrumented. See
   [interpreting metrics](docs/interpreting-metrics.md).
