@@ -4,9 +4,15 @@ Two Kubernetes resources become one Git commit: one created, one edited. A `Comm
 the message and asks the operator to close the window before its normal timer expires. The request
 itself is outside the selected resource types, so saving never commits the save button.
 
-The example assumes a namespace named `demo`, a working `GitProvider` named `example-provider` in
-that namespace, and an authorized `default` `ClusterProvider`. Use a branch no reconciler deploys.
-See the [quickstart](../quickstart.md) for installation and Git credentials.
+**Run the [quickstart](../quickstart.md) first.** It leaves behind everything this example builds
+on: the `gitops-reverser-quickstart-demo` namespace, the `git-creds` Secret, a `GitProvider` named
+`example-provider` whose `allowedBranches` is `"*"`, and the `default` `ClusterProvider`. If you
+configured those yourself instead, substitute your own names below.
+
+The example writes to its own branch, `commit-window-demo`, which no reconciler deploys. The
+quickstart's own starter `GitTarget` keeps watching ConfigMaps in this namespace and writing them to
+`live-cluster` on `main`, so the ConfigMap below lands in both places. That is expected: two targets
+may share one provider as long as they write different folders.
 
 ## Select the resources
 
@@ -17,7 +23,7 @@ apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: window-demo
-  namespace: demo
+  namespace: gitops-reverser-quickstart-demo
 spec:
   gitProviderRef:
     name: example-provider
@@ -41,7 +47,7 @@ apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: window-demo
-  namespace: demo
+  namespace: gitops-reverser-quickstart-demo
 spec:
   gitTargetRef:
     name: window-demo
@@ -71,10 +77,10 @@ Apply this setup and let the initial synchronization finish before going on:
 
 ```bash
 kubectl apply -f watch.yaml
-kubectl get gittarget,watchrule -n demo
+kubectl get gittarget,watchrule -n gitops-reverser-quickstart-demo
 ```
 
-The rule selects **two resource types in `demo`**, not two individual names. Other ConfigMaps and
+The rule selects **two resource types in that namespace**, not two individual names. Other ConfigMaps and
 ServiceAccounts in that namespace are also eligible. Initial synchronization may capture existing
 resources such as the `kube-root-ca.crt` ConfigMap and the `default` ServiceAccount. Keep other
 writes to the target quiet while you run the example.
@@ -85,7 +91,7 @@ Create the ConfigMap on its own first, so the recorded batch below contains one 
 `UPDATE` rather than two creates. Let its commit land before going on:
 
 ```bash
-kubectl create configmap hello --from-literal=message="Hello" -n demo
+kubectl create configmap hello --from-literal=message="Hello" -n gitops-reverser-quickstart-demo
 ```
 
 ## Apply the resources
@@ -98,14 +104,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: hello
-  namespace: demo
+  namespace: gitops-reverser-quickstart-demo
 automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: hello
-  namespace: demo
+  namespace: gitops-reverser-quickstart-demo
 data:
   message: Hello from Reverse GitOps
 ```
@@ -120,7 +126,7 @@ apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
   generateName: save-hello-
-  namespace: demo
+  namespace: gitops-reverser-quickstart-demo
 spec:
   gitTargetRef:
     name: window-demo
@@ -148,7 +154,7 @@ outcomes.
 ## Check the result
 
 ```bash
-kubectl get commitrequests -n demo -o wide
+kubectl get commitrequests -n gitops-reverser-quickstart-demo -o wide
 ```
 
 Look for `Pushed=True` and a `status.sha`. `Pushed` is a wide column; `Ready` and the commit SHA

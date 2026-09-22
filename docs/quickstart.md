@@ -108,8 +108,29 @@ Then check the starter resources:
 kubectl get gitprovider,gittarget,watchrule -n gitops-reverser-quickstart-demo
 ```
 
-The `GitProvider` and `WatchRule` report `Ready=True`; the `GitTarget` reports **`Validated=True`**.
-Its aggregate `Ready` stays `Unknown` until first source discovery, which is the expected state.
+The `GitProvider` and `WatchRule` should report `Ready=True`. The `GitTarget`'s aggregate `Ready`
+stays `Unknown` until its first source discovery, which is the expected state and not a fault, so
+the condition to check on it is `Validated`. It is not a printed column, so ask for it directly:
+
+```bash
+kubectl wait --for=condition=Validated gittarget/example-target \
+  -n gitops-reverser-quickstart-demo --timeout=60s
+```
+
+`condition met` means the configuration is accepted and the target is waiting for work. That is the
+point to go and create a ConfigMap.
+
+If it times out instead, the `Reason` column tells you which of the three states you are in:
+
+```bash
+kubectl get gittarget example-target -n gitops-reverser-quickstart-demo
+kubectl describe gittarget example-target -n gitops-reverser-quickstart-demo
+```
+
+A `Reason` that names a missing or unauthorized dependency (`ClusterProviderNotFound`,
+`NamespaceNotAuthorized`, `InvalidConfig`) is a misconfiguration to fix. One that names discovery or
+streams still settling is initialization, and resolves on its own. `describe` prints every condition
+with its message, which is where the specific cause is written.
 
 ## 5. Test it
 

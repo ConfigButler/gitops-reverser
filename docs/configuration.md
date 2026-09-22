@@ -661,8 +661,8 @@ write rather than stopping the mirror.
 Three templates decide how a commit is phrased: `liveTemplate` for a live window,
 `reconcileTemplate` for an atomic snapshot or resync, and `requestTemplate` for a window a
 [save request](#commitrequest) attached to. Each is a Go template over a documented context,
-validated at admission rather than at commit time, and each has a built-in default, so a target that
-sets none still writes useful messages.
+checked when the target reconciles rather than at commit time, and each has a built-in default, so a
+target that sets none still writes useful messages.
 
 ```yaml
 spec:

@@ -92,7 +92,8 @@ variable), because the check renders the template and looks for the message in t
 than scanning the template's text.
 
 `requestTemplate` is validated against the same window shapes as `liveTemplate`, so a template
-reading a label some resources do not carry fails at admission rather than at commit time. If one
+reading a label some resources do not carry is caught when the target reconciles rather than at
+commit time. If one
 does fail to render in production, the request's message is committed verbatim instead of the
 window being lost, and the commit is counted under `message_source="commit_request_fallback"`.
 Alert on that rate: the commit itself succeeds and no condition moves, so it is the only signal.
@@ -123,8 +124,8 @@ Three things to know:
   `missingkey=error`, so indexing a label a resource does not carry does not render empty: it fails
   the render, and a failed render fails the whole commit, losing the window until the next resync.
   `Label` returns the empty string instead. Validation catches the dotted form (its sample events
-  include a resource with no labels), so such a template is rejected at admission rather than at
-  2am, but the accessor is the spelling to write.
+  include a resource with no labels), so such a template is refused by the `Validated` gate rather
+  than at 2am, but the accessor is the spelling to write.
 - **A commit spans n resources, so a label is a set here.** `LabelValues "team"` is the sorted,
   distinct list of values in this commit, skipping resources that do not set it; `LabelValue "team"`
   is the single value when the whole commit agrees on one, and empty when it does not. A subject

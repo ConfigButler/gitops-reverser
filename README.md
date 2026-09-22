@@ -20,6 +20,9 @@ manifests in place, preserving comments and document structure.
 Use it to capture live changes, bring an existing cluster into Git, or experiment with API-first
 workflows alongside Flux or Argo CD.
 
+It is early-stage software: one controller pod, `v1alpha3` APIs that can still change, and a fit for
+labs and pilots rather than production. [Before you adopt it](#before-you-adopt-it) has the detail.
+
 <div align="center">
   <img src="docs/demo/demo.gif" width="100%"
        alt="Demo: kubectl apply triggers a sanitized Git commit within seconds">
@@ -52,8 +55,8 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
 - **Signed commits.** SSH signing through `GitProvider.spec.commit.signing`, including what it takes
   to earn a verified badge on your Git host. See [commit signing](docs/commit-signing.md).
 - **Commit messages you control.** Separate templates for live windows, reconciles, and save
-  requests, validated at admission rather than at commit time. See
-  [message templates](docs/commit-messages.md).
+  requests. A bad template holds the target at `Validated=False` instead of surfacing at commit
+  time. See [message templates](docs/commit-messages.md).
 - **Encrypted Secrets.** SOPS + age encryption before commit, which Secret-shaped custom resources
   can opt into. See [SOPS and age](docs/sops-age-guide.md).
 - **Metrics.** A Prometheus surface with copy-pasteable PromQL for the questions operators ask, and
@@ -85,53 +88,6 @@ Select the resources that express your intent. For example, watch a `HelmRelease
 settings. The operator cannot automatically distinguish authored resources from controller-generated
 ones. See [choosing what to capture](docs/installing-apps-as-krm.md#the-design-decision-capture-intent-not-the-rendered-output).
 
-## Batch changes into a commit
-
-Changes for the same target and author share a commit window: each change restarts the timer, and
-the commit is made after that much silence. Omitted, the window is `5s`; `0s` opts into a commit per
-event. A `CommitRequest` can close an open window early and supply the commit message itself.
-
-![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)
-
-This configuration selects ConfigMaps and ServiceAccounts in `demo`. The referenced `GitProvider`
-holds the repository URL and credentials.
-
-```yaml
-apiVersion: configbutler.ai/v1alpha3
-kind: GitTarget
-metadata:
-  name: window-demo
-  namespace: demo
-spec:
-  gitProviderRef:
-    name: example-provider
-  branch: commit-window-demo
-  path: apps/demo
-  commit:
-    window: "5s"
----
-apiVersion: configbutler.ai/v1alpha3
-kind: WatchRule
-metadata:
-  name: window-demo
-  namespace: demo
-spec:
-  gitTargetRef:
-    name: window-demo
-  rules:
-    - apiGroups: [""]
-      apiVersions: [v1]
-      resources: [configmaps, serviceaccounts]
-```
-
-All three operations (`CREATE`, `UPDATE`, `DELETE`) are selected by default. The `CommitRequest`
-itself is outside the selected types, so saving never commits the save button.
-
-The picture shows that example running. The [full example](docs/demo/commit-window.md) carries the
-rest of it: the resources to apply, the save request (created with `kubectl create`, because it uses
-`generateName`), a `placement` rule for the flat filenames, and the `requestTemplate` that puts the
-changed resources under the requested message.
-
 ## Quick start
 
 Follow the [installation walkthrough](docs/quickstart.md) to capture ConfigMaps from a demo namespace
@@ -146,6 +102,18 @@ kubectl create configmap test-config --from-literal=key=value -n gitops-reverser
 
 Inspect the commit under `live-cluster/` in your repository. Then edit the ConfigMap and inspect the
 next diff. The walkthrough includes status checks, troubleshooting, and cleanup.
+
+## Batch changes into a commit
+
+Changes for the same target and author share a commit window: each change restarts the timer, and
+the commit is made after that much silence. Omitted, the window is `5s`; `0s` opts into a commit per
+event. A `CommitRequest` can close an open window early and supply the commit message itself.
+
+![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)
+
+The picture shows the [commit-window example](docs/demo/commit-window.md) running. It carries the
+manifests: a `GitTarget` with a `window`, a `WatchRule` selecting the two types, and the save request
+that closes the window early. It runs on top of the quickstart above.
 
 ## Try it with your existing repo
 
