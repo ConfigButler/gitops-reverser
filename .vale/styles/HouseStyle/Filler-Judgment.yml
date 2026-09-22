@@ -1,7 +1,19 @@
 # docs/style-guide.md -> "Words to cut", the rows that need the deletion test.
 #
-# Split out of WordsToCut.yml. These four are sometimes correct, and no linter can
-# tell which time it is looking at, so this rule reminds rather than rules.
+# Split out of WordsToCut.yml. These are sometimes correct, and no linter can tell
+# which time it is looking at, so this rule reminds rather than rules.
+#
+# `real` is here rather than in WordsToCut.yml because it fails the same test in
+# both directions. It is filler wherever nothing unreal is in play -- "the real
+# configuration objects that drive gitops-reverser" promised a distinction the
+# guide never draws, since there is no second, fake set of objects to tell them
+# apart from. It earns its place wherever there IS a counterpart: "it can never
+# clash with a real one" contrasts with a synthetic `_unlabeled` bucket, and "a
+# real apiserver" contrasts with a fake. Measured before adding it: 431 uses
+# across docs/ and the README, more than three times `actually`, and nearly all
+# of them the second kind. That ratio is why this can only ever be a suggestion
+# -- a rule that fired on all 431 would be read as noise and skimmed, which is
+# exactly the failure WordsToCut.yml's header records.
 #
 # The guide's own example is the proof: `actually` earns its place in "the source
 # document, where the value actually lives", because it marks a contrast with the
@@ -22,3 +34,4 @@ tokens:
   - actually
   - genuinely
   - really
+  - real

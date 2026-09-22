@@ -15,7 +15,7 @@
 # is how `commit.window` stays in the table while the message templates do not.
 
 preamble: |
-  ## Every setting at a glance
+  ## Field overview
 
   Ready-made manifests for all six objects live in [`config/samples/`](../config/samples/). They
   cross-reference the same `example-provider` / `example-target` names, so the set can be applied
@@ -140,11 +140,13 @@ kinds:
       - path: rules.resources
         doc: Plural resource names to watch
       - path: rules.apiGroups
-        default: every group
-        doc: API groups to match. `[""]` is the core group
+        default: resolved from the resource name
+        doc: >-
+          API groups to match. `[""]` is the core group. Omitted resolves the named resource across
+          the served surface, and selects nothing when more than one group serves that name
       - path: rules.apiVersions
-        default: every version
-        doc: API versions to match
+        default: the preferred served version
+        doc: API versions to match. `["*"]` watches every served version
       - path: rules.operations
         default: "`CREATE`, `UPDATE`, `DELETE`"
         doc: Which operations produce a write
@@ -165,11 +167,13 @@ kinds:
       - path: rules.resources
         doc: Plural cluster-scoped resource names to watch
       - path: rules.apiGroups
-        default: every group
-        doc: API groups to match
+        default: resolved from the resource name
+        doc: >-
+          API groups to match. Omitted resolves the named resource across the served surface, and
+          selects nothing when more than one group serves that name
       - path: rules.apiVersions
-        default: every version
-        doc: API versions to match
+        default: the preferred served version
+        doc: API versions to match. `["*"]` watches every served version
       - path: rules.operations
         default: "`CREATE`, `UPDATE`, `DELETE`"
         doc: Which operations produce a write

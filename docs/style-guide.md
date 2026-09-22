@@ -204,6 +204,7 @@ README:
 
 | Word | Count | Verdict |
 |---|---|---|
+| `real` | 431 | keep only when something unreal is in play |
 | `just` | 129 | almost always cut |
 | `actually` | 113 | keep only when contrasting with a stated expectation |
 | `genuinely` | 54 | almost always cut |
@@ -215,6 +216,12 @@ README:
 "Actually" survives in a sentence like "the source document, where the value actually lives",
 because it is marking a contrast with the rendered output you might have expected. It does not
 survive in "the operator actually retries", where it is filler.
+
+"Real" is the same test with a sharper question: what is the unreal one? It survives in "it can
+never clash with a real one", where the counterpart is a synthetic bucket name, and in "a real
+apiserver", where it is a fake. It does not survive in "the real configuration objects that drive
+gitops-reverser", which promises a distinction the page never draws -- there is no second, unreal
+set of objects, so the word only makes the reader look for one.
 
 Also avoid: `it's worth noting`, `keep in mind`, `in summary`, `at the end of the day`,
 `delve into`, `seamlessly`. The docs are mostly clean of these already. Keep them that way.

@@ -1,7 +1,7 @@
 # Configuration model
 
-This guide explains the real configuration objects that drive gitops-reverser after the install
-steps in the [quickstart](quickstart.md).
+This guide explains the configuration objects that drive gitops-reverser after the install steps
+in the [quickstart](quickstart.md).
 
 The short version:
 
@@ -27,18 +27,20 @@ attribution later only when you need named Kubernetes users or service accounts 
 The usual flow is:
 
 1. Create a `GitProvider` for repository access and commit behavior.
-2. Create a `ClusterProvider` for the source cluster, including the `default` provider when a target
-   omits its source reference.
-3. Create a `GitTarget` that points at the Git provider, source cluster, branch, and repository path.
-4. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
-5. Create a `CommitRequest` only when you want to flush an open window before the normal timer.
+2. Create a `GitTarget` that points at the Git provider, source cluster, branch, and repository path.
+3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
+4. Create a `CommitRequest` only when you want to flush an open window before the normal timer.
 
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
 
+> **`ClusterProvider` is not one of those steps.** Installing created the `default` one, and that is
+> the source cluster a `GitTarget` mirrors from when it omits `spec.clusterProviderRef`. Write your
+> own only to mirror a second, remote cluster.
+
 <!-- BEGIN GENERATED: settings-index (task settings-index) -->
 
-## Every setting at a glance
+## Field overview
 
 Ready-made manifests for all six objects live in [`config/samples/`](../config/samples/). They
 cross-reference the same `example-provider` / `example-target` names, so the set can be applied
@@ -96,8 +98,8 @@ The destination fields are immutable: to move a target, delete it and create a n
 |---|---|---|
 | `gitTargetRef` | **required** | The `GitTarget` these rules feed |
 | `rules[].resources` | **required** | Plural resource names to watch |
-| `rules[].apiGroups` | every group | API groups to match. `[""]` is the core group |
-| `rules[].apiVersions` | every version | API versions to match |
+| `rules[].apiGroups` | resolved from the resource name | API groups to match. `[""]` is the core group. Omitted resolves the named resource across the served surface, and selects nothing when more than one group serves that name |
+| `rules[].apiVersions` | the preferred served version | API versions to match. `["*"]` watches every served version |
 | `rules[].operations` | `CREATE`, `UPDATE`, `DELETE` | Which operations produce a write |
 | `rules[].sourceNamespace` | the rule's own namespace | Namespace to watch in the source cluster, or `*`. See [watching a different source namespace](#watching-a-different-source-namespace) |
 
@@ -109,8 +111,8 @@ The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespa
 |---|---|---|
 | `gitTargetRef` | **required** | The `GitTarget` these rules feed |
 | `rules[].resources` | **required** | Plural cluster-scoped resource names to watch |
-| `rules[].apiGroups` | every group | API groups to match |
-| `rules[].apiVersions` | every version | API versions to match |
+| `rules[].apiGroups` | resolved from the resource name | API groups to match. Omitted resolves the named resource across the served surface, and selects nothing when more than one group serves that name |
+| `rules[].apiVersions` | the preferred served version | API versions to match. `["*"]` watches every served version |
 | `rules[].operations` | `CREATE`, `UPDATE`, `DELETE` | Which operations produce a write |
 
 ### `CommitRequest` (namespaced): save now
@@ -1548,7 +1550,8 @@ are:
 
 - `operations`: `CREATE`, `UPDATE`, `DELETE`, or `*`; omitted means all operations.
 - `apiGroups`: `""` for the core group, `*` for all groups, or omitted to resolve the named resource
-  across the served API surface.
+  across the served API surface. A name served by more than one group is ambiguous when the group is
+  omitted, and is watched in none of them: name the group.
 - `apiVersions`: a served version such as `v1`; omitted means the preferred served version.
 - `resources`: plural resource names such as `configmaps`, `secrets`, or `*`.
 
