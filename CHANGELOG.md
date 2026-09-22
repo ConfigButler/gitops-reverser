@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.49.0...v0.49.1) (2026-09-22)
+
+
+### Documentation
+
+* restructure the README, and generate the settings index from the CRDs ([#386](https://github.com/ConfigButler/gitops-reverser/issues/386)) ([d99c300](https://github.com/ConfigButler/gitops-reverser/commit/d99c300a4aab4172d9ffe39d7c38c4ad3b528b15))
+
 ## [0.49.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.48.1...v0.49.0) (2026-09-22)
 
 
