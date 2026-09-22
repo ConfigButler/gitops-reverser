@@ -222,10 +222,11 @@ tasks:
     # The four checks do not overlap and each is bad at the others' job, so they stay
     # four tasks and this aggregates them. See docs/design/docs-linting.md.
     #
-    #   lint-doc-links    references resolve, including doc paths inside Go comments
-    #   lint-markdown     markdown structure: fences, headings, lists, blank lines
-    #   lint-prose        English against docs/style-guide.md
-    #   lint-metric-names every gitopsreverser_ metric named in the tree is registered
+    #   lint-doc-links     references resolve, including doc paths inside Go comments
+    #   lint-markdown      markdown structure: fences, headings, lists, blank lines
+    #   lint-prose         English against docs/style-guide.md
+    #   lint-metric-names  every gitopsreverser_ metric named in the tree is registered
+    #   lint-settings-index the settings table matches the CRDs it claims to describe
     #
     # This kept the name `lint-docs` because AGENTS.md, docs/style-guide.md, and the
     # CI cache assertion all name it. It is now a superset of what it used to do, so
@@ -235,6 +236,7 @@ tasks:
       - lint-markdown
       - lint-prose
       - lint-metric-names
+      - lint-settings-index
 
   lint-doc-links:
     desc: Check that every doc reference resolves — markdown links, and docs/**.md cited in Go comments
@@ -261,6 +263,32 @@ tasks:
     # The whole check takes ~0.2s. That is not worth a cache that can be wrong.
     cmds:
       - go run ./hack/doccheck
+
+  settings-index:
+    desc: Regenerate the settings index in docs/configuration.md from the CRD schemas
+    # The writer half of lint-settings-index. Run it after `task manifests` changes an
+    # API, then commit docs/configuration.md with the change that caused it.
+    cmds:
+      - go run ./hack/crdfields
+
+  lint-settings-index:
+    desc: Check that the settings index in docs/configuration.md matches the CRDs
+    # Unlike its four neighbours this one CAN be fingerprinted: its inputs are three
+    # named paths, not "every tracked file", so there is no unrooted `**` to walk and
+    # no hand-maintained list to drift. That keeps it out of the CI cache exemption.
+    #
+    # It exists because the table it guards was written by hand once and got three
+    # defaults backwards, each in the direction that costs a reader an outage:
+    # accessFrom omitted DENIES every namespace, serializeNamespace omitted INFERS
+    # per document rather than meaning false, and qps/burst fall back to the
+    # operator-wide flags. The schema knew all three. Nothing was asking it.
+    sources:
+      - config/crd/bases/*.yaml
+      - hack/crdfields/*.go
+      - hack/crdfields/fields.yaml
+      - docs/configuration.md
+    cmds:
+      - go run ./hack/crdfields -check
 
   lint-metric-names:
     desc: Check that every gitopsreverser_ metric named anywhere in the tree is actually registered

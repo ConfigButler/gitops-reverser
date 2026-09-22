@@ -149,7 +149,7 @@ The design note for the playground flow lives in
 
 ## Documentation checks
 
-`task lint-docs` runs all three, and `task lint` includes it. Each owns one thing and none of them
+`task lint-docs` runs them all, and `task lint` includes it. Each owns one thing and none of them
 overlaps with the others:
 
 | Task | Tool | Checks |
@@ -157,12 +157,20 @@ overlaps with the others:
 | `task lint-doc-links` | `hack/doccheck` | Every reference resolves, including repo-relative doc paths cited inside Go comments, YAML, and shell. No off-the-shelf tool reads those. |
 | `task lint-markdown` | markdownlint-cli2 | Structure: fences, headings, lists, blank lines, bullet style. |
 | `task lint-prose` | Vale | English against [`docs/style-guide.md`](docs/style-guide.md): em dashes, American spelling, product names, words to cut. |
+| `task lint-metric-names` | `hack/metricnames.sh` | Every `gitopsreverser_` metric named anywhere in the tree is actually registered. |
+| `task lint-settings-index` | `hack/crdfields` | The settings index in [`docs/configuration.md`](docs/configuration.md) lists every CRD field, with the schema's own required flags and defaults. |
 
 ```bash
 task lint-docs                  # links and structure everywhere; prose on the gated files
 task lint-markdown-fix          # apply the safe mechanical fixes
 task lint-prose DOCS_SCOPE=all  # the whole tree, to see the prose backlog
+task settings-index             # rewrite the settings index after an API change
 ```
+
+**The settings index is generated.** `docs/configuration.md` carries it between
+`<!-- BEGIN GENERATED: settings-index -->` markers; edit
+[`hack/crdfields/fields.yaml`](hack/crdfields/fields.yaml) and run `task settings-index` instead of
+editing the table. Adding an API field without describing it there fails the gate, naming the field.
 
 **Links and structure are checked on every tracked file; only prose is gated on the files
 [`.docs-lint-scope`](.docs-lint-scope) lists.** Structure was staged the same way until the residue

@@ -36,6 +36,8 @@ The usual flow is:
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
 
+<!-- BEGIN GENERATED: settings-index (task settings-index) -->
+
 ## Every setting at a glance
 
 Ready-made manifests for all six objects live in [`config/samples/`](../config/samples/). They
@@ -51,7 +53,7 @@ fields that need more than a line.
 |---|---|---|
 | `url` | **required** | Repository URL, SSH or HTTPS |
 | `allowedBranches` | **required** | Branches a `GitTarget` may write. A target naming any other is rejected |
-| `secretRef.name` | anonymous access | Secret holding the write credential. See [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret) |
+| `secretRef` | anonymous access | Secret holding the write credential. See [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret) |
 | `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
 | `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
 | `commit.signing` | off | SSH commit signing. See [commit signing](#commit-signing) |
@@ -60,11 +62,12 @@ fields that need more than a line.
 
 | Field | Default | What it does |
 |---|---|---|
-| `kubeConfig` | in-cluster | Points at a remote source cluster instead of the operator's own |
+| `kubeConfig` | the operator's own cluster | Points at a remote source cluster instead of the one the operator runs in |
 | `accessFrom` | **no namespace** | Deny-by-default list of control-cluster namespaces that may reference this provider. Omitted, none may; an empty `selector: {}` admits every namespace |
 | `allowAnySourceNamespace` | `false` | Whether rules may watch namespaces other than their own, `*` included |
-| `attribution.auditRoute` | the provider's name | Audit route this provider joins. See [audit route](#audit-route-and-auditfactsreceived) |
-| `qps` / `burst` | the operator-wide flags | Rate limits for this source cluster. Ignored when `kubeConfig` is omitted |
+| `attribution.auditRoute` | the provider's own name | Audit route this provider joins. See [audit route](#audit-route-and-auditfactsreceived) |
+| `qps` | the operator-wide flag | Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted |
+| `burst` | the operator-wide flag | Client burst for this source cluster. Ignored when `kubeConfig` is omitted |
 
 ### `GitTarget` (namespaced): which branch and folder
 
@@ -75,10 +78,11 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `gitProviderRef` | **required** | The `GitProvider` backing this target, in the same namespace |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches` |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
-| `clusterProviderRef` | `default` | Source cluster to mirror from |
+| `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
 | `commit.window` | `5s` | How long to coalesce changes into one commit. `0s` commits per event. See [the commit window](#the-commit-window-speccommitwindow) |
-| `commit.message` | built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
-| `placement.byType` / `.default` | canonical path | Where new documents are filed. See [where new resources are written](#where-new-resources-are-written-specplacement) |
+| `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
+| `placement.byType` | the canonical path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
+| `placement.default` | the canonical path | Catch-all path template for types with no `byType` entry |
 | `placement.useKustomize` | off | Keep the folder a kustomize folder. See [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize) |
 | `serializeNamespace` | inferred per document | Whether a committed document carries its own `metadata.namespace`. An explicit `false` admits exactly one source namespace. See [whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace) |
 | `prune.mode` | `OnEvent` | Which deletions reach Git. See [deletion policy](#deletion-policy-specprunemode) |
@@ -86,7 +90,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `encryption` | off | SOPS + age encryption for sensitive resources |
 | `suspend` | `false` | Stop writing without deleting the target. See [stopping a target from writing](#stopping-a-target-from-writing-specsuspend) |
 
-### `WatchRule` (namespaced) and `ClusterWatchRule` (cluster-scoped): what to capture
+### `WatchRule` (namespaced): what to capture
 
 | Field | Default | What it does |
 |---|---|---|
@@ -95,10 +99,19 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `rules[].apiGroups` | every group | API groups to match. `[""]` is the core group |
 | `rules[].apiVersions` | every version | API versions to match |
 | `rules[].operations` | `CREATE`, `UPDATE`, `DELETE` | Which operations produce a write |
-| `rules[].sourceNamespace` | the rule's own namespace | Namespace to watch in the source cluster, or `*`. `WatchRule` only. See [watching a different source namespace](#watching-a-different-source-namespace) |
+| `rules[].sourceNamespace` | the rule's own namespace | Namespace to watch in the source cluster, or `*`. See [watching a different source namespace](#watching-a-different-source-namespace) |
 
-A `ClusterWatchRule` carries the same fields minus `sourceNamespace`, and claims cluster-scoped
-types.
+### `ClusterWatchRule` (cluster-scoped): what to capture, cluster-wide
+
+The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespaces, so it has no `sourceNamespace`.
+
+| Field | Default | What it does |
+|---|---|---|
+| `gitTargetRef` | **required** | The `GitTarget` these rules feed |
+| `rules[].resources` | **required** | Plural cluster-scoped resource names to watch |
+| `rules[].apiGroups` | every group | API groups to match |
+| `rules[].apiVersions` | every version | API versions to match |
+| `rules[].operations` | `CREATE`, `UPDATE`, `DELETE` | Which operations produce a write |
 
 ### `CommitRequest` (namespaced): save now
 
@@ -107,6 +120,8 @@ types.
 | `gitTargetRef` | **required** | The target whose open window to close |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `closeDelaySeconds` | `2` | How long to wait for pending events. See [sizing `closeDelaySeconds`](#sizing-closedelayseconds) |
+
+<!-- END GENERATED: settings-index -->
 
 ## Why the two provider types have different scopes
 
