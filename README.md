@@ -66,9 +66,9 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
   foreign push to the branch is an expected case the worker replays onto. See
   [API-first publication](docs/api-first-publication.md).
 - **Bi-directional use, proven by tests.** A dedicated e2e corner runs Flux and Argo CD against the
-  operator in CI and asserts the round trip settles without a commit loop. For a resource edited
-  from both sides there is no merge and no lock: the Kubernetes API wins. See
-  [bi-directional usage](docs/bi-directional.md).
+  operator in CI and asserts the round trip settles without a commit loop. There is no merge and no
+  lock: on replay, captured Kubernetes state can overwrite concurrent Git edits to the same
+  resource. See [bi-directional usage](docs/bi-directional.md).
 
 ## What it can write
 
@@ -148,12 +148,10 @@ repository, so that two of them never write the same paths.
   is the source of truth. That floor can move in any release, including a patch release; when it
   does, the release notes say so.
 
-It runs as a single replica, and the chart refuses `replicaCount > 1` at install time rather than
-letting two instances write the same repository. One active writer per target is where a controller
-ends up regardless, so what a second replica would buy here is faster failover, not parallel
-writing; the ownership coordination that makes standby replicas safe is on the way to 1.0, along
-with a durable worker queue. The backlog is in [docs/TODO.md](docs/TODO.md), and longer-range
-directions in [docs/future/](docs/future/).
+It runs one replica, with no standby failover: the chart rejects `replicaCount > 1` rather than let
+two instances write the same repository. Ownership coordination and a durable worker queue are on
+the way to 1.0. The backlog is in [docs/TODO.md](docs/TODO.md), and longer-range directions in
+[docs/future/](docs/future/).
 
 ## Rather have it managed?
 

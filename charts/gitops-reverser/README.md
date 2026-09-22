@@ -161,7 +161,7 @@ nodeSelector:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of controller replicas. `1` is the only accepted value: a higher one is rejected at startup rather than silently running two writers | `1` |
+| `replicaCount` | Number of controller replicas. One running replica is supported; a higher value is rejected while Helm renders the chart, rather than silently running two writers | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `env` | Extra container env vars, as Kubernetes `EnvVar` entries | `[]` |
 | `volumes` / `volumeMounts` | Extra pod volumes and their mounts, appended as-is | `[]` |

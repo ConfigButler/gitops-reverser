@@ -64,7 +64,7 @@ Two fields exist for the sake of a legible demo rather than because the window n
 - **`placement.byType`** puts both files directly under `apps/demo` as `configmap-hello.yaml` and
   `serviceaccount-hello.yaml`. Without it they land on the
   [built-in canonical path](../configuration.md#declaring-a-layout-bytype--default),
-  `apps/demo/demo/configmaps/hello.yaml`.
+  `apps/demo/gitops-reverser-quickstart-demo/configmaps/hello.yaml`.
 - **`requestTemplate`** keeps the changed resources in the commit body underneath the requested
   message. A request message otherwise **replaces** the generated message entirely, so the commit
   would say why but no longer say what. See
