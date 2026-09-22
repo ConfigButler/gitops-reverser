@@ -136,7 +136,8 @@ next diff. The walkthrough includes status checks, troubleshooting, and cleanup.
 
 Changes for the same target and author share a commit window: each change restarts the timer, and
 the commit is made after that much silence. Omitted, the window is `5s`; `0s` opts into a commit per
-event. A `CommitRequest` can close an open window early and supplies the commit message, allowing the user to indicate **why** he made a certain change.
+event. A `CommitRequest` can close an open window early and supply the commit message. This allows the
+person making a change to explain **why** the change was necessary.
 
 ![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)
 
