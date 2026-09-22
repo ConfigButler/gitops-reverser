@@ -273,6 +273,13 @@ tasks:
 
   lint-settings-index:
     desc: Check that the settings index in docs/configuration.md matches the CRDs
+    deps:
+      # Task runs deps in parallel, and this one reaches `lint` through lint-docs
+      # while lint-golang reaches manifests through its own branch. Without this,
+      # the check can read config/crd/bases while controller-gen is rewriting it
+      # and pass against the previous CRDs — in the one run that matters, the one
+      # where an API field was just added.
+      - manifests
     # Unlike its four neighbours this one CAN be fingerprinted: its inputs are three
     # named paths, not "every tracked file", so there is no unrooted `**` to walk and
     # no hand-maintained list to drift. That keeps it out of the CI cache exemption.

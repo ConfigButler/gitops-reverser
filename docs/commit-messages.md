@@ -30,7 +30,7 @@ spec:
         chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}
 
         {{range .Resources -}}
-        - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}
+        - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}
         {{end -}}
       reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Namespace}} in {{.Namespace}}{{end}}{{if .ResourceVersion}} (last resourceVersion: {{.ResourceVersion}}){{end}}"
 ```

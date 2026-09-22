@@ -54,7 +54,19 @@ kubectl create secret generic git-creds \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-SSH host-key verification fails closed, so the `known_hosts` line is required. Existing Flux or Argo CD
+SSH host-key verification fails closed, so the `known_hosts` line is required.
+
+`ssh-keyscan` trusts whatever answers on the network, so it pins whichever key it is handed. Check
+what you got against the fingerprints GitHub publishes at
+[GitHub's SSH key fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)
+before you rely on the Secret:
+
+```bash
+ssh-keyscan github.com 2>/dev/null | ssh-keygen -lf -
+```
+
+They are printed rather than pinned here on purpose: GitHub has rotated a host key before, and a
+fingerprint copied into a guide goes stale silently while a link does not. Existing Flux or Argo CD
 credentials Secrets are accepted as-is (they must have **write** access). See
 [`configuration.md`](configuration.md) for accepted Secret shapes and
 [`github-setup-guide.md`](github-setup-guide.md) for the full GitHub guide and HTTPS/PAT
