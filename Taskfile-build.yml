@@ -137,6 +137,32 @@ tasks:
         {{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path
         touch '{{.ENVTEST_STAMP}}'
 
+  link-envtest-assets:
+    desc: Point bin/k8s/current at the envtest binaries, which is what the IDE sets KUBEBUILDER_ASSETS to
+    # .devcontainer/devcontainer.json sets go.testEnvVars.KUBEBUILDER_ASSETS to
+    # ${workspaceFolder}/bin/k8s/current, so a controller test run from the Test
+    # Explorer or the CodeLens resolves through this symlink. Nothing used to create
+    # it, and envtest does not say "assets missing" when the path is wrong: the specs
+    # just fail. That cost an investigation once already.
+    #
+    # `task test` does NOT depend on this symlink — it exports the path from
+    # setup-envtest directly, so the gate keeps working if the link is stale or gone.
+    # This exists for the editor.
+    #
+    # The status check follows the symlink, so a dangling one (the version moved,
+    # bin/ was cleaned) is false and the task re-runs. setup-envtest is a no-op once
+    # the binaries are there, so re-running costs nothing.
+    deps:
+      - setup-envtest
+    status:
+      - test -d "$(pwd)/bin/k8s/current"
+    cmds:
+      - |
+        set -eu
+        assets="$({{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path)"
+        ln -sfn "${assets}" "$(pwd)/bin/k8s/current"
+        echo "bin/k8s/current -> ${assets}"
+
   test:
     desc: Run unit tests
     deps:
@@ -144,6 +170,7 @@ tasks:
       - fmt
       - vet
       - setup-envtest
+      - link-envtest-assets
       # cmd's chart-args test runs `helm template`, which evaluates every template —
       # including rbac.yaml, which reads the gitignored chart/config/role.yaml this
       # syncs. Without it a fresh checkout fails the unit suite.
