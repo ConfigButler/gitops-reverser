@@ -20,6 +20,8 @@ manifests in place, preserving comments and document structure.
 Use it to capture live changes, bring an existing cluster into Git, or experiment with API-first
 workflows alongside Flux or Argo CD.
 
+[Quick start](docs/quickstart.md): install the operator and capture your first ConfigMap in Git.
+
 It is pre-1.0: the CRDs are `v1alpha3` and the configuration surface can still change between
 releases. [Before you adopt it](#before-you-adopt-it) covers what to weigh.
 
@@ -47,28 +49,53 @@ to the branch and folder you configured.
 
 Custom resources configure all of it: a `GitProvider` holds the repository and credentials, a
 `GitTarget` the branch and folder, a `WatchRule` or `ClusterWatchRule` the resources to claim, and a
-`ClusterProvider` the source cluster to mirror from (the chart renders a `default` one).
+`ClusterProvider` the source cluster to mirror from (installing renders a `default` one).
 [Configuration](docs/configuration.md) covers each of them.
+
+## Principles
+
+- **We never commit a Kubernetes `Secret` unencrypted. Ever.** A resource classified as sensitive is
+  encrypted before it can reach a commit. If encryption fails, or no encryptor is configured, the
+  write is rejected. There is no plaintext fallback.
+- **We only write one way: Kubernetes to Git.** Deploying Git back into a cluster is Flux's and
+  Argo CD's job. Run one of them alongside if you want the round trip. See
+  [bi-directional usage](docs/bi-directional.md).
+- **We never put the wrong name on a change.** When the facts are weak, late, conflicting or
+  missing, the author is `unknown (attribution unresolved)` instead of a guess. A person's name in
+  the author field means we are sure. See [audit attribution](docs/attribution-setup-guide.md).
+- **We refuse a folder we cannot support.** An unsupported layout is refused before anything is
+  written, with `Stalled=True` and a reason naming the problem. We will not write the half we
+  understood and leave you the rest. See [status conditions](docs/spec/status-conditions-guide.md).
+- **We assume changes arrive through the API.** Publication is driven by API writes. CI tests with
+  Flux and Argo CD verify that the round trip settles without a commit loop.
 
 ## Features
 
+- **Capture existing resources and future changes.** A new target captures the selected resources
+  already in the cluster, then follows changes. With deletion mirroring enabled, removal follows
+  the deletion request, even while finalizers keep the object around. Choose which deletions reach
+  Git with a [deletion policy](docs/configuration.md#deletion-policy-specprunemode).
+- **In-place edits keep the shape of your file.** Updates preserve key order, comments, and
+  untouched documents in multi-document files.
+- **Duplicate resource identities are rejected.** A folder holding the same resource in two
+  documents is refused rather than adopted, so a capture cannot update one copy and leave the other
+  stale.
+- **Inspect a repository before you point at it.** `manifest-analyzer --mode scan-repo` classifies
+  every candidate folder under a repository root, read-only and with no cluster, so you can see what
+  a target could adopt before creating one. See [`cmd/manifest-analyzer/`](cmd/manifest-analyzer/).
+- **SOPS and age, set up on the fly.** The operator creates the encryption configuration and can
+  generate a missing age key in your chosen Kubernetes `Secret`. Back up generated keys before
+  relying on them. See [SOPS and age](docs/sops-age-guide.md).
 - **Signed commits.** SSH signing through `GitProvider.spec.commit.signing`, including what it takes
   to earn a verified badge on your Git host. See [commit signing](docs/commit-signing.md).
 - **Commit messages you control.** Separate templates for live windows, reconciles, and save
   requests. A bad template holds the target at `Validated=False` instead of surfacing at commit
   time. See [message templates](docs/commit-messages.md).
-- **Encrypted Secrets.** SOPS + age encryption before commit, which Secret-shaped custom resources
-  can opt into. See [SOPS and age](docs/sops-age-guide.md).
+- **Status you can wait on.** Conditions follow the kstatus convention, so `Ready`, `Reconciling`,
+  and `Stalled` mean what `kubectl wait` and GitOps tooling expect.
 - **Metrics.** A Prometheus surface with copy-pasteable PromQL for the questions operators ask, and
   a named list of what is deliberately not instrumented. See
   [interpreting metrics](docs/interpreting-metrics.md).
-- **Built for API-first clusters.** Publication is driven by API writes, not by polling, and a
-  foreign push to the branch is an expected case the worker replays onto. See
-  [API-first publication](docs/api-first-publication.md).
-- **Bi-directional use, proven by tests.** A dedicated e2e corner runs Flux and Argo CD against the
-  operator in CI and asserts the round trip settles without a commit loop. There is no merge and no
-  lock: on replay, captured Kubernetes state can overwrite concurrent Git edits to the same
-  resource. See [bi-directional usage](docs/bi-directional.md).
 
 ## What it can write
 
@@ -125,8 +152,8 @@ which source files changed.
 
 The operator pushes directly to the configured branch. If you later write to a branch that Flux or
 Argo CD deploys, read the [bidirectional guide](docs/bi-directional.md) first. Live edits can be
-reverted by the reconciler, and replaying a captured object can overwrite concurrent Git edits to
-that same object. There is no field-level merge, so decide per folder which side is authoritative.
+reverted by the reconciler, and [replaying captured state](docs/api-first-publication.md) can overwrite
+concurrent Git edits to the same object. Decide per folder which side is authoritative.
 
 ## Before you adopt it
 
