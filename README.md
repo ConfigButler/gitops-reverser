@@ -37,20 +37,18 @@ Named Kubernetes actors in Git history require optional
 ## How it works
 
 Changes reach the Kubernetes API however your users make them: `kubectl`, a GUI, a CI job, or an
-agent over MCP. The operator watches the resources you claim, sanitizes each change, and writes it
-to the branch and folder you configured.
+agent over MCP.
 
 ![Overview diagram: humans, kubectl, and MCP clients change resources through the Kubernetes API, which GitOps Reverser watches and commits to Git](docs/images/overview.excalidraw.svg)
 
-1. **Watch** the Kubernetes API for the types each `GitTarget` claims. Watch is the single source of
-   object state.
+1. **Watch** the Kubernetes API for the types each `GitTarget` claims, the single source of object
+   state. A new target also reconciles all existing resources of those types into Git.
 2. **Sanitize** the change and compare it against what Git already holds.
 3. **Write** stable YAML to the target folder and push, grouping a burst of changes into one commit.
 
-Custom resources configure all of it: a `GitProvider` holds the repository and credentials, a
-`GitTarget` the branch and folder, a `WatchRule` or `ClusterWatchRule` the resources to claim, and a
-`ClusterProvider` the source cluster to mirror from (installing renders a `default` one).
-[Configuration](docs/configuration.md) covers each of them.
+Custom resources configure it: `GitProvider` for repository and credentials, `GitTarget` for branch
+and folder, `WatchRule` or `ClusterWatchRule` for what to capture, and `ClusterProvider` for the
+source cluster, created as `default` on install. See [Configuration](docs/configuration.md).
 
 ## Principles
 
@@ -68,10 +66,8 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
   understood and leave you the rest. See [status conditions](docs/spec/status-conditions-guide.md).
 - **We assume changes arrive through the API.** Publication is driven by API writes, and a branch
   that moved underneath is an expected exception rather than a failure. CI tests with Flux and Argo
-  CD verify that the round trip settles without a commit loop.
-- **We never merge. We replay.** When the branch has moved, we fetch the new base and replay the
-  writes we have not published onto it. There is no three-way field merge, so a replay can overwrite
-  a concurrent Git edit to the same object. See [API-first publication](docs/api-first-publication.md).
+  CD verify that the round trip settles without a commit loop. See
+  [API-first publication](docs/api-first-publication.md).
 
 ## Features
 
@@ -140,7 +136,7 @@ next diff. The walkthrough includes status checks, troubleshooting, and cleanup.
 
 Changes for the same target and author share a commit window: each change restarts the timer, and
 the commit is made after that much silence. Omitted, the window is `5s`; `0s` opts into a commit per
-event. A `CommitRequest` can close an open window early and supply the commit message itself.
+event. A `CommitRequest` can close an open window early and supplies the commit message, allowing the user to indicate **why** he made a certain change.
 
 ![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)
 
