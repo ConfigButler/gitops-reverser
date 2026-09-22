@@ -4,13 +4,11 @@ GitOps Reverser enables synchronization from Kubernetes to one or more Git repos
 
 ## Quick Start
 
-The official end-to-end quickstart lives in the repository root README:
+Follow the [quickstart](../../docs/quickstart.md) for installation and your first Git commit.
 
-- [`README.md`](../../README.md)
-
-Use that guide for cert-manager, Valkey, Helm install, Git credentials, starter
-`GitProvider`/`GitTarget`/`WatchRule` resources, and first-commit verification. Kube-apiserver audit
-delivery is optional and can be added later for named commit authors.
+Use that guide for cert-manager, Helm install, Git credentials, starter
+`GitProvider`/`GitTarget`/`WatchRule` resources, and first-commit verification. Audit delivery from
+`kube-apiserver` is optional and can be added later for named commit authors.
 
 This chart README stays focused on chart-specific installation, configuration, and operations.
 
@@ -205,13 +203,13 @@ nodeSelector:
 | `attribution.collectionWindow` | How long after a `deletecollection` a removal in its scope may still be credited to it. It only has to cover audit batching plus clock skew, since the removal is attributed at delete-request time | `30s` |
 | `attribution.collectionUIDCap` | How many object UIDs a `deletecollection` fact carries before the set is dropped and the join falls back to scope matching, which is already correct | `10000` |
 | `attribution.auditRouteAnnotationKey` | Audit-event annotation naming the **audit route** each event belongs to. Empty keeps audit routes named (`/audit-webhook/<audit-route>`). Set it only for a control plane emitting **one shared audit stream** for several logical clusters: it enables the bare `/audit-webhook`, which reads the route per event. A `ClusterProvider` joins a route via `spec.attribution.auditRoute` (default: its own name). An event with no annotation is rejected (counted and logged) and never credited to a fallback | `""` |
-| `clusterProvider.createDefault` | Render and own a `ClusterProvider` named `default` — the source cluster a `GitTarget` mirrors from when it omits `spec.clusterProviderRef`. The **operator never creates one**, so without this you commit the object yourself. Chart-owned: turning it off makes Helm delete the provider it created, and a `GitTarget` referencing a missing provider is held unready (`ClusterProviderNotFound`). The `quickstart` values never create one | `true` |
-| `clusterProvider.default.kubeConfig.secretRef.name` | Secret (release namespace) holding a kubeconfig for the rendered `default` provider. Empty means the operator's **own in-cluster** cluster; a name points `default` at a **remote** cluster instead — the name is a convention, not a claim about which cluster it is | `""` |
+| `clusterProvider.createDefault` | Render and own a `ClusterProvider` named `default`: the source cluster a `GitTarget` mirrors from when it omits `spec.clusterProviderRef`. The **operator never creates one**, so without this you commit the object yourself. Chart-owned: turning it off makes Helm delete the provider it created, and a `GitTarget` referencing a missing provider is held unready (`ClusterProviderNotFound`). The `quickstart` values never create one | `true` |
+| `clusterProvider.default.kubeConfig.secretRef.name` | Secret (release namespace) holding a kubeconfig for the rendered `default` provider. Empty means the operator's **own in-cluster** cluster; a name points `default` at a **remote** cluster instead. The name is a convention | `""` |
 | `clusterProvider.default.kubeConfig.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
 | `clusterProvider.default.accessFrom` | Deny-by-default policy (`names` and/or `selector`) for which **control-cluster** namespaces may reference this provider from a `GitTarget`. The default empty selector admits every namespace | `{selector: {}}` |
 | `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `rbac.create` | Create the manager ClusterRole and its binding | `true` |
-| `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything — convenient, but the reverser can then read every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
+| `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything, including every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
 | `rbac.watchTypes.selected` | Types to grant when `mode: selected`, as `{apiGroups, resources}` entries (verbs are always `get,list,watch`). Required and non-empty in that mode; `namespaces`, `customresourcedefinitions` and `apiservices` come from the manager role and must not be restated | `[]` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
@@ -246,7 +244,7 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 ### Audit Webhook URL Contract
 
 When `attribution.enabled=true`, `https://<service>:9444/audit-webhook/<audit-route>`
-receives audit events from kube-apiserver — the route is
+receives audit events from `kube-apiserver`. The route is
 `ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name.
 Audit routes are **named**, including
 `/audit-webhook/default`. The bare `/audit-webhook` is rejected with **400** unless
@@ -304,7 +302,7 @@ kubectl get crd | grep configbutler
 
 ```
 
-For first-run GitOps Reverser usage, follow the root quickstart instead of duplicating those steps here.
+For first-run GitOps Reverser usage, follow the quickstart linked above.
 
 ### View Logs
 

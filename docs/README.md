@@ -9,7 +9,9 @@ If you only want the supported product docs, start with the files below.
 
 ## Start here
 
-- [`../README.md`](../README.md): product overview and end-to-end quick start
+- [`../README.md`](../README.md): product overview and supported workflows
+- [`quickstart.md`](quickstart.md): installation and your first Git commit
+- [`demo/commit-window.md`](demo/commit-window.md): two resources and a `CommitRequest`
 - [`configuration.md`](configuration.md): core configuration objects and how they fit together
 - [`api-first-publication.md`](api-first-publication.md): why API edits drive publication, how
   replay handles remote changes, and how commit windows and push timing fit together

@@ -1,7 +1,7 @@
 # Configuration model
 
 This guide explains the real configuration objects that drive gitops-reverser after the install
-steps in the [root README](../README.md).
+steps in the [quickstart](quickstart.md).
 
 The short version:
 
@@ -2017,7 +2017,7 @@ attribution:
 
 ## Quickstart vs hand-managed resources
 
-Keep using the [root README quickstart](../README.md#quick-start) when you want the fastest first commit.
+Keep using the [quickstart](quickstart.md) when you want the fastest first commit.
 The chart's `quickstart` values create a starter `GitProvider`, `GitTarget`, and `WatchRule` for you.
 
 The starter `GitTarget` writes under `live-cluster` by default. Override
