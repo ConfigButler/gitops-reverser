@@ -129,7 +129,8 @@ helm install gitops-reverser \
 
 #### Hardened Single-Replica
 
-Hardened settings for a controlled pilot or environment-specific production review:
+Tighter defaults than the minimal install: a disruption budget, and the settings worth reviewing
+against your own environment's policy before you rely on it.
 
 ```yaml
 # hardened-values.yaml
@@ -160,7 +161,7 @@ nodeSelector:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of controller replicas (can't be higher than 1 for now, sorry) | `1` |
+| `replicaCount` | Number of controller replicas. `1` is the only accepted value: a higher one is rejected at startup rather than silently running two writers | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `env` | Extra container env vars, as Kubernetes `EnvVar` entries | `[]` |
 | `volumes` / `volumeMounts` | Extra pod volumes and their mounts, appended as-is | `[]` |

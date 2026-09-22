@@ -1,6 +1,7 @@
 # Quick start
 
-Use a lab cluster and a disposable repository for this demo. It creates a starter `GitProvider`,
+Point this at a disposable repository: the demo commits real cluster state, and the fastest way to
+throw it away afterwards is to delete the repo. It creates a starter `GitProvider`,
 `GitTarget`, and `WatchRule` in the `gitops-reverser-quickstart-demo` namespace, watching ConfigMaps
 there and writing them to
 `<your-repo>/live-cluster` on `main`. It runs in `configured-author` mode (no Redis) by default. The

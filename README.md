@@ -20,8 +20,8 @@ manifests in place, preserving comments and document structure.
 Use it to capture live changes, bring an existing cluster into Git, or experiment with API-first
 workflows alongside Flux or Argo CD.
 
-It is early-stage software: one controller pod, `v1alpha3` APIs that can still change, and a fit for
-labs and pilots rather than production. [Before you adopt it](#before-you-adopt-it) has the detail.
+It is pre-1.0: the CRDs are `v1alpha3` and the configuration surface can still change between
+releases. [Before you adopt it](#before-you-adopt-it) covers what to weigh.
 
 <div align="center">
   <img src="docs/demo/demo.gif" width="100%"
@@ -66,8 +66,9 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
   foreign push to the branch is an expected case the worker replays onto. See
   [API-first publication](docs/api-first-publication.md).
 - **Bi-directional use, proven by tests.** A dedicated e2e corner runs Flux and Argo CD against the
-  operator in CI and asserts the round trip settles without a commit loop. Shared-path concurrency
-  is still experimental. See [bi-directional usage](docs/bi-directional.md).
+  operator in CI and asserts the round trip settles without a commit loop. For a resource edited
+  from both sides there is no merge and no lock: the Kubernetes API wins. See
+  [bi-directional usage](docs/bi-directional.md).
 
 ## What it can write
 
@@ -125,12 +126,13 @@ which source files changed.
 The operator pushes directly to the configured branch. If you later write to a branch that Flux or
 Argo CD deploys, read the [bidirectional guide](docs/bi-directional.md) first. Live edits can be
 reverted by the reconciler, and replaying a captured object can overwrite concurrent Git edits to
-that same object. There is no field-level merge. Shared-resource workflows remain experimental.
+that same object. There is no field-level merge, so decide per folder which side is authoritative.
 
 ## Before you adopt it
 
-GitOps Reverser is early-stage software for labs and pilots. It runs as one controller pod, and its
-`v1alpha3` APIs can change. Keep one `GitProvider` per repository to avoid uncoordinated writers.
+The CRDs are `v1alpha3`, so the configuration surface can change between releases;
+[`docs/UPGRADING.md`](docs/UPGRADING.md) carries each migration. Keep one `GitProvider` per
+repository, so that two of them never write the same paths.
 
 - **Access:** the chart defaults to cluster-wide read access, including Secrets. Review
   [RBAC](docs/rbac.md) to restrict watched types and understand the remaining credential permissions.
@@ -146,8 +148,12 @@ GitOps Reverser is early-stage software for labs and pilots. It runs as one cont
   is the source of truth. That floor can move in any release, including a patch release; when it
   does, the release notes say so.
 
-High availability is the headline gap: `replicaCount > 1` is rejected today. The backlog is in
-[docs/TODO.md](docs/TODO.md), and longer-range directions in [docs/future/](docs/future/).
+It runs as a single replica, and the chart refuses `replicaCount > 1` at install time rather than
+letting two instances write the same repository. One active writer per target is where a controller
+ends up regardless, so what a second replica would buy here is faster failover, not parallel
+writing; the ownership coordination that makes standby replicas safe is on the way to 1.0, along
+with a durable worker queue. The backlog is in [docs/TODO.md](docs/TODO.md), and longer-range
+directions in [docs/future/](docs/future/).
 
 ## Rather have it managed?
 
