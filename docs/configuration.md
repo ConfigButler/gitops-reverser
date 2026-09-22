@@ -16,7 +16,7 @@ The short version:
 The chart's optional `quickstart` values are a convenience layer that creates starter
 instances of those same resources.
 
-For a first trial, use the root README quick start. It runs configured-author: Git writes work without
+For a first trial, use the [quickstart](quickstart.md). It runs configured-author: Git writes work without
 kube-apiserver audit delivery, and every commit uses the configured committer identity. Add audit
 attribution later only when you need named Kubernetes users or service accounts in Git history.
 
@@ -35,6 +35,78 @@ The usual flow is:
 
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
+
+## Every setting at a glance
+
+Ready-made manifests for all six objects live in [`config/samples/`](../config/samples/). They
+cross-reference the same `example-provider` / `example-target` names, so the set can be applied
+together and edited down, rather than assembled from the fragments below.
+
+Every field not marked **required** may be omitted. Sections linked from the tables explain the
+fields that need more than a line.
+
+### `GitProvider` (namespaced): where and how to push
+
+| Field | Default | What it does |
+|---|---|---|
+| `url` | **required** | Repository URL, SSH or HTTPS |
+| `allowedBranches` | **required** | Branches a `GitTarget` may write. A target naming any other is rejected |
+| `secretRef.name` | anonymous access | Secret holding the write credential. See [the credentials Secret](#gitproviderspecsecretref-the-credentials-secret) |
+| `knownHostsRef` | the Secret's own `known_hosts` | Optional ConfigMap or Secret sharing SSH host keys across providers. Host-key verification fails closed either way |
+| `commit.committer` | the operator's built-in identity | Name and email written as the commit committer. See [committer identity](#committer-identity) |
+| `commit.signing` | off | SSH commit signing. See [commit signing](#commit-signing) |
+
+### `ClusterProvider` (cluster-scoped): the source cluster
+
+| Field | Default | What it does |
+|---|---|---|
+| `kubeConfig` | in-cluster | Points at a remote source cluster instead of the operator's own |
+| `accessFrom` | **no namespace** | Deny-by-default list of control-cluster namespaces that may reference this provider. Omitted, none may; an empty `selector: {}` admits every namespace |
+| `allowAnySourceNamespace` | `false` | Whether rules may watch namespaces other than their own, `*` included |
+| `attribution.auditRoute` | the provider's name | Audit route this provider joins. See [audit route](#audit-route-and-auditfactsreceived) |
+| `qps` / `burst` | the operator-wide flags | Rate limits for this source cluster. Ignored when `kubeConfig` is omitted |
+
+### `GitTarget` (namespaced): which branch and folder
+
+The destination fields are immutable: to move a target, delete it and create a new one.
+
+| Field | Default | What it does |
+|---|---|---|
+| `gitProviderRef` | **required** | The `GitProvider` backing this target, in the same namespace |
+| `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches` |
+| `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
+| `clusterProviderRef` | `default` | Source cluster to mirror from |
+| `commit.window` | `5s` | How long to coalesce changes into one commit. `0s` commits per event. See [the commit window](#the-commit-window-speccommitwindow) |
+| `commit.message` | built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
+| `placement.byType` / `.default` | canonical path | Where new documents are filed. See [where new resources are written](#where-new-resources-are-written-specplacement) |
+| `placement.useKustomize` | off | Keep the folder a kustomize folder. See [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize) |
+| `serializeNamespace` | inferred per document | Whether a committed document carries its own `metadata.namespace`. An explicit `false` admits exactly one source namespace. See [whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace) |
+| `prune.mode` | `OnEvent` | Which deletions reach Git. See [deletion policy](#deletion-policy-specprunemode) |
+| `onRefusal` | `Ignore` | What happens to an edit with no legal destination. See [reverting a refused edit](#reverting-a-refused-edit-speconrefusal) |
+| `encryption` | off | SOPS + age encryption for sensitive resources |
+| `suspend` | `false` | Stop writing without deleting the target. See [stopping a target from writing](#stopping-a-target-from-writing-specsuspend) |
+
+### `WatchRule` (namespaced) and `ClusterWatchRule` (cluster-scoped): what to capture
+
+| Field | Default | What it does |
+|---|---|---|
+| `gitTargetRef` | **required** | The `GitTarget` these rules feed |
+| `rules[].resources` | **required** | Plural resource names to watch |
+| `rules[].apiGroups` | every group | API groups to match. `[""]` is the core group |
+| `rules[].apiVersions` | every version | API versions to match |
+| `rules[].operations` | `CREATE`, `UPDATE`, `DELETE` | Which operations produce a write |
+| `rules[].sourceNamespace` | the rule's own namespace | Namespace to watch in the source cluster, or `*`. `WatchRule` only. See [watching a different source namespace](#watching-a-different-source-namespace) |
+
+A `ClusterWatchRule` carries the same fields minus `sourceNamespace`, and claims cluster-scoped
+types.
+
+### `CommitRequest` (namespaced): save now
+
+| Field | Default | What it does |
+|---|---|---|
+| `gitTargetRef` | **required** | The target whose open window to close |
+| `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
+| `closeDelaySeconds` | `2` | How long to wait for pending events. See [sizing `closeDelaySeconds`](#sizing-closedelayseconds) |
 
 ## Why the two provider types have different scopes
 
@@ -150,7 +222,7 @@ throwaway/dev clusters only: it permits SSH when **no** source provided any `kno
 If `spec.commit` is omitted, gitops-reverser uses its built-in defaults.
 
 `spec.commit.message` is not here. A commit's wording describes the folder being written, so it is
-[`GitTarget.spec.commit.message`](#commit-message-templates); setting it on a `GitProvider` is
+[`GitTarget.spec.commit.message`](commit-messages.md); setting it on a `GitProvider` is
 rejected.
 
 #### Author vs committer
@@ -550,7 +622,7 @@ spec:
       liveTemplate: "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}"
 ```
 
-Configure [automatic messages](#commit-message-templates), submit a [save message](#commitrequest),
+Configure [automatic messages](commit-messages.md), submit a [save message](#commitrequest),
 and interpret its [conditions](#commitrequest).
 
 #### The commit window (`spec.commit.window`)
@@ -571,250 +643,22 @@ write rather than stopping the mirror.
 
 #### Commit message templates
 
-`liveTemplate` formats every live window, including one retained entry and `0s` windows.
-`reconcileTemplate` formats atomic snapshots and resyncs. Invalid templates report
-`Validated=False` with reason `InvalidConfig`; validation exercises singleton and mixed-operation
-windows, empty authors, and scoped and whole-target snapshots through the production renderer.
-Sample execution cannot prove every possible conditional branch valid. That applies to
-`requestTemplate`'s [message check](#framing-a-save-message) too: a template that drops the save
-message only on some branch passes validation and falls back at commit time.
-
-| Input, in precedence order | Message source |
-|---|---|
-| Attached [save request](#commitrequest) **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage` |
-| Non-empty literal override, including an attached [save request](#commitrequest) | Exact supplied text |
-| Live window of any size | `liveTemplate` |
-| Atomic snapshot or resync | `reconcileTemplate` |
-
-The default live template produces a Conventional Commits subject and one retained entry per body line:
+Three templates decide how a commit is phrased: `liveTemplate` for a live window,
+`reconcileTemplate` for an atomic snapshot or resync, and `requestTemplate` for a window a
+[save request](#commitrequest) attached to. Each is a Go template over a documented context,
+validated at admission rather than at commit time, and each has a built-in default, so a target that
+sets none still writes useful messages.
 
 ```yaml
 spec:
   commit:
     message:
-      liveTemplate: |-
-        chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}
-
-        {{range .Resources -}}
-        - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{if .Namespace}}{{.Namespace}}/{{end}}{{.Name}}
-        {{end -}}
-      reconcileTemplate: "chore: reconcile {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Namespace}} in {{.Namespace}}{{end}}{{if .ResourceVersion}} (last resourceVersion: {{.ResourceVersion}}){{end}}"
+      liveTemplate: "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}"
 ```
 
-| Template | Fields |
-|---|---|
-| `liveTemplate` | `Author`, `GitTarget`, `Count`, `Operations`, `Resources`, and the `LabelValues` / `LabelValue` accessors |
-| `requestTemplate` | the same fields, plus `RequestMessage` |
-| Each `Resources` entry | `Operation`, `Group`, `Version`, `Resource`, `Kind`, `Namespace`, `Name`, `APIVersion`, `ResourceVersion`, `Generation`, `Labels`, and the `Label` accessor |
-| `reconcileTemplate` | `Count`, `GitTarget`, `Group`, `Version`, `Resource`, `APIVersion`, `Namespace`, `ResourceVersion` |
-
-Live `Count` counts retained entries after window coalescing, before the writer compares them with
-Git. Repeated edits to one resource collapse to one entry, with the last operation retained.
-`Operations` counts those retained `CREATE`, `UPDATE`, and `DELETE` entries; `Resources` preserves
-first-seen order. An entry already matching Git still counts, and several entries may share a file.
-The count can exceed the number of changed resources. A no-op creates no commit, even with a literal
-message. Printing a resource entry directly keeps its `group/version/resource[/namespace]/name` form.
-
-`RequestMessage` belongs to `requestTemplate`. It exists on the live context too, but is always
-empty there: a window carrying a save request's message renders `requestTemplate` when one is
-configured and the literal message when one is not, so `liveTemplate` only ever runs for windows
-that have no request message. Do not reach for `{{if .RequestMessage}}` inside `liveTemplate`;
-it never fires.
-
-`Author` is the raw window username and is empty when no actor is named. It does not use an OIDC
-display name or the `attribution-unresolved` Git author sentinel. The sentinel appears only in the
-Git author header when attribution ran without resolving an actor. Messages never change authorship.
-
-##### Framing a save message
-
-By default a [save request](#commitrequest)'s message **replaces** the template, so supplying one
-costs you the resource body `liveTemplate` would have produced: the commit says why, but no longer
-says what. `requestTemplate` composes the two.
-
-```yaml
-spec:
-  commit:
-    message:
-      requestTemplate: |-
-        {{.RequestMessage}}
-
-        {{range .Resources -}}
-        - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}
-        {{end -}}
-```
-
-It renders only for a window a save request attached to; every other window is unaffected. Omit it
-and request messages are committed verbatim, exactly as before.
-
-The request is **never** parsed as a template. Its message arrives as `.RequestMessage` and is
-committed unaltered, so a save-button user supplies the content while the operator owns the
-wording around it. Nothing a requester writes is ever executed, and braces inside a request message
-stay literal in every case.
-
-A `requestTemplate` that never renders `.RequestMessage` is **rejected** with `Validated=False`,
-because dropping the requester's stated reason is the one thing this field must not do. Every
-spelling that puts the message in the commit is accepted (`{{.RequestMessage}}`, a pipeline, or a
-variable), because the check renders the template and looks for the message in the output rather
-than scanning the template's text.
-
-`requestTemplate` is validated against the same window shapes as `liveTemplate`, so a template
-reading a label some resources do not carry fails at admission rather than at commit time. If one
-does fail to render in production, the request's message is committed verbatim instead of the
-window being lost, and the commit is counted under `message_source="commit_request_fallback"`.
-Alert on that rate: the commit itself succeeds and no condition moves, so it is the only signal.
-
-##### Kind, scope, and labels
-
-`Kind` is the commit-message spelling of the `{kind}` [placement variable](#template-variables),
-and `Namespace` now answers the scope question completely: it renders the resource's namespace, or
-the literal `_cluster` when the resource is cluster-scoped, exactly as `{namespace}` does in a path.
-A body line no longer has to guard it with `{{if .Namespace}}`, because the field is never blank;
-the default template no longer does.
-
-`Labels` is the resource's labels as the writer commits them, and is read with the `Label`
-accessor:
-
-```yaml
-liveTemplate: |-
-  chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}{{with .LabelValue "team"}} for {{.}}{{end}}
-
-  {{range .Resources -}}
-  - [{{.Operation}}] {{.Kind}} {{.Namespace}}/{{.Name}} ({{.Label "app.kubernetes.io/instance"}})
-  {{end -}}
-```
-
-Three things to know:
-
-- **Read a label with `{{.Label "team"}}`, never `{{.Labels.team}}`.** These templates render with
-  `missingkey=error`, so indexing a label a resource does not carry does not render empty: it fails
-  the render, and a failed render fails the whole commit, losing the window until the next resync.
-  `Label` returns the empty string instead. Validation catches the dotted form (its sample events
-  include a resource with no labels), so such a template is rejected at admission rather than at
-  2am, but the accessor is the spelling to write.
-- **A commit spans n resources, so a label is a set here.** `LabelValues "team"` is the sorted,
-  distinct list of values in this commit, skipping resources that do not set it; `LabelValue "team"`
-  is the single value when the whole commit agrees on one, and empty when it does not. A subject
-  line that names a team is only honest under the second. The two differ on a resource that does
-  not carry the label: `LabelValues` skips it, `LabelValue` treats it as a disagreement and renders
-  nothing, so a commit holding one labeled and one unlabeled resource is named after neither.
-- **A `DELETE` carries no object**, because the resource is already gone from the cluster, so
-  `Kind` and `Labels` are empty for one. The identity fields (`Name`, `Namespace`, `Resource`, …)
-  are unaffected, and so are `ResourceVersion` and `Generation`: the watch delivers the final
-  object, so the last state that existed is still knowable even though the object is not. A commit containing a
-  `DELETE` therefore has no agreed `LabelValue`: what the deleted resource was labeled is not
-  something the window still knows.
-
-##### Naming the state a commit wrote
-
-Two counters describe the observed state each entry was at. Neither is committed to the file
-(`resourceVersion` and `generation` are stripped from every manifest on purpose, because a counter
-inside a manifest would make every observation a byte change); both travel beside the object, in
-the message only. Both are off by default, and both are guarded with `{{with}}`:
-
-```yaml
-liveTemplate: |-
-  chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}
-
-  {{range .Resources -}}
-  - [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Namespace}}/{{.Name}}{{with .ResourceVersion}}@{{.}}{{end}}{{with .Generation}} gen{{.}}{{end}}
-  {{end -}}
-```
-
-| | `{{.ResourceVersion}}` | `{{.Generation}}` |
-|---|---|---|
-| moves when | **anything** is written, `/status` included | only the **desired state** changes |
-| present on | every resource the operator observed | only kinds with a spec: **not** a ConfigMap or a Secret |
-| absent value | `""` | `0` |
-| safe to compare | for **equality** only | yes: per object, starts at `1`, one step per spec write |
-
-**Turn `ResourceVersion` on to make a commit joinable**: to an audit log entry, to a
-`kubectl get -o yaml` taken at the time, to another operator's logs. Equal to the object's current
-version means nothing is pending. Do not subtract two of them: `resourceVersion` is opaque by API
-contract and is the cluster-wide store revision in practice, so two consecutive commits of one
-ConfigMap can read `@1331` then `@8402` with nothing skipped, because every other object's writes
-moved the same counter.
-
-**Turn `Generation` on to see what a commit missed.** It is the counter a gap is meaningful in: a
-commit at `gen3` following one at `gen6` means three spec changes that were not committed
-separately. That is the question `ResourceVersion` cannot answer.
-
-Read them together, because each is blind where the other sees:
-
-- **`ResourceVersion` lags, deliberately.** An update whose committed content would be identical (a
-  `/status`-only write) is never routed, so the version in a commit can be older than the object's
-  current one. A resource re-edited inside one window contributes the last routed version, and an
-  entry that already matched Git still contributes one.
-- **`Generation` misses metadata.** A label- or annotation-only edit changes what gets committed
-  without moving it, so an unchanged `Generation` across two commits does not mean an unchanged
-  commit. And it is `0` for every spec-less kind, which is much of what a typical target mirrors.
-- **Neither counts skips.** To count what the operator deliberately did not route, read
-  `watch_events_total{outcome="unchanged"}`, which is exactly that census.
-
-A producer that observed no object renders nothing for either: reconcile, resync, and bootstrap
-writes all leave both empty.
-
-`reconcileTemplate` gets none of these. It describes a *type* being reconciled rather than a list
-of resources, so there are no labels to read, and its own `{{.ResourceVersion}}` is the snapshot
-`LIST`'s version: one value for the whole run, not any single object's. Live names n resources, so
-it names each one's version; reconcile names a type, so it names the snapshot's. Its `Namespace`
-keeps the plain meaning it always had: the namespace a namespace-scoped reconcile covered, empty for a whole-target or all-namespaces
-one. That emptiness means "every namespace", not "cluster-scoped", so the `_cluster` sentinel would
-be a lie there rather than a convenience.
-
-##### Two languages, one vocabulary
-
-Placement templates and commit templates are deliberately different renderers: a path has to be
-statically checkable (that is what lets the operator prove a Secret route cannot collide two
-Secrets onto one file), while a commit message has to iterate over n resources, which needs
-`range` and `if`. Neither language can do the other's job.
-
-The nouns are the same in both, and only the spelling follows each host language:
-
-| Concept | Placement | Commit message |
-|---|---|---|
-| namespace, or `_cluster` when cluster-scoped | `{namespace}` | `.Namespace` |
-| kind | `{kind}` | `.Kind` |
-| name | `{name}` | `.Name` |
-| API version | `{apiVersion}` | `.APIVersion` |
-| one label | `{label:team}` | `.Label "team"` |
-| the observed version | (none) | `.ResourceVersion` |
-| the desired-state counter | (none) | `.Generation` |
-
-The two counters are the first nouns that legitimately exist on only one side. A path keyed on a
-counter would write a new file whenever it moved, which is the opposite of what placement is for: a
-path has to be stable and statically checkable. A message describes one moment, so it can name
-one.
-
-The capitals are Go's, not a style choice: `text/template` can only reach exported struct fields,
-which must begin with one. The braces are lower-case because a placement template reads like the
-manifest it is filing (`metadata.namespace`). A label needs a method call rather than a field on
-the commit side because a Go template field name cannot contain a `:` or a `/`.
-
-Reconcile type fields name the synced type; `Namespace` names a namespace-scoped snapshot.
-Whole-target snapshots leave those fields empty. `ResourceVersion` is the snapshot's resourceVersion
-and can be absent, including a pure sweep. Guard optional values as in the example.
-
-`ResourceVersion` was called `Revision` before `v0.48.0`. A `reconcileTemplate` still naming
-`{{.Revision}}` is rejected, and the `GitTarget` says so on its `Validated` condition. See
-[the upgrade note](UPGRADING.md#reconciletemplates-revision-is-now-resourceversion).
-
-A reconcile runs per *cell* (a (type, namespace) pair) rather than per target, so a
-namespace-scoped run covers exactly one namespace and the default subject names it:
-
-```text
-chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)
-```
-
-Without it, a target watching one type in two namespaces writes two byte-identical subjects, which
-is the same reason the type is in there. `Namespace` stays guarded by `{{if}}` rather than falling
-back to a sentinel the way `Resources[i].Namespace` does, and the difference is not an oversight:
-per resource, empty has exactly one meaning (the kind has no namespaces), so `_cluster` is a true
-name for it. Per run, empty covers two different facts: an all-namespaces sweep of a namespaced
-type, and a cluster-scoped type that has no namespaces. No single word is true of both, so the
-honest rendering is to say nothing.
-
-`eventTemplate` and `groupTemplate` are retired and rejected. Follow the
-[upgrade instructions](UPGRADING.md#one-live-commit-message-template) to migrate existing templates.
+See [commit messages](commit-messages.md) for the full reference: the precedence rules, every field
+of the template context, how to frame a save request's message with what was saved, and the
+validation a bad template fails.
 
 ### Seeing what a target will do, before it does it
 
@@ -1251,7 +1095,7 @@ placement:
 
 Resources sharing a label value bundle into one file, which is usually the point: every ConfigMap
 labeled `app.kubernetes.io/instance: voter` lands in `voter/configmaps.yaml`. The commit that
-writes them can name the same label: see [Kind, scope, and labels](#kind-scope-and-labels).
+writes them can name the same label: see [Kind, scope, and labels](commit-messages.md#kind-scope-and-labels).
 
 ##### Every resource is placed, labeled or not
 
@@ -1787,8 +1631,8 @@ The entire spec is immutable. Create a new `CommitRequest` for each save attempt
 A present message accepts 1–1024 Unicode characters, including newline. All other ASCII control
 characters, including tab, carriage return, and DEL, are rejected, as is whitespace-only text.
 Accepted surrounding spaces are preserved. Braces such as `{{.Author}}` remain literal; omission
-uses [the live template](#commit-message-templates). To frame a save message with what was saved,
-configure [`requestTemplate`](#framing-a-save-message) on the GitTarget. The request is still never
+uses [the live template](commit-messages.md). To frame a save message with what was saved,
+configure [`requestTemplate`](commit-messages.md#framing-a-save-message) on the GitTarget. The request is still never
 parsed as a template. A rejected request leaves automatic mirroring
 available. The submitter chooses any semantic prefix; free-form messages are accepted.
 

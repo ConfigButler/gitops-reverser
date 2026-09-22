@@ -62,7 +62,7 @@ Two fields exist for the sake of a legible demo rather than because the window n
 - **`requestTemplate`** keeps the changed resources in the commit body underneath the requested
   message. A request message otherwise **replaces** the generated message entirely, so the commit
   would say why but no longer say what. See
-  [framing a save message](../configuration.md#framing-a-save-message).
+  [framing a save message](../commit-messages.md#framing-a-save-message).
   `{{.Kind}}` is read off the object, and a `DELETE` event carries none, so a deletion in the window
   renders as `/hello`. Use `{{.Resource}}` where a window can contain one; the built-in live template
   does.

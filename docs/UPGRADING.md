@@ -27,7 +27,7 @@ user-facing place — a Kubernetes `resourceVersion`. A commit message about Git
 "revision" should mean something other than a commit.
 
 The rename lands in the same release as the new per-resource
-[`Resources[i].ResourceVersion`](configuration.md#naming-the-state-a-commit-wrote) on
+[`Resources[i].ResourceVersion`](commit-messages.md#naming-the-state-a-commit-wrote) on
 `liveTemplate`, so the vocabulary changes once: **`Revision` is a Git commit, `ResourceVersion` is a
 Kubernetes version.**
 
@@ -489,7 +489,7 @@ can prune it. Confirm targets return to `Validated=True` after migration.
 The default live subject is `chore: sync N resource(s)` with singular agreement and one retained
 resource per body line, including singleton commits. Reconcile defaults use `chore: reconcile`.
 Counts describe retained input before comparison with Git. See the
-[configuration reference](configuration.md#commit-message-templates).
+[commit message reference](commit-messages.md).
 
 CommitRequest messages reject whitespace-only text and preserve all accepted Unicode and surrounding
 spaces. The 1024-character bound is no longer a byte truncation. A request deadline starts at the

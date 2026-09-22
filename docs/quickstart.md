@@ -10,6 +10,10 @@ chart also renders the cluster-scoped `default` `ClusterProvider` the starter ta
 
 **Prerequisites:** a Kubernetes cluster with `kubectl`, Helm 3, and cert-manager for TLS.
 
+To write the objects yourself instead of letting the chart generate them, start from
+[`config/samples/`](../config/samples/): one manifest per object, consistent enough to apply
+together. [`configuration.md`](configuration.md) explains every field.
+
 ## 1. Install cert-manager
 
 Skip this step if cert-manager is already installed and healthy.

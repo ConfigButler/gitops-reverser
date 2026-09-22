@@ -53,7 +53,7 @@ Custom resources configure all of it: a `GitProvider` holds the repository and c
   to earn a verified badge on your Git host. See [commit signing](docs/commit-signing.md).
 - **Commit messages you control.** Separate templates for live windows, reconciles, and save
   requests, validated at admission rather than at commit time. See
-  [message templates](docs/configuration.md#commit-message-templates).
+  [message templates](docs/commit-messages.md).
 - **Encrypted Secrets.** SOPS + age encryption before commit, which Secret-shaped custom resources
   can opt into. See [SOPS and age](docs/sops-age-guide.md).
 - **Metrics.** A Prometheus surface with copy-pasteable PromQL for the questions operators ask, and
