@@ -149,13 +149,16 @@ tasks:
     # setup-envtest directly, so the gate keeps working if the link is stale or gone.
     # This exists for the editor.
     #
-    # The status check follows the symlink, so a dangling one (the version moved,
-    # bin/ was cleaned) is false and the task re-runs. setup-envtest is a no-op once
-    # the binaries are there, so re-running costs nothing.
+    # There is deliberately no status check. The obvious one — does bin/k8s/current
+    # resolve? — is true of a link left pointing at a previous version, because
+    # setup-envtest keeps every version it has ever downloaded, so the old directory
+    # is still there after a k8s.io/api bump moves ENVTEST_K8S_VERSION. The link
+    # would then keep resolving to the old apiserver and the editor would silently
+    # test against it. A status that compared the link against the selected path
+    # would have to run setup-envtest to learn that path, which is the whole cost of
+    # just relinking, so relinking every time is both cheaper and correct.
     deps:
       - setup-envtest
-    status:
-      - test -d "$(pwd)/bin/k8s/current"
     cmds:
       - |
         set -eu
