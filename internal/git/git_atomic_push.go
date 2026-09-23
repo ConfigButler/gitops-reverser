@@ -113,6 +113,56 @@ func (e *RemoteMovedError) Error() string {
 	return "remote received unknown updates"
 }
 
+// PushOutcomeKind names which of the three non-error exits a push session took.
+type PushOutcomeKind string
+
+const (
+	// PushAccepted means the server took the ref update. The outcome's Head is the new tip.
+	PushAccepted PushOutcomeKind = "Accepted"
+	// PushUpToDate means the advertisement already carried the branch at our head, so nothing
+	// was sent. Head is that hash.
+	PushUpToDate PushOutcomeKind = "UpToDate"
+	// PushNoBranch means the advertisement did not carry the branch and there was nothing local
+	// to send. Head is the zero hash, and that is an observation rather than the absence of one:
+	// a branch does not exist without a commit.
+	PushNoBranch PushOutcomeKind = "NoBranch"
+)
+
+// PushOutcome is what the push session learned about the remote.
+//
+// Every field is read from the ONE connection the push was making anyway, which is the point:
+// none of it costs a round trip. A push that returns without an error therefore proves more than
+// a fetch does. A fetch says "the branch was at X when I looked"; an accepted push says "the
+// branch was at Old when I looked, and the server has just moved it to New on my authority", on
+// one connection, with no window between the read and the write for anyone to slip through.
+//
+// The zero value is not a valid outcome. An error return means nothing was observed at all, and
+// the caller must invalidate rather than record.
+type PushOutcome struct {
+	// Kind is which exit was taken.
+	Kind PushOutcomeKind
+	// Head is where the branch is on the remote now. Zero only for PushNoBranch.
+	Head plumbing.Hash
+}
+
+// pushPlan is validatePushState's answer: either a packfile to send, or an outcome the
+// advertisement alone already settled.
+//
+// The two cases used to share one return shape — a zero/zero pair meaning "up to date" — and the
+// existing comment admitted it conflated "the remote equals our head" with "there is nothing
+// local and nothing on the remote". GetCurrentBranch returns a zero hash for an unborn local
+// branch, so both reached the same line. Both are observations; only one names a revision.
+type pushPlan struct {
+	// settled is empty when the push has to be sent, and otherwise carries what the
+	// advertisement proved.
+	settled PushOutcomeKind
+	// head is the settled outcome's revision. Meaningless while settled is empty.
+	head plumbing.Hash
+	// old and new are the compare-and-swap pair for the push command.
+	old plumbing.Hash
+	new plumbing.Hash
+}
+
 // validatePushState checks if the push can proceed based on remote state.
 func validatePushState(
 	ctx context.Context,
@@ -120,12 +170,12 @@ func validatePushState(
 	repo *git.Repository,
 	rootHash plumbing.Hash,
 	rootBranch plumbing.ReferenceName,
-) (plumbing.Hash, plumbing.Hash, error) {
+) (pushPlan, error) {
 	logger := log.FromContext(ctx)
 
 	branch, localHash, err := GetCurrentBranch(repo)
 	if err != nil {
-		return plumbing.ZeroHash, plumbing.ZeroHash, fmt.Errorf("failed to get current branch: %w", err)
+		return pushPlan{}, fmt.Errorf("failed to get current branch: %w", err)
 	}
 
 	branchName := branch.Short()
@@ -133,7 +183,7 @@ func validatePushState(
 	// Phase 1: Get advertised references (remote state) on this same session.
 	remoteRefs, err := session.GetRemoteRefs(ctx, nil)
 	if err != nil {
-		return plumbing.ZeroHash, plumbing.ZeroHash, fmt.Errorf("failed to get advertised references: %w", err)
+		return pushPlan{}, fmt.Errorf("failed to get advertised references: %w", err)
 	}
 	refs := advertisedHashes(remoteRefs)
 
@@ -142,7 +192,7 @@ func validatePushState(
 	remoteHash, found := refs[branch]
 	currentRootHash, rootFound := refs[rootBranch]
 	if !rootFound && !rootHash.IsZero() {
-		return plumbing.ZeroHash, plumbing.ZeroHash, &RemoteMovedError{
+		return pushPlan{}, &RemoteMovedError{
 			Branch:     rootBranch,
 			Expected:   rootHash,
 			Advertised: plumbing.ZeroHash,
@@ -157,13 +207,13 @@ func validatePushState(
 		// Check if we are already up2date
 		if localHash == remoteHash {
 			logger.Info("remote already up2date", "branch", branchName, "hash", localHash)
-			return plumbing.ZeroHash, plumbing.ZeroHash, nil // special signal for up-to-date
+			return pushPlan{settled: PushUpToDate, head: remoteHash}, nil
 		}
 
 		// Check if the remoteHash is what we based our work on
 		if rootHash != currentRootHash {
 			logger.Info("Remote branch not in expected state", "branch", branchName)
-			return plumbing.ZeroHash, plumbing.ZeroHash, &RemoteMovedError{
+			return pushPlan{}, &RemoteMovedError{
 				Branch:     rootBranch,
 				Expected:   rootHash,
 				Advertised: currentRootHash,
@@ -171,7 +221,13 @@ func validatePushState(
 		}
 	}
 
-	return oldHash, localHash, nil
+	// Nothing on the remote and nothing local to send. The advertisement still answered the
+	// question the caller asked: this branch is not there.
+	if !found && localHash.IsZero() {
+		return pushPlan{settled: PushNoBranch}, nil
+	}
+
+	return pushPlan{old: oldHash, new: localHash}, nil
 }
 
 // performPush executes the packfile creation and push operation.
@@ -248,43 +304,50 @@ func performPush(
 	return nil
 }
 
-// PushAtomic performs an atomic PushAtomic operation in a single network session.
+// PushAtomic performs an atomic push in a single network session.
 // It checks if the remote branch is not touched before pushing to prevent creating diverged branches.
-// An explcit error is returned if it failed: I don't plan to use these, we can always retry...
+//
+// The returned PushOutcome is an observation of the remote, made on the connection the push was
+// opening anyway. An error means nothing was observed; see PushOutcome for what each kind proves.
 func PushAtomic(
 	ctx context.Context,
 	repo *git.Repository,
 	rootHash plumbing.Hash,
 	rootBranch plumbing.ReferenceName, // only pushes if this branch is in exact same state, e.g. refs/heads/main (HEAD not allowed since a ReceivePackSession never returns it)
 	auth []gitclient.Option,
-) error {
+) (PushOutcome, error) {
 	if !rootBranch.IsBranch() {
-		return errors.New("rootBranch is not a branch")
+		return PushOutcome{}, errors.New("rootBranch is not a branch")
 	}
 
 	logger := log.FromContext(ctx)
 
 	session, err := getPushSession(ctx, repo, auth)
 	if err != nil {
-		return err
+		return PushOutcome{}, err
 	}
 	defer session.Close()
 
-	oldHash, localHash, err := validatePushState(ctx, session, repo, rootHash, rootBranch)
+	plan, err := validatePushState(ctx, session, repo, rootHash, rootBranch)
 	if err != nil {
-		return err
+		return PushOutcome{}, err
 	}
-	if oldHash.IsZero() && localHash.IsZero() {
-		// Special signal for up-to-date
-		return nil
+	if plan.settled != "" {
+		return PushOutcome{Kind: plan.settled, Head: plan.head}, nil
 	}
 
 	branch, _, err := GetCurrentBranch(repo)
 	if err != nil {
-		return fmt.Errorf("failed to get current branch: %w", err)
+		return PushOutcome{}, fmt.Errorf("failed to get current branch: %w", err)
 	}
 
-	return performPush(ctx, session, repo, rootHash, localHash, oldHash, branch, logger)
+	if err := performPush(ctx, session, repo, rootHash, plan.new, plan.old, branch, logger); err != nil {
+		return PushOutcome{}, err
+	}
+	// The server accepted the ref update, so the branch is at the hash we sent. go-git v6 decodes
+	// report-status inside session.Push, so a per-command rejection would have come back as the
+	// error above rather than as a silent no-op.
+	return PushOutcome{Kind: PushAccepted, Head: plan.new}, nil
 }
 
 // createPackfile creates a packfile containing the specified objects using go-git's encoder.

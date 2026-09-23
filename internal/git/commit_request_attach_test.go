@@ -842,8 +842,8 @@ func TestAttach_ReSentAttachDuringAFailedPushDoesNotResolve(t *testing.T) {
 	pushAtomicFn = func(
 		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
 		_ plumbing.ReferenceName, _ []gitclient.Option,
-	) error {
-		return errors.New("dial tcp: connection reset by peer")
+	) (PushOutcome, error) {
+		return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
 	}
 	defer func() { pushAtomicFn = originalPush }()
 
@@ -925,8 +925,8 @@ func TestAttach_ShutdownFailsACommittedRequestThatNeverPushed(t *testing.T) {
 	pushAtomicFn = func(
 		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
 		_ plumbing.ReferenceName, _ []gitclient.Option,
-	) error {
-		return errors.New("dial tcp: connection reset by peer")
+	) (PushOutcome, error) {
+		return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
 	}
 	defer func() { pushAtomicFn = originalPush }()
 

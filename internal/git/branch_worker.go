@@ -1775,20 +1775,21 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			rootBranch = plumbing.NewBranchReferenceName(w.Branch)
 		}
 
-		err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
+		outcome, err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
 		if err == nil {
-			// The uploaded commits are the remote tip now, so the worktree is at it. A nil
-			// return also covers "already up to date", which implies the same thing — and a
-			// third case that does not: an unborn branch with nothing to push, where
-			// validatePushState returns zero/zero without having confirmed anything.
-			// branchExists is what separates them.
+			// A push that returns without an error is an OBSERVATION of the remote, on the
+			// connection it was opening anyway: the server took the ref update, or the
+			// advertisement already showed the branch at our head, or the advertisement did not
+			// carry the branch at all. All three say where the branch is, so all three take
+			// trust — including the push that CREATED the branch, which the old branchExists
+			// guard (read from the last fetch, the only writer) wrongly excluded.
 			//
 			// This must NOT clear worktreeDirty. An earlier write can have failed part-way
 			// through executePendingWrites and left staged changes behind while this write was
 			// retained; a successful push says where the remote is, and says nothing about that.
-			if branchExists, _, _ := w.GetBranchMetadata(); branchExists {
-				w.setBaseTrusted(true)
-			}
+			w.setBaseTrusted(true)
+			w.Log.V(1).Info("Remote observed by push",
+				"branch", w.Branch, "outcome", string(outcome.Kind), "head", outcome.Head.String())
 			w.pushCycleRootBranch = ""
 			w.pushCycleRootHash = plumbing.ZeroHash
 			w.firsts.push.Do(func() {

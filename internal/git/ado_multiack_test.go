@@ -315,8 +315,10 @@ func TestADO_PushAtomic_NeedsNoMultiAck(t *testing.T) {
 
 	newHash := commitFileChange(t, worktree, local, "pushed.yaml", "kind: Pushed\n")
 
-	err = PushAtomic(context.Background(), repo, *rootHash, plumbing.ReferenceName("refs/heads/main"), nil)
+	outcome, err := PushAtomic(context.Background(), repo, *rootHash, plumbing.ReferenceName("refs/heads/main"), nil)
 	require.NoError(t, err, "receive-pack has no multi_ack, so the push must succeed")
+	require.Equal(t, PushAccepted, outcome.Kind)
+	require.Equal(t, newHash, outcome.Head)
 
 	assert.Zero(t, sim.uploadPackPosts.Load(), "a push must not touch git-upload-pack")
 

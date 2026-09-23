@@ -35,7 +35,7 @@ func TestPushAtomic_RejectionCarriesAdvertisedHash(t *testing.T) {
 	repo, err := gogit.PlainOpen(f.worker.repoPathForRemote(f.sim.RepoURL))
 	require.NoError(t, err)
 
-	err = PushAtomic(f.worker.ctx, repo, f.worker.pushCycleRootHash,
+	_, err = PushAtomic(f.worker.ctx, repo, f.worker.pushCycleRootHash,
 		plumbing.NewBranchReferenceName("main"), nil)
 
 	var moved *RemoteMovedError
@@ -91,10 +91,10 @@ func TestRunPushCycle_PushWithoutAdvertisement_FallsBackToFetch(t *testing.T) {
 		rootHash plumbing.Hash,
 		rootBranch plumbing.ReferenceName,
 		auth []gitclient.Option,
-	) error {
+	) (PushOutcome, error) {
 		pushes++
 		if pushes == 1 {
-			return errors.New("dial tcp: connection reset by peer")
+			return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
 		}
 		return originalPush(ctx, repo, rootHash, rootBranch, auth)
 	}

@@ -577,8 +577,8 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 		_ plumbing.Hash,
 		_ plumbing.ReferenceName,
 		_ []gitclient.Option,
-	) error {
-		return pushErr
+	) (PushOutcome, error) {
+		return PushOutcome{}, pushErr
 	}
 	fetchRemoteBranchHashFn = func(
 		_ context.Context,
@@ -656,8 +656,8 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 		_ plumbing.Hash,
 		_ plumbing.ReferenceName,
 		_ []gitclient.Option,
-	) error {
-		return pushErr
+	) (PushOutcome, error) {
+		return PushOutcome{}, pushErr
 	}
 	fetchRemoteBranchHashFn = func(
 		_ context.Context,
