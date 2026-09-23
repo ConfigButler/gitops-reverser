@@ -798,6 +798,74 @@ unaffected: they are edited where they already live. The fix is to point the tar
 `apps/checkout/overlays/prod`, and declare the other environments as their own `GitTarget` objects:
 one target is one environment is one write partition.
 
+### Where the branch is, and when that was last proved (`status.remote`)
+
+`status.remote` is what the target last **proved** about its branch on the Git remote. Like
+`status.placement` it is an observation rather than a record of work, so it is there before the
+target has written anything:
+
+```yaml
+status:
+  remote:
+    revision: 4f2c1ab9e0...             # empty = the branch is not on the remote
+    lastVerifiedAt: "2026-09-23T10:14:02Z"
+    verifiedBy: Push                    # Push | Fetch
+```
+
+- `revision` is where the branch is. Empty means the branch is not on the remote at all, which is
+  not an error: a branch does not exist without a commit.
+- `lastVerifiedAt` answers **"has anything looked"**, which is the question
+  `placement.resolvedAtRevision` deliberately does not: that one dates the resolution, so an old
+  value there means the folder's shape has been stable.
+- `verifiedBy` says what proved it. `Push` means the server accepted a ref update of ours, so this
+  revision is Reverser's own work. `Fetch` means it went and looked, and this is what was there.
+  A `Fetch` beside a revision none of your publications produced is how a **foreign push** to the
+  branch is read off `kubectl`.
+
+`kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.
+
+Two things renew it. A **push** does, for free: the push session reads the remote's advertisement
+and the server names the hash it accepted, on the connection the push was making anyway. So a
+target that is publishing never needs anything else, and its revision moves with each push rather
+than lagging an interval behind. An **idle** target is asked to re-prove it on its reconcile tick;
+see [`--git-refresh-interval`](#keeping-an-idle-target-fresh---git-refresh-interval) below.
+
+`GitProvider.status.lastVerifiedAt` is the same word for the connection rather than the branch:
+when the credential and the repository were last proved together. It is never cleared, so
+`Ready=False` beside it reads as "broken for this long".
+
+### Keeping an idle target fresh (`--git-refresh-interval`)
+
+A target that is writing keeps its own view of Git current. One that has gone quiet used to hold
+its previous answer indefinitely, because it is converged and its periodic passes publish status
+without touching Git, until somebody annotated it or it wrote again.
+
+`--git-refresh-interval` (Helm: `controllerManager.gitRefreshInterval`, default `10m`) bounds that.
+On the target's reconcile tick, a branch whose last observation is older than the interval is
+re-proved:
+
+| Target state | What it costs |
+| --- | --- |
+| Actively writing | **Nothing, ever.** Each cycle ends in a push that reads the advertisement, so no refresh is scheduled |
+| Refused | Nothing. It is not converged, so it already re-reads every ten seconds |
+| Healthy and idle | **One ref advertisement per interval**, plus a fetch only on the intervals where the branch had actually moved |
+
+What a refresh may do is bounded on purpose. It republishes `status.remote`, and re-reads the
+folder and republishes `status.placement` when the branch moved. It does **not** re-run the
+acceptance gate, so it neither raises nor clears `GitPathAccepted`, and it never plans, commits or
+pushes anything. A fresh look at Git changes what you read and nothing else.
+
+Set `0` to turn it off. Reverser then holds no timer against your Git host at all and an idle
+target generates no Git traffic; `status.remote` still works, because pushes still renew it. The
+effective granularity is the 5-minute control-plane reconcile, so a value below that means "every
+tick". [`gitopsreverser_git_fetches_total{reason="refresh"}`](interpreting-metrics.md#reading-git_fetches_total)
+is what it costs.
+
+Reverser still does not **act** on what a refresh reads: applying a Git-side change is the GitOps
+reconciler's job. And it is not a latency mechanism: it buys bounded staleness with no inbound
+surface and no Git-host configuration. Seconds-fresh is
+[the inbound receiver's job](design/push-notification-and-reconcile-trigger.md).
+
 ### Reverting a refused edit (`spec.onRefusal`)
 
 `spec.onRefusal` chooses whether an eligible refused edit should request Git re-application.

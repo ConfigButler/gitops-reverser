@@ -428,6 +428,7 @@ provider and branch so different workers do not hide one another's behavior.
 | Signal | Interpretation |
 | --- | --- |
 | `gitopsreverser_git_fetches_total`, reason `publication` | Base-establishment fetches; should stop increasing during healthy steady publication |
+| `gitopsreverser_git_fetches_total`, reason `refresh` | The periodic re-proof of an IDLE branch, counted only when the branch had moved and a fetch followed. A branch being published to never contributes: its pushes prove the remote already |
 | Same counter, reason `contention` | Fetch/reset after confirmed remote movement |
 | Same counter, reason `push_failure_probe` | Remote-state lookup after an unclassified push failure |
 | Same counter, reason `recovery` | Attempts to rebuild unsafe retained work or clean a dirty checkout |

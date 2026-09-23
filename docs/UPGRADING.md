@@ -7,6 +7,43 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `--base-trust-max-age` is gone; an idle target refreshes itself
+
+**Breaking only if you set the flag by hand.** `--base-trust-max-age` is removed. No Helm value
+mapped to it and the chart passes a closed list of arguments, so a chart install could not set it;
+a hand-written Deployment that does now fails to start with `flag provided but not defined`.
+
+What replaces it is on by default and costs less. `--git-refresh-interval` (Helm:
+`controllerManager.gitRefreshInterval`, default `10m`) has an idle `GitTarget` re-prove where its
+branch is: one ref advertisement per interval, and a fetch only when the branch has actually moved.
+A target that is publishing pays nothing at all, because its own push already proves the remote.
+
+The mechanism is the reason for the change. Expiring trust could only make an idle target act by
+forcing a full re-check, which drives a **resync** — a cluster snapshot with mark-and-sweep — so the
+flag's real price was a snapshot per target per interval. The refresher renews the knowledge
+instead of revoking it, and writes nothing.
+
+### What to change
+
+Drop the flag. If you had set it, set `--git-refresh-interval` to the cadence you wanted instead:
+
+```yaml
+# before
+- --base-trust-max-age=30m
+# after
+- --git-refresh-interval=30m
+```
+
+Set `--git-refresh-interval=0` to keep the previous default behaviour, where nothing holds a timer
+against your Git host and an idle target generates no Git traffic.
+
+### What you gain
+
+`GitTarget.status.remote` publishes where the branch is, when that was last proved, and whether a
+push or a fetch proved it — renewed by every push, so it is current on an active target at no cost.
+`GitProvider.status.lastVerifiedAt` does the same for the credential. Both have a `Verified` printer
+column under `kubectl get -o wide`.
+
 ## `reconcileTemplate`'s `Revision` is now `ResourceVersion`
 
 **Breaking, and only for a custom `reconcileTemplate`.** The reconcile commit-message field

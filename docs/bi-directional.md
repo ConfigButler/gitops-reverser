@@ -299,11 +299,24 @@ not exist yet, so what a moved branch costs depends on what the target is doing:
 - **Refused:** it recovers on its own. While `GitPathAccepted` is `False` the target is not
   converged, so it requeues every 10 seconds and each pass forces a re-read. Fix an unsupported
   folder in Git and the condition clears within about ten seconds.
-- **Healthy and idle:** it does not. A converged target requeues every 5 minutes and those passes
-  publish status without touching Git, so it holds its previous answer about the folder until it
-  next writes.
+- **Healthy and idle:** it finds out on its own, within `--git-refresh-interval` (10m by default)
+  plus the 5-minute reconcile tick that carries the request. The target spends one ref
+  advertisement, fetches only if the branch actually moved, and republishes `status.remote` and
+  `status.placement`. It writes nothing: a refresh may change what you read and nothing else.
 
-Force a re-read of an idle target:
+Read where a branch is, and when that was last proved:
+
+```bash
+kubectl get gittarget editing -n gitops-reverser \
+  -o jsonpath='{.status.remote}{"\n"}'
+# {"revision":"4f2c1ab9...","lastVerifiedAt":"2026-09-23T10:14:02Z","verifiedBy":"Fetch"}
+```
+
+`verifiedBy: Fetch` next to a revision none of your publications produced is how a foreign push is
+read off `kubectl`; `Push` means the revision is Reverser's own work and the server took it.
+
+Ask for a re-read **now**, rather than waiting out the interval. This is the one that also forces a
+full re-check, so it is the tool for a refusal you have just fixed:
 
 ```bash
 kubectl annotate gittarget editing -n gitops-reverser \

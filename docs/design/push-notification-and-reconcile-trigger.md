@@ -104,8 +104,14 @@ sequenceDiagram
 ```
 
 The green block already reads the branch SHA, which is the only thing the red block contributed on
-an uncontended cycle. **Reverser never polls the remote and holds no timer against it**, so an idle
-target generates no Git traffic at all.
+an uncontended cycle. **A target that is publishing therefore reads the remote only through the
+push it was making anyway**, which is what the whole of §1.6 measures.
+
+One qualifier, added when the refresher shipped: an IDLE target now spends one ref advertisement
+per `--git-refresh-interval` to re-prove where its branch is, so "no Git traffic at all" holds for
+a publishing target always, and for an idle one only at `--git-refresh-interval=0`. Nothing here
+changes for the active case, because a successful push renews the same knowledge and an active
+branch therefore never schedules a refresh.
 
 ### 1.5 The invariant that replaced it
 
@@ -113,6 +119,12 @@ target generates no Git traffic at all.
 
 Three flags carry it, and they are three because each brackets a different span. Collapsing any two
 is a bug that was found by trying.
+
+Trust is gained in two ways, and after the refresher shipped the push is the main one: a reset onto
+a fetched tip, and a `PushAtomic` the server did not reject. The second is the stronger of the two —
+a fetch says where the branch was when we looked, while an accepted push says the server has just
+moved it there on our authority — which is why a push also renews `status.remote` and why an
+actively-written branch never needs a refresh.
 
 ```mermaid
 stateDiagram-v2

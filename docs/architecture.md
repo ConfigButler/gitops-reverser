@@ -83,11 +83,20 @@ repository without anything restarting it. Each remote has its own clone, so tru
 that change would skip establishing the new checkout entirely; `noteRemoteIdentity` drops it
 instead.
 
-**Nothing tells an idle target that its branch moved.** A target that is not writing makes no round
-trip, so it holds its previous view of the folder until it next publishes, resyncs, or is asked to
-re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
-ten seconds because it is not converged; a healthy idle one does not. Closing the gap properly is
-the inbound receiver's job, designed but not built:
+**An idle target re-proves where its branch is, periodically.** A target that is writing learns it
+for free: the push session reads the remote's advertisement and the server names the hash it
+accepted, so an active branch never schedules a look of its own. One that has gone quiet is asked
+on its 5-minute reconcile tick, and spends one ref advertisement per `--git-refresh-interval`
+(10m by default); only a branch that moved costs a fetch after that. What it learns is published
+as `status.remote` (the revision, when it was last proved, and whether a push or a fetch proved
+it), and a folder somebody changed in Git is re-read and republished as `status.placement`.
+
+**A refresh never causes a write.** It may change what an operator reads and nothing else: it does
+not re-run the acceptance gate, so it neither raises nor clears `GitPathAccepted`, and it never
+plans a commit. A refused target still re-reads itself roughly every ten seconds because it is not
+converged, and `reconcile.configbutler.ai/requestedAt` still forces a full re-check for a human who
+wants one now. What none of this closes is the latency: seconds-fresh needs the inbound receiver,
+designed but not built.
 [§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
 request shape it will accept.
 
