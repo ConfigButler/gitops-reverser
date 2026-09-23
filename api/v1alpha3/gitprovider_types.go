@@ -140,6 +140,17 @@ type GitProviderStatus struct {
 	// Only populated when commit.signing is configured and a signing key is available.
 	// +optional
 	SigningPublicKey string `json:"signingPublicKey,omitempty"`
+
+	// LastVerifiedAt is when the credential and the repository were last proved together: the
+	// connectivity check listed the remote's refs with this provider's credential and the remote
+	// answered. It is never cleared — a failure is already carried by Ready=False with a reason —
+	// so the pair "not ready, last verified 11 minutes ago" says how long the connection has been
+	// broken, which is the sentence an operator otherwise has to infer.
+	//
+	// The check runs on the steady reconcile interval, so a provider's resourceVersion moves at
+	// that cadence. Providers are few and the check was already running; this adds no request.
+	// +optional
+	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
 }
 
 // CommitSpec configures the commit identity and signing a GitProvider uses. Message formatting
@@ -247,6 +258,7 @@ type CommitSigningSpec struct {
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
+// +kubebuilder:printcolumn:name="Verified",type=date,JSONPath=`.status.lastVerifiedAt`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitProvider is the Schema for the gitproviders API.
