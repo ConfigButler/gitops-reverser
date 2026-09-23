@@ -119,10 +119,13 @@ func TestRefresh_SkipsABranchMidCycle(t *testing.T) {
 	h.commit(false, "retained")
 	h.loop.pendingWrites = h.pending
 
+	h.reported = nil
 	connections := h.refresh(time.Nanosecond)
 
 	assert.Zero(t, connections, "a worker mid-cycle is not the target the refresher exists for")
-	assert.Empty(t, h.reported)
+	assert.Len(t, h.reported, 1,
+		"but what is already known is still reported: on a shared branch this tick is the only "+
+			"way a target that is not writing hears anything")
 	assert.Len(t, h.loop.pendingWrites, 1, "and the retained write is still there")
 }
 
@@ -187,8 +190,8 @@ func TestRefresh_AnAbsentBranchCostsOneConnection(t *testing.T) {
 
 	assert.Equal(t, int64(1), connections, "one advertisement answers it")
 	assert.Zero(t, fetchCount(t, reader, h.worker, fetchReasonRefresh))
-	require.Len(t, h.reported, 1)
-	assert.Empty(t, h.reported[0].Revision,
+	require.NotEmpty(t, h.reported)
+	assert.Empty(t, h.reported[len(h.reported)-1].Revision,
 		"no revision IS the observation: a branch does not exist without a commit")
 }
 
@@ -203,4 +206,36 @@ func TestRefresh_SkipsAWorkerThatHasNeverCloned(t *testing.T) {
 
 	assert.Zero(t, connections, "there is no checkout to refresh, so nothing may be spent")
 	assert.Empty(t, h.reported, "and nothing is claimed about a remote nobody has looked at")
+}
+
+// TestRefresh_AQuietSiblingIsRescannedWithoutFetching is the shared-branch case, and it is the one
+// a per-branch view of freshness gets wrong.
+//
+// One worker serves every GitTarget on its (provider, branch). When target A's refresh fetches, it
+// re-reads A's folder and knows nothing about B's. If B's own tick then skipped the re-read
+// because the checkout already matched the remote, B's published layout would describe a folder
+// that has since changed — and would stay that way for as long as the branch kept still.
+func TestRefresh_AQuietSiblingIsRescannedWithoutFetching(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-sibling")
+
+	var layouts []LayoutReport
+	h.worker.layoutReporter = func(_ itypes.ResourceReference, report LayoutReport) {
+		layouts = append(layouts, report)
+	}
+
+	h.publish("prime")
+	// Somebody changes the folder's shape from outside, and A's refresh brings the checkout onto
+	// it: after this the worktree is current, so nothing will fetch again.
+	h.contend("team-a/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: []\n")
+	h.refresh(time.Nanosecond)
+
+	// B's tick. Its observation is fresh — A's refresh renewed it moments ago — so this must cost
+	// nothing at the remote and still re-read the folder.
+	layouts = nil
+	connections := h.refresh(time.Hour)
+
+	assert.Zero(t, connections, "a fresh observation means nothing may be spent at the remote")
+	require.NotEmpty(t, layouts, "the quiet sibling must still re-read its own folder")
+	assert.Equal(t, manifestanalyzer.LayoutSingleKustomization, layouts[len(layouts)-1].Reason)
 }

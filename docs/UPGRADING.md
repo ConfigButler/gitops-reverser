@@ -17,15 +17,30 @@ field in these CRDs is now a Go duration string with a mandatory unit, validated
 | `CommitRequest.spec.closeDelaySeconds` | `2` (integer seconds, 0–300) | `CommitRequest.spec.closeDelay`: `"2s"` (duration, at most `"5m"`) |
 | `GitTarget.spec.commit.window` | `"5s"` (unvalidated string) | unchanged spelling, now validated and typed |
 
-The pattern is Flux's, so what is accepted here is what is accepted on a Flux `interval`:
-`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`. `"750ms"`, `"1.5m"` and `"1m30s"` are all valid; `30`, `"30"`,
-`"5 seconds"`, `"500us"` and `"-1s"` are rejected **at admission**, naming the field, instead of
-being stored and misread later.
+The pattern is Flux's, widened to Go's own units so that the accepted set is closed under
+serialization: `^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$`. `"750ms"`, `"1.5m"`, `"1m30s"` and
+`"500µs"` are all valid. `30`, `"30"`, `"0"`, `".5s"`, `"5 seconds"` and `"-1s"` are rejected **at
+admission**, naming the field, instead of being stored and misread later. A CEL rule bounds each
+field as well — `"5m"` for `closeDelay`, `"24h"` for `window` — which is also what refuses a value
+like `"999999999h"` that matches the pattern and then overflows `time.ParseDuration`.
 
 ### What to change
 
-`spec.commit.window` needs no edit: every value that was valid before is still valid, and a value
-that was not is now rejected instead of silently falling back to the default.
+**`spec.commit.window` needs an edit only if you used one of three spellings the schema now
+refuses:** a bare `"0"` (write `"0s"`), a leading-dot fraction such as `".5s"` (write `"0.5s"`),
+and anything without a unit. Every other value that was valid before is still valid. Find them
+before upgrading:
+
+```bash
+kubectl get gittargets -A -o json \
+  | jq -r '.items[] | select(.spec.commit.window != null)
+      | select(.spec.commit.window | test("^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$") | not)
+      | "\(.metadata.namespace)/\(.metadata.name)\t\(.spec.commit.window)"'
+```
+
+A value that fails the new schema is **not** rewritten by the upgrade: it stays in storage until
+something updates the object, and the CRD change means a typed read of it fails. Fix the ones the
+command above prints before upgrading, not after.
 
 `closeDelaySeconds` must be renamed. **A removed field is pruned on write, not refused**, so a
 manifest that still sets it applies cleanly and the request finalizes after the default `"2s"`

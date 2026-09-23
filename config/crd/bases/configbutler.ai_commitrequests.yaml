@@ -81,7 +81,7 @@ spec:
                   Defaults to "2s", which covers the time a write spends waiting for its audit fact before
                   the commit window opens; an explicit "0s" requests immediate finalization and will usually
                   find nothing pending. A delay does not reserve a transaction.
-                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                 type: string
                 x-kubernetes-validations:
                 - message: closeDelay must not exceed 5m
@@ -121,7 +121,10 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: CommitRequest spec is immutable after creation
-              rule: self == oldSelf
+              rule: self.gitTargetRef == oldSelf.gitTargetRef && has(self.message)
+                == has(oldSelf.message) && (!has(self.message) || self.message ==
+                oldSelf.message) && has(self.closeDelay) == has(oldSelf.closeDelay)
+                && (!has(self.closeDelay) || duration(self.closeDelay) == duration(oldSelf.closeDelay))
           status:
             description: status defines the observed state of CommitRequest
             properties:

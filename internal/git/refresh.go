@@ -61,23 +61,39 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	w := l.w
 
-	// 1. Not idle, so not the target this exists for. A reset here would destroy retained
-	// commits, and a refresh has nothing to offer a worker that is mid-cycle anyway — with a
-	// push renewing the observation, step 2 below would almost always have skipped it too. This
-	// guard is the one that does not depend on that reasoning being right.
+	// 1. Report what is already known, BEFORE deciding whether to do any work, and on every exit
+	// below.
+	//
+	// This is the only way a quiet target on a shared branch ever hears anything. A worker serves
+	// every GitTarget on its (provider, branch), and a push reports only against the targets whose
+	// writes it carried — so a target that is not writing learns where its branch is exclusively
+	// from its own refresh tick. Skipping the report on the way to skipping the work left it
+	// stale for as long as its busy sibling kept the worker occupied.
+	observed, known := w.LastRemoteObservation()
+	if known {
+		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
+	}
+
+	// 2. Not idle, so not the target this exists for. A reset here would destroy retained
+	// commits, and the worktree may hold a partial write, which is also why this is the one exit
+	// that does not re-read the folder: a layout resolved from a half-written tree is worse than
+	// a slightly old one. A target that is mid-cycle is writing, and a write publishes its own
+	// layout as it goes.
 	if len(l.pendingWrites) > 0 || l.openWindow != nil || w.worktreeDirty() || w.replayRequired() {
 		w.Log.V(1).Info("Skipping refresh: this branch is mid-cycle",
 			"branch", w.Branch, "gitTarget", req.Target.String())
 		return
 	}
 
-	// 2. Something has proved this branch recently enough. Report it and stop: a quiet target
-	// sharing a branch with a busy one has nothing to fetch, and its status still has to say so.
+	// 3. Something has proved this branch recently enough, so there is nothing to ask the remote.
+	// This is where "a push is a refresh" is spent: an actively-writing branch renews its
+	// observation on every push and never reaches the connection below.
 	//
-	// This is where "a push is a refresh" is spent. An actively-writing branch renews its
-	// observation on every push, so it never reaches the connection below.
-	if observed, ok := w.LastRemoteObservation(); ok && req.MaxAge > 0 && observed.Age(time.Now()) < req.MaxAge {
-		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
+	// The folder is still re-read. That is local work, and it is what keeps a SIBLING honest: the
+	// fetch that moved this checkout may have been earned by another target's refresh, which
+	// rescanned its own folder and knew nothing about this one.
+	if known && req.MaxAge > 0 && observed.Age(time.Now()) < req.MaxAge {
+		w.rescanLayoutForTarget(w.ctx, req)
 		return
 	}
 
@@ -87,7 +103,12 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 		// working reports itself.
 		w.Log.Error(err, "Refresh failed to prove where the branch is",
 			"branch", w.Branch, "gitTarget", req.Target.String())
+		return
 	}
+
+	// 4. One re-read per tick, on every path that reached the remote, whether or not this tick
+	// was the one that fetched.
+	w.rescanLayoutForTarget(w.ctx, req)
 }
 
 // refreshFromRemote reads the remote's advertisement and, only if the branch has moved away from
@@ -123,7 +144,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 		return fmt.Errorf("open repository: %w", err)
 	}
 
-	// 3. One connection: what does the remote say this branch is at?
+	// One connection: what does the remote say this branch is at?
 	advertised, err := advertiseRemoteBranch(repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
@@ -135,7 +156,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 	observed := w.recordRemoteObservation(revision, ObservedByFetch)
 	w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
 
-	// 4a. The remote does not carry this branch. That IS the answer, and there is nothing to
+	// The remote does not carry this branch. That IS the answer, and there is nothing to
 	// fetch: a fetch would fall back to the default branch and teach us nothing about a branch
 	// nobody has created. It is the ordinary state of a target that has not written yet, so
 	// paying a second connection for it every interval would be a standing cost for nothing. A
@@ -146,15 +167,16 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 		return nil
 	}
 
-	// 4b. The branch is where our checkout already is. Nothing to fetch, and nothing on disk can
-	// have changed, so there is nothing to re-read either.
+	// The branch is where our checkout already is, so there is nothing to fetch. The caller
+	// still re-reads the folder: this worker's checkout may have been moved by a SIBLING
+	// target's refresh since this target last looked at it.
 	if w.baseTrusted() && advertised == localHead(repo) {
 		w.Log.V(1).Info("Refresh confirmed the branch has not moved",
 			"branch", w.Branch, "revision", revision)
 		return nil
 	}
 
-	// 5. It moved (or we cannot claim to know where the checkout is). Fetch and reset onto it.
+	// It moved (or we cannot claim to know where the checkout is). Fetch and reset onto it.
 	w.Log.Info("Refresh found the branch elsewhere; resetting onto it",
 		"branch", w.Branch, "revision", revision)
 	if err := w.syncWithRemote(ctx, fetchReasonRefresh); err != nil {
@@ -163,11 +185,6 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 	if synced, ok := w.LastRemoteObservation(); ok {
 		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, synced)
 	}
-
-	// 6. The folder on disk is now somebody else's, so what it implies about placement may have
-	// changed. Re-reading it is free — it is a walk of local files — and it is most of what an
-	// operator actually reads off a refreshed target.
-	w.rescanLayoutForTarget(ctx, req)
 	return nil
 }
 

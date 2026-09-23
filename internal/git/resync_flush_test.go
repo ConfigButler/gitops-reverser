@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
@@ -431,4 +432,43 @@ func TestResync_DropsOneDocFromMultiDocKeepsSiblings(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(got), "name: keep", "the surviving managed sibling is kept")
 	assert.NotContains(t, string(got), "name: drop", "the orphaned document is removed")
+}
+
+// TestResync_ReportsWhatItsFetchProved closes the gap between what the worker knows and what its
+// status says.
+//
+// A resync ALWAYS fetches — applyResync may find nothing to change and so never open a push, which
+// is why it cannot rely on the advertisement a publication would have read — and that fetch proves
+// where the branch is exactly as a refresh's does. Before this, the observation was recorded in
+// worker memory and reported to nobody, so a resync could discover somebody else's commit and
+// leave status.remote naming the revision before it. On an install that has turned the periodic
+// refresh off, that is indefinite.
+func TestResync_ReportsWhatItsFetchProved(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	var reported []RemoteObservation
+	var reportedFor []types.ResourceReference
+	worker.remoteReporter = func(target types.ResourceReference, observed RemoteObservation) {
+		reportedFor = append(reportedFor, target)
+		reported = append(reported, observed)
+	}
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	scope := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
+	result := make(chan ResyncResult, 1)
+	loop.handleResyncRequest(&ResyncRequest{
+		GitTargetName:      "team-a",
+		GitTargetNamespace: "default",
+		Scope:              &scope,
+		Desired:            nil,
+		Result:             result,
+	})
+
+	require.NotEmpty(t, reported, "the resync's own fetch must reach the status surface")
+	assert.Equal(t, ObservedByFetch, reported[len(reported)-1].By)
+	assert.Equal(t, "team-a", reportedFor[len(reportedFor)-1].Name,
+		"reported against the target the resync was for, which is the one in hand")
 }

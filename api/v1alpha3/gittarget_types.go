@@ -260,18 +260,32 @@ type GitTargetSpec struct {
 
 // GitTargetCommitSpec configures how a GitTarget's writes become commits.
 type GitTargetCommitSpec struct {
-	// metav1.Duration with the pattern below, which is the shape every duration in this API and
+	// metav1.Duration with the markers below, which is the shape every duration in this API and
 	// every duration flag takes: a Go duration string, unit mandatory. The API server rejects a
 	// malformed one at admission, so no code downstream has to decide what to do with a stored
 	// value it cannot parse.
+	//
+	// The unit set is Go's OWN, which is wider than Flux's pattern, and that is deliberate rather
+	// than a liberty. The accepted set has to be CLOSED UNDER SERIALIZATION: a typed client reads
+	// this field into a time.Duration and writes it back as Duration.String(), so a value the
+	// pattern admits but Go re-spells outside it can never be written again. "0.5ms" round-trips
+	// as "500µs", which Flux's pattern rejects — so ns/us/µs are admitted here, and every value
+	// this field accepts survives a read-modify-write.
+	//
+	// The CEL bound is not a policy about how long a window may be. It is what makes the value
+	// PARSEABLE: the pattern cannot express magnitude, so "999999999h" matches it and then
+	// overflows time.ParseDuration, and a stored value that cannot be decoded breaks the typed
+	// GET and LIST that every controller and informer here depends on — one object taking the
+	// whole GitTarget informer down with it. duration() rejects it at admission instead.
 
 	// Window is the rolling silence window used to coalesce this target's events into a single
 	// commit per author, as a Go duration string ("5s", "750ms", "1m30s"). The timer resets on
 	// every event arrival, and the commit is made after this much silence. "0s" opts into
-	// per-event commits. Omitted, it is "5s".
+	// per-event commits. At most "24h". Omitted, it is "5s".
 	// +optional
 	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('24h')",message="spec.commit.window must be a Go duration of at most 24h"
 	Window *metav1.Duration `json:"window,omitempty"`
 
 	// Message configures how this target's commit messages are formatted. Omitted, or with any

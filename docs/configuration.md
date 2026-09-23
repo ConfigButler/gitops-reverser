@@ -654,9 +654,15 @@ targets split a burst. Atomic writes, buffer limits, shutdown, and request final
 the inactivity window early. Push cooldown is independent: `0s` does not promise an immediate
 remote push. See the [complete trigger rules](spec/commit-window-refactor.md).
 
-An unparseable or negative value is rejected on the object (`Validated=False`, reason
-`InvalidConfig`). A value already stored before that check falls back to the `5s` default at the
-write rather than stopping the mirror.
+The value is a **Go duration string with a mandatory unit**, at most `24h`, checked by the API
+server: `"750ms"`, `"1.5m"` and `"1m30s"` are accepted, while `"30"`, `".5s"`, `"5 seconds"` and
+`"-1s"` are refused at admission with the field named. Nothing downstream re-checks it, because a
+malformed value can no longer be stored.
+
+The units are Go's own (`ns`, `us`/`µs`, `ms`, `s`, `m`, `h`) rather than the shorter set Flux
+allows, so that every accepted value survives being read and written back by a client: `"0.5ms"`
+is re-serialized as `"500µs"`, and a value that cannot be rewritten is one no controller could
+ever update.
 
 #### Commit message templates
 

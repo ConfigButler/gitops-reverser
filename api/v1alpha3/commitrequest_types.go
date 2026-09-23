@@ -12,7 +12,14 @@ import (
 // changes it, so a delayed audit event always acts on the spec the object was
 // created with.
 //
-// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="CommitRequest spec is immutable after creation"
+// Immutability is field-by-field rather than `self == oldSelf`, and the reason is the one thing to
+// remember when adding a field here: ADD IT TO THIS RULE TOO, or it becomes quietly mutable.
+//
+// A whole-object comparison compares closeDelay as a STRING, and this field does not round-trip as
+// one: a request created with "1m" reads into Go as a time.Duration and serializes back as "1m0s",
+// so every typed update — including one that only touches metadata — was rejected as a spec
+// change. Comparing it as a duration compares what the field means instead of how it was spelled.
+// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.closeDelay) == has(oldSelf.closeDelay) && (!has(self.closeDelay) || duration(self.closeDelay) == duration(oldSelf.closeDelay))",message="CommitRequest spec is immutable after creation"
 type CommitRequestSpec struct {
 	// GitTargetRef names the GitTarget whose open commit window to finalize.
 	// The GitTarget must be in the same namespace as this CommitRequest.
@@ -41,7 +48,14 @@ type CommitRequestSpec struct {
 	//
 	// The upper bound is CEL rather than a Maximum, because the field is a string to the API
 	// server: the pattern is what rejects a malformed duration, and only CEL can compare two
-	// well-formed ones.
+	// well-formed ones. It doubles as the parseability check — the pattern cannot express
+	// magnitude, so "999999999h" matches it and then overflows time.ParseDuration, and a stored
+	// value no typed client can decode breaks GET and LIST for the whole kind.
+	//
+	// The unit set is Go's own (ns/us/µs as well as Flux's ms/s/m/h) because the accepted set has
+	// to be closed under serialization: "0.5ms" is written back by a typed client as "500µs", and
+	// a value that cannot be re-written is one no controller can ever update. See
+	// GitTargetCommitSpec.Window for the same note.
 
 	// CloseDelay sets the finalize deadline from the worker's first receipt, as a Go duration
 	// string ("2s", "750ms", "1m"). Time waiting for a matching window consumes this delay;
@@ -53,7 +67,7 @@ type CommitRequestSpec struct {
 	// find nothing pending. A delay does not reserve a transaction.
 	// +optional
 	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
 	// +kubebuilder:default="2s"
 	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="closeDelay must not exceed 5m"
 	CloseDelay *metav1.Duration `json:"closeDelay,omitempty"`
