@@ -121,7 +121,7 @@ The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespa
 |---|---|---|
 | `gitTargetRef` | **required** | The target whose open window to close |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
-| `closeDelaySeconds` | `2` | How long to wait for pending events. See [sizing `closeDelaySeconds`](#sizing-closedelayseconds) |
+| `closeDelay` | `2s` | How long to wait for pending events, as a Go duration string. See [sizing `closeDelay`](#sizing-closedelay) |
 
 <!-- END GENERATED: settings-index -->
 
@@ -1704,9 +1704,9 @@ The important fields are:
 
 - `spec.gitTargetRef.name`: target whose open window should be finalized
 - `spec.message`: optional literal commit message, preserved verbatim
-- `spec.closeDelaySeconds`: 0–300 second deadline offset from the worker's first receipt,
-  including time waiting for a matching window; repeated registration keeps the original deadline.
-  Defaults to `2`
+- `spec.closeDelay`: a Go duration string, at most `"5m"`, offsetting the deadline from the
+  worker's first receipt, including time waiting for a matching window; repeated registration keeps
+  the original deadline. Defaults to `"2s"`
 
 Example:
 
@@ -1723,7 +1723,7 @@ spec:
     fix(api): correct the service port
 
     Route traffic to the port exposed by the API container.
-  closeDelaySeconds: 2
+  closeDelay: "2s"
 ```
 
 The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
@@ -1736,13 +1736,13 @@ configure [`requestTemplate`](commit-messages.md#framing-a-save-message) on the 
 parsed as a template. A rejected request leaves automatic mirroring
 available. The submitter chooses any semantic prefix; free-form messages are accepted.
 
-### Sizing `closeDelaySeconds`
+### Sizing `closeDelay`
 
 The delay covers the gap between the API accepting a write and that write reaching the branch
 worker. A write is held in the watch path until its audit fact arrives, so the floor is the API
 server's `--audit-webhook-batch-max-wait` plus the attribution join (roughly 1 to 1.5 seconds at
-the reference configuration of `1s`). The default of `2` clears that with headroom to spare; a
-loaded or distant cluster may want `4` to `5`.
+the reference configuration of `1s`). The default of `"2s"` clears that with headroom to spare; a
+loaded or distant cluster may want `"4s"` to `"5s"`.
 
 Do not size the delay against `--author-attribution-grace`. When that grace expires with no fact
 the write still ships, as a window that names no actor, and a request naming a submitter can never
@@ -1751,8 +1751,8 @@ claim it: the outcome is `WindowMismatch` no matter how long the request waits.
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
 undershooting resolves the request `Ready=True` with reason `NoWindowInGrace` while the edit
 commits seconds later under the target's `liveTemplate`, which reads as a save button that did
-nothing. Setting `0` opts out of the wait entirely and is only useful when the window is known to
-be open already.
+nothing. Setting `"0s"` opts out of the wait entirely and is only useful when the window is known
+to be open already.
 
 A request attaches to at most one matching open window. Normal flush triggers may close it early;
 its message travels with that window. It cannot rename a finalized commit, including a local commit
@@ -1781,7 +1781,7 @@ terminal failures. `Ready=True` includes successful no-commit outcomes. Require 
   the worker replays onto the moved branch, and such a request resolves `Committed` instead. A
   worker that stops before the push fails the request rather than leaving it to time out.
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
-  request is finalizing or waiting through `closeDelaySeconds`; `Stalled=True` when the finalize failed
+  request is finalizing or waiting through `closeDelay`; `Stalled=True` when the finalize failed
   and needs attention (kstatus reports the object Failed).
 - **AuthorAttributed**: `True` with reason `AttributedFromAdmission` when the internal commands
   admission webhook captured the request submitter. `False` with reason `CommitterFallback` means capture

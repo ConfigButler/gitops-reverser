@@ -123,7 +123,7 @@ func TestHandleResyncRequest_HealDoesNotStealSiblingCommitRequestWindow(t *testi
 	defer loop.stopTimers()
 
 	// GitTarget crTarget opens a window holding alice's CommitRequest (a 60s grace keeps it open).
-	serviceAttach(loop, attachReq("alice", 60))
+	serviceAttach(loop, attachReq("alice", 60*time.Second))
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:     []Event{configMapTargetEvent("held", "alice", crTarget)},
 		CommitMode: CommitModePerEvent,

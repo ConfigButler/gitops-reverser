@@ -271,7 +271,7 @@ const (
 )
 ```
 
-A request has one progress wait: its optional `closeDelaySeconds` collect window, followed by finalization
+A request has one progress wait: its optional `closeDelay` collect window, followed by finalization
 and push. `AuthorAttributed` settles at first sight because command authorship is captured synchronously
 at admission; it never has an `Unknown` or audit-wait state.
 

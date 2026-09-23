@@ -317,7 +317,7 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 
 - `spec.gitTargetRef.name`: target whose open window should be finalized.
 - `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
-- `spec.closeDelaySeconds`: `0–300s` delay before the window is closed, so the author's own
+- `spec.closeDelay`: a Go duration string, at most `5m`, delaying the close so the author's own
   in flight changes can join the window before it closes. Defaults to `2`, which covers the wait a
   write spends on its audit fact before the window opens; an explicit `0` finalizes immediately and
   usually finds nothing pending.
@@ -1295,7 +1295,7 @@ immediately. That is not a failure:
 1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
    `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
 2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
-   finalize at `receipt + closeDelaySeconds`. The worker binds it to an open window only when the author
+   finalize at `receipt + closeDelay`. The worker binds it to an open window only when the author
    state and GitTarget match. It **never finalizes another author's window**; a window carries at most one request.
 3. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes an
    open window, the worker always schedules a push, so a window closed by an otherwise no-op resync is not

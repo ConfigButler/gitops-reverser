@@ -204,8 +204,10 @@ spec:
                   window:
                     description: |-
                       Window is the rolling silence window used to coalesce this target's events into a single
-                      commit per author. The timer resets on every event arrival, and the commit is made after
-                      this much silence. "0s" opts into per-event commits. Omitted, it is "5s".
+                      commit per author, as a Go duration string ("5s", "750ms", "1m30s"). The timer resets on
+                      every event arrival, and the commit is made after this much silence. "0s" opts into
+                      per-event commits. Omitted, it is "5s".
+                    pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
                     type: string
                 type: object
               encryption:

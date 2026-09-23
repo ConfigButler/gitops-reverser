@@ -4,7 +4,6 @@ package controller
 
 import (
 	"fmt"
-	"time"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
@@ -19,25 +18,12 @@ import (
 // against the SAME rendering path the write path uses, so admission and the writer cannot disagree
 // about what a template means.
 //
-// The window is checked here too, even though the write path already falls back to the default on
-// an unparseable value. The fallback exists so a stored mistake cannot stop a target mirroring; the
-// check exists so a new one is visible before it silently changes the commit cadence.
+// The window is NOT checked here. It is a metav1.Duration behind the same duration pattern every
+// other time field in this API carries, so the API server rejects a malformed or negative value at
+// admission, with a message naming the field. A second check here could only repeat it.
 func validateCommitConfig(target *configbutleraiv1alpha3.GitTarget) (bool, string) {
 	if target.Spec.Commit == nil {
 		return true, ""
-	}
-
-	if window := target.Spec.Commit.Window; window != nil {
-		parsed, err := time.ParseDuration(*window)
-		if err != nil {
-			return false, fmt.Sprintf(
-				"spec.commit.window %q is not a duration: %v; use a Go duration such as \"5s\" or \"0s\"",
-				*window, err)
-		}
-		if parsed < 0 {
-			return false, fmt.Sprintf(
-				"spec.commit.window %q is negative; use \"0s\" to commit once per event", *window)
-		}
 	}
 
 	if message := target.Spec.Commit.Message; message != nil {

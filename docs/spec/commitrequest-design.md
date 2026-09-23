@@ -10,7 +10,7 @@ worker to close that window after the requested collect delay.
 ## Request and window contract
 
 The request identifies the target in `spec.gitTargetRef.name`, may provide `spec.message`, and sets
-`spec.closeDelaySeconds` (0–300 seconds, default `2`). It is handled by the target’s single branch worker,
+`spec.closeDelay` (a Go duration string, at most `5m`, default `"2s"`). It is handled by the target’s single branch worker,
 so resource events and the attach request share one FIFO.
 
 The worker attaches a request only when all of these match an open window:
@@ -24,7 +24,7 @@ coupled. A request with no named submitter can attach to either a configured-aut
 window, but never to a named actor’s window. A request with a named submitter can attach only to that
 actor’s named window. Therefore one user’s request never finalizes another user’s work.
 
-On its first receipt, the worker sets the deadline to receipt plus `closeDelaySeconds`. Repeated reconciles
+On its first receipt, the worker sets the deadline to receipt plus `closeDelay`. Repeated reconciles
 are idempotent and keep that first deadline. Time spent waiting for a matching window consumes the delay.
 
 The default is `2` rather than `0` because the write a request exists to publish reaches the worker

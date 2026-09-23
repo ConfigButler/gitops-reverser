@@ -406,9 +406,9 @@ func (in *CommitRequestList) DeepCopyObject() runtime.Object {
 func (in *CommitRequestSpec) DeepCopyInto(out *CommitRequestSpec) {
 	*out = *in
 	out.GitTargetRef = in.GitTargetRef
-	if in.CloseDelaySeconds != nil {
-		in, out := &in.CloseDelaySeconds, &out.CloseDelaySeconds
-		*out = new(int32)
+	if in.CloseDelay != nil {
+		in, out := &in.CloseDelay, &out.CloseDelay
+		*out = new(v1.Duration)
 		**out = **in
 	}
 }
@@ -674,7 +674,7 @@ func (in *GitTargetCommitSpec) DeepCopyInto(out *GitTargetCommitSpec) {
 	*out = *in
 	if in.Window != nil {
 		in, out := &in.Window, &out.Window
-		*out = new(string)
+		*out = new(v1.Duration)
 		**out = **in
 	}
 	if in.Message != nil {

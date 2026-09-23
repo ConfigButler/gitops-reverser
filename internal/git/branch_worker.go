@@ -412,7 +412,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 			"request", req.Namespace+"/"+req.Name,
 			"author", req.Author,
 			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
-			"closeDelaySeconds", req.CloseDelaySeconds,
+			"closeDelay", req.CloseDelay.String(),
 			"messageOverride", req.Message != "")
 		// Nothing publishes depth here: the gauge reads inflightItems at scrape
 		// time, so an enqueue is visible to the next scrape whether or not the
@@ -2345,10 +2345,9 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha3.GitP
 // branch), so resolving per target is what makes the field mean what it says. Affordable because a
 // window is bound to one target already, so this is read once per window, not per event.
 //
-// Parsed here rather than at admission so an unparseable stored value degrades loudly to the
-// fallback instead of blocking the target. Negative parses to 0: the caller asked for near-zero
-// coalescing. An unreadable GitTarget also takes the fallback, since a missing target is no reason
-// to change how the events in hand are batched.
+// There is nothing to parse and nothing to reject: the field is a metav1.Duration behind a
+// duration pattern, so a malformed value never reaches storage. An unreadable GitTarget takes the
+// fallback, since a missing target is no reason to change how the events in hand are batched.
 func (w *BranchWorker) commitWindowFor(
 	ctx context.Context,
 	targetName, targetNamespace string,
@@ -2368,19 +2367,7 @@ func (w *BranchWorker) commitWindowFor(
 	if target.Spec.Commit == nil || target.Spec.Commit.Window == nil {
 		return fallback
 	}
-	raw := *target.Spec.Commit.Window
-	parsed, err := time.ParseDuration(raw)
-	if err != nil {
-		w.Log.Error(err, "Invalid spec.commit.window, using the default",
-			"gitTarget", targetNamespace+"/"+targetName, "value", raw)
-		return fallback
-	}
-	if parsed < 0 {
-		w.Log.Info("Negative spec.commit.window treated as 0",
-			"gitTarget", targetNamespace+"/"+targetName, "value", raw)
-		return 0
-	}
-	return parsed
+	return target.Spec.Commit.Window.Duration
 }
 
 // LastRemoteObservation returns what the worker last proved about the target branch, and whether

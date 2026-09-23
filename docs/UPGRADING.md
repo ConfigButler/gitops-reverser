@@ -7,6 +7,48 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Every duration in the API is a Go duration string
+
+**Breaking for `CommitRequest.spec.closeDelaySeconds`, which no longer exists.** Every time-valued
+field in these CRDs is now a Go duration string with a mandatory unit, validated by the API server:
+
+| Field | Was | Is |
+| --- | --- | --- |
+| `CommitRequest.spec.closeDelaySeconds` | `2` (integer seconds, 0–300) | `CommitRequest.spec.closeDelay`: `"2s"` (duration, at most `"5m"`) |
+| `GitTarget.spec.commit.window` | `"5s"` (unvalidated string) | unchanged spelling, now validated and typed |
+
+The pattern is Flux's, so what is accepted here is what is accepted on a Flux `interval`:
+`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`. `"750ms"`, `"1.5m"` and `"1m30s"` are all valid; `30`, `"30"`,
+`"5 seconds"`, `"500us"` and `"-1s"` are rejected **at admission**, naming the field, instead of
+being stored and misread later.
+
+### What to change
+
+`spec.commit.window` needs no edit: every value that was valid before is still valid, and a value
+that was not is now rejected instead of silently falling back to the default.
+
+`closeDelaySeconds` must be renamed. **A removed field is pruned on write, not refused**, so a
+manifest that still sets it applies cleanly and the request finalizes after the default `"2s"`
+rather than the delay it asked for. Find them before upgrading:
+
+```bash
+kubectl get commitrequests -A -o json \
+  | jq -r '.items[] | select(.spec.closeDelaySeconds != null)
+      | "\(.metadata.namespace)/\(.metadata.name)\t\(.spec.closeDelaySeconds)"'
+```
+
+```yaml
+# before
+closeDelaySeconds: 8
+# after
+closeDelay: "8s"
+```
+
+The bound is unchanged in value and moves from `maximum: 300` to a CEL rule, because the field is a
+string to the API server: the pattern decides whether a value is a duration at all, and only CEL
+can compare two that are. An explicit `"0s"` still means "finalize immediately", and an omitted
+field is still defaulted server-side.
+
 ## `--base-trust-max-age` is gone; an idle target refreshes itself
 
 **Breaking only if you set the flag by hand.** `--base-trust-max-age` is removed. No Helm value

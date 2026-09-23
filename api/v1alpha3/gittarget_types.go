@@ -260,14 +260,19 @@ type GitTargetSpec struct {
 
 // GitTargetCommitSpec configures how a GitTarget's writes become commits.
 type GitTargetCommitSpec struct {
-	// A string, not metav1.Duration: parsing happens at the write path, where an unparseable value
-	// falls back to the default loudly instead of blocking admission of the whole target.
+	// metav1.Duration with the pattern below, which is the shape every duration in this API and
+	// every duration flag takes: a Go duration string, unit mandatory. The API server rejects a
+	// malformed one at admission, so no code downstream has to decide what to do with a stored
+	// value it cannot parse.
 
 	// Window is the rolling silence window used to coalesce this target's events into a single
-	// commit per author. The timer resets on every event arrival, and the commit is made after
-	// this much silence. "0s" opts into per-event commits. Omitted, it is "5s".
+	// commit per author, as a Go duration string ("5s", "750ms", "1m30s"). The timer resets on
+	// every event arrival, and the commit is made after this much silence. "0s" opts into
+	// per-event commits. Omitted, it is "5s".
 	// +optional
-	Window *string `json:"window,omitempty"`
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	Window *metav1.Duration `json:"window,omitempty"`
 
 	// Message configures how this target's commit messages are formatted. Omitted, or with any
 	// individual template left empty, the built-in templates are used.

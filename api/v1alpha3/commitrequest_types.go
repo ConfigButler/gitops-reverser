@@ -34,23 +34,29 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.matches(r'[^\\s\\x{0085}\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}]')",message="message must contain a non-whitespace character"
 	Message string `json:"message,omitempty"`
 
-	// A pointer, not a bare int32, so that an omitted field and an explicit 0 stay
-	// distinguishable once the default is stored: a schema default on a bare int32 would
-	// make "finalize immediately" inexpressible from a typed Go client, whose zero value is
-	// not serialized, and would erase the distinction a cluster-level default needs.
+	// A pointer, not a bare metav1.Duration, so that an omitted field and an explicit "0s" stay
+	// distinguishable once the default is stored: a schema default on a bare value would make
+	// "finalize immediately" inexpressible from a typed Go client, whose zero value is not
+	// serialized, and would erase the distinction a cluster-level default needs.
+	//
+	// The upper bound is CEL rather than a Maximum, because the field is a string to the API
+	// server: the pattern is what rejects a malformed duration, and only CEL can compare two
+	// well-formed ones.
 
-	// CloseDelaySeconds sets the finalize deadline from the worker's first receipt.
-	// Time waiting for a matching window consumes this delay; repeated receipt keeps the deadline.
-	// Normal flush triggers can close an attached window early, carrying its message.
-	// A request claims at most one open window and cannot rename a finalized commit.
-	// Defaults to 2, which covers the time a write spends waiting for its audit fact before
-	// the commit window opens; an explicit 0 requests immediate finalization and will usually
+	// CloseDelay sets the finalize deadline from the worker's first receipt, as a Go duration
+	// string ("2s", "750ms", "1m"). Time waiting for a matching window consumes this delay;
+	// repeated receipt keeps the deadline. Normal flush triggers can close an attached window
+	// early, carrying its message. A request claims at most one open window and cannot rename a
+	// finalized commit. At most "5m".
+	// Defaults to "2s", which covers the time a write spends waiting for its audit fact before
+	// the commit window opens; an explicit "0s" requests immediate finalization and will usually
 	// find nothing pending. A delay does not reserve a transaction.
 	// +optional
-	// +kubebuilder:default=2
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=300
-	CloseDelaySeconds *int32 `json:"closeDelaySeconds,omitempty"`
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +kubebuilder:default="2s"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="closeDelay must not exceed 5m"
+	CloseDelay *metav1.Duration `json:"closeDelay,omitempty"`
 }
 
 // CommitRequestStatus defines the observed state of CommitRequest. Progress and

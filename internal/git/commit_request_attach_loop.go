@@ -87,13 +87,13 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		gitTargetName:      req.GitTargetName,
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,
-		finalizeAt:         time.Now().Add(time.Duration(req.CloseDelaySeconds) * time.Second),
+		finalizeAt:         time.Now().Add(req.CloseDelay),
 	}
 	l.w.Log.Info("CommitRequest registered with worker",
 		"request", id.Namespace+"/"+id.Name,
 		"author", req.Author,
 		"target", req.GitTargetNamespace+"/"+req.GitTargetName,
-		"closeDelaySeconds", req.CloseDelaySeconds)
+		"closeDelay", req.CloseDelay.String())
 }
 
 // serviceCommitRequests runs after every loop wake: bind any waiting request to an

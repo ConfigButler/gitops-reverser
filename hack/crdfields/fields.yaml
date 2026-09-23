@@ -186,7 +186,7 @@ kinds:
       - path: message
         default: the target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it
-      - path: closeDelaySeconds
+      - path: closeDelay
         doc: >-
-          How long to wait for pending events. See
-          [sizing `closeDelaySeconds`](#sizing-closedelayseconds)
+          How long to wait for pending events, as a Go duration string. See
+          [sizing `closeDelay`](#sizing-closedelay)
