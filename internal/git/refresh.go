@@ -9,9 +9,11 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -61,6 +63,20 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	w := l.w
 
+	// 0. The GitProvider first, because everything below is a statement about a REPOSITORY and
+	// this worker may have been handed a different one. spec.url is immutable and repointed by
+	// deleting and recreating the GitProvider, while the worker is keyed by (provider, branch)
+	// and survives that, so noteRemoteIdentity is what notices — and it drops the checkout's
+	// trust AND the observation when the answer changes. Reporting first and checking afterwards
+	// published the old repository's revision as this target's remote state.
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		w.Log.V(1).Info("Skipping refresh: the GitProvider cannot be read",
+			"branch", w.Branch, "gitTarget", req.Target.String(), "error", err.Error())
+		return
+	}
+	w.noteRemoteIdentity(provider.Spec.URL)
+
 	// 1. Report what is already known, BEFORE deciding whether to do any work, and on every exit
 	// below.
 	//
@@ -105,7 +121,7 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 		return
 	}
 
-	if err := l.refreshFromRemote(req); err != nil {
+	if err := l.refreshFromRemote(req, provider); err != nil {
 		// A refresh that failed proves nothing, so nothing is recorded: the published
 		// lastVerifiedAt stops advancing, which is precisely how a refresher that stopped
 		// working reports itself.
@@ -127,33 +143,28 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 // way. On an idle target the overwhelmingly common answer is "the branch has not moved", and the
 // advertisement alone settles it, so the common case here costs ONE connection. The scarce
 // resource is the round trip; local recomputation is free and never an excuse for a fetch.
-func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
+func (l *branchWorkerEventLoop) refreshFromRemote(
+	req *RefreshRequest,
+	provider *configv1alpha3.GitProvider,
+) error {
 	w := l.w
 	ctx := w.ctx
 
-	provider, err := w.getGitProvider(ctx)
-	if err != nil {
-		return fmt.Errorf("get GitProvider: %w", err)
-	}
 	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
 	if err != nil {
 		return fmt.Errorf("get auth: %w", err)
 	}
-	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
-	if errors.Is(err, gogit.ErrRepositoryNotExists) {
-		// A worker exists for this branch but has never cloned: nothing has been published yet.
-		// There is no checkout to refresh and nothing to report, and the first publication reads
-		// the remote anyway. It is an ordinary state, so it must not be logged as a failure once
-		// per tick for the lifetime of an unused target.
-		w.Log.V(1).Info("Skipping refresh: no checkout yet", "branch", w.Branch)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("open repository: %w", err)
-	}
 
-	// One connection: what does the remote say this branch is at?
-	advertised, err := advertiseRemoteBranch(repo, plumbing.NewBranchReferenceName(w.Branch), auth)
+	// One connection, and it deliberately does NOT go through the local checkout: "where is this
+	// branch on the remote" is a question for the remote, and answering it needs no clone.
+	//
+	// That is what makes the answer honest for the two targets a clone-first version got wrong: a
+	// GitTarget declared but not yet published to, and one whose GitProvider was recreated
+	// pointing at a different repository. Both have no checkout for the current URL, and both
+	// used to be skipped silently — leaving status.remote either absent or, worse, still naming a
+	// revision in a repository the target no longer points at.
+	advertised, err := advertiseRemoteBranch(
+		provider.Spec.URL, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
 	}
@@ -173,6 +184,19 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 	if advertised.IsZero() {
 		w.Log.V(1).Info("Refresh found no such branch on the remote", "branch", w.Branch)
 		return nil
+	}
+
+	// Everything below compares the advertisement against the local checkout, so from here on a
+	// missing one is simply nothing to compare: the branch's position is already recorded and
+	// reported, and the first publication will clone.
+	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
+	if errors.Is(err, gogit.ErrRepositoryNotExists) {
+		w.Log.V(1).Info("Refresh observed the remote; there is no checkout to reset yet",
+			"branch", w.Branch, "revision", revision)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open repository: %w", err)
 	}
 
 	// The branch is where our checkout already is, so there is nothing to fetch. The caller
@@ -250,17 +274,18 @@ func (w *BranchWorker) rescanLayoutForTarget(ctx context.Context, req *RefreshRe
 
 // advertiseRemoteBranch asks the remote where a branch is, and transfers nothing else.
 //
+// It is built on a storage-less remote, the way CheckRepo is, so it needs no clone on disk: the
+// advertisement is the remote's answer about the remote, and a target that has never published
+// deserves it as much as one that has.
+//
 // Zero means the advertisement did not carry the branch, which includes an empty repository. That
 // is an observation rather than an error: a branch does not exist without a commit.
 func advertiseRemoteBranch(
-	repo *gogit.Repository,
+	remoteURL string,
 	branch plumbing.ReferenceName,
 	auth []gitclient.Option,
 ) (plumbing.Hash, error) {
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("get remote origin: %w", err)
-	}
+	remote := gogit.NewRemote(nil, &config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
 	refs, err := listRemoteRefs(remote, auth)
 	if err != nil {
 		return plumbing.ZeroHash, err

@@ -194,27 +194,42 @@ var _ = Describe("Duration fields", func() {
 	It("lets a typed client update a CommitRequest created with a re-spelled duration", func() {
 		ctx := context.Background()
 
-		request := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: "delay-respelled", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
-				CloseDelay:   &metav1.Duration{Duration: time.Minute},
+		// Created as UNSTRUCTURED, carrying the spelling a HUMAN writes. That is the whole
+		// reproduction, and an earlier version of this spec missed it: a typed create serializes
+		// metav1.Duration{time.Minute} as "1m0s", so the stored value was already canonical and
+		// the update below sent back a byte-identical spec. The spec passed against the broken
+		// `self == oldSelf` rule, which is the definition of testing nothing.
+		request := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "CommitRequest",
+			"metadata":   map[string]any{"name": "delay-respelled", "namespace": "default"},
+			"spec": map[string]any{
+				"gitTargetRef": map[string]any{"name": "any-target"},
+				"closeDelay":   "1m",
 			},
-		}
+		}}
 		Expect(k8sClient.Create(ctx, request)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, request) })
 
-		key := types.NamespacedName{Name: request.Name, Namespace: request.Namespace}
+		stored, _, err := unstructured.NestedString(request.Object, "spec", "closeDelay")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stored).To(Equal("1m"),
+			"the API server stores what was written; nothing normalizes it on the way in")
+
+		// Now the TYPED round trip: read "1m" into a time.Duration and write the whole object
+		// back, which re-serializes the spec as "1m0s". Only a rule that compares durations
+		// rather than spellings accepts that.
+		key := types.NamespacedName{Name: "delay-respelled", Namespace: "default"}
 		Eventually(func() error {
-			var stored configbutleraiv1alpha3.CommitRequest
-			if err := k8sClient.Get(ctx, key, &stored); err != nil {
+			var typed configbutleraiv1alpha3.CommitRequest
+			if err := k8sClient.Get(ctx, key, &typed); err != nil {
 				return err
 			}
-			if stored.Labels == nil {
-				stored.Labels = map[string]string{}
+			if typed.Labels == nil {
+				typed.Labels = map[string]string{}
 			}
-			stored.Labels["touched"] = "yes"
-			return k8sClient.Update(ctx, &stored)
+			typed.Labels["touched"] = "yes"
+			return k8sClient.Update(ctx, &typed)
 		}, "10s", "200ms").Should(Succeed(),
 			"the same duration spelled differently is not a spec change")
 	})

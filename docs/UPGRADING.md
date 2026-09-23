@@ -26,27 +26,36 @@ like `"999999999h"` that matches the pattern and then overflows `time.ParseDurat
 
 ### What to change
 
-**`spec.commit.window` needs an edit in two cases.** The first is a spelling the schema refuses
-although `time.ParseDuration` accepts it: a bare `"0"` (write `"0s"`), a leading-dot fraction such
-as `".5s"` (write `"0.5s"`), a leading sign such as `"+5s"` (write `"5s"`), a trailing dot such as
-`"1.s"` (write `"1s"`), and anything with no unit at all. The second is a window **longer than
-`"24h"`**, which the previous check allowed and the bound refuses. Every other value that was
-valid before is still valid. Find both kinds before upgrading:
+**`spec.commit.window` needs an edit in three cases**, and only the first is about spelling:
+
+1. **A spelling the schema refuses** although `time.ParseDuration` accepts it: a bare `"0"` (write
+   `"0s"`), a leading-dot fraction such as `".5s"` (write `"0.5s"`), a leading sign such as `"+5s"`
+   (write `"5s"`), a trailing dot such as `"1.s"` (write `"1s"`), and anything with no unit.
+2. **A window longer than `"24h"`**, which the previous check allowed and the bound refuses.
+3. **A window too large for `time.ParseDuration` at all**, such as `"999999999999s"`. This is the
+   one that bites hardest and the one a spelling check cannot see: it matches the pattern, so it
+   was stored, and it overflows int64 nanoseconds, so **no typed client can decode the object**.
+   A `LIST` fails as a whole, which takes the GitTarget informer down with it — one object
+   stopping every controller that watches the kind.
+
+Every other value that was valid before is still valid. Because a regular expression cannot decide
+magnitude, the command below **computes** each window rather than matching it, and prints anything
+that fails the pattern or exceeds 24 hours:
 
 ```bash
-kubectl get gittargets -A -o json \
-  | jq -r '.items[] | select(.spec.commit.window != null)
-      | . as $t
-      | ($t.spec.commit.window | capture("^(?<n>[0-9]+(\\.[0-9]+)?)h$") // null) as $h
-      | select(
-          ($t.spec.commit.window | test("^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$") | not)
-          or ($h != null and ($h.n | tonumber) > 24))
-      | "\($t.metadata.namespace)/\($t.metadata.name)\t\($t.spec.commit.window)"'
+kubectl get gittargets -A -o json | jq -r '
+  def secs($n; $u):
+    $n * (if $u=="ns" then 1e-9 elif $u=="us" or $u=="µs" or $u=="μs" then 1e-6
+          elif $u=="ms" then 1e-3 elif $u=="s" then 1 elif $u=="m" then 60 else 3600 end);
+  .items[] | select(.spec.commit.window != null) | . as $t | $t.spec.commit.window as $w
+  | ($w | [scan("([0-9]+(?:\\.[0-9]+)?)(ns|us|µs|μs|ms|s|m|h)")]) as $parts
+  | (if ($parts|length) == 0 then null
+     else ($parts | map(secs(.[0]|tonumber; .[1])) | add) end) as $total
+  | select(
+      ($w | test("^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$") | not)
+      or $total == null or $total > 86400)
+  | "\($t.metadata.namespace)/\($t.metadata.name)\t\($w)"'
 ```
-
-The hour arm is deliberately simple: it catches the plain `"48h"` shape a long window is actually
-written in, not every compound spelling that could exceed a day. If your windows are measured in
-hours at all, read them rather than trusting the filter.
 
 A value that fails the new schema is **not** rewritten by the upgrade: it stays in storage until
 something updates the object, and the CRD change means a typed read of it fails. Fix the ones the

@@ -8,7 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -195,17 +197,23 @@ func TestRefresh_AnAbsentBranchCostsOneConnection(t *testing.T) {
 		"no revision IS the observation: a branch does not exist without a commit")
 }
 
-// TestRefresh_SkipsAWorkerThatHasNeverCloned keeps an ordinary state out of the error log. A
-// worker exists for every branch a GitTarget names, including one that has never published, and a
-// refresh tick for it must not report a failure once per interval forever.
-func TestRefresh_SkipsAWorkerThatHasNeverCloned(t *testing.T) {
-	h := newRefreshHarnessOn(t, "refresh-no-checkout", true)
-	// No publish, no bootstrap: nothing has created the on-disk clone.
+// TestRefresh_ObservesTheRemoteWithNoCheckoutYet. A GitTarget that has been declared but has not
+// published has a worker and no clone, and it still deserves an honest status.remote.
+//
+// An earlier cut skipped it to avoid "a standing cost for nothing". The cost is the same one every
+// idle target pays — a single ref advertisement — and what it buys is not nothing: the question
+// "where is my branch" is answered by the REMOTE, so it needs no local checkout, and skipping left
+// this target's status either empty or (after a GitProvider was repointed) still describing a
+// repository it no longer uses.
+func TestRefresh_ObservesTheRemoteWithNoCheckoutYet(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-no-checkout")
+	// No publish and no bootstrap: nothing has created the on-disk clone.
 
 	connections := h.refresh(time.Nanosecond)
 
-	assert.Zero(t, connections, "there is no checkout to refresh, so nothing may be spent")
-	assert.Empty(t, h.reported, "and nothing is claimed about a remote nobody has looked at")
+	assert.Equal(t, int64(1), connections, "one advertisement, which needs no clone")
+	require.NotEmpty(t, h.reported, "and the target hears where its branch is")
+	assert.Equal(t, revParseMain(t, h.repoDir), h.reported[len(h.reported)-1].Revision)
 }
 
 // TestRefresh_AQuietSiblingIsRescannedWithoutFetching is the shared-branch case, and it is the one
@@ -278,4 +286,38 @@ func TestRemoteObservation_DroppedWhenTheProviderNamesANewRepository(t *testing.
 	_, known := f.worker.LastRemoteObservation()
 	assert.False(t, known, "what was proved about the old repository says nothing about this one")
 	assert.False(t, f.worker.baseTrusted(), "and the checkout for it is not established either")
+}
+
+// TestRefresh_DoesNotReportThePreviousRepositoryAfterARepoint is the whole hazard of a worker that
+// outlives the repository it was built for.
+//
+// spec.url is immutable, so pointing a GitTarget somewhere else means deleting and recreating the
+// GitProvider — and the worker, keyed by (provider name, branch), survives that untouched. Its
+// cached observation is then a fact about a repository this target no longer uses, and the refresh
+// path is where it would be published: it reports what is known before doing any work.
+func TestRefresh_DoesNotReportThePreviousRepositoryAfterARepoint(t *testing.T) {
+	first := newRefreshHarness(t, "repoint-first")
+	second := newLedgerFixture(t, "repoint-second", true)
+
+	first.publish("written-to-the-first-repository")
+	oldRevision := revParseMain(t, first.repoDir)
+	require.NotEmpty(t, oldRevision)
+
+	// The GitProvider is recreated pointing at a different repository. Nothing restarts the
+	// worker; the only thing that changes is what its provider says.
+	var provider configv1alpha3.GitProvider
+	require.NoError(t, first.worker.Client.Get(first.worker.ctx,
+		client.ObjectKey{Name: first.worker.GitProviderRef, Namespace: "default"}, &provider))
+	provider.Spec.URL = second.sim.RepoURL
+	require.NoError(t, first.worker.Client.Update(first.worker.ctx, &provider))
+
+	first.reported = nil
+	first.refresh(time.Hour) // an age that would reuse the cached observation, if anything did
+
+	require.NotEmpty(t, first.reported, "the target still has to be told something")
+	last := first.reported[len(first.reported)-1]
+	assert.NotEqual(t, oldRevision, last.Revision,
+		"a revision from the repository this target no longer points at must never be published")
+	assert.Equal(t, revParseMain(t, second.repoDir), last.Revision,
+		"what is published is where the branch is on the repository it points at NOW")
 }
