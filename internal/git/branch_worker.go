@@ -962,6 +962,11 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		return
 	}
 
+	if item.Refresh != nil {
+		l.handleRefreshRequest(item.Refresh)
+		return
+	}
+
 	if item.Request == nil {
 		return
 	}
@@ -976,7 +981,13 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		return
 	}
 
-	for _, event := range item.Request.Events {
+	l.handleLiveEvents(item.Request)
+}
+
+// handleLiveEvents appends one write request's live events to the commit window, splitting and
+// finalizing it as identity, the byte cap or a zero window require.
+func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
+	for _, event := range request.Events {
 		if !l.w.normalWritesAllowed(event.GitTargetName, event.GitTargetNamespace) {
 			l.w.Log.V(1).Info("Dropping live event while render fidelity is not established",
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
@@ -2136,6 +2147,11 @@ const (
 	// fetchReasonContention is the reset onto the remote tip after a push was rejected because
 	// somebody else moved the branch. One confirmed rejection is exactly one of these.
 	fetchReasonContention = "contention"
+	// fetchReasonRefresh is the periodic top-up of an idle branch's view of the remote: the
+	// refresher found the branch somewhere other than the checkout and reset onto it. The
+	// advertisement that precedes it is NOT counted here, because this counter's documented
+	// meaning is every call that reads the remote through a SmartFetch.
+	fetchReasonRefresh = "refresh"
 	// fetchReasonPushFailureProbe is the fallback lookup after a push that failed WITHOUT the
 	// remote ever saying where the branch is — a dropped connection, an auth failure, a
 	// server-side refusal.

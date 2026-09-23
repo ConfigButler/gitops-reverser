@@ -348,6 +348,8 @@ func main() {
 		WorkerManager: workerManager,
 		EventRouter:   eventRouter,
 		Recorder:      mgr.GetEventRecorderFor("gittarget"),
+
+		GitRefreshInterval: cfg.gitRefreshInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
@@ -442,6 +444,7 @@ type appConfig struct {
 	attributionTransport        string
 	attributionFactTTL          time.Duration
 	attributionGrace            time.Duration
+	gitRefreshInterval          time.Duration
 	attributionMaxFactsPerType  int
 	attributionMaxFacts         int
 	attributionCollectionWindow time.Duration
@@ -596,6 +599,17 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
 			"at the cost of commit latency.")
+	fs.DurationVar(&cfg.gitRefreshInterval, "git-refresh-interval", controller.DefaultGitRefreshInterval,
+		"How often an IDLE GitTarget re-proves where its branch is on the remote (duration string; "+
+			"default 10m, 0 disables it). A target that is publishing renews that knowledge on every "+
+			"push — the push session reads the advertisement and the server names the accepted hash — "+
+			"so it never schedules a refresh and this costs it nothing. An idle branch pays one ref "+
+			"advertisement per interval, plus a fetch only on the intervals where the branch actually "+
+			"moved. Setting 0 buys back the property that Reverser holds no timer against the remote, "+
+			"and status.remote still works in that mode because pushes still renew it. The effective "+
+			"granularity is the reconcile cadence, so a value below the 5m steady interval means "+
+			"\"every tick\". Watch gitopsreverser_git_fetches_total{reason=\"refresh\"} for what it costs."+
+			"")
 	fs.StringVar(&cfg.auditRouteAnnotationKey, "author-attribution-audit-route-annotation-key", "",
 		"Audit-event annotation naming the AUDIT ROUTE each event belongs to. Setting it enables the "+
 			"bare /audit-webhook endpoint for a SHARED audit stream carrying several logical clusters: the "+

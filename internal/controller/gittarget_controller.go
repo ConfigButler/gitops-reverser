@@ -135,8 +135,9 @@ type GitTargetReconciler struct {
 	EventRouter   *watch.EventRouter
 
 	// GitRefreshInterval is how often an idle branch is asked to re-prove where its remote is,
-	// and the quantizer status.remote's clock is written against. Zero takes
-	// DefaultGitRefreshInterval.
+	// and the quantizer status.remote's clock is written against. Zero or less turns the
+	// refresher OFF, which buys back the property that nothing here holds a timer against the
+	// Git host; status.remote still works in that mode, because pushes still renew it.
 	GitRefreshInterval time.Duration
 	// Recorder emits a Kubernetes Event on every persisted Ready transition. It may be nil in
 	// tests, in which case no Event is recorded and nothing else changes.
@@ -230,6 +231,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			blocked: "Blocked by worker wiring failure",
 		})
 	}
+
+	// The refresher's trigger is this reconcile, which is already a scheduled tick looking for a
+	// job: a converged GitTarget requeues on RequeueSteadyInterval and those passes publish
+	// status without touching Git. Nothing new schedules anything, and the request is ENQUEUED
+	// rather than run here — the reconcile must not block on a network round trip, and the work
+	// belongs on the one goroutine allowed to touch the repository.
+	r.requestRemoteRefresh(&target, providerNS)
 
 	// One read of the source ClusterProvider serves everything below it: the audit route captured on
 	// Declare and the ClusterProviderReady projection. Reading it twice invited the two to disagree.
@@ -747,6 +755,37 @@ func gitTargetReadinessGates(
 	rd.progressingIf(observed.declare.Pending && observed.declare.Failures == 0,
 		metav1.ConditionFalse, ReasonProgressing,
 		"Stream declaration has not landed yet; the data-plane surface is not observable")
+}
+
+// requestRemoteRefresh asks this target's branch worker to re-prove where the branch is, if
+// nothing has proved it within the interval.
+//
+// The worker decides whether to spend a connection: the age test is its own, because only it
+// knows when it last pushed. A target sharing a branch with a busy one therefore costs nothing
+// here and still gets its status renewed, because the worker reports the existing observation
+// before it skips.
+//
+// A suspended target refreshes too, for the reason its layout is still scanned: a stopped valve
+// that also stopped looking would freeze what an operator reads at whatever Git looked like when
+// someone panicked. Refreshing writes nothing, so there is no valve to respect.
+func (r *GitTargetReconciler) requestRemoteRefresh(
+	target *configbutleraiv1alpha3.GitTarget,
+	providerNS string,
+) {
+	if r.GitRefreshInterval <= 0 || r.WorkerManager == nil {
+		return
+	}
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		target.Spec.GitProviderRef.Name, providerNS, target.Spec.Branch)
+	if !exists || worker == nil {
+		// Nothing has been published for this target yet, so there is no checkout to refresh and
+		// the first publication reads the remote anyway.
+		return
+	}
+	worker.EnqueueRefresh(&git.RefreshRequest{
+		Target: types.NewResourceReference(target.Name, target.Namespace),
+		MaxAge: r.GitRefreshInterval,
+	})
 }
 
 // publishGitObservations writes what the data plane last read about this target's folder and

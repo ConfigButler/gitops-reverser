@@ -329,7 +329,7 @@ type PendingWrite struct {
 }
 
 // WorkItem is the unit of work in the BranchWorker queue. Exactly one of
-// Request, Attach, or Resync is set.
+// Request, Attach, Resync, or Refresh is set.
 type WorkItem struct {
 	// Request is a resource-write request.
 	Request *WriteRequest
@@ -339,6 +339,9 @@ type WorkItem struct {
 	// Resync is a streaming-snapshot resync request (M8): a synchronous
 	// request/reply that materialises a GitTarget's complete desired set.
 	Resync *ResyncRequest
+	// Refresh asks the worker to re-prove where its branch is on the remote. It is the only
+	// work item that never writes anything: see RefreshRequest.
+	Refresh *RefreshRequest
 }
 
 // ResyncScope restricts a resync's mark-and-sweep to the slice of the mirror the desired
