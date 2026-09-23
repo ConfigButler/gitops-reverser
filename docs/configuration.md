@@ -800,11 +800,17 @@ one target is one environment is one write partition.
 
 ### Reverting a refused edit (`spec.onRefusal`)
 
-A live edit can be refused: the acceptance gate or a write-boundary check decides it has no legal
-destination in the folder, nothing is committed, and `GitPathAccepted` goes `False`. The edit stays
-in the cluster. Nothing reverts it, because reverting is the reconciler's job and the reconciler has
-no reason to act: with Argo CD `selfHeal` off it holds the Application `OutOfSync`, and Flux
-corrects it only on its next apply interval, which a long interval leaves hours away.
+`spec.onRefusal` chooses whether an eligible refused edit should request Git re-application.
+`Ignore`, the default, records the refusal without moving the branch. Choose `PushEmptyCommit`
+when restoring Git state takes priority over preserving unpublished live edits. The
+[bi-directional guide](bi-directional.md#choosing-speconrefusal) explains when to enable it and how
+one refused edit can cause an allowed edit to be lost.
+
+A refusal means the acceptance gate or a write-boundary check found no legal destination for the
+write. Nothing is committed for that write, and `GitPathAccepted` goes `False`. The live edit stays
+until something corrects it. With Argo CD `selfHeal` off, refreshing an already-synced revision
+does not restore it; an explicit sync or a new revision can. Flux corrects drift on its next apply,
+which can follow its interval, a new source revision, or another reconcile trigger.
 
 ```yaml
 spec:
@@ -812,10 +818,15 @@ spec:
   onRefusal: PushEmptyCommit   # default: Ignore
 ```
 
-`PushEmptyCommit` pushes a commit that changes no file. That moves the branch, and a new revision is
-all either reconciler needs: Flux publishes a new artifact revision and re-applies, and Argo CD sees
-a revision it has not synced, so the skip that `selfHeal: false` installs does not apply and
-automated sync reverts the edit. The commit message says what was refused and why its diff is empty.
+`PushEmptyCommit` pushes a commit that changes no file. Flux can observe a new artifact revision
+and re-apply; Argo CD can sync an `OutOfSync` Application against a revision it has not synced, even
+with `selfHeal: false`. The commit message says what was refused and why its diff is empty.
+
+This is a request for restoration. It requires a successful push and a reconciler configured to
+observe and apply the new revision. Suspension, sync restrictions, or field-ignore settings can
+prevent restoration. The empty commit does not clear the refusal condition: recovery still
+requires a successful resync covering the refused scope. Re-applying Git can remove the offending
+difference, but it cannot repair an unsupported folder or give a field a writable destination.
 
 Reverser deliberately does not name the `Kustomization` or `Application` that renders the folder.
 Neither tool derives that mapping itself, so deriving it here to write into somebody else's object
@@ -843,6 +854,9 @@ decided per document, and a write that removes one anywhere in the same flush is
 | Blast radius | The commit wakes **everything** watching the branch, not the refused object alone, so it can hurry unrelated work including another target's pending prune |
 | Unpublished edits | An allowed edit still waiting in the commit window can be reverted along with the refused one |
 | Argo CD exception | An `Application` with `argocd.argoproj.io/manifest-generate-paths` ignores the commit, because no file under its refresh paths changed |
+
+Folder-level refusals, such as invalid YAML or unsupported content, do not trigger this action.
+They still require a correction to the folder.
 
 Three more guards. A suspended target never commits, because an empty commit is a write. A
 `GitTarget` that cannot be read is treated as `Ignore`, since missing evidence is not consent. And

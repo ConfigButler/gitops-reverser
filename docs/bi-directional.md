@@ -5,8 +5,9 @@ cluster. Run both and a resource can be changed from either side. This guide cov
 costs you, how to configure the two reconcilers for it, and which parts are proven by tests.
 
 **The short version.** Point your Git host's push webhook at the reconciler, turn Argo CD's
-`selfHeal` off, and accept that for anything edited live the Kubernetes API is the source of
-truth. There is no merge, no lock, and no timing guarantee.
+`selfHeal` off, and treat publishable live state as the input Reverser writes to Git. There is no
+merge, no lock, and no timing guarantee. Choose what should happen when an edit cannot be
+published: [leave it for intervention or request Git re-application](#choosing-speconrefusal).
 
 **What you are trading.** Round trips to the Git host are the seconds you wait through, so a
 publication talks to the remote **twice**: it opens the push, reads where the branch is, and sends
@@ -274,6 +275,12 @@ manual reconcile request does not bypass it. To trigger the source and the apply
 flux reconcile kustomization editing -n flux-system --with-source
 ```
 
+When upgrading a chart whose pin is declared in Git, reconcile the owning `Kustomization` first
+so it applies the new `HelmRelease` and source configuration. Then reconcile the `HelmRelease` if
+needed. `flux reconcile helmrelease --with-source` refreshes its configured chart source; it does
+not first apply the Git manifests that change that configuration. A successful reconcile can
+therefore still use the old pin.
+
 Flux's equivalent of split ownership is `Kustomization.spec.ignore`, added in kustomize-controller
 `v1.9.0`, with the same trade as Argo's: selected live fields survive later applies, Git seeds them
 at creation, later Git edits to them do not land, and Reverser still captures them back into Git.
@@ -337,13 +344,69 @@ before becoming a pending write is gone from Reverser's side. Recovery is a resy
 state from the cluster as it exists at that moment, so it cannot reproduce an intermediate value
 that has since been overwritten.
 
-Reverser performs no restoration of its own, with one opt-in exception:
-[`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-specconrefusal)
-answers a refused edit with a commit that changes no file, which moves the branch and so asks both
-reconcilers to re-apply. It is off by default and its blast radius is the branch, not the object.
-Otherwise, with Argo `selfHeal` off, refreshing an already-synced revision will not put the
-approved value back; that needs an explicit sync, and Flux restores it on its next apply, which a
-24h interval can leave hours away.
+### Choosing `spec.onRefusal`
+
+**Enable `PushEmptyCommit` when restoring Git state takes priority over keeping unpublished live
+edits.** It is useful on a dedicated demo or editing branch where users accept that trade and an
+active GitOps reconciler applies the branch. Keep the default `Ignore` when live edits need human
+review before being discarded, or when unrelated workloads share the branch and their owners have
+not agreed to an extra apply.
+
+| Policy | Response to a refused edit | Operator's trade |
+| --- | --- | --- |
+| `Ignore` (default) | Report the refusal without moving the branch | Leave recovery to a human or a later apply |
+| `PushEmptyCommit` | For eligible edits, publish an empty commit requesting Git re-application | Accept an extra apply across the branch, including over unpublished edits |
+
+[`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-speconrefusal)
+changes no file. The new revision gives Flux or Argo CD a reason to apply Git again. Restoration
+depends on the reconciler observing the revision and successfully applying it. GitOps Reverser
+does not write the old value back to the Kubernetes API itself.
+
+Eligibility is narrow: the folder must be accepted, the refused edit must concern an existing
+document, and the write must remove no document. Invalid or unsupported folders, new objects, and
+removals do not trigger it. A standing refusal is deduplicated; rechecks do not keep producing empty
+commits for the same observation. A failed push is a separate failure and this policy does not
+repair Git connectivity.
+
+The apply still follows the reconciler's configuration. Flux must be unsuspended; Argo CD needs
+automated sync and an `OutOfSync` Application. An Argo CD Application using
+`argocd.argoproj.io/manifest-generate-paths` can skip the empty revision because no relevant file
+changed. Fields protected by the split-ownership settings above remain protected. A webhook
+reduces discovery delay but gives no completion guarantee.
+
+### How a refused edit can undo an allowed one
+
+The setting belongs to a `GitTarget`, but the new revision can wake every consumer of its branch.
+Separate folders or targets on that branch do not isolate this effect. One possible ordering is:
+
+1. Alice makes an allowed live edit. It is still in an open commit window, so Git has the old value.
+2. Bob makes a refused edit whose window closes first. Reverser pushes an empty commit for it.
+3. The reconciler applies that revision, restoring Git's values over both live edits.
+4. Reverser observes the restoration. Alice's earlier value may never reach Git.
+
+Alice and Bob can be the same person, and the edits can affect different objects. The empty commit
+does not erase accepted commits already included in the published revision; the risk is live
+state missing from the revision being applied. The same race exists whenever a new Git revision
+arrives. `PushEmptyCommit` adds a trigger at the moment a publication was refused. Shortening the
+commit window reduces exposure but does not reserve time against an apply. An extra apply can also
+advance unrelated work, including pruning already requested in Git.
+
+### A restored value does not prove the target recovered
+
+`Ignore` still reports `GitPathAccepted=False`, `Stalled=True`, and `Ready=False`. The target keeps
+rechecking, roughly every ten seconds; `Stalled` does not mean the controller has stopped running.
+Normal publication can remain blocked, and changing `onRefusal` does not bypass acceptance or
+render-fidelity checks.
+
+An empty commit neither clears those conditions nor makes an unrepresentable edit writable. A
+successful resync covering the refused scope must establish acceptance again. Re-applying Git can
+remove the offending live difference, but other differences can remain: API defaults on a
+Deployment inherited from a read-only base can still have no writable destination in the overlay.
+
+Treat recovery as two observations: the live resource has the intended value, and the `GitTarget`
+returns to `Ready=True`. If it remains refused, use the condition's reason to correct the folder,
+the live state, or what the target watches. Leaving the target stalled indefinitely is an
+unresolved publication failure under either policy.
 
 ## What the tests prove
 
@@ -360,15 +423,21 @@ assertions describe those scenarios; they do not guarantee the ordering of concu
 | A SOPS-encrypted Secret round-trips without a reverse commit | Flux |
 | A Git revert removes the live object and the committed file | Flux |
 | Waking only the `GitRepository` makes the Kustomization apply a new revision by itself, reverting live drift, with an **empty** commit as that revision | Flux |
+| An eligible refusal produces an empty commit; unchanged refusals settle, and a new refused value produces another commit | [Refusal action](../test/e2e/refusal_empty_commit_e2e_test.go) |
 
-Two gaps worth knowing. The **Flux spec drives reconciliation manually** with 30m intervals, so
-only the Argo webhook is exercised; the mechanism a `Receiver` depends on is covered by the last
-row, which wakes the `GitRepository` alone and lets the Kustomization apply on its own. And **no
+The refusal-action spec and the Flux spec prove the two halves separately. They do not exercise an
+actual refusal through reconciler restoration to `GitTarget` recovery in one scenario, or an
+allowed edit racing the empty commit's apply.
+
+Two other gaps worth knowing. The **Flux spec drives reconciliation manually** with 30m intervals, so
+only the Argo webhook is exercised; the mechanism a `Receiver` depends on is covered by the Flux
+test that wakes the `GitRepository` alone and lets the Kustomization apply on its own. And **no
 spec tests simultaneous writes to one field from both sides**, because the outcome depends on
 arrival order the corner does not control. The replay mechanism is covered; a conflict policy is
 not, because there is not one.
 
 Run `task test-e2e-bi-directional` for the corner, which is also a CI job. `task test-e2e`
-excludes it, and `task argocd-ui` opens the installed Argo CD UI. The
+excludes the corner and includes the refusal-action spec. `task argocd-ui` opens the installed
+Argo CD UI. The
 [corner specification](spec/e2e-bi-directional-corner.md) describes the setup and the coverage
 still missing.
