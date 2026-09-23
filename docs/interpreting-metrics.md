@@ -257,15 +257,16 @@ count a confirmed moved remote. `push_failure_probe` moving on its own is pushes
 reason that is not another writer — check credentials and connectivity, not the branch.
 `forced_recheck` moving with nothing else is reconcile traffic.
 
-`refresh` is the price of `--git-refresh-interval`, per branch. Divide its rate by the interval and
-you get the number of idle branches whose refresh found the branch somewhere else; if that is close
-to the number of idle branches you think you have, something outside Reverser is pushing to them
-constantly. The advertisement that PRECEDES the fetch is deliberately not counted here — it runs no
-`SmartFetch`, and this counter's documented meaning is every call that does — so on a quiet
-repository the refresher's traffic shows up nowhere on this series at all. That is the honest
-accounting, not an omission: counting the refresher's advertisements separately would be a new
-series, not a redefinition of this one. Setting `--git-refresh-interval=0` returns this reason to
-a flat zero and the idle target to no Git traffic whatsoever.
+`refresh` is the price of `--git-refresh-interval`, per branch. Multiply its per-second rate by
+the interval in seconds and you get the number of idle branches whose refresh found the branch
+somewhere else; if that is close to the number of idle branches you think you have, something
+outside Reverser is pushing to them constantly. The advertisement that PRECEDES the fetch is
+deliberately not counted here: it runs no `SmartFetch`, and this counter's documented meaning is
+every call that does. So on a quiet repository the refresher's traffic shows up nowhere on this
+series at all. That is the honest accounting, not an omission: counting the refresher's
+advertisements separately would be a new series, not a redefinition of this one. Setting
+`--git-refresh-interval=0` returns this reason to a flat zero and the idle target to no Git
+traffic whatsoever.
 
 **This is one instrument, not a family.** Seven reasons on one counter answer seven different
 operator questions, and the alternative (a metric per call site) would multiply the surface without

@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -110,6 +111,14 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 		return fmt.Errorf("get auth: %w", err)
 	}
 	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
+	if errors.Is(err, gogit.ErrRepositoryNotExists) {
+		// A worker exists for this branch but has never cloned: nothing has been published yet.
+		// There is no checkout to refresh and nothing to report, and the first publication reads
+		// the remote anyway. It is an ordinary state, so it must not be logged as a failure once
+		// per tick for the lifetime of an unused target.
+		w.Log.V(1).Info("Skipping refresh: no checkout yet", "branch", w.Branch)
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("open repository: %w", err)
 	}

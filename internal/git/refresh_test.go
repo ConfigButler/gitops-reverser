@@ -191,3 +191,16 @@ func TestRefresh_AnAbsentBranchCostsOneConnection(t *testing.T) {
 	assert.Empty(t, h.reported[0].Revision,
 		"no revision IS the observation: a branch does not exist without a commit")
 }
+
+// TestRefresh_SkipsAWorkerThatHasNeverCloned keeps an ordinary state out of the error log. A
+// worker exists for every branch a GitTarget names, including one that has never published, and a
+// refresh tick for it must not report a failure once per interval forever.
+func TestRefresh_SkipsAWorkerThatHasNeverCloned(t *testing.T) {
+	h := newRefreshHarnessOn(t, "refresh-no-checkout", true)
+	// No publish, no bootstrap: nothing has created the on-disk clone.
+
+	connections := h.refresh(time.Nanosecond)
+
+	assert.Zero(t, connections, "there is no checkout to refresh, so nothing may be spent")
+	assert.Empty(t, h.reported, "and nothing is claimed about a remote nobody has looked at")
+}

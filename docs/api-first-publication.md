@@ -12,7 +12,7 @@ exception: the worker fetches that new base and replays the writes it has not ye
 complete desired content of the YAML document that holds it. When an API change and a Git change
 reach the same object, publication writes the API object over it, including the fields only Git
 changed; every other document keeps what Git says. There is no merge and no conflict state to
-clear, and a branch that someone else moved costs a replay rather than a failure.
+clear, and a branch that someone else moved costs a replay within the three-attempt cycle.
 [Story 2](#story-2-another-writer-moves-the-remote-branch) walks that case, and the
 [deferred merge investigation](future/git-api-three-way-comparison.md) records what preserving both
 sides would require.
@@ -309,9 +309,13 @@ delay permits more collection time; it does not reserve an API transaction.
 
 ## Story 4: an idle target and a Git-side edit
 
-A healthy idle branch worker generates no Git traffic. Its commit and push timers are armed for
-work, and neither is a periodic remote poll. It can therefore retain an old view after a foreign
-push until a later publication, resync, or explicit recheck.
+A healthy idle branch worker generates no Git traffic of its own. Its commit and push timers are
+armed for work, and neither is a periodic remote poll. What does look is the refresher: on the
+target's reconcile tick, a branch nothing has proved within `--git-refresh-interval` (10m by
+default) costs one ref advertisement, and a fetch only if it has moved. That bounds how long an
+idle target can hold an old view after a foreign push; `--git-refresh-interval=0` removes the look
+and restores the old behaviour, where the view is corrected by a later publication, resync, or
+explicit recheck.
 
 The proposed inbound push receiver would notify the worker that its base needs refreshing. It
 would coalesce notifications, refresh on the worker, and replay any retained writes. It is useful

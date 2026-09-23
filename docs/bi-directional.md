@@ -58,9 +58,15 @@ objects on the same provider and branch share that worker and its ordering.
 That compare-and-swap is what detects a foreign push, and it does so from the remote's ref
 advertisement before uploading a single object, on a connection the cycle was making anyway.
 
-**Reverser never polls the remote and holds no timer against it**, so an idle target generates no
-Git traffic at all. That is measured rather than approximate, and there is no interval setting
-that changes it.
+**A target that is publishing reads the remote only through the push it was making anyway.** That
+is measured rather than approximate, and no interval setting changes it: the push session reads the
+advertisement and the server names the hash it accepted, so the knowledge is free.
+
+An IDLE target is the one exception, and it is a setting:
+[`--git-refresh-interval`](configuration.md#keeping-an-idle-target-fresh---git-refresh-interval)
+has it re-prove where its branch is, by default every 10 minutes. That costs one ref advertisement
+per idle branch per interval, and a fetch only when the branch has actually moved. `0` turns it off
+and returns an idle target to no Git traffic at all.
 
 Planning does not read the branch either: the worker plans on the checkout it already has and lets
 the compare-and-swap catch a move. The exceptions are a worker that has not yet seen the remote, a
@@ -99,8 +105,10 @@ watch captured it, and writing that object onto the new tree has one of two outc
 - **A change, committed on top.** The captured object is written over the other writer's value,
   and the branch ends at the API side's value.
 
-There is no third outcome, and there is no merge: a watch event carries the object's whole state,
-with no retained baseline that would say which fields changed on each side. The
+There is no third outcome for a write that has a legal destination at all — one that does not is
+refused, and the table below says what that leaves on disk — and there is no merge: a watch event
+carries the object's whole state, with no retained baseline that would say which fields changed on
+each side. The
 [deferred merge investigation](future/git-api-three-way-comparison.md#what-three-way-merge-means-here)
 defines the comparison that would take.
 

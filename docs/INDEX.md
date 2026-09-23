@@ -190,7 +190,7 @@ the values projection; helm-light inversion parked behind entry criteria), and w
 examples of where the configuration surface should go.
 [`git-api-three-way-comparison.md`](future/git-api-three-way-comparison.md) is the
 deferred investigation into two independent edits to different fields of one
-object: what a common baseline would have to be, five ways of obtaining one, and
+object: what a common baseline would have to be, five evidence sources weighed for supplying or standing in for one, and
 the counterexample that limits each. It opens by naming what API-first already
 settles, and records why a partial merge would be worse than the rule we have.
 Four more ideas sit beside them.
