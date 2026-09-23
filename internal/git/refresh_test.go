@@ -27,8 +27,14 @@ type refreshHarness struct {
 
 func newRefreshHarness(t *testing.T, slug string) *refreshHarness {
 	t.Helper()
+	return newRefreshHarnessOn(t, slug, true)
+}
+
+// newRefreshHarnessOn builds the harness on a remote that may or may not already have the branch.
+func newRefreshHarnessOn(t *testing.T, slug string, seeded bool) *refreshHarness {
+	t.Helper()
 	h := &refreshHarness{
-		ledgerFixture: newLedgerFixture(t, slug, true),
+		ledgerFixture: newLedgerFixture(t, slug, seeded),
 		target:        itypes.NewResourceReference("checkout", "shop"),
 		path:          "team-a",
 	}
@@ -160,4 +166,28 @@ func TestRefresh_RepublishesTheLayoutOfAFolderSomebodyElseChanged(t *testing.T) 
 	last := layouts[len(layouts)-1]
 	assert.Equal(t, manifestanalyzer.LayoutSingleKustomization, last.Reason,
 		"the refresh must report the kustomization somebody else added")
+}
+
+// TestRefresh_AnAbsentBranchCostsOneConnection is the ordinary state of a target that has not
+// written yet, and it must not become a standing per-interval cost. The advertisement is the whole
+// answer: a fetch for a branch nobody has created would fall back to the default branch and teach
+// us nothing.
+func TestRefresh_AnAbsentBranchCostsOneConnection(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	// An unseeded remote: the branch this worker is for does not exist on it. The repository is
+	// prepared, as it is for any target the controller has wired, so what is measured is the
+	// refresh and not a first clone.
+	h := newRefreshHarnessOn(t, "refresh-absent", false)
+	require.NoError(t, h.worker.ensureRepositoryInitialized(h.worker.ctx))
+	h.reported = nil
+
+	connections := h.refresh(time.Nanosecond)
+
+	assert.Equal(t, int64(1), connections, "one advertisement answers it")
+	assert.Zero(t, fetchCount(t, reader, h.worker, fetchReasonRefresh))
+	require.Len(t, h.reported, 1)
+	assert.Empty(t, h.reported[0].Revision,
+		"no revision IS the observation: a branch does not exist without a commit")
 }

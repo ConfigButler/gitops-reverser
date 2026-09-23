@@ -126,7 +126,18 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 	observed := w.recordRemoteObservation(revision, ObservedByFetch)
 	w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
 
-	// 4. The branch is where our checkout already is. Nothing to fetch, and nothing on disk can
+	// 4a. The remote does not carry this branch. That IS the answer, and there is nothing to
+	// fetch: a fetch would fall back to the default branch and teach us nothing about a branch
+	// nobody has created. It is the ordinary state of a target that has not written yet, so
+	// paying a second connection for it every interval would be a standing cost for nothing. A
+	// branch somebody DELETED is handled where it has to be, by the compare-and-swap on the next
+	// push.
+	if advertised.IsZero() {
+		w.Log.V(1).Info("Refresh found no such branch on the remote", "branch", w.Branch)
+		return nil
+	}
+
+	// 4b. The branch is where our checkout already is. Nothing to fetch, and nothing on disk can
 	// have changed, so there is nothing to re-read either.
 	if w.baseTrusted() && advertised == localHead(repo) {
 		w.Log.V(1).Info("Refresh confirmed the branch has not moved",
