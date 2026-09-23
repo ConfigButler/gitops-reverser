@@ -81,3 +81,28 @@ func TestPushCycle_CreatingTheBranchTakesTrust(t *testing.T) {
 	assert.True(t, f.worker.baseTrusted(),
 		"the server accepted the ref update, so the worktree sits at the remote tip")
 }
+
+// TestRemoteObservation_APushRenewsIt is where "a push is a refresh" stops being a comment and
+// becomes structural. The record the refresher reads must name the hash the push just made the
+// tip, not whatever the last fetch happened to see.
+func TestRemoteObservation_APushRenewsIt(t *testing.T) {
+	f := newLedgerFixture(t, "push-renews-observation", true)
+
+	before, ok := f.worker.LastRemoteObservation()
+	require.False(t, ok, "nothing has looked at the remote yet")
+	require.Empty(t, before.Revision)
+
+	f.publish("first")
+	afterFirst, ok := f.worker.LastRemoteObservation()
+	require.True(t, ok)
+	assert.Equal(t, ObservedByPush, afterFirst.By,
+		"the push is the last thing that touched the remote, so it owns the record")
+	assert.Equal(t, revParseMain(t, f.repoDir), afterFirst.Revision)
+
+	f.publish("second")
+	afterSecond, _ := f.worker.LastRemoteObservation()
+	assert.Equal(t, revParseMain(t, f.repoDir), afterSecond.Revision,
+		"a second push moves the revision with it")
+	assert.NotEqual(t, afterFirst.Revision, afterSecond.Revision)
+	assert.False(t, afterSecond.At.Before(afterFirst.At), "and renews the clock")
+}
