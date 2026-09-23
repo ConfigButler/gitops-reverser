@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -20,6 +21,7 @@ type refreshHarness struct {
 
 	loop     *branchWorkerEventLoop
 	target   itypes.ResourceReference
+	path     string
 	reported []RemoteObservation
 }
 
@@ -28,6 +30,7 @@ func newRefreshHarness(t *testing.T, slug string) *refreshHarness {
 	h := &refreshHarness{
 		ledgerFixture: newLedgerFixture(t, slug, true),
 		target:        itypes.NewResourceReference("checkout", "shop"),
+		path:          "team-a",
 	}
 	h.loop = newBranchWorkerEventLoop(h.worker, time.Hour)
 	h.worker.remoteReporter = func(_ itypes.ResourceReference, observed RemoteObservation) {
@@ -40,7 +43,7 @@ func newRefreshHarness(t *testing.T, slug string) *refreshHarness {
 // connections to the Git host.
 func (h *refreshHarness) refresh(maxAge time.Duration) int64 {
 	before := h.mark()
-	h.loop.handleRefreshRequest(&RefreshRequest{Target: h.target, MaxAge: maxAge})
+	h.loop.handleRefreshRequest(&RefreshRequest{Target: h.target, Path: h.path, MaxAge: maxAge})
 	return h.mark().since(before).connections()
 }
 
@@ -130,4 +133,31 @@ func TestRefresh_WritesNothing(t *testing.T) {
 	assert.Equal(t, moved, revParseMain(t, h.repoDir),
 		"the branch must be exactly where the other writer left it: no commit, empty or otherwise")
 	assert.Empty(t, h.loop.pendingWrites, "and nothing may be retained for a later push")
+}
+
+// TestRefresh_RepublishesTheLayoutOfAFolderSomebodyElseChanged is most of what an operator reads
+// off a refreshed target: the branch moved, the folder under it is somebody else's now, and what
+// its shape implies about placement has to follow.
+//
+// The refusal side deliberately does NOT follow: see rescanLayoutForTarget.
+func TestRefresh_RepublishesTheLayoutOfAFolderSomebodyElseChanged(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-layout")
+
+	var layouts []LayoutReport
+	h.worker.layoutReporter = func(_ itypes.ResourceReference, report LayoutReport) {
+		layouts = append(layouts, report)
+	}
+
+	h.publish("prime")
+	// Somebody turns the folder into a kustomize root from outside.
+	h.contend("team-a/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: []\n")
+	layouts = nil
+
+	h.refresh(time.Nanosecond)
+
+	require.NotEmpty(t, layouts, "the folder changed under us, so its layout must be republished")
+	last := layouts[len(layouts)-1]
+	assert.Equal(t, manifestanalyzer.LayoutSingleKustomization, last.Reason,
+		"the refresh must report the kustomization somebody else added")
 }

@@ -784,6 +784,7 @@ func (r *GitTargetReconciler) requestRemoteRefresh(
 	}
 	worker.EnqueueRefresh(&git.RefreshRequest{
 		Target: types.NewResourceReference(target.Name, target.Namespace),
+		Path:   target.Spec.Path,
 		MaxAge: r.GitRefreshInterval,
 	})
 }

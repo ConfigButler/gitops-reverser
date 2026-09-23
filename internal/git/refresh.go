@@ -3,6 +3,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -24,6 +25,9 @@ type RefreshRequest struct {
 	// against. A worker serves every target on its (provider, branch); this names the one in
 	// hand.
 	Target itypes.ResourceReference
+	// Path is the GitTarget's spec.path, so a refresh can re-read that folder and republish
+	// what its shape resolves to. Empty skips the re-scan.
+	Path string
 	// MaxAge is how old an observation may be before it is topped up. An observation younger
 	// than this makes the refresh a no-op with no connection at all, which is what keeps an
 	// actively-publishing branch free: its pushes renew the record continuously.
@@ -122,7 +126,8 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 	observed := w.recordRemoteObservation(revision, ObservedByFetch)
 	w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
 
-	// 4. The branch is where our checkout already is. Nothing to fetch.
+	// 4. The branch is where our checkout already is. Nothing to fetch, and nothing on disk can
+	// have changed, so there is nothing to re-read either.
 	if w.baseTrusted() && advertised == localHead(repo) {
 		w.Log.V(1).Info("Refresh confirmed the branch has not moved",
 			"branch", w.Branch, "revision", revision)
@@ -138,7 +143,64 @@ func (l *branchWorkerEventLoop) refreshFromRemote(req *RefreshRequest) error {
 	if synced, ok := w.LastRemoteObservation(); ok {
 		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, synced)
 	}
+
+	// 6. The folder on disk is now somebody else's, so what it implies about placement may have
+	// changed. Re-reading it is free — it is a walk of local files — and it is most of what an
+	// operator actually reads off a refreshed target.
+	w.rescanLayoutForTarget(ctx, req)
 	return nil
+}
+
+// rescanLayoutForTarget re-reads the target's folder and republishes what its shape resolves to.
+//
+// It is structure-only, and the boundary is the point: a fresh look at Git may change what an
+// operator READS and nothing else. Publishing placement is inside that line and checkably so —
+// LayoutResolved writes no part of the kstatus trio, and the projection republishes only on a
+// transition — while re-running the ACCEPTANCE gate would be outside it. GitPathAccepted=False is
+// not only a report: the reconcile reads it back into forceRecheck, which re-anchors the target's
+// streams and drives a resync, and a refused target then requeues every ten seconds. A refresher
+// allowed to raise it would turn "somebody pushed a folder we cannot write" into a cluster
+// snapshot every ten seconds, from a code path whose whole justification is that it publishes
+// nothing. So acceptance stays where it is: raised by a write that was actually refused, cleared
+// by a resync that actually succeeded.
+//
+// Nothing here builds a plan. An empty desired set is the sweep-everything signal, and this must
+// never reach it.
+func (w *BranchWorker) rescanLayoutForTarget(ctx context.Context, req *RefreshRequest) {
+	if req.Path == "" || w.layoutReporter == nil {
+		return
+	}
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
+	provider, err := w.getGitProvider(ctx)
+	if err != nil {
+		w.Log.V(1).Info("Refresh could not re-read the folder", "error", err.Error())
+		return
+	}
+	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
+	if err != nil {
+		w.Log.V(1).Info("Refresh could not re-read the folder", "error", err.Error())
+		return
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		w.Log.V(1).Info("Refresh could not re-read the folder", "error", err.Error())
+		return
+	}
+	root := worktree.Filesystem().Root()
+	scoped, err := scanRenderScope(root, req.Path)
+	if err != nil {
+		w.Log.V(1).Info("Refresh could not re-read the folder", "error", err.Error())
+		return
+	}
+	// The local mapper, deliberately, even for a target mirroring a remote cluster: what is
+	// resolved here is the folder's SHAPE, which is decided by the kustomizations in it and not
+	// by any cluster's type catalog.
+	batch := newWriteBatch(
+		ctx, w.contentWriter, w.mapper, scoped.scan, nil, namespacePolicy{}, scoped.writeSubdir)
+	batch.target = placementTarget{name: req.Target.Name, namespace: req.Target.Namespace}
+	w.reportLayout(ctx, batch, worktreeRevision(worktree))
 }
 
 // advertiseRemoteBranch asks the remote where a branch is, and transfers nothing else.
