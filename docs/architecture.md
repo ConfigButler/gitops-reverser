@@ -86,10 +86,8 @@ instead.
 **Nothing tells an idle target that its branch moved.** A target that is not writing makes no round
 trip, so it holds its previous view of the folder until it next publishes, resyncs, or is asked to
 re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
-ten seconds because it is not converged; a healthy idle one does not. `--base-trust-max-age` (off by
-default) bounds how stale that view may get, per `GitTarget` rather than per branch: every push
-renews the shared checkout, so a branch-wide age would let one busy target postpone a quiet one
-indefinitely. Closing the gap properly is the inbound receiver's job, designed but not built:
+ten seconds because it is not converged; a healthy idle one does not. Closing the gap properly is
+the inbound receiver's job, designed but not built:
 [§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
 request shape it will accept.
 

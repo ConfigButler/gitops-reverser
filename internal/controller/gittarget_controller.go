@@ -132,29 +132,7 @@ type GitTargetReconciler struct {
 
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
-
-	// baseTrustReads records when each GitTarget last forced a re-read of its own folder, and the
-	// base-trust epoch that re-read answered. It is what makes one expiry reach every target on a
-	// shared worker, and what bounds a quiet target's staleness when a busy sibling means nothing
-	// ever expires.
-	baseTrustReads baseTrustReadTracker
-
-	// BaseTrustMaxAge bounds two things with one duration: how long a branch worker may keep
-	// believing its checkout sits at the remote tip, and how long a GitTarget may go without
-	// re-reading its own folder. Zero disables it, which is the default.
-	//
-	// They are not the same clock, and treating them as one leaves the second unbounded. Every
-	// push renews the shared checkout, so a branch-wide age expires only on a branch nobody is
-	// publishing to; a target that has gone quiet beside a busy sibling would never come up. See
-	// baseTrustReadTracker.
-	//
-	// It is enforced here rather than by a timer inside the worker because the target that needs
-	// it is the IDLE one, and an idle worker has nothing arriving to check the clock on. This
-	// reconcile is already a scheduled tick — a converged GitTarget requeues on
-	// RequeueSteadyInterval and that pass publishes status without touching Git — so it is the
-	// wake-up the age needs, with no second mechanism to own.
-	BaseTrustMaxAge time.Duration
-	EventRouter     *watch.EventRouter
+	EventRouter   *watch.EventRouter
 	// Recorder emits a Kubernetes Event on every persisted Ready transition. It may be nil in
 	// tests, in which case no Event is recorded and nothing else changes.
 	Recorder record.EventRecorder
@@ -260,17 +238,10 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, sourceProviderErr
 	}
 
-	// Expiring base trust has to SCHEDULE the re-read, not merely permit it. Clearing the flag
-	// only helps a target that is about to publish, and the target this exists for is the idle
-	// one: it is converged, nothing is arriving, and no cycle will come along to spend the fetch
-	// the cleared flag allows. So expiry joins forceRecheck below and drives the same chain the
-	// reconcile-request annotation does.
-	trustExpired := r.expireStaleBaseTrust(&target, providerNS, log)
-
 	// A standing reconcile request forces the same re-check a refused Git path does: the watch
 	// plane re-anchors the target's streams, which is what makes it re-read the folder rather than
 	// wait for the periodic pass. Taken once per distinct annotation value.
-	forceRecheck := gitPathWasRefused || trustExpired || r.reconcileRequests.take(
+	forceRecheck := gitPathWasRefused || r.reconcileRequests.take(
 		types.NewResourceReference(target.Name, target.Namespace), reconcileRequestedAt(&target))
 	observed := r.observeDataPlane(&target, sourceProvider, forceRecheck, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
@@ -778,47 +749,6 @@ func gitTargetReadinessGates(
 		"Stream declaration has not landed yet; the data-plane surface is not observable")
 }
 
-// expireStaleBaseTrust is the scheduled half of --base-trust-max-age (see BaseTrustMaxAge), and
-// reports whether this pass expired anything so the caller can force the re-read.
-//
-// **Returning the boolean is the whole point.** Dropping the flag on its own would be a no-op on
-// exactly the target the age exists for: an idle target is converged, so nothing publishes, so
-// nothing ever spends the fetch that the cleared flag merely permits. Git would stay unread until
-// some unrelated write came along, which is the staleness this was meant to bound.
-//
-// A missing worker is not an error: nothing has been published for this target yet, so there is no
-// trust to expire and the first publication will read the remote anyway.
-func (r *GitTargetReconciler) expireStaleBaseTrust(
-	target *configbutleraiv1alpha3.GitTarget,
-	providerNS string,
-	log logr.Logger,
-) bool {
-	if r.BaseTrustMaxAge <= 0 || r.WorkerManager == nil {
-		return false
-	}
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		target.Spec.GitProviderRef.Name, providerNS, target.Spec.Branch)
-	if !exists || worker == nil {
-		return false
-	}
-	// Expire first, then ask the tracker. Whether THIS reconcile is the one that expired the shared
-	// flag does not matter: what decides a re-read is whether this target has acted on the current
-	// epoch, so a sibling that arrives after the expiry still forces its own.
-	worker.ExpireBaseTrust(r.BaseTrustMaxAge)
-	epoch := worker.BaseTrustEpoch()
-	ref := types.NewResourceReference(target.Name, target.Namespace)
-	// maxAge is passed as well as the epoch because an expiry is not the only way to go stale, and
-	// waiting for one would leave the worst case unbounded: the shared timestamp is renewed by
-	// EVERY target's push, so one busy target keeps it fresh and nothing ever expires, while the
-	// quiet target beside it is never re-evaluated at all. See baseTrustReadTracker.
-	if !r.baseTrustReads.take(ref, epoch, r.BaseTrustMaxAge, time.Now()) {
-		return false
-	}
-	log.Info("Forcing a re-read of the Git folder for this GitTarget",
-		"branch", target.Spec.Branch, "maxAge", r.BaseTrustMaxAge.String(), "epoch", epoch)
-	return true
-}
-
 func (r *GitTargetReconciler) ensureEventStream(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
@@ -1176,9 +1106,6 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// condition gauge is released on the same terms and for a sharper reason: a condition series
 	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
-	// Same terms: the base-trust read tracker is the reconciler's own memory too, and a record for
-	// a deleted target would otherwise sit in the map for the lifetime of the process.
-	r.baseTrustReads.forget(gitDest)
 	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
 	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
 	// branch's push failures to an object that no longer exists.

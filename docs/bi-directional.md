@@ -310,13 +310,6 @@ kubectl annotate gittarget editing -n gitops-reverser \
   reconcile.configbutler.ai/requestedAt="$(date +%s)" --overwrite
 ```
 
-To bound it instead of watching for it, set `--base-trust-max-age` on the controller: a `GitTarget`
-that has not re-read its folder within that age is made to, whether or not it has anything to
-publish. It is off by default, because it trades requests for freshness: one folder re-read per
-target per interval, including targets that are perfectly quiet. The age is per target rather than
-per branch, so that one busy target cannot postpone a quiet one beside it indefinitely by renewing
-the shared checkout.
-
 A receiver that does this automatically is designed in
 [inbound push notification](design/push-notification-and-reconcile-trigger.md); the other half of
 that design, removing the head-of-cycle fetch, has shipped. Its request shape is

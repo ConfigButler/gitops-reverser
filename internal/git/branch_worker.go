@@ -133,20 +133,9 @@ type BranchWorker struct {
 	baseTrustedState   atomic.Bool
 	worktreeDirtyState atomic.Bool
 
-	// baseTrustedAt is when baseTrustedState last became true, as Unix nanoseconds, and it exists
-	// only so ExpireBaseTrust can put a maximum age on that trust. Zero means "never trusted".
+	// baseTrustedAt is when baseTrustedState last became true, as Unix nanoseconds. Zero means
+	// "never trusted".
 	baseTrustedAt atomic.Int64
-
-	// baseTrustEpoch counts expiries. It exists because one worker serves EVERY GitTarget on its
-	// (provider, branch), while the flag it guards is one shared boolean: the first target to
-	// reconcile after an expiry consumed the whole transition, and its sibling saw either an
-	// already-cleared flag or the fresh timestamp from that target's fetch, so the sibling never
-	// re-evaluated its own folder and could stay stale indefinitely.
-	//
-	// A counter fans the one event out. Each target compares the epoch it last acted on against
-	// this one and forces its own re-read when they differ, so the transition is consumed once PER
-	// TARGET rather than once per worker.
-	baseTrustEpoch atomic.Uint64
 
 	// lastRefusalTouch records when this worker last pushed an empty commit for a GitTarget, keyed
 	// by "namespace/name", so refusalTouchInterval can floor the rate. It is guarded by its own
@@ -1546,32 +1535,6 @@ func (w *BranchWorker) setBaseTrusted(trusted bool) {
 	}
 	w.baseTrustedState.Store(trusted)
 }
-
-// ExpireBaseTrust drops base trust that is older than maxAge, and reports whether it did.
-//
-// This is the scheduled half of the maximum-age backstop. Nothing else moves an idle target's view
-// of Git: it is converged, so it requeues on the steady interval and those passes publish status
-// without touching the remote. A target that IS publishing re-stamps the clock on every push, so
-// this only ever fires on one that has gone quiet, which is exactly the target it exists for.
-//
-// maxAge <= 0 disables it, which is the default. Enabling it trades requests for freshness, and
-// the request cost is one fetch per branch per maxAge on otherwise silent targets.
-func (w *BranchWorker) ExpireBaseTrust(maxAge time.Duration) bool {
-	if maxAge <= 0 || !w.baseTrusted() {
-		return false
-	}
-	at := w.baseTrustedAt.Load()
-	if at == 0 || time.Since(time.Unix(0, at)) < maxAge {
-		return false
-	}
-	w.invalidateBase("base trust older than the configured maximum age")
-	w.baseTrustEpoch.Add(1)
-	return true
-}
-
-// BaseTrustEpoch is the number of times this worker's base trust has expired. A GitTarget forces
-// its own re-read when this differs from the epoch it last acted on. See baseTrustEpoch.
-func (w *BranchWorker) BaseTrustEpoch() uint64 { return w.baseTrustEpoch.Load() }
 
 // invalidateBase records that the worktree can no longer be assumed to sit at the remote tip.
 //

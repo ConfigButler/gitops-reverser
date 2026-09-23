@@ -165,8 +165,8 @@ The implementation already supplies several parts of a future comparison path:
   implement bounded field assignments. [`applyFieldPatch`](../../internal/git/plan_flush.go) routes
   those assignments through the writer, including supported Kustomize overrides. This machinery
   can preserve fields outside an assignment; a future design need not invent that primitive.
-- [`baseTrustedState` and `ExpireBaseTrust`](../../internal/git/branch_worker.go) track whether the
-  Git checkout remains usable for optimistic publication. They do not track cluster application.
+- [`baseTrustedState`](../../internal/git/branch_worker.go) tracks whether the Git checkout remains
+  usable for optimistic publication. It does not track cluster application.
 
 The field-patch machinery originated in scale rehydration, but its current producer boundary
 matters. A search of non-test Go code finds the payload and writer dispatch, with no construction
