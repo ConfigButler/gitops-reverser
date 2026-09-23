@@ -85,14 +85,22 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 		return
 	}
 
-	// 3. Something has proved this branch recently enough, so there is nothing to ask the remote.
-	// This is where "a push is a refresh" is spent: an actively-writing branch renews its
-	// observation on every push and never reaches the connection below.
+	// 3. Something has proved this branch recently enough, AND the checkout is known to sit at
+	// what was proved, so there is nothing to ask the remote. This is where "a push is a refresh"
+	// is spent: an actively-writing branch renews its observation on every push and never reaches
+	// the connection below.
+	//
+	// Both halves are load-bearing, and the second was learned the hard way. An observation is
+	// recorded from the ADVERTISEMENT, before the fetch that acts on it, so a fetch that failed
+	// leaves a fresh observation standing next to a checkout that never moved onto it. Skipping
+	// on the age alone would then rescan the old tree and publish its layout until the
+	// observation aged out. An untrusted base is exactly that state, so it sends this tick to the
+	// remote instead.
 	//
 	// The folder is still re-read. That is local work, and it is what keeps a SIBLING honest: the
 	// fetch that moved this checkout may have been earned by another target's refresh, which
 	// rescanned its own folder and knew nothing about this one.
-	if known && req.MaxAge > 0 && observed.Age(time.Now()) < req.MaxAge {
+	if known && w.baseTrusted() && req.MaxAge > 0 && observed.Age(time.Now()) < req.MaxAge {
 		w.rescanLayoutForTarget(w.ctx, req)
 		return
 	}

@@ -239,3 +239,43 @@ func TestRefresh_AQuietSiblingIsRescannedWithoutFetching(t *testing.T) {
 	require.NotEmpty(t, layouts, "the quiet sibling must still re-read its own folder")
 	assert.Equal(t, manifestanalyzer.LayoutSingleKustomization, layouts[len(layouts)-1].Reason)
 }
+
+// TestRefresh_AFailedFetchDoesNotBuyQuietUntilTheObservationAges is the ordering hazard in the
+// cheap path. The observation is recorded from the ADVERTISEMENT, before the fetch that acts on
+// it, so a fetch that fails leaves a fresh observation standing beside a checkout that never moved
+// onto it. Skipping the next tick on the age alone would rescan the old tree and publish its
+// layout until the observation aged out.
+func TestRefresh_AFailedFetchDoesNotBuyQuietUntilTheObservationAges(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-failed-fetch")
+	h.publish("prime")
+
+	// The state a failed refresh leaves behind: a fresh observation of a revision the checkout
+	// is not at, and a base nobody can vouch for.
+	h.worker.recordRemoteObservation("0000000000000000000000000000000000000000", ObservedByFetch)
+	h.worker.invalidateBase("a fetch that failed after the advertisement")
+
+	connections := h.refresh(time.Hour)
+
+	assert.Positive(t, connections,
+		"an untrusted base must send the tick to the remote, whatever the observation's age says")
+}
+
+// TestRemoteObservation_DroppedWhenTheProviderNamesANewRepository. A worker is keyed by
+// (provider, branch) while spec.url is immutable and repointed by recreating the GitProvider, so
+// one worker can meet a second repository without anything restarting it. An observation is a
+// statement about a REPOSITORY; carrying it across would report the old one's revision as this
+// GitTarget's remote state, and a fresh enough one would suppress the look that corrects it.
+func TestRemoteObservation_DroppedWhenTheProviderNamesANewRepository(t *testing.T) {
+	f := newLedgerFixture(t, "observation-repoint", true)
+	f.publish("prime")
+
+	before, ok := f.worker.LastRemoteObservation()
+	require.True(t, ok)
+	require.NotEmpty(t, before.Revision)
+
+	f.worker.noteRemoteIdentity("https://example.invalid/another/repo.git")
+
+	_, known := f.worker.LastRemoteObservation()
+	assert.False(t, known, "what was proved about the old repository says nothing about this one")
+	assert.False(t, f.worker.baseTrusted(), "and the checkout for it is not established either")
+}

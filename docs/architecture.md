@@ -318,9 +318,9 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 - `spec.gitTargetRef.name`: target whose open window should be finalized.
 - `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
 - `spec.closeDelay`: a Go duration string, at most `5m`, delaying the close so the author's own
-  in flight changes can join the window before it closes. Defaults to `2`, which covers the wait a
-  write spends on its audit fact before the window opens; an explicit `0` finalizes immediately and
-  usually finds nothing pending.
+  in flight changes can join the window before it closes. Defaults to `"2s"`, which covers the wait
+  a write spends on its audit fact before the window opens; an explicit `"0s"` finalizes
+  immediately and usually finds nothing pending.
 - `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
   terminal outcome that is not an error: a pushed commit, or a benign no-commit);
   **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports

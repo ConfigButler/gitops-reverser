@@ -10,12 +10,12 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 ## Every duration in the API is a Go duration string
 
 **Breaking for `CommitRequest.spec.closeDelaySeconds`, which no longer exists.** Every time-valued
-field in these CRDs is now a Go duration string with a mandatory unit, validated by the API server:
+field in these CRDs is a Go duration string with a mandatory unit, validated by the API server:
 
 | Field | Was | Is |
 | --- | --- | --- |
 | `CommitRequest.spec.closeDelaySeconds` | `2` (integer seconds, 0–300) | `CommitRequest.spec.closeDelay`: `"2s"` (duration, at most `"5m"`) |
-| `GitTarget.spec.commit.window` | `"5s"` (unvalidated string) | unchanged spelling, now validated and typed |
+| `GitTarget.spec.commit.window` | `"5s"` (unvalidated string) | unchanged spelling, validated and typed, at most `"24h"` |
 
 The pattern is Flux's, widened to Go's own units so that the accepted set is closed under
 serialization: `^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$`. `"750ms"`, `"1.5m"`, `"1m30s"` and
@@ -26,17 +26,27 @@ like `"999999999h"` that matches the pattern and then overflows `time.ParseDurat
 
 ### What to change
 
-**`spec.commit.window` needs an edit only if you used one of three spellings the schema now
-refuses:** a bare `"0"` (write `"0s"`), a leading-dot fraction such as `".5s"` (write `"0.5s"`),
-and anything without a unit. Every other value that was valid before is still valid. Find them
-before upgrading:
+**`spec.commit.window` needs an edit in two cases.** The first is a spelling the schema refuses
+although `time.ParseDuration` accepts it: a bare `"0"` (write `"0s"`), a leading-dot fraction such
+as `".5s"` (write `"0.5s"`), a leading sign such as `"+5s"` (write `"5s"`), a trailing dot such as
+`"1.s"` (write `"1s"`), and anything with no unit at all. The second is a window **longer than
+`"24h"`**, which the previous check allowed and the bound refuses. Every other value that was
+valid before is still valid. Find both kinds before upgrading:
 
 ```bash
 kubectl get gittargets -A -o json \
   | jq -r '.items[] | select(.spec.commit.window != null)
-      | select(.spec.commit.window | test("^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$") | not)
-      | "\(.metadata.namespace)/\(.metadata.name)\t\(.spec.commit.window)"'
+      | . as $t
+      | ($t.spec.commit.window | capture("^(?<n>[0-9]+(\\.[0-9]+)?)h$") // null) as $h
+      | select(
+          ($t.spec.commit.window | test("^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$") | not)
+          or ($h != null and ($h.n | tonumber) > 24))
+      | "\($t.metadata.namespace)/\($t.metadata.name)\t\($t.spec.commit.window)"'
 ```
+
+The hour arm is deliberately simple: it catches the plain `"48h"` shape a long window is actually
+written in, not every compound spelling that could exceed a day. If your windows are measured in
+hours at all, read them rather than trusting the filter.
 
 A value that fails the new schema is **not** rewritten by the upgrade: it stays in storage until
 something updates the object, and the CRD change means a typed read of it fails. Fix the ones the
@@ -68,7 +78,7 @@ field is still defaulted server-side.
 
 **Breaking only if you set the flag by hand.** `--base-trust-max-age` is removed. No Helm value
 mapped to it and the chart passes a closed list of arguments, so a chart install could not set it;
-a hand-written Deployment that does now fails to start with `flag provided but not defined`.
+a hand-written Deployment that sets it fails to start with `flag provided but not defined`.
 
 What replaces it is on by default and costs less. `--git-refresh-interval` (Helm:
 `controllerManager.gitRefreshInterval`, default `10m`) has an idle `GitTarget` re-prove where its
@@ -211,7 +221,7 @@ spare. A loaded or distant cluster may want `4` to `5`. Do **not** size the dela
 `--author-attribution-grace`: when that grace expires with no fact, the write still ships as a
 window naming no actor, which a request naming a submitter can never claim, and no amount of waiting
 changes the `WindowMismatch`. See
-[configuration.md](./configuration.md#sizing-closedelayseconds).
+[configuration.md](./configuration.md#sizing-closedelay).
 
 ### Check your integration's assertion
 

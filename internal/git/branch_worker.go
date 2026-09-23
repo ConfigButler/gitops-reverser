@@ -1611,6 +1611,13 @@ func (w *BranchWorker) noteRemoteIdentity(remoteURL string) {
 	w.Log.Info("GitProvider now names a different repository; the checkout for it must be established",
 		"branch", w.Branch)
 	w.invalidateBase("remote repository changed")
+	// The observation goes with the trust, and for a sharper reason: it is a statement about a
+	// REPOSITORY, and this is a different one. Left in place it would be reported as this
+	// GitTarget's remote state — a revision from a repository the target no longer points at —
+	// and a fresh enough one would also let the refresher skip the look that would have
+	// corrected it. Dropping it makes the next refresh unconditional, which is what a worker
+	// that has just met a new remote should do.
+	w.lastObservation.Store(nil)
 }
 
 // ensureBaseForCycle performs the head-of-cycle fetch, which is now conditional.

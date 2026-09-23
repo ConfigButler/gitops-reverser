@@ -276,11 +276,12 @@ names one, and `matchesWindow` refuses it: `WindowMismatch`, every time, permane
 claim (R7). Verify this against the cluster the save actually runs on before tuning anything else.
 
 **2. Set `closeDelay` generously, and do not size it against the 3s grace.** Phase 0 moved
-the default from `0` to `2`, so an omitted field is no longer the broken case; the sizing below is
+the default from `"0s"` to `"2s"`, so an omitted field is no longer the broken case; the sizing below is
 what a cluster slower than the reference configuration still needs. The number has
 to cover audit-fact arrival: the API server's `--audit-webhook-batch-max-wait` plus the attribution
-join. At the reference configuration of `1s` that is roughly 1 to 1.5 seconds in practice, so `2`
-leaves under a second of headroom and `4` to `5` leaves a margin that survives a loaded or distant
+join. At the reference configuration of `1s` that is roughly 1 to 1.5 seconds in practice, so
+`"2s"` leaves under a second of headroom and `"4s"` to `"5s"` leaves a margin that survives a
+loaded or distant
 cluster. The cost of overshooting is that the commit lands a few seconds later; the cost of
 undershooting is a silent no-op. They are not symmetric.
 
@@ -319,8 +320,8 @@ Make `CommitRequest.spec.closeDelay` a `*metav1.Duration` with `+kubebuilder:def
 (Shipped first as `closeDelaySeconds`, an int; renamed when every duration in the API became a Go
 duration string behind the same pattern.)
 
-`*int32` rather than `int32`, decided: a schema default on a bare `int32` means a typed Go client
-can no longer express "finalize immediately", because its zero value is not serialized. More
+A pointer rather than a bare value, decided: a schema default on a bare field means a typed Go
+client can no longer express "finalize immediately", because its zero value is not serialized. More
 importantly, the cluster-level default flag below is **blocked** on the pointer — once stored, an
 omitted field and an explicit `0` are the same value, so nothing downstream can tell them apart.
 The type is `v1alpha3` with one known consumer; this is the cheapest it will ever be.
@@ -473,7 +474,7 @@ the participant's message on the commit.
 - **`--commit-request-default-close-delay`**, a cluster-level default set by whoever installed the
   operator and does know how their API server is configured. Deriving it inside the operator is not
   possible: half the input is the API server's `--audit-webhook-batch-max-wait`, which we cannot
-  read, and the half we do hold is the wrong bound by R7. Unblocked by phase 0's `*int32`.
+  read, and the half we do hold is the wrong bound by R7. Unblocked by phase 0's pointer.
 
 ## Open questions
 
