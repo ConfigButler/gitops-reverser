@@ -1169,8 +1169,7 @@ you declared, which previously wrote a `namespace:` line the rest of that folder
 
 `v0.41.1` raises the `go` directive in `go.mod` from `1.26.5` to `1.27.0`, in a release whose
 changelog entry reads only *"let's release some security updates"*. The floor rises again after it.
-The directive in [`go.mod`](../go.mod) is always the source of truth; the README carries the current
-floor.
+The directive in [`go.mod`](../go.mod) is always the source of truth for the current floor.
 
 **If you run the image, this does not affect you.** The toolchain is baked into the build.
 

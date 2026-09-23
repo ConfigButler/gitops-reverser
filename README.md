@@ -50,53 +50,47 @@ Custom resources configure it: `GitProvider` for repository and credentials, `Gi
 and folder, `WatchRule` or `ClusterWatchRule` for what to capture, and `ClusterProvider` for the
 source cluster, created as `default` on install. See [Configuration](docs/configuration.md).
 
+By default it watches its own cluster. Add more of each as you need them: one operator can serve
+several source clusters, repositories, branches, and folders.
+
 ## Principles
 
-- **gitops-reverser creates Git commits out of your Kubernetes resources** Deploying Git back into a cluster is Flux's and
-  Argo CD's job. Run one of them alongside if you need the round trip. See
-  [bi-directional usage](docs/bi-directional.md).
-
-- **API-first, not API-only.** This operator is designed to reconile API resources into Git. Fast and reliable. The assumption is that gitops-reverser is the most frequent writer. Other actor can push changes to same branch: gitops-reverser can handle a moved branch. The remote is pulled and all unpushed API changes are replayed, until the remote push is succesfull. Any A Git change to a
-  files that are not affected by recent API changes are kept. "API-first" decides only the narrow case, where
-  both the API and an external Git author changed the same object: in that case the captured API object wins. See
-  [API-first publication](docs/api-first-publication.md). for more details.
-
-- **We never commit secret content unencrypted. Ever.** A resource classified as sensitive is
-  encrypted before it can reach a commit. If encryption fails, or no encryptor is configured, the
-  write is rejected. There is no plaintext fallback.
-- **The commit authors field can be trusted** When the facts are weak, late, conflicting or
-  missing, the author is set to `unknown (attribution unresolved)` instead of a guess. A person's name in
-  the author field means we are sure. See [audit attribution](docs/attribution-setup-guide.md).
-- **Fail early** An unsupported layout is refused before anything is
-  written, with `Stalled=True` and a reason naming the problem. We will not write the half we
-  understood and leave you the rest. See [status conditions](docs/spec/status-conditions-guide.md).
+- **Creates Git commits.** The only output is Git commits that reflect the state of your cluster.
+  Deploying is Flux's and Argo CD's job: run one alongside to bring changes from Git back into the
+  cluster. See [bi-directional usage](docs/bi-directional.md).
+- **API-first, not API-only.** Most changes are assumed to arrive through the API, so that is what
+  publishing is tuned for. Your changes end up in your remote Git repo within seconds. Other
+  authors can push to the same branch, and that is handled without conflicts. If an API edit and a
+  Git commit touch the same resource (which is rare!), then the API wins. See
+  [API-first publication](docs/api-first-publication.md) for more depth.
+- **Resources classified as sensitive require encryption before commit.** If encryption fails, or no
+  encryptor is configured, the write is rejected. See [SOPS and age](docs/sops-age-guide.md).
 
 ## Features
 
 - **Capture existing resources and future changes.** A new target captures the selected resources
-  already in the cluster, then follows changes. With deletion mirroring enabled, removal follows
-  the deletion request, even while finalizers keep the object around. Choose which deletions reach
-  Git with a [deletion policy](docs/configuration.md#deletion-policy-specprunemode).
+  already in the cluster, then follows changes, including deletions under a
+  [deletion policy](docs/configuration.md#deletion-policy-specprunemode).
 - **In-place edits keep the shape of your file.** Updates preserve key order, comments, and
   untouched documents in multi-document files.
-- **Duplicate resource identities are rejected.** A folder holding the same resource in two
-  documents is refused rather than adopted, so a capture cannot update one copy and leave the other
-  stale.
 - **Inspect a repository before you point at it.** `manifest-analyzer --mode scan-repo` classifies
-  every candidate folder under a repository root, read-only and with no cluster, so you can see what
-  a target could adopt before creating one. See [`cmd/manifest-analyzer/`](cmd/manifest-analyzer/).
+  every candidate folder under a repository root, read-only and with no cluster. See
+  [`cmd/manifest-analyzer/`](cmd/manifest-analyzer/).
 - **SOPS and age, set up on the fly.** The operator creates the encryption configuration and can
-  generate a missing age key in your chosen Kubernetes `Secret`. Private keys stay in the cluster,
-  never in Git; back up a generated key before relying on it. See [SOPS and age](docs/sops-age-guide.md).
-- **Signed commits.** SSH signing through `GitProvider.spec.commit.signing`, including what it takes
-  to earn a verified badge on your Git host. See [commit signing](docs/commit-signing.md).
-- **Commit messages you control.** Separate templates for live windows, reconciles, and save
-  requests. A bad template holds the target at `Validated=False` instead of surfacing at commit
-  time. See [message templates](docs/commit-messages.md).
-- **Status you can wait on.** Conditions follow the kstatus convention, so `Ready`, `Reconciling`,
-  and `Stalled` mean what `kubectl wait` and GitOps tooling expect, asserted in tests against the
-  kstatus library rather than against our own reading of it.
-- **Metrics.** A Prometheus surface with copy-pasteable PromQL for the questions operators ask, and
+  generate a missing age key in your chosen Kubernetes `Secret`. See
+  [SOPS and age](docs/sops-age-guide.md).
+- **Optional audit attribution identifies Kubernetes actors.** Without it, commits carry the
+  configured Git identity; when attribution cannot be resolved, they carry an explicit unknown
+  author. See [audit attribution](docs/attribution-setup-guide.md).
+- **Custom commit messages.** Separate templates for live windows, reconciles, and save requests.
+  See [message templates](docs/commit-messages.md).
+- **SSH-signed commits.** Configured through `GitProvider.spec.commit.signing`. See
+  [commit signing](docs/commit-signing.md).
+- **`kubectl wait` works on every resource.** Conditions follow the kstatus convention, so `Ready`,
+  `Reconciling`, and `Stalled` mean what GitOps tooling expects. See
+  [status conditions](docs/spec/status-conditions-guide.md).
+- **Metrics on a standard endpoint.** Scrape `/metrics` with whatever you already run, or turn on
+  the chart's `ServiceMonitor`. The docs carry example queries for the questions operators ask, and
   a named list of what is deliberately not instrumented. See
   [interpreting metrics](docs/interpreting-metrics.md).
 
@@ -112,8 +106,9 @@ Choose the resources to watch and the repository, branch, and folder to write in
 | Helm templates or standalone `values.yaml` | No writeback from rendered workloads |
 
 Kustomize support includes local bases and overlays, with the base kept read-only when targeting an
-overlay. Generators, components, remote bases, and several other transforms are unsupported. See the
-[supported subset](docs/configuration.md#kustomize-support-in-the-target-path).
+overlay. Generators, components, remote bases, and several other transforms are unsupported: a
+folder that uses them is refused with `Stalled=True` and a reason, while the folder is still
+untouched. See the [supported subset](docs/configuration.md#kustomize-support-in-the-target-path).
 
 Select the resources that express your intent. For example, watch a `HelmRelease` to capture chart
 settings. The operator cannot automatically distinguish authored resources from controller-generated
@@ -174,10 +169,8 @@ repository, so that two of them never write the same paths.
   that fits your repository.
 - **Versions:** tested against Kubernetes `1.37` at the API level (envtest) and `1.36` end-to-end
   (k3s, which has no stable `1.37` release yet). Other versions may work but are not in the matrix.
-  Running the image needs no Go, but anything importing this repo as a module
-  (`pkg/manifestanalyzer`, for example) is bound by the `go` directive in [`go.mod`](go.mod), which
-  is the source of truth. That floor can move in any release, including a patch release; when it
-  does, the release notes say so.
+  Importing this repo as a Go module carries its own version floor; see
+  [`docs/UPGRADING.md`](docs/UPGRADING.md).
 
 It runs one replica, with no standby failover: the chart rejects `replicaCount > 1` rather than let
 two instances write the same repository. Ownership coordination and a durable worker queue are on
