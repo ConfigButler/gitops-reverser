@@ -42,7 +42,7 @@ If you only want the supported product docs, start with the files below.
 **Start at [`INDEX.md`](INDEX.md).** It names the ~35 documents that bind, out of the
 117 here. Everything else is a user guide (above) or history.
 
-The maintainer folders are organised by **lifecycle**, not by topic. Pick a folder by asking
+The maintainer folders are organized by **lifecycle**, not by topic. Pick a folder by asking
 "what state is this work in?", never "what is this about?":
 
 | Folder | Means | Binds? |
@@ -54,6 +54,11 @@ The maintainer folders are organised by **lifecycle**, not by topic. Pick a fold
 | [`future/`](future/) | Deferred ideas we still want. | as intent |
 | [`ci/`](ci/) | CI/devcontainer rationale and troubleshooting. | as reference |
 | [`audit-setup/`](audit-setup/) | Cluster-specific audit delivery notes. | as reference |
+
+The [deferred three-way comparison investigation](future/git-api-three-way-comparison.md) records
+merge semantics, options for concurrent Git and API edits, and why development remains API-first.
+The [Flux and Argo CD source review](facts/gitops-apply-and-field-ignore.md) explains how apply,
+field ignores, and both reconciliation directions affect that design.
 
 The one rule that keeps this working: **most documents in `spec/` are cited by path from the Go
 source.** If you move or rename one, fix the citation in the same commit. Not doing that is what

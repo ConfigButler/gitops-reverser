@@ -1,14 +1,31 @@
 # API-first publication: structure, stories, and timing
 
+**API-first, not API-only.** Anyone can still write to the branch. The Kubernetes API decides only
+what happens when both sides change the same object.
+
 GitOps Reverser treats changes persisted through the Kubernetes API as its normal input. It
 captures selected live objects, writes their desired state into Git, and publishes quickly while
 grouping bursts into useful commits. Another writer moving the remote branch is an expected
 exception: the worker fetches that new base and replays the writes it has not yet published.
 
-That ordering is a design decision. A remote request can take a second in a particular deployment;
-requiring a fetch before every push would charge every API edit for the less common case of a
-competing Git writer. The push already checks the remote branch, so a healthy worker can plan
-locally and spend its network budget on publication.
+**The short version.** A captured object, meaning the live resource as the watch saw it, is the
+complete desired content of the YAML document that holds it. When an API change and a Git change
+reach the same object, publication writes the API object over it, including the fields only Git
+changed; every other document keeps what Git says. There is no merge and no conflict state to
+clear, and a branch that someone else moved costs a replay rather than a failure.
+[Story 2](#story-2-another-writer-moves-the-remote-branch) walks that case, and the
+[deferred merge investigation](future/git-api-three-way-comparison.md) records what preserving both
+sides would require.
+
+**How the rest is arranged.** [The structures](#the-structures-and-their-responsibilities) name the
+moving parts once. Four stories then follow a single change each: a normal publication, a branch
+that moved underneath one, a save request, and an idle target. The timing sections after them are
+for tuning and debugging.
+
+Publishing before reading the branch is a design decision. A remote request can take a second in a
+particular deployment; requiring a fetch before every push would charge every API edit for the less
+common case of a competing Git writer. The push already checks the remote branch, so a healthy
+worker can plan locally and spend its network budget on publication.
 
 This guide describes the shipped behavior. The inbound Git push receiver remains a proposal: see
 [how to call the receiver](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it)
@@ -210,6 +227,16 @@ This is the consequence of API-first ownership: the captured API object drives t
 manifest edit. A Git-side change reaches the cluster through a separate reconciler such as Flux
 or Argo CD. Reverser does not apply Git to Kubernetes.
 
+The [deferred three-way comparison investigation](future/git-api-three-way-comparison.md) records
+the exact merge rules and the alternatives: timestamps, retained API contents, Git field
+differences, applier confirmation, and audit request intent. Implementation is deferred while
+development remains API-first.
+
+Kubernetes apply and field-ignore policies govern the other reconciliation direction. Ignoring
+replicas during apply can preserve an API scale change, but Reverser still captures the whole
+object, including an old image. The [Flux and Argo CD source review](facts/gitops-apply-and-field-ignore.md)
+explains why these policies help with field authority without providing a concurrent-edit merge.
+
 ### Three separate recovery questions
 
 The worker needs three pieces of state because a successful push cannot answer every question
@@ -234,8 +261,8 @@ the next cycle.
 
 A fourth piece of state is not a flag: the trust above is bound to the repository it was gained
 against. A `GitProvider` is repointed by deleting and recreating it, which does not restart the
-worker, so trust from the previous repository must not be carried into the new one — it would
-skip establishing the new checkout entirely.
+worker, so trust from the previous repository must not be carried into the new one. Carrying it
+forward would skip establishing the new checkout entirely.
 
 ## Story 3: save now, and know what reached Git
 

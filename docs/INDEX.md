@@ -188,6 +188,11 @@ is the strategy review on top of it: the config-as-data direction as the headlin
 brownfield mirroring as the on-ramp, a decided Helm standpoint (declaration editing plus
 the values projection; helm-light inversion parked behind entry criteria), and worked
 examples of where the configuration surface should go.
+[`git-api-three-way-comparison.md`](future/git-api-three-way-comparison.md) is the
+deferred investigation into two independent edits to different fields of one
+object: what a common baseline would have to be, five ways of obtaining one, and
+the counterexample that limits each. It opens by naming what API-first already
+settles, and records why a partial merge would be worse than the rule we have.
 Four more ideas sit beside them.
 
 ## History — [`finished/`](finished/)

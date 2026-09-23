@@ -14,7 +14,7 @@ an operator waits through. Local work is not in that budget: recomputing a chang
 moved branch happens on a checkout that is already on disk and costs nothing worth naming.
 
 That ordering explains the design. A publication talks to the remote **twice**: it opens the push,
-reads where the branch is, and sends the commits — and it learns everything it needs from that one
+reads where the branch is, and sends the commits. It learns everything it needs from that one
 exchange, so it does not read the branch beforehand. A publication that turns out to have nothing
 to change costs a single request. A foreign push is not a problem and not lost work; it costs a
 handful of extra requests and a recomputation, and the branch ends up correct. If your workload is
@@ -68,7 +68,8 @@ advertisement and refuses a moved branch before uploading a single object, so co
 caught on a connection the cycle was making anyway.
 
 **Reverser never polls the remote and holds no timer against it**, so an idle target generates no
-Git traffic at all — measurably none, not approximately none.
+Git traffic at all. That is measured rather than approximate, and there is no interval setting
+that changes it.
 
 A publishing target does not read the branch before planning either. It plans on the checkout it
 already has and lets the compare-and-swap catch it if the branch moved, which is the one case
@@ -87,7 +88,7 @@ write against it, and pushes again. Three attempts, then the writes stay retaine
 try.
 
 Replaying is the cheap half. The re-planning is local and the branch ends up correct either way.
-What a rejection actually costs is the extra conversations with the Git host that surround it,
+What a rejection costs is the extra conversations with the Git host that surround it,
 which is why a push webhook pointed back at Reverser is worth having: told in advance that the
 branch moved, it can fetch once and push onto the right tip instead of discovering the move by
 being turned away. That receiver is designed but not yet built, and
@@ -118,13 +119,15 @@ watch captured it, and writing that object onto the new tree has one of two outc
   and the branch ends at the API side's value.
 
 There is no third outcome, and there is no merge. An ordinary watch event carries the object's
-whole state, not a diff against a known base, so there is nothing to three-way merge with. The
-Kubernetes API decides what is live, and replay writes what the cluster said.
+whole state, without a retained common baseline that identifies which fields changed on each
+side. Replay writes what the cluster said. The
+[deferred merge investigation](future/git-api-three-way-comparison.md#what-three-way-merge-means-here)
+defines the additional comparison that would require.
 
 ### What a write does to the file
 
-The write is an in-place edit of the existing document, not a wholesale overwrite, so the
-distinction that matters is between fields rather than files. For a plain manifest:
+The writer edits fields in place within the existing document, preserving its presentation.
+For a plain manifest:
 
 | In the file | What a replay does to it |
 | --- | --- |
@@ -163,7 +166,8 @@ When a specific change has to be confirmed in Git, use a
 ## Why the loop stops
 
 The obvious fear is a feedback loop: Reverser commits, the reconciler applies, the apply produces
-a watch event, Reverser commits again. It does not happen.
+a watch event, Reverser commits again. With no intervening edits or admission changes, the loop
+settles as follows.
 
 ```mermaid
 sequenceDiagram
@@ -206,34 +210,30 @@ Reverser strips all of it before writing, along with `argocd.argoproj.io/install
 `kro.run/`, `applyset.kubernetes.io/`, and `kcp.io/cluster`. The rules and the reasoning for each
 are in [`internal/sanitize/types.go`](../internal/sanitize/types.go).
 
-Argo CD's tracking annotations are matched by exact key, never by prefix, because sibling
-annotations under `argocd.argoproj.io/` (`sync-wave`, `sync-options`, `hook`) are user intent
-that belongs in Git.
+Reverser strips only the exact Argo CD tracking keys. Sibling annotations under
+`argocd.argoproj.io/` (`sync-wave`, `sync-options`, `hook`) are user intent that belongs in Git.
 
 **Leave Argo CD on its default `annotation` resource tracking for Reverser-managed paths.** The
 `label` and `annotation+label` methods stamp `app.kubernetes.io/instance`, which is
-indistinguishable from the standard recommended label that Helm and Kustomize set for real
+indistinguishable from the standard recommended label that Helm and Kustomize set for application
 reasons. Reverser therefore does not strip it, and label tracking would put Argo's bookkeeping
 into your commits.
 
 ## Configure Argo CD
 
-`selfHeal` is the entire decision.
+`selfHeal` controls automatic correction of live drift after a successful sync. Field ignores
+control which differences count and, with the respect option below, which values apply writes.
 
 | `selfHeal` | What happens to a live edit | Use when |
 | --- | --- | --- |
-| `true` | Reverted before Reverser can publish it. The edit is lost and Git records two commits. | The path is Git-owned and drift is an error |
-| `false` | Left in place, captured to Git, and applied onward. Both directions work on the same field. | Anything edited through the API |
+| `true` | Automatic drift correction can restore Git before publication completes. | The path is Git-owned and drift is an error |
+| `false` | Live drift alone does not repeat a successful sync of the same revision and parameters. | Anything edited through the API |
 
-Self-heal is watch-driven and the first revert of a fresh drift has zero backoff, so it lands
-sub-second. The e2e corner measures about one second. Meanwhile Argo notices a new Git revision
-only on its timed refresh (`timeout.reconciliation`, 120s plus up to 60s of jitter) or when a
-webhook tells it. So with `selfHeal: true` Argo replays its cached desired revision over your
-live edit long before it looks at what Reverser committed.
-
-There is no knob that delays that first revert.
-[Why `selfHeal` cannot be made selective](design/support-boundary/argocd-bi-directional.md) walks
-the code paths, including the options that look like they would work.
+In the e2e corner, self-heal restores the Git value in about one second and the edit produces a
+two-commit flap. These measurements do not establish an ordering guarantee. A new desired revision
+or a manual sync can still overwrite an unpublished API edit with `selfHeal: false`.
+The [apply and field-ignore source review](facts/gitops-apply-and-field-ignore.md) explains the
+separate scheduling, comparison, and write paths.
 
 ```yaml
 spec:
@@ -254,20 +254,28 @@ webhook does not substitute for automated sync.
 
 ### The split-ownership alternative
 
-`ignoreDifferences` on a field, with `RespectIgnoreDifferences=true`, keeps `selfHeal: true`
-everywhere else and hands that one field to the API. The field stops registering as drift, so
-self-heal never fires on it and the Application stays `Synced`.
+`ignoreDifferences` on a field, with `RespectIgnoreDifferences=true`, allows `selfHeal: true`
+elsewhere while preserving that field's live value during ordinary syncs. Its differences alone
+do not make the Application `OutOfSync`. Without the respect option, a later sync can still write
+the ignored field from Git.
 
-The cost is that the field is no longer GitOps-driven in either direction: a later Git commit to
-it will not reach the cluster. That is the difference between the two configurations, and the
-e2e corner proves both halves of it on the same field.
+Git seeds the field on creation, but later Git edits to it do not reach the existing object while
+the apply ignore is active. That behavior follows from the source review. The e2e corner checks
+that an API edit survives and Reverser publishes its value back into Git; it does not test a later
+Git edit to the ignored field. This configures authority for one field; it does not preserve
+unrelated Git fields against Reverser's whole-object replay.
 
 ## Configure Flux
 
-Flux has no self-heal. The apply interval is its drift-correction clock: kustomize-controller
-re-applies the built manifests on each reconcile, so a live edit survives until the next apply of
-a revision that still carries the old value. The two settings that matter are therefore the apply
-interval and how quickly a push reaches Flux.
+Flux kustomize-controller performs drift correction on reconciliation, without Argo CD's
+`selfHeal` toggle. For ordinary declared fields, a reconcile can restore a revision's Git values.
+The periodic interval and source notifications influence how long an API edit has to reach Git.
+Field-ignore policies change which values the apply enforces.
+
+From kustomize-controller `v1.9.0`, `Kustomization.spec.ignore` can preserve selected live fields
+during subsequent applies, while still creating them from Git initially. The source review above
+covers its ownership handling and tests. As with Argo's apply ignores, a later Git edit to an
+ignored field does not normally apply, and Reverser can still capture that field back into Git.
 
 ```yaml
 # GitRepository: short, so a missed webhook becomes a delay rather than a stall.
@@ -369,7 +377,8 @@ approved value back; that needs an explicit sync, and Flux restores it on its ne
 
 ## What the tests prove
 
-The bi-directional corner runs against real Flux and real Argo CD.
+The bi-directional corner runs against deployed Flux and Argo CD. Its timing and event-count
+assertions describe those scenarios; they do not guarantee the ordering of concurrent writers.
 
 | Covered | Where |
 | --- | --- |

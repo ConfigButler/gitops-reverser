@@ -52,22 +52,24 @@ source cluster, created as `default` on install. See [Configuration](docs/config
 
 ## Principles
 
+- **gitops-reverser creates Git commits out of your Kubernetes resources** Deploying Git back into a cluster is Flux's and
+  Argo CD's job. Run one of them alongside if you need the round trip. See
+  [bi-directional usage](docs/bi-directional.md).
+
+- **API-first, not API-only.** This operator is designed to reconile API resources into Git. Fast and reliable. The assumption is that gitops-reverser is the most frequent writer. Other actor can push changes to same branch: gitops-reverser can handle a moved branch. The remote is pulled and all unpushed API changes are replayed, until the remote push is succesfull. Any A Git change to a
+  files that are not affected by recent API changes are kept. "API-first" decides only the narrow case, where
+  both the API and an external Git author changed the same object: in that case the captured API object wins. See
+  [API-first publication](docs/api-first-publication.md). for more details.
+
 - **We never commit secret content unencrypted. Ever.** A resource classified as sensitive is
   encrypted before it can reach a commit. If encryption fails, or no encryptor is configured, the
   write is rejected. There is no plaintext fallback.
-- **We only write one way: Kubernetes to Git.** Deploying Git back into a cluster is Flux's and
-  Argo CD's job. Run one of them alongside if you want the round trip. See
-  [bi-directional usage](docs/bi-directional.md).
-- **We never put the wrong name on a change.** When the facts are weak, late, conflicting or
-  missing, the author is `unknown (attribution unresolved)` instead of a guess. A person's name in
+- **The commit authors field can be trusted** When the facts are weak, late, conflicting or
+  missing, the author is set to `unknown (attribution unresolved)` instead of a guess. A person's name in
   the author field means we are sure. See [audit attribution](docs/attribution-setup-guide.md).
-- **We refuse a folder we cannot support.** An unsupported layout is refused before anything is
+- **Fail early** An unsupported layout is refused before anything is
   written, with `Stalled=True` and a reason naming the problem. We will not write the half we
   understood and leave you the rest. See [status conditions](docs/spec/status-conditions-guide.md).
-- **We assume changes arrive through the API.** Publication is driven by API writes, and a branch
-  that moved underneath is an expected exception rather than a failure. CI tests with Flux and Argo
-  CD verify that the round trip settles without a commit loop. See
-  [API-first publication](docs/api-first-publication.md).
 
 ## Features
 
