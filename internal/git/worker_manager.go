@@ -123,6 +123,11 @@ type WorkerManager struct {
 	// CLI and in tests that do not assert on status.placement.
 	layoutReporter LayoutReporter
 
+	// remoteReporter publishes each confirmed observation of a branch's remote state to the
+	// GitTarget status surface. Set once at startup (SetRemoteReporter) before any worker is
+	// created; nil in the CLI and in tests that do not assert on status.remote.
+	remoteReporter RemoteReporter
+
 	// renderFidelityGate is shared by every worker and the watch manager. It is created with the
 	// manager so a target's state survives workers being recreated for the same branch.
 	renderFidelityGate *RenderFidelityGate
@@ -206,6 +211,15 @@ func (m *WorkerManager) SetLayoutReporter(reporter LayoutReporter) {
 	m.layoutReporter = reporter
 }
 
+// SetRemoteReporter injects the hook every worker calls after it proves where its branch is on
+// the remote, so status.remote reflects the last confirmed look rather than being learned and
+// dropped. Like SetLayoutReporter, it is called once at startup before any worker is created.
+func (m *WorkerManager) SetRemoteReporter(reporter RemoteReporter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.remoteReporter = reporter
+}
+
 // RegisterTarget ensures a worker exists for the target's (provider, branch)
 // and registers the target with that worker.
 // This is called by GitTarget controller when a target becomes Ready.
@@ -272,6 +286,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.credentialPolicy = m.credentialPolicy
 		worker.pathRefusal = m.pathRefusal
 		worker.layoutReporter = m.layoutReporter
+		worker.remoteReporter = m.remoteReporter
 		worker.renderFidelityGate = m.renderFidelityGate
 
 		if err := worker.Start(m.ctx); err != nil {

@@ -28,6 +28,10 @@ spec:
       name: Suspended
       priority: 1
       type: boolean
+    - jsonPath: .status.remote.lastVerifiedAt
+      name: Verified
+      priority: 1
+      type: date
     - jsonPath: .status.placement.mode
       name: Layout
       priority: 1
@@ -631,6 +635,36 @@ spec:
 
                       It is empty when the branch had no commit at the time (a folder nothing has written to yet)
                       and is filled in by the first scan that finds one.
+                    type: string
+                type: object
+              remote:
+                description: |-
+                  Remote is where this target's branch is on the Git remote, and when that was last proved.
+                  It is renewed by every confirmed look: a successful push as well as a fetch. Absent means
+                  nothing has looked yet.
+                properties:
+                  lastVerifiedAt:
+                    description: |-
+                      LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
+                      which placement.resolvedAtRevision deliberately does not: that one dates the resolution, so
+                      an old value there means the layout has not changed rather than that nothing has looked.
+                    format: date-time
+                    type: string
+                  revision:
+                    description: |-
+                      Revision is the commit the branch is at on the remote. EMPTY means the branch is not on
+                      the remote at all, which is not an error: a branch does not exist without a commit, and a
+                      target that has never written has nothing there yet.
+                    type: string
+                  verifiedBy:
+                    description: |-
+                      VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
+                      this revision is our own work; `Fetch` means we went and looked, and this is what was
+                      there. A `Fetch` next to a revision no publication of yours produced is how a foreign push
+                      to the branch is read off kubectl.
+                    enum:
+                    - Push
+                    - Fetch
                     type: string
                 type: object
               retention:

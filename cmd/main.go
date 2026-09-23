@@ -183,6 +183,7 @@ func main() {
 	// healthy; the resync path already reports its own refusals through the router.
 	workerManager.SetPathRefusalReporter(watchMgr.ReportGitPathRefusal)
 	workerManager.SetLayoutReporter(watchMgr.ReportLayoutResolved)
+	workerManager.SetRemoteReporter(watchMgr.ReportRemoteObserved)
 
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{

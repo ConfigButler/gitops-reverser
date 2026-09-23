@@ -160,6 +160,10 @@ const (
 	// a single 5-minute fallback for the GitProvider, GitTarget, WatchRule, and
 	// ClusterWatchRule reconcilers. The fast stream-settle loop below is separate.
 	RequeueSteadyInterval = 5 * time.Minute
+	// DefaultGitRefreshInterval is how often an IDLE branch's remote state is re-proved, and the
+	// quantizer status.remote's clock is written against. A target that is publishing renews its
+	// observation on every push and never waits for this.
+	DefaultGitRefreshInterval = 10 * time.Minute
 	// RequeueStreamSettleInterval is the requeue interval while a Ready GitTarget still
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.

@@ -103,6 +103,11 @@ type BranchWorker struct {
 	// alongside pathRefusal; a nil reporter only drops the projection.
 	layoutReporter LayoutReporter
 
+	// remoteReporter publishes each confirmed observation of the branch's remote state,
+	// projected as status.remote. Set by the WorkerManager before Start, alongside pathRefusal;
+	// a nil reporter only drops the projection.
+	remoteReporter RemoteReporter
+
 	// Event processing
 	eventQueue chan WorkItem
 	ctx        context.Context
@@ -1785,7 +1790,12 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			if !outcome.Head.IsZero() {
 				revision = outcome.Head.String()
 			}
-			w.recordRemoteObservation(revision, ObservedByPush)
+			observed := w.recordRemoteObservation(revision, ObservedByPush)
+			// Reported against the targets these writes were for. A push is the frequent
+			// producer and the one that MOVES the revision, so this is where status.remote
+			// earns its place: on an active target it shows where the branch is, and it costs
+			// no round trip — the connection has already been made.
+			w.reportRemoteObservation(pendingWriteTargets(pendingWrites), observed)
 			w.Log.V(1).Info("Remote observed by push",
 				"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
 			w.pushCycleRootBranch = ""
@@ -2373,9 +2383,10 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 // accepted — because both prove the same kind of fact. An error path must NOT call it: a push
 // that died mid-upload or an advertisement that never arrived observed nothing, and recording a
 // guess there is how a stale revision reaches status.
-func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) {
+func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) RemoteObservation {
 	observed := RemoteObservation{Revision: revision, At: time.Now(), By: by}
 	w.lastObservation.Store(&observed)
+	return observed
 }
 
 // syncWithRemote fetches latest changes from remote and resets onto them. It is the

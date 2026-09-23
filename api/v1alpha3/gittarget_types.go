@@ -383,6 +383,40 @@ type GitTargetStatus struct {
 	// condition carries the verdict.
 	// +optional
 	Placement *GitTargetPlacementStatus `json:"placement,omitempty"`
+
+	// Remote is where this target's branch is on the Git remote, and when that was last proved.
+	// It is renewed by every confirmed look: a successful push as well as a fetch. Absent means
+	// nothing has looked yet.
+	// +optional
+	Remote *GitTargetRemoteStatus `json:"remote,omitempty"`
+}
+
+// GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
+//
+// It is written whenever the revision changes — including a revision we pushed ourselves —
+// and otherwise only when the published timestamp is older than one refresh interval. The
+// revision has to move with the fact it dates: a field showing a ten-minute-old revision on the
+// target an operator is actively editing is not a freshness field but a slower copy of one.
+type GitTargetRemoteStatus struct {
+	// Revision is the commit the branch is at on the remote. EMPTY means the branch is not on
+	// the remote at all, which is not an error: a branch does not exist without a commit, and a
+	// target that has never written has nothing there yet.
+	// +optional
+	Revision string `json:"revision,omitempty"`
+
+	// LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
+	// which placement.resolvedAtRevision deliberately does not: that one dates the resolution, so
+	// an old value there means the layout has not changed rather than that nothing has looked.
+	// +optional
+	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
+
+	// VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
+	// this revision is our own work; `Fetch` means we went and looked, and this is what was
+	// there. A `Fetch` next to a revision no publication of yours produced is how a foreign push
+	// to the branch is read off kubectl.
+	// +optional
+	// +kubebuilder:validation:Enum=Push;Fetch
+	VerifiedBy string `json:"verifiedBy,omitempty"`
 }
 
 // Two rules for anything added here. A field earns its place only if a reader cannot get it from
@@ -517,6 +551,7 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=`.spec.suspend`,priority=1
+// +kubebuilder:printcolumn:name="Verified",type=date,JSONPath=`.status.remote.lastVerifiedAt`,priority=1
 // +kubebuilder:printcolumn:name="Layout",type=string,JSONPath=`.status.placement.mode`,priority=1
 // +kubebuilder:printcolumn:name="RenderRoot",type=string,JSONPath=`.status.placement.renderRoot`,priority=1
 // +kubebuilder:printcolumn:name="LayoutResolved",type=string,JSONPath=`.status.conditions[?(@.type=="LayoutResolved")].reason`,priority=1

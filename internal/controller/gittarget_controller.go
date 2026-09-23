@@ -133,6 +133,11 @@ type GitTargetReconciler struct {
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
 	EventRouter   *watch.EventRouter
+
+	// GitRefreshInterval is how often an idle branch is asked to re-prove where its remote is,
+	// and the quantizer status.remote's clock is written against. Zero takes
+	// DefaultGitRefreshInterval.
+	GitRefreshInterval time.Duration
 	// Recorder emits a Kubernetes Event on every persisted Ready transition. It may be nil in
 	// tests, in which case no Event is recorded and nothing else changes.
 	Recorder record.EventRecorder
@@ -167,12 +172,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st := beginStatus(r.Client, r.Recorder, &target)
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 
-	// Ahead of every gate, so a target held unready still shows what its folder resolved to. That
-	// ordering is the point rather than a convenience: the stanza's job is to explain a refused or
-	// surprising write, and a projection that ran only on the happy path would be missing exactly
-	// when it is wanted.
-	layout, scanned := r.observeLayout(&target)
-	publishLayout(st, &target, layout, scanned)
+	r.publishGitObservations(st, &target)
 
 	providerNS := target.Namespace
 	// Ahead of every gate, for the reason the layout stanza above is: the join series has to carry
@@ -747,6 +747,24 @@ func gitTargetReadinessGates(
 	rd.progressingIf(observed.declare.Pending && observed.declare.Failures == 0,
 		metav1.ConditionFalse, ReasonProgressing,
 		"Stream declaration has not landed yet; the data-plane surface is not observable")
+}
+
+// publishGitObservations writes what the data plane last read about this target's folder and
+// about its branch on the remote: status.placement with the LayoutResolved condition, and
+// status.remote.
+//
+// It runs ahead of every gate, so a target held unready still shows both. That ordering is the
+// point rather than a convenience: these stanzas exist to explain a refused or surprising write,
+// and a projection that ran only on the happy path would be missing exactly when it is wanted.
+func (r *GitTargetReconciler) publishGitObservations(
+	st *reconcileStatus,
+	target *configbutleraiv1alpha3.GitTarget,
+) {
+	layout, scanned := r.observeLayout(target)
+	publishLayout(st, target, layout, scanned)
+
+	remote, remoteSeen := r.observeRemote(target)
+	publishRemote(target, remote, remoteSeen, r.GitRefreshInterval)
 }
 
 func (r *GitTargetReconciler) ensureEventStream(
