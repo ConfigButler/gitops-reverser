@@ -231,6 +231,13 @@ type GitPathAcceptanceStatus struct {
 	At             metav1.Time
 	RefusedCell    types.CellKey
 	RefusedCellSet bool
+	// RaisedByScan marks a refusal that a READ of the folder found, with nobody trying to write.
+	// It exists because the two producers recover differently and must not clear each other. A
+	// write-raised refusal is cleared by a resync that actually wrote the cell it names; a
+	// scan-raised one has no cell and no write to prove anything, so the scan that raised it is
+	// what clears it — and a scan passing says nothing about a write-boundary refusal a write
+	// found, which is why it may never clear one of those.
+	RaisedByScan bool
 }
 
 const (

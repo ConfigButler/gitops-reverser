@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -86,4 +87,37 @@ func TestUpdateBranchMetadataFromPullReport_RecordsTheFetchedHead(t *testing.T) 
 	require.True(t, known)
 	assert.Equal(t, "bbbb", observed.Revision)
 	assert.Equal(t, ObservedByFetch, observed.By)
+}
+
+// TestSetScanAcceptanceReporter_ReachesEveryWorkerTheManagerCreates. The hook is installed once at
+// startup, before any worker exists, so a worker created later has to carry it: without one the
+// refresher reads the folder, finds content nobody can write, and tells nobody.
+func TestSetScanAcceptanceReporter_ReachesEveryWorkerTheManagerCreates(t *testing.T) {
+	m := NewWorkerManager(nil, logr.Discard(), BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
+	called := false
+	m.SetScanAcceptanceReporter(
+		func(itypes.ResourceReference, *manifestanalyzer.AcceptanceRefusedError) { called = true },
+	)
+
+	require.NotNil(t, m.scanAcceptance)
+	m.scanAcceptance(itypes.NewResourceReference("checkout", "shop"), nil)
+	assert.True(t, called)
+}
+
+// TestReportScanAcceptance_SkipsAnUnattributableTarget. The projection is keyed by
+// "namespace/name", so a reference with either half empty — the CLI, and tests — would file the
+// verdict under a key no GitTarget reads.
+func TestReportScanAcceptance_SkipsAnUnattributableTarget(t *testing.T) {
+	reported := 0
+	w := &BranchWorker{Log: logr.Discard()}
+	w.scanAcceptance = func(itypes.ResourceReference, *manifestanalyzer.AcceptanceRefusedError) {
+		reported++
+	}
+
+	w.reportScanAcceptance(itypes.NewResourceReference("", "shop"), nil)
+	w.reportScanAcceptance(itypes.NewResourceReference("checkout", ""), nil)
+	assert.Zero(t, reported)
+
+	w.reportScanAcceptance(itypes.NewResourceReference("checkout", "shop"), nil)
+	assert.Equal(t, 1, reported)
 }

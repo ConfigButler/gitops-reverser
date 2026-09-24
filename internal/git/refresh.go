@@ -14,6 +14,7 @@ import (
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -59,8 +60,10 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 
 // handleRefreshRequest is the refresher, on the loop goroutine.
 //
-// It is allowed to read Git freely and must never cause a publication: publishing from what it
-// reads would turn "somebody changed the folder" into a write nobody asked for.
+// It reads Git freely and writes no CONTENT: mirroring what it reads would turn "somebody changed
+// the folder" into a write nobody asked for. Reporting what it read is the whole point, including
+// the verdict that the folder can no longer be written — see rescanLayoutForTarget for why that
+// report is worth the recovery loop it starts.
 func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	w := l.w
 
@@ -245,22 +248,34 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 	return nil
 }
 
-// rescanLayoutForTarget re-reads the target's folder and republishes what its shape resolves to.
+// rescanLayoutForTarget re-reads the target's folder, publishes what its shape resolves to, and
+// publishes whether the folder can be written at all.
 //
-// It is structure-only, and the boundary is the point: a fresh look at Git may change what an
-// operator READS and nothing else. Publishing placement is inside that line — LayoutResolved
-// writes no part of the kstatus trio, and the projection republishes only on a transition — while
-// RAISING the acceptance gate is outside it. GitPathAccepted=False is not only a report: the
-// reconcile reads it back into forceRecheck, which re-anchors the streams, drives a resync and
-// requeues every ten seconds, so a refresher allowed to raise it would turn "somebody pushed a
-// folder we cannot write" into a cluster snapshot every ten seconds. Acceptance stays where it
-// is: raised by a write that was refused, cleared by a resync that succeeded. The gate is still
-// CONSULTED, as on both write paths, because a refused folder is one whose layout we should make
-// no claims about.
+// The acceptance half is the point. A folder is broken by somebody ELSE's push, which produces no
+// Kubernetes event, so without a read nothing notices until the next live edit arrives — and that
+// edit is refused and its events are dropped (recordCommitFailure: "lost until the next resync").
+// Discovering it by reading costs one local scan on a tick that already happened.
 //
-// Nothing here builds a plan: an empty desired set is the sweep-everything signal.
+// Raising GitPathAccepted=False does more than report: the reconcile reads it back into
+// forceRecheck, which re-anchors the target's streams and drives a resync, and a refused target
+// then requeues on the fast interval. That is the intended recovery and not a side effect — see
+// gitTargetRequeue, which gives a stalled target the fast loop precisely because "someone fixes
+// the folder in Git" emits no event to wake it. It does not loop the branch with commits either:
+// spec.onRefusal is opt-in, floored at one commit per minute per target, and coveredRefusal
+// suppresses a commit for a refusal already covered by one.
+//
+// What this must still never do is write CONTENT. It builds no plan — an empty desired set is the
+// sweep-everything signal — and it publishes no layout for a folder it just refused, which is the
+// same order both write paths use.
+//
+// Recovery is symmetric and deliberately narrow: a scan that passes clears only a refusal a SCAN
+// raised. A write-boundary refusal is invisible to a structural read, so clearing one here would
+// report a target as writable that is not. See Manager.MarkTargetGitPathScanAccepted.
 func (w *BranchWorker) rescanLayoutForTarget(ctx context.Context, req *RefreshRequest) {
-	if req.Path == "" || w.layoutReporter == nil {
+	// Nothing to read for, either because the target has no folder of its own or because neither
+	// projection is wired (the CLI, and tests). The scan is local work, but it is not free, and a
+	// verdict nobody receives is not worth taking the repository lock for.
+	if req.Path == "" || (w.layoutReporter == nil && w.scanAcceptance == nil) {
 		return
 	}
 	w.repoMu.Lock()
@@ -294,10 +309,20 @@ func (w *BranchWorker) rescanLayoutForTarget(ctx context.Context, req *RefreshRe
 		ctx, w.contentWriter, w.mapper, scoped.scan, nil, namespacePolicy{}, scoped.writeSubdir)
 	batch.target = placementTarget{name: req.Target.Name, namespace: req.Target.Namespace}
 	if err := batch.refusal(); err != nil {
-		w.Log.V(1).Info("Refresh will not republish the layout of a refused folder",
-			"branch", w.Branch, "gitTarget", req.Target.String(), "refusal", err.Error())
+		var refused *manifestanalyzer.AcceptanceRefusedError
+		if !errors.As(err, &refused) {
+			// The gate returns nothing else today. If it ever does, a refusal nobody can classify
+			// must not be published as one, and must not pass for acceptance either.
+			w.Log.Error(err, "Refresh could not classify what the folder scan returned",
+				"branch", w.Branch, "gitTarget", req.Target.String())
+			return
+		}
+		w.Log.Info("Refresh found content in the folder that cannot be written",
+			"branch", w.Branch, "gitTarget", req.Target.String(), "detail", refused.Error())
+		w.reportScanAcceptance(req.Target, refused)
 		return
 	}
+	w.reportScanAcceptance(req.Target, nil)
 	w.reportLayout(ctx, batch, worktreeRevision(worktree))
 }
 

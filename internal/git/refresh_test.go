@@ -3,8 +3,14 @@
 package git
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +31,9 @@ type refreshHarness struct {
 	target   itypes.ResourceReference
 	path     string
 	reported []RemoteObservation
+	// scanVerdicts records every folder-scan verdict reported out of the harness; a nil entry is
+	// a folder that passed.
+	scanVerdicts []*manifestanalyzer.AcceptanceRefusedError
 }
 
 func newRefreshHarness(t *testing.T, slug string) *refreshHarness {
@@ -44,7 +53,35 @@ func newRefreshHarnessOn(t *testing.T, slug string, seeded bool) *refreshHarness
 	h.worker.remoteReporter = func(_ itypes.ResourceReference, observed RemoteObservation) {
 		h.reported = append(h.reported, observed)
 	}
+	h.worker.scanAcceptance = func(_ itypes.ResourceReference, refused *manifestanalyzer.AcceptanceRefusedError) {
+		h.scanVerdicts = append(h.scanVerdicts, refused)
+	}
 	return h
+}
+
+// lastScanVerdict is what the folder scan last published: nil for a folder that can be written.
+func (h *refreshHarness) lastScanVerdict(t *testing.T) *manifestanalyzer.AcceptanceRefusedError {
+	t.Helper()
+	require.NotEmpty(t, h.scanVerdicts, "every scan publishes a verdict, including a clean one")
+	return h.scanVerdicts[len(h.scanVerdicts)-1]
+}
+
+// removeFromRemote deletes a file from the branch the way the human who fixes a broken folder
+// does: another writer's push, which produces no Kubernetes event at all.
+func (h *refreshHarness) removeFromRemote(file string) {
+	h.t.Helper()
+	clientPath := filepath.Join(h.t.TempDir(), "client-remove")
+	repo, worktree := initLocalRepo(h.t, clientPath, h.sim.RepoURL, "main")
+	require.NoError(h.t, os.Remove(filepath.Join(clientPath, file)))
+	_, err := worktree.Add(file)
+	require.NoError(h.t, err)
+	_, err = worktree.Commit("Client removes "+file, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Client", Email: "client@example.com", When: time.Now()},
+	})
+	require.NoError(h.t, err)
+	require.NoError(h.t, repo.Push(&gogit.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+	}))
 }
 
 // refresh runs one refresh tick with the given maximum age and returns what it cost in
@@ -132,7 +169,7 @@ func TestRefresh_SkipsABranchMidCycle(t *testing.T) {
 }
 
 // TestRefresh_WritesNothing is the boundary as a test rather than a rule: a fresh look at Git
-// must never cause a publication.
+// reports what it read and mirrors none of it.
 func TestRefresh_WritesNothing(t *testing.T) {
 	h := newRefreshHarness(t, "refresh-writes-nothing")
 	h.publish("prime")
@@ -411,12 +448,14 @@ func TestRefresh_StopsWithdrawingOnceSomethingIsProved(t *testing.T) {
 	assert.False(t, first.worker.observationWithdrawn(), "and nothing is left to take back")
 }
 
-// TestRefresh_DoesNotRepublishTheLayoutOfARefusedFolder. Both write paths consult the acceptance
-// gate before publishing a layout, because a folder the operator has refused to manage is one we
-// should be making no claims about. The refresher rescans the same folder from outside a write,
-// so it has to hold the same line — while still not RAISING the refusal, which is the boundary
-// rescanLayoutForTarget is built on.
-func TestRefresh_DoesNotRepublishTheLayoutOfARefusedFolder(t *testing.T) {
+// TestRefresh_PublishesARefusalSomebodyElsePushed is the gap this closes. A folder is broken by
+// another writer's push, which produces NO Kubernetes event, so nothing noticed until the next
+// live edit arrived — and that edit was refused and its events dropped. A read finds it on a tick
+// that was happening anyway.
+//
+// The layout is not republished alongside it, which is the order both write paths use: a folder we
+// have just refused is one to make no shape claims about.
+func TestRefresh_PublishesARefusalSomebodyElsePushed(t *testing.T) {
 	h := newRefreshHarness(t, "refresh-refused-folder")
 
 	var layouts []LayoutReport
@@ -429,10 +468,52 @@ func TestRefresh_DoesNotRepublishTheLayoutOfARefusedFolder(t *testing.T) {
 	// files, which is a refusal the gate raises off the structure alone.
 	h.contend("team-a/duplicate.yaml", duplicateOfPrime)
 	layouts = nil
+	h.scanVerdicts = nil
 
 	h.refresh(time.Nanosecond)
 
+	refused := h.lastScanVerdict(t)
+	require.NotNil(t, refused, "the scan found content that cannot be written, and must say so")
+	assert.Contains(t, refused.Error(), "prime", "the refusal names what it is about")
 	assert.Empty(t, layouts, "a refused folder's shape must not be republished from a refresh")
+}
+
+// TestRefresh_PublishesTheRecoveryWhenTheFolderIsFixed. The refusal is only half of it: a human
+// fixes the folder with another push, which is again no Kubernetes event, so the same read that
+// found the breakage has to be what reports it gone.
+func TestRefresh_PublishesTheRecoveryWhenTheFolderIsFixed(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-refusal-recovers")
+
+	h.publish("prime")
+	h.contend("team-a/duplicate.yaml", duplicateOfPrime)
+	h.refresh(time.Nanosecond)
+	require.NotNil(t, h.lastScanVerdict(t), "precondition: the folder is refused")
+
+	// The human removes the duplicate.
+	h.removeFromRemote("team-a/duplicate.yaml")
+	h.scanVerdicts = nil
+
+	h.refresh(time.Nanosecond)
+
+	assert.Nil(t, h.lastScanVerdict(t), "the folder can be written again, and only a read can say so")
+}
+
+// TestRefresh_WritesNothingWhileTheFolderIsRefused is the boundary, stated against the change that
+// made the refresher publish a refusal at all. Raising GitPathAccepted=False drives a recheck and
+// a resync, and that recovery machinery is the point — but the refresher itself must not commit,
+// not even the empty commit spec.onRefusal produces, which belongs to a path that had work in
+// hand.
+func TestRefresh_WritesNothingWhileTheFolderIsRefused(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-refused-writes-nothing")
+	h.publish("prime")
+	h.contend("team-a/duplicate.yaml", duplicateOfPrime)
+	head := revParseMain(t, h.repoDir)
+
+	h.refresh(time.Nanosecond)
+
+	assert.Equal(t, head, revParseMain(t, h.repoDir),
+		"the branch must be exactly where the other writer left it")
+	assert.Empty(t, h.loop.pendingWrites, "and nothing may be retained for a later push")
 }
 
 // TestEnqueueRefresh_CountsTheDropOnAFullQueue. Dropping a refresh is safe — the next reconcile

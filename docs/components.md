@@ -257,7 +257,9 @@ Three gates can stop a type before it reaches a stream:
 2. **The claim.** Some rule attached to the GitTarget must select it, and the GitTarget's namespace
    must be admitted by the `ClusterProvider`.
 3. **The acceptance gate.** The Git folder must be one the operator can own. A refusal is recorded
-   as `GitPathAccepted=False` and nothing is committed.
+   as `GitPathAccepted=False` and nothing is committed. Writes are not the only thing that runs it:
+   the periodic refresh reads the folder too, so content pushed by somebody else is reported
+   without waiting for a write to discover it.
 
 ## Where to read next
 

@@ -61,6 +61,66 @@ func (m *Manager) MarkTargetGitPathScopeRefused(
 	m.reportGitPathAcceptance(gitDest, status)
 }
 
+// ReportGitPathScan publishes what a read-only scan of the folder found: a structural refusal
+// nobody tried to write, or its recovery when refused is nil.
+//
+// It is the refresher's channel, and it is separate from ReportGitPathRefusal for one reason: a
+// scan has no cell. It reads the whole folder, so its verdict is target-wide, and the scoped
+// clearing rule that write-raised refusals depend on cannot express it.
+//
+// Structure-only acceptance cannot produce a render-fidelity issue — that one needs the live
+// objects, which a scan does not have — so unlike ReportGitPathRefusal there is no fidelity case
+// to route away here.
+func (m *Manager) ReportGitPathScan(
+	gitDest types.ResourceReference,
+	refused *manifestanalyzer.AcceptanceRefusedError,
+) {
+	if refused == nil {
+		m.MarkTargetGitPathScanAccepted(gitDest)
+		return
+	}
+	m.MarkTargetGitPathScanRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
+}
+
+// MarkTargetGitPathScanRefused records that a read of the folder failed the structure-only gate.
+//
+// It overwrites a write-raised refusal, and that is the right way round: both describe the same
+// folder, and the newer reading is the current one. The reverse also holds — a write that refuses
+// afterwards replaces this with its own, more specific, scoped refusal.
+func (m *Manager) MarkTargetGitPathScanRefused(gitDest types.ResourceReference, reason, message string) {
+	m.reportGitPathAcceptance(gitDest, GitPathAcceptanceStatus{
+		Accepted:     false,
+		Reason:       reason,
+		Message:      message,
+		RaisedByScan: true,
+	})
+}
+
+// MarkTargetGitPathScanAccepted clears a refusal ONLY if a scan is what raised it.
+//
+// A scan proves the folder's structure and nothing else. A write-boundary refusal — the file this
+// write may not touch, the document that has no single root to go into — is invisible to it, so
+// clearing one on a clean scan would report a target as writable that is not. Those stay where
+// they are until a resync writes the cell that proves them gone.
+func (m *Manager) MarkTargetGitPathScanAccepted(gitDest types.ResourceReference) {
+	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
+		prior, had := s.acceptance[gitDest.Key()]
+		if had && prior.Accepted {
+			return false
+		}
+		if had && !prior.RaisedByScan {
+			return false
+		}
+		status := acceptedGitPathStatus()
+		status.At = metav1.Now()
+		s.acceptance[gitDest.Key()] = status
+		return true
+	})
+	if changed {
+		m.enqueueGitTargetReconcile(gitDest)
+	}
+}
+
 // MarkTargetGitPathAccepted clears any prior unscoped refusal for the GitTarget path. Scoped
 // resyncs should call MarkTargetGitPathScopeAccepted so they only clear the refusal they proved.
 func (m *Manager) MarkTargetGitPathAccepted(gitDest types.ResourceReference) {

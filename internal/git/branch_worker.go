@@ -98,6 +98,11 @@ type BranchWorker struct {
 	// Set by WorkerManager before Start, alongside pathRefusal.
 	renderFidelityGate *RenderFidelityGate
 
+	// scanAcceptance publishes what a read-only scan of the folder found, so a refusal that
+	// arrived in Git is visible before anything tries to write. Set by the WorkerManager before
+	// Start, alongside pathRefusal; a nil reporter only drops the projection.
+	scanAcceptance ScanAcceptanceReporter
+
 	// layoutReporter publishes what each scan resolved about a target's folder, projected as
 	// status.placement and the LayoutResolved condition. Set by the WorkerManager before Start,
 	// alongside pathRefusal; a nil reporter only drops the projection.

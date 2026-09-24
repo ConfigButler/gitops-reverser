@@ -91,12 +91,18 @@ on its 5-minute reconcile tick, and spends one ref advertisement per `--git-refr
 as `status.remote` (the revision, when it was last proved, and whether a push or a fetch proved
 it), and a folder somebody changed in Git is re-read and republished as `status.placement`.
 
-**A refresh never causes a write.** It may change what an operator reads and nothing else: it
-consults the acceptance gate only to stay quiet about a folder that is refused, never to raise or
-clear `GitPathAccepted`, and it never plans a commit. A refused target still re-reads itself
-roughly every ten seconds because it is not converged, and
-`reconcile.configbutler.ai/requestedAt` still forces a full re-check for a human who wants one
-now. What none of this closes is the latency: seconds-fresh needs the inbound receiver,
+**A refresh never writes content.** It plans nothing and commits nothing of its own. What it does
+publish, besides `status.remote` and `status.placement`, is whether the folder can be written at
+all: a structural refusal that arrived in somebody else's push sets `GitPathAccepted=False`, and a
+later read that finds the folder fixed clears it. Both directions matter, because neither event
+(breaking a folder in Git, or fixing it) produces a Kubernetes event to notice it by.
+
+That condition puts the target on the ten-second re-check loop, which is the recovery path rather
+than a side effect, and `reconcile.configbutler.ai/requestedAt` still forces a full re-check for a
+human who wants one now. A refusal a write found is left alone: a structural read cannot see a
+write-boundary precondition, so only the resync that writes the affected type clears that one.
+
+What none of this closes is the latency: seconds-fresh needs the inbound receiver,
 designed but not built.
 [§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
 request shape it will accept.
