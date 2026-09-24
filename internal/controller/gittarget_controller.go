@@ -184,7 +184,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, providerErr
 	}
 
-	r.publishGitObservations(st, &target, providerNS, repoIdentityOf(gitProvider))
+	// awaitingAnswer: this reconcile is about to ask the remote where the branch is, so the answer
+	// lands after the status write below. See requeueForRemoteAnswer.
+	awaitingAnswer := r.publishGitObservations(st, &target, providerNS, repoIdentityOf(gitProvider))
 
 	// Ahead of every gate, for the reason the layout stanza above is: the join series has to carry
 	// the targets that are NOT working. git_pushes_total names a branch that stopped advancing and
@@ -279,7 +281,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// requeueAfter shortens the cadence when the status write lost a race: the object then holds
 	// the WINNER's older answer and nothing re-enqueues it, because the For() predicate filters
 	// status-only updates by design.
-	requeue := st.requeueAfter(gitTargetRequeue(rd))
+	requeue := st.requeueAfter(requeueForRemoteAnswer(gitTargetRequeue(rd), awaitingAnswer))
 	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
 	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
 	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
@@ -841,12 +843,34 @@ func (r *GitTargetReconciler) publishGitObservations(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	repo git.RepoIdentity,
-) {
+) bool {
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
 
+	now := time.Now()
 	remote, remoteSeen := r.observeRemote(target, providerNS)
-	r.publishRemote(target, remote, remoteSeen, repo, time.Now())
+	r.publishRemote(target, remote, remoteSeen, repo, now)
+	// Whether the refresh this reconcile goes on to enqueue will actually reach the remote: the
+	// worker spends a connection only when what it holds is older than the interval configured.
+	return r.GitRefreshInterval > 0 && (!remoteSeen || remote.Age(now) >= r.GitRefreshInterval)
+}
+
+// requeueForRemoteAnswer shortens the cadence for a target that has just ASKED the remote where
+// its branch is.
+//
+// It is the one piece of scheduling this status field gets, and it exists because the refresh is
+// enqueued during the reconcile: the worker answers moments later, after the status write, so the
+// answer would otherwise sit undelivered until the next steady tick. An idle target would then
+// spend a connection every interval and publish what it learned a whole tick late — visible to an
+// operator as a target that follows a foreign push ten minutes after noticing it.
+//
+// Nothing else is threaded anywhere. A reconcile that asked nothing keeps its own cadence, and no
+// early return has to carry a deadline.
+func requeueForRemoteAnswer(cadence time.Duration, asked bool) time.Duration {
+	if asked && RemotePublicationInterval < cadence {
+		return RemotePublicationInterval
+	}
+	return cadence
 }
 
 // ensureEventStream wires this GitTarget to the branch worker for the repository its GitProvider

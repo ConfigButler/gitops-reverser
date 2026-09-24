@@ -63,6 +63,12 @@ guarantee has to be threaded through every early return the reconcile has:
   the actual branch is available at any price: an unreachable remote yields no observation at all,
   and the pair (`revision`, `lastVerifiedAt`) is precisely what says so.
 
+One piece of scheduling survives, and only one: a reconcile that has just ASKED the remote where
+the branch is comes back within the interval to publish the answer. The refresh is enqueued during
+the reconcile, so the worker answers after the status write; without this an idle target would
+spend a connection every interval and publish what it learned a whole tick late. It sits in the
+happy path, where the refresh is requested, so no early return carries a deadline.
+
 Two corrections skip the floor, because they are not throughput: the first observation, and a
 revision that names a repository the target has left. The second follows what THIS target
 published (also kept in memory) rather than the latest shared observation, which a sibling on the

@@ -367,3 +367,14 @@ func TestPublishRemote_ADeletedTargetReleasesItsLedgerEntry(t *testing.T) {
 	require.NotNil(t, successor.Status.Remote)
 	assert.Equal(t, "bbbb", successor.Status.Remote.Revision)
 }
+
+// TestRequeueForRemoteAnswer_ShortensOnlyWhenSomethingWasAsked. The refresh is enqueued during the
+// reconcile, so its answer lands after the status write: a target that asked has to come back for
+// it, or an idle one spends a connection every interval and publishes what it learned a whole tick
+// late. A target that asked nothing keeps its own cadence.
+func TestRequeueForRemoteAnswer_ShortensOnlyWhenSomethingWasAsked(t *testing.T) {
+	assert.Equal(t, RemotePublicationInterval, requeueForRemoteAnswer(RequeueSteadyInterval, true))
+	assert.Equal(t, RequeueSteadyInterval, requeueForRemoteAnswer(RequeueSteadyInterval, false))
+	assert.Equal(t, time.Second, requeueForRemoteAnswer(time.Second, true),
+		"a target already on a faster loop is not slowed down to the publication interval")
+}
