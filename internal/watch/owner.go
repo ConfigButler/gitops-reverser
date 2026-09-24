@@ -82,10 +82,21 @@ type declareIntent struct {
 	clusterID  string
 	auditRoute string
 	pruneMode  v1alpha3.PruneMode
-	// force is sticky: a declare that asks for a fresh recheck keeps asking until a pass actually
-	// succeeds, so a failed attempt cannot consume it.
-	force bool
+	// forceRequests counts the recovery requests this target has been given, and forceConsumed is
+	// the last one a pass actually put in place. A request is outstanding while they differ.
+	//
+	// It is a COUNTER rather than a flag because a pass plans against a copy of this record: a
+	// request arriving while that pass runs is not the request the pass is about to satisfy, and a
+	// flag cleared on success erased it. The dirty sequence then scheduled a second pass that saw
+	// nothing to force, so the target kept its existing streams, nothing replayed, and a branch
+	// whose repository had just been replaced could stay unpopulated indefinitely.
+	forceRequests uint64
+	forceConsumed uint64
 }
+
+// forcePending reports whether a recovery request is outstanding: one has been asked for that no
+// pass has yet put in place.
+func (d declareIntent) forcePending() bool { return d.forceRequests != d.forceConsumed }
 
 // dirtyTarget is one GitTarget the owner owes a pass.
 type dirtyTarget struct {
@@ -250,8 +261,9 @@ func (m *Manager) signalSharedRefresh() {
 	t.signal()
 }
 
-// declareIntentFor records the capture-on-Declare values and marks the target dirty. The force
-// flag is sticky across attempts: it survives until a pass actually succeeds.
+// declareIntentFor records the capture-on-Declare values and marks the target dirty. A recovery
+// request is sticky across attempts: it survives until a pass actually puts the watches it asks
+// for in place.
 func (m *Manager) declareIntentFor(
 	gitDest types.ResourceReference,
 	clusterID string,
@@ -266,7 +278,6 @@ func (m *Manager) declareIntentFor(
 		clusterID:  clusterID,
 		auditRoute: auditRoute,
 		pruneMode:  pruneMode,
-		force:      force,
 	}
 	// A GitTarget reconcile is LEVEL-triggered: the controller re-declares on its steady requeue
 	// and on every event it watches, with the same values every time. Marking the target dirty for
@@ -278,7 +289,10 @@ func (m *Manager) declareIntentFor(
 	prior := t.declares[gitDest.Key()]
 	landed := m.watchPlane().passes[gitDest.Key()].Landed
 	if prior != nil {
-		next.force = next.force || prior.force
+		next.forceRequests, next.forceConsumed = prior.forceRequests, prior.forceConsumed
+	}
+	if force {
+		next.forceRequests++
 	}
 	t.declares[gitDest.Key()] = &next
 	if prior == nil || *prior != next || !landed {
@@ -709,7 +723,7 @@ func (m *Manager) runTargetPass(ctx context.Context, log logr.Logger, entry *dir
 // trigger names a target; it does not carry the rule that caused it, and a plan built from
 // whichever rule controller happened to fire first would not be the configuration as it stands.
 func (m *Manager) applyTargetPlan(ctx context.Context, intent declareIntent) error {
-	force := intent.force || m.pruneModeRequiresReplay(intent.ref, intent.pruneMode)
+	force := intent.forcePending() || m.pruneModeRequiresReplay(intent.ref, intent.pruneMode)
 	m.rememberDeclareCapture(intent.ref, intent.clusterID, intent.auditRoute)
 
 	// A pass never dials anything, not even for a cluster nothing has observed yet. Discovery is
@@ -727,7 +741,7 @@ func (m *Manager) applyTargetPlan(ctx context.Context, intent declareIntent) err
 	// Only once the watches are actually in place: a failed pass must leave the pending force
 	// standing for the next one rather than consuming it.
 	m.rememberGitTargetPruneMode(intent.ref, intent.pruneMode)
-	m.clearDeclareForce(intent.ref)
+	m.clearDeclareForce(intent.ref, intent.forceRequests)
 	return nil
 }
 

@@ -54,7 +54,7 @@ func (m *Manager) RequestRecheckForGitTarget(gitDest types.ResourceReference) {
 	t.mu.Lock()
 	prior, declared := t.declares[gitDest.Key()]
 	if declared {
-		prior.force = true
+		prior.forceRequests++
 		t.markDirtyLocked(gitDest, TriggerReasonWorkerReplaced, time.Now())
 	}
 	t.mu.Unlock()
@@ -76,7 +76,7 @@ func (m *Manager) ForcedRecheckTargetsForTest() []string {
 	defer t.mu.Unlock()
 	forced := make([]string, 0, len(t.declares))
 	for key, intent := range t.declares {
-		if intent.force {
+		if intent.forcePending() {
 			forced = append(forced, key)
 		}
 	}
