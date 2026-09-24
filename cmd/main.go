@@ -183,7 +183,6 @@ func main() {
 	// healthy; the resync path already reports its own refusals through the router.
 	workerManager.SetPathRefusalReporter(watchMgr.ReportGitPathRefusal)
 	workerManager.SetLayoutReporter(watchMgr.ReportLayoutResolved)
-	workerManager.SetRemoteReporter(watchMgr.ReportRemoteObserved)
 	// The read-only twin of the refusal reporter: the refresher re-reads an idle target's folder,
 	// and a folder somebody else broke in Git produces no Kubernetes event to notice it by.
 	workerManager.SetScanAcceptanceReporter(watchMgr.ReportGitPathScan)

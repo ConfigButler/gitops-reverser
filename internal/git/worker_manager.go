@@ -124,11 +124,6 @@ type WorkerManager struct {
 	// CLI and in tests that do not assert on status.placement.
 	layoutReporter LayoutReporter
 
-	// remoteReporter publishes each confirmed observation of a branch's remote state to the
-	// GitTarget status surface. Set once at startup (SetRemoteReporter) before any worker is
-	// created; nil in the CLI and in tests that do not assert on status.remote.
-	remoteReporter RemoteReporter
-
 	// scanAcceptance publishes a read-only folder scan's verdict to the GitTarget status surface.
 	// Set once at startup (SetScanAcceptanceReporter) before any worker is created; nil in the CLI
 	// and in tests that do not assert on GitPathAccepted.
@@ -137,6 +132,14 @@ type WorkerManager struct {
 	// renderFidelityGate is shared by every worker and the watch manager. It is created with the
 	// manager so a target's state survives workers being recreated for the same branch.
 	renderFidelityGate *RenderFidelityGate
+
+	// remotes is what each branch was last PROVED to be at, keyed by branch and guarded by mu.
+	//
+	// It lives here rather than on the worker because it has to survive one: a worker replaced
+	// because its GitProvider names another repository takes its own observation with it, and the
+	// layer that publishes needs the old one to see that what it has published describes a
+	// repository this GitTarget has left. It is dropped only when the branch itself is retired.
+	remotes map[BranchKey]RemoteObservation
 
 	// replacements are the branches whose worker was replaced and whose GitTargets have not been
 	// re-established since. Guarded by mu.
@@ -165,6 +168,7 @@ func NewWorkerManager(
 		limits:             limits.withDefaults(),
 		sensitiveResources: sensitiveResources,
 		workers:            make(map[BranchKey]*BranchWorker),
+		remotes:            make(map[BranchKey]RemoteObservation),
 		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
 	}
@@ -239,13 +243,29 @@ func (m *WorkerManager) SetScanAcceptanceReporter(reporter ScanAcceptanceReporte
 	m.scanAcceptance = reporter
 }
 
-// SetRemoteReporter injects the hook every worker calls after it proves where its branch is on
-// the remote, so status.remote reflects the last confirmed look rather than being learned and
-// dropped. Like SetLayoutReporter, it is called once at startup before any worker is created.
-func (m *WorkerManager) SetRemoteReporter(reporter RemoteReporter) {
+// recordRemoteObservation is the delivery point for one branch's confirmed observation. Every
+// worker is given it bound to its own key; it is called on the worker's loop goroutine.
+func (m *WorkerManager) recordRemoteObservation(key BranchKey, observed RemoteObservation) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.remoteReporter = reporter
+	if m.remotes == nil {
+		m.remotes = map[BranchKey]RemoteObservation{}
+	}
+	m.remotes[key] = observed
+}
+
+// RemoteForBranch is what this branch was last proved to be at, and whether anything has looked at
+// all. It opens no connection and reads no repository.
+//
+// It answers for the BRANCH, which is the whole of the delivery half: two GitTargets writing
+// different folders of one branch share a worker, so they share its observation and the moment it
+// was proved. Absent means nothing has looked yet, which is different from a present observation
+// with no revision: that one means the branch is not on the remote.
+func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	observed, known := m.remotes[key]
+	return observed, known
 }
 
 // EnsureWorker ensures a worker exists for the given (provider, branch), and that it is the
@@ -324,7 +344,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.credentialPolicy = m.credentialPolicy
 		worker.pathRefusal = m.pathRefusal
 		worker.layoutReporter = m.layoutReporter
-		worker.remoteReporter = m.remoteReporter
+		worker.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
 		worker.scanAcceptance = m.scanAcceptance
 		worker.renderFidelityGate = m.renderFidelityGate
 
@@ -516,11 +536,12 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 	}
 
 	m.removeWorkersLocked(orphans, "no GitTarget needs this worker any more")
-	// A branch no GitTarget needs has nothing left to re-establish, and a recovery held for it
-	// would outlive every object it was about.
+	// A branch no GitTarget needs has nothing left to re-establish and nothing left to report: a
+	// recovery or an observation held for it would outlive every object it was about.
 	m.mu.Lock()
 	for _, key := range orphans {
 		delete(m.replacements, key)
+		delete(m.remotes, key)
 	}
 	m.mu.Unlock()
 

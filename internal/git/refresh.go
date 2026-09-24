@@ -85,19 +85,14 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 		return
 	}
 
-	// 2. Report what is already known BEFORE deciding whether to do any work, and on every exit
-	// below. A push reports only against the targets whose writes it carried, so a target that is
-	// not writing learns where its branch is exclusively from its own tick.
+	// 2. What is already known about the branch needs no re-delivery: it was delivered when it was
+	// proved, to the branch rather than to a target, and every GitTarget on this branch has been
+	// reading it since. It is read here only to decide whether there is anything to ask the remote.
 	//
-	// What is delivered here is the WORKER's observation, which another target's push may have
-	// proved. That is deliberate: "where is branch B" is one fact for the branch, and every target
-	// on it is entitled to the same answer with the time it was actually proved. It is also why
-	// status.remote must not be read as evidence that THIS target did anything: a fresh timestamp
-	// can arrive on a tick that goes on to do no work at all, two lines below.
+	// It is also why status.remote must not be read as evidence that THIS target did anything: the
+	// observation it publishes can have been proved by a sibling's push, on a tick that goes on to
+	// do no work at all, two lines below.
 	observed, known := w.LastRemoteObservation()
-	if known {
-		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
-	}
 
 	// 3. Not idle, so not the target this exists for. A reset here would destroy retained
 	// commits, and the worktree may hold a partial write — which is also why this is the one exit
@@ -123,7 +118,7 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 		return
 	}
 
-	if err := l.refreshFromRemote(req, provider); err != nil {
+	if err := l.refreshFromRemote(provider); err != nil {
 		// A refresh that failed proves nothing, so nothing is recorded: the published
 		// lastVerifiedAt stops advancing, which is precisely how a refresher that stopped
 		// working reports itself.
@@ -181,10 +176,7 @@ func (w *BranchWorker) checkoutMayLagObservation(revision string) bool {
 // unconditionally — which is right for the write path, because it is about to reset either way.
 // On an idle target the answer is almost always "the branch has not moved", and the advertisement
 // alone settles it, so the common case here costs ONE connection.
-func (l *branchWorkerEventLoop) refreshFromRemote(
-	req *RefreshRequest,
-	provider *configv1alpha3.GitProvider,
-) error {
+func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitProvider) error {
 	w := l.w
 	ctx := w.ctx
 
@@ -207,8 +199,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 	if !advertised.IsZero() {
 		revision = advertised.String()
 	}
-	observed := w.recordRemoteObservation(revision, ObservedByFetch)
-	w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
+	w.recordRemoteObservation(revision, ObservedByFetch)
 
 	// The remote does not carry this branch. That IS the answer, and there is nothing to fetch: a
 	// fetch would fall back to the default branch and teach us nothing about a branch nobody has
@@ -246,9 +237,6 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 		"branch", w.Branch, "revision", revision)
 	if err := w.syncWithRemote(ctx, fetchReasonRefresh); err != nil {
 		return err
-	}
-	if synced, ok := w.LastRemoteObservation(); ok {
-		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, synced)
 	}
 	return nil
 }

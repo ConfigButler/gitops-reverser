@@ -118,9 +118,10 @@ type BranchWorker struct {
 	// alongside pathRefusal; a nil reporter only drops the projection.
 	layoutReporter LayoutReporter
 
-	// remoteReporter publishes each confirmed observation of the branch's remote state,
-	// projected as status.remote. Set by the WorkerManager before Start, alongside pathRefusal;
-	// a nil reporter only drops the projection.
+	// remoteReporter delivers each confirmed observation of the branch's remote state to the
+	// worker manager, which keeps it for every GitTarget on the branch. Set by the WorkerManager
+	// before Start, alongside pathRefusal; nil in the CLI and in tests, where an observation is
+	// simply not shared.
 	remoteReporter RemoteReporter
 
 	// Event processing
@@ -1905,10 +1906,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			if !outcome.Head.IsZero() {
 				revision = outcome.Head.String()
 			}
-			observed := w.recordRemoteObservation(revision, ObservedByPush)
-			// Reported against the targets these writes were for, at no round trip: the
-			// connection has already been made.
-			w.reportRemoteObservation(pendingWriteTargets(pendingWrites), observed)
+			w.recordRemoteObservation(revision, ObservedByPush)
 			w.Log.V(1).Info("Remote observed by push",
 				"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
 			w.pushCycleRootBranch = ""
@@ -2507,12 +2505,18 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 // accepted — because both prove the same kind of fact. An error path must NOT call it: a push
 // that died mid-upload or an advertisement that never arrived observed nothing, and recording a
 // guess there is how a stale revision reaches status.
-func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) RemoteObservation {
+func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) {
 	// Stamped with the repository it is about, so that whoever publishes it can tell whether it
 	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
 	observed := RemoteObservation{Revision: revision, At: time.Now(), By: by, Repo: w.repo}
 	w.lastObservation.Store(&observed)
-	return observed
+	// Delivered here, at the one point where an observation is made, rather than by each caller
+	// against whichever GitTargets it happened to be holding. The fact is about the BRANCH, so it
+	// goes to the branch, and every target on it reads the same answer with the time it was
+	// actually proved.
+	if w.remoteReporter != nil {
+		w.remoteReporter(observed)
+	}
 }
 
 // syncWithRemote fetches latest changes from remote and resets onto them. It is the

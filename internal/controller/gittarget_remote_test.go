@@ -35,8 +35,9 @@ func remoteTestTarget() *configbutleraiv1alpha3.GitTarget {
 // branch.
 func TestPublishRemote_AbsentUntilSomethingLooks(t *testing.T) {
 	target := remoteTestTarget()
-	publishRemote(target, git.RemoteObservation{}, false, git.RepoIdentity{}, time.Minute)
+	due := publishRemote(target, git.RemoteObservation{}, false, git.RepoIdentity{}, time.Now(), time.Minute)
 	assert.Nil(t, target.Status.Remote)
+	assert.Zero(t, due, "nothing is owed for an answer nobody has")
 }
 
 // TestPublishRemote_AnObservationWithNoRevisionIsStillPublished is the other half: the branch is
@@ -45,7 +46,8 @@ func TestPublishRemote_AnObservationWithNoRevisionIsStillPublished(t *testing.T)
 	target := remoteTestTarget()
 	at := time.Now()
 
-	publishRemote(target, git.RemoteObservation{At: at, By: git.ObservedByFetch}, true, git.RepoIdentity{}, time.Minute)
+	publishRemote(target, git.RemoteObservation{At: at, By: git.ObservedByFetch},
+		true, git.RepoIdentity{}, at, time.Minute)
 
 	require.NotNil(t, target.Status.Remote)
 	assert.Empty(t, target.Status.Remote.Revision)
@@ -53,103 +55,183 @@ func TestPublishRemote_AnObservationWithNoRevisionIsStillPublished(t *testing.T)
 	assert.Equal(t, at.Unix(), target.Status.Remote.LastVerifiedAt.Unix())
 }
 
-// TestPublishRemote_ANewRevisionAlwaysWrites is the rule the field exists for. A revision we
-// pushed ourselves is still news: the push is the event that changes where the branch is, and a
-// field lagging it by an interval would be a slower copy of the answer rather than a fresh one.
-func TestPublishRemote_ANewRevisionAlwaysWrites(t *testing.T) {
+// TestPublishRemote_TheFirstObservationIsImmediate. The bound is on the RATE of writes, and the
+// first one has no rate: holding it back would leave a target that has just published showing no
+// branch at all, which reads as a broken data plane rather than as a sampled field.
+func TestPublishRemote_TheFirstObservationIsImmediate(t *testing.T) {
+	target := remoteTestTarget()
+	at := time.Now()
+
+	due := publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: at, By: git.ObservedByPush,
+	}, true, git.RepoIdentity{}, at, time.Hour)
+
+	require.NotNil(t, target.Status.Remote)
+	assert.Equal(t, "aaaa", target.Status.Remote.Revision)
+	assert.Zero(t, due)
+}
+
+// TestPublishRemote_ANewRevisionWaitsForThePublicationDeadline is the rule this surface is bounded
+// by, and it is a deliberate change of promise.
+//
+// A revision that skipped the interval meant that a branch ten GitTargets share turned one push
+// into ten status patches, each an etcd write invalidating every watcher's cached copy of the
+// type. So a new revision is held until the published one is a full interval old — and the caller
+// is told how long that is, so the write lands on the deadline rather than on the next steady tick.
+func TestPublishRemote_ANewRevisionWaitsForThePublicationDeadline(t *testing.T) {
 	target := remoteTestTarget()
 	first := time.Now()
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: first, By: git.ObservedByPush,
-	}, true, git.RepoIdentity{}, time.Hour)
-
-	publishRemote(target, git.RemoteObservation{
-		Revision: "bbbb", At: first.Add(time.Second), By: git.ObservedByPush,
-	}, true, git.RepoIdentity{}, time.Hour)
-
-	require.NotNil(t, target.Status.Remote)
-	assert.Equal(t, "bbbb", target.Status.Remote.Revision,
-		"a second push a second later moves the revision, whatever the quantizer says")
-}
-
-// TestPublishRemote_AnUnchangedRevisionIsQuantized is the trap sameLayout was written to avoid,
-// tested from the other side: a converged target must not write status once per tick merely to
-// advance a clock.
-func TestPublishRemote_AnUnchangedRevisionIsQuantized(t *testing.T) {
-	target := remoteTestTarget()
-	first := time.Now()
-	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: first, By: git.ObservedByFetch,
-	}, true, git.RepoIdentity{}, 10*time.Minute)
+	}, true, git.RepoIdentity{}, first, time.Minute)
 	published := target.Status.Remote
 
-	// One steady tick later, on the same revision. Nothing to say.
-	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: first.Add(5 * time.Minute), By: git.ObservedByFetch,
-	}, true, git.RepoIdentity{}, 10*time.Minute)
-	assert.Same(t, published, target.Status.Remote,
-		"an unchanged revision inside the interval leaves the published value untouched")
+	due := publishRemote(target, git.RemoteObservation{
+		Revision: "bbbb", At: first.Add(2 * time.Second), By: git.ObservedByPush,
+	}, true, git.RepoIdentity{}, first.Add(2*time.Second), time.Minute)
 
-	// A full interval later, the clock is worth a write: an operator reading "verified 40
-	// minutes ago" on a target that is being refreshed would be reading a broken refresher.
-	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: first.Add(10 * time.Minute), By: git.ObservedByFetch,
-	}, true, git.RepoIdentity{}, 10*time.Minute)
-	assert.NotSame(t, published, target.Status.Remote)
-	assert.Equal(t, first.Add(10*time.Minute).Unix(), target.Status.Remote.LastVerifiedAt.Unix())
+	assert.Same(t, published, target.Status.Remote, "a second push two seconds later is not a second write")
+	assert.Equal(t, 58*time.Second, due, "and the reconcile is told exactly when it owes one")
+
+	// On the deadline, it publishes.
+	due = publishRemote(target, git.RemoteObservation{
+		Revision: "bbbb", At: first.Add(2 * time.Second), By: git.ObservedByPush,
+	}, true, git.RepoIdentity{}, first.Add(time.Minute), time.Minute)
+
+	require.NotNil(t, target.Status.Remote)
+	assert.Equal(t, "bbbb", target.Status.Remote.Revision)
+	assert.Zero(t, due)
 }
 
-// TestPublishRemote_SourceChangeIsNews covers the field that answers "is this revision our own
-// work". A branch that moved under us is read off exactly this transition.
-func TestPublishRemote_SourceChangeIsNews(t *testing.T) {
+// TestPublishRemote_AConvergedTargetWritesNothing is the trap sameLayout was written to avoid: a
+// target whose branch has not moved must not write status once per tick merely to advance a clock,
+// however long it has been since the last one.
+func TestPublishRemote_AConvergedTargetWritesNothing(t *testing.T) {
 	target := remoteTestTarget()
 	at := time.Now()
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: at, By: git.ObservedByPush,
-	}, true, git.RepoIdentity{}, time.Hour)
+		Revision: "aaaa", At: at, By: git.ObservedByFetch,
+	}, true, git.RepoIdentity{}, at, time.Minute)
+	published := target.Status.Remote
+
+	// An hour of steady ticks, re-delivering the same observation. There is nothing to say.
+	due := publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: at, By: git.ObservedByFetch,
+	}, true, git.RepoIdentity{}, at.Add(time.Hour), time.Minute)
+
+	assert.Same(t, published, target.Status.Remote)
+	assert.Zero(t, due, "nothing is owed when nothing has been proved since")
+}
+
+// TestPublishRemote_AReProvedRevisionRefreshesTheClockOnTheDeadline. The same revision proved
+// again later IS news — that is what makes lastVerifiedAt a freshness field — and like every other
+// kind of news it waits for the deadline.
+func TestPublishRemote_AReProvedRevisionRefreshesTheClockOnTheDeadline(t *testing.T) {
+	target := remoteTestTarget()
+	at := time.Now()
+	publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: at, By: git.ObservedByFetch,
+	}, true, git.RepoIdentity{}, at, time.Minute)
+
+	due := publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: at.Add(30 * time.Second), By: git.ObservedByFetch,
+	}, true, git.RepoIdentity{}, at.Add(30*time.Second), time.Minute)
+	assert.Equal(t, 30*time.Second, due)
+	assert.Equal(t, at.Unix(), target.Status.Remote.LastVerifiedAt.Unix())
 
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: at.Add(time.Second), By: git.ObservedByFetch,
-	}, true, git.RepoIdentity{}, time.Hour)
+		Revision: "aaaa", At: at.Add(90 * time.Second), By: git.ObservedByFetch,
+	}, true, git.RepoIdentity{}, at.Add(90*time.Second), time.Minute)
 
-	assert.Equal(t, "Fetch", target.Status.Remote.VerifiedBy)
+	assert.Equal(t, at.Add(90*time.Second).Unix(), target.Status.Remote.LastVerifiedAt.Unix(),
+		"an operator reading 'verified 40 minutes ago' on a target being refreshed would be "+
+			"reading a broken refresher")
+}
+
+// TestPublishRemote_TheSameAnswerProvedASecondWayIsNotNews. A revision that changes hands from a
+// Push to a Fetch is the same answer proved again; the watch plane has always ignored it for that
+// reason, and this layer now agrees. The field still follows, because the re-proof carries a later
+// timestamp and that IS news — it just never writes on the strength of verifiedBy alone.
+func TestPublishRemote_TheSameAnswerProvedASecondWayIsNotNews(t *testing.T) {
+	at := metav1.NewTime(time.Now())
+	published := &configbutleraiv1alpha3.GitTargetRemoteStatus{
+		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
+	}
+
+	assert.False(t, remoteStatusIsNews(published, &configbutleraiv1alpha3.GitTargetRemoteStatus{
+		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
+	}))
+}
+
+// TestRemoteStatusIsNews_AMissingTimestampIsAlwaysNews. Neither side can be compared without one,
+// and the safe direction is to write: a stanza with no clock is the one an operator cannot read
+// an age off at all.
+func TestRemoteStatusIsNews_AMissingTimestampIsAlwaysNews(t *testing.T) {
+	at := metav1.NewTime(time.Now())
+	withClock := &configbutleraiv1alpha3.GitTargetRemoteStatus{
+		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
+	}
+	without := &configbutleraiv1alpha3.GitTargetRemoteStatus{Revision: "aaaa", VerifiedBy: "Fetch"}
+
+	assert.True(t, remoteStatusIsNews(without, withClock))
+	assert.True(t, remoteStatusIsNews(withClock, without))
+}
+
+// TestPublishRemote_AZeroIntervalTakesTheDefault. The interval is a constant today, and a caller
+// that passes nothing must not turn the bound off: that is the shape the old quantum had, where a
+// disabled refresher meant "write every tick".
+func TestPublishRemote_AZeroIntervalTakesTheDefault(t *testing.T) {
+	target := remoteTestTarget()
+	at := time.Now()
+	publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: at, By: git.ObservedByFetch,
+	}, true, git.RepoIdentity{}, at, 0)
+
+	due := publishRemote(target, git.RemoteObservation{
+		Revision: "bbbb", At: at.Add(time.Second), By: git.ObservedByPush,
+	}, true, git.RepoIdentity{}, at.Add(time.Second), 0)
+
+	assert.Equal(t, "aaaa", target.Status.Remote.Revision)
+	assert.Equal(t, RemotePublicationInterval-time.Second, due)
 }
 
 // TestPublishRemote_ARevisionFromAnotherRepositoryIsRemoved. The published revision names a
 // commit in a repository this GitTarget no longer points at — its GitProvider was recreated
-// against a different URL, and the observation still in the projection was proved against the old
+// against a different URL, and the observation the branch still holds was proved against the old
 // one. There is nothing to replace it with until a look at the new repository succeeds, and if
 // that repository is unreachable there never will be, so the stanza goes rather than going stale.
 func TestPublishRemote_ARevisionFromAnotherRepositoryIsRemoved(t *testing.T) {
 	target := remoteTestTarget()
+	at := time.Now()
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
-	}, true, firstRepo, time.Hour)
+		Revision: "aaaa", At: at, By: git.ObservedByPush, Repo: firstRepo,
+	}, true, firstRepo, at, time.Hour)
 	require.NotNil(t, target.Status.Remote)
 
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
-	}, true, secondRepo, time.Hour)
+		Revision: "aaaa", At: at, By: git.ObservedByPush, Repo: firstRepo,
+	}, true, secondRepo, at, time.Hour)
 
 	assert.Nil(t, target.Status.Remote,
 		"a revision from a repository this target no longer uses must not be left standing")
 }
 
-// TestPublishRemote_TheRemovalIsNotQuantized. The quantizer exists to stop a converged target
-// writing status once a tick to advance a clock. Removing a revision that is about the wrong
-// repository is a correction, not a clock, so it must never be held back by it.
-func TestPublishRemote_TheRemovalIsNotQuantized(t *testing.T) {
+// TestPublishRemote_TheRemovalIsNotBounded. The rate bound exists to stop a target writing status
+// to advance a clock. Removing a revision that is about the wrong repository is a correction, not
+// a clock, so it must never be held back by it.
+func TestPublishRemote_TheRemovalIsNotBounded(t *testing.T) {
 	target := remoteTestTarget()
 	at := time.Now()
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: at, By: git.ObservedByFetch, Repo: firstRepo,
-	}, true, firstRepo, 10*time.Minute)
+	}, true, firstRepo, at, 10*time.Minute)
 
-	publishRemote(target, git.RemoteObservation{
+	due := publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: at.Add(time.Second), By: git.ObservedByFetch, Repo: firstRepo,
-	}, true, secondRepo, 10*time.Minute)
+	}, true, secondRepo, at.Add(time.Second), 10*time.Minute)
 
 	assert.Nil(t, target.Status.Remote)
+	assert.Zero(t, due)
 }
 
 // TestPublishRemote_AnUnknownIdentityProvesNothing. The comparison needs both halves. A
@@ -167,9 +249,10 @@ func TestPublishRemote_AnUnknownIdentityProvesNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			target := remoteTestTarget()
+			at := time.Now()
 			publishRemote(target, git.RemoteObservation{
-				Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: tc.observed,
-			}, true, tc.current, time.Hour)
+				Revision: "aaaa", At: at, By: git.ObservedByPush, Repo: tc.observed,
+			}, true, tc.current, at, time.Hour)
 
 			require.NotNil(t, target.Status.Remote)
 			assert.Equal(t, "aaaa", target.Status.Remote.Revision)
@@ -178,53 +261,48 @@ func TestPublishRemote_AnUnknownIdentityProvesNothing(t *testing.T) {
 }
 
 // TestPublishRemote_TheNewRepositoryRepopulatesTheStanza is the other side of the removal: the
-// first look at the repository the target points at NOW publishes again, with no latch to clear.
+// first look at the repository the target points at NOW publishes again, with no latch to clear
+// and no deadline to wait for, because there is nothing published to be a rate against.
 func TestPublishRemote_TheNewRepositoryRepopulatesTheStanza(t *testing.T) {
 	target := remoteTestTarget()
+	at := time.Now()
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
-	}, true, secondRepo, time.Hour)
+		Revision: "aaaa", At: at, By: git.ObservedByPush, Repo: firstRepo,
+	}, true, secondRepo, at, time.Hour)
 	require.Nil(t, target.Status.Remote)
 
 	publishRemote(target, git.RemoteObservation{
-		Revision: "bbbb", At: time.Now(), By: git.ObservedByFetch, Repo: secondRepo,
-	}, true, secondRepo, time.Hour)
+		Revision: "bbbb", At: at.Add(time.Second), By: git.ObservedByFetch, Repo: secondRepo,
+	}, true, secondRepo, at.Add(time.Second), time.Hour)
 
 	require.NotNil(t, target.Status.Remote)
 	assert.Equal(t, "bbbb", target.Status.Remote.Revision)
 }
 
-// TestRemoteStatusIsNews_FallsBackToTheDefaultInterval. The quantum comes from the configured
-// refresh interval, and the refresher can be turned off — which must not turn the quantizer into
-// "write every tick". A zero falls back to the default rather than to no bound at all.
-func TestRemoteStatusIsNews_FallsBackToTheDefaultInterval(t *testing.T) {
-	at := metav1.NewTime(time.Now())
-	published := &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
-	}
-	within := metav1.NewTime(at.Add(DefaultGitRefreshInterval / 2))
-	beyond := metav1.NewTime(at.Add(DefaultGitRefreshInterval))
-
-	assert.False(t, remoteStatusIsNews(published, &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &within, VerifiedBy: "Fetch",
-	}, 0))
-	assert.True(t, remoteStatusIsNews(published, &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &beyond, VerifiedBy: "Fetch",
-	}, 0))
+// TestSoonerRequeue_TakesTheEarlierNonZero. Zero means "nothing due", which is not "due now": a
+// requeue of 0 asks controller-runtime for no periodic requeue at all.
+func TestSoonerRequeue_TakesTheEarlierNonZero(t *testing.T) {
+	assert.Equal(t, time.Minute, soonerRequeue(5*time.Minute, time.Minute))
+	assert.Equal(t, time.Minute, soonerRequeue(time.Minute, 5*time.Minute))
+	assert.Equal(t, 5*time.Minute, soonerRequeue(5*time.Minute, 0))
+	assert.Equal(t, time.Minute, soonerRequeue(0, time.Minute))
+	assert.Zero(t, soonerRequeue(0, 0))
 }
 
-// TestRemoteStatusIsNews_AMissingTimestampIsAlwaysNews. Neither side can be compared without one,
-// and the safe direction is to write: a stanza with no clock is the one an operator cannot read
-// an age off at all.
-func TestRemoteStatusIsNews_AMissingTimestampIsAlwaysNews(t *testing.T) {
-	at := metav1.NewTime(time.Now())
-	withClock := &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
-	}
-	without := &configbutleraiv1alpha3.GitTargetRemoteStatus{Revision: "aaaa", VerifiedBy: "Fetch"}
+// TestObserveRemote_ReadsTheBranchItsGitTargetWrites. The observation is shared by every GitTarget
+// on the branch, so it is looked up by (provider namespace, provider, branch) and not by target.
+func TestObserveRemote_ReadsTheBranchItsGitTargetWrites(t *testing.T) {
+	target := remoteTestTarget()
+	target.Spec.GitProviderRef.Name = "repo1"
+	target.Spec.Branch = "main"
 
-	assert.True(t, remoteStatusIsNews(without, withClock, time.Hour))
-	assert.True(t, remoteStatusIsNews(withClock, without, time.Hour))
+	_, seen := (&GitTargetReconciler{}).observeRemote(target, "shop")
+	assert.False(t, seen, "a reconcile with no worker manager has nothing to read")
+
+	workers := git.NewWorkerManager(nil, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	r := &GitTargetReconciler{WorkerManager: workers}
+	_, seen = r.observeRemote(target, "shop")
+	assert.False(t, seen, "and neither has one whose branch nothing has looked at")
 }
 
 // TestRequestRemoteRefresh_DoesNothingWithoutADataPlane covers the two ways the trigger is simply
@@ -261,14 +339,15 @@ func TestPublishRemote_TheRemovalReachesTheAPIAsADelete(t *testing.T) {
 		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready",
 		LastTransitionTime: metav1.NewTime(time.Now()), ObservedGeneration: 4,
 	}}
+	at := time.Now()
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
-	}, true, firstRepo, time.Hour)
+		Revision: "aaaa", At: at, By: git.ObservedByPush, Repo: firstRepo,
+	}, true, firstRepo, at, time.Hour)
 	before := target.DeepCopy()
 
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
-	}, true, secondRepo, time.Hour)
+		Revision: "aaaa", At: at, By: git.ObservedByPush, Repo: firstRepo,
+	}, true, secondRepo, at, time.Hour)
 
 	data, err := client.MergeFrom(before).Data(target)
 	require.NoError(t, err)

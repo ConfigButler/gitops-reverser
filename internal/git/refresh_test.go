@@ -50,7 +50,7 @@ func newRefreshHarnessOn(t *testing.T, slug string, seeded bool) *refreshHarness
 		path:          "team-a",
 	}
 	h.loop = newBranchWorkerEventLoop(h.worker, time.Hour)
-	h.worker.remoteReporter = func(_ itypes.ResourceReference, observed RemoteObservation) {
+	h.worker.remoteReporter = func(observed RemoteObservation) {
 		h.reported = append(h.reported, observed)
 	}
 	h.worker.scanAcceptance = func(_ itypes.ResourceReference, refused *manifestanalyzer.AcceptanceRefusedError) {
@@ -102,11 +102,16 @@ func TestRefresh_AFreshObservationCostsNothing(t *testing.T) {
 	h := newRefreshHarness(t, "refresh-fresh")
 	h.publish("written-by-a-push")
 
+	require.NotEmpty(t, h.reported)
+	assert.Equal(t, ObservedByPush, h.reported[len(h.reported)-1].By,
+		"the push proved where the branch is, and delivered it to the branch as it did so")
+
+	h.reported = nil
 	connections := h.refresh(time.Hour)
 
 	assert.Zero(t, connections, "a push inside the age is the refresh; nothing may be spent on top of it")
-	require.Len(t, h.reported, 1, "the target still has to be told what we know")
-	assert.Equal(t, ObservedByPush, h.reported[0].By)
+	assert.Empty(t, h.reported,
+		"and nothing is re-delivered: the fact reached every target on the branch when it was proved")
 }
 
 // TestRefresh_AnUnmovedBranchCostsOneConnection is the refresher's common case, and the reason it
@@ -162,9 +167,9 @@ func TestRefresh_SkipsABranchMidCycle(t *testing.T) {
 	connections := h.refresh(time.Nanosecond)
 
 	assert.Zero(t, connections, "a worker mid-cycle is not the target the refresher exists for")
-	assert.Len(t, h.reported, 1,
-		"but what is already known is still reported: on a shared branch this tick is the only "+
-			"way a target that is not writing hears anything")
+	assert.Empty(t, h.reported,
+		"and it proves nothing, so it delivers nothing: what is already known about the branch "+
+			"was delivered when it was proved, and every target on the branch has had it since")
 	assert.Len(t, h.loop.pendingWrites, 1, "and the retained write is still there")
 }
 
