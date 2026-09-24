@@ -11,6 +11,7 @@ become one. This page fixes what each surface reports, and at what rate.
 | Information | Where it lives |
 | --- | --- |
 | Branches configured, and how many folders reference each | `GitProvider.status.branches[{name, gitTargets}]` (new) |
+| Whether the credential may write | `GitProvider.status` condition `Writable` (new) |
 | Configuration and health verdicts | the existing conditions on both objects |
 | The latest sampled branch observation | the existing `GitTarget.status.remote` |
 | Queue depth, pushes, failures, retries, drops | the existing metrics |
@@ -136,17 +137,47 @@ status:
     - name: main
       gitTargets: 2
   conditions:
+    - type: Writable
+      status: "False"
+      reason: WriteAccessDenied
+      message: The remote refused a write session for this credential
     - type: Ready
       status: "False"
       reason: WriteAccessDenied
       message: The remote refused a write session for this credential
 ```
 
-The two `GitTarget`s go `Ready=False` with `GitProviderReady=False`. Their `status.remote` keeps
-**advancing**: reads still work, so the refresher goes on proving where the branch is. A stale
-`lastVerifiedAt` is not the signal here and must not be read as one. Writes failing is carried by
-the condition and by the push metrics. Remote freshness and publication success are separate
-questions, and they want separate alerts.
+Their `status.remote` keeps **advancing**: reads still work, so the refresher goes on proving where
+the branch is. A stale `lastVerifiedAt` is not the signal here and must not be read as one. Writes
+failing is carried by the condition and by the push metrics. Remote freshness and publication
+success are separate questions, and they want separate alerts.
+
+### Why `Writable` is a condition of its own
+
+Folding the verdict into `Ready` alone would say "this provider is broken" without saying how, and
+it would make the check a change to what `Ready` means rather than something added beside it. The
+house pattern already answers this: a `GitTarget` publishes `StreamsRunning`, `GitPathAccepted` and
+`RenderMatchesLive` as conditions in their own right AND contributes each to the trio through one
+documented precedence, so the axis is readable on its own and the roll-up stays honest.
+
+`Writable` follows that shape:
+
+- `False` only on an explicit refusal. A probe that could not run leaves it `Unknown`, which by this
+  project's convention does not downgrade `Ready`, so a transient failure never turns a healthy
+  provider red.
+- Not latched. Write access comes back when a token is regranted, and the condition has to follow.
+- It gets a printer column, because "reachable but not writable" is the case an operator cannot
+  currently see at all.
+
+**Whether it also gates `Ready` is a separate decision, and the answer is yes, eventually.** There
+is no such thing as a legitimately read-only destination here: every folder is mirrored by pushing.
+A provider that cannot be written to cannot do its job, and a green `Ready` beside it would be the
+kind of half-truth that teaches people to ignore conditions. Gating also costs nothing to plumb,
+because a `GitTarget` already projects its provider's readiness as `GitProviderReady`; without the
+gate, every consumer would have to learn a second condition and project that too.
+
+So: publish `Writable` first, and flip the `Ready` gate as its own release with an upgrade note,
+since a provider that reads but cannot write goes from `True` to `False` the day it lands.
 
 ## Finding out that a destination is wrong
 
@@ -166,9 +197,7 @@ behaved as expected. Three limits keep it a **separate change** rather than part
 - It cannot replace the read probe. Git lets the two services hide refs differently, so a write
   advertisement is not guaranteed to carry the same branches, and an absent branch there cannot be
   read as "this branch does not exist".
-- Making `Ready` depend on it **changes what `Ready` means**. Adding `branches` is additive; this is
-  not, and a provider that reads but cannot write flips from `True` to `False` on upgrade. That
-  deserves its own decision and its own upgrade note.
+- It reports its own condition rather than only a `Ready` reason, for the reasons above.
 
 **One kind of wrong cannot be found out at all.** A URL that resolves, reads and writes may still be
 a fork, a stale mirror, or somebody else's repository. Nothing on the wire identifies a repository,
@@ -180,4 +209,6 @@ destination being mistaken in the first place.
 
 1. The inventory: `branches[{name, gitTargets}]`, derived from the configured `GitTarget`s.
 2. Shared delivery plus bounded publication, including the `remoteStatusIsNews` change.
-3. The write probe, on its own, with the `Ready` semantics decided explicitly.
+3. The write probe, publishing `Writable` and nothing else.
+4. `Writable` gates `Ready`, with the upgrade note. Separate, because it is the only step that
+   changes what an existing field means.
