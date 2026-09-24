@@ -63,7 +63,7 @@ func TestPush_DeletedRemoteBranchIsTreatedAsMovement(t *testing.T) {
 	require.NoError(t, err)
 	repo, err := openWorkerRepo(f.worker, provider.Spec.URL)
 	require.NoError(t, err)
-	err = PushAtomic(f.worker.ctx, repo, f.worker.pushCycleRootHash,
+	_, err = PushAtomic(f.worker.ctx, repo, f.worker.pushCycleRootHash,
 		plumbing.NewBranchReferenceName("main"), nil)
 
 	var moved *RemoteMovedError

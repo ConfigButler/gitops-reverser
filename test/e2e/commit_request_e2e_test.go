@@ -284,7 +284,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 // The UC2 suite exercises a `kubectl apply` bundle that includes a CommitRequest
 // as its FIRST document — the deliberately-hard ordering where the save intent
 // arrives before the work it is meant to save (docs/spec/commitrequest-design.md). A non-zero
-// spec.closeDelaySeconds is the close-delay collect
+// spec.closeDelay is the close-delay collect
 // window that lets the bundle's resources arrive and join the same window after the
 // CommitRequest is attributed, so the whole bundle lands in ONE commit carrying
 // the CommitRequest's message.
@@ -368,10 +368,10 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		}, 5*time.Second, 1*time.Second).Should(Succeed())
 
 		By("applying a bundle whose FIRST document is a CommitRequest, then three Deployments")
-		// closeDelaySeconds is sized to comfortably exceed the bundle's per-type ingestion
+		// closeDelay is sized to comfortably exceed the bundle's per-type ingestion
 		// spread so the close-delay collect window is deterministic.
 		var bundle strings.Builder
-		bundle.WriteString(commitRequestManifest(testNs, commitRequestName, gitTargetName, message, 8))
+		bundle.WriteString(commitRequestManifest(testNs, commitRequestName, gitTargetName, message, "8s"))
 		for _, name := range deployNames {
 			bundle.WriteString("---\n")
 			bundle.WriteString(deploymentManifest(testNs, name))
@@ -430,9 +430,9 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 })
 
 // commitRequestManifest renders a single CommitRequest document with an explicit
-// message and closeDelaySeconds (the close-delay collect window). It is used to build
-// multi-document `kubectl apply` bundles where the CommitRequest is the first document.
-func commitRequestManifest(namespace, name, gitTargetName, message string, closeDelaySeconds int) string {
+// message and closeDelay (the close-delay collect window, a Go duration string). It is used to
+// build multi-document `kubectl apply` bundles where the CommitRequest is the first document.
+func commitRequestManifest(namespace, name, gitTargetName, message, closeDelay string) string {
 	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
@@ -442,8 +442,8 @@ spec:
   gitTargetRef:
     name: %s
   message: %q
-  closeDelaySeconds: %d
-`, name, namespace, gitTargetName, message, closeDelaySeconds)
+  closeDelay: %q
+`, name, namespace, gitTargetName, message, closeDelay)
 }
 
 // deploymentManifest renders a single zero-replica Deployment document for use in
@@ -473,9 +473,9 @@ spec:
 
 // applyCommitRequestWithGenerateName creates a CommitRequest using
 // metadata.generateName and returns the server-allocated name. It sets a non-zero
-// closeDelaySeconds because the spec creates the Deployment and this CommitRequest
+// closeDelay because the spec creates the Deployment and this CommitRequest
 // back-to-back: authorship is now settled synchronously at admission (no controller-side
-// wait), so a closeDelaySeconds=0 request would race the Deployment's watch event and
+// wait), so a closeDelay of "0s" would race the Deployment's watch event and
 // could resolve NoOpenWindow before the window opens. The collect window is the
 // documented mechanism for a CommitRequest issued concurrently with its work (UC2).
 func applyCommitRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
@@ -489,7 +489,7 @@ spec:
   gitTargetRef:
     name: %s
   message: %q
-  closeDelaySeconds: 8
+  closeDelay: "8s"
 `, prefix, namespace, gitTargetName, message)
 	out, err := kubectlRunWithStdin(namespace, manifest,
 		"create", "-f", "-", "-o", "jsonpath={.metadata.name}")

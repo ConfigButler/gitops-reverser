@@ -7,6 +7,119 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Every duration in the API is a Go duration string
+
+**Breaking for `CommitRequest.spec.closeDelaySeconds`, which no longer exists.** Every time-valued
+field in these CRDs is a Go duration string with a mandatory unit, validated by the API server:
+
+| Field | Was | Is |
+| --- | --- | --- |
+| `CommitRequest.spec.closeDelaySeconds` | `2` (integer seconds, 0–300) | `CommitRequest.spec.closeDelay`: `"2s"` (duration, at most `"5m"`) |
+| `GitTarget.spec.commit.window` | `"5s"` (unvalidated string) | unchanged spelling, validated and typed, at most `"24h"` |
+
+The pattern is Flux's, widened to Go's own units so that the accepted set is closed under
+serialization: `^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$`. `"750ms"`, `"1.5m"`, `"1m30s"` and
+`"500µs"` are all valid. `30`, `"30"`, `"0"`, `".5s"`, `"5 seconds"` and `"-1s"` are rejected **at
+admission**, naming the field, instead of being stored and misread later. A CEL rule bounds each
+field as well — `"5m"` for `closeDelay`, `"24h"` for `window` — which is also what refuses a value
+like `"999999999h"` that matches the pattern and then overflows `time.ParseDuration`.
+
+### What to change
+
+**`spec.commit.window` needs an edit in three cases**, and only the first is about spelling:
+
+1. **A spelling the schema refuses** although `time.ParseDuration` accepts it: a bare `"0"` (write
+   `"0s"`), a leading-dot fraction such as `".5s"` (write `"0.5s"`), a leading sign such as `"+5s"`
+   (write `"5s"`), a trailing dot such as `"1.s"` (write `"1s"`), and anything with no unit.
+2. **A window longer than `"24h"`**, which the previous check allowed and the bound refuses.
+3. **A window too large for `time.ParseDuration` at all**, such as `"999999999999s"`. This is the
+   one that bites hardest and the one a spelling check cannot see: it matches the pattern, so it
+   was stored, and it overflows int64 nanoseconds, so **no typed client can decode the object**.
+   A `LIST` fails as a whole, which takes the GitTarget informer down with it — one object
+   stopping every controller that watches the kind.
+
+Every other value that was valid before is still valid. Because a regular expression cannot decide
+magnitude, the command below **computes** each window rather than matching it, and prints anything
+that fails the pattern or exceeds 24 hours:
+
+```bash
+kubectl get gittargets -A -o json | jq -r '
+  def secs($n; $u):
+    $n * (if $u=="ns" then 1e-9 elif $u=="us" or $u=="µs" or $u=="μs" then 1e-6
+          elif $u=="ms" then 1e-3 elif $u=="s" then 1 elif $u=="m" then 60 else 3600 end);
+  .items[] | select(.spec.commit.window != null) | . as $t | $t.spec.commit.window as $w
+  | ($w | [scan("([0-9]+(?:\\.[0-9]+)?)(ns|us|µs|μs|ms|s|m|h)")]) as $parts
+  | (if ($parts|length) == 0 then null
+     else ($parts | map(secs(.[0]|tonumber; .[1])) | add) end) as $total
+  | select(
+      ($w | test("^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$") | not)
+      or $total == null or $total > 86400)
+  | "\($t.metadata.namespace)/\($t.metadata.name)\t\($w)"'
+```
+
+A value that fails the new schema is **not** rewritten by the upgrade: it stays in storage until
+something updates the object, and the CRD change means a typed read of it fails. Fix the ones the
+command above prints before upgrading, not after.
+
+`closeDelaySeconds` must be renamed. **A removed field is pruned on write, not refused**, so a
+manifest that still sets it applies cleanly and the request finalizes after the default `"2s"`
+rather than the delay it asked for. Find them before upgrading:
+
+```bash
+kubectl get commitrequests -A -o json \
+  | jq -r '.items[] | select(.spec.closeDelaySeconds != null)
+      | "\(.metadata.namespace)/\(.metadata.name)\t\(.spec.closeDelaySeconds)"'
+```
+
+```yaml
+# before
+closeDelaySeconds: 8
+# after
+closeDelay: "8s"
+```
+
+The bound is unchanged in value and moves from `maximum: 300` to a CEL rule, because the field is a
+string to the API server: the pattern decides whether a value is a duration at all, and only CEL
+can compare two that are. An explicit `"0s"` still means "finalize immediately", and an omitted
+field is still defaulted server-side.
+
+## `--base-trust-max-age` is gone; an idle target refreshes itself
+
+**Breaking only if you set the flag by hand.** `--base-trust-max-age` is removed. No Helm value
+mapped to it and the chart passes a closed list of arguments, so a chart install could not set it;
+a hand-written Deployment that sets it fails to start with `flag provided but not defined`.
+
+What replaces it is on by default and costs less. `--git-refresh-interval` (Helm:
+`controllerManager.gitRefreshInterval`, default `10m`) has an idle `GitTarget` re-prove where its
+branch is: one ref advertisement per interval, and a fetch only when the branch has actually moved.
+A target that is publishing pays nothing at all, because its own push already proves the remote.
+
+The mechanism is the reason for the change. Expiring trust could only make an idle target act by
+forcing a full re-check, which drives a **resync** — a cluster snapshot with mark-and-sweep — so the
+flag's real price was a snapshot per target per interval. The refresher renews the knowledge
+instead of revoking it, and writes nothing.
+
+### What to change
+
+Drop the flag. If you had set it, set `--git-refresh-interval` to the cadence you wanted instead:
+
+```yaml
+# before
+- --base-trust-max-age=30m
+# after
+- --git-refresh-interval=30m
+```
+
+Set `--git-refresh-interval=0` to keep the previous default behaviour, where nothing holds a timer
+against your Git host and an idle target generates no Git traffic.
+
+### What you gain
+
+`GitTarget.status.remote` publishes where the branch is, when that was last proved, and whether a
+push or a fetch proved it — renewed by every push, so it is current on an active target at no cost.
+`GitProvider.status.lastVerifiedAt` does the same for the credential. Both have a `Verified` printer
+column under `kubectl get -o wide`.
+
 ## `reconcileTemplate`'s `Revision` is now `ResourceVersion`
 
 **Breaking, and only for a custom `reconcileTemplate`.** The reconcile commit-message field
@@ -117,7 +230,7 @@ spare. A loaded or distant cluster may want `4` to `5`. Do **not** size the dela
 `--author-attribution-grace`: when that grace expires with no fact, the write still ships as a
 window naming no actor, which a request naming a submitter can never claim, and no amount of waiting
 changes the `WindowMismatch`. See
-[configuration.md](./configuration.md#sizing-closedelayseconds).
+[configuration.md](./configuration.md#sizing-closedelay).
 
 ### Check your integration's assertion
 
@@ -1169,8 +1282,7 @@ you declared, which previously wrote a `namespace:` line the rest of that folder
 
 `v0.41.1` raises the `go` directive in `go.mod` from `1.26.5` to `1.27.0`, in a release whose
 changelog entry reads only *"let's release some security updates"*. The floor rises again after it.
-The directive in [`go.mod`](../go.mod) is always the source of truth; the README carries the current
-floor.
+The directive in [`go.mod`](../go.mod) is always the source of truth for the current floor.
 
 **If you run the image, this does not affect you.** The toolchain is baked into the build.
 

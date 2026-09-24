@@ -199,8 +199,8 @@ boundary, the commit, the push. Background:
 | `git_pushes_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per push cycle: `pushed` or `failed`. |
 | `git_push_retries_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
 | `git_push_duration_seconds` | histogram | `provider_namespace`, `provider_name`, `branch` | One cycle end to end, retries included. |
-| `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against). See the note below. |
-| `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync`. Every increment is lost work. |
+| `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, and only on the intervals where the branch had actually moved). See the note below. |
+| `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync` / `refresh`. Every increment is lost work — except `refresh`, which the next reconcile asks for again; a standing rate there means the branch's status and placement stop being topped up. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
 | `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labeled half of the pipeline and the branch-labeled half. Published per configured GitTarget, whether or not its worker runs. |
@@ -257,9 +257,20 @@ count a confirmed moved remote. `push_failure_probe` moving on its own is pushes
 reason that is not another writer — check credentials and connectivity, not the branch.
 `forced_recheck` moving with nothing else is reconcile traffic.
 
-**This is one instrument, not a family.** Six reasons on one counter answer six different operator
-questions, and the alternative (a metric per call site) would multiply the surface without
-telling anyone anything the `reason` label does not. Nothing here should grow a seventh series
+`refresh` is the price of `--git-refresh-interval`, per branch. Multiply its per-second rate by
+the interval in seconds and you get the number of idle branches whose refresh found the branch
+somewhere else; if that is close to the number of idle branches you think you have, something
+outside Reverser is pushing to them constantly. The advertisement that PRECEDES the fetch is
+deliberately not counted here: it runs no `SmartFetch`, and this counter's documented meaning is
+every call that does. So on a quiet repository the refresher's traffic shows up nowhere on this
+series at all. That is the honest accounting, not an omission: counting the refresher's
+advertisements separately would be a new series, not a redefinition of this one. Setting
+`--git-refresh-interval=0` returns this reason to a flat zero and the idle target to no Git
+traffic whatsoever.
+
+**This is one instrument, not a family.** Seven reasons on one counter answer seven different
+operator questions, and the alternative (a metric per call site) would multiply the surface without
+telling anyone anything the `reason` label does not. Nothing here should grow an eighth series
 without a question it is the only way to answer.
 
 ### Sizing the branch worker queue against `git_queue_drops_total`
@@ -495,7 +506,7 @@ landed all read the same way here, because none of them produce a commit carryin
 message. Confirm against the requests themselves before changing the window: a request that
 attached reports `Ready=True`, one that produced a pushed commit also reports `Pushed=True` with
 `status.sha`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
-without their message reaching a commit is the window worth tuning against `closeDelaySeconds`.
+without their message reaching a commit is the window worth tuning against `closeDelay`.
 
 `commit_requests_total` answers the same question in aggregate, which per-object conditions cannot:
 

@@ -48,6 +48,10 @@ type watchPlaneState struct {
 	// status.placement and the LayoutResolved condition. It is a report from a scan, not from a
 	// write, so it is present for a target that has never written and for a suspended one.
 	layouts map[string]git.LayoutReport
+	// remotes is each GitTarget's most recently observed remote branch state, published as
+	// status.remote. Like layouts it is a report from a look at Git rather than from a write, so
+	// it is present for a target that has never written and for a suspended one.
+	remotes map[string]git.RemoteObservation
 }
 
 // targetPassStatus is how one GitTarget's most recent plan pass ended.
@@ -104,6 +108,7 @@ func newWatchPlaneState() *watchPlaneState {
 		pruneModes:  map[string]v1alpha3.PruneMode{},
 		passes:      map[string]targetPassStatus{},
 		layouts:     map[string]git.LayoutReport{},
+		remotes:     map[string]git.RemoteObservation{},
 	}
 }
 
@@ -122,6 +127,7 @@ func (s *watchPlaneState) clone() *watchPlaneState {
 		pruneModes:  copyMap(s.pruneModes),
 		passes:      copyMap(s.passes),
 		layouts:     copyMap(s.layouts),
+		remotes:     copyMap(s.remotes),
 	}
 	for key, cells := range s.streams {
 		out.streams[key] = copyMap(cells)

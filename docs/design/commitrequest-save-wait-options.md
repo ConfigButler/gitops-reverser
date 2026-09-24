@@ -2,7 +2,7 @@
 
 > **design, decided**: a plan to execute, not an open question. Index: [`../INDEX.md`](../INDEX.md)
 >
-> The short version: `spec.closeDelaySeconds` is a timer standing in for a happens-before the API
+> The short version: `spec.closeDelay` is a timer standing in for a happens-before the API
 > never expresses. A request names a `GitTarget` and has no way to name the write it means to
 > capture, so the integrator is asked to guess a duration that covers a latency belonging to the
 > cluster's audit configuration. Its default, `0`, is shorter than the minimum possible
@@ -38,7 +38,7 @@ reached the worker. The edit still committed, five seconds later on the window's
 the target's `liveTemplate` instead of the sentence the participant typed. From the cluster's point
 of view nothing failed. From the operator's, the save button did nothing.
 
-The reporting integrator has since set `closeDelaySeconds: 2` client-side, which moves the failure
+The reporting integrator has since set a two-second close delay client-side, which moves the failure
 from "always" to "whenever the cluster is slower than two seconds". That is a workaround at one
 call site, not a fix: the operator still ships a default that cannot work.
 
@@ -90,7 +90,7 @@ Four mechanisms decide the outcome, and the failure is structural rather than a 
 
 **The deadline is stamped from receipt.** `handleAttachCommitRequest` in
 [`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go) sets
-`finalizeAt = time.Now().Add(closeDelaySeconds)` on first registration, and idempotent re-sends keep
+`finalizeAt = time.Now().Add(closeDelay)` on first registration, and idempotent re-sends keep
 that first value. With the field omitted the deadline is the present instant, so the request is due
 on the next pass of the worker's event loop.
 
@@ -162,7 +162,7 @@ line, so each phase says where the line still is.
 
 **R6. Compatible by construction, except the broken default.** `CommitRequest.spec` is immutable, so
 capability arrives as new optional fields. Apart from an explicit default repair for
-`closeDelaySeconds`, a request that sets none of the new fields behaves exactly as it does today.
+`closeDelay`, a request that sets none of the new fields behaves exactly as it does today.
 
 **R7. Do not tune against the attribution grace.** Sizing a delay against the 3s grace is the
 obvious mistake and the wrong bound. When the grace expires with no fact, the event still ships, as
@@ -184,7 +184,7 @@ while it is still waiting. Reconstructing it afterwards from controller logs is 
 | # | Situation | Today | After the plan | Phase |
 |---|---|---|---|---|
 | 1 | `W` is already in a claimable open window when the request registers | attaches, then waits out the whole delay | satisfied at once from the open window, then the collect delay | 2 |
-| 2 | `W` arrives during the delay | works: this is what `closeDelaySeconds: 2` buys | unchanged | — |
+| 2 | `W` arrives during the delay | works: this is what `closeDelay: "2s"` buys | unchanged | — |
 | 3 | `W` arrives after the delay | `NoWindowInGrace`, `Ready=True`; `W` commits later under `liveTemplate` | wait for `W`, then finalize | 2 |
 | 4 | `W` arrived and its window closed before the request registered | `NoWindowInGrace`, indistinguishable from row 5 | **when a usable attribution fact exists**, the index says whether the cluster ever saw `W`, which splits 4 from 5; otherwise unchanged until the ledger. Naming the commit always needs the ledger | 2 (partial) / later |
 | 5 | Nothing was pending | `NoWindowInGrace`, correct | unchanged | — |
@@ -247,20 +247,20 @@ indistinguishable from one that never happened.
 
 ## The timer model
 
-Give each field one job, rather than reinterpreting `closeDelaySeconds` as a ceiling (R6):
+Give each field one job, rather than reinterpreting `closeDelay` as a ceiling (R6):
 
 - `waitFor.timeoutSeconds` is the give-up bound, anchored at receipt. This is where audit-fact
   latency is covered, and it is the number a cluster's installer can reason about.
-- `closeDelaySeconds` keeps its meaning and is measured from **satisfaction**: once the awaited
+- `closeDelay` keeps its meaning and is measured from **satisfaction**: once the awaited
   arrival lands, collect the rest of its burst for this long, then finalize.
-- With no `waitFor`, `finalizeAt = receipt + closeDelaySeconds`, exactly as today.
+- With no `waitFor`, `finalizeAt = receipt + closeDelay`, exactly as today.
 
 Idempotent re-sends keep the first receipt anchor, and once satisfied, the first satisfaction time.
 
 Note what this does and does not buy. Rows 2 and 3 get faster and more reliable, because the window
 closes a short collect after the write lands rather than after a delay sized for the worst case.
 Row 1 is unchanged in wall-clock terms: satisfaction is immediate, so it still finalizes at
-receipt + `closeDelaySeconds`. The win in row 1 is correctness of the *reason*, not latency.
+receipt + `closeDelay`. The win in row 1 is correctness of the *reason*, not latency.
 
 ## What a save needs today
 
@@ -272,15 +272,16 @@ can widen your way out of.
 **1. The audit policy must cover the type being saved.** If audit emits nothing for the object's
 group and resource, or `--author-attribution` is off, the window names no actor while the request
 names one, and `matchesWindow` refuses it: `WindowMismatch`, every time, permanently. No value of
-`closeDelaySeconds` changes this, because nothing is ever going to arrive that the request could
+`closeDelay` changes this, because nothing is ever going to arrive that the request could
 claim (R7). Verify this against the cluster the save actually runs on before tuning anything else.
 
-**2. Set `closeDelaySeconds` generously, and do not size it against the 3s grace.** Phase 0 moved
-the default from `0` to `2`, so an omitted field is no longer the broken case; the sizing below is
+**2. Set `closeDelay` generously, and do not size it against the 3s grace.** Phase 0 moved
+the default from `"0s"` to `"2s"`, so an omitted field is no longer the broken case; the sizing below is
 what a cluster slower than the reference configuration still needs. The number has
 to cover audit-fact arrival: the API server's `--audit-webhook-batch-max-wait` plus the attribution
-join. At the reference configuration of `1s` that is roughly 1 to 1.5 seconds in practice, so `2`
-leaves under a second of headroom and `4` to `5` leaves a margin that survives a loaded or distant
+join. At the reference configuration of `1s` that is roughly 1 to 1.5 seconds in practice, so
+`"2s"` leaves under a second of headroom and `"4s"` to `"5s"` leaves a margin that survives a
+loaded or distant
 cluster. The cost of overshooting is that the commit lands a few seconds later; the cost of
 undershooting is a silent no-op. They are not symmetric.
 
@@ -315,10 +316,12 @@ Five phases. Each is shippable alone and leaves the system correct.
 
 ### Phase 0 — repair the default — **shipped**
 
-Make `CommitRequest.spec.closeDelaySeconds` a `*int32` with `+kubebuilder:default=2`.
+Make `CommitRequest.spec.closeDelay` a `*metav1.Duration` with `+kubebuilder:default="2s"`.
+(Shipped first as `closeDelaySeconds`, an int; renamed when every duration in the API became a Go
+duration string behind the same pattern.)
 
-`*int32` rather than `int32`, decided: a schema default on a bare `int32` means a typed Go client
-can no longer express "finalize immediately", because its zero value is not serialized. More
+A pointer rather than a bare value, decided: a schema default on a bare field means a typed Go
+client can no longer express "finalize immediately", because its zero value is not serialized. More
 importantly, the cluster-level default flag below is **blocked** on the pointer — once stored, an
 omitted field and an explicit `0` are the same value, so nothing downstream can tell them apart.
 The type is `v1alpha3` with one known consumer; this is the cheapest it will ever be.
@@ -358,7 +361,7 @@ spec:
         name: demo-coffee
         uid: 3f0a...                  # optional
         resourceVersion: "2577872"    # optional
-  closeDelaySeconds: 2
+  closeDelay: "2s"
 ```
 
 The caller already holds these values: they are in the response to the `PATCH` it makes one line
@@ -471,7 +474,7 @@ the participant's message on the commit.
 - **`--commit-request-default-close-delay`**, a cluster-level default set by whoever installed the
   operator and does know how their API server is configured. Deriving it inside the operator is not
   possible: half the input is the API server's `--audit-webhook-batch-max-wait`, which we cannot
-  read, and the half we do hold is the wrong bound by R7. Unblocked by phase 0's `*int32`.
+  read, and the half we do hold is the wrong bound by R7. Unblocked by phase 0's pointer.
 
 ## Open questions
 

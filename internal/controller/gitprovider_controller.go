@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -148,6 +150,11 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		rd.stalled(ReasonConnectionFailed, fmt.Sprintf("Failed to connect to repository: %v", err))
 		return r.commitProvider(ctx, st, rd)
 	}
+
+	// The credential and the repository were proved together, just now. Stamped only on success,
+	// and never cleared: a failure is carried by Ready=False, and the last time this DID work is
+	// the fact that makes a failing provider legible.
+	gitProvider.Status.LastVerifiedAt = &metav1.Time{Time: time.Now()}
 
 	r.firsts.validationSuccess.Do(func() {
 		log.Info("First GitProvider validation completed successfully",

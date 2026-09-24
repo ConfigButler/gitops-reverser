@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
@@ -17,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -294,7 +294,7 @@ func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
 func TestCommitRequestReconcile_OmittedCloseDelayUsesTheDefault(t *testing.T) {
 	cr := newCommitRequest("save-default")
 	cr.CreationTimestamp = metav1.Now()
-	require.Nil(t, cr.Spec.CloseDelaySeconds, "the fixture must leave the field unset")
+	require.Nil(t, cr.Spec.CloseDelay, "the fixture must leave the field unset")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -302,8 +302,8 @@ func TestCommitRequestReconcile_OmittedCloseDelayUsesTheDefault(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-default")
 
 	require.Len(t, f.calls, 1)
-	assert.Equal(t, defaultCloseDelaySeconds, f.calls[0].CloseDelaySeconds,
-		"an omitted closeDelaySeconds is the default, never an immediate finalize")
+	assert.Equal(t, defaultCloseDelay, f.calls[0].CloseDelay,
+		"an omitted closeDelay is the default, never an immediate finalize")
 }
 
 // The pointer type exists so that an explicit 0 survives defaulting. A caller that
@@ -311,7 +311,7 @@ func TestCommitRequestReconcile_OmittedCloseDelayUsesTheDefault(t *testing.T) {
 func TestCommitRequestReconcile_ExplicitZeroCloseDelayIsPreserved(t *testing.T) {
 	cr := newCommitRequest("save-now")
 	cr.CreationTimestamp = metav1.Now()
-	cr.Spec.CloseDelaySeconds = ptr.To(int32(0))
+	cr.Spec.CloseDelay = &metav1.Duration{}
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -319,19 +319,19 @@ func TestCommitRequestReconcile_ExplicitZeroCloseDelayIsPreserved(t *testing.T) 
 	reconcileCommitRequest(t, r, "save-now")
 
 	require.Len(t, f.calls, 1)
-	assert.Equal(t, int32(0), f.calls[0].CloseDelaySeconds,
-		"an explicit 0 must not be re-read as an omitted field")
+	assert.Zero(t, f.calls[0].CloseDelay,
+		"an explicit \"0s\" must not be re-read as an omitted field")
 }
 
 // The close-delay collect window is the worker's job now: the controller does not
 // hold the finalize itself. While the worker has not resolved the attach, the
-// controller polls — spec.closeDelaySeconds is passed through to the worker, not
+// controller polls — spec.closeDelay is passed through to the worker, not
 // consumed here — and once the author is settled the request records the distinct
 // WaitingForCloseDelay wait (the post-attribution close delay plus commit and push).
 func TestCommitRequestReconcile_NotResolvedRecordsCloseDelayWait(t *testing.T) {
 	cr := newCommitRequest("save-linger")
 	cr.CreationTimestamp = metav1.Now()
-	cr.Spec.CloseDelaySeconds = ptr.To(int32(30))
+	cr.Spec.CloseDelay = &metav1.Duration{Duration: 30 * time.Second}
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -341,8 +341,8 @@ func TestCommitRequestReconcile_NotResolvedRecordsCloseDelayWait(t *testing.T) {
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter,
 		"an unresolved attach must be polled, not held by a controller-side delay")
 	require.Len(t, f.calls, 1, "the attach is sent the instant the author is known")
-	assert.Equal(t, int32(30), f.calls[0].CloseDelaySeconds,
-		"closeDelaySeconds is passed to the worker, not consumed here")
+	assert.Equal(t, 30*time.Second, f.calls[0].CloseDelay,
+		"closeDelay is passed to the worker, not consumed here")
 
 	got := fetchCommitRequest(t, c, "save-linger")
 	// Author settled from admission and attached: the request is in the

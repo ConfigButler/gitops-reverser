@@ -4,9 +4,10 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/utils/ptr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -33,7 +34,7 @@ func TestValidateCommitConfig(t *testing.T) {
 		{
 			name: "a valid window and template",
 			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{
-				Window: ptr.To("30s"),
+				Window: &metav1.Duration{Duration: 30 * time.Second},
 				Message: &configbutleraiv1alpha3.CommitMessageSpec{
 					LiveTemplate: "chore(mirror): {{.Count}} by {{.Author}}",
 				},
@@ -42,18 +43,8 @@ func TestValidateCommitConfig(t *testing.T) {
 		},
 		{
 			name: "zero is a real choice, not an omission",
-			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{Window: ptr.To("0s")},
+			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{Window: &metav1.Duration{}},
 			ok:   true,
-		},
-		{
-			name:  "a window that is not a duration",
-			spec:  &configbutleraiv1alpha3.GitTargetCommitSpec{Window: ptr.To("5 seconds")},
-			saysA: "spec.commit.window",
-		},
-		{
-			name:  "a negative window",
-			spec:  &configbutleraiv1alpha3.GitTargetCommitSpec{Window: ptr.To("-1s")},
-			saysA: "negative",
 		},
 		{
 			// A retired field is refused before any template is parsed, so a stored legacy value

@@ -147,8 +147,8 @@ func TestGitFetchesTotal_PushFailureProbeIsNotContention(t *testing.T) {
 	pushAtomicFn = func(
 		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
 		_ plumbing.ReferenceName, _ []gitclient.Option,
-	) error {
-		return errors.New("dial tcp: connection reset by peer")
+	) (PushOutcome, error) {
+		return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
 	}
 	defer func() { pushAtomicFn = original }()
 
@@ -175,10 +175,10 @@ func TestGitFetchesTotal_ProbeThenResetWhenTheRemoteDidMove(t *testing.T) {
 	pushAtomicFn = func(
 		ctx context.Context, repo *gogit.Repository, rootHash plumbing.Hash,
 		rootBranch plumbing.ReferenceName, auth []gitclient.Option,
-	) error {
+	) (PushOutcome, error) {
 		pushes++
 		if pushes == 1 {
-			return errors.New("dial tcp: connection reset by peer")
+			return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
 		}
 		return original(ctx, repo, rootHash, rootBranch, auth)
 	}

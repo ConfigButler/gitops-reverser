@@ -77,11 +77,13 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	err = worker.ensureRepositoryInitialized(ctx)
 	require.NoError(t, err, "ensureRepositoryInitialized should succeed with empty repository")
 
-	// Test GetBranchMetadata - branch should still be unborn until first write/bootstrap
-	exists, sha, fetchTime := worker.GetBranchMetadata()
-	assert.False(t, exists, "Branch should not exist remotely for empty repository")
-	assert.Empty(t, sha, "SHA should be empty while branch is unborn")
-	assert.False(t, fetchTime.IsZero(), "Fetch time should be set")
+	// The worker has looked, and what it saw is that the branch is not there. An empty revision
+	// IS that observation: a branch does not exist without a commit.
+	observed, ok := worker.LastRemoteObservation()
+	require.True(t, ok, "preparing the branch is a look at the remote, so it must be recorded")
+	assert.Empty(t, observed.Revision, "an empty repository advertises no branch")
+	assert.Equal(t, ObservedByFetch, observed.By)
+	assert.False(t, observed.At.IsZero(), "an observation is dated")
 }
 
 // TestBranchWorker_IdentityFields verifies worker identity is set correctly.

@@ -104,8 +104,14 @@ sequenceDiagram
 ```
 
 The green block already reads the branch SHA, which is the only thing the red block contributed on
-an uncontended cycle. **Reverser never polls the remote and holds no timer against it**, so an idle
-target generates no Git traffic at all.
+an uncontended cycle. **A target that is publishing therefore reads the remote only through the
+push it was making anyway**, which is what the whole of §1.6 measures.
+
+One qualifier, added when the refresher shipped: an IDLE target now spends one ref advertisement
+per `--git-refresh-interval` to re-prove where its branch is, so "no Git traffic at all" holds for
+a publishing target always, and for an idle one only at `--git-refresh-interval=0`. Nothing here
+changes for the active case, because a successful push renews the same knowledge and an active
+branch therefore never schedules a refresh.
 
 ### 1.5 The invariant that replaced it
 
@@ -113,6 +119,12 @@ target generates no Git traffic at all.
 
 Three flags carry it, and they are three because each brackets a different span. Collapsing any two
 is a bug that was found by trying.
+
+Trust is gained in two ways, and after the refresher shipped the push is the main one: a reset onto
+a fetched tip, and a `PushAtomic` the server did not reject. The second is the stronger of the two —
+a fetch says where the branch was when we looked, while an accepted push says the server has just
+moved it there on our authority — which is why a push also renews `status.remote` and why an
+actively-written branch never needs a refresh.
 
 ```mermaid
 stateDiagram-v2
@@ -354,31 +366,22 @@ interval alongside a `Receiver`.
 **Consequence worth stating.** If any option below is built, this one should be too, expressed as
 the same age rather than as a second mechanism.
 
-**Built, and off by default.** `--base-trust-max-age` takes a duration and `0`, the default, never
-expires anything, which keeps §1.6's measured zero-fetch idle target true for anyone who does not
-opt in. The age is enforced on the `GitTarget` reconcile rather than by a timer in the worker,
-because the target it exists for is the idle one and an idle worker has nothing arriving to check a
-clock on.
+**Built, then removed, and the reason is worth keeping.** A duration flag shipped in
+[#383](https://github.com/ConfigButler/gitops-reverser/pull/383) and was taken out again. Expiring a
+belief cannot reach the target it exists for: an idle target is converged, nothing publishes, and
+so nothing ever spends the fetch the cleared flag merely permits. Making anything happen therefore
+meant scheduling a full re-check, which drives a **resync** — a cluster snapshot with
+mark-and-sweep — so the knob's real price was a snapshot per target per interval, reaching
+freshness through the most expensive door in the building. No supported install could pay it
+either: the chart builds `args:` as a closed allowlist with no escape hatch, so the flag was
+unreachable from a chart install.
 
-**Expiry forces the re-read; it does not merely permit one.** Clearing the flag alone would be a
-no-op on precisely the target the age exists for: an idle target is converged, nothing publishes,
-and so nothing ever spends the fetch the cleared flag allows. So expiry joins `forceRecheck` and
-drives the same chain the reconcile-request annotation does. That makes the real cost a resync per
-target per interval, not a bare fetch, and it is the honest price of moving what an operator can
-see.
-
-**The age is per `GitTarget`, not per branch,** and a review found why that distinction is
-load-bearing rather than pedantic. Two different things go stale. The CHECKOUT expires on a
-timestamp the worker stamps on every gain of trust, which every push renews — so a target that
-keeps publishing is never expired by it, and an expiry fans out to every target on the worker
-through an epoch counter rather than being consumed by whichever target reconciles first. But what
-an operator reads is the TARGET's own observation: what its folder holds, whether the acceptance
-gate passes, where its documents are placed. A fetch a busy sibling earned updates the checkout and
-says nothing about that. If the age were the shared timestamp alone, one target publishing inside
-the interval would renew it for ever, nothing would expire, and the quiet target beside it would
-never be re-evaluated at all — postponed indefinitely rather than merely late. So each target also
-carries its own last-re-read time, and owes a re-read once that is older than the age, whether or
-not anything expired.
+**What replaced it** renews the observation instead of revoking it: a periodic refresh that reads
+the remote's ref advertisement on an idle branch, fetches only when the branch actually moved, and
+publishes what it saw on `GitTarget.status.remote`. The option's argument above survives intact —
+bounded staleness with no Git-host configuration — but the mechanism under it is one advertisement
+rather than a cluster snapshot, and a branch that is actively being written never schedules one at
+all, because a successful push has already proved where the remote is.
 
 ### Option 2: tell the reconciler after we push
 

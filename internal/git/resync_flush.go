@@ -111,6 +111,18 @@ func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
 		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
 		return err
 	}
+
+	// A resync ALWAYS fetches, and that fetch proves where the branch is exactly as a refresh's
+	// does. Without this the worker knew more than its own status said: a resync could discover a
+	// commit somebody else pushed and leave status.remote naming the revision before it —
+	// indefinitely, on an install that has turned the periodic refresh off. The target is in hand
+	// here, which is the only thing reporting needs.
+	if observed, known := l.w.LastRemoteObservation(); known {
+		l.w.reportRemoteObservation(
+			[]itypes.ResourceReference{
+				itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace),
+			}, observed)
+	}
 	return nil
 }
 

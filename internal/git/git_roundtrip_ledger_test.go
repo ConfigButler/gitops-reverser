@@ -374,7 +374,7 @@ func interceptPushAttempt(t *testing.T, attempt int, before func()) func() {
 		rootHash plumbing.Hash,
 		rootBranch plumbing.ReferenceName,
 		auth []gitclient.Option,
-	) error {
+	) (PushOutcome, error) {
 		calls++
 		if calls == attempt {
 			before()

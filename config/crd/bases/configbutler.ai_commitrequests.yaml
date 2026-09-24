@@ -70,20 +70,22 @@ spec:
           spec:
             description: spec defines the desired state of CommitRequest
             properties:
-              closeDelaySeconds:
-                default: 2
+              closeDelay:
+                default: 2s
                 description: |-
-                  CloseDelaySeconds sets the finalize deadline from the worker's first receipt.
-                  Time waiting for a matching window consumes this delay; repeated receipt keeps the deadline.
-                  Normal flush triggers can close an attached window early, carrying its message.
-                  A request claims at most one open window and cannot rename a finalized commit.
-                  Defaults to 2, which covers the time a write spends waiting for its audit fact before
-                  the commit window opens; an explicit 0 requests immediate finalization and will usually
+                  CloseDelay sets the finalize deadline from the worker's first receipt, as a Go duration
+                  string ("2s", "750ms", "1m"). Time waiting for a matching window consumes this delay;
+                  repeated receipt keeps the deadline. Normal flush triggers can close an attached window
+                  early, carrying its message. A request claims at most one open window and cannot rename a
+                  finalized commit. At most "5m".
+                  Defaults to "2s", which covers the time a write spends waiting for its audit fact before
+                  the commit window opens; an explicit "0s" requests immediate finalization and will usually
                   find nothing pending. A delay does not reserve a transaction.
-                format: int32
-                maximum: 300
-                minimum: 0
-                type: integer
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                type: string
+                x-kubernetes-validations:
+                - message: closeDelay must not exceed 5m
+                  rule: duration(self) <= duration('5m')
               gitTargetRef:
                 description: |-
                   GitTargetRef names the GitTarget whose open commit window to finalize.
@@ -119,7 +121,10 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: CommitRequest spec is immutable after creation
-              rule: self == oldSelf
+              rule: self.gitTargetRef == oldSelf.gitTargetRef && has(self.message)
+                == has(oldSelf.message) && (!has(self.message) || self.message ==
+                oldSelf.message) && has(self.closeDelay) == has(oldSelf.closeDelay)
+                && (!has(self.closeDelay) || duration(self.closeDelay) == duration(oldSelf.closeDelay))
           status:
             description: status defines the observed state of CommitRequest
             properties:

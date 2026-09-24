@@ -83,13 +83,21 @@ repository without anything restarting it. Each remote has its own clone, so tru
 that change would skip establishing the new checkout entirely; `noteRemoteIdentity` drops it
 instead.
 
-**Nothing tells an idle target that its branch moved.** A target that is not writing makes no round
-trip, so it holds its previous view of the folder until it next publishes, resyncs, or is asked to
-re-read (`reconcile.configbutler.ai/requestedAt`). A refused target re-reads itself roughly every
-ten seconds because it is not converged; a healthy idle one does not. `--base-trust-max-age` (off by
-default) bounds how stale that view may get, per `GitTarget` rather than per branch: every push
-renews the shared checkout, so a branch-wide age would let one busy target postpone a quiet one
-indefinitely. Closing the gap properly is the inbound receiver's job, designed but not built:
+**An idle target re-proves where its branch is, periodically.** A target that is writing learns it
+for free: the push session reads the remote's advertisement and the server names the hash it
+accepted, so an active branch never schedules a look of its own. One that has gone quiet is asked
+on its 5-minute reconcile tick, and spends one ref advertisement per `--git-refresh-interval`
+(10m by default); only a branch that moved costs a fetch after that. What it learns is published
+as `status.remote` (the revision, when it was last proved, and whether a push or a fetch proved
+it), and a folder somebody changed in Git is re-read and republished as `status.placement`.
+
+**A refresh never causes a write.** It may change what an operator reads and nothing else: it
+consults the acceptance gate only to stay quiet about a folder that is refused, never to raise or
+clear `GitPathAccepted`, and it never plans a commit. A refused target still re-reads itself
+roughly every ten seconds because it is not converged, and
+`reconcile.configbutler.ai/requestedAt` still forces a full re-check for a human who wants one
+now. What none of this closes is the latency: seconds-fresh needs the inbound receiver,
+designed but not built.
 [§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
 request shape it will accept.
 
@@ -310,10 +318,10 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 
 - `spec.gitTargetRef.name`: target whose open window should be finalized.
 - `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
-- `spec.closeDelaySeconds`: `0–300s` delay before the window is closed, so the author's own
-  in flight changes can join the window before it closes. Defaults to `2`, which covers the wait a
-  write spends on its audit fact before the window opens; an explicit `0` finalizes immediately and
-  usually finds nothing pending.
+- `spec.closeDelay`: a Go duration string, at most `5m`, delaying the close so the author's own
+  in flight changes can join the window before it closes. Defaults to `"2s"`, which covers the wait
+  a write spends on its audit fact before the window opens; an explicit `"0s"` finalizes
+  immediately and usually finds nothing pending.
 - `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
   terminal outcome that is not an error: a pushed commit, or a benign no-commit);
   **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports
@@ -1288,7 +1296,7 @@ immediately. That is not a failure:
 1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
    `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
 2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
-   finalize at `receipt + closeDelaySeconds`. The worker binds it to an open window only when the author
+   finalize at `receipt + closeDelay`. The worker binds it to an open window only when the author
    state and GitTarget match. It **never finalizes another author's window**; a window carries at most one request.
 3. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes an
    open window, the worker always schedules a push, so a window closed by an otherwise no-op resync is not

@@ -103,6 +103,11 @@ type BranchWorker struct {
 	// alongside pathRefusal; a nil reporter only drops the projection.
 	layoutReporter LayoutReporter
 
+	// remoteReporter publishes each confirmed observation of the branch's remote state,
+	// projected as status.remote. Set by the WorkerManager before Start, alongside pathRefusal;
+	// a nil reporter only drops the projection.
+	remoteReporter RemoteReporter
+
 	// Event processing
 	eventQueue chan WorkItem
 	ctx        context.Context
@@ -111,11 +116,20 @@ type BranchWorker struct {
 	started    bool
 	mu         sync.Mutex
 
-	// Branch metadata (protected by metaMu)
-	metaMu        sync.RWMutex
-	branchExists  bool
-	lastCommitSHA string
-	lastFetchTime time.Time
+	// lastObservation is what this worker last PROVED about the target branch on the remote, and
+	// when. See RemoteObservation: it replaces a fetch-only trio (branchExists, lastCommitSHA,
+	// lastFetchTime) that went arbitrarily stale on exactly the busiest targets, because a push
+	// never wrote to it.
+	lastObservation atomic.Pointer[RemoteObservation]
+
+	// observationWithdrawnState records that the observation was dropped because the GitProvider
+	// now names a DIFFERENT repository, and that whatever was published from it has to be taken
+	// back. Dropping the record alone is not enough: the revision an operator reads lives in the
+	// watch plane's projection and in status.remote, and if the new repository is unreachable
+	// nothing would ever replace it. It is cleared by the next observation that is actually
+	// proved, and it stays set until then so every target on this branch withdraws on its own
+	// tick, not only the one that happened to notice the change.
+	observationWithdrawnState atomic.Bool
 
 	// repoMu serializes repository/worktree operations within this worker.
 	repoMu sync.Mutex
@@ -132,21 +146,6 @@ type BranchWorker struct {
 	// See the package's design note in docs/design/push-notification-and-reconcile-trigger.md §1.5.
 	baseTrustedState   atomic.Bool
 	worktreeDirtyState atomic.Bool
-
-	// baseTrustedAt is when baseTrustedState last became true, as Unix nanoseconds, and it exists
-	// only so ExpireBaseTrust can put a maximum age on that trust. Zero means "never trusted".
-	baseTrustedAt atomic.Int64
-
-	// baseTrustEpoch counts expiries. It exists because one worker serves EVERY GitTarget on its
-	// (provider, branch), while the flag it guards is one shared boolean: the first target to
-	// reconcile after an expiry consumed the whole transition, and its sibling saw either an
-	// already-cleared flag or the fresh timestamp from that target's fetch, so the sibling never
-	// re-evaluated its own folder and could stay stale indefinitely.
-	//
-	// A counter fans the one event out. Each target compares the epoch it last acted on against
-	// this one and forces its own re-read when they differ, so the transition is consumed once PER
-	// TARGET rather than once per worker.
-	baseTrustEpoch atomic.Uint64
 
 	// lastRefusalTouch records when this worker last pushed an empty commit for a GitTarget, keyed
 	// by "namespace/name", so refusalTouchInterval can floor the rate. It is guarded by its own
@@ -422,7 +421,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 			"request", req.Namespace+"/"+req.Name,
 			"author", req.Author,
 			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
-			"closeDelaySeconds", req.CloseDelaySeconds,
+			"closeDelay", req.CloseDelay.String(),
 			"messageOverride", req.Message != "")
 		// Nothing publishes depth here: the gauge reads inflightItems at scrape
 		// time, so an enqueue is visible to the next scrape whether or not the
@@ -972,6 +971,11 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		return
 	}
 
+	if item.Refresh != nil {
+		l.handleRefreshRequest(item.Refresh)
+		return
+	}
+
 	if item.Request == nil {
 		return
 	}
@@ -986,7 +990,13 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		return
 	}
 
-	for _, event := range item.Request.Events {
+	l.handleLiveEvents(item.Request)
+}
+
+// handleLiveEvents appends one write request's live events to the commit window, splitting and
+// finalizing it as identity, the byte cap or a zero window require.
+func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
+	for _, event := range request.Events {
 		if !l.w.normalWritesAllowed(event.GitTargetName, event.GitTargetNamespace) {
 			l.w.Log.V(1).Info("Dropping live event while render fidelity is not established",
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
@@ -1537,41 +1547,8 @@ func (w *BranchWorker) worktreeDirty() bool { return w.worktreeDirtyState.Load()
 // now the remote tip). fetchRemoteBranchHash pointedly does not call it: that one fetches without
 // resetting, so it learns where the remote is without making the worktree match.
 func (w *BranchWorker) setBaseTrusted(trusted bool) {
-	if trusted {
-		// Stamped on every gain rather than only on the transition, because the age this feeds is
-		// "how long since we last read the remote", not "how long since we first believed it". A
-		// target publishing steadily re-gains trust on every push and should keep resetting the
-		// clock; otherwise a busy target would be invalidated on a schedule for no reason.
-		w.baseTrustedAt.Store(time.Now().UnixNano())
-	}
 	w.baseTrustedState.Store(trusted)
 }
-
-// ExpireBaseTrust drops base trust that is older than maxAge, and reports whether it did.
-//
-// This is the scheduled half of the maximum-age backstop. Nothing else moves an idle target's view
-// of Git: it is converged, so it requeues on the steady interval and those passes publish status
-// without touching the remote. A target that IS publishing re-stamps the clock on every push, so
-// this only ever fires on one that has gone quiet, which is exactly the target it exists for.
-//
-// maxAge <= 0 disables it, which is the default. Enabling it trades requests for freshness, and
-// the request cost is one fetch per branch per maxAge on otherwise silent targets.
-func (w *BranchWorker) ExpireBaseTrust(maxAge time.Duration) bool {
-	if maxAge <= 0 || !w.baseTrusted() {
-		return false
-	}
-	at := w.baseTrustedAt.Load()
-	if at == 0 || time.Since(time.Unix(0, at)) < maxAge {
-		return false
-	}
-	w.invalidateBase("base trust older than the configured maximum age")
-	w.baseTrustEpoch.Add(1)
-	return true
-}
-
-// BaseTrustEpoch is the number of times this worker's base trust has expired. A GitTarget forces
-// its own re-read when this differs from the epoch it last acted on. See baseTrustEpoch.
-func (w *BranchWorker) BaseTrustEpoch() uint64 { return w.baseTrustEpoch.Load() }
 
 // invalidateBase records that the worktree can no longer be assumed to sit at the remote tip.
 //
@@ -1643,6 +1620,13 @@ func (w *BranchWorker) noteRemoteIdentity(remoteURL string) {
 	w.Log.Info("GitProvider now names a different repository; the checkout for it must be established",
 		"branch", w.Branch)
 	w.invalidateBase("remote repository changed")
+	// The observation goes with the trust, and for a sharper reason: it is a statement about a
+	// REPOSITORY, and this is a different one. Left in place it would be reported as this
+	// GitTarget's remote state, and a fresh enough one would also suppress the look that corrects
+	// it. Dropping it makes the next refresh unconditional; the withdrawal takes back what the
+	// old one already published.
+	w.lastObservation.Store(nil)
+	w.observationWithdrawnState.Store(true)
 }
 
 // ensureBaseForCycle performs the head-of-cycle fetch, which is now conditional.
@@ -1812,20 +1796,31 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			rootBranch = plumbing.NewBranchReferenceName(w.Branch)
 		}
 
-		err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
+		outcome, err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
 		if err == nil {
-			// The uploaded commits are the remote tip now, so the worktree is at it. A nil
-			// return also covers "already up to date", which implies the same thing — and a
-			// third case that does not: an unborn branch with nothing to push, where
-			// validatePushState returns zero/zero without having confirmed anything.
-			// branchExists is what separates them.
+			// A push that returns without an error is an OBSERVATION of the remote, on the
+			// connection it was opening anyway: the server took the ref update, the advertisement
+			// already showed the branch at our head, or it did not carry the branch at all. All
+			// three say where the branch is, so all three take trust — including the push that
+			// CREATED the branch, which the old branchExists guard (written by fetches alone)
+			// wrongly excluded.
 			//
 			// This must NOT clear worktreeDirty. An earlier write can have failed part-way
 			// through executePendingWrites and left staged changes behind while this write was
-			// retained; a successful push says where the remote is, and says nothing about that.
-			if branchExists, _, _ := w.GetBranchMetadata(); branchExists {
-				w.setBaseTrusted(true)
+			// retained; a successful push says where the remote is, and nothing about that.
+			w.setBaseTrusted(true)
+			// The half a fetch-only record could not carry: on an active branch the push is the
+			// event that MOVES the revision.
+			revision := ""
+			if !outcome.Head.IsZero() {
+				revision = outcome.Head.String()
 			}
+			observed := w.recordRemoteObservation(revision, ObservedByPush)
+			// Reported against the targets these writes were for, at no round trip: the
+			// connection has already been made.
+			w.reportRemoteObservation(pendingWriteTargets(pendingWrites), observed)
+			w.Log.V(1).Info("Remote observed by push",
+				"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
 			w.pushCycleRootBranch = ""
 			w.pushCycleRootHash = plumbing.ZeroHash
 			w.firsts.push.Do(func() {
@@ -2164,6 +2159,11 @@ const (
 	// fetchReasonContention is the reset onto the remote tip after a push was rejected because
 	// somebody else moved the branch. One confirmed rejection is exactly one of these.
 	fetchReasonContention = "contention"
+	// fetchReasonRefresh is the periodic top-up of an idle branch's view of the remote: the
+	// refresher found the branch somewhere other than the checkout and reset onto it. The
+	// advertisement that precedes it is NOT counted here, because this counter's documented
+	// meaning is every call that reads the remote through a SmartFetch.
+	fetchReasonRefresh = "refresh"
 	// fetchReasonPushFailureProbe is the fallback lookup after a push that failed WITHOUT the
 	// remote ever saying where the branch is — a dropped connection, an auth failure, a
 	// server-side refusal.
@@ -2193,9 +2193,10 @@ const (
 
 // Queue-drop kinds. The set covers every item that can be refused by a full queue.
 const (
-	queueDropWrite  = "write"
-	queueDropAttach = "attach"
-	queueDropResync = "resync"
+	queueDropWrite   = "write"
+	queueDropAttach  = "attach"
+	queueDropResync  = "resync"
+	queueDropRefresh = "refresh"
 )
 
 // commitLabels is the {author_kind, message_source} pair one commit is counted under.
@@ -2357,10 +2358,9 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha3.GitP
 // branch), so resolving per target is what makes the field mean what it says. Affordable because a
 // window is bound to one target already, so this is read once per window, not per event.
 //
-// Parsed here rather than at admission so an unparseable stored value degrades loudly to the
-// fallback instead of blocking the target. Negative parses to 0: the caller asked for near-zero
-// coalescing. An unreadable GitTarget also takes the fallback, since a missing target is no reason
-// to change how the events in hand are batched.
+// There is nothing to parse and nothing to reject: the field is a metav1.Duration behind a
+// duration pattern, so a malformed value never reaches storage. An unreadable GitTarget takes the
+// fallback, since a missing target is no reason to change how the events in hand are batched.
 func (w *BranchWorker) commitWindowFor(
 	ctx context.Context,
 	targetName, targetNamespace string,
@@ -2380,28 +2380,37 @@ func (w *BranchWorker) commitWindowFor(
 	if target.Spec.Commit == nil || target.Spec.Commit.Window == nil {
 		return fallback
 	}
-	raw := *target.Spec.Commit.Window
-	parsed, err := time.ParseDuration(raw)
-	if err != nil {
-		w.Log.Error(err, "Invalid spec.commit.window, using the default",
-			"gitTarget", targetNamespace+"/"+targetName, "value", raw)
-		return fallback
-	}
-	if parsed < 0 {
-		w.Log.Info("Negative spec.commit.window treated as 0",
-			"gitTarget", targetNamespace+"/"+targetName, "value", raw)
-		return 0
-	}
-	return parsed
+	return target.Spec.Commit.Window.Duration
 }
 
-// GetBranchMetadata returns current branch status without syncing.
-// This is primarily used for quick status checks without triggering Git operations.
-func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
-	w.metaMu.RLock()
-	defer w.metaMu.RUnlock()
-	return w.branchExists, w.lastCommitSHA, w.lastFetchTime
+// LastRemoteObservation returns what the worker last proved about the target branch, and whether
+// it has proved anything at all. It reads no repository and opens no connection.
+func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
+	observed := w.lastObservation.Load()
+	if observed == nil {
+		return RemoteObservation{}, false
+	}
+	return *observed, true
 }
+
+// recordRemoteObservation stores what a confirmed look at the remote learned.
+//
+// It is called from both producers — a fetch that reset onto the tip, and a push the server
+// accepted — because both prove the same kind of fact. An error path must NOT call it: a push
+// that died mid-upload or an advertisement that never arrived observed nothing, and recording a
+// guess there is how a stale revision reaches status.
+func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) RemoteObservation {
+	observed := RemoteObservation{Revision: revision, At: time.Now(), By: by}
+	w.lastObservation.Store(&observed)
+	// Something has now been proved about the repository the worker points at, so there is
+	// nothing left to take back.
+	w.observationWithdrawnState.Store(false)
+	return observed
+}
+
+// observationWithdrawn reports that the last observation was about a repository this worker no
+// longer points at, so anything published from it must be withdrawn rather than left standing.
+func (w *BranchWorker) observationWithdrawn() bool { return w.observationWithdrawnState.Load() }
 
 // syncWithRemote fetches latest changes from remote and resets onto them. It is the
 // no-retained-writes half of a refresh; resync_flush.go and invalidateAndRefresh are its callers.
@@ -2491,12 +2500,13 @@ func (w *BranchWorker) shouldReadRetainedLocalRepository(repoPath string) bool {
 
 // updateBranchMetadataFromPullReport updates metadata from a PullReport.
 func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
-	w.metaMu.Lock()
-	defer w.metaMu.Unlock()
-
-	w.branchExists = report.ExistsOnRemote
-	w.lastCommitSHA = report.HEAD.Sha
-	w.lastFetchTime = time.Now()
+	// A branch the remote does not have is recorded as an observation with no revision, which is
+	// the honest answer rather than a missing one: a git branch without a commit does not exist.
+	revision := ""
+	if report.ExistsOnRemote {
+		revision = report.HEAD.Sha
+	}
+	w.recordRemoteObservation(revision, ObservedByFetch)
 
 	// This is the ONE place trust can be gained by a fetch, because it is the one place a fetch
 	// is known to have been followed by a reset: every call site is a PrepareBranch or a
@@ -2540,11 +2550,13 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 
 // getAuthFromSecret is defined in helpers.go
 
-// SeedBaseTrustForTest marks the base trusted as of `at`. It exists so a test in another package
-// can build a worker in a known trust state; nothing in production calls it.
-func (w *BranchWorker) SeedBaseTrustForTest(at time.Time) {
+// SeedRemoteObservationForTest marks the base trusted and records an observation made at `at`. It
+// exists so a test in another package can build a worker in a known state; nothing in production
+// calls it.
+func (w *BranchWorker) SeedRemoteObservationForTest(revision string, at time.Time, by string) {
 	w.baseTrustedState.Store(true)
-	w.baseTrustedAt.Store(at.UnixNano())
+	observed := RemoteObservation{Revision: revision, At: at, By: ObservationSource(by)}
+	w.lastObservation.Store(&observed)
 }
 
 // BaseTrustedForTest exposes the flag to tests in another package.

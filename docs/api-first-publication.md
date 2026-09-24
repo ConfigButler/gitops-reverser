@@ -1,14 +1,31 @@
 # API-first publication: structure, stories, and timing
 
+**API-first, not API-only.** Anyone can still write to the branch. The Kubernetes API decides only
+what happens when both sides change the same object.
+
 GitOps Reverser treats changes persisted through the Kubernetes API as its normal input. It
 captures selected live objects, writes their desired state into Git, and publishes quickly while
 grouping bursts into useful commits. Another writer moving the remote branch is an expected
 exception: the worker fetches that new base and replays the writes it has not yet published.
 
-That ordering is a design decision. A remote request can take a second in a particular deployment;
-requiring a fetch before every push would charge every API edit for the less common case of a
-competing Git writer. The push already checks the remote branch, so a healthy worker can plan
-locally and spend its network budget on publication.
+**The short version.** A captured object, meaning the live resource as the watch saw it, is the
+complete desired content of the YAML document that holds it. When an API change and a Git change
+reach the same object, publication writes the API object over it, including the fields only Git
+changed; every other document keeps what Git says. There is no merge and no conflict state to
+clear, and a branch that someone else moved costs a replay within the three-attempt cycle.
+[Story 2](#story-2-another-writer-moves-the-remote-branch) walks that case, and the
+[deferred merge investigation](future/git-api-three-way-comparison.md) records what preserving both
+sides would require.
+
+**How the rest is arranged.** [The structures](#the-structures-and-their-responsibilities) name the
+moving parts once. Four stories then follow a single change each: a normal publication, a branch
+that moved underneath one, a save request, and an idle target. The timing sections after them are
+for tuning and debugging.
+
+Publishing before reading the branch is a design decision. A remote request can take a second in a
+particular deployment; requiring a fetch before every push would charge every API edit for the less
+common case of a competing Git writer. The push already checks the remote branch, so a healthy
+worker can plan locally and spend its network budget on publication.
 
 This guide describes the shipped behavior. The inbound Git push receiver remains a proposal: see
 [how to call the receiver](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it)
@@ -158,12 +175,16 @@ them is retried automatically, so it is worth knowing which one you are looking 
 | Gate | What it protects | What happens when it closes |
 | --- | --- | --- |
 | Sensitive-resource encryption | Secrets and configured sensitive types must never reach Git in plaintext | The write fails rather than falling back to plaintext. There is no opt-out |
-| Acceptance of the Git path | The target's folder must be content the writer can edit safely | The plan is refused and reported as `GitPathAccepted=False` on the `GitTarget`. A human changes the folder; the target re-checks roughly every ten seconds |
+| Acceptance of the Git path | The target's folder must be content the writer can edit safely | The plan is refused and reported as `GitPathAccepted=False` on the `GitTarget`. The target re-checks roughly every ten seconds; recovery requires an accepted resync after correcting the folder or live state |
 | Render fidelity | A target whose render-vs-live epoch is pending or divergent must not take live writes | Live events and atomic writes are dropped while the gate is closed. Resync stays allowed so it can measure and repair Git |
 
 A refusal is not a transient error and is not retried into success. It is the common reason a live
 edit never appears in Git while the worker looks healthy, so check the `GitTarget` conditions before
 the worker logs.
+
+[`spec.onRefusal: PushEmptyCommit`](bi-directional.md#choosing-speconrefusal) can request Git
+re-application for eligible refused edits. It leaves these gates in force, and publishing the
+empty commit does not establish that the live value was restored or the target recovered.
 
 Separately, a window whose finalize fails is **dropped**, not retried: its events are gone until
 the next resync re-derives them from the current live state. That is a deliberate choice, because
@@ -210,6 +231,16 @@ This is the consequence of API-first ownership: the captured API object drives t
 manifest edit. A Git-side change reaches the cluster through a separate reconciler such as Flux
 or Argo CD. Reverser does not apply Git to Kubernetes.
 
+The [deferred three-way comparison investigation](future/git-api-three-way-comparison.md) records
+the exact merge rules and the alternatives: timestamps, retained API contents, Git field
+differences, applier confirmation, and audit request intent. Implementation is deferred while
+development remains API-first.
+
+Kubernetes apply and field-ignore policies govern the other reconciliation direction. Ignoring
+replicas during apply can preserve an API scale change, but Reverser still captures the whole
+object, including an old image. The [Flux and Argo CD source review](facts/gitops-apply-and-field-ignore.md)
+explains why these policies help with field authority without providing a concurrent-edit merge.
+
 ### Three separate recovery questions
 
 The worker needs three pieces of state because a successful push cannot answer every question
@@ -234,8 +265,8 @@ the next cycle.
 
 A fourth piece of state is not a flag: the trust above is bound to the repository it was gained
 against. A `GitProvider` is repointed by deleting and recreating it, which does not restart the
-worker, so trust from the previous repository must not be carried into the new one — it would
-skip establishing the new checkout entirely.
+worker, so trust from the previous repository must not be carried into the new one. Carrying it
+forward would skip establishing the new checkout entirely.
 
 ## Story 3: save now, and know what reached Git
 
@@ -278,9 +309,13 @@ delay permits more collection time; it does not reserve an API transaction.
 
 ## Story 4: an idle target and a Git-side edit
 
-A healthy idle branch worker generates no Git traffic. Its commit and push timers are armed for
-work, and neither is a periodic remote poll. It can therefore retain an old view after a foreign
-push until a later publication, resync, or explicit recheck.
+A healthy idle branch worker generates no Git traffic of its own. Its commit and push timers are
+armed for work, and neither is a periodic remote poll. What does look is the refresher: on the
+target's reconcile tick, a branch nothing has proved within `--git-refresh-interval` (10m by
+default) costs one ref advertisement, and a fetch only if it has moved. That bounds how long an
+idle target can hold an old view after a foreign push; `--git-refresh-interval=0` removes the look
+and restores the old behaviour, where the view is corrected by a later publication, resync, or
+explicit recheck.
 
 The proposed inbound push receiver would notify the worker that its base needs refreshing. It
 would coalesce notifications, refresh on the worker, and replay any retained writes. It is useful
@@ -397,6 +432,7 @@ provider and branch so different workers do not hide one another's behavior.
 | Signal | Interpretation |
 | --- | --- |
 | `gitopsreverser_git_fetches_total`, reason `publication` | Base-establishment fetches; should stop increasing during healthy steady publication |
+| `gitopsreverser_git_fetches_total`, reason `refresh` | The periodic re-proof of an IDLE branch, counted only when the branch had moved and a fetch followed. A branch being published to never contributes: its pushes prove the remote already |
 | Same counter, reason `contention` | Fetch/reset after confirmed remote movement |
 | Same counter, reason `push_failure_probe` | Remote-state lookup after an unclassified push failure |
 | Same counter, reason `recovery` | Attempts to rebuild unsafe retained work or clean a dirty checkout |

@@ -260,14 +260,29 @@ type GitTargetSpec struct {
 
 // GitTargetCommitSpec configures how a GitTarget's writes become commits.
 type GitTargetCommitSpec struct {
-	// A string, not metav1.Duration: parsing happens at the write path, where an unparseable value
-	// falls back to the default loudly instead of blocking admission of the whole target.
+	// metav1.Duration with the markers below is the shape every duration in this API takes: a Go
+	// duration string, unit mandatory, rejected at admission, so nothing downstream has to decide
+	// what to do with a stored value it cannot parse.
+	//
+	// The unit set is Go's OWN, wider than Flux's pattern, because the accepted set has to be
+	// CLOSED UNDER SERIALIZATION: a typed client reads this field into a time.Duration and writes
+	// it back as Duration.String(), so a value the pattern admits but Go re-spells outside it
+	// could never be written again. "0.5ms" round-trips as "500µs", which Flux's pattern rejects.
+	//
+	// The CEL bound is not a policy about how long a window may be; it is what keeps the value
+	// PARSEABLE. The pattern cannot express magnitude, so "999999999h" matches it and then
+	// overflows time.ParseDuration — and one stored value that no typed client can decode breaks
+	// GET and LIST for the whole kind, taking the GitTarget informer down with it.
 
 	// Window is the rolling silence window used to coalesce this target's events into a single
-	// commit per author. The timer resets on every event arrival, and the commit is made after
-	// this much silence. "0s" opts into per-event commits. Omitted, it is "5s".
+	// commit per author, as a Go duration string ("5s", "750ms", "1m30s"). The timer resets on
+	// every event arrival, and the commit is made after this much silence. "0s" opts into
+	// per-event commits. At most "24h". Omitted, it is "5s".
 	// +optional
-	Window *string `json:"window,omitempty"`
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('24h')",message="spec.commit.window must be a Go duration of at most 24h"
+	Window *metav1.Duration `json:"window,omitempty"`
 
 	// Message configures how this target's commit messages are formatted. Omitted, or with any
 	// individual template left empty, the built-in templates are used.
@@ -383,6 +398,41 @@ type GitTargetStatus struct {
 	// condition carries the verdict.
 	// +optional
 	Placement *GitTargetPlacementStatus `json:"placement,omitempty"`
+
+	// Remote is where this target's branch is on the Git remote, and when that was last proved.
+	// It is renewed by every confirmed look: a successful push as well as a fetch. Absent means
+	// nothing has proved anything yet — either nothing has looked, or the GitProvider was
+	// recreated against a different repository and what was published no longer describes the
+	// one this target points at.
+	// +optional
+	Remote *GitTargetRemoteStatus `json:"remote,omitempty"`
+}
+
+// GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
+//
+// It is written whenever the revision changes — including one we pushed ourselves — and otherwise
+// only when the published timestamp is older than one refresh interval: the revision has to move
+// with the fact it dates.
+type GitTargetRemoteStatus struct {
+	// Revision is the commit the branch is at on the remote. EMPTY means the branch is not on
+	// the remote at all, which is not an error: a branch does not exist without a commit, and a
+	// target that has never written has nothing there yet.
+	// +optional
+	Revision string `json:"revision,omitempty"`
+
+	// LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
+	// which placement.resolvedAtRevision deliberately does not: that one dates the resolution, so
+	// an old value there means the layout has not changed rather than that nothing has looked.
+	// +optional
+	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
+
+	// VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
+	// this revision is our own work; `Fetch` means we went and looked, and this is what was
+	// there. A `Fetch` next to a revision no publication of yours produced is how a foreign push
+	// to the branch is read off kubectl.
+	// +optional
+	// +kubebuilder:validation:Enum=Push;Fetch
+	VerifiedBy string `json:"verifiedBy,omitempty"`
 }
 
 // Two rules for anything added here. A field earns its place only if a reader cannot get it from
@@ -517,6 +567,7 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=`.spec.suspend`,priority=1
+// +kubebuilder:printcolumn:name="Verified",type=date,JSONPath=`.status.remote.lastVerifiedAt`,priority=1
 // +kubebuilder:printcolumn:name="Layout",type=string,JSONPath=`.status.placement.mode`,priority=1
 // +kubebuilder:printcolumn:name="RenderRoot",type=string,JSONPath=`.status.placement.renderRoot`,priority=1
 // +kubebuilder:printcolumn:name="LayoutResolved",type=string,JSONPath=`.status.conditions[?(@.type=="LayoutResolved")].reason`,priority=1

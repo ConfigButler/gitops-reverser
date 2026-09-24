@@ -121,7 +121,7 @@ The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespa
 |---|---|---|
 | `gitTargetRef` | **required** | The target whose open window to close |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
-| `closeDelaySeconds` | `2` | How long to wait for pending events. See [sizing `closeDelaySeconds`](#sizing-closedelayseconds) |
+| `closeDelay` | `2s` | How long to wait for pending events, as a Go duration string. See [sizing `closeDelay`](#sizing-closedelay) |
 
 <!-- END GENERATED: settings-index -->
 
@@ -654,9 +654,15 @@ targets split a burst. Atomic writes, buffer limits, shutdown, and request final
 the inactivity window early. Push cooldown is independent: `0s` does not promise an immediate
 remote push. See the [complete trigger rules](spec/commit-window-refactor.md).
 
-An unparseable or negative value is rejected on the object (`Validated=False`, reason
-`InvalidConfig`). A value already stored before that check falls back to the `5s` default at the
-write rather than stopping the mirror.
+The value is a **Go duration string with a mandatory unit**, at most `24h`, checked by the API
+server: `"750ms"`, `"1.5m"` and `"1m30s"` are accepted, while `"30"`, `".5s"`, `"5 seconds"` and
+`"-1s"` are refused at admission with the field named. Nothing downstream re-checks it, because a
+malformed value can no longer be stored.
+
+The units are Go's own (`ns`, `us`/`µs`, `ms`, `s`, `m`, `h`) rather than the shorter set Flux
+allows, so that every accepted value survives being read and written back by a client: `"0.5ms"`
+is re-serialized as `"500µs"`, and a value that cannot be rewritten is one no controller could
+ever update.
 
 #### Commit message templates
 
@@ -798,13 +804,87 @@ unaffected: they are edited where they already live. The fix is to point the tar
 `apps/checkout/overlays/prod`, and declare the other environments as their own `GitTarget` objects:
 one target is one environment is one write partition.
 
+### Where the branch is, and when that was last proved (`status.remote`)
+
+`status.remote` is what the target last **proved** about its branch on the Git remote. Like
+`status.placement` it is an observation rather than a record of work, so it is there before the
+target has written anything:
+
+```yaml
+status:
+  remote:
+    revision: 4f2c1ab9e0...             # empty = the branch is not on the remote
+    lastVerifiedAt: "2026-09-23T10:14:02Z"
+    verifiedBy: Push                    # Push | Fetch
+```
+
+- `revision` is where the branch is. Empty means the branch is not on the remote at all, which is
+  not an error: a branch does not exist without a commit.
+- `lastVerifiedAt` answers **"has anything looked"**, which is the question
+  `placement.resolvedAtRevision` deliberately does not: that one dates the resolution, so an old
+  value there means the folder's shape has been stable.
+- `verifiedBy` says what proved it. `Push` means the server accepted a ref update of ours, so this
+  revision is Reverser's own work. `Fetch` means it went and looked, and this is what was there.
+  A `Fetch` beside a revision none of your publications produced is how a **foreign push** to the
+  branch is read off `kubectl`.
+
+`kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.
+
+Two things renew it. A **push** does, for free: the push session reads the remote's advertisement
+and the server names the hash it accepted, on the connection the push was making anyway. So a
+target that is publishing never needs anything else, and its revision moves with each push rather
+than lagging an interval behind. An **idle** target is asked to re-prove it on its reconcile tick;
+see [`--git-refresh-interval`](#keeping-an-idle-target-fresh---git-refresh-interval) below.
+
+`GitProvider.status.lastVerifiedAt` is the same word for the connection rather than the branch:
+when the credential and the repository were last proved together. It is never cleared, so
+`Ready=False` beside it reads as "broken for this long".
+
+### Keeping an idle target fresh (`--git-refresh-interval`)
+
+A target that is writing keeps its own view of Git current. One that has gone quiet used to hold
+its previous answer indefinitely, because it is converged and its periodic passes publish status
+without touching Git, until somebody annotated it or it wrote again.
+
+`--git-refresh-interval` (Helm: `controllerManager.gitRefreshInterval`, default `10m`) bounds that.
+On the target's reconcile tick, a branch whose last observation is older than the interval is
+re-proved:
+
+| Target state | What it costs |
+| --- | --- |
+| Actively writing | **Nothing, ever.** Each cycle ends in a push that reads the advertisement, so no refresh is scheduled |
+| Refused | Nothing. It is not converged, so it already re-reads every ten seconds |
+| Healthy and idle | **One ref advertisement per interval**, plus a fetch only on the intervals where the branch had actually moved |
+
+What a refresh may do is bounded on purpose. It republishes `status.remote`, and re-reads the
+folder and republishes `status.placement` when the branch moved. It does **not** re-run the
+acceptance gate, so it neither raises nor clears `GitPathAccepted`, and it never plans, commits or
+pushes anything. A fresh look at Git changes what you read and nothing else.
+
+Set `0` to turn it off. Reverser then holds no timer against your Git host at all and an idle
+target generates no Git traffic; `status.remote` still works, because pushes still renew it. The
+effective granularity is the 5-minute control-plane reconcile, so a value below that means "every
+tick". [`gitopsreverser_git_fetches_total{reason="refresh"}`](interpreting-metrics.md#reading-git_fetches_total)
+is what it costs.
+
+Reverser still does not **act** on what a refresh reads: applying a Git-side change is the GitOps
+reconciler's job. And it is not a latency mechanism: it buys bounded staleness with no inbound
+surface and no Git-host configuration. Seconds-fresh is
+[the inbound receiver's job](design/push-notification-and-reconcile-trigger.md).
+
 ### Reverting a refused edit (`spec.onRefusal`)
 
-A live edit can be refused: the acceptance gate or a write-boundary check decides it has no legal
-destination in the folder, nothing is committed, and `GitPathAccepted` goes `False`. The edit stays
-in the cluster. Nothing reverts it, because reverting is the reconciler's job and the reconciler has
-no reason to act: with Argo CD `selfHeal` off it holds the Application `OutOfSync`, and Flux
-corrects it only on its next apply interval, which a long interval leaves hours away.
+`spec.onRefusal` chooses whether an eligible refused edit should request Git re-application.
+`Ignore`, the default, records the refusal without moving the branch. Choose `PushEmptyCommit`
+when restoring Git state takes priority over preserving unpublished live edits. The
+[bi-directional guide](bi-directional.md#choosing-speconrefusal) explains when to enable it and how
+one refused edit can cause an allowed edit to be lost.
+
+A refusal means the acceptance gate or a write-boundary check found no legal destination for the
+write. Nothing is committed for that write, and `GitPathAccepted` goes `False`. The live edit stays
+until something corrects it. With Argo CD `selfHeal` off, refreshing an already-synced revision
+does not restore it; an explicit sync or a new revision can. Flux corrects drift on its next apply,
+which can follow its interval, a new source revision, or another reconcile trigger.
 
 ```yaml
 spec:
@@ -812,10 +892,15 @@ spec:
   onRefusal: PushEmptyCommit   # default: Ignore
 ```
 
-`PushEmptyCommit` pushes a commit that changes no file. That moves the branch, and a new revision is
-all either reconciler needs: Flux publishes a new artifact revision and re-applies, and Argo CD sees
-a revision it has not synced, so the skip that `selfHeal: false` installs does not apply and
-automated sync reverts the edit. The commit message says what was refused and why its diff is empty.
+`PushEmptyCommit` pushes a commit that changes no file. Flux can observe a new artifact revision
+and re-apply; Argo CD can sync an `OutOfSync` Application against a revision it has not synced, even
+with `selfHeal: false`. The commit message says what was refused and why its diff is empty.
+
+This is a request for restoration. It requires a successful push and a reconciler configured to
+observe and apply the new revision. Suspension, sync restrictions, or field-ignore settings can
+prevent restoration. The empty commit does not clear the refusal condition: recovery still
+requires a successful resync covering the refused scope. Re-applying Git can remove the offending
+difference, but it cannot repair an unsupported folder or give a field a writable destination.
 
 Reverser deliberately does not name the `Kustomization` or `Application` that renders the folder.
 Neither tool derives that mapping itself, so deriving it here to write into somebody else's object
@@ -843,6 +928,9 @@ decided per document, and a write that removes one anywhere in the same flush is
 | Blast radius | The commit wakes **everything** watching the branch, not the refused object alone, so it can hurry unrelated work including another target's pending prune |
 | Unpublished edits | An allowed edit still waiting in the commit window can be reverted along with the refused one |
 | Argo CD exception | An `Application` with `argocd.argoproj.io/manifest-generate-paths` ignores the commit, because no file under its refresh paths changed |
+
+Folder-level refusals, such as invalid YAML or unsupported content, do not trigger this action.
+They still require a correction to the folder.
 
 Three more guards. A suspended target never commits, because an empty commit is a write. A
 `GitTarget` that cannot be read is treated as `Ignore`, since missing evidence is not consent. And
@@ -1622,9 +1710,9 @@ The important fields are:
 
 - `spec.gitTargetRef.name`: target whose open window should be finalized
 - `spec.message`: optional literal commit message, preserved verbatim
-- `spec.closeDelaySeconds`: 0–300 second deadline offset from the worker's first receipt,
-  including time waiting for a matching window; repeated registration keeps the original deadline.
-  Defaults to `2`
+- `spec.closeDelay`: a Go duration string, at most `"5m"`, offsetting the deadline from the
+  worker's first receipt, including time waiting for a matching window; repeated registration keeps
+  the original deadline. Defaults to `"2s"`
 
 Example:
 
@@ -1641,7 +1729,7 @@ spec:
     fix(api): correct the service port
 
     Route traffic to the port exposed by the API container.
-  closeDelaySeconds: 2
+  closeDelay: "2s"
 ```
 
 The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
@@ -1654,13 +1742,13 @@ configure [`requestTemplate`](commit-messages.md#framing-a-save-message) on the 
 parsed as a template. A rejected request leaves automatic mirroring
 available. The submitter chooses any semantic prefix; free-form messages are accepted.
 
-### Sizing `closeDelaySeconds`
+### Sizing `closeDelay`
 
 The delay covers the gap between the API accepting a write and that write reaching the branch
 worker. A write is held in the watch path until its audit fact arrives, so the floor is the API
 server's `--audit-webhook-batch-max-wait` plus the attribution join (roughly 1 to 1.5 seconds at
-the reference configuration of `1s`). The default of `2` clears that with headroom to spare; a
-loaded or distant cluster may want `4` to `5`.
+the reference configuration of `1s`). The default of `"2s"` clears that with headroom to spare; a
+loaded or distant cluster may want `"4s"` to `"5s"`.
 
 Do not size the delay against `--author-attribution-grace`. When that grace expires with no fact
 the write still ships, as a window that names no actor, and a request naming a submitter can never
@@ -1669,8 +1757,8 @@ claim it: the outcome is `WindowMismatch` no matter how long the request waits.
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
 undershooting resolves the request `Ready=True` with reason `NoWindowInGrace` while the edit
 commits seconds later under the target's `liveTemplate`, which reads as a save button that did
-nothing. Setting `0` opts out of the wait entirely and is only useful when the window is known to
-be open already.
+nothing. Setting `"0s"` opts out of the wait entirely and is only useful when the window is known
+to be open already.
 
 A request attaches to at most one matching open window. Normal flush triggers may close it early;
 its message travels with that window. It cannot rename a finalized commit, including a local commit
@@ -1699,7 +1787,7 @@ terminal failures. `Ready=True` includes successful no-commit outcomes. Require 
   the worker replays onto the moved branch, and such a request resolves `Committed` instead. A
   worker that stops before the push fails the request rather than leaving it to time out.
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
-  request is finalizing or waiting through `closeDelaySeconds`; `Stalled=True` when the finalize failed
+  request is finalizing or waiting through `closeDelay`; `Stalled=True` when the finalize failed
   and needs attention (kstatus reports the object Failed).
 - **AuthorAttributed**: `True` with reason `AttributedFromAdmission` when the internal commands
   admission webhook captured the request submitter. `False` with reason `CommitterFallback` means capture

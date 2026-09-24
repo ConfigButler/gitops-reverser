@@ -86,6 +86,18 @@ controllerManager:
   # Bounds the open commit window plus the writes retained for replay until a push
   # succeeds; tripping it finalizes the window early, ignoring the commit cadence.
   branchBufferMaxSize: 8Mi
+  # How often an IDLE GitTarget re-proves where its branch is on the Git remote, as a duration.
+  # Set "0" to disable it.
+  #
+  # A target that is publishing pays nothing for this: its pushes already prove where the branch
+  # is, so it never schedules a refresh. An idle branch pays one ref advertisement per interval,
+  # and a fetch only on the intervals where the branch actually moved. What it buys is
+  # status.remote staying true on a target nobody is writing to, and a folder somebody changed in
+  # Git being noticed without an operator asking for it.
+  #
+  # The effective granularity is the 5-minute control-plane reconcile, so a value below that means
+  # "every tick". gitopsreverser_git_fetches_total{reason="refresh"} is what it costs.
+  gitRefreshInterval: 10m
 
 # cert-manager issuer shared by every certificate the chart mints. One self-signed CA
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server

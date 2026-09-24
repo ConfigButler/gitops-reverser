@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
 	. "github.com/onsi/ginkgo/v2"
@@ -11,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -88,7 +88,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 				Branch:         "main",
 				Path:           "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
-					Window: ptr.To("30s"),
+					Window: &metav1.Duration{Duration: 30 * time.Second},
 					Message: &configbutleraiv1alpha3.CommitMessageSpec{
 						LiveTemplate: "chore(mirror): {{ .Count }}",
 					},
@@ -102,7 +102,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		Expect(k8sClient.Get(ctx,
 			types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, &storedTarget)).To(Succeed())
 		Expect(storedTarget.Spec.Commit).NotTo(BeNil(), "spec.commit must round-trip, not be pruned")
-		Expect(*storedTarget.Spec.Commit.Window).To(Equal("30s"))
+		Expect(storedTarget.Spec.Commit.Window.Duration).To(Equal(30 * time.Second))
 		Expect(storedTarget.Spec.Commit.Message.LiveTemplate).To(Equal("chore(mirror): {{ .Count }}"))
 	})
 

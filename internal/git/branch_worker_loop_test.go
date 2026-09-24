@@ -18,12 +18,15 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
+// A negative or malformed window has no case here on purpose: the field is a metav1.Duration
+// behind a duration pattern, so neither can be stored, and the API-server side of that is pinned
+// by the admission specs in internal/controller.
 func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
-	target := func(name string, window *string) *configv1alpha3.GitTarget {
+	target := func(name string, window *metav1.Duration) *configv1alpha3.GitTarget {
 		spec := configv1alpha3.GitTargetSpec{
 			GitProviderRef: meta.LocalObjectReference{Name: "p"},
 			Branch:         "main",
@@ -40,10 +43,8 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		target("unset", nil),
-		target("quarter", ptrString("250ms")),
-		target("zero", ptrString("0s")),
-		target("negative", ptrString("-2s")),
-		target("garbage", ptrString("not-a-duration")),
+		target("quarter", &metav1.Duration{Duration: 250 * time.Millisecond}),
+		target("zero", &metav1.Duration{Duration: 0}),
 	).Build()
 	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{})
 	ctx := t.Context()
@@ -57,8 +58,6 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 		{"unset", "unset", DefaultCommitWindow, "a target that declares no window takes the default"},
 		{"explicit", "quarter", 250 * time.Millisecond, "an explicit window is honored"},
 		{"zero", "zero", 0, `"0s" opts into per-event commits`},
-		{"negative", "negative", 0, "a negative window is treated as 0, not as the default"},
-		{"garbage", "garbage", DefaultCommitWindow, "a parse error falls back to the default"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, w.commitWindowFor(ctx, tc.target, "ns", DefaultCommitWindow), tc.why)
@@ -230,5 +229,3 @@ func TestBranchWorker_QueueDepthBoundsAcceptedWrites(t *testing.T) {
 	assert.Equal(t, int64(depth), w.inflightItems.Load(),
 		"a dropped write must not be counted in flight")
 }
-
-func ptrString(s string) *string { return &s }

@@ -107,6 +107,7 @@ spec:
             {{- end }}
             - --branch-worker-queue-depth={{ int .Values.controllerManager.branchWorkerQueueDepth }}
             - --branch-buffer-max-size={{ .Values.controllerManager.branchBufferMaxSize }}
+            - --git-refresh-interval={{ .Values.controllerManager.gitRefreshInterval }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}

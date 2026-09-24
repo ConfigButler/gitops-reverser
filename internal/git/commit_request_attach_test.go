@@ -37,7 +37,7 @@ func serviceAttach(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
 	loop.serviceCommitRequests()
 }
 
-func attachReq(author string, closeDelaySeconds int32) *AttachCommitRequest {
+func attachReq(author string, closeDelay time.Duration) *AttachCommitRequest {
 	return &AttachCommitRequest{
 		Namespace:          "default",
 		Name:               crName,
@@ -45,7 +45,7 @@ func attachReq(author string, closeDelaySeconds int32) *AttachCommitRequest {
 		Author:             author,
 		GitTargetName:      crTarget,
 		GitTargetNamespace: "default",
-		CloseDelaySeconds:  closeDelaySeconds,
+		CloseDelay:         closeDelay,
 	}
 }
 
@@ -91,7 +91,7 @@ func TestEnqueueAttach_Nil(t *testing.T) {
 	assert.Empty(t, w.eventQueue)
 }
 
-// TestAttach_NoOpenWindow verifies an attach (closeDelaySeconds 0) with nothing pending
+// TestAttach_NoOpenWindow verifies an attach (closeDelay 0) with nothing pending
 // resolves NoOpenWindow — the author pressed save with no edits, not an error.
 func TestAttach_NoOpenWindow(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
@@ -197,7 +197,7 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 	defer loop.stopTimers()
 
 	// Attach first, with a non-zero grace, before any window exists.
-	req := attachReq("alice", 60)
+	req := attachReq("alice", 60*time.Second)
 	req.Message = "bundle save"
 	serviceAttach(loop, req)
 	_, resolved := outcome(t, worker)
@@ -241,7 +241,7 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	}})
 	require.NotNil(t, loop.openWindow)
 
-	serviceAttach(loop, attachReq("bob", 60)) // bob, not alice
+	serviceAttach(loop, attachReq("bob", 60*time.Second)) // bob, not alice
 	require.Nil(t, loop.openWindow.pendingCR, "bob's attach must not claim alice's window")
 
 	forceDue(loop)
@@ -267,7 +267,7 @@ func TestAttach_NoWindowAtAllIsNotAMismatch(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	serviceAttach(loop, attachReq("bob", 60))
+	serviceAttach(loop, attachReq("bob", 60*time.Second))
 	require.Nil(t, loop.openWindow, "precondition: nothing is open")
 
 	forceDue(loop)
@@ -298,7 +298,7 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 	}})
 	require.NotNil(t, loop.openWindow)
 
-	serviceAttach(loop, attachReq("bob", 60))
+	serviceAttach(loop, attachReq("bob", 60*time.Second))
 
 	// Alice's window is finalized on its own account, long before bob's grace elapses.
 	loop.finalizeOpenWindowWithReason(windowFinalizeReasonTimer)
@@ -332,11 +332,11 @@ func TestAttach_ClaimedSameAuthorWindowIsNotAMismatch(t *testing.T) {
 	require.NotNil(t, loop.openWindow)
 
 	// Alice's first save claims the window; her second one has to wait for the next.
-	first := attachReq("alice", 60)
+	first := attachReq("alice", 60*time.Second)
 	serviceAttach(loop, first)
 	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the window is claimed")
 
-	second := attachReq("alice", 60)
+	second := attachReq("alice", 60*time.Second)
 	second.Name = "save-second"
 	second.UID = "uid-save-second"
 	serviceAttach(loop, second)
@@ -361,7 +361,7 @@ func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
 	defer loop.stopTimers()
 
 	// Bob parks with nothing open, and his grace runs out before anyone else starts work.
-	serviceAttach(loop, attachReq("bob", 60))
+	serviceAttach(loop, attachReq("bob", 60*time.Second))
 	require.Nil(t, loop.openWindow, "precondition: nothing was open during bob's grace")
 	forceDue(loop)
 
@@ -391,12 +391,12 @@ func TestAttach_IdempotentReSendKeepsFirstDeadline(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	serviceAttach(loop, attachReq("alice", 60))
+	serviceAttach(loop, attachReq("alice", 60*time.Second))
 	id := commitRequestID{Namespace: "default", Name: "save", UID: "uid-save"}
 	require.Contains(t, loop.pendingCRs, id)
 	firstDeadline := loop.pendingCRs[id].finalizeAt
 
-	serviceAttach(loop, attachReq("alice", 300)) // larger grace, re-send
+	serviceAttach(loop, attachReq("alice", 300*time.Second)) // larger grace, re-send
 	require.Len(t, loop.pendingCRs, 1, "a re-send must not duplicate the registration")
 	assert.Equal(t, firstDeadline, loop.pendingCRs[id].finalizeAt, "the first deadline must be kept")
 }
@@ -494,7 +494,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	loop.lastPushAt = time.Now()
 
 	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
-	// finalize it (closeDelaySeconds 0).
+	// finalize it (closeDelay 0).
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:     []Event{configMapTargetEvent("present", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
@@ -554,7 +554,7 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 	// Attach with a distinctive message and a long grace, so the window is Attached
 	// but its finalize deadline has not fired.
 	const message = "save: intent must survive a resync"
-	req := attachReq("alice", 300)
+	req := attachReq("alice", 300*time.Second)
 	req.Message = message
 	serviceAttach(loop, req)
 	require.NotNil(t, loop.openWindow.pendingCR, "the window must be attached")
@@ -842,8 +842,8 @@ func TestAttach_ReSentAttachDuringAFailedPushDoesNotResolve(t *testing.T) {
 	pushAtomicFn = func(
 		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
 		_ plumbing.ReferenceName, _ []gitclient.Option,
-	) error {
-		return errors.New("dial tcp: connection reset by peer")
+	) (PushOutcome, error) {
+		return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
 	}
 	defer func() { pushAtomicFn = originalPush }()
 
@@ -925,8 +925,8 @@ func TestAttach_ShutdownFailsACommittedRequestThatNeverPushed(t *testing.T) {
 	pushAtomicFn = func(
 		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
 		_ plumbing.ReferenceName, _ []gitclient.Option,
-	) error {
-		return errors.New("dial tcp: connection reset by peer")
+	) (PushOutcome, error) {
+		return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
 	}
 	defer func() { pushAtomicFn = originalPush }()
 

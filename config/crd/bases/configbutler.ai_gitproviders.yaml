@@ -28,6 +28,10 @@ spec:
       name: Status
       priority: 1
       type: string
+    - jsonPath: .status.lastVerifiedAt
+      name: Verified
+      priority: 1
+      type: date
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -232,6 +236,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastVerifiedAt:
+                description: |-
+                  LastVerifiedAt is when the credential and the repository were last proved together: the
+                  connectivity check listed the remote's refs with this provider's credential and the remote
+                  answered. It is never cleared — a failure is already carried by Ready=False with a reason —
+                  so the pair "not ready, last verified 11 minutes ago" says how long the connection has been
+                  broken, which is the sentence an operator otherwise has to infer.
+
+                  The check runs on the steady reconcile interval, so a provider's resourceVersion moves at
+                  that cadence. Providers are few and the check was already running; this adds no request.
+                format: date-time
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.

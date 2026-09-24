@@ -29,8 +29,10 @@ func TestAtomicPush_PushOnEmpty(t *testing.T) {
 
 	// New branch in empty repo, so rootHash is plumbing.ZeroHash (let's also include the assumption that we merge to main, so that we can detect if it 'updated')
 	branch := plumbing.NewBranchReferenceName("main")
-	err := PushAtomic(ctx, localRepo, plumbing.ZeroHash, branch, nil)
+	outcome, err := PushAtomic(ctx, localRepo, plumbing.ZeroHash, branch, nil)
 	require.NoError(t, err)
+	assert.Equal(t, PushAccepted, outcome.Kind)
+	assert.Equal(t, createdHash, outcome.Head, "an accepted push names the hash the server took")
 
 	// Verify branch exists on server
 	ref, err := remoteRepo.Reference(branch, true)
@@ -55,8 +57,10 @@ func TestAtomicPush_PushToMain(t *testing.T) {
 	createdCommit := commitFileChange(t, worktree, localPath, "README.md", "This is cool")
 
 	branch := plumbing.NewBranchReferenceName("main")
-	err := PushAtomic(ctx, localRepo, firstCommit, branch, nil)
+	outcome, err := PushAtomic(ctx, localRepo, firstCommit, branch, nil)
 	require.NoError(t, err)
+	assert.Equal(t, PushAccepted, outcome.Kind)
+	assert.Equal(t, createdCommit, outcome.Head)
 
 	// Verify branch exists on server
 	ref, err := remoteRepo.Reference(branch, true)
@@ -83,8 +87,10 @@ func TestAtomicPush_PushToOther(t *testing.T) {
 	// Now we expect this to error out
 	rootBranch := plumbing.NewBranchReferenceName("main")
 	featureBranch := plumbing.NewBranchReferenceName("feature")
-	err := PushAtomic(ctx, localRepo, firstCommit, rootBranch, nil)
+	outcome, err := PushAtomic(ctx, localRepo, firstCommit, rootBranch, nil)
 	require.NoError(t, err)
+	assert.Equal(t, PushAccepted, outcome.Kind)
+	assert.Equal(t, createdCommit, outcome.Head)
 	ref, err := remoteRepo.Reference(featureBranch, true)
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
@@ -115,8 +121,9 @@ func TestAtomicPush_DetectsMissingBranch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now we epxect this to error out
-	err = PushAtomic(ctx, localRepo, featureCommit, featureBranch, nil)
+	outcome, err := PushAtomic(ctx, localRepo, featureCommit, featureBranch, nil)
 	require.Error(t, err)
+	assert.Empty(t, outcome.Kind, "an error means nothing was observed")
 	assert.Contains(t, err.Error(), "remote went missing")
 }
 
@@ -139,7 +146,8 @@ func TestAtomicPush_DetectsUpdatedRemote(t *testing.T) {
 	simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "Another change on remote!")
 
 	// Now we expect this to error out
-	err := PushAtomic(ctx, localRepo, firstCommit, "refs/heads/main", nil)
+	outcome, err := PushAtomic(ctx, localRepo, firstCommit, "refs/heads/main", nil)
 	require.Error(t, err)
+	assert.Empty(t, outcome.Kind, "an error means nothing was observed")
 	assert.Contains(t, err.Error(), "remote received unknown updates")
 }

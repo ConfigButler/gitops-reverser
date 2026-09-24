@@ -231,9 +231,8 @@ func adoLiveSeed(tb testing.TB, target adoLiveTarget, branch string) {
 		"# scratch repository for the gitops-reverser live Azure DevOps test\n",
 		"test: seed the live Azure DevOps scratch repository")
 
-	require.NoError(tb,
-		PushAtomic(ctx, repo, plumbing.ZeroHash, plumbing.NewBranchReferenceName(branch), target.Auth),
-		"creating the first branch on an empty ADO repository must succeed")
+	_, err := PushAtomic(ctx, repo, plumbing.ZeroHash, plumbing.NewBranchReferenceName(branch), target.Auth)
+	require.NoError(tb, err, "creating the first branch on an empty ADO repository must succeed")
 	tb.Logf("seeded %q with a first commit", branch)
 }
 
@@ -262,9 +261,8 @@ func adoLivePushBranch(
 	adoLiveWriteAndCommit(tb, repo, root.Filesystem().Root(),
 		"reverser-live-test.yaml", fmt.Sprintf("# %s at %s\n", message, time.Now().UTC()), message)
 
-	require.NoError(tb,
-		PushAtomic(ctx, repo, rootHash.Hash(), plumbing.NewBranchReferenceName(defaultBranch), target.Auth),
-		"receive-pack has no multi_ack, so the push must succeed")
+	_, err = PushAtomic(ctx, repo, rootHash.Hash(), plumbing.NewBranchReferenceName(defaultBranch), target.Auth)
+	require.NoError(tb, err, "receive-pack has no multi_ack, so the push must succeed")
 	tb.Logf("pushed branch %q", newBranch)
 
 	return rootHash.Hash()
@@ -290,8 +288,8 @@ func adoLiveCommitAndPush(
 	newHash := adoLiveWriteAndCommit(tb, repo, worktree.Filesystem().Root(),
 		"reverser-live-test.yaml", fmt.Sprintf("# %s at %s\n", message, time.Now().UTC()), message)
 
-	require.NoError(tb,
-		PushAtomic(ctx, repo, rootRef.Hash(), plumbing.NewBranchReferenceName(defaultBranch), target.Auth))
+	_, err = PushAtomic(ctx, repo, rootRef.Hash(), plumbing.NewBranchReferenceName(defaultBranch), target.Auth)
+	require.NoError(tb, err)
 	tb.Logf("advanced %q to %s", defaultBranch, newHash)
 
 	return newHash
