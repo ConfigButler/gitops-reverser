@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -285,4 +286,141 @@ func readFile(t *testing.T, path string) string {
 	raw, err := os.ReadFile(path) // #nosec G304 -- a path this test just created
 	require.NoError(t, err)
 	return string(raw)
+}
+
+// TestRun_CheckPassesAgainstTheCommittedTable wires the whole tool together the way the lint gate
+// does: read fields.yaml, read every CRD, render, and compare against what is committed in
+// docs/configuration.md. It fails when the table has drifted from the API — which is the tool's
+// entire purpose — and it fails here, in `task test`, rather than only in `task lint`.
+func TestRun_CheckPassesAgainstTheCommittedTable(t *testing.T) {
+	t.Chdir(repoRoot(t))
+
+	require.NoError(t, run(true),
+		"the generated settings index is out of date; run `go run ./hack/crdfields`")
+}
+
+// TestRun_RewriteIsIdempotent is the other mode. Rewriting an up-to-date document must leave it
+// byte-for-byte alone: a generator that churns its own output turns every unrelated PR into a
+// diff on docs/configuration.md.
+func TestRun_RewriteIsIdempotent(t *testing.T) {
+	root := repoRoot(t)
+	t.Chdir(root)
+
+	before, err := os.ReadFile(targetFile)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.WriteFile(targetFile, before, 0o600)) })
+
+	require.NoError(t, run(false))
+
+	after, err := os.ReadFile(targetFile)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "a rewrite of an up-to-date table changes nothing")
+}
+
+// TestRun_ReportsAMissingInputRatherThanPanicking. The tool runs from the repository root; run
+// from anywhere else it has to name the file it could not read, because "no such file" with no
+// path is the least useful thing a build gate can say.
+func TestRun_ReportsAMissingInputRatherThanPanicking(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	err := run(true)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fieldsFile)
+}
+
+// repoRoot walks up from the test's own directory to the module root, so the tool's fixed
+// relative paths resolve the same way they do for `go run ./hack/crdfields`.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	for range 8 {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	t.Fatal("go.mod not found above the test's working directory")
+	return ""
+}
+
+// TestRender_RefusesAKindNoCRDDefines catches an entry left behind after a kind was renamed or
+// removed: the table would describe settings that no longer exist anywhere.
+func TestRender_RefusesAKindNoCRDDefines(t *testing.T) {
+	index := &indexDoc{Kinds: []kindDoc{{Kind: "Ghost", Title: "Ghost"}}}
+
+	_, err := render(index, map[string]*schema{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Ghost: no CRD defines this kind")
+}
+
+// TestRender_RefusesACRDKindNobodyDescribes is the other direction, and the one a walk driven by
+// fields.yaml would never reach on its own: a whole new kind shipping with no index entry at all.
+func TestRender_RefusesACRDKindNobodyDescribes(t *testing.T) {
+	index := &indexDoc{Kinds: []kindDoc{{
+		Kind:   "GitTarget",
+		Title:  "GitTarget",
+		Fields: gitTargetFixtureFields(),
+	}}}
+	schemas := map[string]*schema{"GitTarget": specSchema(t), "Newcomer": specSchema(t)}
+
+	_, err := render(index, schemas)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Newcomer: a CRD defines this kind and "+fieldsFile+" does not describe it")
+}
+
+// TestRender_RefusesAFieldTheSchemaDoesNotHave is the renderKind half of the gate: a described
+// field that has been removed from the API produces a row with nothing behind it, so the run
+// fails instead of printing one.
+func TestRender_RefusesAFieldTheSchemaDoesNotHave(t *testing.T) {
+	index := &indexDoc{Kinds: []kindDoc{{
+		Kind:  "GitTarget",
+		Title: "GitTarget",
+		Fields: append(gitTargetFixtureFields(),
+			fieldDoc{Path: "departed", Doc: "a field that was removed"}),
+	}}}
+
+	_, err := render(index, map[string]*schema{"GitTarget": specSchema(t)})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GitTarget.departed")
+}
+
+// TestRender_WritesThePreambleAndOneSectionPerKind is the happy path of the assembly itself: what
+// the two halves produce together, in the order the document expects them.
+func TestRender_WritesThePreambleAndOneSectionPerKind(t *testing.T) {
+	index := &indexDoc{
+		Preamble: "Every setting, from the CRDs.",
+		Kinds: []kindDoc{{
+			Kind:   "GitTarget",
+			Title:  "GitTarget",
+			Intro:  "Where writes go.",
+			Outro:  "See the guide for the rest.",
+			Fields: gitTargetFixtureFields(),
+		}},
+	}
+
+	out, err := render(index, map[string]*schema{"GitTarget": specSchema(t)})
+
+	require.NoError(t, err)
+	assert.Contains(t, out, "Every setting, from the CRDs.")
+	assert.Contains(t, out, "### GitTarget")
+	assert.Contains(t, out, "Where writes go.")
+	assert.Contains(t, out, "| `branch` | **required** | the branch |")
+	assert.NotContains(t, out, "`suspend`", "a skipped field stays out of the table")
+	assert.Contains(t, out, "See the guide for the rest.")
+}
+
+// gitTargetFixtureFields describes every top-level property of targetLike, which is what the
+// coverage half of the gate requires before it will render anything at all.
+func gitTargetFixtureFields() []fieldDoc {
+	return []fieldDoc{
+		{Path: "branch", Doc: "the branch"},
+		{Path: "suspend", Skip: "covered above"},
+		{Path: "commit", Doc: "commit settings"},
+		{Path: "rules", Doc: "what to mirror"},
+	}
 }
