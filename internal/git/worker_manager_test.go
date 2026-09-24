@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -406,6 +407,7 @@ func TestRemoveWorkers_IgnoresAKeyThatNamesNoWorker(t *testing.T) {
 // half survives a restart, so a cluster that creates and deletes targets accumulates checkouts
 // until somebody notices the disk.
 func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
 	scheme := setupScheme()
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -425,7 +427,6 @@ func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
 	checkout := worker.repoPathForRemote("https://example.invalid/repo.git")
 	require.NoError(t, os.MkdirAll(checkout, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(checkout, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
-	t.Cleanup(func() { _ = os.RemoveAll(worker.repoRootPath()) })
 
 	require.NoError(t, k8sClient.Delete(ctx, targetForRegister("target1")))
 	require.NoError(t, manager.ReconcileWorkers(ctx))
@@ -439,12 +440,43 @@ func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
 // Deleting that would take out the live workers beside it, which is a far worse outcome than the
 // leak this reclaims.
 func TestRemoveLocalState_RefusesAWorkerWithNoIdentity(t *testing.T) {
-	root := (&BranchWorker{Log: logr.Discard()}).repoRootPath()
-	require.NoError(t, os.MkdirAll(root, 0o750))
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	root := withTemporaryWorkerStateRoot(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "someone-elses-state"), 0o750))
 
 	(&BranchWorker{Log: logr.Discard()}).removeLocalState()
 
-	_, err := os.Stat(root)
+	_, err := os.Stat(filepath.Join(root, "someone-elses-state"))
 	assert.NoError(t, err, "a worker with no identity must never delete the shared root")
+}
+
+// TestBranchPathComponent_KeepsOneBranchOutOfAnothersDirectory. Git branch names contain slashes,
+// so joining one into a path made `release/v1`'s worker a child of `release`'s — and once a
+// retired worker deletes its directory, retiring `release` would take the live worker's checkout
+// with it.
+func TestBranchPathComponent_KeepsOneBranchOutOfAnothersDirectory(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
+	parent := &BranchWorker{GitProviderNamespace: "shop", GitProviderRef: "repo1", Branch: "release"}
+	child := &BranchWorker{GitProviderNamespace: "shop", GitProviderRef: "repo1", Branch: "release/v1"}
+
+	assert.NotContains(t, child.repoRootPath(), filepath.Dir(parent.repoRootPath())+string(filepath.Separator)+"repos",
+		"one branch's tree must not sit inside another's")
+	rel, err := filepath.Rel(filepath.Dir(parent.repoRootPath()), child.repoRootPath())
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(rel, ".."), "release/v1 must not be reachable from inside release")
+
+	// And names that sanitising alone would collapse stay apart.
+	lookalike := &BranchWorker{GitProviderNamespace: "shop", GitProviderRef: "repo1", Branch: "release-v1"}
+	assert.NotEqual(t, child.repoRootPath(), lookalike.repoRootPath())
+}
+
+// withTemporaryWorkerStateRoot points every worker's on-disk state at this test's own directory,
+// so a test that DELETES worker state cannot reach the shared root — where another test's
+// fixtures, or a developer's running operator, keep theirs.
+func withTemporaryWorkerStateRoot(t *testing.T) string {
+	t.Helper()
+	previous := workerStateRoot
+	root := t.TempDir()
+	workerStateRoot = root
+	t.Cleanup(func() { workerStateRoot = previous })
+	return root
 }

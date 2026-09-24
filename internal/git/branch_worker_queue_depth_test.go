@@ -145,3 +145,58 @@ func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
 		t.Fatal("the replacement never started after its predecessor stopped")
 	}
 }
+
+// A sweep must not stop a worker EnsureWorker has just handed to a caller.
+//
+// ReconcileWorkers chooses its orphans from the map and then removes them. If EnsureWorker can run
+// between those two steps it finds the key present, returns "already there" without creating
+// anything, and the sweep then stops the worker that GitTarget was just told it has — leaving it
+// with no worker until its next reconcile, and its live events failing to route in the meantime.
+// Holding lifecycleMu across the selection AND the removal is what closes it, and the seam is what
+// makes that observable: without the lock the EnsureWorker below completes inside the window and
+// the key ends up with no worker at all.
+func TestReconcileWorkers_DoesNotStopAWorkerEnsureWorkerJustHandedOut(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
+	key := BranchKey{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}
+	scheme := runtime.NewScheme()
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	manager := &WorkerManager{
+		Log:     logr.Discard(),
+		ctx:     context.Background(),
+		Client:  fake.NewClientBuilder().WithScheme(scheme).Build(), // no GitTargets: every worker is an orphan
+		workers: map[BranchKey]*BranchWorker{},
+	}
+	retiring := newMetricsTestWorker()
+	manager.workers[key] = retiring
+
+	ensured := make(chan struct{})
+	afterOrphanSelection = func() {
+		go func() {
+			defer close(ensured)
+			_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main")
+		}()
+		// Long enough for an unguarded EnsureWorker to finish inside the window; a guarded one is
+		// blocked on lifecycleMu and finishes after the sweep instead.
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Cleanup(func() { afterOrphanSelection = nil })
+
+	require.NoError(t, manager.ReconcileWorkers(context.Background()))
+
+	select {
+	case <-ensured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("EnsureWorker never returned")
+	}
+
+	manager.mu.RLock()
+	got, exists := manager.workers[key]
+	manager.mu.RUnlock()
+	t.Cleanup(func() {
+		if exists && got != retiring {
+			got.Stop()
+		}
+	})
+	require.True(t, exists, "the target that asked for a worker must have one, not a slot the sweep emptied")
+	assert.NotSame(t, retiring, got, "and it must be a fresh one, not the worker the sweep retired")
+}

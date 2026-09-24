@@ -299,11 +299,17 @@ func (m *WorkerManager) EnsureWorker(
 //
 // A key that names no worker is skipped, so a caller may pass a key it is not sure about.
 func (m *WorkerManager) removeWorkers(keys []BranchKey, reason string) {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.removeWorkersLocked(keys, reason)
+}
+
+// removeWorkersLocked is removeWorkers for a caller that already holds lifecycleMu, so a sweep can
+// hold it across choosing the workers to retire and retiring them.
+func (m *WorkerManager) removeWorkersLocked(keys []BranchKey, reason string) {
 	if len(keys) == 0 {
 		return
 	}
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
 
 	m.mu.Lock()
 	detached := make(map[BranchKey]*BranchWorker, len(keys))
@@ -345,6 +351,15 @@ func (m *WorkerManager) GetWorkerForTarget(
 	worker, exists := m.workers[key]
 	return worker, exists
 }
+
+// afterOrphanSelection runs between choosing the workers to retire and retiring them. It is nil in
+// production and exists because that gap is the ONLY place the lock discipline in ReconcileWorkers
+// can be observed: with lifecycleMu held across both steps a concurrent EnsureWorker blocks here,
+// and without it that EnsureWorker hands a caller the very worker about to be stopped. The seam
+// follows pushAtomicFn, which the push path already uses for the same reason.
+//
+//nolint:gochecknoglobals // a test seam, like pushAtomicFn
+var afterOrphanSelection func()
 
 // ReconcileWorkers stops every worker no live GitTarget still needs.
 //
@@ -388,6 +403,14 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 		neededWorkers[key] = true
 	}
 
+	// lifecycleMu is held across the SELECTION as well as the removal, and the two must not be
+	// separated. EnsureWorker takes this lock, finds the key present and returns "already there"
+	// without creating anything; if it ran between a selection made outside the lock and the
+	// removal, this sweep would then stop the worker that GitTarget had just been told it has,
+	// leaving it with no worker until its next reconcile.
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.RLock()
 	orphans := make([]BranchKey, 0, len(m.workers))
 	for key := range m.workers {
@@ -397,7 +420,13 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 	}
 	m.mu.RUnlock()
 
-	m.removeWorkers(orphans, "no GitTarget needs this worker any more")
+	// The window the lock above closes, opened on request so a test can stand in it. Nil in
+	// production; see afterOrphanSelection.
+	if afterOrphanSelection != nil {
+		afterOrphanSelection()
+	}
+
+	m.removeWorkersLocked(orphans, "no GitTarget needs this worker any more")
 
 	m.mu.RLock()
 	remaining := len(m.workers)

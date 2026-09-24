@@ -328,18 +328,58 @@ func NewBranchWorker(
 	}
 }
 
+// workerStateRoot is where every worker's on-disk state lives. It is a variable rather than a
+// constant so a test can point it at its own directory: the tests that exercise reclaiming a
+// retired worker's checkout delete directories, and doing that under the shared root would take
+// out the state of anything else using it, including a developer's running operator.
+//
+//nolint:gochecknoglobals // a test seam, like pushAtomicFn above
+var workerStateRoot = filepath.Join("/tmp", "gitops-reverser-workers")
+
 func repoCacheKey(remoteURL string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(remoteURL)))
 	return hex.EncodeToString(sum[:16])
 }
 
+// branchPathComponent renders a branch name as ONE directory component.
+//
+// Git branch names contain slashes — `release/v1` is ordinary — and joining one into a path makes
+// its worker's directory a CHILD of the `release` worker's. That is harmless while nothing deletes
+// anything, and it is a data-loss bug the moment something does: retiring `release` would take the
+// live `release/v1` worker's checkout with it.
+//
+// The readable prefix is for whoever is looking at the directory; the hash of the raw name is what
+// makes it unambiguous, including for the names sanitising would otherwise collapse together
+// (`release/v1` and `release-v1`).
+func branchPathComponent(branch string) string {
+	sum := sha256.Sum256([]byte(branch))
+	digest := hex.EncodeToString(sum[:8])
+
+	readable := make([]rune, 0, len(branch))
+	for _, r := range branch {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			readable = append(readable, r)
+		default:
+			readable = append(readable, '-')
+		}
+	}
+	if len(readable) > branchComponentReadableMax {
+		readable = readable[:branchComponentReadableMax]
+	}
+	return string(readable) + "-" + digest
+}
+
+// branchComponentReadableMax caps the readable half so a long branch name cannot push the path
+// past what a filesystem accepts; the digest that follows is what carries the identity.
+const branchComponentReadableMax = 40
+
 func (w *BranchWorker) repoRootPath() string {
 	return filepath.Join(
-		"/tmp",
-		"gitops-reverser-workers",
+		workerStateRoot,
 		w.GitProviderNamespace,
 		w.GitProviderRef,
-		w.Branch,
+		branchPathComponent(w.Branch),
 		"repos",
 	)
 }
