@@ -137,6 +137,18 @@ type WorkerManager struct {
 	// renderFidelityGate is shared by every worker and the watch manager. It is created with the
 	// manager so a target's state survives workers being recreated for the same branch.
 	renderFidelityGate *RenderFidelityGate
+
+	// replacements are the branches whose worker was replaced and whose GitTargets have not been
+	// re-established since. Guarded by mu.
+	//
+	// A replacement is not finished when EnsureWorker returns: the new worker has no clone, no
+	// base trust and an empty queue, so every GitTarget on that branch has to be told to
+	// re-anchor its streams. That delivery can fail — it lists the targets, and a list can fail —
+	// and a one-shot "I replaced something" return value was then spent: later calls reported no
+	// replacement, so nothing ever asked again and an idle target could leave the new repository
+	// empty indefinitely. Recorded here instead, a pending recovery survives every failure until
+	// something acknowledges it.
+	replacements map[BranchKey]struct{}
 }
 
 // NewWorkerManager creates a new worker manager. limits bounds every worker this manager
@@ -153,6 +165,7 @@ func NewWorkerManager(
 		limits:             limits.withDefaults(),
 		sensitiveResources: sensitiveResources,
 		workers:            make(map[BranchKey]*BranchWorker),
+		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
 	}
 }
@@ -244,10 +257,11 @@ func (m *WorkerManager) SetRemoteReporter(reporter RemoteReporter) {
 // retained writes are all statements about the old one — so that worker is stopped, its checkout
 // reclaimed, and a fresh one takes the slot.
 //
-// It reports whether it REPLACED a worker, because a replacement is not complete when it returns:
-// the new worker has no clone and no queue, so every GitTarget on that branch has to re-establish
-// its folder against the new repository. Arranging that is the caller's job; see the GitTarget
-// reconcile's worker wiring gate.
+// A replacement is not complete when it returns: the new worker has no clone and no queue, so
+// every GitTarget on that branch has to re-establish its folder against the new repository. That
+// is recorded as a PENDING RECOVERY rather than returned, because arranging it is the caller's job
+// and the caller can fail. See ReplacementPending; the delivery is the GitTarget reconcile's
+// worker wiring gate.
 //
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(
@@ -255,7 +269,7 @@ func (m *WorkerManager) EnsureWorker(
 	providerName, providerNamespace string,
 	branch string,
 	repo RepoIdentity,
-) (bool, error) {
+) error {
 	// Held across the whole check-and-create so a replacement cannot start while the worker it
 	// replaces is still stopping; they would share a clone.
 	m.lifecycleMu.Lock()
@@ -271,10 +285,9 @@ func (m *WorkerManager) EnsureWorker(
 	existing, exists := m.workers[key]
 	m.mu.RUnlock()
 
-	replaced := false
 	if exists {
 		if existing.repo == repo {
-			return false, nil
+			return nil
 		}
 		// Both identities, at default verbosity: a comparison that is not stable across steady
 		// reconciles is a restart loop, and this line is what makes one visible.
@@ -284,7 +297,7 @@ func (m *WorkerManager) EnsureWorker(
 			"now", repo.String())
 		// lifecycleMu is already held, so the detach-and-stop must not take it again.
 		m.removeWorkersLocked([]BranchKey{key}, "the GitProvider names a different repository")
-		replaced = true
+		m.noteReplacement(key)
 	}
 
 	m.mu.Lock()
@@ -316,13 +329,47 @@ func (m *WorkerManager) EnsureWorker(
 		worker.renderFidelityGate = m.renderFidelityGate
 
 		if err := worker.Start(m.ctx); err != nil {
-			return replaced, fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
+			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
 		}
 
 		m.workers[key] = worker
 	}
 
-	return replaced, nil
+	return nil
+}
+
+// noteReplacement records that a branch's GitTargets have to be re-established. It is called with
+// lifecycleMu held and takes mu itself, which is the lock order everything here uses.
+func (m *WorkerManager) noteReplacement(key BranchKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.replacements == nil {
+		m.replacements = map[BranchKey]struct{}{}
+	}
+	m.replacements[key] = struct{}{}
+}
+
+// ReplacementPending reports whether this branch's GitTargets still have to be re-established
+// after their worker was replaced.
+//
+// It answers for the BRANCH rather than for the caller, so whichever GitTarget reconciles next
+// picks the recovery up — including the siblings, which have no reason of their own to notice
+// that the repository changed.
+func (m *WorkerManager) ReplacementPending(key BranchKey) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, pending := m.replacements[key]
+	return pending
+}
+
+// AcknowledgeReplacement clears a pending recovery, and must be called only once the targets on
+// the branch have actually been told. Anything less leaves the request standing, which is the
+// whole point of keeping it here: a failed delivery is retried by the next reconcile of any
+// GitTarget on the branch, and by the periodic sweep that follows them.
+func (m *WorkerManager) AcknowledgeReplacement(key BranchKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.replacements, key)
 }
 
 // removeWorkers detaches the named workers and stops them.
@@ -469,6 +516,13 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 	}
 
 	m.removeWorkersLocked(orphans, "no GitTarget needs this worker any more")
+	// A branch no GitTarget needs has nothing left to re-establish, and a recovery held for it
+	// would outlive every object it was about.
+	m.mu.Lock()
+	for _, key := range orphans {
+		delete(m.replacements, key)
+	}
+	m.mu.Unlock()
 
 	m.mu.RLock()
 	remaining := len(m.workers)

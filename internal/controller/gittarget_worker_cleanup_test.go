@@ -45,7 +45,7 @@ func TestCleanupDeletedGitTarget_StopsAWorkerNothingNeedsAnyMore(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	func() {
-		_, err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
+		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
 		require.NoError(t, err)
 	}()
 	_, exists := workers.GetWorkerForTarget("repo1", "shop", "main")
@@ -81,7 +81,7 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 	func() {
-		_, err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
+		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
 		require.NoError(t, err)
 	}()
 
@@ -125,7 +125,7 @@ func TestCleanupDeletedGitTarget_RetriesWhenTheSweepCannotRead(t *testing.T) {
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 	func() {
-		_, err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
+		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
 		require.NoError(t, err)
 	}()
 
@@ -158,7 +158,7 @@ func TestHandleFetchError_RequeuesAFailedCleanup(t *testing.T) {
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 	func() {
-		_, err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
+		err := workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"})
 		require.NoError(t, err)
 	}()
 

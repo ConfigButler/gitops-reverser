@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,7 +16,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -127,7 +130,9 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 	workers.RenderFidelityGate().Fail(appsRef, manifestanalyzer.RenderDivergence{})
 	require.False(t, workers.RenderFidelityGate().AllowsWrites(appsRef))
 
-	r.recoverBranchAfterReplacement(context.Background(), "shop", "repo1", "main", logr.Discard())
+	branch := git.BranchKey{RepoNamespace: "shop", RepoName: "repo1", Branch: "main"}
+	require.True(t, r.recoverBranchAfterReplacement(context.Background(), branch, logr.Discard()),
+		"the targets were listed and told, so the recovery is delivered")
 
 	assert.ElementsMatch(t, []string{"shop/apps", "shop/infra"}, manager.ForcedRecheckTargetsForTest(),
 		"every GitTarget the replaced worker served, and nothing else")
@@ -135,4 +140,78 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 		"a verdict about the other repository must not survive into this one")
 	assert.False(t, workers.RenderFidelityGate().AllowsWrites(appsRef),
 		"and nothing may be written to the new one until something has measured it")
+}
+
+// TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried.
+//
+// The recovery is delivered by LISTING the GitTargets on the branch, and a list can fail. When the
+// replacement was a one-shot return value, that failure spent it: every later call reported no
+// replacement, so neither an ordinary reconcile nor the orphan sweep ever forced the missing
+// replay, and an idle target left the new repository empty indefinitely.
+//
+// The pending recovery now lives on the worker manager, so the next reconcile of any GitTarget on
+// the branch picks it up — which is what this asserts, with the first delivery failing and the
+// second succeeding.
+func TestEnsureEventStream_ARecoveryThatCouldNotBeDeliveredIsRetried(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: "shop", UID: k8stypes.UID("uid-apps")},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "repo1"},
+			Branch:         "main",
+			Path:           "apps",
+		},
+	}
+	listFails := true
+	k8sClient := interceptor.NewClient(
+		fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).Build(),
+		interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if listFails {
+					return errors.New("the API server is unreachable")
+				}
+				return c.List(ctx, list, opts...)
+			},
+		})
+
+	workers := git.NewWorkerManager(k8sClient, logr.Discard(), git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = workers.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	manager := &watch.Manager{}
+	manager.DeclareForGitTarget(
+		types.NewResourceReference("apps", "shop").WithUID("uid-apps"), "default", "", "")
+	r := &GitTargetReconciler{
+		Client:        k8sClient,
+		WorkerManager: workers,
+		EventRouter:   watch.NewEventRouter(workers, manager, k8sClient, logr.Discard()),
+	}
+	branch := git.BranchKey{RepoNamespace: "shop", RepoName: "repo1", Branch: "main"}
+	before := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	after := git.RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+
+	_, err := r.ensureEventStream(ctx, target, "shop", before, logr.Discard())
+	require.NoError(t, err)
+
+	// The repoint. Its recovery cannot be delivered, and the reconcile does not fail for it.
+	_, err = r.ensureEventStream(ctx, target, "shop", after, logr.Discard())
+	require.NoError(t, err)
+	require.Empty(t, manager.ForcedRecheckTargetsForTest(), "precondition: nothing was told")
+	assert.True(t, workers.ReplacementPending(branch),
+		"a recovery that reached nobody is not finished")
+
+	// The next reconcile — this target's own, or a sibling's — delivers it.
+	listFails = false
+	_, err = r.ensureEventStream(ctx, target, "shop", after, logr.Discard())
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"shop/apps"}, manager.ForcedRecheckTargetsForTest(),
+		"the replay the replacement owes is forced by a later pass, not lost with the first")
+	assert.False(t, workers.ReplacementPending(branch), "and it is not asked for again")
 }

@@ -57,8 +57,9 @@ const (
 	testTargetNamespace   = "default"
 )
 
-// mustEnsureWorker wires a worker and fails the test if it could not, returning whether an
-// existing worker was REPLACED because the identity it was asked for differs from the slot's.
+// mustEnsureWorker wires a worker and fails the test if it could not. It then does what a
+// GitTarget reconcile does with the branch: take any pending replacement recovery and acknowledge
+// it, reporting whether there was one.
 func mustEnsureWorker(
 	ctx context.Context,
 	t *testing.T,
@@ -67,9 +68,11 @@ func mustEnsureWorker(
 	repo RepoIdentity,
 ) bool {
 	t.Helper()
-	replaced, err := m.EnsureWorker(ctx, providerName, providerNamespace, branch, repo)
-	require.NoError(t, err)
-	return replaced
+	require.NoError(t, m.EnsureWorker(ctx, providerName, providerNamespace, branch, repo))
+	key := BranchKey{RepoNamespace: providerNamespace, RepoName: providerName, Branch: branch}
+	pending := m.ReplacementPending(key)
+	m.AcknowledgeReplacement(key)
+	return pending
 }
 
 func setupScheme() *runtime.Scheme {
@@ -141,7 +144,7 @@ func TestEnsureWorker_CreatesAWorkerWithTheIdentityItWasAskedFor(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "clusters/prod")
 
 	// Register first target
-	_, err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
 	if err != nil {
 		t.Fatalf("Failed to register target: %v", err)
 	}
@@ -234,12 +237,12 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target-dev", "repo1", "develop", "base/")
 
 	// Register targets for same repo, different branches
-	_, err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
 	if err != nil {
 		t.Fatalf("Failed to register target-main: %v", err)
 	}
 
-	_, err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop", repo)
+	err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop", repo)
 	if err != nil {
 		t.Fatalf("Failed to register target-dev: %v", err)
 	}
@@ -359,7 +362,7 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := range 10 {
 		go func(index int) {
-			_, err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+			err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
 			if err != nil {
 				t.Errorf("Failed to ensure worker %d: %v", index, err)
 			}

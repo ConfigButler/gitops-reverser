@@ -304,12 +304,15 @@ func TestEnqueue_AdmissionClosesAtOneInstant(t *testing.T) {
 	wg.Wait()
 }
 
-// TestEnsureWorker_ReportsTheReplacementSoItCanBeRecoveredFrom. Dropping the old worker's queue and
+// TestEnsureWorker_HoldsTheReplacementUntilItIsAcknowledged. Dropping the old worker's queue and
 // retained writes is only safe if something rebuilds the folder in the new repository, and nothing
 // asks for that on its own: the GitTarget's declaration is level-triggered and its inputs did not
 // change. So the caller has to be TOLD, and the steady case must not tell it, or every reconcile
 // would force a replay of every target on the branch.
-func TestEnsureWorker_ReportsTheReplacementSoItCanBeRecoveredFrom(t *testing.T) {
+//
+// mustEnsureWorker does what the reconcile does — take the pending recovery and acknowledge it —
+// so each assertion below reads "was there a recovery to deliver on this pass".
+func TestEnsureWorker_HoldsTheReplacementUntilItIsAcknowledged(t *testing.T) {
 	manager, ctx := startedManager(t)
 	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
@@ -322,7 +325,58 @@ func TestEnsureWorker_ReportsTheReplacementSoItCanBeRecoveredFrom(t *testing.T) 
 	assert.True(t, mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", after),
 		"the repository changed, so the branch has to be re-established against the new one")
 	assert.False(t, mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", after),
-		"reported once, for the reconcile that made it happen")
+		"reported once, for the reconcile that delivered it")
+}
+
+// TestEnsureWorker_AnUndeliveredRecoveryIsStillPendingOnTheNextPass is the hazard of spending the
+// notification on the pass that made the replacement.
+//
+// Delivering it can fail — it lists the GitTargets on the branch, and a list can fail — and once
+// the notification was spent, every later call said there was nothing to recover. Neither an
+// ordinary reconcile nor the orphan sweep forced the missing replay, so an idle target left the
+// new repository empty indefinitely. The recovery is now held until something acknowledges it.
+func TestEnsureWorker_AnUndeliveredRecoveryIsStillPendingOnTheNextPass(t *testing.T) {
+	manager, ctx := startedManager(t)
+	key := BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}
+	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
+	require.False(t, manager.ReplacementPending(key))
+
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	require.True(t, manager.ReplacementPending(key))
+
+	// The delivery fails, so nothing acknowledges it. Two more reconciles of this target, and of
+	// a sibling on the same branch, still find the recovery waiting.
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	assert.True(t, manager.ReplacementPending(key),
+		"a recovery nobody delivered must survive the calls that come after it")
+
+	manager.AcknowledgeReplacement(key)
+	assert.False(t, manager.ReplacementPending(key))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	assert.False(t, manager.ReplacementPending(key),
+		"and a delivered one must not be asked for again on every steady tick")
+}
+
+// TestReconcileWorkers_DropsARecoveryForABranchNothingNeeds keeps the pending set bounded by live
+// configuration: a branch whose last GitTarget is gone has no folder left to re-establish.
+func TestReconcileWorkers_DropsARecoveryForABranchNothingNeeds(t *testing.T) {
+	manager, ctx := startedManager(t)
+	key := BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}
+	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	require.True(t, manager.ReplacementPending(key))
+
+	// No GitTarget names this branch, so the sweep retires its worker.
+	require.NoError(t, manager.ReconcileWorkers(ctx))
+
+	assert.False(t, manager.ReplacementPending(key),
+		"a recovery held for a branch nothing needs would outlive every object it was about")
 }
 
 // TestSweep_RetiresAWorkerNoDeleteWasEverObservedFor. The delete-triggered sweep runs where a

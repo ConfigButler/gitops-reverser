@@ -854,7 +854,7 @@ func (r *GitTargetReconciler) ensureEventStream(
 		return nil, errors.New("worker manager is not configured")
 	}
 
-	replaced, err := r.WorkerManager.EnsureWorker(
+	err := r.WorkerManager.EnsureWorker(
 		context.Background(),
 		target.Spec.GitProviderRef.Name,
 		providerNS,
@@ -870,8 +870,17 @@ func (r *GitTargetReconciler) ensureEventStream(
 			err,
 		)
 	}
-	if replaced {
-		r.recoverBranchAfterReplacement(ctx, providerNS, target.Spec.GitProviderRef.Name, target.Spec.Branch, log)
+	// Asked on EVERY reconcile, not only on the one that did the replacing. The recovery is held
+	// by the worker manager until it has been delivered, so a delivery that failed is retried by
+	// whichever GitTarget on the branch reconciles next.
+	branch := git.BranchKey{
+		RepoNamespace: providerNS,
+		RepoName:      target.Spec.GitProviderRef.Name,
+		Branch:        target.Spec.Branch,
+	}
+	if r.WorkerManager.ReplacementPending(branch) &&
+		r.recoverBranchAfterReplacement(ctx, branch, log) {
+		r.WorkerManager.AcknowledgeReplacement(branch)
 	}
 
 	worker, ensured := r.WorkerManager.GetWorkerForTarget(
@@ -961,27 +970,29 @@ func validateProviderAndBranch(
 // forgetting a target leaves it unregistered, which the gate reads as writable, so the writes
 // would be admitted against the new repository before anything had looked at it.
 //
-// A list that fails recovers nothing, and says so: the periodic sweep and the targets' own steady
-// ticks are what is left, so this is worth a loud line and not worth failing the gate for.
+// It reports whether the recovery was DELIVERED. A list that fails delivers nothing, and the
+// request it was serving stays pending on the worker manager for the next reconcile to pick up:
+// the alternative, spending the notification on an attempt that reached nobody, left the new
+// repository with no target ever asked to populate it.
 func (r *GitTargetReconciler) recoverBranchAfterReplacement(
 	ctx context.Context,
-	providerNS, providerName, branch string,
+	branch git.BranchKey,
 	log logr.Logger,
-) {
+) bool {
 	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
-		return
+		return false
 	}
 	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(providerNS)); err != nil {
-		log.Error(err, "Could not re-establish the branch after its worker was replaced",
-			"provider", providerNS+"/"+providerName, "branch", branch)
-		return
+	if err := r.List(ctx, &targets, client.InNamespace(branch.RepoNamespace)); err != nil {
+		log.Error(err, "Could not re-establish the branch after its worker was replaced; it stays pending",
+			"provider", branch.RepoNamespace+"/"+branch.RepoName, "branch", branch.Branch)
+		return false
 	}
 	gate := r.WorkerManager.RenderFidelityGate()
 	recovered := 0
 	for i := range targets.Items {
 		affected := &targets.Items[i]
-		if affected.Spec.GitProviderRef.Name != providerName || affected.Spec.Branch != branch {
+		if affected.Spec.GitProviderRef.Name != branch.RepoName || affected.Spec.Branch != branch.Branch {
 			continue
 		}
 		if !affected.DeletionTimestamp.IsZero() {
@@ -993,7 +1004,8 @@ func (r *GitTargetReconciler) recoverBranchAfterReplacement(
 		recovered++
 	}
 	log.Info("Branch worker replaced; re-establishing every GitTarget on the branch",
-		"provider", providerNS+"/"+providerName, "branch", branch, "gitTargets", recovered)
+		"provider", branch.RepoNamespace+"/"+branch.RepoName, "branch", branch.Branch, "gitTargets", recovered)
+	return true
 }
 
 // getGitProvider reads the GitTarget's GitProvider ONCE for the whole reconcile.

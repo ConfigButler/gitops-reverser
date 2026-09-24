@@ -363,7 +363,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	go func() { _ = workerManager.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond) // allow the manager to record its context
 
-	_, ensureErr := workerManager.EnsureWorker(
+	ensureErr := workerManager.EnsureWorker(
 		ctx, "team-a-provider", "team-a", "main",
 		git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"},
 	)
