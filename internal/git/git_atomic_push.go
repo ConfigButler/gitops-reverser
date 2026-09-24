@@ -130,13 +130,13 @@ const (
 
 // PushOutcome is what the push session learned about the remote.
 //
-// Every field is read from the ONE connection the push was making anyway, which is the point:
-// none of it costs a round trip. A push that returns without an error therefore proves more than
-// a fetch does. A fetch says "the branch was at X when I looked"; an accepted push says "the
-// branch was at Old when I looked, and the server has just moved it to New on my authority", on
-// one connection, with no window between the read and the write for anyone to slip through.
+// Every field is read from the ONE connection the push was making anyway, so none of it costs a
+// round trip — and a push that returns without an error proves more than a fetch does. A fetch
+// says "the branch was at X when I looked"; an accepted push says "it was at Old when I looked,
+// and the server has just moved it to New on my authority", with no window between the read and
+// the write for anyone to slip through.
 //
-// The zero value is not a valid outcome. An error return means nothing was observed at all, and
+// The zero value is not a valid outcome: an error return means nothing was observed at all, and
 // the caller must invalidate rather than record.
 type PushOutcome struct {
 	// Kind is which exit was taken.
@@ -148,10 +148,10 @@ type PushOutcome struct {
 // pushPlan is validatePushState's answer: either a packfile to send, or an outcome the
 // advertisement alone already settled.
 //
-// The two cases used to share one return shape — a zero/zero pair meaning "up to date" — and the
-// existing comment admitted it conflated "the remote equals our head" with "there is nothing
-// local and nothing on the remote". GetCurrentBranch returns a zero hash for an unborn local
-// branch, so both reached the same line. Both are observations; only one names a revision.
+// The two cases used to share one return shape — a zero/zero pair meaning "up to date" — which
+// conflated "the remote equals our head" with "there is nothing local and nothing on the remote",
+// because GetCurrentBranch returns a zero hash for an unborn local branch. Both are observations;
+// only one names a revision.
 type pushPlan struct {
 	// settled is empty when the push has to be sent, and otherwise carries what the
 	// advertisement proved.

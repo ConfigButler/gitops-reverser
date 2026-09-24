@@ -7,19 +7,14 @@ import (
 )
 
 // RemoteReporter publishes a confirmed observation of a branch's remote state to the layer that
-// owns GitTarget status.
+// owns GitTarget status. It is the twin of LayoutReporter, for the same structural reason: the
+// observation is made on a branch-worker goroutine with no result channel back to the controller,
+// so without a hook it would be learned and dropped.
 //
-// It is the twin of LayoutReporter, and it exists for the same structural reason: the observation
-// is made on a branch-worker goroutine with no result channel back to the controller, so without
-// a hook it would be learned and dropped. The watch Manager supplies it
-// (WorkerManager.SetRemoteReporter), which is where the projection onto status lives.
-//
-// One difference from layouts is worth stating, because it is the only place this design could
-// have grown a registry. A worker serves EVERY GitTarget on its (provider, branch), while the
-// observation is about the branch; the worker keeps no list of the targets it serves, and does
-// not need one. It reports only against a target already in hand — the ones a push's writes
-// named, or the one a refresh request names — and every target reaches the second case on its own
-// reconcile tick, so nothing has to be enumerated and no target goes unreported.
+// Where this could have grown a registry, it does not. A worker serves EVERY GitTarget on its
+// (provider, branch) while the observation is about the branch, and it keeps no list of them: it
+// reports only against a target already in hand — the ones a push's writes named, or the one a
+// refresh names — and every target reaches the second case on its own tick.
 type RemoteReporter func(target itypes.ResourceReference, observed RemoteObservation)
 
 // reportRemoteObservation publishes one observation against every GitTarget named by the writes

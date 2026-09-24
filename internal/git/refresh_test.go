@@ -321,3 +321,218 @@ func TestRefresh_DoesNotReportThePreviousRepositoryAfterARepoint(t *testing.T) {
 	assert.Equal(t, revParseMain(t, second.repoDir), last.Revision,
 		"what is published is where the branch is on the repository it points at NOW")
 }
+
+// TestRefresh_AnAbsentCheckoutHonoursTheInterval. A GitTarget that has been declared but has not
+// published has a worker and no clone, and it is the target most likely to be left idle for a
+// long time. Nothing local can be behind an observation when there is nothing local at all, so
+// its interval has to be worth the same as everybody else's: keying the cheap path on base trust
+// alone sent this target to the remote on EVERY reconcile, whatever the operator configured.
+func TestRefresh_AnAbsentCheckoutHonoursTheInterval(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-no-checkout-interval")
+
+	require.Equal(t, int64(1), h.refresh(time.Hour),
+		"the first tick has nothing recorded, so it asks the remote")
+
+	assert.Zero(t, h.refresh(time.Hour),
+		"and the second, inside the interval, must cost nothing: there is no checkout to be stale")
+}
+
+// TestRefresh_AnAbsentBranchHonoursTheInterval is the same rule for the other target that never
+// gains base trust: the branch is not on the remote, so no fetch ever resets onto it. The
+// checkout exists here and is exactly as current as the observation — an unborn branch and "no
+// revision" are the same fact — so a tick inside the interval has nothing to ask.
+func TestRefresh_AnAbsentBranchHonoursTheInterval(t *testing.T) {
+	h := newRefreshHarnessOn(t, "refresh-absent-interval", false)
+	require.NoError(t, h.worker.ensureRepositoryInitialized(h.worker.ctx))
+
+	require.Equal(t, int64(1), h.refresh(time.Nanosecond), "a stale observation asks the remote")
+
+	assert.Zero(t, h.refresh(time.Hour),
+		"a branch the remote does not carry still gets the interval it was configured with")
+}
+
+// TestRefresh_WithdrawsThePublishedObservationAfterAFailedRepoint is the hazard a dropped
+// observation does not on its own close.
+//
+// Dropping it stops the OLD repository's revision being reported again, which is what the worker
+// owns. It says nothing about the copy already published — in the watch plane's projection and in
+// status.remote — and if the repository this target now points at cannot be read, nothing ever
+// replaces it: the operator goes on reading a revision that lives in a repository the target no
+// longer uses. So the refresh withdraws it explicitly, and keeps withdrawing until something is
+// actually proved, because every GitTarget on this branch has to hear it on its own tick.
+func TestRefresh_WithdrawsThePublishedObservationAfterAFailedRepoint(t *testing.T) {
+	h := newRefreshHarness(t, "repoint-unreachable")
+	h.publish("written-to-the-first-repository")
+	require.NotEmpty(t, revParseMain(t, h.repoDir))
+
+	var provider configv1alpha3.GitProvider
+	require.NoError(t, h.worker.Client.Get(h.worker.ctx,
+		client.ObjectKey{Name: h.worker.GitProviderRef, Namespace: "default"}, &provider))
+	// Recreated pointing at a repository nothing answers for.
+	provider.Spec.URL = "http://127.0.0.1:1/unreachable.git"
+	require.NoError(t, h.worker.Client.Update(h.worker.ctx, &provider))
+
+	h.reported = nil
+	h.refresh(time.Hour) // an age that would reuse the cached observation, if anything did
+
+	require.Len(t, h.reported, 1, "the target has to be told, and the failed look proves nothing")
+	assert.True(t, h.reported[0].Withdrawn,
+		"what is published names a revision in a repository this target no longer points at")
+	assert.Empty(t, h.reported[0].Revision, "a withdrawal carries nothing to publish")
+
+	h.reported = nil
+	h.refresh(time.Hour)
+	require.Len(t, h.reported, 1)
+	assert.True(t, h.reported[0].Withdrawn,
+		"it stands until something is proved: a sibling target's first tick must hear it too")
+}
+
+// TestRefresh_StopsWithdrawingOnceSomethingIsProved is the other side of that latch. A withdrawal
+// is a correction, not a state to live in: the first successful look at the new repository
+// replaces it with a real observation.
+func TestRefresh_StopsWithdrawingOnceSomethingIsProved(t *testing.T) {
+	first := newRefreshHarness(t, "repoint-recovers-first")
+	second := newLedgerFixture(t, "repoint-recovers-second", true)
+	first.publish("written-to-the-first-repository")
+
+	var provider configv1alpha3.GitProvider
+	require.NoError(t, first.worker.Client.Get(first.worker.ctx,
+		client.ObjectKey{Name: first.worker.GitProviderRef, Namespace: "default"}, &provider))
+	provider.Spec.URL = second.sim.RepoURL
+	require.NoError(t, first.worker.Client.Update(first.worker.ctx, &provider))
+
+	first.reported = nil
+	first.refresh(time.Hour)
+
+	require.NotEmpty(t, first.reported)
+	last := first.reported[len(first.reported)-1]
+	assert.False(t, last.Withdrawn, "the new repository answered, so there is something to publish")
+	assert.Equal(t, revParseMain(t, second.repoDir), last.Revision)
+	assert.False(t, first.worker.observationWithdrawn(), "and nothing is left to take back")
+}
+
+// TestRefresh_DoesNotRepublishTheLayoutOfARefusedFolder. Both write paths consult the acceptance
+// gate before publishing a layout, because a folder the operator has refused to manage is one we
+// should be making no claims about. The refresher rescans the same folder from outside a write,
+// so it has to hold the same line — while still not RAISING the refusal, which is the boundary
+// rescanLayoutForTarget is built on.
+func TestRefresh_DoesNotRepublishTheLayoutOfARefusedFolder(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-refused-folder")
+
+	var layouts []LayoutReport
+	h.worker.layoutReporter = func(_ itypes.ResourceReference, report LayoutReport) {
+		layouts = append(layouts, report)
+	}
+
+	h.publish("prime")
+	// Somebody adds a second copy of a resource the folder already declares: one resource, two
+	// files, which is a refusal the gate raises off the structure alone.
+	h.contend("team-a/duplicate.yaml", duplicateOfPrime)
+	layouts = nil
+
+	h.refresh(time.Nanosecond)
+
+	assert.Empty(t, layouts, "a refused folder's shape must not be republished from a refresh")
+}
+
+// TestEnqueueRefresh_CountsTheDropOnAFullQueue. Dropping a refresh is safe — the next reconcile
+// asks again — but a worker saturated for long enough stops topping up status.remote and stops
+// re-reading the folder, and an uncounted drop makes that invisible.
+func TestEnqueueRefresh_CountsTheDropOnAFullQueue(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	h := newRefreshHarness(t, "refresh-queue-drop")
+	for len(h.worker.eventQueue) < cap(h.worker.eventQueue) {
+		h.worker.eventQueue <- WorkItem{}
+	}
+
+	h.worker.EnqueueRefresh(&RefreshRequest{Target: h.target, Path: h.path, MaxAge: time.Hour})
+
+	labels := map[string]string{
+		"provider_namespace": h.worker.GitProviderNamespace,
+		"provider_name":      h.worker.GitProviderRef,
+		"branch":             h.worker.Branch,
+		"kind":               queueDropRefresh,
+	}
+	drops, ok := telemetry.CollectInt64Sum(reader, queueDropsMetric, labels)
+	require.True(t, ok, "a dropped refresh must be counted like any other lost work item")
+	assert.Equal(t, int64(1), drops)
+}
+
+// duplicateOfPrime is a second copy of the ConfigMap the harness publishes as "prime", in a file
+// of its own: one resource in two files, which the acceptance gate refuses off the structure.
+const duplicateOfPrime = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prime
+  namespace: default
+data:
+  key: prime
+`
+
+// TestEnqueueRefresh_IgnoresANilRequest. The enqueue is called from a reconcile, which is the one
+// place a nil could arrive, and dropping it there would leak an inflight item and hold the queue
+// depth gauge up forever.
+func TestEnqueueRefresh_IgnoresANilRequest(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-nil-request")
+
+	h.worker.EnqueueRefresh(nil)
+
+	assert.Zero(t, h.worker.inflightItems.Load(), "nothing was queued, so nothing is in flight")
+	assert.Empty(t, h.worker.eventQueue)
+}
+
+// TestRefresh_SkipsWhenTheGitProviderCannotBeRead is the first exit, and the order matters: the
+// provider is read BEFORE anything is reported, because every statement below it is about a
+// repository only the provider can name.
+func TestRefresh_SkipsWhenTheGitProviderCannotBeRead(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-no-provider")
+	h.publish("prime")
+
+	var provider configv1alpha3.GitProvider
+	require.NoError(t, h.worker.Client.Get(h.worker.ctx,
+		client.ObjectKey{Name: h.worker.GitProviderRef, Namespace: "default"}, &provider))
+	require.NoError(t, h.worker.Client.Delete(h.worker.ctx, &provider))
+
+	h.reported = nil
+	connections := h.refresh(time.Nanosecond)
+
+	assert.Zero(t, connections, "there is no URL to ask")
+	assert.Empty(t, h.reported, "and nothing may be published against a repository we cannot name")
+}
+
+// TestRefresh_CannotRescanAFolderWithNoCheckout. The rescan is best-effort by design: it is a
+// read that improves what an operator sees, and a target with no clone yet simply has no folder
+// to read. It must log and return rather than fail the tick that has just proved where the
+// branch is.
+func TestRefresh_CannotRescanAFolderWithNoCheckout(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-rescan-no-checkout")
+
+	var layouts []LayoutReport
+	h.worker.layoutReporter = func(_ itypes.ResourceReference, report LayoutReport) {
+		layouts = append(layouts, report)
+	}
+
+	h.refresh(time.Nanosecond)
+
+	require.NotEmpty(t, h.reported, "the remote was still observed")
+	assert.Empty(t, layouts, "and no layout is claimed for a folder that is not on disk")
+}
+
+// TestRefresh_WithNoPathScansNothing. spec.path is what scopes the rescan, and a target without
+// one has no folder of its own to resolve.
+func TestRefresh_WithNoPathScansNothing(t *testing.T) {
+	h := newRefreshHarness(t, "refresh-no-path")
+
+	var layouts []LayoutReport
+	h.worker.layoutReporter = func(_ itypes.ResourceReference, report LayoutReport) {
+		layouts = append(layouts, report)
+	}
+	h.publish("prime")
+	layouts = nil
+
+	h.loop.handleRefreshRequest(&RefreshRequest{Target: h.target, MaxAge: time.Nanosecond})
+
+	assert.Empty(t, layouts)
+}

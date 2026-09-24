@@ -647,7 +647,9 @@ spec:
                 description: |-
                   Remote is where this target's branch is on the Git remote, and when that was last proved.
                   It is renewed by every confirmed look: a successful push as well as a fetch. Absent means
-                  nothing has looked yet.
+                  nothing has proved anything yet — either nothing has looked, or the GitProvider was
+                  recreated against a different repository and what was published no longer describes the
+                  one this target points at.
                 properties:
                   lastVerifiedAt:
                     description: |-

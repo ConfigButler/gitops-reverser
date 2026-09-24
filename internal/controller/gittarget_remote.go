@@ -29,19 +29,17 @@ func (r *GitTargetReconciler) observeRemote(
 
 // publishRemote writes status.remote, subject to the rule that keeps its write rate honest.
 //
-// A converged GitTarget writes nothing on its steady tick today, because the status patch no-ops
-// on an empty diff. A clock in status ends that unless something governs it, and republishing a
+// A converged GitTarget writes nothing on its steady tick, because the status patch no-ops on an
+// empty diff. A clock in status ends that unless something governs it, and republishing a
 // timestamp nobody reads a decision from — once per target per tick, forever — is the trap
 // sameLayout was written to avoid.
 //
 // So: write whenever the REVISION changes, including one we pushed ourselves, and otherwise only
 // when the published timestamp is older than one refresh interval. The revision has to move with
-// the fact it dates. A field showing a ten-minute-old revision on the target an operator is
-// actively editing would not be a freshness field; it would be a slower, less honest copy of one.
-// The push case is also the cheap one: the worker has just opened a connection to a Git host,
-// uploaded a packfile and had a ref update accepted, so one status patch against the local API
-// server is noise beside it — and PushCooldown already floors the rate at one push per 5s per
-// branch worker.
+// the fact it dates; a field showing a ten-minute-old revision on a target somebody is actively
+// editing is a slower copy of the answer, not a freshness field. The push case is also the cheap
+// one: beside a packfile upload and an accepted ref update, one status patch against the local
+// API server is noise, and PushCooldown floors it at one push per 5s per branch worker.
 func publishRemote(
 	target *configbutleraiv1alpha3.GitTarget,
 	observed git.RemoteObservation,
@@ -49,6 +47,15 @@ func publishRemote(
 	quantum time.Duration,
 ) {
 	if !seen {
+		return
+	}
+	// A withdrawal is not an observation: the data plane is saying that what is published names a
+	// revision in a repository this target no longer points at. It has to be REMOVED rather than
+	// replaced, because there is nothing to replace it with until a look at the new repository
+	// succeeds — and an unreachable new remote would otherwise leave the old one's revision
+	// standing indefinitely.
+	if observed.Withdrawn {
+		target.Status.Remote = nil
 		return
 	}
 	next := &configbutleraiv1alpha3.GitTargetRemoteStatus{

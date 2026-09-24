@@ -46,16 +46,8 @@ type CommitRequestSpec struct {
 	// "finalize immediately" inexpressible from a typed Go client, whose zero value is not
 	// serialized, and would erase the distinction a cluster-level default needs.
 	//
-	// The upper bound is CEL rather than a Maximum, because the field is a string to the API
-	// server: the pattern is what rejects a malformed duration, and only CEL can compare two
-	// well-formed ones. It doubles as the parseability check — the pattern cannot express
-	// magnitude, so "999999999h" matches it and then overflows time.ParseDuration, and a stored
-	// value no typed client can decode breaks GET and LIST for the whole kind.
-	//
-	// The unit set is Go's own (ns/us/µs as well as Flux's ms/s/m/h) because the accepted set has
-	// to be closed under serialization: "0.5ms" is written back by a typed client as "500µs", and
-	// a value that cannot be re-written is one no controller can ever update. See
-	// GitTargetCommitSpec.Window for the same note.
+	// The pattern, the CEL bound and the wider-than-Flux unit set are the shape every duration in
+	// this API takes, and GitTargetCommitSpec.Window carries the reasoning for all three.
 
 	// CloseDelay sets the finalize deadline from the worker's first receipt, as a Go duration
 	// string ("2s", "750ms", "1m"). Time waiting for a matching window consumes this delay;

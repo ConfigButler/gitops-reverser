@@ -64,3 +64,100 @@ func TestRemoteForGitTarget_AbsentUntilSomethingLooks(t *testing.T) {
 	_, ok := m.RemoteForGitTarget(types.NewResourceReference("checkout", "shop"))
 	assert.False(t, ok)
 }
+
+// TestReportRemoteObserved_AnIdenticalReportPublishesNothing. Every refresh tick re-reports what
+// it already knew, for every target on the branch, and every push reports too. Storing a value
+// that is already there would clone the whole watch-plane snapshot to change nothing — the trap
+// both sibling reporters short-circuit on.
+func TestReportRemoteObserved_AnIdenticalReportPublishesNothing(t *testing.T) {
+	m := &Manager{}
+	gitDest := types.NewResourceReference("checkout", "shop")
+	observed := git.RemoteObservation{Revision: "aaaa", At: time.Now(), By: git.ObservedByPush}
+
+	m.ReportRemoteObserved(gitDest, observed)
+	published := m.watchPlane()
+
+	m.ReportRemoteObserved(gitDest, observed)
+
+	assert.Same(t, published, m.watchPlane(),
+		"a byte-identical report changes nothing a reader could see, so nothing is republished")
+}
+
+// TestReportRemoteObserved_AWithdrawalReplacesTheRevisionAndWakesTheTarget is the correction path.
+// The data plane has met a different repository, so the revision in the projection describes one
+// the target no longer points at; it has to be replaced AND the target woken, because the
+// controller is the only thing that can take it out of status.
+func TestReportRemoteObserved_AWithdrawalReplacesTheRevisionAndWakesTheTarget(t *testing.T) {
+	m := &Manager{}
+	events := m.GitPathEvents()
+	gitDest := types.NewResourceReference("checkout", "shop")
+
+	m.ReportRemoteObserved(gitDest, git.RemoteObservation{
+		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush,
+	})
+	require.Len(t, events, 1)
+
+	m.ReportRemoteObserved(gitDest, git.WithdrawnObservation())
+
+	observed, ok := m.RemoteForGitTarget(gitDest)
+	require.True(t, ok)
+	assert.True(t, observed.Withdrawn)
+	assert.Empty(t, observed.Revision, "the old repository's revision is gone from the projection")
+	assert.Len(t, events, 2, "and the target has to reconcile to take it out of status")
+
+	m.ReportRemoteObserved(gitDest, git.WithdrawnObservation())
+	assert.Len(t, events, 2, "a withdrawal that is already standing is not news again")
+}
+
+// TestTearDownGitTarget_DropsTheRemoteObservation. The projection is keyed by namespace/name, and
+// a GitTarget deleted and recreated under the same name is a different target that may point at a
+// different branch entirely. Leaving the observation behind would hand the new one its
+// predecessor's revision before anything had looked on its behalf.
+func TestTearDownGitTarget_DropsTheRemoteObservation(t *testing.T) {
+	m := &Manager{}
+	gitDest := types.NewResourceReference("checkout", "shop")
+	m.ReportRemoteObserved(gitDest, git.RemoteObservation{
+		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush,
+	})
+	_, seen := m.RemoteForGitTarget(gitDest)
+	require.True(t, seen)
+
+	m.tearDownGitTarget(gitDest)
+
+	_, seen = m.RemoteForGitTarget(gitDest)
+	assert.False(t, seen, "a deleted GitTarget leaves nothing behind for its successor to inherit")
+}
+
+// TestReportRemoteObserved_WakesOnEveryChangeOfAnswer. Both "the remote does not carry this
+// branch" and "what was published is withdrawn" have no revision, and they mean opposite things:
+// one publishes a stanza saying the branch is not there, the other removes the stanza entirely.
+// Comparing revisions alone left whichever was published standing until some unrelated reconcile
+// happened by.
+func TestReportRemoteObserved_WakesOnEveryChangeOfAnswer(t *testing.T) {
+	absent := git.RemoteObservation{At: time.Now(), By: git.ObservedByFetch}
+
+	t.Run("absent branch to withdrawn", func(t *testing.T) {
+		m := &Manager{}
+		events := m.GitPathEvents()
+		gitDest := types.NewResourceReference("checkout", "shop")
+
+		m.ReportRemoteObserved(gitDest, absent)
+		require.Len(t, events, 1)
+
+		m.ReportRemoteObserved(gitDest, git.WithdrawnObservation())
+		assert.Len(t, events, 2, "the stanza has to come out of status, and only a reconcile does that")
+	})
+
+	t.Run("withdrawn to absent branch", func(t *testing.T) {
+		m := &Manager{}
+		events := m.GitPathEvents()
+		gitDest := types.NewResourceReference("checkout", "shop")
+
+		m.ReportRemoteObserved(gitDest, git.WithdrawnObservation())
+		require.Len(t, events, 1)
+
+		m.ReportRemoteObserved(gitDest, absent)
+		assert.Len(t, events, 2,
+			"the new repository answered — it does not carry the branch — and that is publishable")
+	})
+}

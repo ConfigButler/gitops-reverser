@@ -260,23 +260,19 @@ type GitTargetSpec struct {
 
 // GitTargetCommitSpec configures how a GitTarget's writes become commits.
 type GitTargetCommitSpec struct {
-	// metav1.Duration with the markers below, which is the shape every duration in this API and
-	// every duration flag takes: a Go duration string, unit mandatory. The API server rejects a
-	// malformed one at admission, so no code downstream has to decide what to do with a stored
-	// value it cannot parse.
+	// metav1.Duration with the markers below is the shape every duration in this API takes: a Go
+	// duration string, unit mandatory, rejected at admission, so nothing downstream has to decide
+	// what to do with a stored value it cannot parse.
 	//
-	// The unit set is Go's OWN, which is wider than Flux's pattern, and that is deliberate rather
-	// than a liberty. The accepted set has to be CLOSED UNDER SERIALIZATION: a typed client reads
-	// this field into a time.Duration and writes it back as Duration.String(), so a value the
-	// pattern admits but Go re-spells outside it can never be written again. "0.5ms" round-trips
-	// as "500µs", which Flux's pattern rejects — so ns/us/µs are admitted here, and every value
-	// this field accepts survives a read-modify-write.
+	// The unit set is Go's OWN, wider than Flux's pattern, because the accepted set has to be
+	// CLOSED UNDER SERIALIZATION: a typed client reads this field into a time.Duration and writes
+	// it back as Duration.String(), so a value the pattern admits but Go re-spells outside it
+	// could never be written again. "0.5ms" round-trips as "500µs", which Flux's pattern rejects.
 	//
-	// The CEL bound is not a policy about how long a window may be. It is what makes the value
-	// PARSEABLE: the pattern cannot express magnitude, so "999999999h" matches it and then
-	// overflows time.ParseDuration, and a stored value that cannot be decoded breaks the typed
-	// GET and LIST that every controller and informer here depends on — one object taking the
-	// whole GitTarget informer down with it. duration() rejects it at admission instead.
+	// The CEL bound is not a policy about how long a window may be; it is what keeps the value
+	// PARSEABLE. The pattern cannot express magnitude, so "999999999h" matches it and then
+	// overflows time.ParseDuration — and one stored value that no typed client can decode breaks
+	// GET and LIST for the whole kind, taking the GitTarget informer down with it.
 
 	// Window is the rolling silence window used to coalesce this target's events into a single
 	// commit per author, as a Go duration string ("5s", "750ms", "1m30s"). The timer resets on
@@ -405,17 +401,18 @@ type GitTargetStatus struct {
 
 	// Remote is where this target's branch is on the Git remote, and when that was last proved.
 	// It is renewed by every confirmed look: a successful push as well as a fetch. Absent means
-	// nothing has looked yet.
+	// nothing has proved anything yet — either nothing has looked, or the GitProvider was
+	// recreated against a different repository and what was published no longer describes the
+	// one this target points at.
 	// +optional
 	Remote *GitTargetRemoteStatus `json:"remote,omitempty"`
 }
 
 // GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
 //
-// It is written whenever the revision changes — including a revision we pushed ourselves —
-// and otherwise only when the published timestamp is older than one refresh interval. The
-// revision has to move with the fact it dates: a field showing a ten-minute-old revision on the
-// target an operator is actively editing is not a freshness field but a slower copy of one.
+// It is written whenever the revision changes — including one we pushed ourselves — and otherwise
+// only when the published timestamp is older than one refresh interval: the revision has to move
+// with the fact it dates.
 type GitTargetRemoteStatus struct {
 	// Revision is the commit the branch is at on the remote. EMPTY means the branch is not on
 	// the remote at all, which is not an error: a branch does not exist without a commit, and a

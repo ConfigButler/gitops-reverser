@@ -122,6 +122,15 @@ type BranchWorker struct {
 	// never wrote to it.
 	lastObservation atomic.Pointer[RemoteObservation]
 
+	// observationWithdrawnState records that the observation was dropped because the GitProvider
+	// now names a DIFFERENT repository, and that whatever was published from it has to be taken
+	// back. Dropping the record alone is not enough: the revision an operator reads lives in the
+	// watch plane's projection and in status.remote, and if the new repository is unreachable
+	// nothing would ever replace it. It is cleared by the next observation that is actually
+	// proved, and it stays set until then so every target on this branch withdraws on its own
+	// tick, not only the one that happened to notice the change.
+	observationWithdrawnState atomic.Bool
+
 	// repoMu serializes repository/worktree operations within this worker.
 	repoMu sync.Mutex
 
@@ -1613,11 +1622,11 @@ func (w *BranchWorker) noteRemoteIdentity(remoteURL string) {
 	w.invalidateBase("remote repository changed")
 	// The observation goes with the trust, and for a sharper reason: it is a statement about a
 	// REPOSITORY, and this is a different one. Left in place it would be reported as this
-	// GitTarget's remote state — a revision from a repository the target no longer points at —
-	// and a fresh enough one would also let the refresher skip the look that would have
-	// corrected it. Dropping it makes the next refresh unconditional, which is what a worker
-	// that has just met a new remote should do.
+	// GitTarget's remote state, and a fresh enough one would also suppress the look that corrects
+	// it. Dropping it makes the next refresh unconditional; the withdrawal takes back what the
+	// old one already published.
 	w.lastObservation.Store(nil)
+	w.observationWithdrawnState.Store(true)
 }
 
 // ensureBaseForCycle performs the head-of-cycle fetch, which is now conditional.
@@ -1790,29 +1799,25 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		outcome, err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
 		if err == nil {
 			// A push that returns without an error is an OBSERVATION of the remote, on the
-			// connection it was opening anyway: the server took the ref update, or the
-			// advertisement already showed the branch at our head, or the advertisement did not
-			// carry the branch at all. All three say where the branch is, so all three take
-			// trust — including the push that CREATED the branch, which the old branchExists
-			// guard (read from the last fetch, the only writer) wrongly excluded.
+			// connection it was opening anyway: the server took the ref update, the advertisement
+			// already showed the branch at our head, or it did not carry the branch at all. All
+			// three say where the branch is, so all three take trust — including the push that
+			// CREATED the branch, which the old branchExists guard (written by fetches alone)
+			// wrongly excluded.
 			//
 			// This must NOT clear worktreeDirty. An earlier write can have failed part-way
 			// through executePendingWrites and left staged changes behind while this write was
-			// retained; a successful push says where the remote is, and says nothing about that.
+			// retained; a successful push says where the remote is, and nothing about that.
 			w.setBaseTrusted(true)
-			// The observation, on all three non-error exits. This is the half a fetch-only
-			// record could not carry: on an active branch the push is the event that MOVES the
-			// revision, so a record only fetches wrote to named whatever the last fetch saw,
-			// however many commits ago.
+			// The half a fetch-only record could not carry: on an active branch the push is the
+			// event that MOVES the revision.
 			revision := ""
 			if !outcome.Head.IsZero() {
 				revision = outcome.Head.String()
 			}
 			observed := w.recordRemoteObservation(revision, ObservedByPush)
-			// Reported against the targets these writes were for. A push is the frequent
-			// producer and the one that MOVES the revision, so this is where status.remote
-			// earns its place: on an active target it shows where the branch is, and it costs
-			// no round trip — the connection has already been made.
+			// Reported against the targets these writes were for, at no round trip: the
+			// connection has already been made.
 			w.reportRemoteObservation(pendingWriteTargets(pendingWrites), observed)
 			w.Log.V(1).Info("Remote observed by push",
 				"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
@@ -2188,9 +2193,10 @@ const (
 
 // Queue-drop kinds. The set covers every item that can be refused by a full queue.
 const (
-	queueDropWrite  = "write"
-	queueDropAttach = "attach"
-	queueDropResync = "resync"
+	queueDropWrite   = "write"
+	queueDropAttach  = "attach"
+	queueDropResync  = "resync"
+	queueDropRefresh = "refresh"
 )
 
 // commitLabels is the {author_kind, message_source} pair one commit is counted under.
@@ -2396,8 +2402,15 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) RemoteObservation {
 	observed := RemoteObservation{Revision: revision, At: time.Now(), By: by}
 	w.lastObservation.Store(&observed)
+	// Something has now been proved about the repository the worker points at, so there is
+	// nothing left to take back.
+	w.observationWithdrawnState.Store(false)
 	return observed
 }
+
+// observationWithdrawn reports that the last observation was about a repository this worker no
+// longer points at, so anything published from it must be withdrawn rather than left standing.
+func (w *BranchWorker) observationWithdrawn() bool { return w.observationWithdrawnState.Load() }
 
 // syncWithRemote fetches latest changes from remote and resets onto them. It is the
 // no-retained-writes half of a refresh; resync_flush.go and invalidateAndRefresh are its callers.

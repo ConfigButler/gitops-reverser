@@ -762,8 +762,8 @@ func gitTargetReadinessGates(
 //
 // The worker decides whether to spend a connection: the age test is its own, because only it
 // knows when it last pushed. A target sharing a branch with a busy one therefore costs nothing
-// here and still gets its status renewed, because the worker reports the existing observation
-// before it skips.
+// here and still gets its status renewed, because the worker reports what it knows before it
+// skips.
 //
 // A suspended target refreshes too, for the reason its layout is still scanned: a stopped valve
 // that also stopped looking would freeze what an operator reads at whatever Git looked like when
