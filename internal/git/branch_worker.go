@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -345,6 +346,33 @@ func (w *BranchWorker) repoRootPath() string {
 
 func (w *BranchWorker) repoPathForRemote(remoteURL string) string {
 	return filepath.Join(w.repoRootPath(), repoCacheKey(remoteURL))
+}
+
+// removeLocalState deletes everything this worker kept on disk: the clone of every remote it
+// worked with, under its own (provider namespace, provider, branch) directory.
+//
+// It is called only when a worker is being retired because nothing needs it any more, never on
+// shutdown — a restart wants the clones it left behind, and re-cloning every branch on every
+// restart is exactly the cost the on-disk cache exists to avoid.
+//
+// The identity guard is not defensive programming. repoRootPath joins the three identity fields
+// into a fixed prefix, so a worker with empty fields — which tests build — resolves to the ROOT of
+// every worker's state, and deleting that would take out the live workers next to it.
+func (w *BranchWorker) removeLocalState() {
+	if w.GitProviderNamespace == "" || w.GitProviderRef == "" || w.Branch == "" {
+		w.Log.V(1).Info("Not removing worker state: the worker has no complete identity")
+		return
+	}
+	// The branch directory rather than the repos/ tree inside it, so nothing is left behind to
+	// accumulate one empty directory per branch the operator ever mirrored.
+	path := filepath.Dir(w.repoRootPath())
+	if err := os.RemoveAll(path); err != nil {
+		// Worth knowing and not worth failing for: the worker is gone either way, and what is
+		// left is disk rather than anything that can produce a wrong answer.
+		w.Log.Error(err, "Could not remove the retired worker's checkout", "path", path)
+		return
+	}
+	w.Log.Info("Removed the retired worker's checkout", "path", path)
 }
 
 // Start begins processing events.

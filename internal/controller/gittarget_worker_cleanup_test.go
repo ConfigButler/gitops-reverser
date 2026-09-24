@@ -4,17 +4,22 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -44,7 +49,7 @@ func TestCleanupDeletedGitTarget_StopsAWorkerNothingNeedsAnyMore(t *testing.T) {
 	require.True(t, exists)
 
 	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
-	r.cleanupDeletedGitTarget(ctx,
+	_ = r.cleanupDeletedGitTarget(ctx,
 		k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"}, logr.Discard())
 
 	_, exists = workers.GetWorkerForTarget("repo1", "shop", "main")
@@ -75,7 +80,7 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main"))
 
 	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
-	r.cleanupDeletedGitTarget(ctx,
+	_ = r.cleanupDeletedGitTarget(ctx,
 		k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"}, logr.Discard())
 
 	_, exists := workers.GetWorkerForTarget("repo1", "shop", "main")
@@ -87,7 +92,68 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 func TestCleanupDeletedGitTarget_WithoutAWorkerManager(t *testing.T) {
 	r := &GitTargetReconciler{}
 	assert.NotPanics(t, func() {
-		r.cleanupDeletedGitTarget(context.Background(),
+		_ = r.cleanupDeletedGitTarget(context.Background(),
 			k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"}, logr.Discard())
 	})
+}
+
+// TestCleanupDeletedGitTarget_RetriesWhenTheSweepCannotRead. The sweep is the only thing that ever
+// retires a worker, so a read that failed must come back. A deleted object still has a reconcile
+// key, so returning the error requeues this same pass; swallowing it would leave the worker and
+// its clone standing until some other GitTarget happens to be deleted, which nothing guarantees.
+func TestCleanupDeletedGitTarget_RetriesWhenTheSweepCannotRead(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return errors.New("the cache is not having it")
+			},
+		}).Build()
+
+	workers := git.NewWorkerManager(k8sClient, logr.Discard(), git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = workers.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main"))
+
+	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
+	err := r.cleanupDeletedGitTarget(ctx,
+		k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"}, logr.Discard())
+
+	require.Error(t, err, "the caller has to come back, or nothing ever retires this worker")
+	_, exists := workers.GetWorkerForTarget("repo1", "shop", "main")
+	assert.True(t, exists, "and the worker is still there, which is why the retry matters")
+}
+
+// TestHandleFetchError_RequeuesAFailedCleanup is the wiring of the rule above: the reconcile must
+// surface the error rather than reporting success for a pass that did not finish.
+func TestHandleFetchError_RequeuesAFailedCleanup(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return errors.New("the cache is not having it")
+			},
+		}).Build()
+
+	workers := git.NewWorkerManager(k8sClient, logr.Discard(), git.BranchWorkerLimits{},
+		types.SensitiveResourcePolicy{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = workers.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main"))
+
+	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
+	_, err := r.handleFetchError(ctx, apierrors.NewNotFound(
+		schema.GroupResource{Resource: "gittargets"}, "checkout"),
+		logr.Discard(), k8stypes.NamespacedName{Name: "checkout", Namespace: "shop"})
+
+	assert.Error(t, err)
 }

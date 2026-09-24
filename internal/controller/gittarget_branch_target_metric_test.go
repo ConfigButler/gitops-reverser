@@ -39,7 +39,7 @@ func TestGitTargetCleanup_ForgetsTheBranchTargetMapping(t *testing.T) {
 	require.True(t, ok, "precondition: the mapping is published")
 
 	r := &GitTargetReconciler{}
-	r.cleanupDeletedGitTarget(
+	_ = r.cleanupDeletedGitTarget(
 		context.Background(),
 		k8stypes.NamespacedName{Namespace: "team-a", Name: "mirror"},
 		logf.Log,

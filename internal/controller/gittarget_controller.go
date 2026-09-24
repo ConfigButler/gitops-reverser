@@ -1147,19 +1147,31 @@ func (r *GitTargetReconciler) handleFetchError(
 	namespacedName k8stypes.NamespacedName,
 ) (ctrl.Result, error) {
 	if client.IgnoreNotFound(err) == nil {
-		r.cleanupDeletedGitTarget(ctx, namespacedName, log)
+		cleanupErr := r.cleanupDeletedGitTarget(ctx, namespacedName, log)
 		log.Info("GitTarget not found, was likely deleted", "namespacedName", namespacedName)
-		return ctrl.Result{}, nil
+		// A deleted object still has a reconcile key, so returning the error requeues this same
+		// pass with backoff. That matters because the worker sweep is the ONLY thing that retires
+		// a worker: if its read of the GitTargets failed, swallowing the error here would leave
+		// the worker and its clone standing until another GitTarget somewhere is deleted, which
+		// nothing guarantees will ever happen.
+		return ctrl.Result{}, cleanupErr
 	}
 	log.Error(err, "unable to fetch GitTarget", "namespacedName", namespacedName)
 	return ctrl.Result{}, err
 }
 
+// cleanupDeletedGitTarget releases everything this reconciler and its data plane held for a
+// GitTarget that is gone.
+//
+// Every step is idempotent, and they all run before the error is returned: the in-memory releases
+// cannot fail, and the one step that can — the worker sweep, which reads the API — must not stop
+// the others from happening. The error it returns is the caller's signal to come back, not a
+// report that nothing was cleaned up.
 func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	ctx context.Context,
 	namespacedName k8stypes.NamespacedName,
 	log logr.Logger,
-) {
+) error {
 	gitDest := types.NewResourceReference(namespacedName.Name, namespacedName.Namespace)
 	// Unconditionally, and before the EventRouter check below: the tracker is the reconciler's own
 	// memory, so it must be released for a deleted target whether or not a data plane is wired. The
@@ -1176,17 +1188,18 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// shrunk. The sweep decides from the API, so a branch several GitTargets share keeps its worker
 	// while any of them is still listed. It runs ahead of the EventRouter check below because it is
 	// the WorkerManager's business, not the data plane's.
+	var sweepErr error
 	if r.WorkerManager != nil {
 		if err := r.WorkerManager.ReconcileWorkers(ctx); err != nil {
-			// Not an error the reconcile can act on: the object is already gone, so there is
-			// nothing to requeue for. The next deletion sweeps again.
 			log.V(1).Info("Could not sweep branch workers after a GitTarget was deleted",
 				"error", err.Error())
+			sweepErr = fmt.Errorf("sweep branch workers after %s was deleted: %w",
+				namespacedName.String(), err)
 		}
 	}
 
 	if r.EventRouter == nil {
-		return
+		return sweepErr
 	}
 
 	r.EventRouter.UnregisterGitTargetEventStream(gitDest)
@@ -1199,6 +1212,7 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	}
 
 	log.V(1).Info("Cleaned up in-memory state for deleted GitTarget", "gitDest", gitDest.String())
+	return sweepErr
 }
 
 func clampIntToInt32(value int) int32 {

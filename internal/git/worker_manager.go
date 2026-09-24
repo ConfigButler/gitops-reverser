@@ -318,6 +318,11 @@ func (m *WorkerManager) removeWorkers(keys []BranchKey, reason string) {
 	for key, worker := range detached {
 		m.Log.Info("Stopping branch worker", "key", key.String(), "reason", reason)
 		worker.Stop()
+		// After Stop, never before: Stop waits for the loop goroutine, so until it returns the
+		// worktree can still be written. A worker being retired takes its clone with it — the
+		// goroutine was only half the leak, and the checkout is the half that survives a
+		// restart.
+		worker.removeLocalState()
 	}
 }
 

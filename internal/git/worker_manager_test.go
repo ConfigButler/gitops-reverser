@@ -5,6 +5,7 @@ package git
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -398,4 +399,52 @@ func TestRemoveWorkers_IgnoresAKeyThatNamesNoWorker(t *testing.T) {
 			RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main",
 		}}, "test")
 	})
+}
+
+// TestReconcileWorkers_RemovesTheRetiredWorkersCheckout. Stopping the goroutine was only half the
+// leak. Each worker keeps a clone per remote under its own (provider, branch) directory, and that
+// half survives a restart, so a cluster that creates and deletes targets accumulates checkouts
+// until somebody notices the disk.
+func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
+	scheme := setupScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = manager.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	createProviderWithLocalRepo(ctx, t, k8sClient, "repo1")
+	createTargetForRegister(ctx, t, k8sClient, "target1", "repo1", "main", "apps/")
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", testTargetNamespace, "main"))
+
+	worker, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	require.True(t, exists)
+	// Stand in for the clone a first publication would leave behind.
+	checkout := worker.repoPathForRemote("https://example.invalid/repo.git")
+	require.NoError(t, os.MkdirAll(checkout, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(checkout, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
+	t.Cleanup(func() { _ = os.RemoveAll(worker.repoRootPath()) })
+
+	require.NoError(t, k8sClient.Delete(ctx, targetForRegister("target1")))
+	require.NoError(t, manager.ReconcileWorkers(ctx))
+
+	_, err := os.Stat(checkout)
+	assert.True(t, os.IsNotExist(err), "the retired worker's checkout must go with it")
+}
+
+// TestRemoveLocalState_RefusesAWorkerWithNoIdentity. repoRootPath joins the three identity fields
+// into a fixed prefix, so a worker with empty fields resolves to the ROOT of every worker's state.
+// Deleting that would take out the live workers beside it, which is a far worse outcome than the
+// leak this reclaims.
+func TestRemoveLocalState_RefusesAWorkerWithNoIdentity(t *testing.T) {
+	root := (&BranchWorker{Log: logr.Discard()}).repoRootPath()
+	require.NoError(t, os.MkdirAll(root, 0o750))
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	(&BranchWorker{Log: logr.Discard()}).removeLocalState()
+
+	_, err := os.Stat(root)
+	assert.NoError(t, err, "a worker with no identity must never delete the shared root")
 }
