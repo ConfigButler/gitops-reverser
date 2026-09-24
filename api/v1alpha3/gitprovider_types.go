@@ -141,6 +141,20 @@ type GitProviderStatus struct {
 	// +optional
 	SigningPublicKey string `json:"signingPublicKey,omitempty"`
 
+	// Branches lists the branches this repository's GitTargets are configured to write, with how
+	// many reference each. It answers what the repository is being used for, so it includes a
+	// branch whose targets are blocked or suspended and excludes a branch nothing references any
+	// more.
+	//
+	// It is not the branches that exist on the remote, and not the workers currently running: it
+	// moves only when somebody edits a GitTarget. An empty list beside Ready=True is the state
+	// this exists to make legible — configured and unused, which looks nothing like broken and
+	// previously took a GitTarget listing to tell apart.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Branches []GitProviderBranchStatus `json:"branches,omitempty"`
+
 	// LastVerifiedAt is when the credential and the repository were last proved together: the
 	// connectivity check listed the remote's refs with this provider's credential and the remote
 	// answered. It is never cleared — a failure is already carried by Ready=False with a reason —
@@ -151,6 +165,22 @@ type GitProviderStatus struct {
 	// that cadence. Providers are few and the check was already running; this adds no request.
 	// +optional
 	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
+}
+
+// GitProviderBranchStatus is one branch of this repository that GitTargets are configured to
+// write, and how many of them write it.
+type GitProviderBranchStatus struct {
+	// Name is the branch.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// GitTargets is how many GitTargets are configured to write this branch. More than one means
+	// they share a branch worker, and each still reports its own folder's health on its own
+	// conditions.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	GitTargets int32 `json:"gitTargets"`
 }
 
 // CommitSpec configures the commit identity and signing a GitProvider uses. Message formatting
