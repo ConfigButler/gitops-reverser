@@ -866,11 +866,13 @@ folder fixed clears it again.
 
 Raising that condition puts the target on the ten-second re-check loop, which is the recovery path:
 a human fixing a folder in Git produces no event either, so a periodic re-read is the only thing
-that can notice. What a refresh still never does is write **content**. It plans nothing, commits
-nothing and pushes nothing of its own. If you have opted into
-[`spec.onRefusal: PushEmptyCommit`](#reverting-a-refused-edit-speconrefusal), the recovery pass a
-refusal triggers can make that empty commit: the trigger you asked for, floored at one per minute
-per target and suppressed entirely for a refusal an earlier commit already covered.
+that can notice. What a refresh still never does is write anything. It plans nothing, commits
+nothing and pushes nothing.
+
+That includes [`spec.onRefusal: PushEmptyCommit`](#reverting-a-refused-edit-speconrefusal), which a
+folder refusal never triggers. That setting reverts a refused **edit**, and an empty commit cannot
+fix a folder: only a human can, and the reconciler may be part-way through its own corrections
+there.
 
 A refusal a **write** found is not cleared by a refresh. A structural read sees the files; it
 cannot see that a particular write may not touch one of them, so only the resync that writes the

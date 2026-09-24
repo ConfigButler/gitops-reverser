@@ -260,9 +260,10 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 // forceRecheck, which re-anchors the target's streams and drives a resync, and a refused target
 // then requeues on the fast interval. That is the intended recovery and not a side effect — see
 // gitTargetRequeue, which gives a stalled target the fast loop precisely because "someone fixes
-// the folder in Git" emits no event to wake it. It does not loop the branch with commits either:
-// spec.onRefusal is opt-in, floored at one commit per minute per target, and coveredRefusal
-// suppresses a commit for a refusal already covered by one.
+// the folder in Git" emits no event to wake it. It cannot loop the branch with commits either:
+// spec.onRefusal reverts a refused EDIT, and refusalIsAWriteBoundary admits only the three
+// edit-level issue kinds, so a folder refusal — which is the only kind a scan can raise — never
+// produces a commit at all.
 //
 // What this must still never do is write CONTENT. It builds no plan — an empty desired set is the
 // sweep-everything signal — and it publishes no layout for a folder it just refused, which is the
