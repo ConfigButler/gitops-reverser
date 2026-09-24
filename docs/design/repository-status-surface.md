@@ -12,7 +12,7 @@ become one. This page fixes what each surface reports, and at what rate.
 | Information | Where it lives |
 | --- | --- |
 | Branches configured, and how many folders reference each | `GitProvider.status.branches[{name, gitTargets}]` (new) |
-| Whether the credential may write | `GitProvider.status` condition `Writable` (new) |
+| Whether the remote opens a write session for the credential | `GitProvider.status` condition `Writable` (new) |
 | Configuration and health verdicts | the existing conditions on both objects |
 | The latest sampled branch observation | the existing `GitTarget.status.remote` |
 | Queue depth, pushes, failures, retries, drops | the existing metrics |
