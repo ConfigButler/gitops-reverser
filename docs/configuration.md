@@ -189,7 +189,8 @@ status:
 
 It is a statement about **configuration**, not about the remote and not about what is running: a
 suspended or blocked `GitTarget` still says what the repository is for, and a branch that exists on
-the remote but nothing writes never appears. It moves only when somebody edits a `GitTarget`.
+the remote but nothing writes never appears. It is re-derived on the provider's own reconcile tick,
+so a `GitTarget` edit reaches it within one steady interval.
 
 `Ready=True` beside `branches: []` is the state it exists to make readable: **configured and
 unused**, which looks nothing like broken, and which otherwise takes a `GitTarget` listing to tell
@@ -862,19 +863,19 @@ target that is publishing never needs anything else. An **idle** target is asked
 its reconcile tick; see
 [`--git-refresh-interval`](#keeping-an-idle-target-fresh---git-refresh-interval) below.
 
-**What is proved and what is published are two different rates.** An observation of a branch is one
-fact, and it reaches every `GitTarget` on that branch the moment it is proved, in memory and for
-nothing. Writing it to status is not free: ten folders sharing a branch would turn one commit into
-ten status writes, each invalidating every watcher's cached copy of the type. So each target
-publishes at most **once a minute**, and `status.remote` can be up to that far behind the last
-observation: push and read status immediately, and you may still see the previous revision. The
-target comes back on the deadline to publish it, rather than waiting for its next five-minute tick.
+**What is proved and what is published are two different rates.** An observation of a branch is
+one fact, and it reaches every `GitTarget` on that branch the moment it is proved, in memory and
+for nothing. Writing it to status is not free: ten folders sharing a branch would turn one commit
+into ten status writes, each invalidating every watcher's cached copy of the type. So each target
+publishes what it holds **when it reconciles** (no commit wakes anybody), and writes this stanza
+at most once a minute however often it reconciles. Push and read status immediately, and you may
+see the previous revision until that target's next tick.
 
-Two things are never held back, because they are health rather than throughput: the **first**
-observation, and **taking back** a revision that names a repository the target no longer points at
-(a recreated `GitProvider` with a different URL). And none of this promises anything about the
-branch itself: an unreachable remote yields no observation at all, which is exactly what the pair
-`revision` + `lastVerifiedAt` is there to say.
+Two corrections are never held back, because they are not throughput: the **first** observation,
+and **taking back** a revision that names a repository the target no longer points at (a recreated
+`GitProvider` with a different URL). And none of this promises anything about the branch itself: an
+unreachable remote yields no observation at all, which is exactly what the pair `revision` +
+`lastVerifiedAt` is there to say.
 
 `GitProvider.status.lastVerifiedAt` is the same word for the connection rather than the branch:
 when the credential and the repository were last proved together. It is never cleared, so

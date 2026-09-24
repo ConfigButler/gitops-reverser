@@ -17,8 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -114,46 +112,4 @@ func TestPublishBranchInventory_ReadsOnlyTheProvidersOwnNamespace(t *testing.T) 
 	require.NoError(t, r.publishBranchInventory(context.Background(), provider))
 	assert.Equal(t, []configbutleraiv1alpha3.GitProviderBranchStatus{{Name: "main", GitTargets: 1}},
 		provider.Status.Branches)
-}
-
-// TestGitTargetToGitProvider_NamesTheProviderInTheTargetsNamespace.
-func TestGitTargetToGitProvider_NamesTheProviderInTheTargetsNamespace(t *testing.T) {
-	r := &GitProviderReconciler{}
-
-	assert.Equal(t,
-		[]reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: "shop", Name: "repo1"}}},
-		r.gitTargetToGitProvider(context.Background(), inventoryTarget("apps", "repo1", "main")))
-	assert.Nil(t, r.gitTargetToGitProvider(context.Background(), inventoryTarget("apps", "", "main")),
-		"a target that names no provider enqueues nothing")
-	assert.Nil(t, r.gitTargetToGitProvider(context.Background(),
-		&configbutleraiv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Name: "repo1"}}),
-		"and neither does an object of another kind")
-}
-
-// TestGitTargetInventoryChanged_IgnoresTheStatusWritesEveryTargetMakes. A GitTarget publishes
-// status on its own tick; waking every GitProvider in the namespace for each of those would make
-// the inventory the noisiest thing in the process.
-func TestGitTargetInventoryChanged_IgnoresTheStatusWritesEveryTargetMakes(t *testing.T) {
-	p := gitTargetInventoryChanged()
-	before := inventoryTarget("apps", "repo1", "main")
-
-	assert.True(t, p.Create(event.CreateEvent{Object: before}))
-	assert.True(t, p.Delete(event.DeleteEvent{Object: before}))
-
-	statusOnly := before.DeepCopy()
-	statusOnly.Status.Remote = &configbutleraiv1alpha3.GitTargetRemoteStatus{Revision: "abc"}
-	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: statusOnly}))
-
-	repointed := before.DeepCopy()
-	repointed.Spec.Branch = "release"
-	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: repointed}))
-
-	reprovidered := before.DeepCopy()
-	reprovidered.Spec.GitProviderRef.Name = "repo2"
-	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: reprovidered}))
-
-	deleting := before.DeepCopy()
-	deleting.DeletionTimestamp = &metav1.Time{Time: time.Now()}
-	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: deleting}),
-		"a target on its way out stops being what the repository is for")
 }

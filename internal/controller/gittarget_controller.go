@@ -147,6 +147,10 @@ type GitTargetReconciler struct {
 	// so a standing annotation forces one re-read rather than one per reconcile forever. Its zero
 	// value is usable.
 	reconcileRequests reconcileRequestTracker
+
+	// remotePublications is what each GitTarget last wrote to status.remote: when, and about which
+	// repository. It is internal by design; see remotePublicationLedger.
+	remotePublications remotePublicationLedger
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
@@ -180,8 +184,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, providerErr
 	}
 
-	// Folded into every requeue below, stalled ones included: see publishGitObservations.
-	remoteDue := r.publishGitObservations(st, &target, providerNS, repoIdentityOf(gitProvider))
+	r.publishGitObservations(st, &target, providerNS, repoIdentityOf(gitProvider))
 
 	// Ahead of every gate, for the reason the layout stanza above is: the join series has to carry
 	// the targets that are NOT working. git_pushes_total names a branch that stopped advancing and
@@ -211,10 +214,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"Blocked by Validated=False",
 		)
 		return r.stall(ctx, st, blockedGate{
-			reason:       GitTargetReadyReasonValidationFailed,
-			message:      validationMsg,
-			blocked:      "Blocked by Validated=False",
-			requeueAfter: remoteDue,
+			reason:  GitTargetReadyReasonValidationFailed,
+			message: validationMsg,
+			blocked: "Blocked by Validated=False",
 		})
 	}
 
@@ -224,7 +226,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			reason:       GitTargetReadyReasonEncryptionNotConfigured,
 			message:      encryptionMessage,
 			blocked:      "Blocked by EncryptionConfigured=False",
-			requeueAfter: soonerRequeue(encryptionRequeueAfter, remoteDue),
+			requeueAfter: encryptionRequeueAfter,
 		})
 	}
 
@@ -234,10 +236,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	wired, wiringMessage := r.evaluateWorkerWiringGate(ctx, &target, providerNS, repoIdentityOf(gitProvider), log)
 	if !wired {
 		return r.stall(ctx, st, blockedGate{
-			reason:       GitTargetReadyReasonWorkerUnavailable,
-			message:      wiringMessage,
-			blocked:      "Blocked by worker wiring failure",
-			requeueAfter: remoteDue,
+			reason:  GitTargetReadyReasonWorkerUnavailable,
+			message: wiringMessage,
+			blocked: "Blocked by worker wiring failure",
 		})
 	}
 
@@ -278,7 +279,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// requeueAfter shortens the cadence when the status write lost a race: the object then holds
 	// the WINNER's older answer and nothing re-enqueues it, because the For() predicate filters
 	// status-only updates by design.
-	requeue := st.requeueAfter(soonerRequeue(gitTargetRequeue(rd), remoteDue))
+	requeue := st.requeueAfter(gitTargetRequeue(rd))
 	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
 	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
 	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
@@ -834,43 +835,18 @@ func (r *GitTargetReconciler) requestRemoteRefresh(
 // It runs ahead of every gate, so a target held unready still shows both. That ordering is the
 // point rather than a convenience: these stanzas exist to explain a refused or surprising write,
 // and a projection that ran only on the happy path would be missing exactly when it is wanted.
-//
-// It returns how long until this target owes status.remote another look, zero meaning none is
-// owed. The caller folds it into whatever requeue it was going to take — including a stalled
-// one — because a bounded publication is a promise about wall-clock lag, and a target that took
-// a gate's five-minute cadence instead would break it.
+
 func (r *GitTargetReconciler) publishGitObservations(
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	repo git.RepoIdentity,
-) time.Duration {
+) {
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
 
-	now := time.Now()
 	remote, remoteSeen := r.observeRemote(target, providerNS)
-	dueIn := publishRemote(target, remote, remoteSeen, repo, now, RemotePublicationInterval)
-	// This reconcile has just asked the remote where the branch is (requestRemoteRefresh enqueues
-	// whenever the observation is older than the interval the operator configured), so the answer
-	// lands on the worker moments from now — after this status write. Nothing delivers it here,
-	// by design, so the deadline is what this target comes back on: without it the answer would
-	// sit undelivered until the next steady tick, five minutes later.
-	if r.GitRefreshInterval > 0 && (!remoteSeen || remote.Age(now) >= r.GitRefreshInterval) {
-		dueIn = soonerRequeue(dueIn, RemotePublicationInterval)
-	}
-	return dueIn
-}
-
-// soonerRequeue folds a due time into a requeue, where zero means "nothing due".
-func soonerRequeue(current, candidate time.Duration) time.Duration {
-	if candidate <= 0 {
-		return current
-	}
-	if current <= 0 || candidate < current {
-		return candidate
-	}
-	return current
+	r.publishRemote(target, remote, remoteSeen, repo, time.Now())
 }
 
 // ensureEventStream wires this GitTarget to the branch worker for the repository its GitProvider

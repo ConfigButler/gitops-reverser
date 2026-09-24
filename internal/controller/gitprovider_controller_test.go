@@ -312,10 +312,12 @@ var _ = Describe("GitProvider Controller", func() {
 			// The inventory is a question about configuration, so it is published ahead of every
 			// gate: an operator looking at a red GitProvider still needs to see what it is FOR.
 			//
-			// Nothing here calls Reconcile. The suite's manager owns this object, and the point of
-			// the assertions below is that a GitTarget edit reaches it at all — the GitProvider's
-			// own predicate cannot see one, so without the Watches this would converge only on the
-			// five-minute steady tick.
+			// The inventory is re-derived on the provider's own reconcile, deliberately with no
+			// watch on GitTarget: this reconcile also proves the credential against the remote, so
+			// an edge per GitTarget edit would spend a round trip to answer a question about
+			// configuration. Each step below therefore drives one reconcile, inside Eventually
+			// because the suite's manager reconciles the same object and either write can lose the
+			// optimistic lock.
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-provider-inventory", Namespace: "default"},
 				Spec: configbutleraiv1alpha3.GitProviderSpec{
@@ -327,6 +329,8 @@ var _ = Describe("GitProvider Controller", func() {
 
 			key := types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace}
 			branches := func(g Gomega) []configbutleraiv1alpha3.GitProviderBranchStatus {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+				g.Expect(err).NotTo(HaveOccurred())
 				published := &configbutleraiv1alpha3.GitProvider{}
 				g.Expect(k8sClient.Get(ctx, key, published)).To(Succeed())
 				return published.Status.Branches
@@ -349,13 +353,13 @@ var _ = Describe("GitProvider Controller", func() {
 				}
 			})
 
-			Eventually(branches, "30s", "250ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
+			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
 				{Name: "main", GitTargets: 2},
 				{Name: "release", GitTargets: 1},
 			}), "two folders share the main branch, and they share one branch worker with it")
 
 			Expect(k8sClient.Delete(ctx, targets[2])).To(Succeed())
-			Eventually(branches, "30s", "250ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
+			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
 				{Name: "main", GitTargets: 2},
 			}), "a branch nothing references any more is not what this repository is for")
 		})

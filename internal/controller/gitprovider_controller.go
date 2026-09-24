@@ -19,7 +19,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -334,14 +333,6 @@ func (r *GitProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(
 			&configbutleraiv1alpha3.GitProvider{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
-		// React to the GitTargets that reference this provider, so status.branches follows the
-		// configuration instead of lagging up to one steady interval behind it. The For()
-		// predicate above cannot: nothing about a GitTarget changes this object's generation.
-		Watches(
-			&configbutleraiv1alpha3.GitTarget{},
-			handler.EnqueueRequestsFromMapFunc(r.gitTargetToGitProvider),
-			builder.WithPredicates(gitTargetInventoryChanged()),
 		).
 		Named("gitprovider").
 		Complete(r)

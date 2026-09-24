@@ -10,8 +10,9 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 ## `GitTarget.status.remote` is sampled, and a `GitProvider` lists its branches
 
 **Not breaking for any field, and a change of promise for one.** `status.remote.revision` is a
-**sampled** value: a target publishes it at most once a minute, so a push followed immediately by a
-`kubectl get` can still show the previous revision. It used to be written on every change, which
+**sampled** value: a target publishes what it holds when it reconciles, and writes the stanza at
+most once a minute, so a push followed immediately by a `kubectl get` can still show the previous
+revision. It used to be written on every change, which
 meant ten folders sharing a branch turned one commit into ten status writes — each an etcd write
 that invalidates the cached copy every watcher of the type holds.
 
@@ -24,7 +25,7 @@ longer points at.
 ### What to change
 
 **Automation that reads `status.remote.revision` to confirm its own push has landed needs a
-timeout of at least a minute**, or should read Git instead: that field answers "where is my branch",
+timeout of minutes, not seconds**, or should read Git instead: that field answers "where is my branch",
 not "did my write go through". A `CommitRequest`'s own status is what answers the second question.
 
 ### What you gain

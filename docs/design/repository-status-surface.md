@@ -45,34 +45,38 @@ So the `remote` tuple is **sampled** rather than published on every change. Two 
 because they are health rather than throughput: a condition transition, and clearing `remote` when
 the repository identity no longer matches.
 
-### The deadline is a wall clock, not a cadence
+### What publication promises, and what it does not
 
-"Sampled onto the target's reconcile cadence" is not a bound, and saying it that way hides two
-different failures. The rule is one number, `RemotePublicationInterval`:
+The sampling rule is deliberately the plainest one available, because every extra scheduling
+guarantee has to be threaded through every early return the reconcile has:
 
-- **At most one `status.remote` write per `GitTarget` per interval**, measured in wall clock from
-  the observation currently published. Not from the gap between two observations, which is what
-  today's quantizer compares and which stops moving exactly when the remote does.
-- **A target holding something newer requeues on the remainder of that interval.** Without this the
-  deadline would be decorative: the write would land on whatever tick came next, which for a
-  converged target is five minutes. This is what makes an interval SHORTER than the reconcile
-  cadence mean what it says, and it is also what keeps the data plane from waking anything:
-  delivery notifies nobody, so no sibling is woken by a commit.
-- **The lag is stated against the latest OBSERVATION, never against the branch.** No maximum lag
-  against the actual branch is available at any price: an unreachable remote yields no observation at
-  all, and the pair (`revision`, `lastVerifiedAt`) is precisely what says so.
+- **A `GitTarget` publishes what it holds when it reconciles**, on its own cadence. Nothing in the
+  data plane wakes a target because a branch moved, so a commit costs no reconciles at all; the
+  lag on a converged target is therefore up to one `RequeueSteadyInterval`, the same freshness
+  every other projection on this object has.
+- **On top of that sits one floor**, `RemotePublicationInterval`, so a target reconciling in a
+  tight loop still writes this stanza at most once a minute. It is measured from the last WRITE,
+  which is kept in memory and never published: the observation's own timestamp cannot measure it,
+  because an observation proved just before a write and one proved just after are seconds apart
+  while the writes are not.
+- **The lag is stated against the latest OBSERVATION, never against the branch.** No bound against
+  the actual branch is available at any price: an unreachable remote yields no observation at all,
+  and the pair (`revision`, `lastVerifiedAt`) is precisely what says so.
+
+Two corrections skip the floor, because they are not throughput: the first observation, and a
+revision that names a repository the target has left. The second follows what THIS target
+published (also kept in memory) rather than the latest shared observation, which a sibling on the
+same branch may already have renewed against the new repository.
 
 Removing the revision bypass from
-[`remoteStatusIsNews`](../../internal/controller/gittarget_remote.go) is necessary and not
-sufficient. That function also treats a changed `verifiedBy` as news, which it is not: `Push` to
-`Fetch` is the same answer proved a second way, and the watch plane already ignores it for that
-reason. News becomes "a different revision, or the same one proved later", and the rate bound above
-applies to whatever passes it.
+[`remoteStatusIsNews`](../../internal/controller/gittarget_remote.go) is part of it. That function
+also treated a changed `verifiedBy` as news, which it is not: `Push` to `Fetch` is the same answer
+proved a second way, and the watch plane already ignores it for that reason. News is "a different
+revision, or the same one proved later".
 
-**This changes a promise, so it is worth stating plainly.** `status.remote.revision` becomes a
-sampled value that can lag the last observation by up to one publication interval, so an operator
-who pushes and immediately reads status may still see the previous revision. The alternative is a
-status field that moves at commit rate, which is what the
+**This changes a promise, so it is worth stating plainly.** `status.remote.revision` is sampled, so
+an operator who pushes and immediately reads status may see the previous revision until the target
+next reconciles. The alternative is a status field that moves at commit rate, which is what the
 [status rate rule](../spec/status-conditions-guide.md) rejects.
 
 ## Example: two `GitTarget`s on one `GitProvider`
@@ -234,10 +238,12 @@ destination being mistaken in the first place.
 ## Order of work
 
 1. **Done.** The inventory: `branches[{name, gitTargets}]`, derived from the configured
-   `GitTarget`s, kept current by a filtered `Watches()` edge on `GitTarget`.
-2. **Done.** Shared delivery plus bounded publication. The observation is recorded once, where it
+   `GitTarget`s on the provider's own steady tick. No watch on `GitTarget`: this reconcile also
+   proves the credential against the remote, so an edge per edit would spend a round trip and move
+   `lastVerifiedAt` to answer a question about configuration.
+2. **Done.** Shared delivery plus sampled publication. The observation is recorded once, where it
    is proved, and kept per branch by the worker manager, so it outlives the worker that proved it
-   and the per-target projection is gone. Publication follows the deadline rule above.
+   and the per-target projection is gone. Publication follows the rule above.
 3. The write probe, publishing `Writable` and nothing else.
 4. `Writable` gates `Ready`, with the upgrade note. Separate, because it is the only step that
    changes what an existing field means.

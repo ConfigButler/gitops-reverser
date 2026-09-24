@@ -440,3 +440,27 @@ func TestRenderFidelityGate_InvalidateDropsAWriteDivergence(t *testing.T) {
 	require.True(t, applied)
 	assert.True(t, gate.AllowsWrites(target))
 }
+
+// TestRenderFidelityGate_AnEmptyPlanCompletesAnInvalidation. A target whose rules select nothing
+// is converged by every other rule in this file, and an invalidation it could never clear would
+// hold it Rechecking for ever — on the fast reconcile loop, waiting for a report no stream will
+// make. An empty plan is not a measurement, so it still does not clear a write DIVERGENCE; it is
+// an applied plan, which is what an invalidation is waiting for.
+func TestRenderFidelityGate_AnEmptyPlanCompletesAnInvalidation(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scope := fidelityScope("apps", "deployments")
+
+	_, revisions := restartAll(gate, target, scope)
+	_, applied := gate.RecordScopeClean(target, revisions[scope], scope)
+	require.True(t, applied)
+
+	gate.Invalidate(target)
+	require.False(t, gate.AllowsWrites(target))
+
+	// The target's rules now select nothing, and that plan lands.
+	status, _ := gate.Reconcile(target, nil, nil)
+
+	assert.Equal(t, RenderFidelityTrue, status.State)
+	assert.True(t, gate.AllowsWrites(target), "nothing to mirror is converged, before and after a replacement")
+}

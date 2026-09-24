@@ -1166,10 +1166,9 @@ published, or that its streams are running. Those are the conditions' job.
 **Delivery is not publication**, and the split is deliberate. Delivery is immediate and costs
 nothing: the observation is recorded once, where it is proved, and every target on the branch reads
 the same tuple from that moment. Publication is a status write (an etcd write that invalidates
-every watcher's cached copy of the type), so it is sampled: each target writes `status.remote` at
-most once per publication interval, and nothing in the data plane wakes a target because a branch
-moved. A target holding something newer than what it published comes back on the deadline to write
-it.
+every watcher's cached copy of the type), so it is sampled: each target publishes what it holds
+when it reconciles, writes the stanza at most once a minute however often that is, and nothing in
+the data plane wakes a target because a branch moved.
 
 So two targets on one branch can show different times. That is publication lag, not a difference in
 what was proved, and each tuple is internally consistent: one observation from one moment, never

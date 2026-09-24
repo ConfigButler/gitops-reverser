@@ -148,6 +148,13 @@ func (g *RenderFidelityGate) Reconcile(
 	// admitted again on the strength of nothing.
 	if len(scopes) > 0 && fresh == len(scopes) {
 		state.writeDivergence = nil
+	}
+	// The invalidation is cleared by a completed plan, INCLUDING an empty one. A divergence needs
+	// a measurement to repair it, which an empty plan is not; an invalidation needs a plan that
+	// has been applied against the new repository, and "this target selects nothing" is one. A
+	// target with no scopes is converged by every other rule here, and holding it Rechecking for
+	// ever would keep it on the fast reconcile loop waiting for a report nothing will ever make.
+	if fresh == len(scopes) {
 		state.awaitingFreshMeasurement = false
 	}
 	g.targets[target.Key()] = state
