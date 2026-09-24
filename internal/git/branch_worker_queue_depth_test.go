@@ -128,7 +128,7 @@ func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
 
 	ensured := make(chan struct{})
 	go func() {
-		_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main")
+		_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main", RepoIdentity{})
 		close(ensured)
 	}()
 

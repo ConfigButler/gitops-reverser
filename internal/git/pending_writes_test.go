@@ -78,7 +78,16 @@ func TestPendingWrites_ResolvesEncryptionOncePerUniqueTarget(t *testing.T) {
 		Build()
 
 	counting := &countingClient{Client: baseClient}
-	worker := NewBranchWorker(counting, logr.Discard(), providerName, "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		counting,
+		logr.Discard(),
+		providerName,
+		"default",
+		"main",
+		RepoIdentity{URL: "file:///tmp/test-repo.git"},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = context.Background()
 
 	events := []Event{

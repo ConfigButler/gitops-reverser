@@ -73,6 +73,15 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) error {
 	return nil
 }
 
+// ServesWorker reports whether this stream still forwards to the given branch worker.
+//
+// It exists because a worker can be REPLACED in its slot — its GitProvider now names a different
+// repository — and a stream still pointing at the old one would enqueue live events onto a stopped
+// worker's queue, where nothing would ever write them.
+func (s *GitTargetEventStream) ServesWorker(worker EventEnqueuer) bool {
+	return s.branchWorker == worker
+}
+
 // String returns a string representation for debugging.
 func (s *GitTargetEventStream) String() string {
 	return fmt.Sprintf("GitTargetEventStream(gitTarget=%s/%s)", s.gitTargetNamespace, s.gitTargetName)

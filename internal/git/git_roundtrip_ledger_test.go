@@ -99,7 +99,16 @@ func newLedgerFixture(t *testing.T, slug string, seeded bool) *ledgerFixture {
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), providerName, "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		providerName,
+		"default",
+		"main",
+		RepoIdentity{URL: sim.RepoURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 	t.Cleanup(func() { _ = os.RemoveAll(worker.repoRootPath()) })
 

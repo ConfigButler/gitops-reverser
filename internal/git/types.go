@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
@@ -160,6 +161,35 @@ type BranchKey struct {
 func (k BranchKey) String() string {
 	return fmt.Sprintf("%s/%s/%s", k.RepoNamespace, k.RepoName, k.Branch)
 }
+
+// RepoIdentity is WHICH REPOSITORY a branch worker's clone, base trust and observations are
+// about. It is what BranchKey does not say: every field of that key comes off the GitTarget, and
+// none of them mentions the repository.
+//
+// The UID carries the identity because spec.url is immutable, so within the lifetime of one
+// GitProvider object the repository cannot change: a new object is the only way to reach a new
+// one, and that mints a new UID. The URL rides along as a safety net for an immutability rule
+// that was bypassed — a CRD reinstalled without the CEL rule, or a write straight to etcd. It is
+// compared EXACTLY, with no normalization, because a re-spelled URL can only arrive with a
+// recreate, which the UID has already caught.
+//
+// It is deliberately NOT part of BranchKey. That key is derivable from the GitTarget alone, which
+// is what lets the event router resolve a worker with a map read and no GitProvider in hand; a key
+// naming the repository would put a provider read on the per-event path, and would let two workers
+// for one (provider, branch) report under one set of metric labels while both were live.
+type RepoIdentity struct {
+	// ProviderUID is the GitProvider object's metadata.uid.
+	ProviderUID k8stypes.UID
+	// URL is the GitProvider's spec.url, exactly as it is written there.
+	URL string
+}
+
+// IsZero reports that nothing is known about the repository. The CLI and tests that never touch a
+// remote build workers this way, and a comparison against an unknown identity proves nothing.
+func (r RepoIdentity) IsZero() bool { return r.ProviderUID == "" && r.URL == "" }
+
+// String is for logs: enough to tell two repositories apart without printing a credential.
+func (r RepoIdentity) String() string { return fmt.Sprintf("%s (uid %s)", r.URL, r.ProviderUID) }
 
 // UserInfo contains relevant user information for commit messages.
 type UserInfo struct {

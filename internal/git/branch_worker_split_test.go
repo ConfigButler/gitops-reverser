@@ -160,7 +160,16 @@ func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, s
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 	return worker, serverRepo, remoteURL
 }

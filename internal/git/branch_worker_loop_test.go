@@ -46,7 +46,7 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 		target("quarter", &metav1.Duration{Duration: 250 * time.Millisecond}),
 		target("zero", &metav1.Duration{Duration: 0}),
 	).Build()
-	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{})
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", RepoIdentity{}, nil, BranchWorkerLimits{})
 	ctx := t.Context()
 
 	for _, tc := range []struct {
@@ -162,13 +162,31 @@ func TestNewBranchWorker_DefaultsBufferCap(t *testing.T) {
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{})
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", RepoIdentity{}, nil, BranchWorkerLimits{})
 	assert.Equal(t, DefaultBranchBufferMaxBytes, w.branchBufferMaxBytes)
 
-	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{MaxBufferBytes: 4096})
+	w = NewBranchWorker(
+		c,
+		logr.Discard(),
+		"p",
+		"ns",
+		"main",
+		RepoIdentity{},
+		nil,
+		BranchWorkerLimits{MaxBufferBytes: 4096},
+	)
 	assert.Equal(t, int64(4096), w.branchBufferMaxBytes)
 
-	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{MaxBufferBytes: -7})
+	w = NewBranchWorker(
+		c,
+		logr.Discard(),
+		"p",
+		"ns",
+		"main",
+		RepoIdentity{},
+		nil,
+		BranchWorkerLimits{MaxBufferBytes: -7},
+	)
 	assert.Equal(t, DefaultBranchBufferMaxBytes, w.branchBufferMaxBytes,
 		"non-positive override falls back to default")
 }
@@ -182,13 +200,13 @@ func TestNewBranchWorker_QueueDepthReachesTheChannel(t *testing.T) {
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{})
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", RepoIdentity{}, nil, BranchWorkerLimits{})
 	assert.Equal(t, DefaultBranchWorkerQueueDepth, cap(w.eventQueue))
 
-	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: 7})
+	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", RepoIdentity{}, nil, BranchWorkerLimits{QueueDepth: 7})
 	assert.Equal(t, 7, cap(w.eventQueue))
 
-	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: -1})
+	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", RepoIdentity{}, nil, BranchWorkerLimits{QueueDepth: -1})
 	assert.Equal(t, DefaultBranchWorkerQueueDepth, cap(w.eventQueue),
 		"non-positive override falls back to default")
 }
@@ -201,11 +219,20 @@ func TestNewBranchWorker_LimitsAreIndependent(t *testing.T) {
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: 3})
+	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", RepoIdentity{}, nil, BranchWorkerLimits{QueueDepth: 3})
 	assert.Equal(t, 3, cap(w.eventQueue))
 	assert.Equal(t, DefaultBranchBufferMaxBytes, w.branchBufferMaxBytes)
 
-	w = NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{MaxBufferBytes: 4096})
+	w = NewBranchWorker(
+		c,
+		logr.Discard(),
+		"p",
+		"ns",
+		"main",
+		RepoIdentity{},
+		nil,
+		BranchWorkerLimits{MaxBufferBytes: 4096},
+	)
 	assert.Equal(t, DefaultBranchWorkerQueueDepth, cap(w.eventQueue))
 	assert.Equal(t, int64(4096), w.branchBufferMaxBytes)
 }
@@ -219,7 +246,16 @@ func TestBranchWorker_QueueDepthBoundsAcceptedWrites(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	const depth = 5
-	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, BranchWorkerLimits{QueueDepth: depth})
+	w := NewBranchWorker(
+		c,
+		logr.Discard(),
+		"p",
+		"ns",
+		"main",
+		RepoIdentity{},
+		nil,
+		BranchWorkerLimits{QueueDepth: depth},
+	)
 
 	// The worker is never started, so nothing drains: the queue fills to exactly its depth.
 	for i := range depth {

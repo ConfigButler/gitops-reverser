@@ -173,9 +173,15 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st := beginStatus(r.Client, r.Recorder, &target)
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 
+	providerNS := target.Namespace
+	// One read of the GitProvider for everything below it; see getGitProvider.
+	gitProvider, providerErr := r.getGitProvider(ctx, providerNS, target.Spec.GitProviderRef.Name)
+	if providerErr != nil {
+		return ctrl.Result{}, providerErr
+	}
+
 	r.publishGitObservations(st, &target)
 
-	providerNS := target.Namespace
 	// Ahead of every gate, for the reason the layout stanza above is: the join series has to carry
 	// the targets that are NOT working. git_pushes_total names a branch that stopped advancing and
 	// cannot name the GitTargets behind it, and a mapping published only on the happy path would
@@ -185,7 +191,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		target.Namespace, target.Name, providerNS, target.Spec.GitProviderRef.Name, target.Spec.Branch,
 		target.SourceCluster())
 
-	validated, validationMsg, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS)
+	validated, validationMsg, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS, gitProvider)
 	if validationErr != nil {
 		return ctrl.Result{}, validationErr
 	}
@@ -223,7 +229,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Ensure the branch worker exists and register the GitTarget's event stream before declaring
 	// streams. The watch data plane can route live events as soon as it reaches Streaming, so the
 	// destination worker must already be wired.
-	wired, wiringMessage := r.evaluateWorkerWiringGate(&target, providerNS, log)
+	wired, wiringMessage := r.evaluateWorkerWiringGate(&target, providerNS, repoIdentityOf(gitProvider), log)
 	if !wired {
 		return r.stall(ctx, st, blockedGate{
 			reason:  GitTargetReadyReasonWorkerUnavailable,
@@ -256,15 +262,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st.setValue(GitTargetConditionGitPathAccepted, observed.axes.GitPath)
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
-	// Source-cluster reachability (runtime), GitProvider readiness (destination-side) and
-	// ClusterProvider readiness (source-config side) are published as conditions of their own AND
-	// contributed to the trio below. Publishing is all this does: nothing here writes Ready.
-	sourceReach := r.observeSourceReachable(&target)
-	provider := r.gitProviderReadiness(ctx, &target, providerNS)
-	clusterProvider := clusterProviderReadiness(sourceProvider)
-	st.setValue(GitTargetConditionSourceClusterReachable, sourceReach)
-	st.setValue(GitTargetConditionGitProviderReady, provider)
-	st.setValue(GitTargetConditionClusterProviderReady, clusterProvider)
+	refs := r.publishReferenceReadiness(st, &target, providerNS, gitProvider, sourceProvider)
 
 	rd := newGitTargetReadiness()
 	// A suspended target is healthy, not faulty: not writing is the configured outcome, and no
@@ -280,7 +278,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			Message: "GitTarget is suspended: it scans and publishes what it resolved, and writes nothing",
 		})
 	}
-	gitTargetReadinessGates(rd, observed, provider, clusterProvider, sourceReach)
+	gitTargetReadinessGates(rd, observed, refs.gitProvider, refs.clusterProvider, refs.sourceCluster)
 	st.applyReadiness(rd)
 
 	if err := st.commit(ctx); err != nil {
@@ -392,11 +390,9 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
+	provider *configbutleraiv1alpha3.GitProvider,
 ) (bool, string, error) {
-	validated, message, reason, err := r.validateProviderAndBranch(ctx, target, providerNS)
-	if err != nil {
-		return false, "", err
-	}
+	validated, message, reason := validateProviderAndBranch(target, providerNS, provider)
 	if !validated {
 		st.set(GitTargetConditionValidated, metav1.ConditionFalse, reason, message)
 		return false, fmt.Sprintf("Validated gate failed: %s", reason), nil
@@ -504,13 +500,14 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
+	repo git.RepoIdentity,
 	log logr.Logger,
 ) (bool, string) {
 	if r.EventRouter == nil {
 		return true, ""
 	}
 
-	if _, err := r.ensureEventStream(target, providerNS, log); err != nil {
+	if _, err := r.ensureEventStream(target, providerNS, repo, log); err != nil {
 		return false, fmt.Sprintf("Failed to wire branch worker/event stream for %s/%s: %v",
 			target.Namespace, target.Name, err)
 	}
@@ -713,6 +710,36 @@ func renderAxis(renderFidelity watch.RenderFidelityStatus) conditionValue {
 // is the order in which competing explanations are preferred. Adding a gate means adding a line
 // here, in the position where its answer should outrank the ones below it — not calling a setter
 // from wherever the gate happens to be evaluated.
+// referenceReadiness is what the three objects a GitTarget REFERENCES say about themselves:
+// destination-side (the GitProvider), source-config side (the ClusterProvider), and the runtime
+// reachability of the source cluster.
+type referenceReadiness struct {
+	gitProvider     conditionValue
+	clusterProvider conditionValue
+	sourceCluster   conditionValue
+}
+
+// publishReferenceReadiness writes those three as conditions of their own and returns them, so the
+// readiness trio can also take them into account. Publishing is all this does: nothing here
+// writes Ready.
+func (r *GitTargetReconciler) publishReferenceReadiness(
+	st *reconcileStatus,
+	target *configbutleraiv1alpha3.GitTarget,
+	providerNS string,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
+	sourceProvider *configbutleraiv1alpha3.ClusterProvider,
+) referenceReadiness {
+	refs := referenceReadiness{
+		gitProvider:     gitProviderReadiness(target, providerNS, gitProvider),
+		clusterProvider: clusterProviderReadiness(sourceProvider),
+		sourceCluster:   r.observeSourceReachable(target),
+	}
+	st.setValue(GitTargetConditionSourceClusterReachable, refs.sourceCluster)
+	st.setValue(GitTargetConditionGitProviderReady, refs.gitProvider)
+	st.setValue(GitTargetConditionClusterProviderReady, refs.clusterProvider)
+	return refs
+}
+
 func gitTargetReadinessGates(
 	rd *readiness,
 	observed dataPlaneObservation,
@@ -807,54 +834,60 @@ func (r *GitTargetReconciler) publishGitObservations(
 	publishRemote(target, remote, remoteSeen, r.GitRefreshInterval)
 }
 
+// ensureEventStream wires this GitTarget to the branch worker for the repository its GitProvider
+// names NOW, and wires the route live events take to reach it.
+//
+// EnsureWorker is called on EVERY reconcile rather than only when no worker is in the slot: it is
+// the one place that compares the slot's repository against repo, and a lookup that found a worker
+// says nothing about WHICH repository that worker is about. It is a map read and a lock when
+// nothing has changed.
 func (r *GitTargetReconciler) ensureEventStream(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
+	repo git.RepoIdentity,
 	log logr.Logger,
 ) (*reconcile.GitTargetEventStream, error) {
 	if r.WorkerManager == nil {
 		return nil, errors.New("worker manager is not configured")
 	}
 
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
+	if err := r.WorkerManager.EnsureWorker(
+		context.Background(),
+		target.Spec.GitProviderRef.Name,
+		providerNS,
+		target.Spec.Branch,
+		repo,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"failed to ensure branch worker for provider=%s/%s branch=%s: %w",
+			providerNS,
+			target.Spec.GitProviderRef.Name,
+			target.Spec.Branch,
+			err,
+		)
+	}
+
+	worker, ensured := r.WorkerManager.GetWorkerForTarget(
 		target.Spec.GitProviderRef.Name,
 		providerNS,
 		target.Spec.Branch,
 	)
-	if !exists {
-		if err := r.WorkerManager.EnsureWorker(
-			context.Background(),
-			target.Spec.GitProviderRef.Name,
+	if !ensured {
+		return nil, fmt.Errorf(
+			"branch worker not found for provider=%s/%s branch=%s",
 			providerNS,
-			target.Spec.Branch,
-		); err != nil {
-			return nil, fmt.Errorf(
-				"failed to ensure branch worker for provider=%s/%s branch=%s: %w",
-				providerNS,
-				target.Spec.GitProviderRef.Name,
-				target.Spec.Branch,
-				err,
-			)
-		}
-
-		var ensured bool
-		worker, ensured = r.WorkerManager.GetWorkerForTarget(
 			target.Spec.GitProviderRef.Name,
-			providerNS,
 			target.Spec.Branch,
 		)
-		if !ensured {
-			return nil, fmt.Errorf(
-				"branch worker not found for provider=%s/%s branch=%s",
-				providerNS,
-				target.Spec.GitProviderRef.Name,
-				target.Spec.Branch,
-			)
-		}
 	}
 
 	gitDest := types.NewResourceReference(target.Name, target.Namespace)
-	if existingStream := r.EventRouter.GetGitTargetEventStream(gitDest); existingStream != nil {
+	// A stream holds its worker directly, so one registered against a REPLACED worker would keep
+	// handing live events to a stopped goroutine's queue — accepted, never written, and silently
+	// dropped once it filled. The stream is thin and holds no state of its own, so re-pointing it
+	// is a fresh registration.
+	if existingStream := r.EventRouter.GetGitTargetEventStream(gitDest); existingStream != nil &&
+		existingStream.ServesWorker(worker) {
 		return existingStream, nil
 	}
 
@@ -863,19 +896,18 @@ func (r *GitTargetReconciler) ensureEventStream(
 	return stream, nil
 }
 
-func (r *GitTargetReconciler) validateProviderAndBranch(
-	ctx context.Context,
+// validateProviderAndBranch answers the two questions the GitProvider decides: is there one, and
+// does it admit this branch. It takes the provider the reconcile already read rather than reading
+// its own, so the branch worker cannot be wired for a different object than the one validated
+// here; a nil provider is the not-found case.
+func validateProviderAndBranch(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
-) (bool, string, string, error) {
-	var gp configbutleraiv1alpha3.GitProvider
-	gpKey := k8stypes.NamespacedName{Name: target.Spec.GitProviderRef.Name, Namespace: providerNS}
-	if err := r.Get(ctx, gpKey, &gp); err != nil {
-		if apierrors.IsNotFound(err) {
-			msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.GitProviderRef.Name)
-			return false, msg, GitTargetReasonProviderNotFound, nil
-		}
-		return false, "", "", err
+	gp *configbutleraiv1alpha3.GitProvider,
+) (bool, string, string) {
+	if gp == nil {
+		msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.GitProviderRef.Name)
+		return false, msg, GitTargetReasonProviderNotFound
 	}
 
 	branchAllowed := false
@@ -897,10 +929,44 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 			providerNS,
 			target.Spec.GitProviderRef.Name,
 		)
-		return false, msg, GitTargetReasonBranchNotAllowed, nil
+		return false, msg, GitTargetReasonBranchNotAllowed
 	}
 
-	return true, "", "", nil
+	return true, "", ""
+}
+
+// getGitProvider reads the GitTarget's GitProvider ONCE for the whole reconcile.
+//
+// That one object answers the Validated gate's questions, projects GitProviderReady, and names the
+// repository the branch worker has to be about. Reading it three times let those three disagree
+// about which repository this target points at, which is the disagreement the worker's repository
+// identity exists to prevent.
+//
+// A provider that is not there comes back (nil, nil): its absence is a configuration state the
+// Validated gate reports as ProviderNotFound, not a reconcile failure to retry with a backoff.
+func (r *GitTargetReconciler) getGitProvider(
+	ctx context.Context,
+	providerNS, providerName string,
+) (*configbutleraiv1alpha3.GitProvider, error) {
+	var gp configbutleraiv1alpha3.GitProvider
+	key := k8stypes.NamespacedName{Name: providerName, Namespace: providerNS}
+	if err := r.Get(ctx, key, &gp); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil //nolint:nilnil // a GitProvider that is not there is a state, not an error
+		}
+		return nil, err
+	}
+	return &gp, nil
+}
+
+// repoIdentityOf is which repository a GitProvider names, in the form the data plane keys a branch
+// worker by. A provider that could not be read names nothing, and the zero identity says exactly
+// that rather than standing in for some repository.
+func repoIdentityOf(provider *configbutleraiv1alpha3.GitProvider) git.RepoIdentity {
+	if provider == nil {
+		return git.RepoIdentity{}
+	}
+	return git.RepoIdentity{ProviderUID: provider.UID, URL: provider.Spec.URL}
 }
 
 func (r *GitTargetReconciler) checkForConflicts(

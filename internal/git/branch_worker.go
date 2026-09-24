@@ -64,6 +64,15 @@ type BranchWorker struct {
 	GitProviderNamespace string
 	Branch               string
 
+	// repo is the repository this worker is ABOUT: its clone, its base trust, its observations
+	// and its retained writes all describe that one repository and no other.
+	//
+	// It is immutable for the same reason the three fields above are. The worker does not follow
+	// its GitProvider to a new repository — meeting one is not a state change to be undone field
+	// by field, it is a different subject — so the WorkerManager replaces the worker instead.
+	// See RepoIdentity and WorkerManager.EnsureWorker.
+	repo RepoIdentity
+
 	// Dependencies
 	Client        client.Client
 	Log           logr.Logger
@@ -301,6 +310,7 @@ func NewBranchWorker(
 	log logr.Logger,
 	providerName, providerNamespace string,
 	branch string,
+	repo RepoIdentity,
 	writer *contentWriter,
 	limits BranchWorkerLimits,
 ) *BranchWorker {
@@ -315,6 +325,7 @@ func NewBranchWorker(
 		GitProviderRef:       providerName,
 		GitProviderNamespace: providerNamespace,
 		Branch:               branch,
+		repo:                 repo,
 		Client:               client,
 		Log: log.WithValues(
 			"provider", providerName,

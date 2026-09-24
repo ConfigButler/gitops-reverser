@@ -234,20 +234,26 @@ func (m *WorkerManager) SetRemoteReporter(reporter RemoteReporter) {
 	m.remoteReporter = reporter
 }
 
-// EnsureWorker ensures a worker exists for the given (provider, branch).
+// EnsureWorker ensures a worker exists for the given (provider, branch), and that it is the
+// worker for the repository the GitProvider names NOW.
+//
+// repo is the caller's answer to "which repository is this"; the reconcile has already read the
+// GitProvider one gate earlier, so it costs no API call. A slot holding a worker for a DIFFERENT
+// repository is not corrected field by field — the clone, the base trust, the observation and the
+// retained writes are all statements about the old one — so that worker is stopped, its checkout
+// reclaimed, and a fresh one takes the slot.
+//
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(
 	_ context.Context,
 	providerName, providerNamespace string,
 	branch string,
+	repo RepoIdentity,
 ) error {
 	// Held across the whole check-and-create so a replacement cannot start while the worker it
 	// replaces is still stopping; they would share a clone.
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	key := BranchKey{
 		RepoNamespace: providerNamespace,
@@ -255,14 +261,36 @@ func (m *WorkerManager) EnsureWorker(
 		Branch:        branch,
 	}
 
-	if _, exists := m.workers[key]; !exists {
-		m.Log.Info("Creating new branch worker", "key", key.String())
+	m.mu.RLock()
+	existing, exists := m.workers[key]
+	m.mu.RUnlock()
+
+	if exists {
+		if existing.repo == repo {
+			return nil
+		}
+		// Both identities, at default verbosity: a comparison that is not stable across steady
+		// reconciles is a restart loop, and this line is what makes one visible.
+		m.Log.Info("GitProvider now names a different repository; replacing the branch worker",
+			"key", key.String(),
+			"was", existing.repo.String(),
+			"now", repo.String())
+		// lifecycleMu is already held, so the detach-and-stop must not take it again.
+		m.removeWorkersLocked([]BranchKey{key}, "the GitProvider names a different repository")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, live := m.workers[key]; !live {
+		m.Log.Info("Creating new branch worker", "key", key.String(), "repository", repo.String())
 		worker := NewBranchWorker(
 			m.Client,
 			m.Log.WithName("branch-worker"),
 			providerName,
 			providerNamespace,
 			branch,
+			repo,
 			newContentWriter(m.sensitiveResources),
 			m.limits,
 		)
@@ -304,8 +332,9 @@ func (m *WorkerManager) removeWorkers(keys []BranchKey, reason string) {
 	m.removeWorkersLocked(keys, reason)
 }
 
-// removeWorkersLocked is removeWorkers for a caller that already holds lifecycleMu, so a sweep can
-// hold it across choosing the workers to retire and retiring them.
+// removeWorkersLocked is removeWorkers for a caller that already holds lifecycleMu: a sweep holding
+// it across choosing the workers to retire and retiring them, and EnsureWorker holding it across
+// its whole check-and-create, where a second acquisition would deadlock.
 func (m *WorkerManager) removeWorkersLocked(keys []BranchKey, reason string) {
 	if len(keys) == 0 {
 		return

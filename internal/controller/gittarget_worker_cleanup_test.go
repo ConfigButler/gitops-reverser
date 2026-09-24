@@ -44,7 +44,7 @@ func TestCleanupDeletedGitTarget_StopsAWorkerNothingNeedsAnyMore(t *testing.T) {
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
 
-	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main"))
+	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}))
 	_, exists := workers.GetWorkerForTarget("repo1", "shop", "main")
 	require.True(t, exists)
 
@@ -77,7 +77,7 @@ func TestCleanupDeletedGitTarget_LeavesAWorkerAnotherGitTargetStillUses(t *testi
 	defer cancel()
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
-	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main"))
+	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}))
 
 	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
 	_ = r.cleanupDeletedGitTarget(ctx,
@@ -118,7 +118,7 @@ func TestCleanupDeletedGitTarget_RetriesWhenTheSweepCannotRead(t *testing.T) {
 	defer cancel()
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
-	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main"))
+	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}))
 
 	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
 	err := r.cleanupDeletedGitTarget(ctx,
@@ -148,7 +148,7 @@ func TestHandleFetchError_RequeuesAFailedCleanup(t *testing.T) {
 	defer cancel()
 	go func() { _ = workers.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
-	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main"))
+	require.NoError(t, workers.EnsureWorker(ctx, "repo1", "shop", "main", git.RepoIdentity{URL: "file:///repo1.git"}))
 
 	r := &GitTargetReconciler{Client: k8sClient, WorkerManager: workers}
 	_, err := r.handleFetchError(ctx, apierrors.NewNotFound(

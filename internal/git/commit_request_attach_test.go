@@ -417,7 +417,16 @@ func TestAttach_FinalizeFailureResolvesFailed(t *testing.T) {
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: "file:///nonexistent/gitops-reverser-repo.git"},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
