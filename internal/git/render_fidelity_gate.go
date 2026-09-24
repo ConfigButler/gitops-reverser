@@ -63,6 +63,10 @@ type renderFidelityTargetState struct {
 	// against is the SCOPE's revision.
 	revision uint64
 	scopes   map[types.CellKey]renderFidelityScopeResult
+	// awaitingFreshMeasurement says that everything this target has proved describes a repository
+	// it no longer writes to, so nothing it holds may admit a write. Only a COMPLETE fresh
+	// measurement clears it, which is the rule writeDivergence already lives by.
+	awaitingFreshMeasurement bool
 	// writeDivergence is a divergence found by a live write rather than by a scope's replay,
 	// so it belongs to no scope and no scope's replay can clear it. Only a plan that restarts
 	// EVERY scope does — a forced recheck, or a target starting from nothing — which is the
@@ -144,6 +148,7 @@ func (g *RenderFidelityGate) Reconcile(
 	// admitted again on the strength of nothing.
 	if len(scopes) > 0 && fresh == len(scopes) {
 		state.writeDivergence = nil
+		state.awaitingFreshMeasurement = false
 	}
 	g.targets[target.Key()] = state
 	return reduceRenderFidelity(state), revisions
@@ -248,6 +253,39 @@ func (g *RenderFidelityGate) AllowsWrites(target types.ResourceReference) bool {
 	return g.Status(target).State == RenderFidelityTrue
 }
 
+// Invalidate says that everything this target has proved was proved about a repository it no
+// longer writes to, and that nothing may be written until it has been measured again.
+//
+// It is what a branch worker's replacement needs, and Forget is not. Forgetting a target makes it
+// UNREGISTERED, and an unregistered target is treated as writable — so the gate opened the moment
+// the repository changed, before anything had looked at the new one. It also reset the revision
+// counter, so the next plan issued revision 1 again and a result still in flight from the old
+// repository, carrying that same number, was accepted as proof about the new one.
+//
+// So the state is kept and turned back to pending instead: every scope is given a fresh revision,
+// which no running stream holds, and the target is held Unknown — including the vacuous case of a
+// target with no scopes at all, where an empty plan would otherwise reduce to True — until a pass
+// restarts every scope and measures the new repository.
+func (g *RenderFidelityGate) Invalidate(target types.ResourceReference) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.targets == nil {
+		g.targets = map[string]renderFidelityTargetState{}
+	}
+	state := g.targets[target.Key()]
+	pending := make(map[types.CellKey]renderFidelityScopeResult, len(state.scopes))
+	for scope := range state.scopes {
+		state.revision++
+		pending[scope] = renderFidelityScopeResult{revision: state.revision}
+	}
+	state.scopes = pending
+	// A divergence found in the old repository says nothing about the new one, and the fresh
+	// measurement this is waiting for is exactly what would have cleared it.
+	state.writeDivergence = nil
+	state.awaitingFreshMeasurement = true
+	g.targets[target.Key()] = state
+}
+
 // Forget removes a deleted GitTarget's state.
 func (g *RenderFidelityGate) Forget(target types.ResourceReference) {
 	g.mu.Lock()
@@ -256,6 +294,14 @@ func (g *RenderFidelityGate) Forget(target types.ResourceReference) {
 }
 
 func reduceRenderFidelity(state renderFidelityTargetState) RenderFidelityStatus {
+	if state.awaitingFreshMeasurement {
+		return RenderFidelityStatus{
+			Revision: state.revision, State: RenderFidelityUnknown, Reason: "Rechecking",
+			Message: "Waiting for a complete fresh measurement: what this target proved was proved " +
+				"about a repository it no longer writes to",
+			ScopeCount: len(state.scopes), CleanScopes: countCleanScopes(state),
+		}
+	}
 	if state.writeDivergence != nil {
 		return renderFidelityDivergedStatus(state, *state.writeDivergence, countCleanScopes(state))
 	}

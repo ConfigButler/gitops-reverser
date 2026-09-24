@@ -957,8 +957,9 @@ func validateProviderAndBranch(
 // serves them all, and the siblings have no reason of their own to reconcile.
 //
 // The render-fidelity verdicts go the same way and for the same reason: they say a folder matches
-// live, about a folder in the other repository. Forgetting them returns each target to the state a
-// brand new one is in, which is where it actually is.
+// live, about a folder in the other repository. They are INVALIDATED rather than forgotten —
+// forgetting a target leaves it unregistered, which the gate reads as writable, so the writes
+// would be admitted against the new repository before anything had looked at it.
 //
 // A list that fails recovers nothing, and says so: the periodic sweep and the targets' own steady
 // ticks are what is left, so this is worth a loud line and not worth failing the gate for.
@@ -987,7 +988,7 @@ func (r *GitTargetReconciler) recoverBranchAfterReplacement(
 			continue
 		}
 		ref := types.NewResourceReference(affected.Name, affected.Namespace).WithUID(string(affected.UID))
-		gate.Forget(ref)
+		gate.Invalidate(ref)
 		r.EventRouter.WatchManager.RequestRecheckForGitTarget(ref)
 		recovered++
 	}

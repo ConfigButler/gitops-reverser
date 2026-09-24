@@ -131,6 +131,8 @@ func TestRecoverBranchAfterReplacement_ReachesEverySiblingOnTheBranch(t *testing
 
 	assert.ElementsMatch(t, []string{"shop/apps", "shop/infra"}, manager.ForcedRecheckTargetsForTest(),
 		"every GitTarget the replaced worker served, and nothing else")
-	assert.True(t, workers.RenderFidelityGate().AllowsWrites(appsRef),
+	assert.Equal(t, git.RenderFidelityUnknown, workers.RenderFidelityGate().Status(appsRef).State,
 		"a verdict about the other repository must not survive into this one")
+	assert.False(t, workers.RenderFidelityGate().AllowsWrites(appsRef),
+		"and nothing may be written to the new one until something has measured it")
 }
