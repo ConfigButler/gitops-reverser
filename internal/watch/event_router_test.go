@@ -370,7 +370,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 			"team-a-provider",
 			"team-a",
 			"main",
-			git.RepoIdentity{URL: "file:///team-a.git"},
+			git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"},
 		),
 	)
 

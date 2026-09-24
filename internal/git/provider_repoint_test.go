@@ -8,15 +8,19 @@ package git
 //
 // Nothing about that reaches a live branch worker. Workers are keyed by
 // (GitProvider namespace, GitProvider name, branch) and the GitTarget that owns the worker is
-// untouched, so the worker survives the repoint — and it goes on writing to the repository it was
-// CREATED for, because that is the one its clone, its base trust and its retained commits are
-// about. The WorkerManager is what notices, on the GitTarget's next reconcile, and it replaces the
-// worker rather than pointing this one somewhere new (see worker_repo_identity_test.go).
+// untouched, so the worker survives the repoint. It does not follow the provider to the new
+// repository: it is FOR the old one, and the WorkerManager replaces it at the GitTarget's next
+// reconcile (see worker_repo_identity_test.go).
 //
-// The alternative, following the provider's URL on every cycle, is what produced #382: the cycle
-// planned against trust earned on the old repository, skipped the fetch that would have
-// established the new checkout, and every write from then on failed at "repository does not
-// exist".
+// Following the provider's URL on every cycle is what produced #382: the cycle planned against
+// trust earned on the old repository, skipped the fetch that would have established the new
+// checkout, and every write from then on failed at "repository does not exist".
+//
+// Until the replacement arrives the worker does NOTHING, and that is deliberate rather than
+// incidental. It would otherwise be writing to a repository the operator has just pointed away
+// from, with credentials read from the object that now names a different one: the replacement is
+// the only thing that resolves it, and a replacement blocked by a failing Validated gate never
+// comes. So the mismatch fails the cycle loudly instead.
 
 import (
 	"os/exec"
@@ -31,51 +35,52 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// TestRepoint_TheWorkerGoesOnWritingToItsOwnRepository is the in-window guarantee. A repointed
+// TestRepoint_TheWorkerStopsRatherThanWriteWithTheNewProvidersCredentials. A repointed
 // GitProvider is noticed at the GitTarget's next reconcile, and until then the worker is still
-// live and still reads that provider on every cycle for credentials and commit identity. What it
-// must NOT take from it is the destination: writing to the new URL with the old repository's base
-// trust and clone path is the failure this keying replaced.
-func TestRepoint_TheWorkerGoesOnWritingToItsOwnRepository(t *testing.T) {
+// live and still reads that provider on every cycle for credentials, commit identity and signing.
+// What it must not do is combine the two: its own repository with the replacement's credential.
+func TestRepoint_TheWorkerStopsRatherThanWriteWithTheNewProvidersCredentials(t *testing.T) {
 	f := newLedgerFixture(t, "repoint-provider", true)
 
 	f.publish("before-the-repoint")
 	require.True(t, f.worker.baseTrusted(), "a successful push leaves the base trusted")
 
+	// Planned while the provider still agreed, so the refusal below is the write path's and not
+	// merely the planner's: both read the GitProvider, and both have to refuse.
+	events := []Event{configMapEvent("after-the-repoint", "alice", "team-a")}
+	write, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, events)
+	require.NoError(t, err)
+
 	elsewhere := f.repointProvider(t)
 
-	f.commit(false, "after-the-repoint")
-	f.push()
+	require.Error(t, f.worker.commitPendingWrites([]PendingWrite{*write}, false),
+		"the GitProvider names a repository this worker is not for")
+	_, err = f.worker.buildGroupedPendingWrite(f.worker.ctx, events)
+	require.Error(t, err, "and nothing new is planned against it either")
+	assert.Contains(t, err.Error(), "waiting to be replaced")
 
-	assert.Contains(t, configMapFileNames(t, f.repoDir), "after-the-repoint.yaml",
-		"the write went to the repository this worker is about")
+	assert.NotContains(t, configMapFileNames(t, f.repoDir), "after-the-repoint.yaml",
+		"nothing more goes into the repository the operator has pointed away from")
 	assert.Empty(t, configMapFileNames(t, elsewhere),
-		"and nothing reached the repository the provider now names: a different worker serves that")
-	assert.True(t, f.worker.baseTrusted(),
-		"nothing about the provider's URL invalidates what this worker knows about its own remote")
+		"and nothing reaches the one the provider now names: a different worker serves that")
 }
 
-// TestRepoint_RetainedWritesAreUnaffected is the other half. A worker holding retained work skips
-// the head-of-cycle guard entirely, because a reset would destroy the local commits those writes
-// produced. That used to be the case an identity check had to be placed in front of the guard to
-// catch; now there is nothing to catch, and the retained work simply finishes where it started.
-func TestRepoint_RetainedWritesAreUnaffected(t *testing.T) {
+// TestRepoint_WhatWasAlreadyWrittenIsUntouched is the other half of stopping. The worker refuses
+// the cycle; it does not undo, re-target or lose what it had already pushed, and its own checkout
+// is still the one it was always about.
+func TestRepoint_WhatWasAlreadyWrittenIsUntouched(t *testing.T) {
 	f := newLedgerFixture(t, "repoint-with-retained", true)
 
 	f.publish("before-the-repoint")
-	f.commit(false, "retained")
+	require.Contains(t, configMapFileNames(t, f.repoDir), "before-the-repoint.yaml")
 
 	elsewhere := f.repointProvider(t)
 
-	joining := []Event{configMapEvent("joins-the-cycle", "alice", "team-a")}
-	retained, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, joining)
-	require.NoError(t, err)
-	require.NoError(t, f.worker.commitPendingWrites([]PendingWrite{*retained}, true),
-		"the local commits behind the retained writes are in this worker's own clone, where they always were")
-	f.push()
-
-	assert.Contains(t, configMapFileNames(t, f.repoDir), "joins-the-cycle.yaml")
+	assert.Contains(t, configMapFileNames(t, f.repoDir), "before-the-repoint.yaml",
+		"a repoint is not a retraction of what is already in the old repository")
 	assert.Empty(t, configMapFileNames(t, elsewhere))
+	assert.Equal(t, f.sim.RepoURL, f.worker.repo.URL,
+		"and the worker still knows which repository it is for")
 }
 
 // repointProvider deletes the fixture's GitProvider and creates it again pointing at a second

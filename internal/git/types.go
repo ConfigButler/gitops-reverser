@@ -5,6 +5,7 @@ package git
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -189,7 +190,20 @@ type RepoIdentity struct {
 func (r RepoIdentity) IsZero() bool { return r.ProviderUID == "" && r.URL == "" }
 
 // String is for logs: enough to tell two repositories apart without printing a credential.
-func (r RepoIdentity) String() string { return fmt.Sprintf("%s (uid %s)", r.URL, r.ProviderUID) }
+//
+// spec.url is validated for length and nothing else, so it can carry userinfo
+// (https://user:token@host/repo.git), and a replacement logs both identities at default
+// verbosity. The userinfo is stripped rather than the whole URL withheld, because telling two
+// repositories apart is the entire job of this line. A URL that will not parse is printed as
+// written: it reached no remote, so it holds no credential a remote accepted.
+func (r RepoIdentity) String() string {
+	shown := r.URL
+	if parsed, err := url.Parse(r.URL); err == nil && parsed.User != nil {
+		parsed.User = nil
+		shown = parsed.String()
+	}
+	return fmt.Sprintf("%s (uid %s)", shown, r.ProviderUID)
+}
 
 // UserInfo contains relevant user information for commit messages.
 type UserInfo struct {

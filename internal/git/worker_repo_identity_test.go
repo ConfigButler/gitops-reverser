@@ -202,3 +202,57 @@ func TestEnsureWorker_TheSlotReportsOneQueueDepthAcrossAReplacement(t *testing.T
 	assert.Len(t, manager.queueDepthSamples(), 1,
 		"one slot is one series, whatever happened to the worker behind it")
 }
+
+// TestRepoIdentityString_DoesNotPrintACredential. `spec.url` is validated for length and nothing
+// else, so it accepts userinfo, and a replacement logs both identities at default verbosity. The
+// line has to stay useful — telling two repositories apart is its whole job — so the userinfo is
+// stripped rather than the URL withheld.
+func TestRepoIdentityString_DoesNotPrintACredential(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			"user and token",
+			"https://git:ghp_supersecret@example.invalid/repo.git",
+			"https://example.invalid/repo.git (uid uid-1)",
+		},
+		{"user only", "https://git@example.invalid/repo.git", "https://example.invalid/repo.git (uid uid-1)"},
+		{"no userinfo", "https://example.invalid/repo.git", "https://example.invalid/repo.git (uid uid-1)"},
+		{"ssh scp form, which url.Parse does not read as a URL", "git@example.invalid:org/repo.git",
+			"git@example.invalid:org/repo.git (uid uid-1)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RepoIdentity{ProviderUID: "uid-1", URL: tc.url}.String()
+			assert.Equal(t, tc.want, got)
+			assert.NotContains(t, got, "ghp_supersecret")
+		})
+	}
+}
+
+// TestEnqueue_RefusesOnceTheWorkerIsStopping is the cursor-safety contract across a replacement.
+//
+// A worker is stopped while the process keeps running, and the sibling GitTargets on its branch go
+// on holding streams that point at it until their own next reconcile. Shutdown DRAINS the queue
+// without processing it, so an event accepted in that window is thrown away — while the `true`
+// return has already told the watch loop it may advance its durable cursor past it. Refusing turns
+// that silent loss into the drop path every producer already handles.
+func TestEnqueue_RefusesOnceTheWorkerIsStopping(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
+	worker := newMetricsTestWorker()
+	// The loop reads its GitProvider on every pass; with none present it finds nothing to do,
+	// which is all this test needs from it.
+	worker.Client = fake.NewClientBuilder().WithScheme(setupScheme()).Build()
+	require.NoError(t, worker.Start(context.Background()))
+
+	require.True(t, worker.Enqueue(Event{Operation: "UPDATE"}),
+		"a running worker accepts the event and owns it from then on")
+
+	worker.Stop()
+
+	assert.False(t, worker.Enqueue(Event{Operation: "UPDATE"}),
+		"an event the shutdown drain would discard must not be reported as accepted")
+	assert.False(t, worker.EnqueueResync(&ResyncRequest{}),
+		"and a resync must be answered rather than left waiting on a reply that never comes")
+}

@@ -131,6 +131,21 @@ type BranchWorker struct {
 	started    bool
 	mu         sync.Mutex
 
+	// stoppingState closes the queue to new work from the moment Stop is called.
+	//
+	// Shutdown drains whatever is still on the FIFO without processing it, so an item accepted
+	// after that point is silently thrown away, while Enqueue's "true" has already told a watch
+	// loop it may advance its durable cursor past the event. That cost nothing while Stop was
+	// only ever called at process exit. A worker REPLACED because its GitProvider names a
+	// different repository is stopped with the process still running, and the sibling GitTargets
+	// on its branch go on holding streams that point at it until their own next reconcile, which
+	// is minutes of accepted-and-discarded events.
+	//
+	// Refusing them turns a silent loss into the drop path every producer already handles: the
+	// watch leaves its cursor where it is and redelivers to the replacement. Items already ON the
+	// queue when Stop is called are still drained, which is the behaviour shutdown always had.
+	stoppingState atomic.Bool
+
 	// lastObservation is what this worker last PROVED about the target branch on the remote, and
 	// when. See RemoteObservation: it replaces a fetch-only trio (branchExists, lastCommitSHA,
 	// lastFetchTime) that went arbitrarily stale on exactly the busiest targets, because a push
@@ -448,6 +463,9 @@ func (w *BranchWorker) Stop() {
 	}
 	w.mu.Unlock()
 
+	// Before the cancel, so nothing is accepted that the drain below would discard.
+	w.stoppingState.Store(true)
+
 	w.Log.Info("Stopping branch worker")
 	w.cancelFunc()
 	w.wg.Wait()
@@ -478,6 +496,11 @@ func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
 // full drop is recovered by the next poll rather than a synchronous reply.
 func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	if req == nil {
+		return
+	}
+	if w.stopping() {
+		w.recordQueueDrop(queueDropAttach)
+		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
 	// Increment before the send so inflightItems can never lag the loop's
@@ -520,6 +543,15 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 // reconciled-through-Hc with no reconcile ever queued.
 func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	if request == nil {
+		return false
+	}
+	if w.stopping() {
+		w.recordQueueDrop(queueDropResync)
+		w.Log.V(1).Info("Worker is stopping, resync request refused",
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+		// Answered rather than dropped in silence: the caller is waiting on this channel, and the
+		// shutdown drain does not answer what it throws away.
+		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
 	key := resyncKeyFor(request)
@@ -664,6 +696,13 @@ func (w *BranchWorker) takePendingResync(marker *ResyncRequest) *ResyncRequest {
 // drop as success.
 func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	if request == nil {
+		return false
+	}
+	if w.stopping() {
+		w.recordQueueDrop(queueDropWrite)
+		w.Log.V(1).Info("Worker is stopping, request refused; the producer keeps it to redeliver",
+			"events", len(request.Events),
+			"gitTarget", request.GitTargetName)
 		return false
 	}
 	item := WorkItem{Request: request}
@@ -1663,6 +1702,9 @@ func (w *BranchWorker) markReplayRequired() {
 	}
 }
 
+// stopping reports that Stop has begun, so nothing new may enter the queue: see stoppingState.
+func (w *BranchWorker) stopping() bool { return w.stoppingState.Load() }
+
 // markReplayComplete is called only when a rebuild has replayed every retained write.
 func (w *BranchWorker) markReplayComplete() { w.replayRequiredState.Store(false) }
 
@@ -2380,6 +2422,24 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha3.GitP
 
 	if err := w.Client.Get(ctx, namespacedName, &provider); err != nil {
 		return nil, fmt.Errorf("failed to fetch GitProvider: %w", err)
+	}
+
+	// The worker writes to ITS repository and reads this object for the credentials, commit
+	// identity and signing to write it with. Those two must describe the same repository, or the
+	// worker would present a credential issued for one remote to another: a GitProvider recreated
+	// against a different URL is normally replaced at the next reconcile, but a replacement that
+	// cannot pass the Validated gate never arrives, and the old worker would otherwise go on
+	// mirroring into a repository the operator has abandoned, using the new one's credential.
+	//
+	// So a mismatch is fatal to the cycle rather than something to work around. The worker stops
+	// acting and says why; the reconcile that replaces it is what resolves it. A worker with no
+	// identity of its own (the CLI, and tests that never reach a remote) has nothing to compare.
+	if !w.repo.IsZero() {
+		if found := (RepoIdentity{ProviderUID: provider.UID, URL: provider.Spec.URL}); found != w.repo {
+			return nil, fmt.Errorf(
+				"GitProvider %s/%s now names %s; this worker is for %s and is waiting to be replaced",
+				w.GitProviderNamespace, w.GitProviderRef, found, w.repo)
+		}
 	}
 
 	return &provider, nil

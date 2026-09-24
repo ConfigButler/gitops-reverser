@@ -321,20 +321,21 @@ func TestRemoteObservation_CarriesTheRepositoryItWasProvedAgainst(t *testing.T) 
 	assert.Equal(t, f.sim.RepoURL, observed.Repo.URL)
 }
 
-// TestRefresh_LooksAtItsOwnRepositoryAfterARepoint is the read-path twin of
-// TestRepoint_TheWorkerGoesOnWritingToItsOwnRepository. The GitProvider is repointed under a live
-// worker; the refresh reads that provider for credentials and must still ask the repository the
-// worker is about, so what it reports is a fact and not a mixture of two remotes.
+// TestRefresh_AsksNothingWhileItsGitProviderNamesAnotherRepository is the read-path twin of
+// TestRepoint_TheWorkerStopsRatherThanWriteWithTheNewProvidersCredentials. The GitProvider is
+// repointed under a live worker, and the refresh reads it for the credentials its look would use.
+// It must not go looking with them: pointed at its own remote they are the wrong credentials for
+// that host, and pointed at the new remote the answer would describe a repository this worker's
+// checkout knows nothing about.
 //
-// Taking back what was already published about the old repository is the reconcile's job, from the
-// identity this observation carries: see publishRemote.
-func TestRefresh_LooksAtItsOwnRepositoryAfterARepoint(t *testing.T) {
+// So the tick costs nothing and reports nothing, and what was already published is taken back by
+// the reconcile from the identity the stored observation carries: see publishRemote.
+func TestRefresh_AsksNothingWhileItsGitProviderNamesAnotherRepository(t *testing.T) {
 	first := newRefreshHarness(t, "repoint-first")
 	second := newLedgerFixture(t, "repoint-second", true)
 
 	first.publish("written-to-the-first-repository")
-	ownRevision := revParseMain(t, first.repoDir)
-	require.NotEmpty(t, ownRevision)
+	require.NotEmpty(t, revParseMain(t, first.repoDir))
 
 	// The GitProvider now names a different repository. Nothing restarts the worker.
 	var provider configv1alpha3.GitProvider
@@ -344,15 +345,25 @@ func TestRefresh_LooksAtItsOwnRepositoryAfterARepoint(t *testing.T) {
 	require.NoError(t, first.worker.Client.Update(first.worker.ctx, &provider))
 
 	first.reported = nil
-	first.refresh(time.Nanosecond) // an age that forces the look
+	connections := first.refresh(time.Nanosecond) // an age that would otherwise force the look
 
-	require.NotEmpty(t, first.reported, "the target still has to be told something")
-	last := first.reported[len(first.reported)-1]
-	assert.Equal(t, ownRevision, last.Revision,
-		"the worker asked its own remote, not whichever one the provider names now")
-	assert.Equal(t, first.worker.repo, last.Repo,
-		"and it says which repository that answer is about")
-	assert.NotEqual(t, revParseMain(t, second.repoDir), last.Revision)
+	assert.Zero(t, connections, "a worker waiting to be replaced asks no remote anything")
+	assert.Empty(t, first.reported,
+		"and publishes nothing: the reconcile removes the old revision from the identity it carries")
+}
+
+// TestRemoteObservation_KeepsCarryingItsRepositoryAcrossAPush. The stamp is what lets the layer
+// that publishes an observation decide whether it still describes the repository the GitTarget
+// points at, so it has to survive the producer that writes it most often.
+func TestRemoteObservation_KeepsCarryingItsRepositoryAcrossAPush(t *testing.T) {
+	f := newLedgerFixture(t, "observation-identity-push", true)
+	f.publish("first")
+	f.publish("second")
+
+	observed, ok := f.worker.LastRemoteObservation()
+	require.True(t, ok)
+	assert.Equal(t, ObservedByPush, observed.By)
+	assert.Equal(t, f.worker.repo, observed.Repo)
 }
 
 // TestRefresh_AnAbsentCheckoutHonoursTheInterval. A GitTarget that has been declared but has not

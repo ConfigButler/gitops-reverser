@@ -47,6 +47,10 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 	if req == nil {
 		return
 	}
+	if w.stopping() {
+		w.recordQueueDrop(queueDropRefresh)
+		return
+	}
 	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Refresh: req}:
