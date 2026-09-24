@@ -180,7 +180,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, providerErr
 	}
 
-	r.publishGitObservations(st, &target)
+	r.publishGitObservations(st, &target, repoIdentityOf(gitProvider))
 
 	// Ahead of every gate, for the reason the layout stanza above is: the join series has to carry
 	// the targets that are NOT working. git_pushes_total names a branch that stopped advancing and
@@ -703,13 +703,6 @@ func renderAxis(renderFidelity watch.RenderFidelityStatus) conditionValue {
 	return value
 }
 
-// gitTargetReadinessGates contributes every GitTarget gate to the accumulator that owns the trio.
-//
-// THIS FUNCTION IS THE PRECEDENCE. Read it top to bottom: a stall always beats a progressing gate
-// whatever the order, and within each group the first contributor wins, so the order of these calls
-// is the order in which competing explanations are preferred. Adding a gate means adding a line
-// here, in the position where its answer should outrank the ones below it — not calling a setter
-// from wherever the gate happens to be evaluated.
 // referenceReadiness is what the three objects a GitTarget REFERENCES say about themselves:
 // destination-side (the GitProvider), source-config side (the ClusterProvider), and the runtime
 // reachability of the source cluster.
@@ -740,6 +733,13 @@ func (r *GitTargetReconciler) publishReferenceReadiness(
 	return refs
 }
 
+// gitTargetReadinessGates contributes every GitTarget gate to the accumulator that owns the trio.
+//
+// THIS FUNCTION IS THE PRECEDENCE. Read it top to bottom: a stall always beats a progressing gate
+// whatever the order, and within each group the first contributor wins, so the order of these calls
+// is the order in which competing explanations are preferred. Adding a gate means adding a line
+// here, in the position where its answer should outrank the ones below it — not calling a setter
+// from wherever the gate happens to be evaluated.
 func gitTargetReadinessGates(
 	rd *readiness,
 	observed dataPlaneObservation,
@@ -826,12 +826,13 @@ func (r *GitTargetReconciler) requestRemoteRefresh(
 func (r *GitTargetReconciler) publishGitObservations(
 	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
+	repo git.RepoIdentity,
 ) {
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
 
 	remote, remoteSeen := r.observeRemote(target)
-	publishRemote(target, remote, remoteSeen, r.GitRefreshInterval)
+	publishRemote(target, remote, remoteSeen, repo, r.GitRefreshInterval)
 }
 
 // ensureEventStream wires this GitTarget to the branch worker for the repository its GitProvider

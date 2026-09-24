@@ -137,15 +137,6 @@ type BranchWorker struct {
 	// never wrote to it.
 	lastObservation atomic.Pointer[RemoteObservation]
 
-	// observationWithdrawnState records that the observation was dropped because the GitProvider
-	// now names a DIFFERENT repository, and that whatever was published from it has to be taken
-	// back. Dropping the record alone is not enough: the revision an operator reads lives in the
-	// watch plane's projection and in status.remote, and if the new repository is unreachable
-	// nothing would ever replace it. It is cleared by the next observation that is actually
-	// proved, and it stays set until then so every target on this branch withdraws on its own
-	// tick, not only the one that happened to notice the change.
-	observationWithdrawnState atomic.Bool
-
 	// repoMu serializes repository/worktree operations within this worker.
 	repoMu sync.Mutex
 
@@ -193,17 +184,6 @@ type BranchWorker struct {
 	//
 	// See docs/design/push-notification-and-reconcile-trigger.md §1.5.
 	replayRequiredState atomic.Bool
-
-	// trustedRemote is the repository the flags above are ABOUT: the remote URL the worker last
-	// planned a cycle against.
-	//
-	// Trust is a claim concerning one checkout, and each remote gets its own on-disk clone
-	// (repoPathForRemote), so a claim carried across a change of destination is not merely stale —
-	// it points at a directory that may not exist. Workers are keyed by (GitProvider namespace,
-	// GitProvider name, branch) and never by URL, while spec.url is immutable and repointed by
-	// deleting and recreating the GitProvider, so a live worker really does meet a new repository
-	// without anything restarting it. See noteRemoteIdentity.
-	trustedRemote atomic.Pointer[string]
 
 	// branchBufferMaxBytes caps the retained in-memory event data; tripped on
 	// event arrival, an immediate finalize bypasses the commit window.
@@ -398,6 +378,17 @@ func (w *BranchWorker) repoRootPath() string {
 func (w *BranchWorker) repoPathForRemote(remoteURL string) string {
 	return filepath.Join(w.repoRootPath(), repoCacheKey(remoteURL))
 }
+
+// repoPath is the checkout of the repository this worker is ABOUT.
+//
+// The URL comes from the worker's own identity and never from the GitProvider as it reads NOW. The
+// provider is still read on every cycle — for credentials, commit identity and signing — and it
+// can name a different repository by then, because it is repointed by being recreated while the
+// worker is keyed by (provider, branch). Following it there is what produced the outage in #382:
+// the cycle planned against trust earned on the old repository and every write failed at
+// `open repository: repository does not exist`. A worker that cannot be pointed anywhere cannot
+// have that happen to it; the WorkerManager replaces it instead.
+func (w *BranchWorker) repoPath() string { return w.repoPathForRemote(w.repo.URL) }
 
 // removeLocalState deletes everything this worker kept on disk: the clone of every remote it
 // worked with, under its own (provider namespace, provider, branch) directory.
@@ -833,12 +824,9 @@ func (w *BranchWorker) prepareBootstrapRepository(
 		return "", fmt.Errorf("failed to get auth: %w", err)
 	}
 
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
-	// This fetch establishes a checkout for whatever the provider names now, so record which
-	// repository that is — see noteRemoteIdentity.
-	w.noteRemoteIdentity(provider.Spec.URL)
+	repoPath := w.repoPath()
 	w.recordFetch(fetchReasonBootstrap)
-	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	pullReport, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return "", fmt.Errorf("failed to prepare repository: %w", err)
 	}
@@ -1678,41 +1666,6 @@ func (w *BranchWorker) markReplayRequired() {
 // markReplayComplete is called only when a rebuild has replayed every retained write.
 func (w *BranchWorker) markReplayComplete() { w.replayRequiredState.Store(false) }
 
-// noteRemoteIdentity binds the base trust to the repository it was gained against, and drops it
-// when the GitProvider now names a different one.
-//
-// `spec.url` is immutable and repointed by deleting the GitProvider and creating it again (see
-// GitProviderSpec). That does not restart the worker: workers are keyed by (GitProvider namespace,
-// GitProvider name, branch), and the GitTarget that owns this one is untouched. So the same worker
-// meets the new repository still holding the trust its last push to the OLD one established.
-//
-// Without this, the head-of-cycle guard believes that trust, skips the PrepareBranch that would
-// have initialised the new clone — each remote has its own, keyed by URL — and every write from
-// then on fails at `open repository: repository does not exist`, dropping live windows for as long
-// as the worker lives.
-//
-// It runs before the guard rather than inside it, so a worker holding retained writes (which skips
-// the guard entirely, because a reset would destroy the local commits those writes produced) still
-// records the change instead of carrying the old trust into the cycle after the retained work
-// clears.
-func (w *BranchWorker) noteRemoteIdentity(remoteURL string) {
-	key := repoCacheKey(remoteURL)
-	previous := w.trustedRemote.Swap(&key)
-	if previous == nil || *previous == key {
-		return
-	}
-	w.Log.Info("GitProvider now names a different repository; the checkout for it must be established",
-		"branch", w.Branch)
-	w.invalidateBase("remote repository changed")
-	// The observation goes with the trust, and for a sharper reason: it is a statement about a
-	// REPOSITORY, and this is a different one. Left in place it would be reported as this
-	// GitTarget's remote state, and a fresh enough one would also suppress the look that corrects
-	// it. Dropping it makes the next refresh unconditional; the withdrawal takes back what the
-	// old one already published.
-	w.lastObservation.Store(nil)
-	w.observationWithdrawnState.Store(true)
-}
-
 // ensureBaseForCycle performs the head-of-cycle fetch, which is now conditional.
 //
 // The push session reads the remote's ref advertisement on a connection the cycle was making
@@ -1728,10 +1681,6 @@ func (w *BranchWorker) ensureBaseForCycle(
 	repoPath string,
 	hasPendingCommits bool,
 ) error {
-	// Before the guard, not inside it: a repointed GitProvider must invalidate even on a cycle
-	// this guard is going to skip.
-	w.noteRemoteIdentity(provider.Spec.URL)
-
 	if hasPendingCommits || (w.baseTrusted() && !w.worktreeDirty()) {
 		return nil
 	}
@@ -1753,7 +1702,7 @@ func (w *BranchWorker) ensureBaseForCycle(
 	}
 	w.recordFetch(reason)
 
-	pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	pullReport, err := PrepareBranch(w.ctx, w.repo.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return fmt.Errorf("prepare repository: %w", err)
 	}
@@ -1780,7 +1729,7 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		return fmt.Errorf("get GitProvider: %w", err)
 	}
 
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repoPath := w.repoPath()
 	if err := w.ensureBaseForCycle(provider, repoPath, hasPendingCommits); err != nil {
 		return err
 	}
@@ -1864,7 +1813,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		return fmt.Errorf("resolve auth: %w", err)
 	}
 
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repoPath := w.repoPath()
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return fmt.Errorf("open repository: %w", err)
@@ -1910,7 +1859,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			w.firsts.push.Do(func() {
 				w.Log.Info("First push to remote completed",
 					"branch", w.Branch,
-					"url", provider.Spec.URL,
+					"url", w.repo.URL,
 					"commits", len(pendingWrites))
 			})
 			return nil
@@ -2062,7 +2011,7 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 		return fmt.Errorf("resolve auth: %w", err)
 	}
 
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repoPath := w.repoPath()
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return fmt.Errorf("open repository: %w", err)
@@ -2484,17 +2433,12 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 // that died mid-upload or an advertisement that never arrived observed nothing, and recording a
 // guess there is how a stale revision reaches status.
 func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) RemoteObservation {
-	observed := RemoteObservation{Revision: revision, At: time.Now(), By: by}
+	// Stamped with the repository it is about, so that whoever publishes it can tell whether it
+	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
+	observed := RemoteObservation{Revision: revision, At: time.Now(), By: by, Repo: w.repo}
 	w.lastObservation.Store(&observed)
-	// Something has now been proved about the repository the worker points at, so there is
-	// nothing left to take back.
-	w.observationWithdrawnState.Store(false)
 	return observed
 }
-
-// observationWithdrawn reports that the last observation was about a repository this worker no
-// longer points at, so anything published from it must be withdrawn rather than left standing.
-func (w *BranchWorker) observationWithdrawn() bool { return w.observationWithdrawnState.Load() }
 
 // syncWithRemote fetches latest changes from remote and resets onto them. It is the
 // no-retained-writes half of a refresh; resync_flush.go and invalidateAndRefresh are its callers.
@@ -2516,15 +2460,14 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context, reason string) error 
 		return fmt.Errorf("failed to get auth: %w", err)
 	}
 
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repoPath := w.repoPath()
 
 	// Somebody stated that the remote moved: see refreshRemoteAndRebuildPendingWrites.
-	w.noteRemoteIdentity(provider.Spec.URL)
 	w.invalidateBase(reason)
 
 	// PrepareBranch handles both initial and update cases
 	w.recordFetch(reason)
-	report, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	report, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return fmt.Errorf("failed to sync with remote: %w", err)
 	}
@@ -2548,7 +2491,7 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 		return fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repoPath := w.repoPath()
 	if w.shouldReadRetainedLocalRepository(repoPath) {
 		return nil
 	}
@@ -2559,7 +2502,7 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 	}
 
 	// Use new PrepareBranch abstraction
-	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	pullReport, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return fmt.Errorf("failed to prepare repository: %w", err)
 	}
@@ -2639,7 +2582,7 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 // calls it.
 func (w *BranchWorker) SeedRemoteObservationForTest(revision string, at time.Time, by string) {
 	w.baseTrustedState.Store(true)
-	observed := RemoteObservation{Revision: revision, At: at, By: ObservationSource(by)}
+	observed := RemoteObservation{Revision: revision, At: at, By: ObservationSource(by), Repo: w.repo}
 	w.lastObservation.Store(&observed)
 }
 

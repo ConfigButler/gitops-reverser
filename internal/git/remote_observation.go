@@ -38,16 +38,19 @@ type RemoteObservation struct {
 	At time.Time
 	// By is what proved it.
 	By ObservationSource
-	// Withdrawn marks the one report that is not an observation: "forget what was published".
-	// A worker sends it when its GitProvider now names a different repository, because the
-	// revision already published then describes a repository the target no longer points at, and
-	// if the new one is unreachable nothing else would correct it. It carries no revision and
-	// dates nothing — the projection turns it into an ABSENT status.remote, not a value.
-	Withdrawn bool
+	// Repo is the repository the observation is ABOUT: the identity of the worker that proved it.
+	//
+	// A revision means nothing without it. Workers are keyed by (provider, branch) while a
+	// GitProvider can be repointed at another repository, so the layer that publishes this can be
+	// holding a revision from a repository its GitTarget no longer uses — and if the new one is
+	// unreachable, nothing else would ever correct it. Carrying the identity lets that be DERIVED
+	// at the moment of publication, by comparing it against what the GitProvider names now,
+	// instead of latched by whoever happened to notice the change.
+	//
+	// It is zero for a worker that has no identity of its own: the CLI, and tests that never reach
+	// a remote. A comparison against an unknown identity proves nothing, so it is not made.
+	Repo RepoIdentity
 }
-
-// WithdrawnObservation is the report that takes back whatever was published about a branch.
-func WithdrawnObservation() RemoteObservation { return RemoteObservation{Withdrawn: true} }
 
 // Age is how long ago the observation was made, against now.
 func (o RemoteObservation) Age(now time.Time) time.Duration { return now.Sub(o.At) }

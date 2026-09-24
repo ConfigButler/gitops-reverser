@@ -79,7 +79,7 @@ func TestCommitPendingWrites_ResolvesCredentialsOncePerPushCycle(t *testing.T) {
 		"test-repo",
 		"default",
 		"main",
-		RepoIdentity{},
+		RepoIdentity{URL: "file://" + remotePath},
 		nil,
 		BranchWorkerLimits{},
 	)

@@ -305,43 +305,38 @@ func TestRefresh_AFailedFetchDoesNotBuyQuietUntilTheObservationAges(t *testing.T
 		"an untrusted base must send the tick to the remote, whatever the observation's age says")
 }
 
-// TestRemoteObservation_DroppedWhenTheProviderNamesANewRepository. A worker is keyed by
-// (provider, branch) while spec.url is immutable and repointed by recreating the GitProvider, so
-// one worker can meet a second repository without anything restarting it. An observation is a
-// statement about a REPOSITORY; carrying it across would report the old one's revision as this
-// GitTarget's remote state, and a fresh enough one would suppress the look that corrects it.
-func TestRemoteObservation_DroppedWhenTheProviderNamesANewRepository(t *testing.T) {
-	f := newLedgerFixture(t, "observation-repoint", true)
+// TestRemoteObservation_CarriesTheRepositoryItWasProvedAgainst. A revision means nothing without
+// the repository it is in, and the layer that publishes it — the GitTarget reconcile — holds no
+// worker. Stamping the identity on the observation is what lets that layer compare it against the
+// repository the GitProvider names NOW, and take back a revision from one the target has left.
+func TestRemoteObservation_CarriesTheRepositoryItWasProvedAgainst(t *testing.T) {
+	f := newLedgerFixture(t, "observation-identity", true)
 	f.publish("prime")
 
-	before, ok := f.worker.LastRemoteObservation()
+	observed, ok := f.worker.LastRemoteObservation()
 	require.True(t, ok)
-	require.NotEmpty(t, before.Revision)
-
-	f.worker.noteRemoteIdentity("https://example.invalid/another/repo.git")
-
-	_, known := f.worker.LastRemoteObservation()
-	assert.False(t, known, "what was proved about the old repository says nothing about this one")
-	assert.False(t, f.worker.baseTrusted(), "and the checkout for it is not established either")
+	require.NotEmpty(t, observed.Revision)
+	assert.Equal(t, f.worker.repo, observed.Repo,
+		"a push proves where the branch is on THIS worker's repository, and says which one that is")
+	assert.Equal(t, f.sim.RepoURL, observed.Repo.URL)
 }
 
-// TestRefresh_DoesNotReportThePreviousRepositoryAfterARepoint is the whole hazard of a worker that
-// outlives the repository it was built for.
+// TestRefresh_LooksAtItsOwnRepositoryAfterARepoint is the read-path twin of
+// TestRepoint_TheWorkerGoesOnWritingToItsOwnRepository. The GitProvider is repointed under a live
+// worker; the refresh reads that provider for credentials and must still ask the repository the
+// worker is about, so what it reports is a fact and not a mixture of two remotes.
 //
-// spec.url is immutable, so pointing a GitTarget somewhere else means deleting and recreating the
-// GitProvider — and the worker, keyed by (provider name, branch), survives that untouched. Its
-// cached observation is then a fact about a repository this target no longer uses, and the refresh
-// path is where it would be published: it reports what is known before doing any work.
-func TestRefresh_DoesNotReportThePreviousRepositoryAfterARepoint(t *testing.T) {
+// Taking back what was already published about the old repository is the reconcile's job, from the
+// identity this observation carries: see publishRemote.
+func TestRefresh_LooksAtItsOwnRepositoryAfterARepoint(t *testing.T) {
 	first := newRefreshHarness(t, "repoint-first")
 	second := newLedgerFixture(t, "repoint-second", true)
 
 	first.publish("written-to-the-first-repository")
-	oldRevision := revParseMain(t, first.repoDir)
-	require.NotEmpty(t, oldRevision)
+	ownRevision := revParseMain(t, first.repoDir)
+	require.NotEmpty(t, ownRevision)
 
-	// The GitProvider is recreated pointing at a different repository. Nothing restarts the
-	// worker; the only thing that changes is what its provider says.
+	// The GitProvider now names a different repository. Nothing restarts the worker.
 	var provider configv1alpha3.GitProvider
 	require.NoError(t, first.worker.Client.Get(first.worker.ctx,
 		client.ObjectKey{Name: first.worker.GitProviderRef, Namespace: "default"}, &provider))
@@ -349,14 +344,15 @@ func TestRefresh_DoesNotReportThePreviousRepositoryAfterARepoint(t *testing.T) {
 	require.NoError(t, first.worker.Client.Update(first.worker.ctx, &provider))
 
 	first.reported = nil
-	first.refresh(time.Hour) // an age that would reuse the cached observation, if anything did
+	first.refresh(time.Nanosecond) // an age that forces the look
 
 	require.NotEmpty(t, first.reported, "the target still has to be told something")
 	last := first.reported[len(first.reported)-1]
-	assert.NotEqual(t, oldRevision, last.Revision,
-		"a revision from the repository this target no longer points at must never be published")
-	assert.Equal(t, revParseMain(t, second.repoDir), last.Revision,
-		"what is published is where the branch is on the repository it points at NOW")
+	assert.Equal(t, ownRevision, last.Revision,
+		"the worker asked its own remote, not whichever one the provider names now")
+	assert.Equal(t, first.worker.repo, last.Repo,
+		"and it says which repository that answer is about")
+	assert.NotEqual(t, revParseMain(t, second.repoDir), last.Revision)
 }
 
 // TestRefresh_AnAbsentCheckoutHonoursTheInterval. A GitTarget that has been declared but has not
@@ -386,66 +382,6 @@ func TestRefresh_AnAbsentBranchHonoursTheInterval(t *testing.T) {
 
 	assert.Zero(t, h.refresh(time.Hour),
 		"a branch the remote does not carry still gets the interval it was configured with")
-}
-
-// TestRefresh_WithdrawsThePublishedObservationAfterAFailedRepoint is the hazard a dropped
-// observation does not on its own close.
-//
-// Dropping it stops the OLD repository's revision being reported again, which is what the worker
-// owns. It says nothing about the copy already published — in the watch plane's projection and in
-// status.remote — and if the repository this target now points at cannot be read, nothing ever
-// replaces it: the operator goes on reading a revision that lives in a repository the target no
-// longer uses. So the refresh withdraws it explicitly, and keeps withdrawing until something is
-// actually proved, because every GitTarget on this branch has to hear it on its own tick.
-func TestRefresh_WithdrawsThePublishedObservationAfterAFailedRepoint(t *testing.T) {
-	h := newRefreshHarness(t, "repoint-unreachable")
-	h.publish("written-to-the-first-repository")
-	require.NotEmpty(t, revParseMain(t, h.repoDir))
-
-	var provider configv1alpha3.GitProvider
-	require.NoError(t, h.worker.Client.Get(h.worker.ctx,
-		client.ObjectKey{Name: h.worker.GitProviderRef, Namespace: "default"}, &provider))
-	// Recreated pointing at a repository nothing answers for.
-	provider.Spec.URL = "http://127.0.0.1:1/unreachable.git"
-	require.NoError(t, h.worker.Client.Update(h.worker.ctx, &provider))
-
-	h.reported = nil
-	h.refresh(time.Hour) // an age that would reuse the cached observation, if anything did
-
-	require.Len(t, h.reported, 1, "the target has to be told, and the failed look proves nothing")
-	assert.True(t, h.reported[0].Withdrawn,
-		"what is published names a revision in a repository this target no longer points at")
-	assert.Empty(t, h.reported[0].Revision, "a withdrawal carries nothing to publish")
-
-	h.reported = nil
-	h.refresh(time.Hour)
-	require.Len(t, h.reported, 1)
-	assert.True(t, h.reported[0].Withdrawn,
-		"it stands until something is proved: a sibling target's first tick must hear it too")
-}
-
-// TestRefresh_StopsWithdrawingOnceSomethingIsProved is the other side of that latch. A withdrawal
-// is a correction, not a state to live in: the first successful look at the new repository
-// replaces it with a real observation.
-func TestRefresh_StopsWithdrawingOnceSomethingIsProved(t *testing.T) {
-	first := newRefreshHarness(t, "repoint-recovers-first")
-	second := newLedgerFixture(t, "repoint-recovers-second", true)
-	first.publish("written-to-the-first-repository")
-
-	var provider configv1alpha3.GitProvider
-	require.NoError(t, first.worker.Client.Get(first.worker.ctx,
-		client.ObjectKey{Name: first.worker.GitProviderRef, Namespace: "default"}, &provider))
-	provider.Spec.URL = second.sim.RepoURL
-	require.NoError(t, first.worker.Client.Update(first.worker.ctx, &provider))
-
-	first.reported = nil
-	first.refresh(time.Hour)
-
-	require.NotEmpty(t, first.reported)
-	last := first.reported[len(first.reported)-1]
-	assert.False(t, last.Withdrawn, "the new repository answered, so there is something to publish")
-	assert.Equal(t, revParseMain(t, second.repoDir), last.Revision)
-	assert.False(t, first.worker.observationWithdrawn(), "and nothing is left to take back")
 }
 
 // TestRefresh_PublishesARefusalSomebodyElsePushed is the gap this closes. A folder is broken by

@@ -76,12 +76,14 @@ when adding code here:** anything that resolves, commits, or concludes without r
 advertisement must either fetch, or refuse to conclude. See
 [inbound push notification](design/push-notification-and-reconcile-trigger.md) §3.
 
-That trust belongs to **one repository**. A worker is keyed by
-`(GitProvider namespace, GitProvider name, branch)`, while `spec.url` is immutable
-and repointed by deleting and recreating the `GitProvider`, so the same worker can meet a new
-repository without anything restarting it. Each remote has its own clone, so trust carried across
-that change would skip establishing the new checkout entirely; `noteRemoteIdentity` drops it
-instead.
+That trust belongs to **one repository**, and so does the worker holding it. A worker is keyed by
+`(GitProvider namespace, GitProvider name, branch)`, which names no repository, while `spec.url` is
+immutable and repointed by deleting and recreating the `GitProvider`. So the worker also carries
+the **repository identity** it was created for: the provider's UID paired with its URL. Every
+repository operation uses that URL rather than whatever the provider names when the cycle reads it,
+and the reconcile compares the identity on each tick. A provider naming a different repository does
+not move the worker; it **replaces** it, and the replaced worker takes its clone, its trust and its
+queued work with it. Nothing has to remember to invalidate a field.
 
 **An idle target re-proves where its branch is, periodically.** A target that is writing learns it
 for free: the push session reads the remote's advertisement and the server names the hash it

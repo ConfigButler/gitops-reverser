@@ -34,14 +34,14 @@ func (m *Manager) ReportRemoteObserved(gitDest types.ResourceReference, observed
 			return false
 		}
 		// What wakes the controller is a change in the ANSWER to "where is my branch", which the
-		// revision alone does not carry. A withdrawal and a branch the remote does not have both
-		// have no revision and mean opposite things — one removes the stanza, the other publishes
-		// it — so a move between them is news in both directions, and comparing revisions alone
-		// left the wrong one standing until some other reconcile happened by.
+		// revision alone does not carry. The REPOSITORY the revision is in is half the answer: a
+		// report from a different one means the published revision describes a repository this
+		// GitTarget no longer points at, and the reconcile is what removes it. Comparing revisions
+		// alone left the wrong one standing until some other reconcile happened by.
 		//
 		// `By` is deliberately not compared: a revision that changes hands from a push to a fetch
 		// is the same answer, and the target's own steady tick republishes it.
-		newAnswer = !had || prior.Revision != observed.Revision || prior.Withdrawn != observed.Withdrawn
+		newAnswer = !had || prior.Revision != observed.Revision || prior.Repo != observed.Repo
 		s.remotes[gitDest.Key()] = observed
 		return true
 	})

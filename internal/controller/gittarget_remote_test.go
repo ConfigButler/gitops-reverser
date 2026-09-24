@@ -17,6 +17,13 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
+// The two repositories a repoint moves between: a recreated GitProvider mints a new UID, and here
+// it names a different URL as well.
+var (
+	firstRepo  = git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	secondRepo = git.RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+)
+
 func remoteTestTarget() *configbutleraiv1alpha3.GitTarget {
 	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "shop", Generation: 4},
@@ -28,7 +35,7 @@ func remoteTestTarget() *configbutleraiv1alpha3.GitTarget {
 // branch.
 func TestPublishRemote_AbsentUntilSomethingLooks(t *testing.T) {
 	target := remoteTestTarget()
-	publishRemote(target, git.RemoteObservation{}, false, time.Minute)
+	publishRemote(target, git.RemoteObservation{}, false, git.RepoIdentity{}, time.Minute)
 	assert.Nil(t, target.Status.Remote)
 }
 
@@ -38,7 +45,7 @@ func TestPublishRemote_AnObservationWithNoRevisionIsStillPublished(t *testing.T)
 	target := remoteTestTarget()
 	at := time.Now()
 
-	publishRemote(target, git.RemoteObservation{At: at, By: git.ObservedByFetch}, true, time.Minute)
+	publishRemote(target, git.RemoteObservation{At: at, By: git.ObservedByFetch}, true, git.RepoIdentity{}, time.Minute)
 
 	require.NotNil(t, target.Status.Remote)
 	assert.Empty(t, target.Status.Remote.Revision)
@@ -54,11 +61,11 @@ func TestPublishRemote_ANewRevisionAlwaysWrites(t *testing.T) {
 	first := time.Now()
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: first, By: git.ObservedByPush,
-	}, true, time.Hour)
+	}, true, git.RepoIdentity{}, time.Hour)
 
 	publishRemote(target, git.RemoteObservation{
 		Revision: "bbbb", At: first.Add(time.Second), By: git.ObservedByPush,
-	}, true, time.Hour)
+	}, true, git.RepoIdentity{}, time.Hour)
 
 	require.NotNil(t, target.Status.Remote)
 	assert.Equal(t, "bbbb", target.Status.Remote.Revision,
@@ -73,13 +80,13 @@ func TestPublishRemote_AnUnchangedRevisionIsQuantized(t *testing.T) {
 	first := time.Now()
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: first, By: git.ObservedByFetch,
-	}, true, 10*time.Minute)
+	}, true, git.RepoIdentity{}, 10*time.Minute)
 	published := target.Status.Remote
 
 	// One steady tick later, on the same revision. Nothing to say.
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: first.Add(5 * time.Minute), By: git.ObservedByFetch,
-	}, true, 10*time.Minute)
+	}, true, git.RepoIdentity{}, 10*time.Minute)
 	assert.Same(t, published, target.Status.Remote,
 		"an unchanged revision inside the interval leaves the published value untouched")
 
@@ -87,7 +94,7 @@ func TestPublishRemote_AnUnchangedRevisionIsQuantized(t *testing.T) {
 	// minutes ago" on a target that is being refreshed would be reading a broken refresher.
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: first.Add(10 * time.Minute), By: git.ObservedByFetch,
-	}, true, 10*time.Minute)
+	}, true, git.RepoIdentity{}, 10*time.Minute)
 	assert.NotSame(t, published, target.Status.Remote)
 	assert.Equal(t, first.Add(10*time.Minute).Unix(), target.Status.Remote.LastVerifiedAt.Unix())
 }
@@ -99,46 +106,92 @@ func TestPublishRemote_SourceChangeIsNews(t *testing.T) {
 	at := time.Now()
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: at, By: git.ObservedByPush,
-	}, true, time.Hour)
+	}, true, git.RepoIdentity{}, time.Hour)
 
 	publishRemote(target, git.RemoteObservation{
 		Revision: "aaaa", At: at.Add(time.Second), By: git.ObservedByFetch,
-	}, true, time.Hour)
+	}, true, git.RepoIdentity{}, time.Hour)
 
 	assert.Equal(t, "Fetch", target.Status.Remote.VerifiedBy)
 }
 
-// TestPublishRemote_AWithdrawalRemovesTheStanza. A withdrawal says the published revision names a
+// TestPublishRemote_ARevisionFromAnotherRepositoryIsRemoved. The published revision names a
 // commit in a repository this GitTarget no longer points at — its GitProvider was recreated
-// against a different URL. There is nothing to replace it with until a look at the new repository
-// succeeds, and if that repository is unreachable there never will be, so the stanza goes rather
-// than going stale.
-func TestPublishRemote_AWithdrawalRemovesTheStanza(t *testing.T) {
+// against a different URL, and the observation still in the projection was proved against the old
+// one. There is nothing to replace it with until a look at the new repository succeeds, and if
+// that repository is unreachable there never will be, so the stanza goes rather than going stale.
+func TestPublishRemote_ARevisionFromAnotherRepositoryIsRemoved(t *testing.T) {
 	target := remoteTestTarget()
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush,
-	}, true, time.Hour)
+		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
+	}, true, firstRepo, time.Hour)
 	require.NotNil(t, target.Status.Remote)
 
-	publishRemote(target, git.WithdrawnObservation(), true, time.Hour)
+	publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
+	}, true, secondRepo, time.Hour)
 
 	assert.Nil(t, target.Status.Remote,
 		"a revision from a repository this target no longer uses must not be left standing")
 }
 
-// TestPublishRemote_AWithdrawalIsNotQuantized. The quantizer exists to stop a converged target
-// writing status once a tick to advance a clock. A withdrawal carries no clock and is a
-// correction, so it must never be held back by it.
-func TestPublishRemote_AWithdrawalIsNotQuantized(t *testing.T) {
+// TestPublishRemote_TheRemovalIsNotQuantized. The quantizer exists to stop a converged target
+// writing status once a tick to advance a clock. Removing a revision that is about the wrong
+// repository is a correction, not a clock, so it must never be held back by it.
+func TestPublishRemote_TheRemovalIsNotQuantized(t *testing.T) {
 	target := remoteTestTarget()
 	at := time.Now()
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: at, By: git.ObservedByFetch,
-	}, true, 10*time.Minute)
+		Revision: "aaaa", At: at, By: git.ObservedByFetch, Repo: firstRepo,
+	}, true, firstRepo, 10*time.Minute)
 
-	publishRemote(target, git.WithdrawnObservation(), true, 10*time.Minute)
+	publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: at.Add(time.Second), By: git.ObservedByFetch, Repo: firstRepo,
+	}, true, secondRepo, 10*time.Minute)
 
 	assert.Nil(t, target.Status.Remote)
+}
+
+// TestPublishRemote_AnUnknownIdentityProvesNothing. The comparison needs both halves. A
+// GitProvider that could not be read names no repository, and a worker with no identity of its own
+// — the CLI, and tests that never reach a remote — records none. Treating either as a mismatch
+// would delete a perfectly good revision every time a provider read blipped.
+func TestPublishRemote_AnUnknownIdentityProvesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		observed git.RepoIdentity
+		current  git.RepoIdentity
+	}{
+		{"the provider could not be read", firstRepo, git.RepoIdentity{}},
+		{"the worker has no identity", git.RepoIdentity{}, firstRepo},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := remoteTestTarget()
+			publishRemote(target, git.RemoteObservation{
+				Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: tc.observed,
+			}, true, tc.current, time.Hour)
+
+			require.NotNil(t, target.Status.Remote)
+			assert.Equal(t, "aaaa", target.Status.Remote.Revision)
+		})
+	}
+}
+
+// TestPublishRemote_TheNewRepositoryRepopulatesTheStanza is the other side of the removal: the
+// first look at the repository the target points at NOW publishes again, with no latch to clear.
+func TestPublishRemote_TheNewRepositoryRepopulatesTheStanza(t *testing.T) {
+	target := remoteTestTarget()
+	publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
+	}, true, secondRepo, time.Hour)
+	require.Nil(t, target.Status.Remote)
+
+	publishRemote(target, git.RemoteObservation{
+		Revision: "bbbb", At: time.Now(), By: git.ObservedByFetch, Repo: secondRepo,
+	}, true, secondRepo, time.Hour)
+
+	require.NotNil(t, target.Status.Remote)
+	assert.Equal(t, "bbbb", target.Status.Remote.Revision)
 }
 
 // TestRemoteStatusIsNews_FallsBackToTheDefaultInterval. The quantum comes from the configured
@@ -196,11 +249,11 @@ func TestRequestRemoteRefresh_DoesNothingWithoutADataPlane(t *testing.T) {
 	}, "and a target whose branch has no worker yet has nothing to refresh either")
 }
 
-// TestPublishRemote_TheWithdrawalReachesTheAPIAsADelete. Clearing a Go pointer is only half of
+// TestPublishRemote_TheRemovalReachesTheAPIAsADelete. Clearing a Go pointer is only half of
 // removing a field: the status write is a JSON merge patch computed against the object as read, so
 // the fix works only if a field that was there and is now nil is emitted as an explicit null. A
 // patch that simply omitted it would leave the old repository's revision in etcd forever.
-func TestPublishRemote_TheWithdrawalReachesTheAPIAsADelete(t *testing.T) {
+func TestPublishRemote_TheRemovalReachesTheAPIAsADelete(t *testing.T) {
 	target := remoteTestTarget()
 	// A condition, so the patch is computed against a status that outlives the stanza being
 	// removed: the whole point is that `remote` alone is deleted.
@@ -209,11 +262,13 @@ func TestPublishRemote_TheWithdrawalReachesTheAPIAsADelete(t *testing.T) {
 		LastTransitionTime: metav1.NewTime(time.Now()), ObservedGeneration: 4,
 	}}
 	publishRemote(target, git.RemoteObservation{
-		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush,
-	}, true, time.Hour)
+		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
+	}, true, firstRepo, time.Hour)
 	before := target.DeepCopy()
 
-	publishRemote(target, git.WithdrawnObservation(), true, time.Hour)
+	publishRemote(target, git.RemoteObservation{
+		Revision: "aaaa", At: time.Now(), By: git.ObservedByPush, Repo: firstRepo,
+	}, true, secondRepo, time.Hour)
 
 	data, err := client.MergeFrom(before).Data(target)
 	require.NoError(t, err)

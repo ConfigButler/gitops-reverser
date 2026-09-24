@@ -44,17 +44,26 @@ func publishRemote(
 	target *configbutleraiv1alpha3.GitTarget,
 	observed git.RemoteObservation,
 	seen bool,
+	repo git.RepoIdentity,
 	quantum time.Duration,
 ) {
 	if !seen {
 		return
 	}
-	// A withdrawal is not an observation: the data plane is saying that what is published names a
-	// revision in a repository this target no longer points at. It has to be REMOVED rather than
-	// replaced, because there is nothing to replace it with until a look at the new repository
-	// succeeds — and an unreachable new remote would otherwise leave the old one's revision
-	// standing indefinitely.
-	if observed.Withdrawn {
+	// The observation names the repository it was proved against; repo is the one the GitTarget's
+	// GitProvider names NOW. When they differ, what is published is a revision in a repository
+	// this target no longer points at, and it has to be REMOVED rather than replaced: there is
+	// nothing to replace it with until a look at the new repository succeeds, and an unreachable
+	// new remote would otherwise leave the old one's revision standing indefinitely.
+	//
+	// It is derived here, on every tick, rather than latched by whoever noticed the repoint. That
+	// is what makes it right for the SIBLING targets on the same branch, which each reach this on
+	// their own reconcile without anybody having to keep a correction alive for them.
+	//
+	// Both halves have to be known for the comparison to mean anything: an unreadable GitProvider
+	// names no repository, and a worker with no identity of its own records none. Neither is
+	// evidence that what is published is about the wrong one.
+	if !repo.IsZero() && !observed.Repo.IsZero() && observed.Repo != repo {
 		target.Status.Remote = nil
 		return
 	}
