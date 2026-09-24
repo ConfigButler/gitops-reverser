@@ -1145,7 +1145,8 @@ stops a fact being published by something that cannot actually prove it.
 | --- | --- | --- |
 | Can this repository be reached with this credential? | the `GitProvider` controller's connectivity check | `GitProvider.status`: `Ready`, `lastVerifiedAt` |
 | Which repository is this? | the `GitProvider` object's identity (`metadata.uid` with `spec.url`) | nothing: it is carried on the branch worker and compared, not reported |
-| Where is branch B on the remote, and when was that proved? | the branch worker, on its queue | `GitTarget.status.remote`, delivered to each `GitTarget` on the branch |
+| Where is branch B on the remote, and when was that proved? | the branch worker, on its queue | `GitTarget.status.remote`, sampled by each `GitTarget` on the branch |
+| What is this repository being used for? | the `GitTarget`s that reference it | `GitProvider.status.branches` |
 | Is this folder accepted, streaming and matching live? | the watch plane, per `GitTarget` | the `GitTarget`'s conditions and `status.placement` |
 
 A branch worker sits at the intersection and belongs wholly to neither object: `GitTarget`s decide
@@ -1155,16 +1156,24 @@ and **identified** by the repository it is about, which only the `GitProvider` c
 that names a different repository does not move a live worker; it replaces it, and the replacement
 starts with no clone, no base trust and no observation.
 
-`GitTarget.status.remote` is a **branch** fact delivered per target, and it is worth being exact
+`GitTarget.status.remote` is a **branch** fact published per target, and it is worth being exact
 about that, because the reverse reading is tempting and wrong. The revision and its `lastVerifiedAt`
 are the branch worker's single observation, shared by every `GitTarget` on that branch: a push by
-one target renews it for all of them, and a refresh hands the stored value to whichever target asked
-before deciding whether any work is possible. So a fresh `lastVerifiedAt` says the branch tip was
-recently proved. It does **not** say that this target's folder was scanned, that its documents were
+one target proves it for all of them. So a fresh `lastVerifiedAt` says the branch tip was recently
+proved. It does **not** say that this target's folder was scanned, that its documents were
 published, or that its streams are running. Those are the conditions' job.
 
-Two targets on one branch can hold different times, but that is delivery lag rather than a
-difference in what was proved: each learns the shared observation on its own tick.
+**Delivery is not publication**, and the split is deliberate. Delivery is immediate and costs
+nothing: the observation is recorded once, where it is proved, and every target on the branch reads
+the same tuple from that moment. Publication is a status write (an etcd write that invalidates
+every watcher's cached copy of the type), so it is sampled: each target writes `status.remote` at
+most once per publication interval, and nothing in the data plane wakes a target because a branch
+moved. A target holding something newer than what it published comes back on the deadline to write
+it.
+
+So two targets on one branch can show different times. That is publication lag, not a difference in
+what was proved, and each tuple is internally consistent: one observation from one moment, never
+the newest revision beside a stale clock.
 
 ### Everything about a branch happens on that branch's queue
 

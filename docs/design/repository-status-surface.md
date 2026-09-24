@@ -1,6 +1,7 @@
 # Status surfaces for a repository and its folders
 
-> **design**: still being decided. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: steps 1 and 2 are implemented; steps 3 and 4 are not.
+> Index: [`../INDEX.md`](../INDEX.md)
 
 Two objects describe one mirror. A `GitProvider` is a repository; a `GitTarget` is one folder on
 one branch of it. Between them sits a branch worker, which is not an API object and must not
@@ -40,22 +41,39 @@ cached copy held by every watcher of the type. Moving revisions from the `GitPro
 `GitTarget`s does not reduce that. The revision belongs on the `GitTarget` because that is where
 the question is asked, which is a different argument; on write volume alone it is worse.
 
-So the `remote` tuple is **sampled onto the target's own reconcile cadence** rather than published
-on every change. Two things stay prompt, because they are health rather than throughput: a
-condition transition, and clearing `remote` when the repository identity no longer matches.
+So the `remote` tuple is **sampled** rather than published on every change. Two things stay prompt,
+because they are health rather than throughput: a condition transition, and clearing `remote` when
+the repository identity no longer matches.
 
-Today's quantizer does not achieve this, and the plan has to change it.
-[`remoteStatusIsNews`](../../internal/controller/gittarget_remote.go) treats a changed revision
-*or* a changed `verifiedBy` as news and skips the interval entirely, so under fan-out every target
-would patch on every commit to its branch. `verifiedBy` moving from `Push` to `Fetch` is the same
-answer proved a second way, and the watch plane already ignores it for that reason; the two layers
-should agree.
+### The deadline is a wall clock, not a cadence
+
+"Sampled onto the target's reconcile cadence" is not a bound, and saying it that way hides two
+different failures. The rule is one number, `RemotePublicationInterval`:
+
+- **At most one `status.remote` write per `GitTarget` per interval**, measured in wall clock from
+  the observation currently published. Not from the gap between two observations, which is what
+  today's quantizer compares and which stops moving exactly when the remote does.
+- **A target holding something newer requeues on the remainder of that interval.** Without this the
+  deadline would be decorative: the write would land on whatever tick came next, which for a
+  converged target is five minutes. This is what makes an interval SHORTER than the reconcile
+  cadence mean what it says, and it is also what keeps the data plane from waking anything:
+  delivery notifies nobody, so no sibling is woken by a commit.
+- **The lag is stated against the latest OBSERVATION, never against the branch.** No maximum lag
+  against the actual branch is available at any price: an unreachable remote yields no observation at
+  all, and the pair (`revision`, `lastVerifiedAt`) is precisely what says so.
+
+Removing the revision bypass from
+[`remoteStatusIsNews`](../../internal/controller/gittarget_remote.go) is necessary and not
+sufficient. That function also treats a changed `verifiedBy` as news, which it is not: `Push` to
+`Fetch` is the same answer proved a second way, and the watch plane already ignores it for that
+reason. News becomes "a different revision, or the same one proved later", and the rate bound above
+applies to whatever passes it.
 
 **This changes a promise, so it is worth stating plainly.** `status.remote.revision` becomes a
-sampled value that can lag the branch by up to one reconcile interval, so an operator who pushes and
-immediately reads status may still see the previous revision. The alternative is a status field
-that moves at commit rate, which is what the [status rate rule](../spec/status-conditions-guide.md)
-rejects.
+sampled value that can lag the last observation by up to one publication interval, so an operator
+who pushes and immediately reads status may still see the previous revision. The alternative is a
+status field that moves at commit rate, which is what the
+[status rate rule](../spec/status-conditions-guide.md) rejects.
 
 ## Example: two `GitTarget`s on one `GitProvider`
 
@@ -165,7 +183,15 @@ documented precedence, so the axis is readable on its own and the roll-up stays 
 - `False` only on an explicit refusal. A probe that could not run leaves it `Unknown`, which by this
   project's convention does not downgrade `Ready`, so a transient failure never turns a healthy
   provider red.
-- Not latched. Write access comes back when a token is regranted, and the condition has to follow.
+- Not latched, with one asymmetry that has to be written down because it is where the two rules
+  above collide. **A failed probe never clears a proven denial.** `False` moves to `Unknown` only
+  when nothing has been proven yet; once the remote has refused a write session, the condition
+  stays `False` until a probe SUCCEEDS. Otherwise a repository whose token was revoked would go
+  green the moment the network flapped, and green here means "this destination works" to every
+  consumer, including the `Ready` gate step 4 adds. Uncertainty may withhold an affirmative
+  verdict; it may not overturn a proven negative one.
+- Write access comes back when a token is regranted, and the condition follows: the successful
+  probe is the evidence, and it is the only thing that clears the denial.
 - It gets a printer column, because "reachable but not writable" is the case an operator cannot
   currently see at all.
 
@@ -207,8 +233,11 @@ destination being mistaken in the first place.
 
 ## Order of work
 
-1. The inventory: `branches[{name, gitTargets}]`, derived from the configured `GitTarget`s.
-2. Shared delivery plus bounded publication, including the `remoteStatusIsNews` change.
+1. **Done.** The inventory: `branches[{name, gitTargets}]`, derived from the configured
+   `GitTarget`s, kept current by a filtered `Watches()` edge on `GitTarget`.
+2. **Done.** Shared delivery plus bounded publication. The observation is recorded once, where it
+   is proved, and kept per branch by the worker manager, so it outlives the worker that proved it
+   and the per-target projection is gone. Publication follows the deadline rule above.
 3. The write probe, publishing `Writable` and nothing else.
 4. `Writable` gates `Ready`, with the upgrade note. Separate, because it is the only step that
    changes what an existing field means.

@@ -7,6 +7,42 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `GitTarget.status.remote` is sampled, and a `GitProvider` lists its branches
+
+**Not breaking for any field, and a change of promise for one.** `status.remote.revision` is a
+**sampled** value: a target publishes it at most once a minute, so a push followed immediately by a
+`kubectl get` can still show the previous revision. It used to be written on every change, which
+meant ten folders sharing a branch turned one commit into ten status writes — each an etcd write
+that invalidates the cached copy every watcher of the type holds.
+
+Nothing about what is *proved* changed. An observation still reaches every `GitTarget` on the
+branch the instant a push or a fetch proves it, and the tuple stays internally consistent: one
+observation from one moment, never the newest revision beside a stale clock. Two things are still
+immediate — the first observation, and taking back a revision that names a repository the target no
+longer points at.
+
+### What to change
+
+**Automation that reads `status.remote.revision` to confirm its own push has landed needs a
+timeout of at least a minute**, or should read Git instead: that field answers "where is my branch",
+not "did my write go through". A `CommitRequest`'s own status is what answers the second question.
+
+### What you gain
+
+`GitProvider.status.branches` lists the branches the namespace's `GitTarget`s are configured to
+write, and how many reference each:
+
+```yaml
+status:
+  branches:
+    - name: main
+      gitTargets: 2
+```
+
+`Ready=True` beside `branches: []` now reads as **configured and unused** rather than looking the
+same as a repository nothing can reach. It follows the configuration, not the remote: a suspended
+or blocked target still counts, and a branch that only exists on the remote never appears.
+
 ## Every duration in the API is a Go duration string
 
 **Breaking for `CommitRequest.spec.closeDelaySeconds`, which no longer exists.** Every time-valued
@@ -116,7 +152,8 @@ against your Git host and an idle target generates no Git traffic.
 ### What you gain
 
 `GitTarget.status.remote` publishes where the branch is, when that was last proved, and whether a
-push or a fetch proved it — renewed by every push, so it is current on an active target at no cost.
+push or a fetch proved it — proved again by every push, at no cost, and published on the sampled
+cadence described above.
 `GitProvider.status.lastVerifiedAt` does the same for the credential. Both have a `Verified` printer
 column under `kubectl get -o wide`.
 
