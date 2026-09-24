@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -243,13 +244,18 @@ func (m *WorkerManager) SetRemoteReporter(reporter RemoteReporter) {
 // retained writes are all statements about the old one — so that worker is stopped, its checkout
 // reclaimed, and a fresh one takes the slot.
 //
+// It reports whether it REPLACED a worker, because a replacement is not complete when it returns:
+// the new worker has no clone and no queue, so every GitTarget on that branch has to re-establish
+// its folder against the new repository. Arranging that is the caller's job; see the GitTarget
+// reconcile's worker wiring gate.
+//
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(
 	_ context.Context,
 	providerName, providerNamespace string,
 	branch string,
 	repo RepoIdentity,
-) error {
+) (bool, error) {
 	// Held across the whole check-and-create so a replacement cannot start while the worker it
 	// replaces is still stopping; they would share a clone.
 	m.lifecycleMu.Lock()
@@ -265,9 +271,10 @@ func (m *WorkerManager) EnsureWorker(
 	existing, exists := m.workers[key]
 	m.mu.RUnlock()
 
+	replaced := false
 	if exists {
 		if existing.repo == repo {
-			return nil
+			return false, nil
 		}
 		// Both identities, at default verbosity: a comparison that is not stable across steady
 		// reconciles is a restart loop, and this line is what makes one visible.
@@ -277,6 +284,7 @@ func (m *WorkerManager) EnsureWorker(
 			"now", repo.String())
 		// lifecycleMu is already held, so the detach-and-stop must not take it again.
 		m.removeWorkersLocked([]BranchKey{key}, "the GitProvider names a different repository")
+		replaced = true
 	}
 
 	m.mu.Lock()
@@ -308,13 +316,13 @@ func (m *WorkerManager) EnsureWorker(
 		worker.renderFidelityGate = m.renderFidelityGate
 
 		if err := worker.Start(m.ctx); err != nil {
-			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
+			return replaced, fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
 		}
 
 		m.workers[key] = worker
 	}
 
-	return nil
+	return replaced, nil
 }
 
 // removeWorkers detaches the named workers and stops them.
@@ -480,7 +488,7 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, m.queueDepthSamples)
 	m.Log.Info("WorkerManager started")
 
-	<-ctx.Done()
+	m.sweepPeriodically(ctx)
 
 	// Clear the source before the workers go, so the callback cannot outlive them.
 	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, nil)
@@ -500,6 +508,40 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	}
 	m.Log.Info("WorkerManager stopped")
 	return nil
+}
+
+// WorkerSweepInterval is the floor under the orphan sweep. It is a FLOOR and not the mechanism: a
+// deleted GitTarget's reconcile sweeps immediately, and this catches what that path cannot see.
+const WorkerSweepInterval = time.Minute
+
+// sweepPeriodically runs the orphan sweep until the context ends.
+//
+// The delete-triggered sweep is prompt but not complete, because it runs only where a reconcile
+// READ NotFound. Delete a GitTarget and recreate it under the same name on another branch before
+// that reconcile runs, and the controller sees the successor, wires its worker, and never learns
+// that the predecessor existed: the old branch's worker, its goroutine and its clone are then held
+// until the process restarts. Kubernetes reconciliation cannot be built on observing every
+// intermediate state, so the sweep needs a trigger that does not depend on seeing the delete.
+//
+// It is a separate goroutine rather than a step in the GitTarget reconcile on purpose: the sweep
+// takes lifecycleMu and holds it across Stop, and GitTarget reconciles are serialized, so a slow
+// stop on the reconcile path would stall every target's reconcile behind it.
+func (m *WorkerManager) sweepPeriodically(ctx context.Context) {
+	ticker := time.NewTicker(WorkerSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := m.ReconcileWorkers(ctx); err != nil {
+				// Failing safe: a List that errors stops nothing, so the only cost is that the
+				// sweep is late.
+				m.Log.V(1).Info("Periodic worker sweep could not read the GitTargets",
+					"error", err.Error())
+			}
+		}
+	}
 }
 
 // queueDepthSamples is the git_queue_depth source: one sample per live worker, read when

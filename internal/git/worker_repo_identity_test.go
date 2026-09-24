@@ -16,6 +16,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,12 +58,12 @@ func TestEnsureWorker_KeepsTheWorkerWhenTheRepositoryIsUnchanged(t *testing.T) {
 	manager, ctx := startedManager(t)
 	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", repo)
 	first, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 
 	for range 3 {
-		require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo))
+		mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", repo)
 	}
 
 	second, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
@@ -79,11 +80,11 @@ func TestEnsureWorker_ReplacesTheWorkerWhenTheProviderIsRecreated(t *testing.T) 
 	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", before)
 	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", after)
 
 	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
@@ -100,13 +101,13 @@ func TestEnsureWorker_ReplacesOnARecreateThatKeepsTheURL(t *testing.T) {
 	manager, ctx := startedManager(t)
 	const url = "https://example.invalid/repo.git"
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-1", URL: url}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: url})
 	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-2", URL: url}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-2", URL: url})
 
 	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
@@ -120,13 +121,13 @@ func TestEnsureWorker_ReplacesOnARecreateThatKeepsTheURL(t *testing.T) {
 func TestEnsureWorker_ReplacesWhenTheURLMovedUnderTheSameObject(t *testing.T) {
 	manager, ctx := startedManager(t)
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"})
 	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/second.git"}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/second.git"})
 
 	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
@@ -140,8 +141,8 @@ func TestEnsureWorker_ReplacementTakesTheOldCheckoutWithIt(t *testing.T) {
 	manager, ctx := startedManager(t)
 	const oldURL = "https://example.invalid/first.git"
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-1", URL: oldURL}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: oldURL})
 	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 
@@ -150,8 +151,8 @@ func TestEnsureWorker_ReplacementTakesTheOldCheckoutWithIt(t *testing.T) {
 	require.NoError(t, os.MkdirAll(checkout, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(checkout, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"})
 
 	_, err := os.Stat(checkout)
 	assert.True(t, os.IsNotExist(err), "the replaced worker's checkout must go with it")
@@ -166,8 +167,8 @@ func TestEnsureWorker_ReplacementTakesTheOldCheckoutWithIt(t *testing.T) {
 func TestEnsureWorker_ReplacementDropsWhatTheOldWorkerWasHolding(t *testing.T) {
 	manager, ctx := startedManager(t)
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"})
 	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 
@@ -176,8 +177,8 @@ func TestEnsureWorker_ReplacementDropsWhatTheOldWorkerWasHolding(t *testing.T) {
 	old.eventQueue <- WorkItem{}
 	old.eventQueue <- WorkItem{}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"})
 
 	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
@@ -192,12 +193,12 @@ func TestEnsureWorker_ReplacementDropsWhatTheOldWorkerWasHolding(t *testing.T) {
 func TestEnsureWorker_TheSlotReportsOneQueueDepthAcrossAReplacement(t *testing.T) {
 	manager, ctx := startedManager(t)
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"})
 	require.Len(t, manager.queueDepthSamples(), 1)
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
-		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}))
+	mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main",
+		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"})
 
 	assert.Len(t, manager.queueDepthSamples(), 1,
 		"one slot is one series, whatever happened to the worker behind it")
@@ -255,4 +256,97 @@ func TestEnqueue_RefusesOnceTheWorkerIsStopping(t *testing.T) {
 		"an event the shutdown drain would discard must not be reported as accepted")
 	assert.False(t, worker.EnqueueResync(&ResyncRequest{}),
 		"and a resync must be answered rather than left waiting on a reply that never comes")
+}
+
+// TestEnqueue_AdmissionClosesAtOneInstant is the half a check-then-send misses.
+//
+// Reading a stopping flag OUTSIDE the lock the send is made under leaves an enqueue able to pass
+// the check, block on the lock, and deliver into a queue Stop has already finished draining: no
+// loop is left to read it, and the caller was told "accepted". So admission and the stop
+// transition are taken under one lock, and the invariant is absolute rather than probabilistic:
+// once Stop has returned, nothing may be on the queue and nothing may be accepted.
+func TestEnqueue_AdmissionClosesAtOneInstant(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
+	worker := newMetricsTestWorker()
+	worker.Client = fake.NewClientBuilder().WithScheme(setupScheme()).Build()
+	require.NoError(t, worker.Start(context.Background()))
+
+	// Producers pushing continuously, so the stop lands in the middle of one.
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				worker.Enqueue(Event{Operation: "UPDATE"})
+			}
+		}()
+	}
+	time.Sleep(20 * time.Millisecond) // let them get going
+
+	worker.Stop()
+
+	// Still producing, and every one of them has to be refused from here on. With the check taken
+	// outside the send's lock, a producer that was already past it lands an item here and answers
+	// "accepted" for an event nothing will ever read.
+	for range 500 {
+		require.False(t, worker.Enqueue(Event{Operation: "UPDATE"}),
+			"the queue accepted an event after Stop returned; nothing is left to process it")
+	}
+
+	close(done)
+	wg.Wait()
+}
+
+// TestEnsureWorker_ReportsTheReplacementSoItCanBeRecoveredFrom. Dropping the old worker's queue and
+// retained writes is only safe if something rebuilds the folder in the new repository, and nothing
+// asks for that on its own: the GitTarget's declaration is level-triggered and its inputs did not
+// change. So the caller has to be TOLD, and the steady case must not tell it, or every reconcile
+// would force a replay of every target on the branch.
+func TestEnsureWorker_ReportsTheReplacementSoItCanBeRecoveredFrom(t *testing.T) {
+	manager, ctx := startedManager(t)
+	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+
+	assert.False(t, mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", before),
+		"creating the first worker replaces nothing")
+	assert.False(t, mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", before),
+		"and a steady tick must not claim a replacement it did not make")
+
+	assert.True(t, mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", after),
+		"the repository changed, so the branch has to be re-established against the new one")
+	assert.False(t, mustEnsureWorker(ctx, t, manager, "repo1", "gitops-system", "main", after),
+		"reported once, for the reconcile that made it happen")
+}
+
+// TestSweep_RetiresAWorkerNoDeleteWasEverObservedFor. The delete-triggered sweep runs where a
+// reconcile READ NotFound. Delete a GitTarget and recreate it under the same name on another
+// branch before that reconcile runs, and the controller sees only the successor: it wires the new
+// branch's worker and never learns the predecessor existed, so the old branch's worker, goroutine
+// and clone are held until the process restarts.
+//
+// Kubernetes reconciliation cannot be built on observing every intermediate state, so the sweep
+// needs a trigger that does not depend on seeing the delete.
+func TestSweep_RetiresAWorkerNoDeleteWasEverObserved(t *testing.T) {
+	manager, ctx := startedManager(t)
+	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
+
+	// The state a rapid delete-and-recreate leaves: a worker for the branch the predecessor named,
+	// and a live GitTarget of the same name on a different one.
+	mustEnsureWorker(ctx, t, manager, "repo1", testTargetNamespace, "main", repo)
+	createTargetForRegister(ctx, t, manager.Client, "target1", "repo1", "release", "apps/")
+	mustEnsureWorker(ctx, t, manager, "repo1", testTargetNamespace, "release", repo)
+
+	require.NoError(t, manager.ReconcileWorkers(ctx))
+
+	_, stranded := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	assert.False(t, stranded, "no GitTarget names this branch any more, and no delete was ever seen")
+	_, live := manager.GetWorkerForTarget("repo1", testTargetNamespace, "release")
+	assert.True(t, live, "and the successor's worker is untouched")
 }

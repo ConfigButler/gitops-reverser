@@ -67,6 +67,10 @@ const (
 	TriggerReasonSharedRefresh = "shared_refresh"
 	// TriggerReasonPeriodic is the 30s floor, the one path that still marks everything.
 	TriggerReasonPeriodic = "periodic"
+	// TriggerReasonWorkerReplaced is a branch worker replaced because its GitProvider now names a
+	// different repository. The new worker has no clone and no queue, so every GitTarget on that
+	// branch has to re-establish its folder there.
+	TriggerReasonWorkerReplaced = "worker_replaced"
 )
 
 // declareIntent is what only the GitTarget controller knows about a target: its UID and the three

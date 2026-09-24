@@ -1145,8 +1145,8 @@ stops a fact being published by something that cannot actually prove it.
 | --- | --- | --- |
 | Can this repository be reached with this credential? | the `GitProvider` controller's connectivity check | `GitProvider.status`: `Ready`, `lastVerifiedAt` |
 | Which repository is this? | the `GitProvider` object's identity (`metadata.uid` with `spec.url`) | nothing: it is carried on the branch worker and compared, not reported |
-| Where is branch B on the remote? | the branch worker, on its queue | reported to each `GitTarget` that asked for it |
-| Is this folder's content in Git, and how recently was that proved? | the branch worker, per `GitTarget` | `GitTarget.status.remote`, `status.placement` |
+| Where is branch B on the remote, and when was that proved? | the branch worker, on its queue | `GitTarget.status.remote`, delivered to each `GitTarget` on the branch |
+| Is this folder accepted, streaming and matching live? | the watch plane, per `GitTarget` | the `GitTarget`'s conditions and `status.placement` |
 
 A branch worker sits at the intersection and belongs wholly to neither object: `GitTarget`s decide
 which branches are needed, `GitProvider` decides which repository those branches are in. So the
@@ -1155,12 +1155,16 @@ and **identified** by the repository it is about, which only the `GitProvider` c
 that names a different repository does not move a live worker; it replaces it, and the replacement
 starts with no clone, no base trust and no observation.
 
-`GitTarget.status.remote` stays on the `GitTarget` rather than moving to the `GitProvider`, although
-the branch tip it names is shared by every target on that branch. Its `lastVerifiedAt` is not a fact
-about the branch: it dates **this target's** proof, and two targets on one branch legitimately hold
-different times, because one has been pushing and the other has only been looking. A refresher that
-stopped working is read off exactly that timestamp ceasing to advance, and one timestamp per branch
-could not say which target had gone quiet.
+`GitTarget.status.remote` is a **branch** fact delivered per target, and it is worth being exact
+about that, because the reverse reading is tempting and wrong. The revision and its `lastVerifiedAt`
+are the branch worker's single observation, shared by every `GitTarget` on that branch: a push by
+one target renews it for all of them, and a refresh hands the stored value to whichever target asked
+before deciding whether any work is possible. So a fresh `lastVerifiedAt` says the branch tip was
+recently proved. It does **not** say that this target's folder was scanned, that its documents were
+published, or that its streams are running. Those are the conditions' job.
+
+Two targets on one branch can hold different times, but that is delivery lag rather than a
+difference in what was proved: each learns the shared observation on its own tick.
 
 ### Everything about a branch happens on that branch's queue
 

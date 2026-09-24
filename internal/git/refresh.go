@@ -47,11 +47,16 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 	if req == nil {
 		return
 	}
-	if w.stopping() {
+	w.inflightItems.Add(1)
+	// Under the same lock as every other admission, for the reason on stoppingState: a check
+	// outside it can pass and then send into a queue Stop has already finished draining.
+	w.pendingResyncsMu.Lock()
+	defer w.pendingResyncsMu.Unlock()
+	if w.stoppingLocked() {
+		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropRefresh)
 		return
 	}
-	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Refresh: req}:
 	default:
@@ -83,6 +88,12 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	// 2. Report what is already known BEFORE deciding whether to do any work, and on every exit
 	// below. A push reports only against the targets whose writes it carried, so a target that is
 	// not writing learns where its branch is exclusively from its own tick.
+	//
+	// What is delivered here is the WORKER's observation, which another target's push may have
+	// proved. That is deliberate: "where is branch B" is one fact for the branch, and every target
+	// on it is entitled to the same answer with the time it was actually proved. It is also why
+	// status.remote must not be read as evidence that THIS target did anything: a fresh timestamp
+	// can arrive on a tick that goes on to do no work at all, two lines below.
 	observed, known := w.LastRemoteObservation()
 	if known {
 		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)

@@ -229,7 +229,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Ensure the branch worker exists and register the GitTarget's event stream before declaring
 	// streams. The watch data plane can route live events as soon as it reaches Streaming, so the
 	// destination worker must already be wired.
-	wired, wiringMessage := r.evaluateWorkerWiringGate(&target, providerNS, repoIdentityOf(gitProvider), log)
+	wired, wiringMessage := r.evaluateWorkerWiringGate(ctx, &target, providerNS, repoIdentityOf(gitProvider), log)
 	if !wired {
 		return r.stall(ctx, st, blockedGate{
 			reason:  GitTargetReadyReasonWorkerUnavailable,
@@ -498,6 +498,7 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 // internal plumbing rather than a status condition of its own: rare failures fold into Ready
 // with reason WorkerUnavailable. A nil EventRouter (test/standalone) is trivially wired.
 func (r *GitTargetReconciler) evaluateWorkerWiringGate(
+	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	repo git.RepoIdentity,
@@ -507,7 +508,7 @@ func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 		return true, ""
 	}
 
-	if _, err := r.ensureEventStream(target, providerNS, repo, log); err != nil {
+	if _, err := r.ensureEventStream(ctx, target, providerNS, repo, log); err != nil {
 		return false, fmt.Sprintf("Failed to wire branch worker/event stream for %s/%s: %v",
 			target.Namespace, target.Name, err)
 	}
@@ -843,6 +844,7 @@ func (r *GitTargetReconciler) publishGitObservations(
 // says nothing about WHICH repository that worker is about. It is a map read and a lock when
 // nothing has changed.
 func (r *GitTargetReconciler) ensureEventStream(
+	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	repo git.RepoIdentity,
@@ -852,13 +854,14 @@ func (r *GitTargetReconciler) ensureEventStream(
 		return nil, errors.New("worker manager is not configured")
 	}
 
-	if err := r.WorkerManager.EnsureWorker(
+	replaced, err := r.WorkerManager.EnsureWorker(
 		context.Background(),
 		target.Spec.GitProviderRef.Name,
 		providerNS,
 		target.Spec.Branch,
 		repo,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to ensure branch worker for provider=%s/%s branch=%s: %w",
 			providerNS,
@@ -866,6 +869,9 @@ func (r *GitTargetReconciler) ensureEventStream(
 			target.Spec.Branch,
 			err,
 		)
+	}
+	if replaced {
+		r.recoverBranchAfterReplacement(ctx, providerNS, target.Spec.GitProviderRef.Name, target.Spec.Branch, log)
 	}
 
 	worker, ensured := r.WorkerManager.GetWorkerForTarget(
@@ -934,6 +940,59 @@ func validateProviderAndBranch(
 	}
 
 	return true, "", ""
+}
+
+// recoverBranchAfterReplacement re-establishes every GitTarget on a branch whose worker was just
+// replaced, because the replacement leaves that branch's state describing a repository that is no
+// longer the destination.
+//
+// The new worker starts with no clone, no base trust and an empty queue: whatever the old one held
+// was computed against the old repository and is deliberately dropped. Nothing else asks for it
+// back. The declaration is level-triggered and its inputs did not change, so the next pass is a
+// no-op, the streams keep running, and an IDLE target would leave the new repository empty for as
+// long as nothing happened to it. Forcing a recheck re-anchors the streams, and a stream that
+// starts replays, which is what drives the mark-and-sweep that rebuilds the folder.
+//
+// It runs for every target on the branch and not only the one whose reconcile noticed. A worker
+// serves them all, and the siblings have no reason of their own to reconcile.
+//
+// The render-fidelity verdicts go the same way and for the same reason: they say a folder matches
+// live, about a folder in the other repository. Forgetting them returns each target to the state a
+// brand new one is in, which is where it actually is.
+//
+// A list that fails recovers nothing, and says so: the periodic sweep and the targets' own steady
+// ticks are what is left, so this is worth a loud line and not worth failing the gate for.
+func (r *GitTargetReconciler) recoverBranchAfterReplacement(
+	ctx context.Context,
+	providerNS, providerName, branch string,
+	log logr.Logger,
+) {
+	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
+		return
+	}
+	var targets configbutleraiv1alpha3.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(providerNS)); err != nil {
+		log.Error(err, "Could not re-establish the branch after its worker was replaced",
+			"provider", providerNS+"/"+providerName, "branch", branch)
+		return
+	}
+	gate := r.WorkerManager.RenderFidelityGate()
+	recovered := 0
+	for i := range targets.Items {
+		affected := &targets.Items[i]
+		if affected.Spec.GitProviderRef.Name != providerName || affected.Spec.Branch != branch {
+			continue
+		}
+		if !affected.DeletionTimestamp.IsZero() {
+			continue
+		}
+		ref := types.NewResourceReference(affected.Name, affected.Namespace).WithUID(string(affected.UID))
+		gate.Forget(ref)
+		r.EventRouter.WatchManager.RequestRecheckForGitTarget(ref)
+		recovered++
+	}
+	log.Info("Branch worker replaced; re-establishing every GitTarget on the branch",
+		"provider", providerNS+"/"+providerName, "branch", branch, "gitTargets", recovered)
 }
 
 // getGitProvider reads the GitTarget's GitProvider ONCE for the whole reconcile.

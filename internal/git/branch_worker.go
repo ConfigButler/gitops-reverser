@@ -144,7 +144,12 @@ type BranchWorker struct {
 	// Refusing them turns a silent loss into the drop path every producer already handles: the
 	// watch leaves its cursor where it is and redelivers to the replacement. Items already ON the
 	// queue when Stop is called are still drained, which is the behaviour shutdown always had.
-	stoppingState atomic.Bool
+	//
+	// It is written and read under pendingResyncsMu, the lock every enqueue already holds across
+	// its send. Checking it outside that lock is not enough: an enqueue could pass the check,
+	// block on the lock, and send after Stop had finished draining, into a queue with no loop left
+	// to read it — and still answer "accepted".
+	stoppingState bool
 
 	// lastObservation is what this worker last PROVED about the target branch on the remote, and
 	// when. See RemoteObservation: it replaces a fetch-only trio (branchExists, lastCommitSHA,
@@ -463,8 +468,11 @@ func (w *BranchWorker) Stop() {
 	}
 	w.mu.Unlock()
 
-	// Before the cancel, so nothing is accepted that the drain below would discard.
-	w.stoppingState.Store(true)
+	// Before the cancel, and under the lock every enqueue holds across its send, so admission
+	// closes at one instant: an enqueue either completed before this point or is refused.
+	w.pendingResyncsMu.Lock()
+	w.stoppingState = true
+	w.pendingResyncsMu.Unlock()
 
 	w.Log.Info("Stopping branch worker")
 	w.cancelFunc()
@@ -498,11 +506,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	if req == nil {
 		return
 	}
-	if w.stopping() {
-		w.recordQueueDrop(queueDropAttach)
-		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
-		return
-	}
+
 	// Increment before the send so inflightItems can never lag the loop's
 	// receive; roll back if the queue is full and the item is dropped.
 	w.inflightItems.Add(1)
@@ -511,6 +515,13 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	// rare, so blocking a coalesce on them costs no storm protection. The mark
 	// and the send are ONE critical section: see enqueueRequest.
 	w.pendingResyncsMu.Lock()
+	if w.stoppingLocked() {
+		w.pendingResyncsMu.Unlock()
+		w.inflightItems.Add(-1)
+		w.recordQueueDrop(queueDropAttach)
+		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
+		return
+	}
 	w.markResyncTailForTargetLocked(req.GitTargetNamespace, req.GitTargetName)
 	select {
 	case w.eventQueue <- WorkItem{Attach: req}:
@@ -545,7 +556,11 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	if request == nil {
 		return false
 	}
-	if w.stopping() {
+	key := resyncKeyFor(request)
+
+	w.pendingResyncsMu.Lock()
+	if w.stoppingLocked() {
+		w.pendingResyncsMu.Unlock()
 		w.recordQueueDrop(queueDropResync)
 		w.Log.V(1).Info("Worker is stopping, resync request refused",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
@@ -554,9 +569,6 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
-	key := resyncKeyFor(request)
-
-	w.pendingResyncsMu.Lock()
 	if w.pendingResyncs == nil {
 		w.pendingResyncs = make(map[resyncKey]*pendingResync)
 	}
@@ -698,13 +710,6 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	if request == nil {
 		return false
 	}
-	if w.stopping() {
-		w.recordQueueDrop(queueDropWrite)
-		w.Log.V(1).Info("Worker is stopping, request refused; the producer keeps it to redeliver",
-			"events", len(request.Events),
-			"gitTarget", request.GitTargetName)
-		return false
-	}
 	item := WorkItem{Request: request}
 	// Increment before the send so inflightItems can never lag the loop's
 	// receive; roll back if the queue is full and the item is dropped.
@@ -718,6 +723,15 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	// non-blocking, so holding the lock across them cannot deadlock. Marking a
 	// write the full queue then drops only forgoes a coalesce, the safe direction.
 	w.pendingResyncsMu.Lock()
+	if w.stoppingLocked() {
+		w.pendingResyncsMu.Unlock()
+		w.inflightItems.Add(-1)
+		w.recordQueueDrop(queueDropWrite)
+		w.Log.V(1).Info("Worker is stopping, request refused; the producer keeps it to redeliver",
+			"events", len(request.Events),
+			"gitTarget", request.GitTargetName)
+		return false
+	}
 	w.markResyncTailForWriteLocked(request)
 	select {
 	case w.eventQueue <- item:
@@ -1702,8 +1716,9 @@ func (w *BranchWorker) markReplayRequired() {
 	}
 }
 
-// stopping reports that Stop has begun, so nothing new may enter the queue: see stoppingState.
-func (w *BranchWorker) stopping() bool { return w.stoppingState.Load() }
+// stoppingLocked reports that Stop has begun, so nothing new may enter the queue. The caller must
+// hold pendingResyncsMu and must still be holding it when it sends: see stoppingState.
+func (w *BranchWorker) stoppingLocked() bool { return w.stoppingState }
 
 // markReplayComplete is called only when a rebuild has replayed every retained write.
 func (w *BranchWorker) markReplayComplete() { w.replayRequiredState.Store(false) }

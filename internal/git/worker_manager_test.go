@@ -44,7 +44,7 @@ func TestWorkerManager_SetMapperInjectsIntoWorkers(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // allow Start to set m.ctx
 
 	repo := createProviderWithLocalRepo(ctx, t, client, "repo1")
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", testProviderNamespace, "main", repo))
+	mustEnsureWorker(ctx, t, manager, "repo1", testProviderNamespace, "main", repo)
 	worker, exists := manager.GetWorkerForTarget("repo1", testProviderNamespace, "main")
 	require.True(t, exists)
 	require.NotNil(t, worker)
@@ -56,6 +56,21 @@ const (
 	testProviderNamespace = "gitops-system"
 	testTargetNamespace   = "default"
 )
+
+// mustEnsureWorker wires a worker and fails the test if it could not, returning whether an
+// existing worker was REPLACED because the identity it was asked for differs from the slot's.
+func mustEnsureWorker(
+	ctx context.Context,
+	t *testing.T,
+	m *WorkerManager,
+	providerName, providerNamespace, branch string,
+	repo RepoIdentity,
+) bool {
+	t.Helper()
+	replaced, err := m.EnsureWorker(ctx, providerName, providerNamespace, branch, repo)
+	require.NoError(t, err)
+	return replaced
+}
 
 func setupScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
@@ -126,7 +141,7 @@ func TestEnsureWorker_CreatesAWorkerWithTheIdentityItWasAskedFor(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "clusters/prod")
 
 	// Register first target
-	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+	_, err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
 	if err != nil {
 		t.Fatalf("Failed to register target: %v", err)
 	}
@@ -178,15 +193,8 @@ func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target-infra", "shared-repo", "main", "infra/")
 
 	// Register two targets for same repo+branch, different paths
-	err := manager.EnsureWorker(ctx, "shared-repo", "gitops-system", "main", repo)
-	if err != nil {
-		t.Fatalf("Failed to register target-apps: %v", err)
-	}
-
-	err = manager.EnsureWorker(ctx, "shared-repo", "gitops-system", "main", repo)
-	if err != nil {
-		t.Fatalf("Failed to register target-infra: %v", err)
-	}
+	mustEnsureWorker(ctx, t, manager, "shared-repo", "gitops-system", "main", repo)
+	mustEnsureWorker(ctx, t, manager, "shared-repo", "gitops-system", "main", repo)
 
 	// Verify only one worker exists
 	manager.mu.RLock()
@@ -226,12 +234,12 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target-dev", "repo1", "develop", "base/")
 
 	// Register targets for same repo, different branches
-	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+	_, err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
 	if err != nil {
 		t.Fatalf("Failed to register target-main: %v", err)
 	}
 
-	err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop", repo)
+	_, err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop", repo)
 	if err != nil {
 		t.Fatalf("Failed to register target-dev: %v", err)
 	}
@@ -285,7 +293,7 @@ func TestReconcileWorkers_KeepsAWorkerASiblingStillNeeds(t *testing.T) {
 	createTargetForRegister(ctx, t, k8sClient, "target1", "repo1", "main", "apps/")
 	createTargetForRegister(ctx, t, k8sClient, "target2", "repo1", "main", "infra/")
 	// The provider lives beside its targets, which is the namespace the sweep derives.
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", testTargetNamespace, "main", repo))
+	mustEnsureWorker(ctx, t, manager, "repo1", testTargetNamespace, "main", repo)
 
 	// One of the two goes.
 	require.NoError(t, k8sClient.Delete(ctx, targetForRegister("target1")))
@@ -320,10 +328,8 @@ func TestReconcileWorkers_StopsNothingWhenTheTargetsCannotBeRead(t *testing.T) {
 	defer cancel()
 	go func() { _ = manager.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
-	require.NoError(
-		t,
-		manager.EnsureWorker(ctx, "repo1", testTargetNamespace, "main", RepoIdentity{URL: "file:///unread.git"}),
-	)
+	mustEnsureWorker(ctx, t, manager, "repo1", testTargetNamespace, "main",
+		RepoIdentity{URL: "file:///unread.git"})
 
 	err := manager.ReconcileWorkers(ctx)
 
@@ -353,7 +359,7 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := range 10 {
 		go func(index int) {
-			err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+			_, err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
 			if err != nil {
 				t.Errorf("Failed to ensure worker %d: %v", index, err)
 			}
@@ -428,7 +434,7 @@ func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
 
 	repo := createProviderWithLocalRepo(ctx, t, k8sClient, "repo1")
 	createTargetForRegister(ctx, t, k8sClient, "target1", "repo1", "main", "apps/")
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", testTargetNamespace, "main", repo))
+	mustEnsureWorker(ctx, t, manager, "repo1", testTargetNamespace, "main", repo)
 
 	worker, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
 	require.True(t, exists)
