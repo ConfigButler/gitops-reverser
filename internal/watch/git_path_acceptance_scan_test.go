@@ -22,6 +22,8 @@ func scanRefusal() *manifestanalyzer.AcceptanceRefusedError {
 	}
 }
 
+func configMapCell() types.CellKey { return types.CellKey{Resource: "configmaps"} }
+
 // TestReportGitPathScan_RaisesAndRecovers is the pair the refresher needs: a read publishes a
 // refusal nobody tried to write, and a later read that passes takes it back. Both wake the
 // controller, because the condition it publishes is the operator's only sign either way.
@@ -32,55 +34,110 @@ func TestReportGitPathScan_RaisesAndRecovers(t *testing.T) {
 
 	m.ReportGitPathScan(gitDest, scanRefusal())
 
-	status, had := m.watchPlane().acceptance[gitDest.Key()]
-	require.True(t, had)
+	status := m.GitPathAcceptanceForGitTarget(gitDest)
 	assert.False(t, status.Accepted)
-	assert.True(t, status.RaisedByScan, "a read raised it, and only a read may take it back")
 	assert.False(t, status.RefusedCellSet, "a whole-folder scan has no cell to scope it to")
 	require.Len(t, events, 1)
 
 	m.ReportGitPathScan(gitDest, nil)
 
-	status = m.watchPlane().acceptance[gitDest.Key()]
-	assert.True(t, status.Accepted)
+	assert.True(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
 	assert.Len(t, events, 2, "the recovery is as much news as the refusal")
 }
 
-// TestReportGitPathScan_NeverClearsAWriteBoundaryRefusal is the rule that keeps this safe. A
-// structural read sees the FILES; it cannot see that a write may not touch one of them, or that a
-// new document has no single root to go into. Clearing a write-raised refusal on a clean scan
-// would report a target as writable that is not.
-func TestReportGitPathScan_NeverClearsAWriteBoundaryRefusal(t *testing.T) {
+// TestGitPathAcceptance_AStandingRefusalIsReportedOnceByEachProducer is the feedback loop, as a
+// test. A refused folder has BOTH producers reporting it: the refresher reads it on every tick,
+// and the resync the refusal itself triggers writes it and refuses again. While the two shared one
+// record, each report looked like a change, so each enqueued a reconcile, which drove the next
+// scan and resync — a loop that outruns the ten-second re-check it was supposed to ride.
+func TestGitPathAcceptance_AStandingRefusalIsReportedOnceByEachProducer(t *testing.T) {
+	m := &Manager{}
+	events := m.GitPathEvents()
+	gitDest := types.NewResourceReference("checkout", "shop")
+
+	m.ReportGitPathScan(gitDest, scanRefusal())
+	m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "Unsupported", "the same folder, from a write")
+	settled := len(events)
+
+	// Three more rounds of exactly what is already known.
+	for range 3 {
+		m.ReportGitPathScan(gitDest, scanRefusal())
+		m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "Unsupported", "the same folder, from a write")
+	}
+
+	assert.Len(t, events, settled,
+		"nothing an operator reads has changed, so nothing may wake the controller")
+	assert.LessOrEqual(t, settled, 2, "and reaching the settled state costs one transition per producer")
+}
+
+// TestGitPathAcceptance_AScanNeverErasesAnUnresolvedWriteRefusal is the hazard of two producers in
+// one slot. The sequence is write refusal, then a structural scan refusal, then a clean scan: if
+// the scan's verdict displaced the write's, the clean scan would clear a write-boundary problem no
+// write ever proved resolved, and the target would report healthy while it is not writable.
+func TestGitPathAcceptance_AScanNeverErasesAnUnresolvedWriteRefusal(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("checkout", "shop")
-	cell := types.CellKey{Resource: "configmaps"}
-	m.MarkTargetGitPathScopeRefused(gitDest, cell, "WriteBoundary", "this write may not touch that file")
+
+	m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "WriteBoundary", "this write may not touch that file")
+	m.ReportGitPathScan(gitDest, scanRefusal())
+	m.ReportGitPathScan(gitDest, nil)
+
+	status := m.GitPathAcceptanceForGitTarget(gitDest)
+	require.False(t, status.Accepted, "no write has proved the write-boundary refusal resolved")
+	assert.Equal(t, "WriteBoundary", status.Reason)
+	assert.Equal(t, configMapCell(), status.RefusedCell, "and its cell survived, so recovery still has a key")
+
+	// The write's own recovery still works, and clears it.
+	m.MarkTargetGitPathScopeAccepted(gitDest, configMapCell())
+	assert.True(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
+}
+
+// TestGitPathAcceptance_AScanRefusalIsRecordedEvenWhenItReadsLikeTheWriteRefusal. A write refusal
+// can be unscoped — a commit window spanning several cells reports one — and a scan refusal about
+// the same folder can carry the same reason and message. Dropping the scan's verdict for looking
+// identical left a record whose provenance said "write", so the later clean scan could not clear
+// it and the target stayed refused with nothing able to recover it.
+func TestGitPathAcceptance_AScanRefusalIsRecordedEvenWhenItReadsLikeTheWriteRefusal(t *testing.T) {
+	m := &Manager{}
+	gitDest := types.NewResourceReference("checkout", "shop")
+	refused := scanRefusal()
+
+	m.MarkTargetGitPathRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
+	m.ReportGitPathScan(gitDest, refused)
+	// The write recovers on its own terms; the scan's verdict must still be standing.
+	m.MarkTargetGitPathAccepted(gitDest)
+	m.ReportGitPathScan(gitDest, refused)
+	require.False(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
 
 	m.ReportGitPathScan(gitDest, nil)
 
-	status := m.watchPlane().acceptance[gitDest.Key()]
-	assert.False(t, status.Accepted, "the write refusal stands until a write proves it gone")
-	assert.Equal(t, cell, status.RefusedCell)
+	assert.True(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted,
+		"the scan raised the standing refusal, so the scan can clear it")
 }
 
-// TestReportGitPathScan_AWriteRefusalReplacesAScanRefusal. Both describe the same folder and the
-// newer reading is the current one — and the write's is the more specific, because it names the
-// cell that recovery has to prove.
-func TestReportGitPathScan_AWriteRefusalReplacesAScanRefusal(t *testing.T) {
+// TestMarkTargetGitPathScopeAccepted_ClearsTheScanVerdictToo. A resync that succeeded ran the same
+// structure-only gate over the same folder and passed, which is strictly stronger evidence than a
+// read. A scan refusal left standing beside it would be stale.
+func TestMarkTargetGitPathScopeAccepted_ClearsTheScanVerdictToo(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("checkout", "shop")
-	cell := types.CellKey{Resource: "configmaps"}
 
 	m.ReportGitPathScan(gitDest, scanRefusal())
-	m.MarkTargetGitPathScopeRefused(gitDest, cell, "WriteBoundary", "this write may not touch that file")
+	m.MarkTargetGitPathScopeAccepted(gitDest, configMapCell())
 
-	status := m.watchPlane().acceptance[gitDest.Key()]
-	assert.False(t, status.RaisedByScan)
-	assert.True(t, status.RefusedCellSet)
+	assert.True(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
+}
 
-	// And the scoped recovery now clears it, which is the path that exists today.
-	m.MarkTargetGitPathScopeAccepted(gitDest, cell)
-	assert.True(t, m.watchPlane().acceptance[gitDest.Key()].Accepted)
+// TestMarkTargetGitPathScopeAccepted_LeavesAnotherCellsRefusal keeps the rule the scoping exists
+// for: a successful replay of one type must not hide a still impossible path in another.
+func TestMarkTargetGitPathScopeAccepted_LeavesAnotherCellsRefusal(t *testing.T) {
+	m := &Manager{}
+	gitDest := types.NewResourceReference("checkout", "shop")
+
+	m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "WriteBoundary", "configmaps are stuck")
+	m.MarkTargetGitPathScopeAccepted(gitDest, types.CellKey{Resource: "secrets"})
+
+	assert.False(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
 }
 
 // TestMarkTargetGitPathScanAccepted_IsSilentWhenNothingWasRefused keeps the steady state quiet: a
@@ -92,11 +149,8 @@ func TestMarkTargetGitPathScanAccepted_IsSilentWhenNothingWasRefused(t *testing.
 	gitDest := types.NewResourceReference("checkout", "shop")
 
 	m.ReportGitPathScan(gitDest, nil)
-	require.Len(t, events, 1, "the first verdict is news: nothing was known before")
-	published := m.watchPlane()
-
 	m.ReportGitPathScan(gitDest, nil)
 
-	assert.Len(t, events, 1, "a folder that was fine and still is says nothing new")
-	assert.Same(t, published, m.watchPlane())
+	assert.Empty(t, events, "a folder that was fine and still is says nothing at all")
+	assert.True(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
 }
