@@ -32,6 +32,10 @@ import (
 func startedManager(t *testing.T) (*WorkerManager, context.Context) {
 	t.Helper()
 
+	// Replacing a worker DELETES its on-disk state, so every test here points that state at its
+	// own directory rather than the shared root a developer's operator also writes under.
+	withTemporaryWorkerStateRoot(t)
+
 	k8sClient := fake.NewClientBuilder().WithScheme(setupScheme()).Build()
 	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -145,7 +149,6 @@ func TestEnsureWorker_ReplacementTakesTheOldCheckoutWithIt(t *testing.T) {
 	checkout := old.repoPathForRemote(oldURL)
 	require.NoError(t, os.MkdirAll(checkout, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(checkout, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
-	t.Cleanup(func() { _ = os.RemoveAll(old.repoRootPath()) })
 
 	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main",
 		RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}))

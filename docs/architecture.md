@@ -1136,6 +1136,44 @@ reconciled only after the replay completes.
 
 ## Git write architecture
 
+### Who owns which question
+
+Three objects meet at a write, and each answers a different question. Keeping them apart is what
+stops a fact being published by something that cannot actually prove it.
+
+| Question | Proved by | Published on |
+| --- | --- | --- |
+| Can this repository be reached with this credential? | the `GitProvider` controller's connectivity check | `GitProvider.status`: `Ready`, `lastVerifiedAt` |
+| Which repository is this? | the `GitProvider` object's identity (`metadata.uid` with `spec.url`) | nothing: it is carried on the branch worker and compared, not reported |
+| Where is branch B on the remote? | the branch worker, on its queue | reported to each `GitTarget` that asked for it |
+| Is this folder's content in Git, and how recently was that proved? | the branch worker, per `GitTarget` | `GitTarget.status.remote`, `status.placement` |
+
+A branch worker sits at the intersection and belongs wholly to neither object: `GitTarget`s decide
+which branches are needed, `GitProvider` decides which repository those branches are in. So the
+worker is **keyed** by `(provider namespace, provider, branch)`, all of which a `GitTarget` carries,
+and **identified** by the repository it is about, which only the `GitProvider` carries. A provider
+that names a different repository does not move a live worker; it replaces it, and the replacement
+starts with no clone, no base trust and no observation.
+
+`GitTarget.status.remote` stays on the `GitTarget` rather than moving to the `GitProvider`, although
+the branch tip it names is shared by every target on that branch. Its `lastVerifiedAt` is not a fact
+about the branch: it dates **this target's** proof, and two targets on one branch legitimately hold
+different times, because one has been pushing and the other has only been looking. A refresher that
+stopped working is read off exactly that timestamp ceasing to advance, and one timestamp per branch
+could not say which target had gone quiet.
+
+### Everything about a branch happens on that branch's queue
+
+Reading or writing a branch's repository state is the branch worker's job, and the worker does it on
+one FIFO queue, on one goroutine. Live events, resyncs, `CommitRequest` attaches and periodic
+refreshes all enter the same queue and are served in order. Nothing else opens a connection on a
+branch's behalf, and nothing else touches its clone. That is what makes "the base is trusted" a
+statement one goroutine can hold.
+
+The `GitProvider` controller's connectivity check is the one thing outside that rule, and it is
+outside it deliberately: it answers a question about the repository that has to be answerable when
+no branch worker exists at all, including before any `GitTarget` has been created.
+
 ### BranchWorker
 
 - **Source**: [internal/git/branch_worker.go](../internal/git/branch_worker.go)
@@ -1159,13 +1197,17 @@ bursts. Heal resyncs that arrive during a window are deferred and drained at the
 ### Local clones and conflict retry
 
 Local clones live under
-`/tmp/gitops-reverser-workers/{provider namespace}/{provider}/{branch}/repos/{url-digest}`. The leading
-segments are exactly the `(provider namespace, provider, branch)` tuple that identifies the
-[BranchWorker](../internal/git/branch_worker.go), and the final `{url-digest}` segment is a short digest
-of `GitProvider.spec.url` (a truncated SHA-256 of the remote URL,
-[`repoCacheKey`](../internal/git/branch_worker.go)), **not** a commit hash. It only disambiguates distinct
-remote URLs under the same branch and is stable across commits, so the worker reuses one clone for the life
-of the branch. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
+`/tmp/gitops-reverser-workers/{provider namespace}/{provider}/{branch-component}/repos/{url-digest}`. The
+leading segments are exactly the `(provider namespace, provider, branch)` tuple that identifies the
+[BranchWorker](../internal/git/branch_worker.go). `{branch-component}` is the branch rendered as **one**
+path component ([`branchPathComponent`](../internal/git/branch_worker.go)): a readable prefix for whoever
+is looking at the directory, plus a digest of the raw name. Branch names contain slashes, and joining one
+in would make `release/v1`'s directory a child of `release`'s, which is data loss the moment a retired
+worker deletes its own tree. The final `{url-digest}` segment is a short digest of `GitProvider.spec.url`
+(a truncated SHA-256 of the remote URL, [`repoCacheKey`](../internal/git/branch_worker.go)), **not** a
+commit hash. A worker is about exactly one repository (see below), so that segment no longer separates
+two destinations inside one worker: it is stable for the worker's whole life, and the worker reuses one
+clone throughout. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
 remote diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
