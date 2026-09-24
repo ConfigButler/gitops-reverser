@@ -342,3 +342,28 @@ func TestPublishRemote_TheRemovalReachesTheAPIAsADelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"status":{"remote":null}}`, string(data))
 }
+
+// TestPublishRemote_ADeletedTargetReleasesItsLedgerEntry. The ledger is the reconciler's own
+// memory, keyed by namespace/name, so an entry left behind would hold a rate limit against a name
+// that may be recreated tomorrow with nothing published at all.
+func TestPublishRemote_ADeletedTargetReleasesItsLedgerEntry(t *testing.T) {
+	r := &GitTargetReconciler{}
+	target := remoteTestTarget()
+	at := time.Now()
+	r.publishRemote(target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, firstRepo, at)
+	ref := types.NewResourceReference(target.Name, target.Namespace)
+	_, had := r.remotePublications.last(ref)
+	require.True(t, had)
+
+	r.remotePublications.forget(ref)
+
+	_, had = r.remotePublications.last(ref)
+	assert.False(t, had)
+
+	// A successor under the same name publishes immediately rather than waiting out the floor.
+	successor := remoteTestTarget()
+	r.publishRemote(successor, observation("bbbb", at.Add(time.Second), git.ObservedByFetch, firstRepo),
+		true, firstRepo, at.Add(time.Second))
+	require.NotNil(t, successor.Status.Remote)
+	assert.Equal(t, "bbbb", successor.Status.Remote.Revision)
+}
