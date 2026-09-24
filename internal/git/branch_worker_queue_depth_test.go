@@ -40,7 +40,7 @@ func TestReleaseHandledItem_PublishesRetainedWorkBeforeReleasingInflight(t *test
 
 // The git_queue_depth source must not wait on the worker lifecycle lock.
 //
-// queueDepthSamples runs on the metric SDK's collection goroutine. UnregisterTarget used to hold
+// queueDepthSamples runs on the metric SDK's collection goroutine. Worker removal used to hold
 // m.mu across worker.Stop(), which waits for the loop goroutine to finish, so a slow shutdown
 // blocked collection for its whole duration — the staleness the observable gauge exists to remove,
 // reintroduced through the manager's own lock.
@@ -58,16 +58,17 @@ func TestQueueDepthSamples_NotBlockedByASlowWorkerShutdown(t *testing.T) {
 	release := func() { once.Do(w.wg.Done) }
 	t.Cleanup(release)
 
-	var unregistered sync.WaitGroup
-	unregistered.Add(1)
+	var removed sync.WaitGroup
+	removed.Add(1)
 	go func() {
-		defer unregistered.Done()
-		_ = manager.UnregisterTarget("", "", "test-provider", "test-ns", "main")
+		defer removed.Done()
+		manager.removeWorkers([]BranchKey{{RepoNamespace: "test-ns", RepoName: "test-provider", Branch: "main"}},
+			"test")
 	}()
 
 	sampled := make(chan int, 1)
 	go func() {
-		// Give the unregister a moment to reach Stop() before sampling.
+		// Give the removal a moment to reach Stop() before sampling.
 		time.Sleep(50 * time.Millisecond)
 		sampled <- len(manager.queueDepthSamples())
 	}()
@@ -79,7 +80,7 @@ func TestQueueDepthSamples_NotBlockedByASlowWorkerShutdown(t *testing.T) {
 	}
 
 	release()
-	unregistered.Wait()
+	removed.Wait()
 }
 
 // A replacement worker must not start while the one it replaces is still stopping.
@@ -120,10 +121,10 @@ func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
 	stopping := make(chan struct{})
 	go func() {
 		close(stopping)
-		_ = manager.UnregisterTarget("", "", "test-provider", "test-ns", "main")
+		manager.removeWorkers([]BranchKey{key}, "test")
 	}()
 	<-stopping
-	time.Sleep(50 * time.Millisecond) // let the unregister reach Stop()
+	time.Sleep(50 * time.Millisecond) // let the removal reach Stop()
 
 	ensured := make(chan struct{})
 	go func() {

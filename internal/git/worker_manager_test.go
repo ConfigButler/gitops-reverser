@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -97,8 +99,8 @@ func createTargetForRegister(
 	require.NoError(t, k8sClient.Create(ctx, target))
 }
 
-// TestWorkerManagerRegisterTarget verifies worker registration.
-func TestWorkerManagerRegisterTarget(t *testing.T) {
+// TestEnsureWorker_CreatesAWorkerWithTheIdentityItWasAskedFor.
+func TestEnsureWorker_CreatesAWorkerWithTheIdentityItWasAskedFor(t *testing.T) {
 	scheme := setupScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
@@ -116,10 +118,7 @@ func TestWorkerManagerRegisterTarget(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "clusters/prod")
 
 	// Register first target
-	err := manager.RegisterTarget(ctx,
-		"target1", "default",
-		"repo1", "gitops-system",
-		"main", "clusters/prod")
+	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main")
 	if err != nil {
 		t.Fatalf("Failed to register target: %v", err)
 	}
@@ -171,18 +170,12 @@ func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target-infra", "shared-repo", "main", "infra/")
 
 	// Register two targets for same repo+branch, different paths
-	err := manager.RegisterTarget(ctx,
-		"target-apps", "default",
-		"shared-repo", "gitops-system",
-		"main", "apps/")
+	err := manager.EnsureWorker(ctx, "shared-repo", "gitops-system", "main")
 	if err != nil {
 		t.Fatalf("Failed to register target-apps: %v", err)
 	}
 
-	err = manager.RegisterTarget(ctx,
-		"target-infra", "default",
-		"shared-repo", "gitops-system",
-		"main", "infra/")
+	err = manager.EnsureWorker(ctx, "shared-repo", "gitops-system", "main")
 	if err != nil {
 		t.Fatalf("Failed to register target-infra: %v", err)
 	}
@@ -225,18 +218,12 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target-dev", "repo1", "develop", "base/")
 
 	// Register targets for same repo, different branches
-	err := manager.RegisterTarget(ctx,
-		"target-main", "default",
-		"repo1", "gitops-system",
-		"main", "base/")
+	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main")
 	if err != nil {
 		t.Fatalf("Failed to register target-main: %v", err)
 	}
 
-	err = manager.RegisterTarget(ctx,
-		"target-dev", "default",
-		"repo1", "gitops-system",
-		"develop", "base/")
+	err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop")
 	if err != nil {
 		t.Fatalf("Failed to register target-dev: %v", err)
 	}
@@ -265,74 +252,73 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// TestWorkerManagerUnregisterTarget verifies target unregistration.
-func TestWorkerManagerUnregisterTarget(t *testing.T) {
+// targetForRegister addresses a GitTarget createTargetForRegister made, for a delete.
+func targetForRegister(name string) *configv1alpha3.GitTarget {
+	target := &configv1alpha3.GitTarget{}
+	target.Name = name
+	target.Namespace = testTargetNamespace
+	return target
+}
+
+// TestReconcileWorkers_KeepsAWorkerASiblingStillNeeds is the rule a per-target count gets wrong.
+// One worker serves every GitTarget on its (provider, branch), so deleting one of them says
+// nothing about the others: the sweep decides from the API, where the siblings are still listed.
+func TestReconcileWorkers_KeepsAWorkerASiblingStillNeeds(t *testing.T) {
 	scheme := setupScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	log := logr.Discard()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	go func() {
-		_ = manager.Start(ctx)
-	}()
+	go func() { _ = manager.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
-	createProviderWithLocalRepo(ctx, t, client, "repo1")
-	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "apps/")
-	createTargetForRegister(ctx, t, client, "target2", "repo1", "main", "infra/")
 
-	// Register two targets
-	_ = manager.RegisterTarget(ctx,
-		"target1", "default",
-		"repo1", "gitops-system",
-		"main", "apps/")
-	_ = manager.RegisterTarget(ctx,
-		"target2", "default",
-		"repo1", "gitops-system",
-		"main", "infra/")
+	createProviderWithLocalRepo(ctx, t, k8sClient, "repo1")
+	createTargetForRegister(ctx, t, k8sClient, "target1", "repo1", "main", "apps/")
+	createTargetForRegister(ctx, t, k8sClient, "target2", "repo1", "main", "infra/")
+	// The provider lives beside its targets, which is the namespace the sweep derives.
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", testTargetNamespace, "main"))
 
-	// Verify worker exists
-	_, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
-	if !exists {
-		t.Fatal("Worker should exist")
-	}
+	// One of the two goes.
+	require.NoError(t, k8sClient.Delete(ctx, targetForRegister("target1")))
+	require.NoError(t, manager.ReconcileWorkers(ctx))
 
-	// Unregister first target
-	err := manager.UnregisterTarget("target1", "default", "repo1", "gitops-system", "main")
-	if err != nil {
-		t.Fatalf("Failed to unregister target1: %v", err)
-	}
+	_, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	assert.True(t, exists, "target2 still writes to this branch, so its worker must survive")
 
-	// Verify worker was destroyed (WorkerManager now destroys on any unregister)
-	_, exists = manager.GetWorkerForTarget("repo1", "gitops-system", "main")
-	if exists {
-		t.Error("Worker should be destroyed when target unregistered")
-	}
+	// And now the last one.
+	require.NoError(t, k8sClient.Delete(ctx, targetForRegister("target2")))
+	require.NoError(t, manager.ReconcileWorkers(ctx))
 
-	// Unregister last target
-	err = manager.UnregisterTarget("target2", "default", "repo1", "gitops-system", "main")
-	if err != nil {
-		t.Fatalf("Failed to unregister target2: %v", err)
-	}
+	_, exists = manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	assert.False(t, exists,
+		"nothing needs this worker now, and it holds a goroutine, a queue and a clone until it stops")
+}
 
-	// Verify worker was destroyed
-	_, exists = manager.GetWorkerForTarget("repo1", "gitops-system", "main")
-	if exists {
-		t.Error("Worker should be destroyed when last target unregistered")
-	}
+// TestReconcileWorkers_StopsNothingWhenTheTargetsCannotBeRead. Treating "I could not read the
+// GitTargets" as "there are no GitTargets" would stop every live worker in the process, which is
+// the one outcome a cleanup sweep must never produce.
+func TestReconcileWorkers_StopsNothingWhenTheTargetsCannotBeRead(t *testing.T) {
+	scheme := setupScheme()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return errors.New("the cache is not having it")
+			},
+		}).Build()
 
-	manager.mu.RLock()
-	finalWorkerCount := len(manager.workers)
-	manager.mu.RUnlock()
-
-	if finalWorkerCount != 0 {
-		t.Errorf("Manager should have 0 workers, got %d", finalWorkerCount)
-	}
-
-	cancel()
+	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = manager.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", testTargetNamespace, "main"))
+
+	err := manager.ReconcileWorkers(ctx)
+
+	require.Error(t, err)
+	_, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
+	assert.True(t, exists, "a read that failed proves nothing about which workers are needed")
 }
 
 // TestWorkerManagerConcurrentRegistration verifies thread safety.
@@ -356,13 +342,9 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := range 10 {
 		go func(index int) {
-			targetName := "target"
-			err := manager.RegisterTarget(ctx,
-				targetName, "default",
-				"repo1", "gitops-system",
-				"main", "base/")
+			err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main")
 			if err != nil {
-				t.Errorf("Failed to register target %d: %v", index, err)
+				t.Errorf("Failed to ensure worker %d: %v", index, err)
 			}
 			done <- true
 		}(i)
@@ -403,17 +385,17 @@ func TestWorkerManagerGetNonexistentWorker(t *testing.T) {
 	}
 }
 
-// TestWorkerManagerUnregisterNonexistent verifies unregistering nonexistent target is safe.
-func TestWorkerManagerUnregisterNonexistent(t *testing.T) {
+// TestRemoveWorkers_IgnoresAKeyThatNamesNoWorker keeps the sweep idempotent: it computes its
+// orphan list outside the lifecycle lock, so a worker can have gone by the time it is removed.
+func TestRemoveWorkers_IgnoresAKeyThatNamesNoWorker(t *testing.T) {
 	scheme := setupScheme()
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	log := logr.Discard()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	manager := NewWorkerManager(client, log, BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	manager := NewWorkerManager(k8sClient, logr.Discard(), BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
 
-	// Unregister should be idempotent and not error
-	err := manager.UnregisterTarget("nonexistent", "default", "repo1", "gitops-system", "main")
-	if err != nil {
-		t.Errorf("Unregister nonexistent should not error: %v", err)
-	}
+	assert.NotPanics(t, func() {
+		manager.removeWorkers([]BranchKey{{
+			RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main",
+		}}, "test")
+	})
 }

@@ -167,7 +167,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	var target configbutleraiv1alpha3.GitTarget
 	if err := r.Get(ctx, req.NamespacedName, &target); err != nil {
-		return r.handleFetchError(err, log, req.NamespacedName)
+		return r.handleFetchError(ctx, err, log, req.NamespacedName)
 	}
 
 	st := beginStatus(r.Client, r.Recorder, &target)
@@ -1141,12 +1141,13 @@ func hasAgeKeyEntry(data map[string][]byte) bool {
 
 // handleFetchError handles errors from fetching GitTarget.
 func (r *GitTargetReconciler) handleFetchError(
+	ctx context.Context,
 	err error,
 	log logr.Logger,
 	namespacedName k8stypes.NamespacedName,
 ) (ctrl.Result, error) {
 	if client.IgnoreNotFound(err) == nil {
-		r.cleanupDeletedGitTarget(namespacedName, log)
+		r.cleanupDeletedGitTarget(ctx, namespacedName, log)
 		log.Info("GitTarget not found, was likely deleted", "namespacedName", namespacedName)
 		return ctrl.Result{}, nil
 	}
@@ -1155,6 +1156,7 @@ func (r *GitTargetReconciler) handleFetchError(
 }
 
 func (r *GitTargetReconciler) cleanupDeletedGitTarget(
+	ctx context.Context,
 	namespacedName k8stypes.NamespacedName,
 	log logr.Logger,
 ) {
@@ -1168,6 +1170,20 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
 	// branch's push failures to an object that no longer exists.
 	telemetry.ForgetBranchTarget(namespacedName.Namespace, namespacedName.Name)
+
+	// The branch worker outlives its GitTarget unless something says otherwise, and this reconcile
+	// — the one the delete watch event produced — is the moment the set of needed workers can have
+	// shrunk. The sweep decides from the API, so a branch several GitTargets share keeps its worker
+	// while any of them is still listed. It runs ahead of the EventRouter check below because it is
+	// the WorkerManager's business, not the data plane's.
+	if r.WorkerManager != nil {
+		if err := r.WorkerManager.ReconcileWorkers(ctx); err != nil {
+			// Not an error the reconcile can act on: the object is already gone, so there is
+			// nothing to requeue for. The next deletion sweeps again.
+			log.V(1).Info("Could not sweep branch workers after a GitTarget was deleted",
+				"error", err.Error())
+		}
+	}
 
 	if r.EventRouter == nil {
 		return

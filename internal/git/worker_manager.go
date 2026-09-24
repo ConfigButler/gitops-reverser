@@ -234,31 +234,6 @@ func (m *WorkerManager) SetRemoteReporter(reporter RemoteReporter) {
 	m.remoteReporter = reporter
 }
 
-// RegisterTarget ensures a worker exists for the target's (provider, branch)
-// and registers the target with that worker.
-// This is called by GitTarget controller when a target becomes Ready.
-func (m *WorkerManager) RegisterTarget(
-	ctx context.Context,
-	targetName, targetNamespace string,
-	providerName, providerNamespace string,
-	branch, path string,
-) error {
-	if err := m.EnsureWorker(ctx, providerName, providerNamespace, branch); err != nil {
-		return err
-	}
-
-	m.Log.Info("GitTarget registered with branch worker",
-		"target", fmt.Sprintf("%s/%s", targetNamespace, targetName),
-		"workerKey", BranchKey{
-			RepoNamespace: providerNamespace,
-			RepoName:      providerName,
-			Branch:        branch,
-		}.String(),
-		"path", path)
-
-	return nil
-}
-
 // EnsureWorker ensures a worker exists for the given (provider, branch).
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(
@@ -314,41 +289,36 @@ func (m *WorkerManager) EnsureWorker(
 	return nil
 }
 
-// UnregisterTarget removes a GitTarget from its worker.
-// Destroys the worker if it was the last target using it.
-// This is called by GitTarget controller when a target is deleted.
-func (m *WorkerManager) UnregisterTarget(
-	_, _ string,
-	providerName, providerNamespace string,
-	branch string,
-) error {
-	key := BranchKey{
-		RepoNamespace: providerNamespace,
-		RepoName:      providerName,
-		Branch:        branch,
+// removeWorkers detaches the named workers and stops them.
+//
+// The lock discipline is the whole reason this is one function rather than a loop at each call
+// site. lifecycleMu is held across the Stops so EnsureWorker cannot start a replacement while the
+// worker it replaces is still draining — they would share an on-disk clone. m.mu is held only to
+// detach: queueDepthSamples reads it on the metric SDK's collection goroutine, so holding THAT
+// across Stop(), which waits for the loop goroutine, stalls collection for the whole shutdown.
+//
+// A key that names no worker is skipped, so a caller may pass a key it is not sure about.
+func (m *WorkerManager) removeWorkers(keys []BranchKey, reason string) {
+	if len(keys) == 0 {
+		return
 	}
-
-	// lifecycleMu is held across the Stop so EnsureWorker cannot start a replacement while this
-	// worker is still draining. m.mu is only held to detach: queueDepthSamples reads it on the
-	// scrape goroutine, so holding THAT across Stop() stalls collection instead of reporting it.
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 
 	m.mu.Lock()
-	worker, exists := m.workers[key]
-	delete(m.workers, key)
+	detached := make(map[BranchKey]*BranchWorker, len(keys))
+	for _, key := range keys {
+		if worker, exists := m.workers[key]; exists {
+			detached[key] = worker
+			delete(m.workers, key)
+		}
+	}
 	m.mu.Unlock()
 
-	if !exists {
-		return nil
+	for key, worker := range detached {
+		m.Log.Info("Stopping branch worker", "key", key.String(), "reason", reason)
+		worker.Stop()
 	}
-
-	// Worker no longer tracks targets internally - always destroy worker
-	// since WorkerManager handles all lifecycle decisions
-	m.Log.Info("Unregistering target, destroying worker", "key", key.String())
-	worker.Stop()
-
-	return nil
 }
 
 // GetWorkerForTarget finds the worker for a target's (provider, branch).
@@ -371,10 +341,22 @@ func (m *WorkerManager) GetWorkerForTarget(
 	return worker, exists
 }
 
-// ReconcileWorkers checks active GitTargets and cleans up orphaned workers.
-// This ensures workers are removed when their GitTargets are deleted.
+// ReconcileWorkers stops every worker no live GitTarget still needs.
+//
+// It is the ONLY thing that removes a worker before shutdown, and it is driven from the GitTarget
+// reconcile's deleted-object path: that reconcile is what the delete watch event produces, so the
+// sweep runs exactly when the set of needed workers can have shrunk. A worker that outlives its
+// last GitTarget is not free — it holds a goroutine, an event queue and an on-disk clone until the
+// process restarts.
+//
+// It decides from the API rather than from a count of registrations, which is what makes it
+// correct for a branch SHARED by several GitTargets: deleting one of them leaves the others
+// listed, so the worker they share is still needed and is left alone.
+//
+// It fails safe. A List that errors stops nothing: the alternative — treating "I could not read
+// the targets" as "there are no targets" — would take down every live worker in the process.
 func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
-	// The List and the Stops stay outside m.mu, for the reason in UnregisterTarget.
+	// The List and the Stops stay outside m.mu, for the reason in removeWorkers.
 
 	// Get all GitTargets
 	var targetList configv1alpha3.GitTargetList
@@ -401,30 +383,25 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 		neededWorkers[key] = true
 	}
 
-	// Detach the orphans under m.mu; stop them after releasing it, with lifecycleMu held so no
-	// replacement starts while one is draining.
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
-
-	m.mu.Lock()
-	orphans := make(map[BranchKey]*BranchWorker)
-	for key, worker := range m.workers {
+	m.mu.RLock()
+	orphans := make([]BranchKey, 0, len(m.workers))
+	for key := range m.workers {
 		if !neededWorkers[key] {
-			orphans[key] = worker
-			delete(m.workers, key)
+			orphans = append(orphans, key)
 		}
 	}
-	remaining := len(m.workers)
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
-	for key, worker := range orphans {
-		m.Log.Info("Cleaning up orphaned worker", "key", key.String())
-		worker.Stop()
-	}
+	m.removeWorkers(orphans, "no GitTarget needs this worker any more")
+
+	m.mu.RLock()
+	remaining := len(m.workers)
+	m.mu.RUnlock()
 
 	m.Log.V(1).Info("Worker reconciliation complete",
 		"activeWorkers", remaining,
-		"neededWorkers", len(neededWorkers))
+		"neededWorkers", len(neededWorkers),
+		"stopped", len(orphans))
 
 	return nil
 }
