@@ -128,6 +128,11 @@ type WorkerManager struct {
 	// created; nil in the CLI and in tests that do not assert on status.remote.
 	remoteReporter RemoteReporter
 
+	// scanAcceptance publishes a read-only folder scan's verdict to the GitTarget status surface.
+	// Set once at startup (SetScanAcceptanceReporter) before any worker is created; nil in the CLI
+	// and in tests that do not assert on GitPathAccepted.
+	scanAcceptance ScanAcceptanceReporter
+
 	// renderFidelityGate is shared by every worker and the watch manager. It is created with the
 	// manager so a target's state survives workers being recreated for the same branch.
 	renderFidelityGate *RenderFidelityGate
@@ -211,6 +216,15 @@ func (m *WorkerManager) SetLayoutReporter(reporter LayoutReporter) {
 	m.layoutReporter = reporter
 }
 
+// SetScanAcceptanceReporter injects the hook the refresher calls after it re-reads a target's
+// folder, so a structural refusal that arrived in Git surfaces before anything tries to write it.
+// Like SetLayoutReporter, it is called once at startup before any worker is created.
+func (m *WorkerManager) SetScanAcceptanceReporter(reporter ScanAcceptanceReporter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scanAcceptance = reporter
+}
+
 // SetRemoteReporter injects the hook every worker calls after it proves where its branch is on
 // the remote, so status.remote reflects the last confirmed look rather than being learned and
 // dropped. Like SetLayoutReporter, it is called once at startup before any worker is created.
@@ -287,6 +301,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.pathRefusal = m.pathRefusal
 		worker.layoutReporter = m.layoutReporter
 		worker.remoteReporter = m.remoteReporter
+		worker.scanAcceptance = m.scanAcceptance
 		worker.renderFidelityGate = m.renderFidelityGate
 
 		if err := worker.Start(m.ctx); err != nil {

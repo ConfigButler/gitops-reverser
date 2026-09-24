@@ -856,10 +856,27 @@ re-proved:
 | Refused | Nothing. It is not converged, so it already re-reads every ten seconds |
 | Healthy and idle | **One ref advertisement per interval**, plus a fetch only on the intervals where the branch had actually moved |
 
-What a refresh may do is bounded on purpose. It republishes `status.remote`, and re-reads the
-folder and republishes `status.placement` when the branch moved. It does **not** re-run the
-acceptance gate, so it neither raises nor clears `GitPathAccepted`, and it never plans, commits or
-pushes anything. A fresh look at Git changes what you read and nothing else.
+A refresh republishes `status.remote`, and re-reads the folder to republish `status.placement` and
+to answer whether the folder can still be written at all. That last part is why it exists as much
+as the first: somebody else's push can leave content Reverser cannot write, and a push emits no
+Kubernetes event, so without a read nothing notices until your next live edit. That edit is then
+refused, and its events are dropped until a resync recovers them. A refresh that finds such content
+sets `GitPathAccepted=False` naming the file and the reason, and a later refresh that finds the
+folder fixed clears it again.
+
+Raising that condition puts the target on the ten-second re-check loop, which is the recovery path:
+a human fixing a folder in Git produces no event either, so a periodic re-read is the only thing
+that can notice. What a refresh still never does is write anything. It plans nothing, commits
+nothing and pushes nothing.
+
+That includes [`spec.onRefusal: PushEmptyCommit`](#reverting-a-refused-edit-speconrefusal), which a
+folder refusal never triggers. That setting reverts a refused **edit**, and an empty commit cannot
+fix a folder: only a human can, and the reconciler may be part-way through its own corrections
+there.
+
+A refusal a **write** found is not cleared by a refresh. A structural read sees the files; it
+cannot see that a particular write may not touch one of them, so only the resync that writes the
+affected type clears that kind.
 
 Set `0` to turn it off. Reverser then holds no timer against your Git host at all and an idle
 target generates no Git traffic; `status.remote` still works, because pushes still renew it. The

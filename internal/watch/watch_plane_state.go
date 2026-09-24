@@ -24,7 +24,7 @@ type watchPlaneState struct {
 	// the stream runs at. See markTargetStreamState for why the version is absent.
 	streams map[string]map[types.CellKey]targetStreamStatus
 	// acceptance is the target-side structure-gate projection, published as GitPathAccepted.
-	acceptance map[string]GitPathAcceptanceStatus
+	acceptance map[string]gitPathAcceptance
 	// fidelity is the projected state of the shared worker gate, published as RenderMatchesLive.
 	fidelity map[string]git.RenderFidelityStatus
 	// retention is each GitTarget's per-cell retained-document counts, epoch-keyed so a cell that
@@ -99,7 +99,7 @@ func (s DeclareStatus) Settled() bool {
 func newWatchPlaneState() *watchPlaneState {
 	return &watchPlaneState{
 		streams:     map[string]map[types.CellKey]targetStreamStatus{},
-		acceptance:  map[string]GitPathAcceptanceStatus{},
+		acceptance:  map[string]gitPathAcceptance{},
 		fidelity:    map[string]git.RenderFidelityStatus{},
 		retention:   map[string]targetRetentionState{},
 		uids:        map[string]string{},

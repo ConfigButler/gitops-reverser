@@ -33,6 +33,34 @@ type PathRefusalReporter func(
 	refused *manifestanalyzer.AcceptanceRefusedError,
 )
 
+// ScanAcceptanceReporter publishes what a READ-ONLY scan of a GitTarget's folder found: a
+// structural refusal, or its recovery when refused is nil.
+//
+// It is the refresher's twin of PathRefusalReporter and deliberately a separate hook, because the
+// two are not the same fact. A refusal reported here was found by READING, with nobody writing
+// and nothing lost yet; one reported through PathRefusalReporter aborted a write that had work in
+// hand. They also recover differently — see Manager.MarkTargetGitPathScanAccepted — and a single
+// hook would have had to carry a cell that a whole-folder scan does not have.
+type ScanAcceptanceReporter func(
+	target itypes.ResourceReference,
+	refused *manifestanalyzer.AcceptanceRefusedError,
+)
+
+// reportScanAcceptance publishes a folder scan's verdict, refused or clean.
+//
+// An unattributable scan (either half of the target reference empty — the CLI, and tests)
+// publishes nothing, for the reason reportPathRefusal does not: the projection is keyed by
+// "namespace/name", so an empty half files the verdict under a key no GitTarget reads.
+func (w *BranchWorker) reportScanAcceptance(
+	target itypes.ResourceReference,
+	refused *manifestanalyzer.AcceptanceRefusedError,
+) {
+	if w.scanAcceptance == nil || target.Name == "" || target.Namespace == "" {
+		return
+	}
+	w.scanAcceptance(target, refused)
+}
+
 // reportPathRefusal classifies a failed live commit. When the error is (or wraps) an
 // AcceptanceRefusedError it hands the refusal to the configured reporter and returns true, so
 // the caller can log it as a refusal rather than an unexpected write fault. Every other error

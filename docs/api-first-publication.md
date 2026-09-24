@@ -175,7 +175,7 @@ them is retried automatically, so it is worth knowing which one you are looking 
 | Gate | What it protects | What happens when it closes |
 | --- | --- | --- |
 | Sensitive-resource encryption | Secrets and configured sensitive types must never reach Git in plaintext | The write fails rather than falling back to plaintext. There is no opt-out |
-| Acceptance of the Git path | The target's folder must be content the writer can edit safely | The plan is refused and reported as `GitPathAccepted=False` on the `GitTarget`. The target re-checks roughly every ten seconds; recovery requires an accepted resync after correcting the folder or live state |
+| Acceptance of the Git path | The target's folder must be content the writer can edit safely | The plan is refused and reported as `GitPathAccepted=False` on the `GitTarget`. The periodic refresh raises the same condition off a READ, so folder content somebody else pushed is reported before a write goes looking for it. The target re-checks roughly every ten seconds; recovery requires an accepted resync after correcting the folder or live state, or — for a refusal a read raised — a later read that finds the folder clean |
 | Render fidelity | A target whose render-vs-live epoch is pending or divergent must not take live writes | Live events and atomic writes are dropped while the gate is closed. Resync stays allowed so it can measure and repair Git |
 
 A refusal is not a transient error and is not retried into success. It is the common reason a live
