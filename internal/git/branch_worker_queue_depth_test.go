@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -202,4 +204,69 @@ func TestReconcileWorkers_DoesNotStopAWorkerEnsureWorkerJustHandedOut(t *testing
 	})
 	require.True(t, exists, "the target that asked for a worker must have one, not a slot the sweep emptied")
 	assert.NotSame(t, retiring, got, "and it must be a fresh one, not the worker the sweep retired")
+}
+
+// A sweep must not stop a worker created for a GitTarget that its own snapshot is too old to
+// contain.
+//
+// The selection window above is only half of it. ReconcileWorkers decides from the API, so a
+// target created AFTER that list is taken is absent from it — and the worker EnsureWorker creates
+// for that target moments later matches no needed key, so the sweep stops it, taking its queue
+// and its checkout with it. The target is then wired to a dead worker until its next reconcile.
+//
+// The interceptor stands in the window a list outside the lock would open: it runs while the sweep
+// is reading the targets, and a guarded sweep leaves the EnsureWorker below blocked on lifecycleMu
+// until the removal is done.
+func TestReconcileWorkers_DoesNotStopAWorkerCreatedAfterItsSnapshot(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
+	key := BranchKey{RepoNamespace: "test-ns", RepoName: "newcomer-provider", Branch: "main"}
+	scheme := runtime.NewScheme()
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
+	manager := &WorkerManager{
+		Log:     logr.Discard(),
+		ctx:     context.Background(),
+		workers: map[BranchKey]*BranchWorker{},
+	}
+
+	ensured := make(chan struct{})
+	var once sync.Once
+	manager.Client = interceptor.NewClient(
+		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if err := c.List(ctx, list, opts...); err != nil {
+					return err
+				}
+				// A GitTarget is created right after this snapshot was taken, and its reconcile
+				// asks for the branch worker it needs.
+				once.Do(func() {
+					go func() {
+						defer close(ensured)
+						_, _ = manager.EnsureWorker(
+							context.Background(), "newcomer-provider", "test-ns", "main", RepoIdentity{})
+					}()
+					time.Sleep(200 * time.Millisecond)
+				})
+				return nil
+			},
+		})
+
+	require.NoError(t, manager.ReconcileWorkers(context.Background()))
+
+	select {
+	case <-ensured:
+	case <-time.After(5 * time.Second):
+		t.Fatal("EnsureWorker never returned")
+	}
+
+	manager.mu.RLock()
+	created, exists := manager.workers[key]
+	manager.mu.RUnlock()
+	t.Cleanup(func() {
+		if exists {
+			created.Stop()
+		}
+	})
+	assert.True(t, exists,
+		"a worker created after the sweep's snapshot is not an orphan; it is younger than the question")
 }

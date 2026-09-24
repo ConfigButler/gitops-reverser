@@ -413,7 +413,20 @@ var afterOrphanSelection func()
 // It fails safe. A List that errors stops nothing: the alternative — treating "I could not read
 // the targets" as "there are no targets" — would take down every live worker in the process.
 func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
-	// The List and the Stops stay outside m.mu, for the reason in removeWorkers.
+	// lifecycleMu is held across the whole decision — the List, the selection and the removal —
+	// and the three must not be separated.
+	//
+	// EnsureWorker takes this lock, finds the key present and returns "already there" without
+	// creating anything, so a selection made outside it would let this sweep stop a worker a
+	// GitTarget had just been told it has. The LIST is inside for the same reason read the other
+	// way round: a target created after the snapshot is taken is absent from it, and its worker —
+	// created under this lock moments later — then looks like an orphan and is stopped with its
+	// queue and its checkout. The client is cached, so the read costs no round trip.
+	//
+	// m.mu is still taken only for the map itself, and the Stops still run outside it, for the
+	// reason in removeWorkers.
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 
 	// Get all GitTargets
 	var targetList configv1alpha3.GitTargetList
@@ -439,14 +452,6 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 		}
 		neededWorkers[key] = true
 	}
-
-	// lifecycleMu is held across the SELECTION as well as the removal, and the two must not be
-	// separated. EnsureWorker takes this lock, finds the key present and returns "already there"
-	// without creating anything; if it ran between a selection made outside the lock and the
-	// removal, this sweep would then stop the worker that GitTarget had just been told it has,
-	// leaving it with no worker until its next reconcile.
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
 
 	m.mu.RLock()
 	orphans := make([]BranchKey, 0, len(m.workers))
