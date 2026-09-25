@@ -157,10 +157,14 @@ func (r *GitTargetReconciler) publishRemote(
 		return
 	}
 	target.Status.Remote = next
-	// Only once the write has landed. A patch refused by the optimistic lock leaves the object
-	// holding the WINNER's older answer, and a ledger that recorded this publication anyway would
-	// hold the retry off behind a cooldown for a revision nobody can read.
-	st.afterPersist(func() { r.remotePublications.record(ref, target.UID, now, observed.Repo) })
+	// Only once the write has landed, and dated THEN rather than now. A patch refused by the
+	// optimistic lock leaves the object holding the winner's older answer, and a ledger that
+	// recorded this publication anyway would hold the retry off behind a cooldown for a revision
+	// nobody can read. The timestamp is the moment of persistence for the same reason the
+	// callback exists: `now` was taken before the gates, the worker wiring and the patch itself,
+	// so on a slow reconcile a cooldown dated from it can be half spent before the write lands,
+	// and a reconcile queued behind it would publish again straight away.
+	st.afterPersist(func() { r.remotePublications.record(ref, target.UID, r.clockNow(), observed.Repo) })
 }
 
 // withdrawRemote decides whether what is published has to be taken back rather than replaced.

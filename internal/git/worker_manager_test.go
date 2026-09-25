@@ -522,26 +522,41 @@ func TestRepoRootPath_IsKeyedByTheProviderIncarnation(t *testing.T) {
 // worker that reclaims the wrong directory takes a live checkout with it, and one that reclaims
 // nothing leaks a clone per branch the operator ever mirrored until the process restarts.
 func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
-	root := withTemporaryWorkerStateRoot(t)
 	manager, ctx := startedManager(t)
+	// startedManager points the worker state root at its own directory, so the neighbour below has
+	// to be placed under THAT root: one created beforehand would sit outside the tree this test is
+	// about, and the assertion would hold even if the sweep deleted the whole active root.
+	root := workerStateRoot
 	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 
 	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo))
 	worker, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
+	require.True(t, strings.HasPrefix(worker.repoPath(), root+string(filepath.Separator)),
+		"precondition: the worker keeps its state under the root this test owns")
 
-	// The worker's state, and a neighbour's, both under the shared root.
+	// Three directories under that root: this worker's, another provider's, and — the one that
+	// matters most — a SIBLING BRANCH of the same provider. Branch siblings share the UID
+	// component, so a removal one level too high takes every branch the provider mirrors.
 	require.NoError(t, os.MkdirAll(worker.repoPath(), 0o750))
-	neighbour := filepath.Join(root, "uid-2", "main-abcdef")
-	require.NoError(t, os.MkdirAll(neighbour, 0o750))
+	sibling := filepath.Join(root, string(repo.ProviderUID), branchPathComponent("release"))
+	neighbour := filepath.Join(root, "uid-2", branchPathComponent("main"))
+	for _, dir := range []string{sibling, neighbour} {
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
+	}
 
 	// Nothing needs it: the sweep retires it, and what it reclaims is its own directory.
 	require.NoError(t, manager.ReconcileWorkers(ctx))
 
 	_, err := os.Stat(worker.repoPath())
 	assert.True(t, os.IsNotExist(err), "a retired worker takes its checkout with it")
-	_, err = os.Stat(neighbour)
-	require.NoError(t, err, "and nothing else's")
+	_, err = os.Stat(filepath.Join(sibling, "HEAD"))
+	require.NoError(t, err, "a sibling BRANCH of the same provider is not this worker's to delete")
+	_, err = os.Stat(filepath.Join(neighbour, "HEAD"))
+	require.NoError(t, err, "and neither is another provider's")
+	_, err = os.Stat(root)
+	require.NoError(t, err, "least of all the root every worker's state lives under")
 	_, stillThere := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	assert.False(t, stillThere)
 }
@@ -563,16 +578,26 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	require.True(t, ok)
 	require.NoError(t, os.MkdirAll(old.repoPath(), 0o750))
 
+	// The replacement's directory, and a sentinel in it, BEFORE the replacement happens: a
+	// directory created afterwards would prove nothing about what the removal deleted.
+	successor := filepath.Join(workerStateRoot, string(after.ProviderUID), branchPathComponent("main"))
+	require.NoError(t, os.MkdirAll(successor, 0o750))
+	sentinel := filepath.Join(successor, "HEAD")
+	require.NoError(t, os.WriteFile(sentinel, []byte("ref: refs/heads/main\n"), 0o600))
+
 	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
 	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 	require.NotSame(t, old, replacement)
 
+	require.Equal(t, successor, replacement.repoPath(),
+		"the replacement's checkout is the one the sentinel was placed in")
 	require.NotEqual(t, old.repoPath(), replacement.repoPath(),
 		"one repository under two provider incarnations is two checkouts")
-	require.NoError(t, os.MkdirAll(replacement.repoPath(), 0o750))
-	_, err := os.Stat(replacement.repoPath())
-	require.NoError(t, err, "the predecessor's removal cannot have taken the replacement's checkout")
+	_, err := os.Stat(old.repoPath())
+	assert.True(t, os.IsNotExist(err), "the retired worker took its own checkout with it")
+	_, err = os.Stat(sentinel)
+	require.NoError(t, err, "and left the replacement's alone")
 	assert.True(t, manager.ReplacementPending(
 		BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}),
 		"and the targets on the branch still owe a rebuild in the new one")

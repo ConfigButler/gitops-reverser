@@ -151,6 +151,18 @@ type GitTargetReconciler struct {
 	// remotePublications is what each GitTarget last wrote to status.remote: when, and about which
 	// repository. It is internal by design; see remotePublicationLedger.
 	remotePublications remotePublicationLedger
+
+	// clock is the source of "now" for the publication ledger, so a test can hold time still
+	// across a reconcile that is measured in wall clock. Nil means time.Now.
+	clock func() time.Time
+}
+
+// clockNow is the reconciler's wall clock.
+func (r *GitTargetReconciler) clockNow() time.Time {
+	if r.clock != nil {
+		return r.clock()
+	}
+	return time.Now()
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
@@ -847,7 +859,7 @@ func (r *GitTargetReconciler) publishGitObservations(
 	layout, scanned := r.observeLayout(target)
 	publishLayout(st, target, layout, scanned)
 
-	now := time.Now()
+	now := r.clockNow()
 	remote, remoteSeen := r.observeRemote(target, providerNS)
 	r.publishRemote(st, target, remote, remoteSeen, repo, now)
 	// Whether the refresh this reconcile goes on to enqueue will actually reach the remote: the

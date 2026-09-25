@@ -3,14 +3,22 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -35,6 +43,12 @@ func publishPersisted(
 	repo git.RepoIdentity,
 	now time.Time,
 ) {
+	// The ledger dates itself from the reconciler's clock at PERSISTENCE, so a test that drives
+	// synthetic time has to hold that clock still at the same instant it is evaluating.
+	previous := r.clock
+	r.clock = func() time.Time { return now }
+	defer func() { r.clock = previous }()
+
 	st := &reconcileStatus{}
 	r.publishRemote(st, target, observed, seen, repo, now)
 	st.runPersisted()
@@ -407,6 +421,152 @@ func TestRequeueForRemoteAnswer_ShortensOnlyWhenSomethingWasAsked(t *testing.T) 
 	assert.Equal(t, RequeueSteadyInterval, requeueForRemoteAnswer(RequeueSteadyInterval, false))
 	assert.Equal(t, time.Second, requeueForRemoteAnswer(time.Second, true),
 		"a target already on a faster loop is not slowed down to the publication interval")
+}
+
+// remoteLedgerFixture drives publishRemote through the REAL status session, so what advances the
+// ledger is a patch the API server accepted rather than a callback a test chose to run.
+type remoteLedgerFixture struct {
+	r        *GitTargetReconciler
+	client   client.Client
+	conflict bool
+	now      time.Time
+}
+
+func newRemoteLedgerFixture(t *testing.T, target *configbutleraiv1alpha3.GitTarget) *remoteLedgerFixture {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+
+	f := &remoteLedgerFixture{now: time.Now()}
+	f.client = interceptor.NewClient(
+		fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(target).WithStatusSubresource(target).Build(),
+		interceptor.Funcs{
+			SubResourcePatch: func(
+				ctx context.Context, c client.Client, subResource string,
+				obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption,
+			) error {
+				if f.conflict {
+					// What losing the optimistic lock looks like: the object moved under this
+					// reconcile, so the patch is refused.
+					return apierrors.NewConflict(
+						schema.GroupResource{Group: "configbutler.ai", Resource: "gittargets"},
+						obj.GetName(), errors.New("the object has been modified"))
+				}
+				return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+			},
+		})
+	f.r = &GitTargetReconciler{Client: f.client, clock: func() time.Time { return f.now }}
+	return f
+}
+
+// publish runs one reconcile's worth of publication against the real status session and reports
+// whether the write landed.
+func (f *remoteLedgerFixture) publish(
+	t *testing.T,
+	target *configbutleraiv1alpha3.GitTarget,
+	observed git.RemoteObservation,
+	repo git.RepoIdentity,
+) bool {
+	t.Helper()
+	st := beginStatus(f.client, nil, target)
+	f.r.publishRemote(st, target, observed, true, repo, f.now)
+	require.NoError(t, st.commit(context.Background()), "a conflict is recorded, not returned")
+	return !st.writeLost()
+}
+
+// TestPublishRemote_ARejectedPatchDoesNotAdvanceTheLedger. The conflict is the case the callback
+// exists for, and it is invisible to a caller checking the error: commit() records the loss and
+// returns nil. What must not happen is the ledger recording a publication the API server refused,
+// because the cooldown would then hold off the retry for a revision nobody can read.
+func TestPublishRemote_ARejectedPatchDoesNotAdvanceTheLedger(t *testing.T) {
+	target := remoteTestTarget()
+	target.UID = "uid-target"
+	f := newRemoteLedgerFixture(t, target)
+	ref := types.NewResourceReference(target.Name, target.Namespace)
+
+	f.conflict = true
+	require.False(t, f.publish(t, target, observation("aaaa", f.now, git.ObservedByPush, firstRepo), firstRepo),
+		"precondition: the patch was refused")
+	_, had := f.r.remotePublications.last(ref, target.UID)
+	assert.False(t, had, "a publication the API server refused is not a publication")
+
+	// The retry, two seconds later, is not held off by a cooldown it never earned.
+	f.conflict = false
+	f.now = f.now.Add(2 * time.Second)
+	fresh := &configbutleraiv1alpha3.GitTarget{}
+	require.NoError(t, f.client.Get(context.Background(),
+		client.ObjectKeyFromObject(target), fresh))
+	require.Nil(t, fresh.Status.Remote, "nothing was published, so there is nothing to read back")
+
+	require.True(t, f.publish(t, fresh, observation("bbbb", f.now, git.ObservedByPush, firstRepo), firstRepo))
+	published, had := f.r.remotePublications.last(ref, target.UID)
+	require.True(t, had)
+	assert.Equal(t, f.now, published.at, "and the cooldown starts when the write landed")
+	assert.Equal(t, "bbbb", fresh.Status.Remote.Revision)
+}
+
+// TestPublishRemote_ARejectedWithdrawalKeepsTheLedgerEntry is the same rule for the correction.
+// Forgetting the entry before the removal persists would leave the old repository's revision in
+// etcd with nothing left that knows it is wrong: the next reconcile compares against a ledger that
+// says this target published nothing.
+func TestPublishRemote_ARejectedWithdrawalKeepsTheLedgerEntry(t *testing.T) {
+	target := remoteTestTarget()
+	target.UID = "uid-target"
+	f := newRemoteLedgerFixture(t, target)
+	ref := types.NewResourceReference(target.Name, target.Namespace)
+
+	require.True(t, f.publish(t, target, observation("aaaa", f.now, git.ObservedByPush, firstRepo), firstRepo))
+	require.NotNil(t, target.Status.Remote)
+
+	// The GitProvider is recreated against another repository, and the withdrawal loses the race.
+	f.conflict = true
+	f.now = f.now.Add(time.Second)
+	require.False(t, f.publish(t, target, observation("aaaa", f.now, git.ObservedByPush, firstRepo), secondRepo))
+
+	entry, had := f.r.remotePublications.last(ref, target.UID)
+	require.True(t, had, "the entry is what makes the next reconcile withdraw again")
+	assert.Equal(t, firstRepo, entry.repo)
+
+	// And the next one does, against the object as it actually stands.
+	f.conflict = false
+	f.now = f.now.Add(time.Second)
+	stale := &configbutleraiv1alpha3.GitTarget{}
+	require.NoError(t, f.client.Get(context.Background(), client.ObjectKeyFromObject(target), stale))
+	require.NotNil(t, stale.Status.Remote, "the old repository's revision is still published")
+
+	require.True(t, f.publish(t, stale, observation("aaaa", f.now, git.ObservedByPush, firstRepo), secondRepo))
+	assert.Nil(t, stale.Status.Remote)
+	_, had = f.r.remotePublications.last(ref, target.UID)
+	assert.False(t, had, "and the ledger forgets it only once the removal is persisted")
+}
+
+// TestPublishRemote_TheCooldownStartsWhenTheWriteLands. `now` is taken before the gates, the
+// worker wiring and the patch, so on a slow reconcile a cooldown dated from it is already part
+// spent when the write lands — and a reconcile queued behind it publishes again straight away.
+func TestPublishRemote_TheCooldownStartsWhenTheWriteLands(t *testing.T) {
+	r := &GitTargetReconciler{}
+	target := remoteTestTarget()
+	evaluated := time.Now()
+	landed := evaluated.Add(90 * time.Second) // a slow pass: gates, wiring, then the patch
+
+	r.clock = func() time.Time { return landed }
+	st := &reconcileStatus{}
+	r.publishRemote(st, target, observation("aaaa", evaluated, git.ObservedByPush, firstRepo),
+		true, firstRepo, evaluated)
+	st.runPersisted()
+	require.NotNil(t, target.Status.Remote)
+
+	// A reconcile that was queued behind it, one second after the write landed.
+	r.clock = func() time.Time { return landed.Add(time.Second) }
+	st = &reconcileStatus{}
+	r.publishRemote(st, target, observation("bbbb", landed.Add(time.Second), git.ObservedByPush, firstRepo),
+		true, firstRepo, landed.Add(time.Second))
+	st.runPersisted()
+
+	assert.Equal(t, "aaaa", target.Status.Remote.Revision,
+		"the floor runs from the write, not from the moment the slow pass started")
 }
 
 // TestPublishRemote_AWriteThatDidNotLandDoesNotAdvanceTheLedger.
