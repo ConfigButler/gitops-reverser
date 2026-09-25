@@ -60,10 +60,6 @@ spec:
       name: SourceReachable
       priority: 1
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].message
-      name: Status
-      priority: 1
-      type: string
     - jsonPath: .spec.encryption.provider
       name: Encryption
       priority: 1
@@ -78,6 +74,10 @@ spec:
       type: string
     - jsonPath: .spec.path
       name: Path
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp

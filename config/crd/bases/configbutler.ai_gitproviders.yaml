@@ -24,14 +24,14 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].message
-      name: Status
-      priority: 1
-      type: string
     - jsonPath: .status.lastVerifiedAt
       name: Verified
       priority: 1
       type: date
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

@@ -111,10 +111,11 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
+// +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.sha`
 // +kubebuilder:printcolumn:name="AuthorAttributed",type=string,JSONPath=`.status.conditions[?(@.type=="AuthorAttributed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CommitRequest is a one-shot "save" signal: creating one finalizes the open

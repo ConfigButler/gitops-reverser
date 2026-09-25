@@ -168,9 +168,9 @@ type ClusterProviderStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Facts",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
+// +kubebuilder:printcolumn:name="FactsReceived",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
 // +kubebuilder:printcolumn:name="Validated",type=string,JSONPath=`.status.conditions[?(@.type=="Validated")].status`,priority=1
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a

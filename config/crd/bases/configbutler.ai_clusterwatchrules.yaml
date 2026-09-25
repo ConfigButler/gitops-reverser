@@ -16,7 +16,7 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.gitTargetRef.name
-      name: Target
+      name: GitTarget
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -29,6 +29,14 @@ spec:
       type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
       name: StreamsRunning
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="ResourcesResolved")].status
+      name: ResourcesResolved
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp

@@ -25,7 +25,7 @@ spec:
       name: Reason
       type: string
     - jsonPath: .status.sha
-      name: SHA
+      name: Commit
       type: string
     - jsonPath: .status.conditions[?(@.type=="AuthorAttributed")].status
       name: AuthorAttributed
@@ -37,6 +37,10 @@ spec:
       type: string
     - jsonPath: .status.branch
       name: Branch
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp

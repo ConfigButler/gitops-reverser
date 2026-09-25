@@ -22,14 +22,14 @@ spec:
       name: Reason
       type: string
     - jsonPath: .status.conditions[?(@.type=="AuditFactsReceived")].status
-      name: Facts
+      name: FactsReceived
       type: string
     - jsonPath: .status.conditions[?(@.type=="Validated")].status
       name: Validated
       priority: 1
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
-      name: Status
+      name: Message
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
