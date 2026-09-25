@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.49.1...v0.50.0) (2026-09-25)
+
+
+### Features
+
+* key a branch worker to its repository, and give a repository its own status surface ([#396](https://github.com/ConfigButler/gitops-reverser/issues/396)) ([71eb515](https://github.com/ConfigButler/gitops-reverser/commit/71eb515273590f4d75d1118a7eb881fece673a0d))
+* report a folder somebody else broke, instead of discovering it on the next write ([#391](https://github.com/ConfigButler/gitops-reverser/issues/391)) ([ae4c823](https://github.com/ConfigButler/gitops-reverser/commit/ae4c82391ce67c6ade1806fb1aaf4fdb08d1ca6c))
+
 ## [0.49.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.49.0...v0.49.1) (2026-09-22)
 
 
