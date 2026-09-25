@@ -516,3 +516,64 @@ func TestRepoRootPath_IsKeyedByTheProviderIncarnation(t *testing.T) {
 	cliB := &BranchWorker{repo: RepoIdentity{URL: "https://example.invalid/b.git"}, Branch: "main"}
 	assert.NotEqual(t, cliA.repoRootPath(), cliB.repoRootPath())
 }
+
+// TestWorkerLifecycle_BuildsAndReclaimsItsOwnState walks one worker's whole life on disk, because
+// the build-up and the tear-down are the two halves of one rule and only ever break together: a
+// worker that reclaims the wrong directory takes a live checkout with it, and one that reclaims
+// nothing leaks a clone per branch the operator ever mirrored until the process restarts.
+func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
+	root := withTemporaryWorkerStateRoot(t)
+	manager, ctx := startedManager(t)
+	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo))
+	worker, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.True(t, ok)
+
+	// The worker's state, and a neighbour's, both under the shared root.
+	require.NoError(t, os.MkdirAll(worker.repoPath(), 0o750))
+	neighbour := filepath.Join(root, "uid-2", "main-abcdef")
+	require.NoError(t, os.MkdirAll(neighbour, 0o750))
+
+	// Nothing needs it: the sweep retires it, and what it reclaims is its own directory.
+	require.NoError(t, manager.ReconcileWorkers(ctx))
+
+	_, err := os.Stat(worker.repoPath())
+	assert.True(t, os.IsNotExist(err), "a retired worker takes its checkout with it")
+	_, err = os.Stat(neighbour)
+	require.NoError(t, err, "and nothing else's")
+	_, stillThere := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	assert.False(t, stillThere)
+}
+
+// TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout is the same rule across a
+// repoint. The two workers are different incarnations of one (provider, branch), so they hold
+// different directories, and stopping the old one must not touch the new one's — which is exactly
+// what the old layout, keyed by provider NAME with a URL digest inside it, could not promise for a
+// provider recreated against the same repository.
+func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
+	manager, ctx := startedManager(t)
+	sameURL := "https://example.invalid/repo.git"
+	before := RepoIdentity{ProviderUID: "uid-1", URL: sameURL}
+	after := RepoIdentity{ProviderUID: "uid-2", URL: sameURL}
+
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
+	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.True(t, ok)
+	require.NoError(t, os.MkdirAll(old.repoPath(), 0o750))
+
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.True(t, ok)
+	require.NotSame(t, old, replacement)
+
+	require.NotEqual(t, old.repoPath(), replacement.repoPath(),
+		"one repository under two provider incarnations is two checkouts")
+	require.NoError(t, os.MkdirAll(replacement.repoPath(), 0o750))
+	_, err := os.Stat(replacement.repoPath())
+	require.NoError(t, err, "the predecessor's removal cannot have taken the replacement's checkout")
+	assert.True(t, manager.ReplacementPending(
+		BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}),
+		"and the targets on the branch still owe a rebuild in the new one")
+}
