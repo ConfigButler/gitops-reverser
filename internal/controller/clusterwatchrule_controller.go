@@ -31,8 +31,7 @@ import (
 // ClusterWatchRule status condition reasons.
 const (
 	ClusterWatchRuleReasonValidating            = "Validating"
-	ClusterWatchRuleReasonGitProviderNotFound   = "GitRepoConfigNotFound"
-	ClusterWatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	ClusterWatchRuleReasonGitProviderNotFound   = "GitProviderNotFound"
 	ClusterWatchRuleReasonAccessDenied          = "AccessDenied"
 	ClusterWatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	ClusterWatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"

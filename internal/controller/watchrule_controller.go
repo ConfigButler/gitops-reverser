@@ -29,8 +29,7 @@ import (
 // WatchRule status condition reasons.
 const (
 	WatchRuleReasonValidating            = "Validating"
-	WatchRuleReasonGitProviderNotFound   = "GitRepoConfigNotFound"
-	WatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	WatchRuleReasonGitProviderNotFound   = "GitProviderNotFound"
 	WatchRuleReasonAccessDenied          = "AccessDenied"
 	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
