@@ -57,13 +57,20 @@ func TestBranchInventory_CountsTheGitTargetsThatConfigureEachBranch(t *testing.T
 		"every branch a live GitTarget of THIS provider configures, suspended ones included, sorted by name")
 }
 
-// TestBranchInventory_AConfiguredAndUnusedRepositoryReportsNoBranches is the state the field
-// exists to distinguish. It is not an error, and it must not look like one.
-func TestBranchInventory_AConfiguredAndUnusedRepositoryReportsNoBranches(t *testing.T) {
-	assert.Nil(t, branchInventory("repo1", nil))
-	assert.Nil(t, branchInventory("repo1", []configbutleraiv1alpha3.GitTarget{
+// TestBranchInventory_AConfiguredAndUnusedRepositoryReportsAnEmptyList is the state the field
+// exists to distinguish. It is not an error, and it must not look like one — and it must not look
+// like the third state either: an ABSENT list means nothing has read the GitTargets yet, so the
+// measured-and-empty answer is an empty slice rather than nil.
+func TestBranchInventory_AConfiguredAndUnusedRepositoryReportsAnEmptyList(t *testing.T) {
+	measured := branchInventory("repo1", nil)
+	assert.NotNil(t, measured, "configured and unused is an answer, not the absence of one")
+	assert.Empty(t, measured)
+
+	measured = branchInventory("repo1", []configbutleraiv1alpha3.GitTarget{
 		*inventoryTarget("other", "repo2", "main"),
-	}), "a GitTarget on another provider says nothing about this one")
+	})
+	assert.NotNil(t, measured)
+	assert.Empty(t, measured, "a GitTarget on another provider says nothing about this one")
 }
 
 // TestPublishBranchInventory_KeepsTheLastAnswerWhenTheTargetsCannotBeRead. An inventory that

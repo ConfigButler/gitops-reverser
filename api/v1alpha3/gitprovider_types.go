@@ -147,13 +147,14 @@ type GitProviderStatus struct {
 	// more.
 	//
 	// It is not the branches that exist on the remote, and not the workers currently running: it
-	// moves only when somebody edits a GitTarget. An empty list beside Ready=True is the state
+	// moves only when somebody edits a GitTarget. An EMPTY list beside Ready=True is the state
 	// this exists to make legible — configured and unused, which looks nothing like broken and
-	// previously took a GitTarget listing to tell apart.
+	// previously took a GitTarget listing to tell apart. An ABSENT list is the third state and a
+	// different one: no inventory has been read yet, so nothing here has been measured.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
-	Branches []GitProviderBranchStatus `json:"branches,omitempty"`
+	Branches []GitProviderBranchStatus `json:"branches"`
 
 	// LastVerifiedAt is when the credential and the repository were last proved together: the
 	// connectivity check listed the remote's refs with this provider's credential and the remote

@@ -18,9 +18,12 @@ that invalidates the cached copy every watcher of the type holds.
 
 Nothing about what is *proved* changed. An observation still reaches every `GitTarget` on the
 branch the instant a push or a fetch proves it, and the tuple stays internally consistent: one
-observation from one moment, never the newest revision beside a stale clock. Two things are still
-immediate — the first observation, and taking back a revision that names a repository the target no
-longer points at.
+observation from one moment, never the newest revision beside a stale clock.
+
+Two things skip the once-a-minute write floor, and neither skips the reconcile: the **first**
+observation is published by the next reconcile rather than waiting out a floor it has not earned,
+and **taking back** a revision that names a repository the target no longer points at is published
+the moment a reconcile sees it. A push still wakes nobody.
 
 ### What to change
 

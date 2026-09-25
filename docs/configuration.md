@@ -187,6 +187,9 @@ status:
       gitTargets: 1
 ```
 
+An absent `branches` is a third state, and a different one: nothing has read the `GitTarget`s yet,
+so nothing here has been measured. An empty list is a measurement.
+
 It is a statement about **configuration**, not about the remote and not about what is running: a
 suspended or blocked `GitTarget` still says what the repository is for, and a branch that exists on
 the remote but nothing writes never appears. It is re-derived on the provider's own reconcile tick,
@@ -871,11 +874,11 @@ publishes what it holds **when it reconciles** (no commit wakes anybody), and wr
 at most once a minute however often it reconciles. Push and read status immediately, and you may
 see the previous revision until that target's next tick.
 
-Two corrections are never held back, because they are not throughput: the **first** observation,
-and **taking back** a revision that names a repository the target no longer points at (a recreated
-`GitProvider` with a different URL). And none of this promises anything about the branch itself: an
-unreachable remote yields no observation at all, which is exactly what the pair `revision` +
-`lastVerifiedAt` is there to say.
+Two corrections skip the once-a-minute floor, though not the reconcile that carries them: the
+**first** observation, and **taking back** a revision that names a repository the target no
+longer points at (a recreated `GitProvider` with a different URL). And none of this promises
+anything about the branch itself: an unreachable remote yields no observation at all, which is
+exactly what the pair `revision` + `lastVerifiedAt` is there to say.
 
 `GitProvider.status.lastVerifiedAt` is the same word for the connection rather than the branch:
 when the credential and the repository were last proved together. It is never cleared, so

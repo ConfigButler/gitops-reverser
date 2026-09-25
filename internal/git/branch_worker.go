@@ -1918,7 +1918,9 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			w.firsts.push.Do(func() {
 				w.Log.Info("First push to remote completed",
 					"branch", w.Branch,
-					"url", w.repo.URL,
+					// String(), never the raw URL: spec.url takes userinfo, and this line is at
+					// default verbosity.
+					"repository", w.repo.String(),
 					"commits", len(pendingWrites))
 			})
 			return nil

@@ -63,9 +63,9 @@ func branchInventory(
 		}
 		counts[target.Spec.Branch]++
 	}
-	if len(counts) == 0 {
-		return nil
-	}
+	// EMPTY rather than nil: "this repository is configured and unused" is a measurement, and a
+	// nil slice would serialize the same way as "nothing has read the GitTargets yet", which is
+	// what the field is absent for.
 	branches := make([]configbutleraiv1alpha3.GitProviderBranchStatus, 0, len(counts))
 	for name, count := range counts {
 		branches = append(branches, configbutleraiv1alpha3.GitProviderBranchStatus{Name: name, GitTargets: count})

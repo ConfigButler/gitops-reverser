@@ -182,9 +182,10 @@ spec:
                   more.
 
                   It is not the branches that exist on the remote, and not the workers currently running: it
-                  moves only when somebody edits a GitTarget. An empty list beside Ready=True is the state
+                  moves only when somebody edits a GitTarget. An EMPTY list beside Ready=True is the state
                   this exists to make legible — configured and unused, which looks nothing like broken and
-                  previously took a GitTarget listing to tell apart.
+                  previously took a GitTarget listing to tell apart. An ABSENT list is the third state and a
+                  different one: no inventory has been read yet, so nothing here has been measured.
                 items:
                   description: |-
                     GitProviderBranchStatus is one branch of this repository that GitTargets are configured to

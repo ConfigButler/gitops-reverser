@@ -336,7 +336,7 @@ var _ = Describe("GitProvider Controller", func() {
 				return published.Status.Branches
 			}
 
-			Consistently(branches, "2s", "500ms").Should(BeEmpty(),
+			Consistently(branches, "2s", "500ms").Should(And(Not(BeNil()), BeEmpty()),
 				"configured and unused is a state of its own, and it is not an error")
 
 			targets := []*configbutleraiv1alpha3.GitTarget{
