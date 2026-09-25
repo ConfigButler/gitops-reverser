@@ -137,7 +137,7 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 	require.True(t, ok)
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
-	require.NotEmpty(t, res.SHA)
+	require.NotEmpty(t, res.Commit)
 	assert.Nil(t, loop.openWindow, "the open window must be finalized")
 	assert.Empty(t, loop.pendingWrites, "the pushed write is cleared on success")
 
@@ -147,7 +147,7 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 	require.NoError(t, err)
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
-	assert.Equal(t, ref.Hash().String(), res.SHA)
+	assert.Equal(t, ref.Hash().String(), res.Commit)
 	commit, err := repo.CommitObject(ref.Hash())
 	require.NoError(t, err)
 	assert.Equal(t, message, commit.Message, "the attached message must be used verbatim")
@@ -527,7 +527,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeAlreadyPresent, res.Outcome,
 		"the remote agreed there was nothing to add")
-	assert.Empty(t, res.SHA, "no commit was made, so there is no SHA")
+	assert.Empty(t, res.Commit, "no commit was made, so there is no SHA")
 }
 
 // pushCompetingCommit advances the remote's main from a second clone, so a worker's
@@ -586,13 +586,13 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 	require.True(t, ok, "the cut-off commit's push must resolve the request")
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
-	require.NotEmpty(t, res.SHA)
+	require.NotEmpty(t, res.Commit)
 
 	// The commit on the remote carries the user's message verbatim (not the generated
 	// grouped message), and its SHA equals the reported SHA.
 	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
-	assert.Equal(t, ref.Hash().String(), res.SHA, "the reported SHA must be the commit on the remote")
+	assert.Equal(t, ref.Hash().String(), res.Commit, "the reported SHA must be the commit on the remote")
 	commit, err := serverRepo.CommitObject(ref.Hash())
 	require.NoError(t, err)
 	assert.Equal(t, message, commit.Message, "the cut-off commit must carry the user's message verbatim")
@@ -642,8 +642,8 @@ func TestAttach_ConflictReplayResolvesToPostReplaySHA(t *testing.T) {
 	// pre-replay local hash.
 	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
-	assert.Equal(t, ref.Hash().String(), res.SHA, "the reported SHA must be the commit on the remote")
-	assert.NotEqual(t, localSHA.String(), res.SHA, "the SHA must be refreshed to the post-replay hash")
+	assert.Equal(t, ref.Hash().String(), res.Commit, "the reported SHA must be the commit on the remote")
+	assert.NotEqual(t, localSHA.String(), res.Commit, "the SHA must be refreshed to the post-replay hash")
 	commit, err := serverRepo.CommitObject(ref.Hash())
 	require.NoError(t, err)
 	assert.Equal(t, message, commit.Message, "the replayed commit keeps the user's message")
@@ -826,7 +826,7 @@ func TestAttach_ReSentAttachDuringPushCooldownDoesNotResolve(t *testing.T) {
 
 	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
-	assert.Equal(t, ref.Hash().String(), res.SHA, "the reported SHA is the commit on the remote")
+	assert.Equal(t, ref.Hash().String(), res.Commit, "the reported SHA is the commit on the remote")
 }
 
 // TestAttach_ReSentAttachDuringAFailedPushDoesNotResolve is the same gap unbounded. A cooldown is

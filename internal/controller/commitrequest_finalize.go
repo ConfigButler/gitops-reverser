@@ -259,7 +259,7 @@ func applyFinalizeResultToStatus(
 
 	switch result.Outcome {
 	case git.FinalizeCommitted:
-		cr.Status.Commit = result.SHA
+		cr.Status.Commit = result.Commit
 		const committedMsg = "the open commit window was closed, committed, and pushed"
 		setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, crReasonCommitted, committedMsg)
 		setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, crReasonCommitted, notStalledMessage)

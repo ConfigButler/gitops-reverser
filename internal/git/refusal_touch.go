@@ -75,7 +75,7 @@ func (w *BranchWorker) executeRefusalTouch(
 	}
 	log.FromContext(ctx).Info("Empty commit created to trigger a reconcile after a refused write",
 		"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName,
-		"branch", w.Branch, "sha", hash.String())
+		"branch", w.Branch, "commit", hash.String())
 	return 1, hash, nil
 }
 

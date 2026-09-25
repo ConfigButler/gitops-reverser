@@ -155,7 +155,7 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	cr := newCommitRequest("save-1")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc123", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc123", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -424,7 +424,7 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 	cr.CreationTimestamp = metav1.Now() // fresh: a waiting path would requeue instead of commit
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "c0ffee", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f} // AuthorLookup nil
@@ -514,7 +514,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 	}
 	c := newCommitRequestClient(t, &fns, cr)
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "ddd111", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "ddd111", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -536,7 +536,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 			&cr,
 			git.FinalizeResult{
 				Outcome: git.FinalizeCommitted,
-				SHA:     "abc",
+				Commit:  "abc",
 				Branch:  "main",
 			},
 			nil,
@@ -580,7 +580,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	t.Run("finalize error stalls", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc"},
+			git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc"},
 			errors.New("boom"), attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonFinalizeFailed)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)

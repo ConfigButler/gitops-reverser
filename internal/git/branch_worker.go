@@ -1606,7 +1606,7 @@ func (l *branchWorkerEventLoop) resolvePushedCommitRequests() {
 		}
 		l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{
 			Outcome: FinalizeCommitted,
-			SHA:     pw.CommitSHA.String(),
+			Commit:  pw.CommitSHA.String(),
 			Branch:  l.w.Branch,
 		})
 	}
