@@ -78,8 +78,6 @@ const (
 	// ability to re-evaluate its policy and is retaining that scope" — neither of which may be
 	// rendered as a permanent failure.
 	ConditionTypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
-	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
-	ConditionTypeStreamsReady = ConditionTypeStreamsRunning
 	// ConditionTypeAuthorAttributed indicates whether a CommitRequest's commit author
 	// was named from the submitter captured at admission. It is binary and immediately
 	// settled (no Unknown, no timeout): True (AttributedFromAdmission) when the

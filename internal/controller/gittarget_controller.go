@@ -50,12 +50,6 @@ const (
 	GitTargetConditionStreamsRunning = ConditionTypeStreamsRunning
 )
 
-// GitTargetReasonReady is a backward-compatible alias used by existing tests.
-const GitTargetReasonReady = GitTargetConditionReady
-const GitTargetReasonConflict = GitTargetReasonTargetConflict
-const GitTargetConditionStreamsReady = GitTargetConditionStreamsRunning
-const GitTargetStreamsReadyReasonNotReady = GitTargetStreamsRunningReasonNotReady
-
 const (
 	// GitTargetReasonOK is the healthy reason. It is the shared Succeeded vocabulary rather than
 	// a per-kind spelling; the name is kept for call-site stability.
