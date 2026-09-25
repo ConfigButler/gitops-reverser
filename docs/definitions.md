@@ -3,13 +3,14 @@
 One name per concept, and the rules that decide the name. If you need a word for something and it
 is not here, add it here first.
 
-This page completes a set of three rulebooks, and each owns one surface:
+This page completes a set of four rulebooks, and each owns one surface:
 
 | Rulebook | Governs |
 |---|---|
 | [`style-guide.md`](style-guide.md) | prose: voice, punctuation, spelling, structure |
 | [`config-flag-conventions.md`](config-flag-conventions.md) | command-line flags, and the chart values that map onto them |
-| this page | concepts, and the API names that carry them: kinds, fields, condition types, reasons, enum values, printer columns |
+| [`spec/status-conditions-guide.md`](spec/status-conditions-guide.md) | conditions and reasons: the kstatus trio, polarity, the generic reason vocabulary |
+| this page | concepts, and the API names that carry them: kinds, fields, blocks, timestamps, enum values, printer columns |
 
 It binds. A name in the code that contradicts a rule here is a defect, not a variation, and the
 cleanup that produced this page is tracked in
@@ -210,33 +211,23 @@ this project already aliases (`lastHandledReconcileAt`). Not `...Time`, which wo
 Say what the timestamp dates. A field that dates a *resolution* is not evidence that anything
 looked recently, and its doc comment has to say so.
 
-### 5. Condition types are positive state assertions
+### 5. Conditions and reasons are specified in `spec/status-conditions-guide.md`, and it binds
 
-PascalCase, and phrased so that True is the healthy or settled state: `GitPathAccepted`,
-`RenderMatchesLive`, `StreamsRunning`, `SourceNamespaceAuthorized`, `AuditFactsReceived`. Never
-`...Failed`, `...Error`, `...Invalid` or `...Missing` as a condition type: those belong in the
-reason.
+That page is the contract: the `Ready`/`Reconciling`/`Stalled` trio and its single writer, condition
+polarity, state-not-transition naming, the Flux-aliased generic reason vocabulary, the rule that a
+reason restating its condition type answers nothing, when a status field may mirror a condition, and
+the one deliberate deviation from the API conventions. This page does not restate any of it. A rule
+about conditions or reasons belongs there, and the next rule is only what that page does not cover.
+
+### 6. A condition type names one axis; a reason names a cause
 
 A condition type names one axis and is never reused for a second one. `GitTargetReady` is the health
 of a referenced `GitTarget` and is not available for source authorization, which is why
 `SourceNamespaceAuthorized` exists separately.
 
-### 6. A reason answers why, and never restates its condition type
-
-`GitPathAccepted=True` with `reason: GitPathAccepted` tells the reader nothing they did not get from
-the type. Use the shared vocabulary for the uninteresting end of a binary gate, and a domain reason
-wherever there is something to say.
-
-Generic reasons are aliases of [`fluxcd/pkg/apis/meta`](https://github.com/fluxcd/pkg/tree/main/apis/meta),
-so one alerting rule spans our kinds and Flux's: `Succeeded`, `Progressing`, `Suspended`, `Failed`.
-Domain reasons are ours, and earn their place by carrying information the generic one cannot:
-`WriteBoundaryRefused`, `UnsupportedContent`, `RouteUnused`, `KubeConfigInvalid`.
-
 A reason names a cause, not a negated type. `UnresolvedResources` inverts the noun order of its own
-condition; `ResourcesNotServed` would name what happened.
-
-A reason never repeats a word the condition type already carries, and never says "yet": the
-`Unknown` status already says it.
+condition; `ResourcesNotServed` names what happened. A reason also never repeats a word the condition
+type already carries, and never says "yet": the `Unknown` status already says it.
 
 ### 7. An enum value we invent is PascalCase; a value that names something else keeps its spelling
 
@@ -284,9 +275,10 @@ default four. Every kind's columns are `<identity>`, `Ready`, `Reason`, ... , `M
 that order: the first column is the kind's defining fact when it has one (`URL`, `GitTarget`) and
 `Ready` when it does not. A column holding `Ready`'s message is named `Message`, not `Status`.
 
-A column over a field that exists only to feed it is display-only, and its doc comment says so:
-`status.streams.summary` is the `3/4` string a column can read in one JSONPath, and nothing computes
-from it.
+A column may be fed by a field that exists only to feed it. That is the one sanctioned exception to
+"do not duplicate between conditions and status fields", and it is
+`spec/status-conditions-guide.md`'s to grant, not this page's: `status.streams.summary` is the `3/4`
+string a column can read in one JSONPath.
 
 ### 9. Refusals are named for their cause, failures for their effect
 

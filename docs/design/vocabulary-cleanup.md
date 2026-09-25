@@ -87,20 +87,27 @@ Reasons are the largest group and the cheapest to change in code: they are const
 `internal/controller`. They are also the only group with no schema-level migration path at all, so
 every reason below lands in one commit.
 
+The rule most of these breach is not new and is not this change's to make. **"A reason that restates
+the condition type answers nothing and is not used" is already in
+[`../spec/status-conditions-guide.md`](../spec/status-conditions-guide.md), under Reason
+vocabulary**, and `spec/` binds. So the eight `Succeeded` rows below are not a proposal: they are a
+spec the code does not currently obey. The `guide` rows cite it; the numbered rows cite
+[`../definitions.md`](../definitions.md).
+
 | Now | Becomes | Rule | Note |
 |---|---|---|---|
 | `GitRepoConfigNotFound` | `GitProviderNotFound` | 1 | on `WatchRule` and `ClusterWatchRule`. Names a kind that no longer exists; the Go identifier was renamed years ago and the string was not |
 | `GitRepoConfigNotReady` | deleted | 1 | declared on both rule kinds, emitted by neither. Dead constants keeping a dead name alive |
-| `GitPathAccepted` | `Succeeded` | 6 | on `GitPathAccepted=True` |
-| `RenderMatchesLive` | `Succeeded` | 6 | on `RenderMatchesLive=True` |
-| `GitProviderReady` | `Succeeded` | 6 | on `GitProviderReady=True` |
-| `ClusterProviderReady` | `Succeeded` | 6 | on `ClusterProviderReady=True` |
-| `Pushed` | `Succeeded` | 6 | on `CommitRequest`'s `Pushed=True` |
-| `Validated` | `Succeeded` | 6 | on `Validated=True`. `InCluster` stays: it is a second answer with something to say, and it shows the shape rule 6 is asking for |
-| `Suspended` | alias `fluxmeta.SuspendedReason` | 6 | same string, now shared rather than re-spelled. No user-visible change |
-| `Reconciling` | deleted | 6 | unused in production code; `Progressing` (already a Flux alias) is what the controllers set |
+| `GitPathAccepted` | `Succeeded` | guide | on `GitPathAccepted=True` |
+| `RenderMatchesLive` | `Succeeded` | guide | on `RenderMatchesLive=True` |
+| `GitProviderReady` | `Succeeded` | guide | on `GitProviderReady=True` |
+| `ClusterProviderReady` | `Succeeded` | guide | on `ClusterProviderReady=True` |
+| `Pushed` | `Succeeded` | guide | on `CommitRequest`'s `Pushed=True` |
+| `Validated` | `Succeeded` | guide | on `Validated=True`. `InCluster` stays: it is a second answer with something to say, and it shows the shape rule 6 is asking for |
+| `Suspended` | alias `fluxmeta.SuspendedReason` | guide | same string, now shared rather than re-spelled. No user-visible change |
+| `Reconciling` | deleted | guide | unused in production code; `Progressing` (already a Flux alias) is what the controllers set |
 | `Checking` | deleted | 1 | unused in production code, asserted only by tests |
-| `Stalled` | `Failed` | 6 | the one generic reason with no upstream equivalent. `fluxmeta` has no `Stalled`, so this aliases `FailedReason`. Used once, in `gittarget_dependency_status.go` |
+| `Stalled` | `Failed` | guide | the one generic reason with no upstream equivalent. `fluxmeta` has no `Stalled`, so this aliases `FailedReason`. Used once, in `gittarget_dependency_status.go` |
 | `Resolved` / `UnresolvedResources` | `Succeeded` / `ResourcesNotServed` | 6 | on `ResourcesResolved`. The False reason currently inverts the noun order of its own type instead of naming a cause |
 
 The `Succeeded` collapse is the item most worth arguing about, so the argument is here rather than
@@ -248,3 +255,246 @@ regenerate into a scratch directory with `controller-gen` and compare against `c
 with every `description` key stripped from both. This change edits comments on types that carry
 `+kubebuilder:` marker blocks, which is exactly the case where a misplaced comment silently drops a
 marker.
+
+## Worked before and after, per kind
+
+The tables above name strings without showing where they sit. This section is the same change seen
+from `kubectl`. Column rows are the real current headers, taken from `config/crd/bases`; status
+snippets show only the fields and reasons this change touches.
+
+### GitProvider
+
+```text
+# before
+NAME   URL                              READY   REASON      AGE
+  -o wide adds:  STATUS   VERIFIED
+# after
+NAME   URL                              READY   REASON      AGE
+  -o wide adds:  MESSAGE  VERIFIED
+```
+
+```yaml
+# before
+status:
+  branches:
+    - name: main
+      gitTargets: 3          # a count named like a list
+  lastVerifiedAt: "2026-09-25T09:14:02Z"
+# after
+status:
+  branches:
+    - name: main
+      gitTargetCount: 3      # rule 3
+  lastVerifiedAt: "2026-09-25T09:14:02Z"   # unchanged: rule 4 already satisfied
+```
+
+### ClusterProvider
+
+The `Facts` header is the one column that renames its concept instead of shortening it, so an
+operator who sees it has no way to guess which condition to describe.
+
+```text
+# before
+NAME      READY   REASON      FACTS     AGE
+  -o wide adds:  VALIDATED  STATUS
+# after
+NAME      READY   REASON      FACTSRECEIVED   AGE
+  -o wide adds:  VALIDATED  MESSAGE
+```
+
+```yaml
+# before
+status:
+  conditions:
+    - type: Validated
+      status: "True"
+      reason: Validated             # restates its own type
+    - type: AuditFactsReceived
+      status: "Unknown"
+      reason: RouteUnused           # already correct: names the cause
+# after
+status:
+  conditions:
+    - type: Validated
+      status: "True"
+      reason: Succeeded             # spec/status-conditions-guide.md, Reason vocabulary
+    - type: AuditFactsReceived
+      status: "Unknown"
+      reason: RouteUnused
+```
+
+`InCluster` stays as the other `Validated=True` reason. It is the shape the rule is asking for: a
+second answer that tells you something `Succeeded` cannot.
+
+### GitTarget
+
+The two provider gates sit side by side in wide output, and only one of them is abbreviated.
+
+```text
+# before, -o wide (20 columns, the four provider/source ones shown)
+... STREAMSRUNNING   SOURCEREACHABLE   PROVIDERREADY   CLUSTERPROVIDERREADY   STATUS ...
+# after (23 columns)
+... STREAMSRUNNING   SOURCEREACHABLE   GITPROVIDERREADY   CLUSTERPROVIDERREADY   MESSAGE ...
+    plus VALIDATED and ENCRYPTIONCONFIGURED, which the controller sets and no column showed
+```
+
+`SOURCEREACHABLE` stays: dropping `Cluster` from `SourceClusterReachable` collides with nothing.
+Dropping `Git` from `GitProviderReady` collides with `ClusterProviderReady`, which is why that one
+goes back to its full name.
+
+```yaml
+# before
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "True"
+      reason: GitPathAccepted        # restates its own type
+    - type: RenderMatchesLive
+      status: "True"
+      reason: RenderMatchesLive      # restates its own type
+    - type: GitProviderReady
+      status: "True"
+      reason: GitProviderReady       # restates its own type
+  retention:
+    mode: OnEvent                    # no enum on the schema, unlike spec.prune.mode
+    retainedDocuments: 0
+    lastChangedTime: "2026-09-25T09:14:02Z"
+  streams:
+    summary: 3/4
+    total: 4
+    ready: 3
+# after
+status:
+  conditions:
+    - type: GitPathAccepted
+      status: "True"
+      reason: Succeeded
+    - type: RenderMatchesLive
+      status: "True"
+      reason: Succeeded
+    - type: GitProviderReady
+      status: "True"
+      reason: Succeeded
+  retention:
+    mode: OnEvent                    # now carries Enum=Never;OnEvent;Always, rule 7
+    retainedDocuments: 0
+    lastChangedAt: "2026-09-25T09:14:02Z"   # rule 4
+  streams:
+    summary: 3/4
+    total: 4
+    ready: 3
+    pendingSample: [apps/deployments]       # gained with the shared StreamsStatus type
+```
+
+Nothing changes on the False side. A refused write still reads `GitPathAccepted=False` with
+`reason: UnsupportedContent` or `WriteBoundaryRefused`, which is what rule 9 and the conditions
+guide both already ask for.
+
+### WatchRule and ClusterWatchRule
+
+This is where the kind-renamed-but-string-did-not shows up, and it is the row an operator actually
+hits: point a rule at a `GitProvider` that does not exist and the reason names a kind that has not
+existed for a long time.
+
+```text
+# before
+NAME   TARGET       READY   REASON                  STREAMS   AGE
+rule   my-target    False   GitRepoConfigNotFound    0/0      4m
+# after
+NAME   GITTARGET    READY   REASON                  STREAMS   AGE
+rule   my-target    False   GitProviderNotFound      0/0      4m
+```
+
+```yaml
+# before
+status:
+  conditions:
+    - type: ResourcesResolved
+      status: "False"
+      reason: UnresolvedResources    # inverts its own type instead of naming a cause
+    - type: ResourcesResolved        # when True, on another object
+      status: "True"
+      reason: Resolved               # restates its own type
+# after
+status:
+  conditions:
+    - type: ResourcesResolved
+      status: "False"
+      reason: ResourcesNotServed     # rule 6: name the cause
+    - type: ResourcesResolved
+      status: "True"
+      reason: Succeeded
+```
+
+`ResourcesResolved` also gains a wide column on both kinds. It is the condition that answers "did
+your `rules[]` match anything the cluster serves", and today you have to describe the object to see
+it at all.
+
+`ClusterWatchRule` gets the same two changes and not `SourceAuthorized`, which it has no business
+carrying: it selects no namespaces.
+
+### CommitRequest
+
+```text
+# before
+NAME   GITTARGET   READY   REASON      SHA       AGE
+  -o wide adds:  AUTHORATTRIBUTED  PUSHED  BRANCH
+# after
+NAME   GITTARGET   READY   REASON      SHA       AGE
+  -o wide adds:  AUTHORATTRIBUTED  PUSHED  BRANCH  MESSAGE
+```
+
+`GITTARGET` is already right here, and it is the reason the two rule kinds move to match it rather
+than the other way round.
+
+```yaml
+# before
+status:
+  conditions:
+    - type: Pushed
+      status: "True"
+      reason: Pushed                 # restates its own type
+    - type: AuthorAttributed
+      status: "True"
+      reason: AttributedFromAdmission  # already correct
+# after
+status:
+  conditions:
+    - type: Pushed
+      status: "True"
+      reason: Succeeded
+    - type: AuthorAttributed
+      status: "True"
+      reason: AttributedFromAdmission
+```
+
+### The spec change, and the one flag
+
+```yaml
+# before
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+spec:
+  kubeConfig:
+    secretRef: {name: prod-kubeconfig}
+  qps: 20
+  burst: 40
+# after
+spec:
+  kubeConfig:
+    secretRef: {name: prod-kubeconfig}
+  client:
+    qps: 20
+    burst: 40
+```
+
+This is the only fail-open row in the change. Pruned, the two values fall back to the operator-wide
+`--source-cluster-qps` and `--source-cluster-burst`, so a deliberately throttled provider starts
+talking to its source cluster faster than asked.
+
+```text
+# before
+--allow-insecure-git-http
+# after
+--insecure-allow-git-http     # config-flag-conventions.md rule 6, and Flux's --insecure-allow-http
+```
