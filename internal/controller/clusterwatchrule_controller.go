@@ -356,7 +356,7 @@ func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	streams watch.StreamSummary,
 ) {
-	clusterRule.Status.Streams = watchRuleStreamsStatus(streams)
+	clusterRule.Status.Streams = streamsStatus(streams)
 	st.set(ConditionTypeStreamsRunning, streamConditionStatus(streams), streams.Reason, streams.Message)
 }
 

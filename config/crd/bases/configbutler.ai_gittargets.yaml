@@ -618,17 +618,17 @@ spec:
                     type: string
                   resolvedAt:
                     description: |-
-                      ResolvedAt is when this resolution was computed. Like ResolvedAtRevision it dates the
+                      ResolvedAt is when this resolution was computed. Like ResolvedAtCommit it dates the
                       resolution rather than the last scan, so a timestamp well in the past means the folder's
                       shape has been stable, not that scanning stopped.
                     format: date-time
                     type: string
-                  resolvedAtRevision:
+                  resolvedAtCommit:
                     description: |-
-                      ResolvedAtRevision is the Git revision this resolution was first observed at. It is not
+                      ResolvedAtCommit is the commit hash this resolution was first observed at. It is not
                       re-stamped on every scan: a resolution that has not changed is not republished, because
                       doing so would write status once per commit to the branch, whichever target caused the
-                      commit. So it dates the RESOLUTION, not the last scan — a revision older than the branch
+                      commit. So it dates the RESOLUTION, not the last scan — a commit older than the branch
                       head means the folder's layout has not changed since, not that nothing has looked.
 
                       It is empty when the branch had no commit at the time (a folder nothing has written to yet)
@@ -643,24 +643,24 @@ spec:
                   recreated against a different repository and what was published no longer describes the
                   one this target points at.
                 properties:
+                  commit:
+                    description: |-
+                      Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
+                      the remote at all, which is not an error: a branch does not exist without a commit, and a
+                      target that has never written has nothing there yet.
+                    type: string
                   lastVerifiedAt:
                     description: |-
                       LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
-                      which placement.resolvedAtRevision deliberately does not: that one dates the resolution, so
+                      which placement.resolvedAtCommit deliberately does not: that one dates the resolution, so
                       an old value there means the layout has not changed rather than that nothing has looked.
                     format: date-time
-                    type: string
-                  revision:
-                    description: |-
-                      Revision is the commit the branch is at on the remote. EMPTY means the branch is not on
-                      the remote at all, which is not an error: a branch does not exist without a commit, and a
-                      target that has never written has nothing there yet.
                     type: string
                   verifiedBy:
                     description: |-
                       VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
-                      this revision is our own work; `Fetch` means we went and looked, and this is what was
-                      there. A `Fetch` next to a revision no publication of yours produced is how a foreign push
+                      this commit is our own work; `Fetch` means we went and looked, and this is what was
+                      there. A `Fetch` next to a commit no publication of yours produced is how a foreign push
                       to the branch is read off kubectl.
                     enum:
                     - Push
@@ -675,9 +675,9 @@ spec:
                   to mirror deletes. It is informational either way — retention is the configured behavior,
                   never a fault, and no condition changes state because of it.
                 properties:
-                  lastChangedTime:
+                  lastChangedAt:
                     description: |-
-                      LastChangedTime records when the reported retention count or effective prune mode last
+                      LastChangedAt records when the reported retention count or effective prune mode last
                       changed. It does NOT indicate when retention was last evaluated: a resync that re-reports the
                       same count leaves it untouched, so an old timestamp is equally consistent with stable
                       retention and with nothing having measured it since.
@@ -688,6 +688,10 @@ spec:
                       Mode is the EFFECTIVE spec.prune.mode this roll-up was produced under. It is reported here
                       rather than left to be read from the spec because a GitTarget that predates spec.prune has
                       no stored value at all, so the spec alone cannot explain why documents are being kept.
+                    enum:
+                    - Never
+                    - OnEvent
+                    - Always
                     type: string
                   retainedDocuments:
                     description: |-
@@ -709,6 +713,13 @@ spec:
                       be watched.
                     format: int32
                     type: integer
+                  pendingSample:
+                    description: PendingSample is a bounded sample of types not yet
+                      ready.
+                    items:
+                      type: string
+                    maxItems: 5
+                    type: array
                   ready:
                     description: Ready is how many tracked types are Streaming.
                     format: int32
@@ -727,7 +738,7 @@ spec:
                       Do not compute anything from it — read ready and total.
                     type: string
                   total:
-                    description: Total is how many types this target tracks.
+                    description: Total is how many types are tracked.
                     format: int32
                     type: integer
                 required:

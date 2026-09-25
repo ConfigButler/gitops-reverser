@@ -176,12 +176,12 @@ type GitProviderBranchStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// GitTargets is how many GitTargets are configured to write this branch. More than one means
+	// GitTargetCount is how many GitTargets are configured to write this branch. More than one means
 	// they share a branch worker, and each still reports its own folder's health on its own
 	// conditions.
 	// +required
 	// +kubebuilder:validation:Minimum=0
-	GitTargets int32 `json:"gitTargets"`
+	GitTargetCount int32 `json:"gitTargetCount"`
 }
 
 // CommitSpec configures the commit identity and signing a GitProvider uses. Message formatting

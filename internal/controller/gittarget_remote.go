@@ -145,7 +145,7 @@ func (r *GitTargetReconciler) publishRemote(
 		return
 	}
 	next := &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision:       observed.Revision,
+		Commit:         observed.Commit,
 		LastVerifiedAt: &metav1.Time{Time: observed.At},
 		VerifiedBy:     string(observed.By),
 	}
@@ -203,7 +203,7 @@ func remoteStatusIsNews(published, next *configbutleraiv1alpha3.GitTargetRemoteS
 	if published == nil || published.LastVerifiedAt == nil || next.LastVerifiedAt == nil {
 		return true
 	}
-	if published.Revision != next.Revision {
+	if published.Commit != next.Commit {
 		return true
 	}
 	// metav1.Time is second-granular on the wire, so this compares against what was PUBLISHED: a

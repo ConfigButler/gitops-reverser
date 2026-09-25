@@ -190,32 +190,7 @@ type WatchRuleStatus struct {
 
 	// Streams is the bounded stream-readiness roll-up for the types this rule resolves.
 	// +optional
-	Streams *WatchRuleStreamsStatus `json:"streams,omitempty"`
-}
-
-// WatchRuleStreamsStatus is a bounded roll-up of the stream-readiness state for the
-// types a WatchRule or ClusterWatchRule resolves.
-type WatchRuleStreamsStatus struct {
-	// Summary is the display-only ready/total ratio.
-	// +optional
-	Summary string `json:"summary,omitempty"`
-
-	// Total is how many types this rule resolves.
-	Total int32 `json:"total"`
-
-	// Ready is how many resolved types are Streaming.
-	Ready int32 `json:"ready"`
-
-	// Replaying is how many resolved types are still replaying their initial events.
-	Replaying int32 `json:"replaying"`
-
-	// Blocked is how many resolved types cannot currently be watched.
-	Blocked int32 `json:"blocked"`
-
-	// PendingSample is a bounded sample of types not yet ready.
-	// +optional
-	// +kubebuilder:validation:MaxItems=5
-	PendingSample []string `json:"pendingSample,omitempty"`
+	Streams *StreamsStatus `json:"streams,omitempty"`
 }
 
 // Deny-by-default and re-evaluated on EVERY reconcile, so a policy tightened after a rule was

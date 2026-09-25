@@ -113,7 +113,7 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	// fetch that moved this checkout may have been earned by another target's refresh, which
 	// rescanned its own folder and knew nothing about this one.
 	if known && req.MaxAge > 0 && observed.Age(time.Now()) < req.MaxAge &&
-		!w.checkoutMayLagObservation(observed.Revision) {
+		!w.checkoutMayLagObservation(observed.Commit) {
 		w.rescanLayoutForTarget(w.ctx, req)
 		return
 	}

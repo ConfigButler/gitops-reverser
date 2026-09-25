@@ -90,19 +90,19 @@ func TestRemoteObservation_APushRenewsIt(t *testing.T) {
 
 	before, ok := f.worker.LastRemoteObservation()
 	require.False(t, ok, "nothing has looked at the remote yet")
-	require.Empty(t, before.Revision)
+	require.Empty(t, before.Commit)
 
 	f.publish("first")
 	afterFirst, ok := f.worker.LastRemoteObservation()
 	require.True(t, ok)
 	assert.Equal(t, ObservedByPush, afterFirst.By,
 		"the push is the last thing that touched the remote, so it owns the record")
-	assert.Equal(t, revParseMain(t, f.repoDir), afterFirst.Revision)
+	assert.Equal(t, revParseMain(t, f.repoDir), afterFirst.Commit)
 
 	f.publish("second")
 	afterSecond, _ := f.worker.LastRemoteObservation()
-	assert.Equal(t, revParseMain(t, f.repoDir), afterSecond.Revision,
+	assert.Equal(t, revParseMain(t, f.repoDir), afterSecond.Commit,
 		"a second push moves the revision with it")
-	assert.NotEqual(t, afterFirst.Revision, afterSecond.Revision)
+	assert.NotEqual(t, afterFirst.Commit, afterSecond.Commit)
 	assert.False(t, afterSecond.At.Before(afterFirst.At), "and renews the clock")
 }

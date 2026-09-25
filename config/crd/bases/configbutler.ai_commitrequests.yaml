@@ -24,7 +24,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
-    - jsonPath: .status.sha
+    - jsonPath: .status.commit
       name: Commit
       type: string
     - jsonPath: .status.conditions[?(@.type=="AuthorAttributed")].status
@@ -52,7 +52,7 @@ spec:
         description: |-
           CommitRequest is a one-shot "save" signal: creating one finalizes the open
           commit window for the referenced GitTarget instead of waiting for the
-          silence timer. The resulting commit SHA is reported back in status.
+          silence timer. The resulting commit hash is reported back in status.
         properties:
           apiVersion:
             description: |-
@@ -137,6 +137,10 @@ spec:
                   Branch is the Git branch the GitTarget commits to. Populated once the
                   finalize resolves.
                 type: string
+              commit:
+                description: Commit is the resulting commit hash. Set when the commit
+                  was pushed (Pushed=True).
+                type: string
               conditions:
                 description: |-
                   Conditions report the request's progress and terminal outcome: the Ready
@@ -205,10 +209,6 @@ spec:
                   by the controller.
                 format: int64
                 type: integer
-              sha:
-                description: SHA is the resulting commit SHA. Set when the commit
-                  was pushed (Pushed=True).
-                type: string
             type: object
         required:
         - spec

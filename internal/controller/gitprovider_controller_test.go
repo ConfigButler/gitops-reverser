@@ -354,13 +354,13 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
-				{Name: "main", GitTargets: 2},
-				{Name: "release", GitTargets: 1},
+				{Name: "main", GitTargetCount: 2},
+				{Name: "release", GitTargetCount: 1},
 			}), "two folders share the main branch, and they share one branch worker with it")
 
 			Expect(k8sClient.Delete(ctx, targets[2])).To(Succeed())
 			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
-				{Name: "main", GitTargets: 2},
+				{Name: "main", GitTargetCount: 2},
 			}), "a branch nothing references any more is not what this repository is for")
 		})
 

@@ -588,7 +588,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 		// same as "observed to be empty": the streams axis stays False and holds the target below
 		// Ready, and it says Progressing rather than NoResolvedTypes so the two are never confused.
 		streams := noResolvedStreamsSummary()
-		target.Status.Streams = gitTargetStreamsStatus(streams)
+		target.Status.Streams = streamsStatus(streams)
 		return dataPlaneObservation{
 			axes: gitTargetAxes{
 				Streams: conditionValue{
@@ -632,7 +632,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 		Render:  renderAxis(manager.RenderFidelityForGitTarget(gitDest)),
 	}
 
-	target.Status.Streams = gitTargetStreamsStatus(observation.streams)
+	target.Status.Streams = streamsStatus(observation.streams)
 	// Retention is read beside the others and projected the same way, but it feeds NO condition: a
 	// document kept by policy is the configured outcome, not a degraded target.
 	//
@@ -1411,16 +1411,6 @@ func clampIntToInt32(value int) int32 {
 	return int32(value)
 }
 
-func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3.GitTargetStreamsStatus {
-	return &configbutleraiv1alpha3.GitTargetStreamsStatus{
-		Summary:   streams.Summary(),
-		Total:     clampIntToInt32(streams.Total),
-		Ready:     clampIntToInt32(streams.Ready),
-		Replaying: clampIntToInt32(streams.Replaying),
-		Blocked:   clampIntToInt32(streams.Blocked),
-	}
-}
-
 // gitTargetRetentionStatus projects the data-plane retention roll-up.
 //
 // A summary that has never been reported projects to NIL rather than to a zero count, and the
@@ -1432,11 +1422,11 @@ func gitTargetRetentionStatus(summary watch.RetentionSummary) *configbutleraiv1a
 	if !summary.Reported {
 		return nil
 	}
-	changed := metav1.NewTime(summary.LastChangedTime)
+	changed := metav1.NewTime(summary.LastChangedAt)
 	return &configbutleraiv1alpha3.GitTargetRetentionStatus{
 		Mode:              summary.Mode,
 		RetainedDocuments: clampIntToInt32(summary.RetainedDocuments),
-		LastChangedTime:   &changed,
+		LastChangedAt:     &changed,
 	}
 }
 

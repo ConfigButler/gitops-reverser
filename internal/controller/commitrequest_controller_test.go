@@ -115,7 +115,7 @@ var _ = Describe("CommitRequest controller", func() {
 			Type: ConditionTypeReconciling, Status: metav1.ConditionFalse, Reason: crReasonCommitted, Message: "done",
 		})
 		fetched.Status.Branch = "main"
-		fetched.Status.SHA = "abc123"
+		fetched.Status.Commit = "abc123"
 		Expect(k8sClient.Status().Update(ctx, &fetched)).To(Succeed())
 
 		// The controller must leave the terminal outcome intact.
@@ -125,7 +125,7 @@ var _ = Describe("CommitRequest controller", func() {
 			ready := apimeta.FindStatusCondition(checked.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-			g.Expect(checked.Status.SHA).To(Equal("abc123"))
+			g.Expect(checked.Status.Commit).To(Equal("abc123"))
 		}, 2*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 })

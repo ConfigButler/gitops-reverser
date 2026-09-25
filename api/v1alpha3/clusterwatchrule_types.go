@@ -105,7 +105,7 @@ type ClusterWatchRuleStatus struct {
 
 	// Streams is the bounded stream-readiness roll-up for the types this rule resolves.
 	// +optional
-	Streams *WatchRuleStreamsStatus `json:"streams,omitempty"`
+	Streams *StreamsStatus `json:"streams,omitempty"`
 }
 
 // Cluster-scoped objects have no namespace, so no namespace policy bounds them: this is

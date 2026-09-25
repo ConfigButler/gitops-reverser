@@ -429,7 +429,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 				"authorAttributed", commitRequestConditionStatus(current, ConditionTypeAuthorAttributed),
 				"pushed", commitRequestConditionStatus(current, ConditionTypePushed),
 				"branch", current.Status.Branch,
-				"sha", current.Status.SHA,
+				"commit", current.Status.Commit,
 				"outcome", result.Outcome,
 				"finalizeError", finalizeError,
 				"gitTarget", current.Spec.GitTargetRef.Name,

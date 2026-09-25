@@ -249,7 +249,7 @@ func (r *WatchRuleReconciler) setStreamsReadyCondition(
 	watchRule *configbutleraiv1alpha3.WatchRule,
 	streams watch.StreamSummary,
 ) {
-	watchRule.Status.Streams = watchRuleStreamsStatus(streams)
+	watchRule.Status.Streams = streamsStatus(streams)
 	st.set(ConditionTypeStreamsRunning, streamConditionStatus(streams), streams.Reason, streams.Message)
 }
 

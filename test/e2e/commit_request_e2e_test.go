@@ -136,7 +136,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 			headSHA, shaErr := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
 			g.Expect(shaErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(headSHA)).To(Equal(reportedSHA),
-				"status.sha should match the SHA of the commit on the branch\n%s",
+				"status.commit should match the commit on the branch\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			// Exactly one new commit: this is the first commit on a fresh
@@ -409,7 +409,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 			headSHA, shaErr := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
 			g.Expect(shaErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(headSHA)).To(Equal(reportedSHA),
-				"status.sha should match the single bundle commit\n%s",
+				"status.commit should match the single bundle commit\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			for _, name := range deployNames {
@@ -543,7 +543,7 @@ const commitRequestReasonCommitted = "Committed"
 // Ready=True alone cannot answer that, and reading it as "it committed" is how this suite went
 // blind. A benign rejection — no window collected in the grace, a foreign author's window, a
 // change already present on the remote — is deliberately Ready=True with Pushed=False and an
-// empty status.sha, so that kstatus reads Current rather than Failed (see rejectCommitRequest).
+// empty status.commit, so that kstatus reads Current rather than Failed (see rejectCommitRequest).
 // A spec asserting Ready=True therefore PASSES on a request that committed nothing, then fails
 // seconds later on the empty sha with "<string>: not to be empty" and no reason attached.
 type commitRequestOutcome struct {
@@ -552,15 +552,15 @@ type commitRequestOutcome struct {
 	Message string
 	Stalled string
 	Pushed  string
-	SHA     string
+	Commit  string
 	Branch  string
 }
 
 // String renders the outcome as the diagnostic the bare-sha assertion never produced.
 func (o commitRequestOutcome) String() string {
 	return fmt.Sprintf(
-		"CommitRequest status: Ready=%s (reason=%q) Stalled=%s Pushed=%s sha=%q branch=%q\n  message: %s",
-		o.Ready, o.Reason, o.Stalled, o.Pushed, o.SHA, o.Branch, o.Message)
+		"CommitRequest status: Ready=%s (reason=%q) Stalled=%s Pushed=%s commit=%q branch=%q\n  message: %s",
+		o.Ready, o.Reason, o.Stalled, o.Pushed, o.Commit, o.Branch, o.Message)
 }
 
 // isTerminal reports whether the controller has stopped working on this request: Ready=True
@@ -580,13 +580,13 @@ func readCommitRequestOutcome(g Gomega, namespace, name string) commitRequestOut
 		Message: commitRequestField(g, namespace, name, readyPath+`.message}`),
 		Stalled: commitRequestCondition(g, namespace, name, "Stalled"),
 		Pushed:  commitRequestCondition(g, namespace, name, "Pushed"),
-		SHA:     commitRequestField(g, namespace, name, "{.status.sha}"),
+		Commit:  commitRequestField(g, namespace, name, "{.status.commit}"),
 		Branch:  commitRequestField(g, namespace, name, "{.status.branch}"),
 	}
 }
 
 // expectCommitRequestCommitted asserts the request reached the COMMITTED ending, and returns the
-// SHA it reported.
+// commit it reported.
 //
 // It gives up early on any other terminal ending rather than polling to the timeout. A terminal
 // outcome is final — the controller will not revisit it — so continuing to re-read it cannot
@@ -605,6 +605,6 @@ func expectCommitRequestCommitted(g Gomega, namespace, name, diagnostics string)
 		"Ready=True must mean a commit, not a benign rejection\n%s\n%s", outcome, diagnostics)
 	g.Expect(outcome.Pushed).To(Equal("True"),
 		"a committed CommitRequest must report Pushed=True\n%s", outcome)
-	g.Expect(outcome.SHA).NotTo(BeEmpty(), "a committed CommitRequest must report status.sha\n%s", outcome)
-	return outcome.SHA
+	g.Expect(outcome.Commit).NotTo(BeEmpty(), "a committed CommitRequest must report status.commit\n%s", outcome)
+	return outcome.Commit
 }

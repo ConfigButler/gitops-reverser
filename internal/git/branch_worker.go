@@ -2514,7 +2514,7 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) {
 	// Stamped with the repository it is about, so that whoever publishes it can tell whether it
 	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
-	observed := RemoteObservation{Revision: revision, At: time.Now(), By: by, Repo: w.repo}
+	observed := RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo}
 	w.lastObservation.Store(&observed)
 	// Delivered here, at the one point where an observation is made, rather than by each caller
 	// against whichever GitTargets it happened to be holding. The fact is about the BRANCH, so it
@@ -2667,7 +2667,7 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 // calls it.
 func (w *BranchWorker) SeedRemoteObservationForTest(revision string, at time.Time, by string) {
 	w.baseTrustedState.Store(true)
-	observed := RemoteObservation{Revision: revision, At: at, By: ObservationSource(by), Repo: w.repo}
+	observed := RemoteObservation{Commit: revision, At: at, By: ObservationSource(by), Repo: w.repo}
 	w.lastObservation.Store(&observed)
 }
 
