@@ -68,8 +68,8 @@ fields that need more than a line.
 | `accessFrom` | **no namespace** | Deny-by-default list of control-cluster namespaces that may reference this provider. Omitted, none may; an empty `selector: {}` admits every namespace |
 | `allowAnySourceNamespace` | `false` | Whether rules may watch namespaces other than their own, `*` included |
 | `attribution.auditRoute` | the provider's own name | Audit route this provider joins. See [audit route](#audit-route-and-auditfactsreceived) |
-| `qps` | the operator-wide flag | Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted |
-| `burst` | the operator-wide flag | Client burst for this source cluster. Ignored when `kubeConfig` is omitted |
+| `client.qps` | the operator-wide flag | Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted |
+| `client.burst` | the operator-wide flag | Client burst for this source cluster. Ignored when `kubeConfig` is omitted |
 
 ### `GitTarget` (namespaced): which branch and folder
 

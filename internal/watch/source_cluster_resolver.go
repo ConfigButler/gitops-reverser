@@ -58,7 +58,7 @@ type secretSourceClusterResolver struct {
 
 	// qps and burst are the GLOBAL defaults (--source-cluster-qps/-burst) bounding the rate at
 	// which the operator talks to a source cluster. A ClusterProvider may override them per
-	// cluster via spec.qps/spec.burst.
+	// cluster via spec.client.qps/spec.client.burst.
 	qps   float32
 	burst int
 }
@@ -147,11 +147,15 @@ func (r *secretSourceClusterResolver) ResolveSourceCluster(
 func (r *secretSourceClusterResolver) throttleFor(provider *configv1alpha3.ClusterProvider) (float32, int) {
 	qps := r.qps
 	burst := r.burst
-	if provider.Spec.QPS != nil {
-		qps = float32(*provider.Spec.QPS)
+	client := provider.Spec.Client
+	if client == nil {
+		return qps, burst
 	}
-	if provider.Spec.Burst != nil {
-		burst = int(*provider.Spec.Burst)
+	if client.QPS != nil {
+		qps = float32(*client.QPS)
+	}
+	if client.Burst != nil {
+		burst = int(*client.Burst)
 	}
 	return qps, burst
 }

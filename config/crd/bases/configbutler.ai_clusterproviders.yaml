@@ -181,13 +181,27 @@ spec:
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string
                 type: object
-              burst:
+              client:
                 description: |-
-                  Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
-                  operator-wide --source-cluster-burst applies. Ignored when kubeConfig is omitted.
-                format: int32
-                minimum: 1
-                type: integer
+                  Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
+                  the operator-wide --source-cluster-qps and --source-cluster-burst apply. Ignored when
+                  kubeConfig is omitted (the in-cluster client is not per-provider).
+                properties:
+                  burst:
+                    description: |-
+                      Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
+                      operator-wide --source-cluster-burst applies.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  qps:
+                    description: |-
+                      QPS overrides the operator's outgoing kube-client query-per-second throttle for this
+                      cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
               kubeConfig:
                 description: |-
                   KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach it
@@ -267,14 +281,6 @@ spec:
                 - message: exactly one of spec.kubeConfig.configMapRef or spec.kubeConfig.secretRef
                     must be specified
                   rule: '!has(self.configMapRef) || !has(self.secretRef)'
-              qps:
-                description: |-
-                  QPS overrides the operator's outgoing kube-client query-per-second throttle for this
-                  cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
-                  Ignored when kubeConfig is omitted (the in-cluster client is not per-provider).
-                format: int32
-                minimum: 1
-                type: integer
             type: object
             x-kubernetes-validations:
             - message: spec.kubeConfig is immutable; delete and recreate the ClusterProvider

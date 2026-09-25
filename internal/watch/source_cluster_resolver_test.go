@@ -105,8 +105,7 @@ func TestResolveSourceCluster_PerProviderThrottleOverride(t *testing.T) {
 	qps := int32(5)
 	burst := int32(7)
 	provider := clusterProvider("value")
-	provider.Spec.QPS = &qps
-	provider.Spec.Burst = &burst
+	provider.Spec.Client = &configv1alpha3.ClusterProviderClient{QPS: &qps, Burst: &burst}
 	r := newResolver(t, kubeconfig.SafetyPolicy{}, provider, kubeconfigSecret("value", resolverKubeConfig))
 
 	cfg, _, err := r.ResolveSourceCluster(context.Background(), "prod-eu-1")

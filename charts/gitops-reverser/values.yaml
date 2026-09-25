@@ -63,7 +63,7 @@ controllerManager:
   additionalSensitiveResources: []
   # Permit credentials with http:// GitProvider URLs. This is only for trusted
   # in-cluster development Git servers; production remotes should use HTTPS or SSH.
-  allowInsecureGitHTTP: false
+  insecureAllowGitHTTP: false
   # Event queue depth per branch worker. One branch worker is shared by every GitTarget
   # writing to one (GitProvider, branch), so pointing another GitTarget at a branch
   # divides the headroom of a worker already in use.
@@ -86,6 +86,9 @@ controllerManager:
   # Bounds the open commit window plus the writes retained for replay until a push
   # succeeds; tripping it finalizes the window early, ignoring the commit cadence.
   branchBufferMaxSize: 8Mi
+
+# How the operator treats the Git remote.
+git:
   # How often an IDLE GitTarget re-proves where its branch is on the Git remote, as a duration.
   # Set "0" to disable it.
   #
@@ -97,7 +100,7 @@ controllerManager:
   #
   # The effective granularity is the 5-minute control-plane reconcile, so a value below that means
   # "every tick". gitopsreverser_git_fetches_total{reason="refresh"} is what it costs.
-  gitRefreshInterval: 10m
+  refreshInterval: 10m
 
 # cert-manager issuer shared by every certificate the chart mints. One self-signed CA
 # backs them all, so the issuer is genuinely cross-cutting and lives here; each server
