@@ -1,7 +1,8 @@
 # Vocabulary cleanup: one name per concept, as a breaking change
 
-> **design**: proposed, nothing implemented yet. The rules are decided and written down in
-> [`../definitions.md`](../definitions.md); what is open is how far to take three of the renames.
+> **design, decided**: not built yet, and nothing is open. The rules are in
+> [`../definitions.md`](../definitions.md); every call this page once left to the maintainer is
+> settled under "Decided: break it in place, and warn".
 > Index: [`../INDEX.md`](../INDEX.md)
 > Governed by: [`../facts/crd-upgrade-strategies.md`](../facts/crd-upgrade-strategies.md)
 > Completes: [`../config-flag-conventions.md`](../config-flag-conventions.md)
@@ -243,27 +244,33 @@ source-cluster one, which [`../definitions.md`](../definitions.md) now does. Thi
 case on the page of a definition being the right fix for an ambiguity, and it is worth noticing that
 the audit reached for a rename first.
 
-## Open: three calls to make
+## Decided: break it in place, and warn
 
-Everything above is decided except these.
+Nothing is open any more. The posture, decided by the maintainer: **there is no known production
+install, so nothing is kept for compatibility.** No retain-and-refuse release, no conversion, no
+alias left behind for an old spelling. The release version carries the break and
+[`../UPGRADING.md`](../UPGRADING.md) carries a loud warning.
 
-**How to land `spec.client.{qps,burst}`.** Retain-and-refuse costs a release of schema residue
-plus the code to reject the old spelling, and buys a loud signal for a field that is almost certainly
-unset on every object in existence. A one-shot delete costs nothing and silently unthrottles anyone
-who did set it. Recommendation: **one-shot delete with a `UPGRADING.md` inventory command**, on the
-grounds that the population is small and knowable, but this is a judgment about that population
-rather than about the API, so it is the user's call.
+That is what `v1alpha3` is for. The Kubernetes API conventions allow an alpha version to change
+incompatibly without a new version, which is the whole content of the alpha signal, so these renames
+land in `v1alpha3` itself rather than opening a `v1alpha4`. Opening one would be the conservative move
+and would cost either a conversion webhook or an unreadable set of stored objects, for a guarantee
+nobody asked for.
 
-**Whether `Message` goes on all six kinds, or on none.** Adding it is three new columns; dropping it is three
-removed ones. Recommendation: **add it**, because the three kinds that have it were written later and
-reached for it, which is evidence it earns its place. A Ready message is long, so it is `priority=1`
-and second-to-last.
+The four calls that were open, now settled:
 
-**Whether the True-state reasons collapse to `Succeeded`.** Six True-state reasons become one string, which means an alerting
-rule that currently matches `reason=GitPathAccepted` has to match the condition type instead, where
-it belonged. Recommendation: **do it.** The counter-case is worth stating: if anything downstream
-keys on the True reason of a specific gate, it breaks silently rather than loudly, because the value
-is still a valid non-empty reason.
+| Was open | Decided |
+|---|---|
+| how to land `spec.client.{qps,burst}` (the one fail-open row) | **one-shot delete.** No retain-and-refuse. `UPGRADING.md` says to check for the field before upgrading, because a pruned throttle falls back to the operator-wide default and speeds the client up |
+| `Message` on all six kinds, or none | **all six**, `priority=1`, second to last |
+| whether the True-state reasons collapse to `Succeeded` | **yes.** An alerting rule keying on `reason=GitPathAccepted` has to key on the condition type instead, where it belonged |
+| the `GitTargetReady` column on the two rule kinds | **dropped**, consistent with rule 8 excluding dependency-readiness projections |
+
+The one consequence worth writing down before it surprises someone: a renamed reason is also a
+**metrics label change**. `resource_condition` carries `reason`
+(`internal/controller/resource_condition_metrics.go`), so a dashboard or alert selecting on
+`reason="GitPathAccepted"` goes empty rather than erroring. That belongs in the `UPGRADING.md` entry
+next to the status-field renames, not only in the API section.
 
 ## Commit split
 
