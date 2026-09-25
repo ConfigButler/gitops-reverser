@@ -36,7 +36,10 @@ const (
 	ClusterWatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	ClusterWatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
 	ClusterWatchRuleReasonReady                 = ReasonSucceeded
-	ClusterWatchRuleReasonResourcesNotServed    = "ResourcesNotServed"
+	// ClusterWatchRuleReasonCatalogNotReady is ResourcesResolved=False: the source cluster's discovery
+	// catalog is not ready, so no selector can be resolved yet. A selector that matches nothing
+	// the cluster serves is not this: it resolves True, watching zero types.
+	ClusterWatchRuleReasonCatalogNotReady = "CatalogNotReady"
 
 	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
 	// referenced GitTarget's namespace is not admitted by that target's ClusterProvider. It is
@@ -343,7 +346,7 @@ func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 ) {
 	resolved, message := r.WatchManager.ResolveClusterWatchRuleResources(ctx, *clusterRule)
 	status := metav1.ConditionFalse
-	reason := ClusterWatchRuleReasonResourcesNotServed
+	reason := ClusterWatchRuleReasonCatalogNotReady
 	if resolved {
 		status = metav1.ConditionTrue
 		reason = ReasonSucceeded

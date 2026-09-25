@@ -34,7 +34,10 @@ const (
 	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
 	WatchRuleReasonReady                 = ReasonSucceeded
-	WatchRuleReasonResourcesNotServed    = "ResourcesNotServed"
+	// WatchRuleReasonCatalogNotReady is ResourcesResolved=False: the source cluster's discovery
+	// catalog is not ready, so no selector can be resolved yet. A selector that matches nothing
+	// the cluster serves is not this: it resolves True, watching zero types.
+	WatchRuleReasonCatalogNotReady = "CatalogNotReady"
 )
 
 // WatchRuleReconciler reconciles a WatchRule object.
@@ -236,7 +239,7 @@ func (r *WatchRuleReconciler) setResourceResolutionCondition(
 ) {
 	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)
 	status := metav1.ConditionFalse
-	reason := WatchRuleReasonResourcesNotServed
+	reason := WatchRuleReasonCatalogNotReady
 	if resolved {
 		status = metav1.ConditionTrue
 		reason = ReasonSucceeded
