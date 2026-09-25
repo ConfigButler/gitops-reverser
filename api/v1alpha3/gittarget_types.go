@@ -379,7 +379,7 @@ type GitTargetStatus struct {
 	// Streams is the bounded data-plane roll-up over this GitTarget's tracked types.
 	// Counts, never a per-type list, so it stays bounded however many types are watched.
 	// +optional
-	Streams *GitTargetStreamsStatus `json:"streams,omitempty"`
+	Streams *StreamsStatus `json:"streams,omitempty"`
 
 	// An observation, not a condition: a sweep suppressed by spec.prune.mode is the configured
 	// outcome, and a condition going False for it would train operators to ignore the real ones.
@@ -410,25 +410,25 @@ type GitTargetStatus struct {
 
 // GitTargetRemoteStatus is the answer to "where is my branch, and when did we last prove it".
 //
-// It is written whenever the revision changes — including one we pushed ourselves — and otherwise
-// only when the published timestamp is older than one refresh interval: the revision has to move
+// It is written whenever the commit changes — including one we pushed ourselves — and otherwise
+// only when the published timestamp is older than one refresh interval: the commit has to move
 // with the fact it dates.
 type GitTargetRemoteStatus struct {
-	// Revision is the commit the branch is at on the remote. EMPTY means the branch is not on
+	// Commit is the commit hash the branch is at on the remote. EMPTY means the branch is not on
 	// the remote at all, which is not an error: a branch does not exist without a commit, and a
 	// target that has never written has nothing there yet.
 	// +optional
-	Revision string `json:"revision,omitempty"`
+	Commit string `json:"commit,omitempty"`
 
 	// LastVerifiedAt is when the remote was last observed. It answers "has anything looked",
-	// which placement.resolvedAtRevision deliberately does not: that one dates the resolution, so
+	// which placement.resolvedAtCommit deliberately does not: that one dates the resolution, so
 	// an old value there means the layout has not changed rather than that nothing has looked.
 	// +optional
 	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
 
 	// VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so
-	// this revision is our own work; `Fetch` means we went and looked, and this is what was
-	// there. A `Fetch` next to a revision no publication of yours produced is how a foreign push
+	// this commit is our own work; `Fetch` means we went and looked, and this is what was
+	// there. A `Fetch` next to a commit no publication of yours produced is how a foreign push
 	// to the branch is read off kubectl.
 	// +optional
 	// +kubebuilder:validation:Enum=Push;Fetch
@@ -479,18 +479,18 @@ type GitTargetPlacementStatus struct {
 	// +optional
 	ReadOnlyBases []string `json:"readOnlyBases,omitempty"`
 
-	// ResolvedAtRevision is the Git revision this resolution was first observed at. It is not
+	// ResolvedAtCommit is the commit hash this resolution was first observed at. It is not
 	// re-stamped on every scan: a resolution that has not changed is not republished, because
 	// doing so would write status once per commit to the branch, whichever target caused the
-	// commit. So it dates the RESOLUTION, not the last scan — a revision older than the branch
+	// commit. So it dates the RESOLUTION, not the last scan — a commit older than the branch
 	// head means the folder's layout has not changed since, not that nothing has looked.
 	//
 	// It is empty when the branch had no commit at the time (a folder nothing has written to yet)
 	// and is filled in by the first scan that finds one.
 	// +optional
-	ResolvedAtRevision string `json:"resolvedAtRevision,omitempty"`
+	ResolvedAtCommit string `json:"resolvedAtCommit,omitempty"`
 
-	// ResolvedAt is when this resolution was computed. Like ResolvedAtRevision it dates the
+	// ResolvedAt is when this resolution was computed. Like ResolvedAtCommit it dates the
 	// resolution rather than the last scan, so a timestamp well in the past means the folder's
 	// shape has been stable, not that scanning stopped.
 	// +optional
@@ -511,30 +511,6 @@ const (
 	PlacementModeKustomizeOverlay PlacementMode = "KustomizeOverlay"
 )
 
-// GitTargetStreamsStatus is a bounded roll-up of the stream readiness state for the
-// types this GitTarget tracks.
-type GitTargetStreamsStatus struct {
-	// Summary is the display-only ready/total ratio, e.g. "3/4".
-	//
-	// It restates Ready and Total, which the API conventions would normally rule out. It exists
-	// solely to feed the Streams printer column: a column can read one JSONPath, not format two.
-	// Do not compute anything from it — read ready and total.
-	// +optional
-	Summary string `json:"summary,omitempty"`
-
-	// Total is how many types this target tracks.
-	Total int32 `json:"total"`
-
-	// Ready is how many tracked types are Streaming.
-	Ready int32 `json:"ready"`
-
-	// Replaying is how many tracked types are still replaying their initial events.
-	Replaying int32 `json:"replaying"`
-
-	// Blocked is how many tracked types cannot currently be watched.
-	Blocked int32 `json:"blocked"`
-}
-
 // Counts, never a per-document list, so the field stays bounded however many documents are
 // retained. Pull-based: only as fresh as the last reconcile, which is fine for an observation and
 // is another reason this must not become a condition.
@@ -545,6 +521,7 @@ type GitTargetRetentionStatus struct {
 	// rather than left to be read from the spec because a GitTarget that predates spec.prune has
 	// no stored value at all, so the spec alone cannot explain why documents are being kept.
 	// +optional
+	// +kubebuilder:validation:Enum=Never;OnEvent;Always
 	Mode PruneMode `json:"mode,omitempty"`
 
 	// RetainedDocuments is how many managed documents the policy kept that a converged mirror
@@ -552,12 +529,12 @@ type GitTargetRetentionStatus struct {
 	// converged. An ABSENT retention block means something different: no resync has reported yet.
 	RetainedDocuments int32 `json:"retainedDocuments"`
 
-	// LastChangedTime records when the reported retention count or effective prune mode last
+	// LastChangedAt records when the reported retention count or effective prune mode last
 	// changed. It does NOT indicate when retention was last evaluated: a resync that re-reports the
 	// same count leaves it untouched, so an old timestamp is equally consistent with stable
 	// retention and with nothing having measured it since.
 	// +optional
-	LastChangedTime *metav1.Time `json:"lastChangedTime,omitempty"`
+	LastChangedAt *metav1.Time `json:"lastChangedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -575,13 +552,11 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="RenderMatchesLive",type=string,JSONPath=`.status.conditions[?(@.type=="RenderMatchesLive")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
 // +kubebuilder:printcolumn:name="SourceReachable",type=string,JSONPath=`.status.conditions[?(@.type=="SourceClusterReachable")].reason`,priority=1
-// +kubebuilder:printcolumn:name="ProviderReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitProviderReady")].status`,priority=1
-// +kubebuilder:printcolumn:name="ClusterProviderReady",type=string,JSONPath=`.status.conditions[?(@.type=="ClusterProviderReady")].status`,priority=1
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.gitProviderRef.name`,priority=1
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`,priority=1
 // +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitTarget is the Schema for the gittargets API.

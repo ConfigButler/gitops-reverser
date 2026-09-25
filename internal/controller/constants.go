@@ -78,8 +78,6 @@ const (
 	// ability to re-evaluate its policy and is retaining that scope" — neither of which may be
 	// rendered as a permanent failure.
 	ConditionTypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
-	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
-	ConditionTypeStreamsReady = ConditionTypeStreamsRunning
 	// ConditionTypeAuthorAttributed indicates whether a CommitRequest's commit author
 	// was named from the submitter captured at admission. It is binary and immediately
 	// settled (no Unknown, no timeout): True (AttributedFromAdmission) when the
@@ -140,9 +138,8 @@ const (
 	// and that answer is latched.
 	ReasonFactsReceived = "Received"
 
-	// ReasonValidated is the Validated=True reason.
-	ReasonValidated = "Validated"
-	// ReasonInCluster is the Validated=True reason for the in-cluster "default" provider.
+	// ReasonInCluster is the Validated=True reason for the in-cluster "default" provider. A remote
+	// provider that validates reports the shared ReasonSucceeded instead.
 	ReasonInCluster = "InCluster"
 	// ReasonKubeConfigInvalid is the Validated=False reason for a malformed or unsafe kubeconfig
 	// whose specific cause is carried in the message.
@@ -213,12 +210,10 @@ const (
 	// ReasonProgressing indicates that a stream or control-plane gate is still converging.
 	ReasonProgressing = fluxmeta.ProgressingReason
 
-	// ReasonChecking indicates that the controller is checking the resource status.
-	ReasonChecking = "Checking"
-	// ReasonReconciling indicates that reconciliation is still making progress.
-	ReasonReconciling = "Reconciling"
-	// ReasonStalled indicates that reconciliation is blocked until a human fixes the object or dependency.
-	ReasonStalled = "Stalled"
+	// ReasonFailed indicates that reconciliation is blocked until a human fixes the object or
+	// dependency. fluxmeta has no Stalled reason, and a reason restating the Stalled type would
+	// answer nothing, so this is the upstream Failed.
+	ReasonFailed = fluxmeta.FailedReason
 	// ReasonSecretNotFound indicates that the referenced secret was not found.
 	ReasonSecretNotFound = "SecretNotFound"
 	// ReasonSecretMalformed indicates that the referenced secret is invalid.

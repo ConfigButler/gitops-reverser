@@ -132,7 +132,7 @@ func TestRefresh_AnUnmovedBranchCostsOneConnection(t *testing.T) {
 	require.NotEmpty(t, h.reported)
 	last := h.reported[len(h.reported)-1]
 	assert.Equal(t, ObservedByFetch, last.By, "we went and looked, so the record says so")
-	assert.Equal(t, revParseMain(t, h.repoDir), last.Revision)
+	assert.Equal(t, revParseMain(t, h.repoDir), last.Commit)
 }
 
 // TestRefresh_AMovedBranchFetchesAndResets is the other arm: somebody else pushed, so the
@@ -151,7 +151,7 @@ func TestRefresh_AMovedBranchFetchesAndResets(t *testing.T) {
 	assert.Equal(t, int64(1), fetchCount(t, reader, h.worker, fetchReasonRefresh),
 		"the branch moved, so the checkout has to be brought onto it")
 	require.NotEmpty(t, h.reported)
-	assert.Equal(t, moved, h.reported[len(h.reported)-1].Revision,
+	assert.Equal(t, moved, h.reported[len(h.reported)-1].Commit,
 		"status must follow the branch somebody else moved")
 	assert.True(t, h.worker.baseTrusted(), "the reset leaves the worktree at the remote tip")
 }
@@ -235,7 +235,7 @@ func TestRefresh_AnAbsentBranchCostsOneConnection(t *testing.T) {
 	assert.Equal(t, int64(1), connections, "one advertisement answers it")
 	assert.Zero(t, fetchCount(t, reader, h.worker, fetchReasonRefresh))
 	require.NotEmpty(t, h.reported)
-	assert.Empty(t, h.reported[len(h.reported)-1].Revision,
+	assert.Empty(t, h.reported[len(h.reported)-1].Commit,
 		"no revision IS the observation: a branch does not exist without a commit")
 }
 
@@ -255,7 +255,7 @@ func TestRefresh_ObservesTheRemoteWithNoCheckoutYet(t *testing.T) {
 
 	assert.Equal(t, int64(1), connections, "one advertisement, which needs no clone")
 	require.NotEmpty(t, h.reported, "and the target hears where its branch is")
-	assert.Equal(t, revParseMain(t, h.repoDir), h.reported[len(h.reported)-1].Revision)
+	assert.Equal(t, revParseMain(t, h.repoDir), h.reported[len(h.reported)-1].Commit)
 }
 
 // TestRefresh_AQuietSiblingIsRescannedWithoutFetching is the shared-branch case, and it is the one
@@ -320,7 +320,7 @@ func TestRemoteObservation_CarriesTheRepositoryItWasProvedAgainst(t *testing.T) 
 
 	observed, ok := f.worker.LastRemoteObservation()
 	require.True(t, ok)
-	require.NotEmpty(t, observed.Revision)
+	require.NotEmpty(t, observed.Commit)
 	assert.Equal(t, f.worker.repo, observed.Repo,
 		"a push proves where the branch is on THIS worker's repository, and says which one that is")
 	assert.Equal(t, f.sim.RepoURL, observed.Repo.URL)

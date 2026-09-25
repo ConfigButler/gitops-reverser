@@ -270,7 +270,7 @@ nothing built now is wasted.
 > a fabricated object at a fabricated path is not an answer, `declaredTypes` went because it counts a
 > spec map the same GET returns, and `renderRootReason` became the `LayoutResolved` condition's
 > reason. `status.placement` now publishes `mode`, `renderRoot`, `readOnlyBases`,
-> `resolvedAtRevision` and `resolvedAt`, and nothing else. Read the shape below as the argument that
+> `resolvedAtCommit` and `resolvedAt`, and nothing else. Read the shape below as the argument that
 > produced it, not as the field.
 
 An **observation, not a condition**, in the sense

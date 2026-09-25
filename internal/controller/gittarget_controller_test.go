@@ -67,7 +67,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			var validatedCondition *metav1.Condition
 			for i, condition := range createdGitTarget.Status.Conditions {
 				switch condition.Type {
-				case GitTargetReasonReady:
+				case GitTargetConditionReady:
 					readyCondition = &createdGitTarget.Status.Conditions[i]
 				case GitTargetConditionValidated:
 					validatedCondition = &createdGitTarget.Status.Conditions[i]
@@ -153,7 +153,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(createdGitTarget.Status.Conditions).NotTo(BeEmpty())
 			var readyCondition *metav1.Condition
 			for i, condition := range createdGitTarget.Status.Conditions {
-				if condition.Type == GitTargetReasonReady {
+				if condition.Type == GitTargetConditionReady {
 					readyCondition = &createdGitTarget.Status.Conditions[i]
 					break
 				}
@@ -227,7 +227,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				}
 				// Check if Ready condition exists
 				for _, condition := range createdGitTarget.Status.Conditions {
-					if condition.Type == GitTargetReasonReady {
+					if condition.Type == GitTargetConditionReady {
 						return true
 					}
 				}
@@ -239,7 +239,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// The key point is that sensitive fields are NOT cleared
 			var readyCondition *metav1.Condition
 			for i, condition := range createdGitTarget.Status.Conditions {
-				if condition.Type == GitTargetReasonReady {
+				if condition.Type == GitTargetConditionReady {
 					readyCondition = &createdGitTarget.Status.Conditions[i]
 					break
 				}
@@ -388,7 +388,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						return false
 					}
 					for _, condition := range createdGitTarget.Status.Conditions {
-						if condition.Type == GitTargetReasonReady {
+						if condition.Type == GitTargetConditionReady {
 							return true
 						}
 					}
@@ -398,7 +398,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				// Verify the condition based on whether branch should be allowed
 				var readyCondition *metav1.Condition
 				for i, condition := range createdGitTarget.Status.Conditions {
-					if condition.Type == GitTargetReasonReady {
+					if condition.Type == GitTargetConditionReady {
 						readyCondition = &createdGitTarget.Status.Conditions[i]
 						break
 					}
@@ -474,7 +474,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					return false
 				}
 				for _, condition := range target.Status.Conditions {
-					if condition.Type == GitTargetReasonReady {
+					if condition.Type == GitTargetConditionReady {
 						return true
 					}
 				}
@@ -523,7 +523,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			var readyCondition *metav1.Condition
 			for i, condition := range secondReconciledTarget.Status.Conditions {
-				if condition.Type == GitTargetReasonReady {
+				if condition.Type == GitTargetConditionReady {
 					readyCondition = &secondReconciledTarget.Status.Conditions[i]
 					break
 				}
@@ -609,7 +609,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					return false
 				}
 				for _, condition := range target.Status.Conditions {
-					if condition.Type == GitTargetReasonReady {
+					if condition.Type == GitTargetConditionReady {
 						return true
 					}
 				}
@@ -622,7 +622,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			var readyCondition *metav1.Condition
 			for i, condition := range secondReconciledTarget.Status.Conditions {
-				if condition.Type == GitTargetReasonReady {
+				if condition.Type == GitTargetConditionReady {
 					readyCondition = &secondReconciledTarget.Status.Conditions[i]
 					break
 				}
@@ -680,7 +680,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					return false
 				}
 				for _, condition := range target.Status.Conditions {
-					if condition.Type == GitTargetReasonReady {
+					if condition.Type == GitTargetConditionReady {
 						return true
 					}
 				}
@@ -727,7 +727,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			var readyCondition *metav1.Condition
 			for i, condition := range secondReconciledTarget.Status.Conditions {
-				if condition.Type == GitTargetReasonReady {
+				if condition.Type == GitTargetConditionReady {
 					readyCondition = &secondReconciledTarget.Status.Conditions[i]
 					break
 				}
@@ -873,7 +873,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 				var readyCondition *metav1.Condition
 				for i, condition := range got.Status.Conditions {
-					if condition.Type == GitTargetReasonReady {
+					if condition.Type == GitTargetConditionReady {
 						readyCondition = &got.Status.Conditions[i]
 						break
 					}
@@ -955,7 +955,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						switch condition.Type {
 						case GitTargetConditionValidated:
 							validatedCondition = &got.Status.Conditions[i]
-						case GitTargetReasonReady:
+						case GitTargetConditionReady:
 							readyCondition = &got.Status.Conditions[i]
 						case GitTargetConditionEncryptionConfigured:
 							encryptionCondition = &got.Status.Conditions[i]

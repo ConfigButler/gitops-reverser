@@ -46,9 +46,9 @@ sed -i \
 
 # The public install bundle keeps credentialed HTTP Git disabled by default; the e2e fixtures
 # intentionally use an in-cluster HTTP Gitea service.
-if ! grep -q -- "--allow-insecure-git-http" "${tmpdir}/install.yaml"; then
+if ! grep -q -- "--insecure-allow-git-http" "${tmpdir}/install.yaml"; then
 	perl -0pi -e \
-		's/(\n\s+- --redis-insecure\n)/$1            - --allow-insecure-git-http\n/' \
+		's/(\n\s+- --redis-insecure\n)/$1            - --insecure-allow-git-http\n/' \
 		"${tmpdir}/install.yaml"
 fi
 

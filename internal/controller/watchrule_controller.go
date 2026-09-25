@@ -29,14 +29,15 @@ import (
 // WatchRule status condition reasons.
 const (
 	WatchRuleReasonValidating            = "Validating"
-	WatchRuleReasonGitProviderNotFound   = "GitRepoConfigNotFound"
-	WatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	WatchRuleReasonGitProviderNotFound   = "GitProviderNotFound"
 	WatchRuleReasonAccessDenied          = "AccessDenied"
 	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
 	WatchRuleReasonReady                 = ReasonSucceeded
-	WatchRuleReasonResourcesResolved     = "Resolved"
-	WatchRuleReasonUnresolvedResources   = "UnresolvedResources"
+	// WatchRuleReasonCatalogNotReady is ResourcesResolved=False: the source cluster's discovery
+	// catalog is not ready, so no selector can be resolved yet. A selector that matches nothing
+	// the cluster serves is not this: it resolves True, watching zero types.
+	WatchRuleReasonCatalogNotReady = "CatalogNotReady"
 )
 
 // WatchRuleReconciler reconciles a WatchRule object.
@@ -238,10 +239,10 @@ func (r *WatchRuleReconciler) setResourceResolutionCondition(
 ) {
 	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)
 	status := metav1.ConditionFalse
-	reason := WatchRuleReasonUnresolvedResources
+	reason := WatchRuleReasonCatalogNotReady
 	if resolved {
 		status = metav1.ConditionTrue
-		reason = WatchRuleReasonResourcesResolved
+		reason = ReasonSucceeded
 	}
 	st.set(ConditionTypeResourcesResolved, status, reason, message)
 }
@@ -251,7 +252,7 @@ func (r *WatchRuleReconciler) setStreamsReadyCondition(
 	watchRule *configbutleraiv1alpha3.WatchRule,
 	streams watch.StreamSummary,
 ) {
-	watchRule.Status.Streams = watchRuleStreamsStatus(streams)
+	watchRule.Status.Streams = streamsStatus(streams)
 	st.set(ConditionTypeStreamsRunning, streamConditionStatus(streams), streams.Reason, streams.Message)
 }
 

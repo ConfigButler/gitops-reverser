@@ -101,7 +101,7 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 			"no kustomization governs this folder", "150s")
 
 		By("the stanza carries the scan's own facts, not a placement's")
-		// resolvedAtRevision is deliberately NOT asserted here. The repository's branch has no
+		// resolvedAtCommit is deliberately NOT asserted here. The repository's branch has no
 		// commit yet at this point — nothing has written to it — so the scan honestly read the
 		// folder at no revision, and reporting an empty one is the correct answer rather than a
 		// missing one. It is asserted below, once the active target has produced a commit.
@@ -150,7 +150,7 @@ var _ = Describe("Manager GitTarget suspend", Label("manager", "suspend"), Order
 		requestReconcile(suspendedTarget, testNs)
 		Eventually(func(g Gomega) {
 			placement := placementStatusOf(g, suspendedTarget, testNs)
-			g.Expect(placement).To(HaveKeyWithValue("resolvedAtRevision", Not(BeEmpty())),
+			g.Expect(placement).To(HaveKeyWithValue("resolvedAtCommit", Not(BeEmpty())),
 				"the scan names the revision it read")
 		}).Should(Succeed())
 

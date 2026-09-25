@@ -31,14 +31,15 @@ import (
 // ClusterWatchRule status condition reasons.
 const (
 	ClusterWatchRuleReasonValidating            = "Validating"
-	ClusterWatchRuleReasonGitProviderNotFound   = "GitRepoConfigNotFound"
-	ClusterWatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	ClusterWatchRuleReasonGitProviderNotFound   = "GitProviderNotFound"
 	ClusterWatchRuleReasonAccessDenied          = "AccessDenied"
 	ClusterWatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	ClusterWatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
 	ClusterWatchRuleReasonReady                 = ReasonSucceeded
-	ClusterWatchRuleReasonResourcesResolved     = "Resolved"
-	ClusterWatchRuleReasonUnresolvedResources   = "UnresolvedResources"
+	// ClusterWatchRuleReasonCatalogNotReady is ResourcesResolved=False: the source cluster's discovery
+	// catalog is not ready, so no selector can be resolved yet. A selector that matches nothing
+	// the cluster serves is not this: it resolves True, watching zero types.
+	ClusterWatchRuleReasonCatalogNotReady = "CatalogNotReady"
 
 	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
 	// referenced GitTarget's namespace is not admitted by that target's ClusterProvider. It is
@@ -345,10 +346,10 @@ func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 ) {
 	resolved, message := r.WatchManager.ResolveClusterWatchRuleResources(ctx, *clusterRule)
 	status := metav1.ConditionFalse
-	reason := ClusterWatchRuleReasonUnresolvedResources
+	reason := ClusterWatchRuleReasonCatalogNotReady
 	if resolved {
 		status = metav1.ConditionTrue
-		reason = ClusterWatchRuleReasonResourcesResolved
+		reason = ReasonSucceeded
 	}
 	st.set(ConditionTypeResourcesResolved, status, reason, message)
 }
@@ -358,7 +359,7 @@ func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	streams watch.StreamSummary,
 ) {
-	clusterRule.Status.Streams = watchRuleStreamsStatus(streams)
+	clusterRule.Status.Streams = streamsStatus(streams)
 	st.set(ConditionTypeStreamsRunning, streamConditionStatus(streams), streams.Reason, streams.Message)
 }
 

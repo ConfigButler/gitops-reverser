@@ -508,11 +508,12 @@ non-empty patch and wrote status. A field that moves without its subject moving 
 with nothing to say, and it defeated the no-op write suppression every other field here relies on.
 
 Fixed by advancing it only when the roll-up itself changed, which makes it date the **result**
-rather than the last scan: exactly what `status.placement.resolvedAtRevision` already does, and for
+rather than the last scan: exactly what `status.placement.resolvedAtCommit` already does, and for
 the same reason. The doc comment now says so, so a timestamp well in the past reads as "stable", not
 as "measuring stopped".
 
-The field is also **renamed** `observedTime` → `lastChangedTime`. It behaved this way as soon as the
+The field is also **renamed** `observedTime` → `lastChangedTime`, since renamed again to
+`lastChangedAt` by [`vocabulary-cleanup.md`](vocabulary-cleanup.md). It behaved this way as soon as the
 restamping stopped, but the old name invited clients to read it as a freshness signal, and a
 behavioral change under an unchanged name is the kind a consumer discovers in production. The
 rename makes the break visible. `retainedDocuments`, `mode`, and the whole of `status.streams` are

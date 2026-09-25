@@ -79,7 +79,7 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	// IS that observation: a branch does not exist without a commit.
 	observed, ok := worker.LastRemoteObservation()
 	require.True(t, ok, "preparing the branch is a look at the remote, so it must be recorded")
-	assert.Empty(t, observed.Revision, "an empty repository advertises no branch")
+	assert.Empty(t, observed.Commit, "an empty repository advertises no branch")
 	assert.Equal(t, ObservedByFetch, observed.By)
 	assert.False(t, observed.At.IsZero(), "an observation is dated")
 }

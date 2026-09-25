@@ -101,9 +101,9 @@ type CommitRequestStatus struct {
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
-	// SHA is the resulting commit SHA. Set when the commit was pushed (Pushed=True).
+	// Commit is the resulting commit hash. Set when the commit was pushed (Pushed=True).
 	// +optional
-	SHA string `json:"sha,omitempty"`
+	Commit string `json:"commit,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -111,15 +111,16 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
+// +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.commit`
 // +kubebuilder:printcolumn:name="AuthorAttributed",type=string,JSONPath=`.status.conditions[?(@.type=="AuthorAttributed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CommitRequest is a one-shot "save" signal: creating one finalizes the open
 // commit window for the referenced GitTarget instead of waiting for the
-// silence timer. The resulting commit SHA is reported back in status.
+// silence timer. The resulting commit hash is reported back in status.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 

@@ -246,7 +246,7 @@ func (r *ClusterProviderReconciler) validateProviderKubeConfig(
 		//nolint:nilerr
 		return false, rej.Reason, fmt.Sprintf("kubeconfig Secret %s key %q: %s", secretKey, usedKey, rej.Message), nil
 	}
-	return true, ReasonValidated, fmt.Sprintf("kubeconfig Secret %s validated", secretKey), nil
+	return true, ReasonSucceeded, fmt.Sprintf("kubeconfig Secret %s validated", secretKey), nil
 }
 
 // clusterProviderReconcilePredicate admits spec changes and the start of deletion. A deletion

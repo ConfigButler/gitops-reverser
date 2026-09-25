@@ -148,8 +148,8 @@ func main() {
 		// Resolve a source cluster (named by a GitTarget.spec.clusterProviderRef) into a
 		// rest.Config: look up the ClusterProvider by name, read its kubeConfig Secret from the
 		// operator namespace, and build the client. The manager client bypasses its cache for
-		// Secrets, so a rotated kubeconfig is seen without a Secret informer. Per-provider qps/burst
-		// override the global --source-cluster-qps/-burst defaults passed here.
+		// Secrets, so a rotated kubeconfig is seen without a Secret informer. Per-provider spec.client
+		// qps/burst override the global --source-cluster-qps/-burst defaults passed here.
 		SourceClusters: watch.NewSecretSourceClusterResolver(
 			mgr.GetClient(), os.Getenv("POD_NAMESPACE"), cfg.kubeConfigSafety,
 			float32(cfg.sourceClusterQPS), cfg.sourceClusterBurst),
@@ -667,7 +667,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.BoolVar(&cfg.sshHostKeys.AllowMissingKnownHosts, "insecure-allow-missing-known-hosts", false,
 		"INSECURE, dev/throwaway clusters only: permit SSH when no host-key source produced any "+
 			"known_hosts at all. A present-but-unparseable known_hosts is always a hard error.")
-	fs.BoolVar(&cfg.credentialPolicy.AllowInsecureGitHTTP, "allow-insecure-git-http", false,
+	fs.BoolVar(&cfg.credentialPolicy.AllowInsecureGitHTTP, "insecure-allow-git-http", false,
 		"INSECURE, dev/throwaway clusters only: permit credentials with http:// GitProvider URLs.")
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.

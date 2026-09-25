@@ -23,7 +23,12 @@ import (
 
 func TestRuleReadiness_GitTargetReadyStalledBlocksRule(t *testing.T) {
 	conditions := []metav1.Condition{
-		{Type: ConditionTypeResourcesResolved, Status: metav1.ConditionTrue, Reason: "Resolved", Message: "resolved"},
+		{
+			Type:    ConditionTypeResourcesResolved,
+			Status:  metav1.ConditionTrue,
+			Reason:  ReasonSucceeded,
+			Message: "resolved",
+		},
 		{
 			Type:    ConditionTypeGitTargetReady,
 			Status:  metav1.ConditionFalse,

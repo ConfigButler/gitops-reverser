@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
+
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -405,7 +407,7 @@ func renderFidelityDivergedStatus(
 
 func renderFidelityReadyStatus(revision uint64, scopes, clean int) RenderFidelityStatus {
 	return RenderFidelityStatus{
-		Revision: revision, State: RenderFidelityTrue, Reason: "RenderMatchesLive",
+		Revision: revision, State: RenderFidelityTrue, Reason: fluxmeta.SucceededReason,
 		Message: "Every rendered token matches live", ScopeCount: scopes, CleanScopes: clean,
 	}
 }

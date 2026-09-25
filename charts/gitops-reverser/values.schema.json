@@ -100,7 +100,7 @@
           "items": { "type": "string" },
           "description": "Resource or group/resource, e.g. core.cozystack.io/tenantsecrets."
         },
-        "allowInsecureGitHTTP": {
+        "insecureAllowGitHTTP": {
           "type": "boolean",
           "description": "Permit credentials with http:// GitProvider URLs for trusted in-cluster development Git servers."
         },
@@ -112,8 +112,15 @@
         "branchBufferMaxSize": {
           "type": "string",
           "description": "Maximum in-memory event buffer per branch worker, as a Kubernetes resource quantity (e.g. 8Mi). Bounds the open commit window plus the writes retained for replay until a push succeeds."
-        },
-        "gitRefreshInterval": {
+        }
+      }
+    },
+
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "refreshInterval": {
           "type": "string",
           "description": "How often an IDLE GitTarget re-proves where its branch is on the remote, as a duration (e.g. 10m); \"0\" disables it. A publishing target pays nothing, because its pushes already prove it; an idle branch pays one ref advertisement per interval."
         }

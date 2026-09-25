@@ -31,31 +31,31 @@ func TestIsConditionTrue(t *testing.T) {
 		{
 			name:          "empty conditions returns false",
 			conditions:    nil,
-			conditionType: GitTargetConditionStreamsReady,
+			conditionType: GitTargetConditionStreamsRunning,
 			want:          false,
 		},
 		{
 			name: "condition present with status True returns true",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionStreamsRunning, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionStreamsReady,
+			conditionType: GitTargetConditionStreamsRunning,
 			want:          true,
 		},
 		{
 			name: "condition present with status False returns false",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionFalse},
+				{Type: GitTargetConditionStreamsRunning, Status: metav1.ConditionFalse},
 			},
-			conditionType: GitTargetConditionStreamsReady,
+			conditionType: GitTargetConditionStreamsRunning,
 			want:          false,
 		},
 		{
 			name: "condition present with status Unknown returns false",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionUnknown},
+				{Type: GitTargetConditionStreamsRunning, Status: metav1.ConditionUnknown},
 			},
-			conditionType: GitTargetConditionStreamsReady,
+			conditionType: GitTargetConditionStreamsRunning,
 			want:          false,
 		},
 		{
@@ -63,16 +63,16 @@ func TestIsConditionTrue(t *testing.T) {
 			conditions: []metav1.Condition{
 				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionStreamsReady,
+			conditionType: GitTargetConditionStreamsRunning,
 			want:          false,
 		},
 		{
 			name: "target condition true alongside other conditions",
 			conditions: []metav1.Condition{
 				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
-				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionStreamsRunning, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionStreamsReady,
+			conditionType: GitTargetConditionStreamsRunning,
 			want:          true,
 		},
 	}

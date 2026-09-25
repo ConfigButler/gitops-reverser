@@ -68,7 +68,7 @@ func branchInventory(
 	// what the field is absent for.
 	branches := make([]configbutleraiv1alpha3.GitProviderBranchStatus, 0, len(counts))
 	for name, count := range counts {
-		branches = append(branches, configbutleraiv1alpha3.GitProviderBranchStatus{Name: name, GitTargets: count})
+		branches = append(branches, configbutleraiv1alpha3.GitProviderBranchStatus{Name: name, GitTargetCount: count})
 	}
 	sort.Slice(branches, func(i, j int) bool { return branches[i].Name < branches[j].Name })
 	return branches

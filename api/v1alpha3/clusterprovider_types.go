@@ -77,18 +77,11 @@ type ClusterProviderSpec struct {
 	// +kubebuilder:default=false
 	AllowAnySourceNamespace bool `json:"allowAnySourceNamespace,omitempty"`
 
-	// QPS overrides the operator's outgoing kube-client query-per-second throttle for this
-	// cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
-	// Ignored when kubeConfig is omitted (the in-cluster client is not per-provider).
+	// Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
+	// the operator-wide --source-cluster-qps and --source-cluster-burst apply. Ignored when
+	// kubeConfig is omitted (the in-cluster client is not per-provider).
 	// +optional
-	// +kubebuilder:validation:Minimum=1
-	QPS *int32 `json:"qps,omitempty"`
-
-	// Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
-	// operator-wide --source-cluster-burst applies. Ignored when kubeConfig is omitted.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Burst *int32 `json:"burst,omitempty"`
+	Client *ClusterProviderClient `json:"client,omitempty"`
 
 	// Attribution groups this cluster's author-attribution settings. The block is spelled
 	// "attribution" rather than "authorAttribution" even though the operator flags are
@@ -96,6 +89,21 @@ type ClusterProviderSpec struct {
 	// source-cluster object already supplies that scope.
 	// +optional
 	Attribution *ClusterProviderAttribution `json:"attribution,omitempty"`
+}
+
+// ClusterProviderClient holds the per-cluster kube-client throttles.
+type ClusterProviderClient struct {
+	// QPS overrides the operator's outgoing kube-client query-per-second throttle for this
+	// cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	QPS *int32 `json:"qps,omitempty"`
+
+	// Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
+	// operator-wide --source-cluster-burst applies.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Burst *int32 `json:"burst,omitempty"`
 }
 
 // ClusterProviderAttribution holds the per-cluster author-attribution settings. It exists as a
@@ -168,9 +176,9 @@ type ClusterProviderStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Facts",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
+// +kubebuilder:printcolumn:name="FactsReceived",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
 // +kubebuilder:printcolumn:name="Validated",type=string,JSONPath=`.status.conditions[?(@.type=="Validated")].status`,priority=1
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a

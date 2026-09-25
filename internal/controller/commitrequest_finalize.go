@@ -27,7 +27,6 @@ const (
 	crReasonAttributedFromAdmission = "AttributedFromAdmission"
 	crReasonCommitterFallback       = "CommitterFallback"
 	crReasonAuthorCaptureDisabled   = "AuthorCaptureDisabled"
-	crReasonPushed                  = "Pushed"
 	crReasonGitTargetRefPruned      = "GitTargetRefPruned"
 )
 
@@ -260,11 +259,11 @@ func applyFinalizeResultToStatus(
 
 	switch result.Outcome {
 	case git.FinalizeCommitted:
-		cr.Status.SHA = result.SHA
+		cr.Status.Commit = result.Commit
 		const committedMsg = "the open commit window was closed, committed, and pushed"
 		setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, crReasonCommitted, committedMsg)
 		setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, crReasonCommitted, notStalledMessage)
-		setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed,
+		setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded,
 			"the commit was pushed to the remote repository")
 		setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted, committedMsg)
 	case git.FinalizeNoOpenWindow:

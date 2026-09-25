@@ -69,10 +69,10 @@ kinds:
         doc: >-
           Audit route this provider joins. See
           [audit route](#audit-route-and-auditfactsreceived)
-      - path: qps
+      - path: client.qps
         default: the operator-wide flag
         doc: Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted
-      - path: burst
+      - path: client.burst
         default: the operator-wide flag
         doc: Client burst for this source cluster. Ignored when `kubeConfig` is omitted
 

@@ -89,7 +89,7 @@ func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
 func TestParseFlagsWithArgs_InsecureCredentialedGitHTTP(t *testing.T) {
 	fs := flag.NewFlagSet("test-insecure-git-http", flag.ContinueOnError)
 
-	cfg, err := parseFlagsWithArgs(fs, []string{"--allow-insecure-git-http"})
+	cfg, err := parseFlagsWithArgs(fs, []string{"--insecure-allow-git-http"})
 
 	require.NoError(t, err)
 	assert.True(t, cfg.credentialPolicy.AllowInsecureGitHTTP)

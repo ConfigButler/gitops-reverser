@@ -43,7 +43,7 @@ func TestRetentionRollup_SumsEveryScope(t *testing.T) {
 	assert.True(t, summary.Reported)
 	assert.Equal(t, 5, summary.RetainedDocuments)
 	assert.Equal(t, v1alpha3.PruneOnEvent, summary.Mode)
-	assert.False(t, summary.LastChangedTime.IsZero())
+	assert.False(t, summary.LastChangedAt.IsZero())
 }
 
 // TestRetentionRollup_ZeroIsRecordedAsActivelyAsAnyOtherCount is the likeliest regression in this
@@ -338,6 +338,6 @@ func TestMarkTargetRetention_UnchangedRemeasurementPublishesNothing(t *testing.T
 
 	after := m.RetentionForGitTarget(gitDest)
 	assert.Equal(t, before.RetainedDocuments, after.RetainedDocuments)
-	assert.Equal(t, before.LastChangedTime, after.LastChangedTime,
+	assert.Equal(t, before.LastChangedAt, after.LastChangedAt,
 		"a re-measurement that changes no number must not restamp the roll-up")
 }

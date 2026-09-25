@@ -176,12 +176,12 @@ type GitProviderBranchStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// GitTargets is how many GitTargets are configured to write this branch. More than one means
+	// GitTargetCount is how many GitTargets are configured to write this branch. More than one means
 	// they share a branch worker, and each still reports its own folder's health on its own
 	// conditions.
 	// +required
 	// +kubebuilder:validation:Minimum=0
-	GitTargets int32 `json:"gitTargets"`
+	GitTargetCount int32 `json:"gitTargetCount"`
 }
 
 // CommitSpec configures the commit identity and signing a GitProvider uses. Message formatting
@@ -288,8 +288,8 @@ type CommitSigningSpec struct {
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Verified",type=date,JSONPath=`.status.lastVerifiedAt`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitProvider is the Schema for the gitproviders API.
