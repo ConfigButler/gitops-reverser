@@ -48,6 +48,15 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 		return
 	}
 	w.inflightItems.Add(1)
+	// Under the same lock as every other admission, for the reason on stoppingState: a check
+	// outside it can pass and then send into a queue Stop has already finished draining.
+	w.pendingResyncsMu.Lock()
+	defer w.pendingResyncsMu.Unlock()
+	if w.stoppingLocked() {
+		w.inflightItems.Add(-1)
+		w.recordQueueDrop(queueDropRefresh)
+		return
+	}
 	select {
 	case w.eventQueue <- WorkItem{Refresh: req}:
 	default:
@@ -67,32 +76,23 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	w := l.w
 
-	// 1. The GitProvider first, because everything below is a statement about a REPOSITORY and
-	// this worker may have been handed a different one. spec.url is immutable and repointed by
-	// recreating the GitProvider, which the worker — keyed by (provider, branch) — survives, so
-	// noteRemoteIdentity is what notices; it drops the checkout's trust and the observation.
+	// 1. The GitProvider first, for the credentials the look below needs. WHICH repository is
+	// looked at is not its decision: that is the worker's own identity, fixed when it was created.
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
 		w.Log.V(1).Info("Skipping refresh: the GitProvider cannot be read",
 			"branch", w.Branch, "gitTarget", req.Target.String(), "error", err.Error())
 		return
 	}
-	w.noteRemoteIdentity(provider.Spec.URL)
 
-	// 2. Report what is already known BEFORE deciding whether to do any work, and on every exit
-	// below. A push reports only against the targets whose writes it carried, so a target that is
-	// not writing learns where its branch is exclusively from its own tick.
+	// 2. What is already known about the branch needs no re-delivery: it was delivered when it was
+	// proved, to the branch rather than to a target, and every GitTarget on this branch has been
+	// reading it since. It is read here only to decide whether there is anything to ask the remote.
 	//
-	// Once the repository has changed under us there is a withdrawal to report instead. Nothing
-	// else would correct the published revision if the new remote is unreachable, and that
-	// revision names a commit in a repository this target no longer points at.
+	// It is also why status.remote must not be read as evidence that THIS target did anything: the
+	// observation it publishes can have been proved by a sibling's push, on a tick that goes on to
+	// do no work at all, two lines below.
 	observed, known := w.LastRemoteObservation()
-	switch {
-	case known:
-		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
-	case w.observationWithdrawn():
-		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, WithdrawnObservation())
-	}
 
 	// 3. Not idle, so not the target this exists for. A reset here would destroy retained
 	// commits, and the worktree may hold a partial write — which is also why this is the one exit
@@ -113,12 +113,12 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	// fetch that moved this checkout may have been earned by another target's refresh, which
 	// rescanned its own folder and knew nothing about this one.
 	if known && req.MaxAge > 0 && observed.Age(time.Now()) < req.MaxAge &&
-		!w.checkoutMayLagObservation(provider.Spec.URL, observed.Revision) {
+		!w.checkoutMayLagObservation(observed.Revision) {
 		w.rescanLayoutForTarget(w.ctx, req)
 		return
 	}
 
-	if err := l.refreshFromRemote(req, provider); err != nil {
+	if err := l.refreshFromRemote(provider); err != nil {
 		// A refresh that failed proves nothing, so nothing is recorded: the published
 		// lastVerifiedAt stops advancing, which is precisely how a refresher that stopped
 		// working reports itself.
@@ -147,11 +147,11 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 // untrusted base falls through to where the checkout actually is: no checkout cannot lag anything
 // (the rescan reads nothing, and the first publication clones), and a HEAD already at the
 // observed revision is not behind it.
-func (w *BranchWorker) checkoutMayLagObservation(remoteURL, revision string) bool {
+func (w *BranchWorker) checkoutMayLagObservation(revision string) bool {
 	if w.baseTrusted() {
 		return false
 	}
-	repo, err := gogit.PlainOpen(w.repoPathForRemote(remoteURL))
+	repo, err := gogit.PlainOpen(w.repoPath())
 	if errors.Is(err, gogit.ErrRepositoryNotExists) {
 		return false
 	}
@@ -176,10 +176,7 @@ func (w *BranchWorker) checkoutMayLagObservation(remoteURL, revision string) boo
 // unconditionally — which is right for the write path, because it is about to reset either way.
 // On an idle target the answer is almost always "the branch has not moved", and the advertisement
 // alone settles it, so the common case here costs ONE connection.
-func (l *branchWorkerEventLoop) refreshFromRemote(
-	req *RefreshRequest,
-	provider *configv1alpha3.GitProvider,
-) error {
+func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitProvider) error {
 	w := l.w
 	ctx := w.ctx
 
@@ -194,7 +191,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 	// declared but never published to, and one whose GitProvider was recreated against a
 	// different repository.
 	advertised, err := advertiseRemoteBranch(
-		provider.Spec.URL, plumbing.NewBranchReferenceName(w.Branch), auth)
+		w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
 	}
@@ -202,8 +199,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 	if !advertised.IsZero() {
 		revision = advertised.String()
 	}
-	observed := w.recordRemoteObservation(revision, ObservedByFetch)
-	w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, observed)
+	w.recordRemoteObservation(revision, ObservedByFetch)
 
 	// The remote does not carry this branch. That IS the answer, and there is nothing to fetch: a
 	// fetch would fall back to the default branch and teach us nothing about a branch nobody has
@@ -217,7 +213,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 	// Everything below compares the advertisement against the local checkout, so a missing one is
 	// simply nothing to compare: the branch's position is already recorded and reported, and the
 	// first publication will clone.
-	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
+	repo, err := gogit.PlainOpen(w.repoPath())
 	if errors.Is(err, gogit.ErrRepositoryNotExists) {
 		w.Log.V(1).Info("Refresh observed the remote; there is no checkout to reset yet",
 			"branch", w.Branch, "revision", revision)
@@ -241,9 +237,6 @@ func (l *branchWorkerEventLoop) refreshFromRemote(
 		"branch", w.Branch, "revision", revision)
 	if err := w.syncWithRemote(ctx, fetchReasonRefresh); err != nil {
 		return err
-	}
-	if synced, ok := w.LastRemoteObservation(); ok {
-		w.reportRemoteObservation([]itypes.ResourceReference{req.Target}, synced)
 	}
 	return nil
 }
@@ -282,12 +275,7 @@ func (w *BranchWorker) rescanLayoutForTarget(ctx context.Context, req *RefreshRe
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
-	provider, err := w.getGitProvider(ctx)
-	if err != nil {
-		w.Log.V(1).Info("Refresh could not re-read the folder", "error", err.Error())
-		return
-	}
-	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
+	repo, err := gogit.PlainOpen(w.repoPath())
 	if err != nil {
 		w.Log.V(1).Info("Refresh could not re-read the folder", "error", err.Error())
 		return

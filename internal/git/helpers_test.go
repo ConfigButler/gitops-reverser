@@ -4,6 +4,8 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -205,10 +208,18 @@ func newTestBranchWorker(
 
 	objects := make([]client.Object, 0, len(extraObjects)+1)
 	objects = append(objects, extraObjects...)
+	// The UID is what a worker's on-disk state is keyed by, so two test workers have to differ here
+	// exactly as two GitProviders would in a cluster. The REMOTE is part of it, not only the name:
+	// these fixtures each build their own fake client, so two of them routinely use one provider
+	// name against different remotes, and a UID derived from the name alone would hand them the
+	// same checkout — one fixture's files appearing in another's.
+	digest := sha256.Sum256([]byte(remoteURL))
+	providerUID := k8stypes.UID("uid-" + providerName + "-" + hex.EncodeToString(digest[:8]))
 	objects = append(objects, &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      providerName,
 			Namespace: "default",
+			UID:       providerUID,
 		},
 		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
@@ -216,7 +227,16 @@ func newTestBranchWorker(
 	})
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-	worker := NewBranchWorker(k8sClient, logr.Discard(), providerName, "default", branch, nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		providerName,
+		"default",
+		branch,
+		RepoIdentity{ProviderUID: providerUID, URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = context.Background()
 	return worker, nil
 }

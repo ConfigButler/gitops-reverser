@@ -132,7 +132,7 @@ func TestBranchWorker_SecretEncryptionFailureDoesNotWritePlaintext(t *testing.T)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption is required")
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	secretPath := filepath.Join(repoPath, "v1", "secrets", "default", "test-secret.yaml")
 	_, statErr := os.Stat(secretPath)
 	require.Error(t, statErr, "Secret file should not be written when encryption fails")
@@ -185,7 +185,7 @@ func TestBranchWorker_SecretWritesSOPSPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	sopsPath := filepath.Join(worker.repoPathForRemote(remoteURL), "default", "secrets", "test-secret.sops.yaml")
+	sopsPath := filepath.Join(worker.repoPath(), "default", "secrets", "test-secret.sops.yaml")
 	assert.FileExists(t, sopsPath)
 }
 
@@ -239,7 +239,7 @@ func TestBranchWorker_DeleteSecretRemovesSOPSPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	localRepoPath := worker.repoPathForRemote(remoteURL)
+	localRepoPath := worker.repoPath()
 	_, statErr := os.Stat(filepath.Join(localRepoPath, "v1", "secrets", "default", "test-secret.yaml"))
 	require.Error(t, statErr)
 	_, statErr = os.Stat(filepath.Join(localRepoPath, "v1", "secrets", "default", "test-secret.sops.yaml"))
@@ -286,7 +286,7 @@ func TestBranchWorker_DoesNotBootstrapRootSOPSConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	_, statErr := os.Stat(filepath.Join(worker.repoPathForRemote(remoteURL), sopsConfigFileName))
+	_, statErr := os.Stat(filepath.Join(worker.repoPath(), sopsConfigFileName))
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
@@ -317,7 +317,7 @@ func TestBranchWorker_DoesNotCreateBootstrapOnlyCommit(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	repo, err := gogit.PlainOpen(worker.repoPathForRemote(remoteURL))
+	repo, err := gogit.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	_, err = repo.Reference(plumbing.NewBranchReferenceName("master"), true)
 	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)

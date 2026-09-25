@@ -30,17 +30,6 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestRepoCacheKey_DeterministicAndDistinct(t *testing.T) {
-	a := repoCacheKey("https://example.com/foo.git")
-	b := repoCacheKey("https://example.com/foo.git")
-	c := repoCacheKey("https://example.com/bar.git")
-	d := repoCacheKey(" https://example.com/foo.git ")
-
-	require.Equal(t, a, b, "same URL should produce same cache key")
-	require.NotEqual(t, a, c, "different URL should produce different cache key")
-	require.Equal(t, a, d, "cache key should ignore surrounding whitespace")
-}
-
 // TestBranchWorker_EmptyRepository tests that BranchWorker properly handles empty repositories
 // that have no commits yet. This is a critical scenario for bootstrapping new repositories.
 func TestBranchWorker_EmptyRepository(t *testing.T) {
@@ -60,7 +49,16 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	_ = configv1alpha3.AddToScheme(scheme)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	logger := logr.Discard()
-	worker := NewBranchWorker(client, logger, "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		client,
+		logger,
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: "file://" + repoPath},
+		nil,
+		BranchWorkerLimits{},
+	)
 
 	// Create a GitProvider in the fake client pointing to our empty repo
 	repoConfig := &configv1alpha3.GitProvider{
@@ -94,7 +92,16 @@ func TestBranchWorker_IdentityFields(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	worker := NewBranchWorker(client, log, "my-repo", "my-namespace", "develop", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		client,
+		log,
+		"my-repo",
+		"my-namespace",
+		"develop",
+		RepoIdentity{},
+		nil,
+		BranchWorkerLimits{},
+	)
 
 	if worker.GitProviderRef != "my-repo" {
 		t.Errorf("Expected GitProviderRef 'my-repo', got %q", worker.GitProviderRef)
@@ -129,14 +136,23 @@ func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing
 	require.NoError(t, k8sClient.Create(ctx, provider))
 	createTargetWithEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 
 	_, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "Bootstrap should not create the branch remotely")
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
@@ -178,7 +194,16 @@ func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathBootstrapsMissingFiles(
 	require.NoError(t, k8sClient.Create(ctx, provider))
 	createTargetWithEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 
@@ -186,7 +211,7 @@ func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathBootstrapsMissingFiles(
 	require.NoError(t, err)
 	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()), "Bootstrap should not create a remote commit")
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
@@ -217,10 +242,19 @@ func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *test
 	require.NoError(t, k8sClient.Create(ctx, provider))
 	createTargetWithoutEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/dev")
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -260,10 +294,19 @@ func TestBranchWorker_EnsurePathBootstrapped_ExistingFileNotOverwritten(t *testi
 	require.NoError(t, k8sClient.Create(ctx, provider))
 	createTargetWithEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	readmeContent, err := os.ReadFile(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
 	assert.Equal(t, customREADME, string(readmeContent), "Bootstrap must not overwrite existing files")
@@ -293,10 +336,19 @@ func TestBranchWorker_EnsurePathBootstrapped_EnableEncryptionLaterAddsSOPSConfig
 	require.NoError(t, k8sClient.Create(ctx, provider))
 	createTargetWithoutEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/dev")
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -348,10 +400,19 @@ func TestBranchWorker_EnsurePathBootstrapped_InvalidEncryptionSecretSkipsSOPSCon
 		},
 	)
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -393,10 +454,19 @@ func TestBranchWorker_EnsurePathBootstrapped_MissingSOPSKeySkipsSOPSConfig(t *te
 		},
 	)
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -465,10 +535,19 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	}
 	require.NoError(t, k8sClient.Create(ctx, target))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	sopsConfig, err := os.ReadFile(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	require.NoError(t, err)
 	assert.Contains(t, string(sopsConfig), secretIdentity.Recipient().String())
@@ -512,7 +591,16 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 
 	request := &WriteRequest{
@@ -550,7 +638,7 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
-	localRepoPath := worker.repoPathForRemote(remoteURL)
+	localRepoPath := worker.repoPath()
 	localRepo, err := git.PlainOpen(localRepoPath)
 	require.NoError(t, err)
 
@@ -607,11 +695,20 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "feature", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"feature",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 
 	// Pre-create a stale local checkout while remote main is still at commit A.
-	staleRepoPath := worker.repoPathForRemote(remoteURL)
+	staleRepoPath := worker.repoPath()
 	staleReport, err := PrepareBranch(ctx, remoteURL, staleRepoPath, worker.Branch, nil)
 	require.NoError(t, err)
 	require.Equal(t, hashA.String(), staleReport.HEAD.Sha)
@@ -746,7 +843,16 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitterAndTargetMessage
 	}
 	require.NoError(t, k8sClient.Create(ctx, target))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 
 	request := &WriteRequest{
@@ -836,7 +942,16 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 	}
 	require.NoError(t, k8sClient.Create(ctx, target))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 
 	request := &WriteRequest{
@@ -959,7 +1074,16 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 	}
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 
 	request := &WriteRequest{
@@ -1056,7 +1180,16 @@ func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(
 	}
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 
 	request := &WriteRequest{

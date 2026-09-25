@@ -309,8 +309,9 @@ not exist yet, so what a moved branch costs depends on what the target is doing:
   folder in Git and the condition clears within about ten seconds.
 - **Healthy and idle:** it finds out on its own, within `--git-refresh-interval` (10m by default)
   plus the 5-minute reconcile tick that carries the request. The target spends one ref
-  advertisement, fetches only if the branch actually moved, and republishes `status.remote` and
-  `status.placement`. If that push left content the writer cannot handle, the same read sets
+  advertisement, fetches only if the branch actually moved, and republishes `status.placement`;
+  `status.remote` follows on a later tick, since it is sampled rather than pushed. If that push
+  left content the writer cannot handle, the same read sets
   `GitPathAccepted=False` — which moves the target into the refused row above, where it re-checks
   every ten seconds until somebody fixes the folder. The refresh writes no content of its own.
 

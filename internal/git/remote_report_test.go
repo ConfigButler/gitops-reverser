@@ -14,48 +14,60 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// TestReportRemoteObservation_SkipsAnUnattributableTarget. The projection is keyed by
-// "namespace/name", so a reference with either half empty — the CLI, and tests — would file the
-// report under a key no GitTarget ever reads.
-func TestReportRemoteObservation_SkipsAnUnattributableTarget(t *testing.T) {
-	var reported []itypes.ResourceReference
-	w := &BranchWorker{Log: logr.Discard()}
-	w.remoteReporter = func(target itypes.ResourceReference, _ RemoteObservation) {
-		reported = append(reported, target)
-	}
-
-	w.reportRemoteObservation([]itypes.ResourceReference{
-		itypes.NewResourceReference("", "shop"),
-		itypes.NewResourceReference("checkout", ""),
-		itypes.NewResourceReference("checkout", "shop"),
-	}, RemoteObservation{Revision: "aaaa", At: time.Now(), By: ObservedByPush})
-
-	require.Len(t, reported, 1, "only a fully named target can be filed against")
-	assert.Equal(t, "shop/checkout", reported[0].String())
-}
-
-// TestReportRemoteObservation_IsANoOpWithoutAReporter covers the CLI, which runs the same write
-// path with no status surface behind it.
-func TestReportRemoteObservation_IsANoOpWithoutAReporter(t *testing.T) {
-	w := &BranchWorker{Log: logr.Discard()}
-	assert.NotPanics(t, func() {
-		w.reportRemoteObservation(
-			[]itypes.ResourceReference{itypes.NewResourceReference("checkout", "shop")},
-			RemoteObservation{})
-	})
-}
-
-// TestSetRemoteReporter_ReachesEveryWorkerTheManagerCreates. The hook is installed once at
-// startup, before any worker exists, and a worker created later has to carry it: a worker built
-// without one silently drops status.remote for every target on its branch.
-func TestSetRemoteReporter_ReachesEveryWorkerTheManagerCreates(t *testing.T) {
+// TestRecordRemoteObservation_DeliversOneFactToTheWholeBranch. A worker serves every GitTarget on
+// its (provider, branch), and "where is branch B" is one fact for all of them. It used to be
+// delivered against whichever targets the caller happened to hold — the ones a push's writes
+// named, or the one a refresh was serving — so some targets on a branch had it and some did not,
+// and the layer above kept a copy per target of a value that was identical for all of them.
+func TestRecordRemoteObservation_DeliversOneFactToTheWholeBranch(t *testing.T) {
 	m := NewWorkerManager(nil, logr.Discard(), BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
-	called := false
-	m.SetRemoteReporter(func(itypes.ResourceReference, RemoteObservation) { called = true })
+	key := BranchKey{RepoNamespace: "shop", RepoName: "repo1", Branch: "main"}
+	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	w := &BranchWorker{Log: logr.Discard(), repo: repo}
+	w.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
 
-	require.NotNil(t, m.remoteReporter)
-	m.remoteReporter(itypes.NewResourceReference("checkout", "shop"), RemoteObservation{})
-	assert.True(t, called)
+	_, known := m.RemoteForBranch(key)
+	require.False(t, known, "nothing has looked yet, which is not the same as a branch with no commits")
+
+	w.recordRemoteObservation("aaaa", ObservedByPush)
+
+	observed, known := m.RemoteForBranch(key)
+	require.True(t, known)
+	assert.Equal(t, "aaaa", observed.Revision)
+	assert.Equal(t, ObservedByPush, observed.By)
+	assert.Equal(t, repo, observed.Repo, "a revision means nothing without the repository it is in")
+	assert.WithinDuration(t, time.Now(), observed.At, time.Minute)
+}
+
+// TestRecordRemoteObservation_IsANoOpWithoutAReporter covers the CLI, which runs the same write
+// path with nothing keeping observations behind it.
+func TestRecordRemoteObservation_IsANoOpWithoutAReporter(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard()}
+	assert.NotPanics(t, func() { w.recordRemoteObservation("aaaa", ObservedByPush) })
+}
+
+// TestRemoteForBranch_SurvivesTheWorkerItWasProvedBy is why the observation is kept by the manager
+// and not by the worker. A worker replaced because its GitProvider names another repository takes
+// its own memory with it; the layer that publishes needs the OLD observation, with the repository
+// stamped on it, to see that what it has published describes a repository this GitTarget has left.
+func TestRemoteForBranch_SurvivesTheWorkerItWasProvedBy(t *testing.T) {
+	m, ctx := startedManager(t)
+	key := BranchKey{RepoNamespace: "gitops-system", RepoName: "repo1", Branch: "main"}
+	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
+	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
+
+	require.NoError(t, m.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
+	worker, ok := m.GetWorkerForTarget("repo1", "gitops-system", "main")
+	require.True(t, ok)
+	worker.recordRemoteObservation("aaaa", ObservedByPush)
+
+	require.NoError(t, m.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+
+	observed, known := m.RemoteForBranch(key)
+	require.True(t, known,
+		"the replacement has proved nothing yet, and the old answer is still what is published")
+	assert.Equal(t, before, observed.Repo,
+		"stamped with the repository it was proved against, which is how the publisher takes it back")
 }
 
 // TestUpdateBranchMetadataFromPullReport_RecordsAnAbsentBranchAsNoRevision. A fetch that found no

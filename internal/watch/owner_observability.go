@@ -162,14 +162,24 @@ func (m *Manager) logOwnerHeartbeat(log logr.Logger) {
 	log.V(1).Info("watch plane owner heartbeat", "dirtyTargets", count, "oldestDirtyAge", oldest.String())
 }
 
-// clearDeclareForce consumes a satisfied force-recheck request. It runs only after a pass has
-// actually put the watches in place, so a failed attempt leaves the request standing.
-func (m *Manager) clearDeclareForce(ref types.ResourceReference) {
+// clearDeclareForce acknowledges the force-recheck request a pass actually consumed, named by the
+// request counter the pass planned against. It runs only after that pass has put the watches in
+// place, so a failed attempt leaves the request standing.
+//
+// Acknowledging BY NUMBER is what makes a request that arrived mid-pass survive it. The pass was
+// planned from a copy taken before that request existed, and the streams it installed cannot be
+// the ones the new request is asking for; clearing unconditionally therefore reported a recovery
+// that never happened. Anything newer than `consumed` stays outstanding for the next pass.
+func (m *Manager) clearDeclareForce(ref types.ResourceReference, consumed uint64) {
 	t := m.triggers()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if intent := t.declares[ref.Key()]; intent != nil && matchesUID(intent.ref, ref) {
-		intent.force = false
+	intent := t.declares[ref.Key()]
+	if intent == nil || !matchesUID(intent.ref, ref) {
+		return
+	}
+	if consumed > intent.forceConsumed {
+		intent.forceConsumed = consumed
 	}
 }
 

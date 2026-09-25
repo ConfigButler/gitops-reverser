@@ -308,6 +308,62 @@ var _ = Describe("GitProvider Controller", func() {
 			}
 		})
 
+		It("publishes the branches its GitTargets configure, even when the remote is unreachable", func() {
+			// The inventory is a question about configuration, so it is published ahead of every
+			// gate: an operator looking at a red GitProvider still needs to see what it is FOR.
+			//
+			// The inventory is re-derived on the provider's own reconcile, deliberately with no
+			// watch on GitTarget: this reconcile also proves the credential against the remote, so
+			// an edge per GitTarget edit would spend a round trip to answer a question about
+			// configuration. Each step below therefore drives one reconcile, inside Eventually
+			// because the suite's manager reconciles the same object and either write can lose the
+			// optimistic lock.
+			gitProvider = &configbutleraiv1alpha3.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-provider-inventory", Namespace: "default"},
+				Spec: configbutleraiv1alpha3.GitProviderSpec{
+					URL:             "https://example.invalid/unreachable.git",
+					AllowedBranches: []string{"main", "release"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
+
+			key := types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace}
+			branches := func(g Gomega) []configbutleraiv1alpha3.GitProviderBranchStatus {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+				g.Expect(err).NotTo(HaveOccurred())
+				published := &configbutleraiv1alpha3.GitProvider{}
+				g.Expect(k8sClient.Get(ctx, key, published)).To(Succeed())
+				return published.Status.Branches
+			}
+
+			Consistently(branches, "2s", "500ms").Should(And(Not(BeNil()), BeEmpty()),
+				"configured and unused is a state of its own, and it is not an error")
+
+			targets := []*configbutleraiv1alpha3.GitTarget{
+				newInventoryGitTarget("inventory-apps", gitProvider.Name, "main"),
+				newInventoryGitTarget("inventory-infra", gitProvider.Name, "main"),
+				newInventoryGitTarget("inventory-release", gitProvider.Name, "release"),
+			}
+			for _, target := range targets {
+				Expect(k8sClient.Create(ctx, target)).To(Succeed())
+			}
+			DeferCleanup(func() {
+				for _, target := range targets {
+					_ = k8sClient.Delete(ctx, target)
+				}
+			})
+
+			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
+				{Name: "main", GitTargets: 2},
+				{Name: "release", GitTargets: 1},
+			}), "two folders share the main branch, and they share one branch worker with it")
+
+			Expect(k8sClient.Delete(ctx, targets[2])).To(Succeed())
+			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
+				{Name: "main", GitTargets: 2},
+			}), "a branch nothing references any more is not what this repository is for")
+		})
+
 		It("should fail when secret is not found", func() {
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
@@ -498,4 +554,17 @@ func generateTestSSHKey() ([]byte, error) {
 	})
 
 	return privateKeyPEM, nil
+}
+
+// newInventoryGitTarget is a minimal, valid GitTarget for the branch-inventory spec: the inventory
+// reads the spec alone, so nothing here has to reconcile.
+func newInventoryGitTarget(name, provider, branch string) *configbutleraiv1alpha3.GitTarget {
+	return &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: provider},
+			Branch:         branch,
+			Path:           "apps/" + name,
+		},
+	}
 }

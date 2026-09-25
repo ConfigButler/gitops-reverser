@@ -343,7 +343,7 @@ func TestBranchWorker_FirstCommitOnEmptyRepo(t *testing.T) {
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// Verify repository state
-	repo, err := git.PlainOpen(worker.repoPathForRemote("file://" + serverPath))
+	repo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 
 	head, err := repo.Head()
@@ -352,7 +352,7 @@ func TestBranchWorker_FirstCommitOnEmptyRepo(t *testing.T) {
 	assert.Equal(t, "main", branchName)
 
 	// Verify file exists
-	filePath := filepath.Join(worker.repoPathForRemote("file://"+serverPath), "default/pods/test-pod.yaml")
+	filePath := filepath.Join(worker.repoPath(), "default/pods/test-pod.yaml")
 	assert.FileExists(t, filePath)
 }
 
@@ -447,7 +447,7 @@ func TestBranchWorker_BranchCreationAndPush(t *testing.T) {
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// Verify local branch exists
-	localRepo, err := git.PlainOpen(worker.repoPathForRemote("file://" + remotePath))
+	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 
 	head, err := localRepo.Head()
@@ -991,7 +991,7 @@ spec:
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	repo, err = git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	repo, err = git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	head, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)

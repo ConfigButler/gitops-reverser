@@ -61,23 +61,6 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "get GitTarget")
 }
 
-func TestRouteEvent_NoWorker(t *testing.T) {
-	scheme := eventRouterScheme(t)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(
-		client,
-		logr.Discard(),
-		git.BranchWorkerLimits{},
-		types.SensitiveResourcePolicy{},
-	)
-	router := NewEventRouter(workerManager, nil, client, logr.Discard())
-
-	err := router.RouteEvent("provider", "team-a", "main", git.Event{Operation: "UPDATE"})
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no worker")
-}
-
 func TestGitTargetEventStreamRegistry(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -363,7 +346,11 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	go func() { _ = workerManager.Start(ctx) }()
 	time.Sleep(100 * time.Millisecond) // allow the manager to record its context
 
-	require.NoError(t, workerManager.EnsureWorker(ctx, "team-a-provider", "team-a", "main"))
+	ensureErr := workerManager.EnsureWorker(
+		ctx, "team-a-provider", "team-a", "main",
+		git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"},
+	)
+	require.NoError(t, ensureErr)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 

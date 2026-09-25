@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -123,11 +124,6 @@ type WorkerManager struct {
 	// CLI and in tests that do not assert on status.placement.
 	layoutReporter LayoutReporter
 
-	// remoteReporter publishes each confirmed observation of a branch's remote state to the
-	// GitTarget status surface. Set once at startup (SetRemoteReporter) before any worker is
-	// created; nil in the CLI and in tests that do not assert on status.remote.
-	remoteReporter RemoteReporter
-
 	// scanAcceptance publishes a read-only folder scan's verdict to the GitTarget status surface.
 	// Set once at startup (SetScanAcceptanceReporter) before any worker is created; nil in the CLI
 	// and in tests that do not assert on GitPathAccepted.
@@ -136,6 +132,26 @@ type WorkerManager struct {
 	// renderFidelityGate is shared by every worker and the watch manager. It is created with the
 	// manager so a target's state survives workers being recreated for the same branch.
 	renderFidelityGate *RenderFidelityGate
+
+	// remotes is what each branch was last PROVED to be at, keyed by branch and guarded by mu.
+	//
+	// It lives here rather than on the worker because it has to survive one: a worker replaced
+	// because its GitProvider names another repository takes its own observation with it, and the
+	// layer that publishes needs the old one to see that what it has published describes a
+	// repository this GitTarget has left. It is dropped only when the branch itself is retired.
+	remotes map[BranchKey]RemoteObservation
+
+	// replacements are the branches whose worker was replaced and whose GitTargets have not been
+	// re-established since. Guarded by mu.
+	//
+	// A replacement is not finished when EnsureWorker returns: the new worker has no clone, no
+	// base trust and an empty queue, so every GitTarget on that branch has to be told to
+	// re-anchor its streams. That delivery can fail — it lists the targets, and a list can fail —
+	// and a one-shot "I replaced something" return value was then spent: later calls reported no
+	// replacement, so nothing ever asked again and an idle target could leave the new repository
+	// empty indefinitely. Recorded here instead, a pending recovery survives every failure until
+	// something acknowledges it.
+	replacements map[BranchKey]struct{}
 }
 
 // NewWorkerManager creates a new worker manager. limits bounds every worker this manager
@@ -152,6 +168,8 @@ func NewWorkerManager(
 		limits:             limits.withDefaults(),
 		sensitiveResources: sensitiveResources,
 		workers:            make(map[BranchKey]*BranchWorker),
+		remotes:            make(map[BranchKey]RemoteObservation),
+		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
 	}
 }
@@ -225,54 +243,57 @@ func (m *WorkerManager) SetScanAcceptanceReporter(reporter ScanAcceptanceReporte
 	m.scanAcceptance = reporter
 }
 
-// SetRemoteReporter injects the hook every worker calls after it proves where its branch is on
-// the remote, so status.remote reflects the last confirmed look rather than being learned and
-// dropped. Like SetLayoutReporter, it is called once at startup before any worker is created.
-func (m *WorkerManager) SetRemoteReporter(reporter RemoteReporter) {
+// recordRemoteObservation is the delivery point for one branch's confirmed observation. Every
+// worker is given it bound to its own key; it is called on the worker's loop goroutine.
+func (m *WorkerManager) recordRemoteObservation(key BranchKey, observed RemoteObservation) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.remoteReporter = reporter
-}
-
-// RegisterTarget ensures a worker exists for the target's (provider, branch)
-// and registers the target with that worker.
-// This is called by GitTarget controller when a target becomes Ready.
-func (m *WorkerManager) RegisterTarget(
-	ctx context.Context,
-	targetName, targetNamespace string,
-	providerName, providerNamespace string,
-	branch, path string,
-) error {
-	if err := m.EnsureWorker(ctx, providerName, providerNamespace, branch); err != nil {
-		return err
+	if m.remotes == nil {
+		m.remotes = map[BranchKey]RemoteObservation{}
 	}
-
-	m.Log.Info("GitTarget registered with branch worker",
-		"target", fmt.Sprintf("%s/%s", targetNamespace, targetName),
-		"workerKey", BranchKey{
-			RepoNamespace: providerNamespace,
-			RepoName:      providerName,
-			Branch:        branch,
-		}.String(),
-		"path", path)
-
-	return nil
+	m.remotes[key] = observed
 }
 
-// EnsureWorker ensures a worker exists for the given (provider, branch).
+// RemoteForBranch is what this branch was last proved to be at, and whether anything has looked at
+// all. It opens no connection and reads no repository.
+//
+// It answers for the BRANCH, which is the whole of the delivery half: two GitTargets writing
+// different folders of one branch share a worker, so they share its observation and the moment it
+// was proved. Absent means nothing has looked yet, which is different from a present observation
+// with no revision: that one means the branch is not on the remote.
+func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	observed, known := m.remotes[key]
+	return observed, known
+}
+
+// EnsureWorker ensures a worker exists for the given (provider, branch), and that it is the
+// worker for the repository the GitProvider names NOW.
+//
+// repo is the caller's answer to "which repository is this"; the reconcile has already read the
+// GitProvider one gate earlier, so it costs no API call. A slot holding a worker for a DIFFERENT
+// repository is not corrected field by field — the clone, the base trust, the observation and the
+// retained writes are all statements about the old one — so that worker is stopped, its checkout
+// reclaimed, and a fresh one takes the slot.
+//
+// A replacement is not complete when it returns: the new worker has no clone and no queue, so
+// every GitTarget on that branch has to re-establish its folder against the new repository. That
+// is recorded as a PENDING RECOVERY rather than returned, because arranging it is the caller's job
+// and the caller can fail. See ReplacementPending; the delivery is the GitTarget reconcile's
+// worker wiring gate.
+//
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(
 	_ context.Context,
 	providerName, providerNamespace string,
 	branch string,
+	repo RepoIdentity,
 ) error {
 	// Held across the whole check-and-create so a replacement cannot start while the worker it
 	// replaces is still stopping; they would share a clone.
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	key := BranchKey{
 		RepoNamespace: providerNamespace,
@@ -280,14 +301,37 @@ func (m *WorkerManager) EnsureWorker(
 		Branch:        branch,
 	}
 
-	if _, exists := m.workers[key]; !exists {
-		m.Log.Info("Creating new branch worker", "key", key.String())
+	m.mu.RLock()
+	existing, exists := m.workers[key]
+	m.mu.RUnlock()
+
+	if exists {
+		if existing.repo == repo {
+			return nil
+		}
+		// Both identities, at default verbosity: a comparison that is not stable across steady
+		// reconciles is a restart loop, and this line is what makes one visible.
+		m.Log.Info("GitProvider now names a different repository; replacing the branch worker",
+			"key", key.String(),
+			"was", existing.repo.String(),
+			"now", repo.String())
+		// lifecycleMu is already held, so the detach-and-stop must not take it again.
+		m.removeWorkersLocked([]BranchKey{key}, "the GitProvider names a different repository")
+		m.noteReplacement(key)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, live := m.workers[key]; !live {
+		m.Log.Info("Creating new branch worker", "key", key.String(), "repository", repo.String())
 		worker := NewBranchWorker(
 			m.Client,
 			m.Log.WithName("branch-worker"),
 			providerName,
 			providerNamespace,
 			branch,
+			repo,
 			newContentWriter(m.sensitiveResources),
 			m.limits,
 		)
@@ -300,7 +344,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.credentialPolicy = m.credentialPolicy
 		worker.pathRefusal = m.pathRefusal
 		worker.layoutReporter = m.layoutReporter
-		worker.remoteReporter = m.remoteReporter
+		worker.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
 		worker.scanAcceptance = m.scanAcceptance
 		worker.renderFidelityGate = m.renderFidelityGate
 
@@ -314,41 +358,82 @@ func (m *WorkerManager) EnsureWorker(
 	return nil
 }
 
-// UnregisterTarget removes a GitTarget from its worker.
-// Destroys the worker if it was the last target using it.
-// This is called by GitTarget controller when a target is deleted.
-func (m *WorkerManager) UnregisterTarget(
-	_, _ string,
-	providerName, providerNamespace string,
-	branch string,
-) error {
-	key := BranchKey{
-		RepoNamespace: providerNamespace,
-		RepoName:      providerName,
-		Branch:        branch,
+// noteReplacement records that a branch's GitTargets have to be re-established. It is called with
+// lifecycleMu held and takes mu itself, which is the lock order everything here uses.
+func (m *WorkerManager) noteReplacement(key BranchKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.replacements == nil {
+		m.replacements = map[BranchKey]struct{}{}
 	}
+	m.replacements[key] = struct{}{}
+}
 
-	// lifecycleMu is held across the Stop so EnsureWorker cannot start a replacement while this
-	// worker is still draining. m.mu is only held to detach: queueDepthSamples reads it on the
-	// scrape goroutine, so holding THAT across Stop() stalls collection instead of reporting it.
+// ReplacementPending reports whether this branch's GitTargets still have to be re-established
+// after their worker was replaced.
+//
+// It answers for the BRANCH rather than for the caller, so whichever GitTarget reconciles next
+// picks the recovery up — including the siblings, which have no reason of their own to notice
+// that the repository changed.
+func (m *WorkerManager) ReplacementPending(key BranchKey) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, pending := m.replacements[key]
+	return pending
+}
+
+// AcknowledgeReplacement clears a pending recovery, and must be called only once the targets on
+// the branch have actually been told. Anything less leaves the request standing, which is the
+// whole point of keeping it here: a failed delivery is retried by the next reconcile of any
+// GitTarget on the branch, and by the periodic sweep that follows them.
+func (m *WorkerManager) AcknowledgeReplacement(key BranchKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.replacements, key)
+}
+
+// removeWorkers detaches the named workers and stops them.
+//
+// The lock discipline is the whole reason this is one function rather than a loop at each call
+// site. lifecycleMu is held across the Stops so EnsureWorker cannot start a replacement while the
+// worker it replaces is still draining — they would share an on-disk clone. m.mu is held only to
+// detach: queueDepthSamples reads it on the metric SDK's collection goroutine, so holding THAT
+// across Stop(), which waits for the loop goroutine, stalls collection for the whole shutdown.
+//
+// A key that names no worker is skipped, so a caller may pass a key it is not sure about.
+func (m *WorkerManager) removeWorkers(keys []BranchKey, reason string) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
+	m.removeWorkersLocked(keys, reason)
+}
 
-	m.mu.Lock()
-	worker, exists := m.workers[key]
-	delete(m.workers, key)
-	m.mu.Unlock()
-
-	if !exists {
-		return nil
+// removeWorkersLocked is removeWorkers for a caller that already holds lifecycleMu: a sweep holding
+// it across choosing the workers to retire and retiring them, and EnsureWorker holding it across
+// its whole check-and-create, where a second acquisition would deadlock.
+func (m *WorkerManager) removeWorkersLocked(keys []BranchKey, reason string) {
+	if len(keys) == 0 {
+		return
 	}
 
-	// Worker no longer tracks targets internally - always destroy worker
-	// since WorkerManager handles all lifecycle decisions
-	m.Log.Info("Unregistering target, destroying worker", "key", key.String())
-	worker.Stop()
+	m.mu.Lock()
+	detached := make(map[BranchKey]*BranchWorker, len(keys))
+	for _, key := range keys {
+		if worker, exists := m.workers[key]; exists {
+			detached[key] = worker
+			delete(m.workers, key)
+		}
+	}
+	m.mu.Unlock()
 
-	return nil
+	for key, worker := range detached {
+		m.Log.Info("Stopping branch worker", "key", key.String(), "reason", reason)
+		worker.Stop()
+		// After Stop, never before: Stop waits for the loop goroutine, so until it returns the
+		// worktree can still be written. A worker being retired takes its clone with it — the
+		// goroutine was only half the leak, and the checkout is the half that survives a
+		// restart.
+		worker.removeLocalState()
+	}
 }
 
 // GetWorkerForTarget finds the worker for a target's (provider, branch).
@@ -371,10 +456,44 @@ func (m *WorkerManager) GetWorkerForTarget(
 	return worker, exists
 }
 
-// ReconcileWorkers checks active GitTargets and cleans up orphaned workers.
-// This ensures workers are removed when their GitTargets are deleted.
+// afterOrphanSelection runs between choosing the workers to retire and retiring them. It is nil in
+// production and exists because that gap is the ONLY place the lock discipline in ReconcileWorkers
+// can be observed: with lifecycleMu held across both steps a concurrent EnsureWorker blocks here,
+// and without it that EnsureWorker hands a caller the very worker about to be stopped. The seam
+// follows pushAtomicFn, which the push path already uses for the same reason.
+//
+//nolint:gochecknoglobals // a test seam, like pushAtomicFn
+var afterOrphanSelection func()
+
+// ReconcileWorkers stops every worker no live GitTarget still needs.
+//
+// It is the ONLY thing that removes a worker before shutdown, and it is driven from the GitTarget
+// reconcile's deleted-object path: that reconcile is what the delete watch event produces, so the
+// sweep runs exactly when the set of needed workers can have shrunk. A worker that outlives its
+// last GitTarget is not free — it holds a goroutine, an event queue and an on-disk clone until the
+// process restarts.
+//
+// It decides from the API rather than from a count of registrations, which is what makes it
+// correct for a branch SHARED by several GitTargets: deleting one of them leaves the others
+// listed, so the worker they share is still needed and is left alone.
+//
+// It fails safe. A List that errors stops nothing: the alternative — treating "I could not read
+// the targets" as "there are no targets" — would take down every live worker in the process.
 func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
-	// The List and the Stops stay outside m.mu, for the reason in UnregisterTarget.
+	// lifecycleMu is held across the whole decision — the List, the selection and the removal —
+	// and the three must not be separated.
+	//
+	// EnsureWorker takes this lock, finds the key present and returns "already there" without
+	// creating anything, so a selection made outside it would let this sweep stop a worker a
+	// GitTarget had just been told it has. The LIST is inside for the same reason read the other
+	// way round: a target created after the snapshot is taken is absent from it, and its worker —
+	// created under this lock moments later — then looks like an orphan and is stopped with its
+	// queue and its checkout. The client is cached, so the read costs no round trip.
+	//
+	// m.mu is still taken only for the map itself, and the Stops still run outside it, for the
+	// reason in removeWorkers.
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 
 	// Get all GitTargets
 	var targetList configv1alpha3.GitTargetList
@@ -401,30 +520,39 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 		neededWorkers[key] = true
 	}
 
-	// Detach the orphans under m.mu; stop them after releasing it, with lifecycleMu held so no
-	// replacement starts while one is draining.
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
-
-	m.mu.Lock()
-	orphans := make(map[BranchKey]*BranchWorker)
-	for key, worker := range m.workers {
+	m.mu.RLock()
+	orphans := make([]BranchKey, 0, len(m.workers))
+	for key := range m.workers {
 		if !neededWorkers[key] {
-			orphans[key] = worker
-			delete(m.workers, key)
+			orphans = append(orphans, key)
 		}
 	}
-	remaining := len(m.workers)
+	m.mu.RUnlock()
+
+	// The window the lock above closes, opened on request so a test can stand in it. Nil in
+	// production; see afterOrphanSelection.
+	if afterOrphanSelection != nil {
+		afterOrphanSelection()
+	}
+
+	m.removeWorkersLocked(orphans, "no GitTarget needs this worker any more")
+	// A branch no GitTarget needs has nothing left to re-establish and nothing left to report: a
+	// recovery or an observation held for it would outlive every object it was about.
+	m.mu.Lock()
+	for _, key := range orphans {
+		delete(m.replacements, key)
+		delete(m.remotes, key)
+	}
 	m.mu.Unlock()
 
-	for key, worker := range orphans {
-		m.Log.Info("Cleaning up orphaned worker", "key", key.String())
-		worker.Stop()
-	}
+	m.mu.RLock()
+	remaining := len(m.workers)
+	m.mu.RUnlock()
 
 	m.Log.V(1).Info("Worker reconciliation complete",
 		"activeWorkers", remaining,
-		"neededWorkers", len(neededWorkers))
+		"neededWorkers", len(neededWorkers),
+		"stopped", len(orphans))
 
 	return nil
 }
@@ -440,7 +568,7 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, m.queueDepthSamples)
 	m.Log.Info("WorkerManager started")
 
-	<-ctx.Done()
+	m.sweepPeriodically(ctx)
 
 	// Clear the source before the workers go, so the callback cannot outlive them.
 	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, nil)
@@ -460,6 +588,40 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	}
 	m.Log.Info("WorkerManager stopped")
 	return nil
+}
+
+// WorkerSweepInterval is the floor under the orphan sweep. It is a FLOOR and not the mechanism: a
+// deleted GitTarget's reconcile sweeps immediately, and this catches what that path cannot see.
+const WorkerSweepInterval = time.Minute
+
+// sweepPeriodically runs the orphan sweep until the context ends.
+//
+// The delete-triggered sweep is prompt but not complete, because it runs only where a reconcile
+// READ NotFound. Delete a GitTarget and recreate it under the same name on another branch before
+// that reconcile runs, and the controller sees the successor, wires its worker, and never learns
+// that the predecessor existed: the old branch's worker, its goroutine and its clone are then held
+// until the process restarts. Kubernetes reconciliation cannot be built on observing every
+// intermediate state, so the sweep needs a trigger that does not depend on seeing the delete.
+//
+// It is a separate goroutine rather than a step in the GitTarget reconcile on purpose: the sweep
+// takes lifecycleMu and holds it across Stop, and GitTarget reconciles are serialized, so a slow
+// stop on the reconcile path would stall every target's reconcile behind it.
+func (m *WorkerManager) sweepPeriodically(ctx context.Context) {
+	ticker := time.NewTicker(WorkerSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := m.ReconcileWorkers(ctx); err != nil {
+				// Failing safe: a List that errors stops nothing, so the only cost is that the
+				// sweep is late.
+				m.Log.V(1).Info("Periodic worker sweep could not read the GitTargets",
+					"error", err.Error())
+			}
+		}
+	}
 }
 
 // queueDepthSamples is the git_queue_depth source: one sample per live worker, read when

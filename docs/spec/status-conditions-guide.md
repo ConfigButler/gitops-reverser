@@ -45,6 +45,8 @@ The rule is already visible in the fields this project ships, and they are the w
 | `status.streams` | counts that move when a stream's readiness changes | status |
 | `status.retention` | counts and a roll-up time that move when a **resync** reports, not per event | status |
 | placements, placement refusals | every placed or refused document | metric (`gitopsreverser_placements_total`, `_placement_refusals_total`) |
+| `GitProvider.status.branches` | somebody edits a `GitTarget` | status |
+| `GitTarget.status.remote` | the branch moves, so at workload rate | status, but **sampled** — see below |
 | a "last reconcile attempt" timestamp | every pass | removed, see below |
 
 `resolvedAtRevision` is the one worth reading twice, because it looks like a timestamp field and is
@@ -56,6 +58,34 @@ the branch head means the layout has been stable, not that nothing has looked.
 passes: a reconcile-request handshake such as Flux's `lastHandledReconcileAt` is bounded by how often
 someone pokes the annotation, which is not a throughput. Rejecting that kind of field is stricter
 than this rule requires.
+
+### When the subject really does move with the workload
+
+`status.remote` is the exception the rule has to be able to answer, because the question it
+answers — where is my branch on the remote — is genuinely worth a status field and genuinely moves
+on every commit. Publishing it unsampled would be the fan-out this whole section forbids: a branch
+ten `GitTarget`s share turns one commit into ten status writes.
+
+What makes it publishable is splitting the two rates, and the split is worth copying for any field
+in the same shape:
+
+- **Delivery** is in memory and immediate. One branch worker proves where its branch is, by a push
+  or by a fetch, and every `GitTarget` on that branch reads the same tuple from that moment.
+  Distributing a fact is not re-proving it, and it costs nothing.
+- **Publication** is the status write, and it is sampled: each target writes what it holds WHEN IT
+  RECONCILES, on its own cadence, with a floor of one write per minute measured from the last
+  write. Nothing in the data plane wakes a target because a branch moved. The one exception is a
+  reconcile that has just ASKED the remote something, which comes back for the answer rather than
+  leaving it undelivered for a tick.
+- **The tuple stays internally consistent**: one observation from one moment, never the newest
+  revision beside a stale clock. That is what makes a sampled value readable, and it is why
+  `revision` and `lastVerifiedAt` are published together or not at all.
+
+Two corrections skip the floor, because they are not throughput: the first observation, and taking
+back a revision that names a repository the target no longer points at.
+
+The promise that follows is worth stating wherever such a field is documented: it can lag the
+latest observation, and it says nothing at all about the subject when nothing has observed it.
 
 **Where this bites in review:** the durable per-type record. A map in status keyed by watched type
 grows with the number of types *and* is rewritten by each scan, so it fails on both halves at once.

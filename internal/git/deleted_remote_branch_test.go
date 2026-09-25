@@ -59,9 +59,9 @@ func TestPush_DeletedRemoteBranchIsTreatedAsMovement(t *testing.T) {
 	gitInRepo(t, f.repoDir, "update-ref", "-d", "refs/heads/main")
 
 	// Push once, without the replay, to read the error the remote produces.
-	provider, err := f.worker.getGitProvider(f.worker.ctx)
+	_, err := f.worker.getGitProvider(f.worker.ctx)
 	require.NoError(t, err)
-	repo, err := openWorkerRepo(f.worker, provider.Spec.URL)
+	repo, err := openWorkerRepo(f.worker)
 	require.NoError(t, err)
 	_, err = PushAtomic(f.worker.ctx, repo, f.worker.pushCycleRootHash,
 		plumbing.NewBranchReferenceName("main"), nil)
@@ -86,9 +86,9 @@ func TestFetchRemoteBranchHash_ReportsZeroWhenTheBranchIsGone(t *testing.T) {
 	giveRemoteADefaultBranchBesidesMain(t, f.repoDir)
 	f.publish("prime")
 
-	provider, err := f.worker.getGitProvider(f.worker.ctx)
+	_, err := f.worker.getGitProvider(f.worker.ctx)
 	require.NoError(t, err)
-	repo, err := openWorkerRepo(f.worker, provider.Spec.URL)
+	repo, err := openWorkerRepo(f.worker)
 	require.NoError(t, err)
 
 	branch := plumbing.NewBranchReferenceName("main")
@@ -151,6 +151,6 @@ func TestPush_DeletedRemoteBranchDoesNotStrandRetainedWrites(t *testing.T) {
 
 // openWorkerRepo opens the worker's on-disk checkout, which several of these tests reach into to
 // drive one push or one probe directly.
-func openWorkerRepo(w *BranchWorker, url string) (*gogit.Repository, error) {
-	return gogit.PlainOpen(w.repoPathForRemote(url))
+func openWorkerRepo(w *BranchWorker) (*gogit.Repository, error) {
+	return gogit.PlainOpen(w.repoPath())
 }

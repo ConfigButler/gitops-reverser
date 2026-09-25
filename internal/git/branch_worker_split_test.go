@@ -160,7 +160,16 @@ func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, s
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: remoteURL},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 	return worker, serverRepo, remoteURL
 }
@@ -168,7 +177,7 @@ func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, s
 // TestCommitGroups_DoesNotPush verifies grouped pending writes can be committed
 // locally without ever advancing the remote branch.
 func TestCommitGroups_DoesNotPush(t *testing.T) {
-	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 
 	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -192,7 +201,7 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 		"remote should not advance during local commit creation; only push publishes")
 
 	// Local repo carries the new commit.
-	localRepoPath := worker.repoPathForRemote(remoteURL)
+	localRepoPath := worker.repoPath()
 	localRepo, err := git.PlainOpen(localRepoPath)
 	require.NoError(t, err)
 	localRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
@@ -217,7 +226,7 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 // second commitPendingWrites call within the same push cycle (hasUnpushedCommits=true) must
 // not call PrepareBranch, so the prior local commit is preserved.
 func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
-	worker, _, remoteURL := setupCommitPushSplitWorker(t)
+	worker, _, _ := setupCommitPushSplitWorker(t)
 
 	firstPendingWrite, err := worker.buildGroupedPendingWrite(
 		worker.ctx,
@@ -237,7 +246,7 @@ func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
 	assert.Equal(t, rootAfterFirst, worker.pushCycleRootHash,
 		"hasUnpushedCommits=true must preserve the rootHash from the first commit")
 
-	localRepoPath := worker.repoPathForRemote(remoteURL)
+	localRepoPath := worker.repoPath()
 	localRepo, err := git.PlainOpen(localRepoPath)
 	require.NoError(t, err)
 
@@ -376,7 +385,7 @@ func TestRefreshRemoteAndRebuildPendingWrites_ReplaysWithoutPushing(t *testing.T
 	assert.Equal(t, contendingRef.Hash(), worker.pushCycleRootHash,
 		"the replayed push cycle must be rooted at the fresh remote tip")
 
-	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	localRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -542,7 +551,7 @@ func TestBranchWorker_Replay_UsesResolvedMetadata_GitTargetDeletedMidBurst(t *te
 }
 
 func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T) {
-	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(
 		worker.ctx,
@@ -551,7 +560,7 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	localRefBefore, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -620,7 +629,7 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 }
 
 func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T) {
-	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(
 		worker.ctx,
@@ -629,7 +638,7 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	localRefBefore, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -755,7 +764,7 @@ func TestBranchWorker_Replay_DropsUnitsThatBecomeNoOpAgainstNewRemoteTree(t *tes
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	localRepoPath := worker.repoPathForRemote(remoteURL)
+	localRepoPath := worker.repoPath()
 	filePath := generateFilePath(event.Identifier, itypes.SensitiveResourcePolicy{})
 	gitPath := filepath.ToSlash(filepath.Join(event.Path, filePath))
 	desiredContent, err := os.ReadFile(filepath.Join(localRepoPath, gitPath))
@@ -790,7 +799,7 @@ func TestBranchWorker_Replay_DropsUnitsThatBecomeNoOpAgainstNewRemoteTree(t *tes
 // local Git commit. While the push cooldown is active those local commits
 // accumulate in pendingWrites — only a successful push clears them.
 func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
-	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 
 	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -822,7 +831,7 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 		"remote must not advance while the cooldown holds the push back")
 
 	// The local commit must already be in place.
-	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	localRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1010,7 +1019,7 @@ func TestEventLoop_CrossAuthorSamePathPingPongUsesOnlyAuthorBoundaries(t *testin
 }
 
 func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testing.T) {
-	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 
 	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1034,7 +1043,7 @@ func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testin
 	assert.Equal(t, initialRef.Hash(), afterCommitRef.Hash(),
 		"remote must not advance while cooldown defers the push")
 
-	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	localRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)

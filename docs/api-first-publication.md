@@ -263,10 +263,12 @@ commits behind the retained writes are already unreachable at that point, and a 
 the success path would miss exactly that case. The cost of setting it too eagerly is one fetch on
 the next cycle.
 
-A fourth piece of state is not a flag: the trust above is bound to the repository it was gained
-against. A `GitProvider` is repointed by deleting and recreating it, which does not restart the
-worker, so trust from the previous repository must not be carried into the new one. Carrying it
-forward would skip establishing the new checkout entirely.
+A fourth piece of state is not a flag: the trust above, like everything else the worker holds, is
+about one repository, and the worker carries that repository's identity. A `GitProvider` is
+repointed by deleting and recreating it, which does not restart the worker — so the worker goes on
+using its own repository's URL, and the reconcile replaces it with one built for the new
+repository. Trust from the previous repository is never carried into the new one, because the two
+are never held by the same worker.
 
 ## Story 3: save now, and know what reached Git
 

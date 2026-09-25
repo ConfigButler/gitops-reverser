@@ -353,3 +353,114 @@ func TestRenderFidelityGate_PendingMessageNamesARefusedReport(t *testing.T) {
 	require.True(t, applied)
 	assert.Equal(t, RenderFidelityTrue, status.State)
 }
+
+// TestRenderFidelityGate_InvalidateClosesWritesUntilAFreshMeasurement is the replacement's half of
+// the gate contract. Forgetting the target made it unregistered, and an unregistered target is
+// treated as writable, so the gate opened the instant the repository changed — before anything had
+// looked at the new one.
+func TestRenderFidelityGate_InvalidateClosesWritesUntilAFreshMeasurement(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scope := fidelityScope("apps", "deployments")
+
+	_, revisions := restartAll(gate, target, scope)
+	_, applied := gate.RecordScopeClean(target, revisions[scope], scope)
+	require.True(t, applied)
+	require.True(t, gate.AllowsWrites(target), "precondition: the target is proved clean")
+
+	gate.Invalidate(target)
+
+	assert.Equal(t, RenderFidelityUnknown, gate.Status(target).State)
+	assert.False(t, gate.AllowsWrites(target),
+		"what this target proved was proved about a repository it no longer writes to")
+
+	// A pass that restarts every scope is the fresh measurement, and only its result reopens.
+	_, after := restartAll(gate, target, scope)
+	assert.False(t, gate.AllowsWrites(target), "the fresh scope still owes a report")
+	_, applied = gate.RecordScopeClean(target, after[scope], scope)
+	require.True(t, applied)
+	assert.True(t, gate.AllowsWrites(target))
+}
+
+// TestRenderFidelityGate_InvalidateAdvancesEveryScopeRevision closes the other half: a result
+// computed against the OLD repository can still be in flight, and a reset counter would hand it
+// the very number the new plan is issuing.
+func TestRenderFidelityGate_InvalidateAdvancesEveryScopeRevision(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scope := fidelityScope("apps", "deployments")
+
+	_, before := restartAll(gate, target, scope)
+
+	gate.Invalidate(target)
+	_, after := restartAll(gate, target, scope)
+	assert.Greater(t, after[scope], before[scope],
+		"a revision the old repository's streams hold must never be issued again")
+
+	_, applied := gate.RecordScopeClean(target, before[scope], scope)
+	assert.False(t, applied, "a clean result about the old repository proves nothing about this one")
+	assert.False(t, gate.AllowsWrites(target))
+}
+
+// TestRenderFidelityGate_InvalidateHoldsATargetWithNoScopes is the vacuous case, and it is the one
+// an unregistered target got wrong: with no scopes to report, an empty plan reduces to True, so a
+// target whose rules select nothing would have been writable against a repository nothing has
+// looked at. Atomic requests and CommitRequests do not come from a watch.
+func TestRenderFidelityGate_InvalidateHoldsATargetWithNoScopes(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+
+	gate.Invalidate(target)
+
+	assert.Equal(t, RenderFidelityUnknown, gate.Status(target).State)
+	assert.False(t, gate.AllowsWrites(target))
+	assert.Equal(t, "Rechecking", gate.Status(target).Reason)
+}
+
+// TestRenderFidelityGate_InvalidateDropsAWriteDivergence keeps the two recovery routes consistent:
+// a divergence found in the old repository says nothing about the new one, and the complete fresh
+// measurement this waits for is exactly what would have cleared it anyway.
+func TestRenderFidelityGate_InvalidateDropsAWriteDivergence(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scope := fidelityScope("apps", "deployments")
+
+	_, revisions := restartAll(gate, target, scope)
+	_, applied := gate.RecordScopeClean(target, revisions[scope], scope)
+	require.True(t, applied)
+	require.Equal(t, RenderFidelityFalse,
+		gate.Fail(target, manifestanalyzer.RenderDivergence{Token: "x", Field: "spec.replicas"}).State)
+
+	gate.Invalidate(target)
+	assert.Equal(t, RenderFidelityUnknown, gate.Status(target).State,
+		"the old repository's divergence is neither carried over nor reported as clean")
+
+	_, after := restartAll(gate, target, scope)
+	_, applied = gate.RecordScopeClean(target, after[scope], scope)
+	require.True(t, applied)
+	assert.True(t, gate.AllowsWrites(target))
+}
+
+// TestRenderFidelityGate_AnEmptyPlanCompletesAnInvalidation. A target whose rules select nothing
+// is converged by every other rule in this file, and an invalidation it could never clear would
+// hold it Rechecking for ever — on the fast reconcile loop, waiting for a report no stream will
+// make. An empty plan is not a measurement, so it still does not clear a write DIVERGENCE; it is
+// an applied plan, which is what an invalidation is waiting for.
+func TestRenderFidelityGate_AnEmptyPlanCompletesAnInvalidation(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scope := fidelityScope("apps", "deployments")
+
+	_, revisions := restartAll(gate, target, scope)
+	_, applied := gate.RecordScopeClean(target, revisions[scope], scope)
+	require.True(t, applied)
+
+	gate.Invalidate(target)
+	require.False(t, gate.AllowsWrites(target))
+
+	// The target's rules now select nothing, and that plan lands.
+	status, _ := gate.Reconcile(target, nil, nil)
+
+	assert.Equal(t, RenderFidelityTrue, status.State)
+	assert.True(t, gate.AllowsWrites(target), "nothing to mirror is converged, before and after a replacement")
+}

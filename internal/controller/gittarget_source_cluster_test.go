@@ -477,18 +477,13 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := fake.NewClientBuilder().WithScheme(scScheme(t))
-			if tc.gp != nil {
-				builder = builder.WithObjects(tc.gp)
-			}
-			r := &GitTargetReconciler{Client: builder.Build()}
 			target := &configbutleraiv1alpha3.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
 				Spec: configbutleraiv1alpha3.GitTargetSpec{
 					GitProviderRef: meta.LocalObjectReference{Name: "prov"},
 				},
 			}
-			got := r.gitProviderReadiness(context.Background(), target, "team-a")
+			got := gitProviderReadiness(target, "team-a", tc.gp)
 			assert.Equal(t, tc.want, got.Status)
 			assert.NotEmpty(t, got.Message)
 		})

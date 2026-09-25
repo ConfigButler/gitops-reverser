@@ -78,6 +78,12 @@ type reconcileStatus struct {
 	beforeConditions []metav1.Condition
 	// conditions points at the live status condition slice of object, which set() rewrites.
 	conditions *[]metav1.Condition
+	// persisted are the callbacks that may run only once the status write has actually landed:
+	// in-memory state a later reconcile reads back as "what this object published". Keeping them
+	// here rather than at the call sites is what makes them right for EVERY exit, including the
+	// early gates that commit and return, and for the two ways a write does not land — an error,
+	// and the optimistic lock, which is recorded rather than returned.
+	persisted []func()
 	// writeLostToRace records that commit() computed a status it could not persist because the
 	// object moved underneath it. The observation is discarded (publishing it would be stale), so
 	// what is left is an object whose PUBLISHED status is older than what this reconcile knew —
@@ -183,6 +189,24 @@ func (s *reconcileStatus) applyReadiness(r *readiness) {
 // Suppressing the no-op write is what breaks the self-triggering reconcile edge: a status write
 // bumps resourceVersion and fires the Update watch event that `For()` turns straight back into a
 // queued request. Nothing to say, nothing to write, no wake-up.
+// afterPersist registers a callback to run once this reconcile's status write has landed.
+//
+// A caller that mutated status AND some in-memory record of it cannot do the second half inline:
+// the patch can be refused by the optimistic lock, and then the object still holds what the winner
+// wrote while the record claims otherwise. Every such record goes through here.
+func (s *reconcileStatus) afterPersist(fn func()) {
+	s.persisted = append(s.persisted, fn)
+}
+
+// runPersisted settles the registered callbacks. It is called only where the status this reconcile
+// computed is what the object now holds.
+func (s *reconcileStatus) runPersisted() {
+	for _, fn := range s.persisted {
+		fn()
+	}
+	s.persisted = nil
+}
+
 func (s *reconcileStatus) commit(ctx context.Context) error {
 	log := logf.FromContext(ctx).WithName("status")
 
@@ -199,6 +223,9 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 		return fmt.Errorf("compute status patch for %s: %w", client.ObjectKeyFromObject(s.object), err)
 	}
 	if string(data) == "{}" {
+		// Nothing to write, so what the object holds is already what this reconcile computed: the
+		// callbacks describe a state that is true.
+		s.runPersisted()
 		return nil
 	}
 
@@ -221,6 +248,7 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 	switch err := s.client.Status().Patch(ctx, s.object, patch); {
 	case err == nil:
 		s.recordReadyTransition()
+		s.runPersisted()
 		return nil
 	case apierrors.IsNotFound(err):
 		return nil

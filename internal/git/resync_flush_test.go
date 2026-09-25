@@ -440,7 +440,7 @@ func TestResync_DropsOneDocFromMultiDocKeepsSiblings(t *testing.T) {
 // A resync ALWAYS fetches — applyResync may find nothing to change and so never open a push, which
 // is why it cannot rely on the advertisement a publication would have read — and that fetch proves
 // where the branch is exactly as a refresh's does. Before this, the observation was recorded in
-// worker memory and reported to nobody, so a resync could discover somebody else's commit and
+// worker memory and delivered to nobody, so a resync could discover somebody else's commit and
 // leave status.remote naming the revision before it. On an install that has turned the periodic
 // refresh off, that is indefinite.
 func TestResync_ReportsWhatItsFetchProved(t *testing.T) {
@@ -448,9 +448,7 @@ func TestResync_ReportsWhatItsFetchProved(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	var reported []RemoteObservation
-	var reportedFor []types.ResourceReference
-	worker.remoteReporter = func(target types.ResourceReference, observed RemoteObservation) {
-		reportedFor = append(reportedFor, target)
+	worker.remoteReporter = func(observed RemoteObservation) {
 		reported = append(reported, observed)
 	}
 
@@ -468,7 +466,6 @@ func TestResync_ReportsWhatItsFetchProved(t *testing.T) {
 	})
 
 	require.NotEmpty(t, reported, "the resync's own fetch must reach the status surface")
-	assert.Equal(t, ObservedByFetch, reported[len(reported)-1].By)
-	assert.Equal(t, "team-a", reportedFor[len(reportedFor)-1].Name,
-		"reported against the target the resync was for, which is the one in hand")
+	assert.Equal(t, ObservedByFetch, reported[len(reported)-1].By,
+		"delivered to the branch, which is what every GitTarget on it reads")
 }

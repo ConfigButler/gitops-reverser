@@ -112,7 +112,7 @@ func TestBaseTrust_FetchingTheRemoteHashDoesNotGrantTrust(t *testing.T) {
 	f.commit(false, "mine")
 	f.contend("OUTSIDE.md", "from-another-writer\n")
 
-	repo, err := gogit.PlainOpen(f.worker.repoPathForRemote(f.sim.RepoURL))
+	repo, err := gogit.PlainOpen(f.worker.repoPath())
 	require.NoError(t, err)
 
 	// Pretend an earlier reset had established trust. Seeding the atomic directly is what makes

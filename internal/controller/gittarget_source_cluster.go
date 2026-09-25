@@ -152,15 +152,17 @@ func describeKubeConfigKey(specKey string) string {
 	return specKey
 }
 
-// gitProviderReadiness reads the referenced GitProvider's Ready condition and projects it. It
-// runs only after the Validated gate has confirmed the provider exists. It returns Unknown —
-// which does NOT downgrade Ready — when the provider's readiness cannot be observed (a transient
-// read error, or a provider that has not reported a Ready condition yet), so a not-yet-reconciled
-// provider never blocks its GitTarget; only an EXPLICIT Ready=False downgrades.
-func (r *GitTargetReconciler) gitProviderReadiness(
-	ctx context.Context,
+// gitProviderReadiness projects the referenced GitProvider's Ready condition. It takes the
+// provider the reconcile already read — the same object the Validated gate and the branch worker's
+// identity came from, so the three cannot describe different objects — and runs only after that
+// gate has confirmed it exists. It returns Unknown — which does NOT downgrade Ready — when
+// readiness cannot be observed (no provider in hand, or one that has not reported a Ready
+// condition yet), so a not-yet-reconciled provider never blocks its GitTarget; only an EXPLICIT
+// Ready=False downgrades.
+func gitProviderReadiness(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
+	gp *configbutleraiv1alpha3.GitProvider,
 ) conditionValue {
 	key := k8stypes.NamespacedName{Name: target.Spec.GitProviderRef.Name, Namespace: providerNS}
 	notReady := func(status metav1.ConditionStatus, format string, args ...any) conditionValue {
@@ -171,9 +173,8 @@ func (r *GitTargetReconciler) gitProviderReadiness(
 		}
 	}
 
-	var gp configbutleraiv1alpha3.GitProvider
-	if err := r.Get(ctx, key, &gp); err != nil {
-		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s readiness not observed: %v", key, err)
+	if gp == nil {
+		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s readiness not observed", key)
 	}
 	c := findCondition(gp.Status.Conditions, ConditionTypeReady)
 	switch {

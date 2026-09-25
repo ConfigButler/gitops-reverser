@@ -61,6 +61,7 @@ type gitProviderLogFirsts struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/finalizers,verbs=update
+// +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -110,6 +111,16 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		fmt.Sprintf("Repository connectivity validated for %s", gitProvider.Spec.URL),
 		"GitProvider is not stalled",
 	)
+
+	// Ahead of every gate, like the GitTarget's own projections and for the same reason: the
+	// inventory explains what a refused or unused repository is FOR, so publishing it only on the
+	// happy path would drop it exactly when it is wanted. It must also come AFTER beginStatus,
+	// which snapshots the status the patch is computed against. A failure to read the GitTargets
+	// leaves the last inventory standing and is not a reason to fail the reconcile.
+	if err := r.publishBranchInventory(ctx, gitProvider); err != nil {
+		log.Error(err, "Could not list the GitTargets for the branch inventory; the last one stands",
+			"name", gitProvider.Name, "namespace", gitProvider.Namespace)
+	}
 
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
 		rd.stalled(ReasonCommitConfigInvalid, err.Error())

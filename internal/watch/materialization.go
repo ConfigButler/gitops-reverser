@@ -3,6 +3,8 @@
 package watch
 
 import (
+	"time"
+
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -36,6 +38,51 @@ func (m *Manager) DeclareForGitTarget(
 	m.declareIntentFor(gitDest, clusterID, auditRoute, pruneMode, force)
 }
 
+// RequestRecheckForGitTarget forces this target's next pass to re-anchor its streams, which is
+// what makes each one replay and drive the mark-and-sweep that rebuilds its folder.
+//
+// It exists for the branch worker replacement. The declaration is level-triggered and its inputs
+// do not change when the repository underneath it does, so without this the pass is a no-op: the
+// streams keep running, nothing replays, and an idle target would leave the new repository empty
+// indefinitely. The force flag is the same one a refused Git path raises, and it is sticky on the
+// intent, so it survives until a pass actually consumes it.
+//
+// A target that has not declared yet needs nothing: its first pass starts its streams, and a
+// stream that starts replays.
+func (m *Manager) RequestRecheckForGitTarget(gitDest types.ResourceReference) {
+	t := m.triggers()
+	t.mu.Lock()
+	prior, declared := t.declares[gitDest.Key()]
+	if declared {
+		prior.forceRequests++
+		t.markDirtyLocked(gitDest, TriggerReasonWorkerReplaced, time.Now())
+	}
+	t.mu.Unlock()
+	if !declared {
+		return
+	}
+	t.signal()
+	// The controller owns status, and what it reads back about this target (its render fidelity,
+	// its remote revision) was proved against the repository that is no longer there.
+	m.enqueueGitTargetReconcile(gitDest)
+}
+
+// ForcedRecheckTargetsForTest lists the declared GitTargets whose next pass will re-anchor their
+// streams. It exists so a test in another package can assert which targets a recovery reached;
+// nothing in production calls it.
+func (m *Manager) ForcedRecheckTargetsForTest() []string {
+	t := m.triggers()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	forced := make([]string, 0, len(t.declares))
+	for key, intent := range t.declares {
+		if intent.forcePending() {
+			forced = append(forced, key)
+		}
+	}
+	return forced
+}
+
 // ForgetGitTargetDeclaration drops in-memory watch state for a deleted GitTarget, and tears down
 // its source cluster's context when it was the last GitTarget mirroring from it.
 //
@@ -58,13 +105,11 @@ func (m *Manager) tearDownGitTarget(gitDest types.ResourceReference) {
 	m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		_, hadPass := s.passes[gitDest.Key()]
 		_, hadLayout := s.layouts[gitDest.Key()]
-		_, hadRemote := s.remotes[gitDest.Key()]
-		if !hadPass && !hadLayout && !hadRemote {
+		if !hadPass && !hadLayout {
 			return false
 		}
 		delete(s.passes, gitDest.Key())
 		delete(s.layouts, gitDest.Key())
-		delete(s.remotes, gitDest.Key())
 		return true
 	})
 }

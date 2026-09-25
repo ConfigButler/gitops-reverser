@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -38,7 +39,11 @@ func TestGitTargetCleanup_ForgetsTheBranchTargetMapping(t *testing.T) {
 	require.True(t, ok, "precondition: the mapping is published")
 
 	r := &GitTargetReconciler{}
-	r.cleanupDeletedGitTarget(k8stypes.NamespacedName{Namespace: "team-a", Name: "mirror"}, logf.Log)
+	_ = r.cleanupDeletedGitTarget(
+		context.Background(),
+		k8stypes.NamespacedName{Namespace: "team-a", Name: "mirror"},
+		logf.Log,
+	)
 
 	_, ok = telemetry.CollectInt64Sum(reader, branchTargetsMetricName, map[string]string{
 		"gittarget_namespace": "team-a",

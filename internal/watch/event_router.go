@@ -58,38 +58,6 @@ func NewEventRouter(
 	}
 }
 
-// RouteEvent sends an event to the worker for (provider, branch).
-// The target info is used to lookup the worker, then the event is queued.
-// Returns an error if no worker exists for the given (provider, branch) combination.
-func (r *EventRouter) RouteEvent(
-	providerName, providerNamespace string,
-	branch string,
-	event git.Event,
-) error {
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		providerName, providerNamespace, branch,
-	)
-
-	if !exists {
-		return fmt.Errorf("no worker for provider=%s/%s branch=%s",
-			providerNamespace, providerName, branch)
-	}
-
-	if !worker.Enqueue(event) {
-		return fmt.Errorf("worker queue full for provider=%s/%s branch=%s; event dropped",
-			providerNamespace, providerName, branch)
-	}
-
-	r.Log.V(1).Info("Event routed to worker",
-		"provider", providerName,
-		"namespace", providerNamespace,
-		"branch", branch,
-		"operation", event.Operation,
-		"path", event.Path)
-
-	return nil
-}
-
 // ServiceCommitRequest is the controller's attach-then-poll seam (§6.4.3): it
 // resolves the GitTarget's branch worker, registers the CommitRequest attach
 // idempotently on that worker's FIFO event queue (bind the message to the author's

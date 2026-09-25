@@ -111,7 +111,7 @@ func TestAttach_NoOpenWindow(t *testing.T) {
 // same-author window finalizes it with the request's message and reports the SHA
 // (UC1, the "Save" button).
 func TestAttach_CommitsOpenWindow(t *testing.T) {
-	worker, _, remoteURL := setupCommitPushSplitWorker(t)
+	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	// lastPushAt left zero so the finalize's push fires immediately; the request is
@@ -143,7 +143,7 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 
 	// The reported SHA must match local HEAD (Committed means on the remote) and
 	// carry the attached message verbatim.
-	repo, err := gogit.PlainOpen(worker.repoPathForRemote(remoteURL))
+	repo, err := gogit.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -157,7 +157,7 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 // TestAttach_EmptyMessageUsesGeneratedMessage verifies an attach with no message
 // falls back to the generated grouped-commit message.
 func TestAttach_EmptyMessageUsesGeneratedMessage(t *testing.T) {
-	worker, _, remoteURL := setupCommitPushSplitWorker(t)
+	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
@@ -176,7 +176,7 @@ func TestAttach_EmptyMessageUsesGeneratedMessage(t *testing.T) {
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
 
-	repo, err := gogit.PlainOpen(worker.repoPathForRemote(remoteURL))
+	repo, err := gogit.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -417,7 +417,16 @@ func TestAttach_FinalizeFailureResolvesFailed(t *testing.T) {
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
 
-	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil, BranchWorkerLimits{})
+	worker := NewBranchWorker(
+		k8sClient,
+		logr.Discard(),
+		"test-repo",
+		"default",
+		"main",
+		RepoIdentity{URL: "file:///nonexistent/gitops-reverser-repo.git"},
+		nil,
+		BranchWorkerLimits{},
+	)
 	worker.ctx = ctx
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 

@@ -6,12 +6,21 @@ package git
 // destination: spec.url is immutable, so an operator deletes the object and creates it again with
 // the new URL (see GitProviderSpec).
 //
-// Nothing about that restarts the branch worker. Workers are keyed by
+// Nothing about that reaches a live branch worker. Workers are keyed by
 // (GitProvider namespace, GitProvider name, branch) and the GitTarget that owns the worker is
-// untouched, so the SAME worker meets the new repository — carrying the base trust it earned
-// against the old one. Each remote gets its own on-disk clone, so that trust is not merely stale,
-// it is about a checkout that does not exist at the new path: the cycle skips the fetch that would
-// have created it and fails on every write with "repository does not exist".
+// untouched, so the worker survives the repoint. It does not follow the provider to the new
+// repository: it is FOR the old one, and the WorkerManager replaces it at the GitTarget's next
+// reconcile (see worker_repo_identity_test.go).
+//
+// Following the provider's URL on every cycle is what produced #382: the cycle planned against
+// trust earned on the old repository, skipped the fetch that would have established the new
+// checkout, and every write from then on failed at "repository does not exist".
+//
+// Until the replacement arrives the worker does NOTHING, and that is deliberate rather than
+// incidental. It would otherwise be writing to a repository the operator has just pointed away
+// from, with credentials read from the object that now names a different one: the replacement is
+// the only thing that resolves it, and a replacement blocked by a failing Validated gate never
+// comes. So the mismatch fails the cycle loudly instead.
 
 import (
 	"os/exec"
@@ -26,59 +35,52 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// TestBaseTrust_RepointedProviderDoesNotInheritTheOldRepositorysTrust publishes to one remote,
-// repoints the provider at another, and requires the next publication to land on the new one.
-func TestBaseTrust_RepointedProviderDoesNotInheritTheOldRepositorysTrust(t *testing.T) {
+// TestRepoint_TheWorkerStopsRatherThanWriteWithTheNewProvidersCredentials. A repointed
+// GitProvider is noticed at the GitTarget's next reconcile, and until then the worker is still
+// live and still reads that provider on every cycle for credentials, commit identity and signing.
+// What it must not do is combine the two: its own repository with the replacement's credential.
+func TestRepoint_TheWorkerStopsRatherThanWriteWithTheNewProvidersCredentials(t *testing.T) {
 	f := newLedgerFixture(t, "repoint-provider", true)
 
 	f.publish("before-the-repoint")
 	require.True(t, f.worker.baseTrusted(), "a successful push leaves the base trusted")
 
-	second := f.repointProvider(t)
+	// Planned while the provider still agreed, so the refusal below is the write path's and not
+	// merely the planner's: both read the GitProvider, and both have to refuse.
+	events := []Event{configMapEvent("after-the-repoint", "alice", "team-a")}
+	write, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, events)
+	require.NoError(t, err)
 
-	// The write that follows must reach the new repository. Before trust was bound to the
-	// repository it was gained against, this failed with "open repository: repository does not
-	// exist" and kept failing, because nothing ever initialised the new checkout.
-	f.commit(false, "after-the-repoint")
-	f.push()
+	elsewhere := f.repointProvider(t)
 
-	assert.Equal(t, "after-the-repoint.yaml", firstConfigMapFileName(t, second),
-		"the write went to the repository the provider now names")
+	require.Error(t, f.worker.commitPendingWrites([]PendingWrite{*write}, false),
+		"the GitProvider names a repository this worker is not for")
+	_, err = f.worker.buildGroupedPendingWrite(f.worker.ctx, events)
+	require.Error(t, err, "and nothing new is planned against it either")
+	assert.Contains(t, err.Error(), "waiting to be replaced")
+
+	assert.NotContains(t, configMapFileNames(t, f.repoDir), "after-the-repoint.yaml",
+		"nothing more goes into the repository the operator has pointed away from")
+	assert.Empty(t, configMapFileNames(t, elsewhere),
+		"and nothing reaches the one the provider now names: a different worker serves that")
 }
 
-// TestBaseTrust_RepointIsNoticedEvenWhileWritesAreRetained is the other half. A worker holding
-// retained work skips the head-of-cycle guard entirely (a reset would destroy the local commits
-// those writes produced), so the identity check must not live behind that guard: the trust has to
-// be dropped on the cycle that skips it, or it would survive into the cycle that follows the
-// retained work and take that one straight past its fetch as well.
-//
-// The retained work itself cannot be rescued, and that is not this change's business: its local
-// commits are in the old clone, and the cycle fails at the open. That failure is identical before
-// and after base trust existed.
-func TestBaseTrust_RepointIsNoticedEvenWhileWritesAreRetained(t *testing.T) {
+// TestRepoint_WhatWasAlreadyWrittenIsUntouched is the other half of stopping. The worker refuses
+// the cycle; it does not undo, re-target or lose what it had already pushed, and its own checkout
+// is still the one it was always about.
+func TestRepoint_WhatWasAlreadyWrittenIsUntouched(t *testing.T) {
 	f := newLedgerFixture(t, "repoint-with-retained", true)
 
 	f.publish("before-the-repoint")
-	f.commit(false, "retained")
-	require.True(t, f.worker.baseTrusted())
+	require.Contains(t, configMapFileNames(t, f.repoDir), "before-the-repoint.yaml")
 
-	second := f.repointProvider(t)
+	elsewhere := f.repointProvider(t)
 
-	// A cycle with work in hand: the guard is skipped, so only the identity check can drop trust.
-	joining := []Event{configMapEvent("joins-the-cycle", "alice", "team-a")}
-	retained, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, joining)
-	require.NoError(t, err)
-	require.Error(t, f.worker.commitPendingWrites([]PendingWrite{*retained}, true),
-		"the local commits behind the retained writes are in the repository the provider no longer names")
-
-	assert.False(t, f.worker.baseTrusted(),
-		"the provider names a different repository than the one this trust was gained against")
-
-	// Once nothing is retained, that dropped trust is what makes the next cycle establish the new
-	// checkout rather than plan against a base it never had.
-	f.pending = nil
-	f.publish("after-the-retained-work")
-	assert.Equal(t, "after-the-retained-work.yaml", firstConfigMapFileName(t, second))
+	assert.Contains(t, configMapFileNames(t, f.repoDir), "before-the-repoint.yaml",
+		"a repoint is not a retraction of what is already in the old repository")
+	assert.Empty(t, configMapFileNames(t, elsewhere))
+	assert.Equal(t, f.sim.RepoURL, f.worker.repo.URL,
+		"and the worker still knows which repository it is for")
 }
 
 // repointProvider deletes the fixture's GitProvider and creates it again pointing at a second
@@ -109,27 +111,29 @@ func (f *ledgerFixture) repointProvider(t *testing.T) string {
 	return repoDir
 }
 
-// firstConfigMapFileName reads the name of the single ConfigMap document the worker wrote into the
-// given bare repository, which is how each test says "the write landed HERE".
-func firstConfigMapFileName(t *testing.T, bareRepoDir string) string {
+// configMapFileNames lists the ConfigMap documents on main in a bare repository, which is how each
+// test says "the write landed HERE, and nowhere else".
+func configMapFileNames(t *testing.T, bareRepoDir string) []string {
 	t.Helper()
 
 	repo, err := gogit.PlainOpen(bareRepoDir)
 	require.NoError(t, err)
 	ref, err := repo.Reference("refs/heads/main", true)
-	require.NoError(t, err)
+	if err != nil {
+		// No branch at all is the honest answer for a repository nothing ever wrote to.
+		return nil
+	}
 	commit, err := repo.CommitObject(ref.Hash())
 	require.NoError(t, err)
 	tree, err := commit.Tree()
 	require.NoError(t, err)
 
-	var found string
+	var found []string
 	require.NoError(t, tree.Files().ForEach(func(file *object.File) error {
 		if filepath.Ext(file.Name) == ".yaml" && filepath.Base(filepath.Dir(file.Name)) == "configmaps" {
-			found = filepath.Base(file.Name)
+			found = append(found, filepath.Base(file.Name))
 		}
 		return nil
 	}))
-	require.NotEmpty(t, found, "no ConfigMap document in the repository the provider now names")
 	return found
 }

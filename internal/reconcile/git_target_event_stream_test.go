@@ -87,6 +87,19 @@ var _ = Describe("GitTargetEventStream", func() {
 		Expect(stream.OnWatchEvent(createTestEvent("configmap", "full-queue", "UPDATE"))).NotTo(Succeed())
 		Expect(mockWorker.events).To(BeEmpty())
 	})
+
+	// A branch worker is REPLACED in its slot when its GitProvider names a different repository,
+	// and the stream holds its worker directly. One left pointing at the retired worker would go
+	// on enqueueing live events onto a stopped goroutine's queue, where they are accepted, never
+	// written, and silently dropped once it fills. The reconcile asks this before reusing a
+	// registered stream, so it is the whole guard against that.
+	It("reports which worker it still forwards to", func() {
+		Expect(stream.ServesWorker(mockWorker)).To(BeTrue())
+
+		replacement := &mockBranchWorker{events: make([]git.Event, 0)}
+		Expect(stream.ServesWorker(replacement)).To(BeFalse(),
+			"a stream that survived a worker replacement must not claim to serve the new one")
+	})
 })
 
 // mockBranchWorker implements the EventEnqueuer interface for testing. When full is set

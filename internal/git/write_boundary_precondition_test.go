@@ -261,7 +261,7 @@ func TestEventLoop_LiveFanInRefusal_FailsGitTargetAndCommitsNothing(t *testing.T
 
 	// The GitTarget fails, and Git is untouched: no commit was created on the worker's local
 	// branch, so nothing could ever be pushed.
-	localHead, err := gogit.PlainOpen(worker.repoPathForRemote(remoteURL))
+	localHead, err := gogit.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
 	head, err := localHead.Head()
 	require.NoError(t, err)

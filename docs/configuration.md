@@ -173,6 +173,36 @@ spec:
     - main
 ```
 
+### What this repository is being used for (`status.branches`)
+
+`status.branches` lists the branches the `GitTarget`s in this namespace are configured to write,
+with how many reference each:
+
+```yaml
+status:
+  branches:
+    - name: main
+      gitTargets: 2
+    - name: release
+      gitTargets: 1
+```
+
+An absent `branches` is a third state, and a different one: nothing has read the `GitTarget`s yet,
+so nothing here has been measured. An empty list is a measurement.
+
+It is a statement about **configuration**, not about the remote and not about what is running: a
+suspended or blocked `GitTarget` still says what the repository is for, and a branch that exists on
+the remote but nothing writes never appears. It is re-derived on the provider's own reconcile tick,
+so a `GitTarget` edit reaches it within one steady interval.
+
+`Ready=True` beside `branches: []` is the state it exists to make readable: **configured and
+unused**, which looks nothing like broken, and which otherwise takes a `GitTarget` listing to tell
+apart.
+
+More than one `gitTargets` on a branch means those folders share one branch worker, one clone and
+one queue. They still report their own health on their own conditions: one folder being refused
+says nothing about its siblings.
+
 ### `GitProvider.spec.secretRef`: the credentials Secret
 
 The referenced Secret holds the Git credentials. The examples use the **Kubernetes-native** keys,
@@ -832,9 +862,23 @@ status:
 
 Two things renew it. A **push** does, for free: the push session reads the remote's advertisement
 and the server names the hash it accepted, on the connection the push was making anyway. So a
-target that is publishing never needs anything else, and its revision moves with each push rather
-than lagging an interval behind. An **idle** target is asked to re-prove it on its reconcile tick;
-see [`--git-refresh-interval`](#keeping-an-idle-target-fresh---git-refresh-interval) below.
+target that is publishing never needs anything else. An **idle** target is asked to re-prove it on
+its reconcile tick; see
+[`--git-refresh-interval`](#keeping-an-idle-target-fresh---git-refresh-interval) below.
+
+**What is proved and what is published are two different rates.** An observation of a branch is
+one fact, and it reaches every `GitTarget` on that branch the moment it is proved, in memory and
+for nothing. Writing it to status is not free: ten folders sharing a branch would turn one commit
+into ten status writes, each invalidating every watcher's cached copy of the type. So each target
+publishes what it holds **when it reconciles** (no commit wakes anybody), and writes this stanza
+at most once a minute however often it reconciles. Push and read status immediately, and you may
+see the previous revision until that target's next tick.
+
+Two corrections skip the once-a-minute floor, though not the reconcile that carries them: the
+**first** observation, and **taking back** a revision that names a repository the target no
+longer points at (a recreated `GitProvider` with a different URL). And none of this promises
+anything about the branch itself: an unreachable remote yields no observation at all, which is
+exactly what the pair `revision` + `lastVerifiedAt` is there to say.
 
 `GitProvider.status.lastVerifiedAt` is the same word for the connection rather than the branch:
 when the credential and the repository were last proved together. It is never cleared, so
