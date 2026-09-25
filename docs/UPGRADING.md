@@ -15,7 +15,8 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 > throttle and talks to its source cluster **faster**. Run the check under
 > [Before you upgrade](#before-you-upgrade) first.
 
-Every change here is a name. Nothing behaves differently. The rules the names now follow are in
+Every change here is a name, and the controllers decide nothing differently; the one exception is
+the pruned throttle above. The rules the names now follow are in
 [`definitions.md`](definitions.md), and the plan is
 [`design/vocabulary-cleanup.md`](design/vocabulary-cleanup.md).
 

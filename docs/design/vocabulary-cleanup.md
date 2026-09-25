@@ -15,15 +15,17 @@ first, and named inconsistently everywhere the rules arrived late. This change w
 rules down ([`../definitions.md`](../definitions.md)) and then makes the surface obey them, in one
 breaking release, because every remaining problem is a user-visible string.
 
-Nothing here is a behavior change. Every item is a name.
+Every item is a name, and the controllers decide nothing differently. The one way a rename changes
+what a cluster sees is `spec.client`: a manifest still setting the old `spec.qps` has it pruned, and
+the provider falls back to the operator-wide throttle.
 
 ## Why one breaking release rather than a deprecation cycle
 
-Three of the items are condition reasons, which no schema can deprecate: a reason is a string a
+Thirteen of the items are condition reasons, which no schema can deprecate: a reason is a string a
 controller writes into `status`, so there is no field to retain, nothing to reject, and no admission
 point to warn from. The only way to change one is to change it, and the only way to give a user
 warning is a document. Spreading the change over two releases would therefore buy nothing for the
-majority of it while leaving two spellings of several concepts live in between, which is the state
+largest group while leaving two spellings of several concepts live in between, which is the state
 [`../definitions.md`](../definitions.md) rule 1 exists to end.
 
 The schema changes are small enough to ride along. Per

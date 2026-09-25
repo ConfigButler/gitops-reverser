@@ -118,7 +118,7 @@ decided), **design, decided** (decision made, not built), **partly built**, **bu
 **deferred** (parked, kept as a decision record). The label is the first thing in the page,
 so you never have to read a proposal to find out it already shipped.
 
-### Open — 17 pages
+### Open — 19 pages
 
 | Doc | Open question |
 |---|---|
