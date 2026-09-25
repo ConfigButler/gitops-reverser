@@ -56,7 +56,7 @@ say, its reason is `Succeeded`, the shared Flux reason `Ready=True` already carr
 | --- | --- | --- | --- |
 | `WatchRule`, `ClusterWatchRule` | `Ready` | `GitRepoConfigNotFound` | `GitProviderNotFound` |
 | `WatchRule`, `ClusterWatchRule` | `ResourcesResolved=True` | `Resolved` | `Succeeded` |
-| `WatchRule`, `ClusterWatchRule` | `ResourcesResolved=False` | `UnresolvedResources` | `ResourcesNotServed` |
+| `WatchRule`, `ClusterWatchRule` | `ResourcesResolved=False` | `UnresolvedResources` | `CatalogNotReady` |
 | `GitTarget` | `GitPathAccepted=True` | `GitPathAccepted` | `Succeeded` |
 | `GitTarget` | `RenderMatchesLive=True` | `RenderMatchesLive` | `Succeeded` |
 | `GitTarget` | `GitProviderReady=True` | `GitProviderReady` | `Succeeded` |
@@ -71,7 +71,7 @@ unchanged.
 **A reason is also a metrics label.** `gitopsreverser_resource_condition` carries the `reason` of
 `Ready`, `Reconciling` and `Stalled`, and three of the old reasons reach those on a rule:
 `GitRepoConfigNotFound`, `UnresolvedResources` and `Stalled`. A dashboard or alert selecting one of
-them **goes empty rather than erroring**; select `GitProviderNotFound`, `ResourcesNotServed` or
+them **goes empty rather than erroring**; select `GitProviderNotFound`, `CatalogNotReady` or
 `Failed`. The `True`-state reasons never reached the metric, because `Ready=True` was already
 `Succeeded`, but anything matching them in `kubectl` output or in `status.conditions` has to match
 on the condition type and status instead, which is what those reasons were restating.
@@ -86,9 +86,13 @@ on the condition type and status instead, which is what those reasons were resta
 | `GitTarget` | `status.retention.lastChangedTime` | `status.retention.lastChangedAt` |
 | `GitProvider` | `status.branches[].gitTargets` | `status.branches[].gitTargetCount` |
 
-Each holds the same value as before. The operator writes status, so there is nothing to migrate:
-the old field disappears and the new one appears on the next reconcile. Anything reading the old
-path reads empty. `GitTarget.status.streams` also carries `pendingSample`, the bounded list of
+Each holds the same value as before. The old field disappears as soon as the new CRDs are applied,
+and the new one appears on the next reconcile. Anything reading the old path reads empty.
+
+**A `CommitRequest` that had already finished keeps an empty `status.commit`.** The controller
+never reconciles a finished request again, so it still reads `Pushed=True` with no commit on it.
+Nothing is lost: the commit is in Git, which is the record. If you want the value on the object,
+read it before upgrading. `GitTarget.status.streams` also carries `pendingSample`, the bounded list of
 types not yet streaming that the rule kinds already reported, and `status.retention.mode` is
 validated against `Never`, `OnEvent` and `Always`, the values `spec.prune.mode` already allows.
 

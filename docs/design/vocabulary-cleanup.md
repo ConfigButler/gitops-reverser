@@ -112,7 +112,7 @@ spec the code does not currently obey. The `guide` rows cite it; the numbered ro
 | `Reconciling` | deleted | guide | unused in production code; `Progressing` (already a Flux alias) is what the controllers set |
 | `Checking` | deleted | 1 | unused in production code, asserted only by tests |
 | `Stalled` | `Failed` | guide | the one generic reason with no upstream equivalent. `fluxmeta` has no `Stalled`, so this aliases `FailedReason`. Used once, in `gittarget_dependency_status.go` |
-| `Resolved` / `UnresolvedResources` | `Succeeded` / `ResourcesNotServed` | 6 | on `ResourcesResolved`. The False reason currently inverts the noun order of its own type instead of naming a cause |
+| `Resolved` / `UnresolvedResources` | `Succeeded` / `CatalogNotReady` | 6 | on `ResourcesResolved`. The False reason inverted the noun order of its own type instead of naming a cause. The cause is the only one resolution can report: the discovery catalog is not ready. A selector matching nothing the cluster serves resolves `True`, watching zero types |
 
 The `Succeeded` collapse is the item most worth arguing about, so the argument is here rather than
 in a commit message. Six conditions currently answer "why are you True?" with their own name. The
@@ -215,7 +215,9 @@ one, which is the distinction Flux is making and which naming both the same thin
 
 Status fields are the easy case and the matrix says why: the operator writes them, no user manifest
 carries them, and nothing is pruned from a spec. A renamed status field is absent for one
-reconcile and then present under its new name. The enum narrowing on `status.retention.mode` is safe
+reconcile and then present under its new name, except on a finished `CommitRequest`, which is
+never reconciled again and keeps an empty `status.commit`; the commit is in Git. The enum narrowing
+on `status.retention.mode` is safe
 for the same reason: only the controller writes it, and it only ever writes the three values the
 enum lists.
 
@@ -499,7 +501,7 @@ status:
   conditions:
     - type: ResourcesResolved
       status: "False"
-      reason: ResourcesNotServed     # rule 6: name the cause
+      reason: CatalogNotReady        # rule 6: name the cause
     - type: ResourcesResolved
       status: "True"
       reason: Succeeded

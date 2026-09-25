@@ -74,7 +74,8 @@ target", a "type" or a "scope".
 
 **Stream.** The open watch behind one cell, and its readiness state: `Replaying`, `Streaming` or
 `Blocked`. A stream is a thing that runs; a cell is a thing that is selected. `status.streams` on a
-`GitTarget` or a rule is a count of streams, keyed by cell.
+`GitTarget` or a rule counts by **type**, not by cell: one resource watched in three namespaces is
+three cells and one entry in the count, in the weakest of their three states.
 
 **Replay.** The initial burst of events a watch opened with `sendInitialEvents=true` delivers before
 `initial-events-end`. It is the API server's own term for it.
@@ -232,7 +233,7 @@ of a referenced `GitTarget` and is not available for source authorization, which
 `SourceNamespaceAuthorized` exists separately.
 
 A reason names a cause, not a negated type. `UnresolvedResources` inverts the noun order of its own
-condition; `ResourcesNotServed` names what happened. A reason also never repeats a word the condition
+condition; `CatalogNotReady` names what happened. A reason also never repeats a word the condition
 type already carries, and never says "yet": the `Unknown` status already says it.
 
 ### 7. An enum value we invent is PascalCase; a value that names something else keeps its spelling
