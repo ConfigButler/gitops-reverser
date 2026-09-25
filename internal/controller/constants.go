@@ -160,22 +160,20 @@ const (
 	// a single 5-minute fallback for the GitProvider, GitTarget, WatchRule, and
 	// ClusterWatchRule reconcilers. The fast stream-settle loop below is separate.
 	RequeueSteadyInterval = 5 * time.Minute
-	// RemotePublicationInterval bounds how often one GitTarget writes status.remote: at most one
-	// such write per target per interval, whatever the branch's commit rate.
+	// RemotePublicationInterval is the FLOOR on how often one GitTarget writes status.remote: at
+	// most one such write per target per interval, whatever the branch's commit rate.
 	//
-	// It is deliberately not the reconcile cadence and not the refresh interval. Those two say how
-	// often a target LOOKS at its world; this says how often it is allowed to write one stanza of
-	// its status, which is a cost paid by every watcher of the type. A target holding something
-	// newer than what it published requeues on the remainder of this interval, so the number is a
-	// real ceiling on the lag rather than a side effect of the 5-minute tick.
+	// It is a floor and not a deadline. What a target publishes is what it holds when it
+	// reconciles, so the lag is its own cadence; this only stops a target reconciling in a tight
+	// loop from writing the stanza every time. The one place it also acts as a delay is a
+	// reconcile that has just ASKED the remote where the branch is, which comes back after this
+	// long to publish the answer rather than leaving it undelivered for a tick.
 	//
-	// One minute: short enough that "where is my branch" is a current answer for a human reading
-	// kubectl, long enough that ten folders sharing a busy branch cost ten status writes a minute
-	// instead of ten per commit.
+	// One minute: short enough that a target being asked questions answers promptly, long enough
+	// that ten folders sharing a busy branch cost ten status writes a minute, not ten per commit.
 	RemotePublicationInterval = 1 * time.Minute
-	// DefaultGitRefreshInterval is how often an IDLE branch's remote state is re-proved, and the
-	// quantizer status.remote's clock is written against. A target that is publishing renews its
-	// observation on every push and never waits for this.
+	// DefaultGitRefreshInterval is how often an IDLE branch's remote state is re-proved. A target
+	// that is publishing renews its observation on every push and never waits for this.
 	DefaultGitRefreshInterval = 10 * time.Minute
 	// RequeueStreamSettleInterval is the requeue interval while a Ready GitTarget still
 	// has streams pending replay completion. Stream status is computed during reconcile, so

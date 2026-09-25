@@ -1208,18 +1208,19 @@ bursts. Heal resyncs that arrive during a window are deferred and drained at the
 
 ### Local clones and conflict retry
 
-Local clones live under
-`/tmp/gitops-reverser-workers/{provider namespace}/{provider}/{branch-component}/repos/{url-digest}`. The
-leading segments are exactly the `(provider namespace, provider, branch)` tuple that identifies the
-[BranchWorker](../internal/git/branch_worker.go). `{branch-component}` is the branch rendered as **one**
-path component ([`branchPathComponent`](../internal/git/branch_worker.go)): a readable prefix for whoever
-is looking at the directory, plus a digest of the raw name. Branch names contain slashes, and joining one
-in would make `release/v1`'s directory a child of `release`'s, which is data loss the moment a retired
-worker deletes its own tree. The final `{url-digest}` segment is a short digest of `GitProvider.spec.url`
-(a truncated SHA-256 of the remote URL, [`repoCacheKey`](../internal/git/branch_worker.go)), **not** a
-commit hash. A worker is about exactly one repository (see below), so that segment no longer separates
-two destinations inside one worker: it is stable for the worker's whole life, and the worker reuses one
-clone throughout. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
+Local clones live under `/tmp/gitops-reverser-workers/{provider UID}/{branch-component}`. The first
+segment is the `GitProvider`'s `metadata.uid`: globally unique, and minted fresh by the API server for
+every object, so it says which **incarnation** of the provider this is. `spec.url` is immutable and a
+repoint is therefore a recreate, which means a replacement worker cannot inherit, share, or delete the
+directory its predecessor was using. Two providers naming one repository do not share a checkout
+either. A worker built with no provider behind it (the CLI, and tests) has no UID to be unique by and
+falls back to a digest of its remote.
+
+`{branch-component}` is the branch rendered as **one** path component
+([`branchPathComponent`](../internal/git/branch_worker.go)): a readable prefix for whoever is looking at
+the directory, plus a digest of the raw name. Branch names contain slashes, and joining one in would make
+`release/v1`'s directory a child of `release`'s, which is data loss the moment a retired worker deletes
+its own tree. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
 remote diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
