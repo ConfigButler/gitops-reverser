@@ -104,6 +104,12 @@ not merge across authors, which is why attribution can be per-commit.
 **Publication.** One commit-and-push cycle by a branch worker. The thing a `GitTarget` reports in
 `status.remote`.
 
+**Commit.** A bare Git commit hash, wherever one appears in the API: `status.remote.commit`,
+`CommitRequest.status.commit`, `status.placement.resolvedAtCommit`. Not "sha", which names an
+algorithm Git is in the middle of changing, and not "revision", which Flux uses for a polymorphic
+identifier that may be a tag, a chart version or a composite like `main@sha1:<hash>`. If this project
+ever needs that composite, `revision` is the word waiting for it.
+
 **Placement.** Where in the folder a document lands, and what governs it. Resolved by a scan, and
 reported in `status.placement` with a **mode**: `Plain` (no kustomization), `KustomizeRoot` (one
 kustomization, self-contained) or `KustomizeOverlay` (one kustomization that also renders a base
@@ -258,22 +264,47 @@ Where they disagree about a *name* we are mirroring, follow Flux, which is the `
 An enum on a status field carries the same `+kubebuilder:validation:Enum` as the spec field of the
 same type. A status mirror of a spec enum with no enum marker is a defect.
 
-### 8. Printer columns shorten a name, never rename a concept
+### 8. Printer columns: a dependency projection gets none, and a header may shorten but not rename
 
-A condition's column header is the condition type, or the condition type with a leading qualifier
-dropped. `SourceClusterReachable` may print as `SourceReachable`. `AuditFactsReceived` may print as
-`FactsReceived`. It may not print as `Facts`, which is a different word and does not lead the reader
-back to the condition they now have to describe.
+**Which conditions get a column.** Every condition a controller sets gets one, at `priority=1` unless
+an operator needs it in the default four, with one exclusion: a condition that merely **projects
+another object's readiness** gets no column at all. `Ready`'s reason already names the dependency that
+is not ready (`GitProviderNotReady`, `ClusterProviderNotReady`), and the detail an operator then needs
+lives on the object being projected, which is where they have to go anyway. A column for it repeats
+the default output one place to the right and then sends the reader somewhere else.
 
-Drop a qualifier only when no sibling column collides after the drop. `GitProviderReady` stays
-spelled out because `ClusterProviderReady` sits next to it, and `ProviderReady` beside
-`ClusterProviderReady` reads as a general case and a special case of one thing rather than two
-peers.
+This is deliberately narrower than "drop any column whose state is already legible from `Ready`'s
+reason", which sounds like the same rule and is not. Because the trio takes its reason from the
+worst-ranked gate, that wider test would condemn nearly every domain column we have: a stalled
+`GitPathAccepted` or `RenderMatchesLive` also surfaces as `Ready`'s reason. The difference is that
+those report **this** object's own work, so a column showing one of them `True` beside `Ready=False`
+tells an operator which gates are fine, which no reason can. A projection has no such content: it is
+a pointer, and `Ready` already carries the pointer.
 
-Every condition a controller sets gets a column, at `priority=1` unless an operator needs it in the
-default four. Every kind's columns are `<identity>`, `Ready`, `Reason`, ... , `Message`, `Age`, in
-that order: the first column is the kind's defining fact when it has one (`URL`, `GitTarget`) and
-`Ready` when it does not. A column holding `Ready`'s message is named `Message`, not `Status`.
+**How a header may be shortened.** A header may drop any tokens, as long as what remains still names
+the same subject and cannot be read as naming another column's subject. This is not a rule about
+length or about which end of the name is cut.
+
+`SourceClusterReachable` may print as `SourceReachable`: nothing else in that output is about the
+source. `AuditFactsReceived` may print as `FactsReceived`, but not as `Facts`, which is a different
+word and does not lead back to the condition to describe.
+
+`GitProviderReady` may not print as `GitReady`, and `ClusterProviderReady` may not print as
+`ClusterReady`, which is the worked case for why the test is about subjects rather than length.
+`GitReady` would sit beside `GitPathAccepted`, where `Git` means the repository, so it reads as a
+claim about Git rather than about the `GitProvider` object. `ClusterReady` would sit beside
+`SourceReachable`, which is about the cluster itself, so it invites the reader to wonder how a cluster
+being ready differs from it being reachable. `Provider` is the token that says "the config object, not
+the thing it names", and it is the one token neither name can lose. Both are moot now that a
+projection gets no column, and the pair is kept here as the example.
+
+**Order.** `<identity>`, `Ready`, `Reason`, the domain columns, `Message`, `Age`. The first column is
+the kind's defining fact when it has one (`URL`, `GitTarget`) and `Ready` when it does not. A column
+holding `Ready`'s message is named `Message`, not `Status`.
+
+**What a column reads.** `.status`, so True/False/Unknown lines up down the output. A column reads
+`.reason` only where the condition's whole content is which of several named states it is in, and
+never for a binary gate.
 
 A column may be fed by a field that exists only to feed it. That is the one sanctioned exception to
 "do not duplicate between conditions and status fields", and it is
@@ -299,4 +330,5 @@ outage.
 | attribution (bare) | author attribution, render attribution | two unrelated concepts share the word |
 | `GitRepoConfig` | `GitProvider` | the kind was renamed; the string survived in two reasons |
 | failure, error (for a declined write) | refusal | the operator worked correctly |
+| sha, revision (for a commit hash) | commit | `revision` is Flux's word for a polymorphic identifier, and is reserved for one |
 | namespace access (bare) | access, or source namespace | two directions, two names |

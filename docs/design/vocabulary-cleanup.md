@@ -129,28 +129,85 @@ Cheap, visible, and breaking only for someone parsing `kubectl get` output, whic
 
 | Kind | Now | Becomes | Rule |
 |---|---|---|---|
+| `GitTarget` | `ProviderReady`, `ClusterProviderReady` | **both removed** | 8 |
 | `WatchRule`, `ClusterWatchRule` | `Target` | `GitTarget` | 1 |
 | `ClusterProvider` | `Facts` | `FactsReceived` | 8 |
-| `GitTarget` | `ProviderReady` | `GitProviderReady` | 8 |
 | `GitProvider`, `ClusterProvider`, `GitTarget` | `Status` | `Message` | 8 |
 | `WatchRule`, `ClusterWatchRule`, `CommitRequest` | (absent) | `Message` added | 8 |
 | `WatchRule`, `ClusterWatchRule` | (absent) | `ResourcesResolved` added | 8 |
-| `GitTarget` | (absent) | `Validated`, `EncryptionConfigured` added | 8 |
 
-`SourceReachable` stays as it is: it is a qualifier drop with no sibling collision, which rule 8
-permits. `GitTarget`'s wide output goes from twenty columns to twenty-three, and that is the point at
-which rule 8's "every condition gets a column" starts costing something. It is still the right
-default, because the alternative is an operator who cannot see a condition exists without describing
-the object.
+The first row replaces what an earlier draft of this page proposed, and the reasoning is worth keeping
+because it changed the rule rather than the row. The draft renamed `ProviderReady` to
+`GitProviderReady` so it would stop reading as the general case of `ClusterProviderReady` beside it.
+Shortening the other way (`GitReady` and `ClusterReady`, symmetric and narrower) does not work:
+`GitReady` sits beside `GitPathAccepted`, where `Git` is the repository, and `ClusterReady` sits beside
+`SourceReachable`, which is about the cluster itself. `Provider` is the token that distinguishes the
+config object from the thing it names, so neither name can lose it.
+
+Which left the question worth asking: why are those two columns there at all? Both only project another
+object's `Ready`, and `Ready`'s own reason on the `GitTarget` already carries `GitProviderNotReady` or
+`ClusterProviderNotReady` when either is why the target is not ready. They are the first two
+progressing contributors in `internal/controller/gittarget_controller.go`, so in the ordinary
+single-cause case the default `REASON` column has already said it. The column repeats it and then
+sends the reader to the other object, which is where the detail lives anyway.
+
+So rule 8 now excludes a dependency-readiness projection from getting a column, and the asymmetry
+disappears without a rename. `GitTarget`'s output goes from twenty columns to eighteen. The two
+conditions are still set, still in `kubectl describe`, and still aggregated into `Ready`.
+
+`SourceReachable` stays: dropping `Cluster` collides with nothing, which rule 8 permits. `Validated`
+and `EncryptionConfigured` are **not** given columns after all; they were in the draft under the
+"every condition gets a column" clause, and dropping them is the same judgment applied consistently to
+`GitTarget`'s own-spec gates.
+
+**One consequence to accept or reject.** The same rule condemns the existing `GitTargetReady` column
+on `WatchRule` and `ClusterWatchRule`: it too projects another object's `Ready`, and it literally
+copies that object's reason (`gitTargetReadyReasonIsStalled` in `internal/controller/stream_status.go`
+switches on `GitTarget` reasons). Dropping it would be consistent. It is listed here rather than in the
+table because it was not part of the audit, and a rule discovering extra work is exactly the moment to
+say so out loud instead of quietly widening the change.
+
+`ResourcesResolved` is not a projection and keeps its new column. It reports this rule's own work,
+answering whether `spec.rules[]` matched anything the cluster serves, and no other object holds that
+answer.
 
 ### Status fields
 
 | Kind | Now | Becomes | Prune fails | Strategy |
 |---|---|---|---|---|
+| `CommitRequest` | `status.sha` | `status.commit` | n/a, status | delete and rename |
+| `GitTarget` | `status.remote.revision` | `status.remote.commit` | n/a, status | delete and rename |
+| `GitTarget` | `status.placement.resolvedAtRevision` | `resolvedAtCommit` | n/a, status | delete and rename |
+| `CommitRequest` | column `SHA` | column `Commit` | n/a | follows the field |
 | `GitTarget` | `status.retention.lastChangedTime` | `lastChangedAt` | n/a, status | delete and rename |
 | `GitProvider` | `status.branches[].gitTargets` | `gitTargetCount` | n/a, status | delete and rename |
 | `GitTarget` | `status.retention.mode` with no enum | gains the `PruneMode` enum | n/a | narrow, the cheapest row in the matrix |
 | both rule kinds and `GitTarget` | `WatchRuleStreamsStatus` + `GitTargetStreamsStatus` | one `StreamsStatus` | n/a | Go-level only; `GitTarget` gains an optional `pendingSample` |
+
+#### One commit hash, three field names
+
+`CommitRequest.status.sha`, `GitTarget.status.remote.revision` and
+`GitTarget.status.placement.resolvedAtRevision` all hold the same kind of value: a bare 40-character
+commit hash. Verified rather than assumed, at the three places each is written:
+`pw.CommitSHA.String()` in `internal/git/branch_worker.go`, `outcome.Head.String()` and
+`report.HEAD.Sha` for the remote observation, and `head.Hash().String()` in `worktreeRevision`. One
+concept, two words, which is rule 1.
+
+Neither of the two words is the right one, and Flux says why in its own doc comments. Its
+`Artifact.Revision` is "a human readable identifier traceable in the origin source system. It can be
+a Git commit SHA, Git tag, a Helm index timestamp, a Helm chart version, etc.", so `revision` is
+deliberately polymorphic across source kinds, and its Git form in `v1` is composite
+(`main@sha1:<hash>`) rather than a bare hash. Its `GitRepository.spec.ref.commit` is documented as
+"Commit SHA to check out", which is the bare hash. And Flux has no `sha` field anywhere in any of its
+APIs.
+
+So the word for a bare Git commit hash is **`commit`**. It is what Flux calls that value, it is one
+word for all three fields, and it drops an algorithm name that Git's SHA-256 transition makes a poor
+choice for a field. `revision` is left available for a composite identifier if this project ever needs
+one, which is the distinction Flux is making and which naming both the same thing would destroy.
+
+`status.placement.resolvedAtRevision` becomes `resolvedAtCommit`, which also lands it on rule 4: the
+`At` names a point, and what follows now says what kind of point.
 
 Status fields are the easy case and the matrix says why: the operator writes them, no user manifest
 carries them, and nothing is pruned from a spec. A renamed status field is absent for one
@@ -259,7 +316,7 @@ marker.
 ## Worked before and after, per kind
 
 The tables above name strings without showing where they sit. This section is the same change seen
-from `kubectl`. Column rows are the real current headers, taken from `config/crd/bases`; status
+from `kubectl`. Column rows are the current headers, taken from `config/crd/bases`; status
 snippets show only the fields and reasons this change touches.
 
 ### GitProvider
@@ -355,6 +412,11 @@ status:
     - type: GitProviderReady
       status: "True"
       reason: GitProviderReady       # restates its own type
+  remote:
+    revision: 4f2c1ab9e3d5...        # a bare commit hash, called something else on CommitRequest
+    verifiedBy: Push
+  placement:
+    resolvedAtRevision: 4f2c1ab9e3d5...
   retention:
     mode: OnEvent                    # no enum on the schema, unlike spec.prune.mode
     retainedDocuments: 0
@@ -375,6 +437,11 @@ status:
     - type: GitProviderReady
       status: "True"
       reason: Succeeded
+  remote:
+    commit: 4f2c1ab9e3d5...          # rule 1: one word for one concept
+    verifiedBy: Push
+  placement:
+    resolvedAtCommit: 4f2c1ab9e3d5...
   retention:
     mode: OnEvent                    # now carries Enum=Never;OnEvent;Always, rule 7
     retainedDocuments: 0
@@ -392,7 +459,7 @@ guide both already ask for.
 
 ### WatchRule and ClusterWatchRule
 
-This is where the kind-renamed-but-string-did-not shows up, and it is the row an operator actually
+This is where the kind-renamed-but-string-did-not shows up, and it is the row an operator
 hits: point a rule at a `GitProvider` that does not exist and the reason names a kind that has not
 existed for a long time.
 
@@ -440,7 +507,7 @@ carrying: it selects no namespaces.
 NAME   GITTARGET   READY   REASON      SHA       AGE
   -o wide adds:  AUTHORATTRIBUTED  PUSHED  BRANCH
 # after
-NAME   GITTARGET   READY   REASON      SHA       AGE
+NAME   GITTARGET   READY   REASON      COMMIT    AGE
   -o wide adds:  AUTHORATTRIBUTED  PUSHED  BRANCH  MESSAGE
 ```
 
@@ -450,6 +517,7 @@ than the other way round.
 ```yaml
 # before
 status:
+  sha: 4f2c1ab9e3d5...              # the only field in the API that says "sha"
   conditions:
     - type: Pushed
       status: "True"
@@ -459,6 +527,7 @@ status:
       reason: AttributedFromAdmission  # already correct
 # after
 status:
+  commit: 4f2c1ab9e3d5...           # same value, the word Flux uses for it
   conditions:
     - type: Pushed
       status: "True"
