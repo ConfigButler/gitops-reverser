@@ -348,11 +348,6 @@ func NewBranchWorker(
 //nolint:gochecknoglobals // a test seam, like pushAtomicFn above
 var workerStateRoot = filepath.Join("/tmp", "gitops-reverser-workers")
 
-func repoCacheKey(remoteURL string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(remoteURL)))
-	return hex.EncodeToString(sum[:16])
-}
-
 // branchPathComponent renders a branch name as ONE directory component.
 //
 // Git branch names contain slashes — `release/v1` is ordinary — and joining one into a path makes
@@ -386,18 +381,29 @@ func branchPathComponent(branch string) string {
 // past what a filesystem accepts; the digest that follows is what carries the identity.
 const branchComponentReadableMax = 40
 
+// repoRootPath is where this worker keeps its checkout: the GitProvider's UID, then the branch.
+//
+// The UID is the whole of the first component, and it replaces three things that were there
+// before: the provider's namespace, its name, and a digest of the remote URL. A UID is globally
+// unique and is minted fresh by the API server for every object, so it says everything those
+// three said and one thing they could not — WHICH INCARNATION of the provider this is. A
+// repointed provider is a recreated one, so its worker cannot inherit, share, or delete the
+// directory its predecessor was using, and no digest has to stand in for that.
 func (w *BranchWorker) repoRootPath() string {
-	return filepath.Join(
-		workerStateRoot,
-		w.GitProviderNamespace,
-		w.GitProviderRef,
-		branchPathComponent(w.Branch),
-		"repos",
-	)
+	return filepath.Join(workerStateRoot, w.stateComponent(), branchPathComponent(w.Branch))
 }
 
-func (w *BranchWorker) repoPathForRemote(remoteURL string) string {
-	return filepath.Join(w.repoRootPath(), repoCacheKey(remoteURL))
+// stateComponent names this worker's state directory.
+//
+// A worker built with no GitProvider behind it — the CLI, and tests — has no UID to be unique by,
+// and every one of them would otherwise share one directory per branch. Those workers fall back to
+// a digest of the remote they were built for, which is the only identity they have.
+func (w *BranchWorker) stateComponent() string {
+	if w.repo.ProviderUID != "" {
+		return string(w.repo.ProviderUID)
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(w.repo.URL)))
+	return "url-" + hex.EncodeToString(sum[:16])
 }
 
 // repoPath is the checkout of the repository this worker is ABOUT.
@@ -409,26 +415,24 @@ func (w *BranchWorker) repoPathForRemote(remoteURL string) string {
 // the cycle planned against trust earned on the old repository and every write failed at
 // `open repository: repository does not exist`. A worker that cannot be pointed anywhere cannot
 // have that happen to it; the WorkerManager replaces it instead.
-func (w *BranchWorker) repoPath() string { return w.repoPathForRemote(w.repo.URL) }
+func (w *BranchWorker) repoPath() string { return w.repoRootPath() }
 
 // removeLocalState deletes everything this worker kept on disk: the clone of every remote it
-// worked with, under its own (provider namespace, provider, branch) directory.
+// worked with, under its own (provider UID, branch) directory.
 //
 // It is called only when a worker is being retired because nothing needs it any more, never on
 // shutdown — a restart wants the clones it left behind, and re-cloning every branch on every
 // restart is exactly the cost the on-disk cache exists to avoid.
 //
-// The identity guard is not defensive programming. repoRootPath joins the three identity fields
-// into a fixed prefix, so a worker with empty fields — which tests build — resolves to the ROOT of
-// every worker's state, and deleting that would take out the live workers next to it.
+// The identity guard is not defensive programming. repoRootPath joins the UID and the branch into
+// a fixed prefix, so a worker with neither — which tests build — resolves to the ROOT of every
+// worker's state, and deleting that would take out the live workers next to it.
 func (w *BranchWorker) removeLocalState() {
-	if w.GitProviderNamespace == "" || w.GitProviderRef == "" || w.Branch == "" {
+	if w.repo.IsZero() || w.Branch == "" {
 		w.Log.V(1).Info("Not removing worker state: the worker has no complete identity")
 		return
 	}
-	// The branch directory rather than the repos/ tree inside it, so nothing is left behind to
-	// accumulate one empty directory per branch the operator ever mirrored.
-	path := filepath.Dir(w.repoRootPath())
+	path := w.repoRootPath()
 	if err := os.RemoveAll(path); err != nil {
 		// Worth knowing and not worth failing for: the worker is gone either way, and what is
 		// left is disk rather than anything that can produce a wrong answer.

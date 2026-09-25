@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -205,10 +206,14 @@ func newTestBranchWorker(
 
 	objects := make([]client.Object, 0, len(extraObjects)+1)
 	objects = append(objects, extraObjects...)
+	// The UID is what a worker's on-disk state is keyed by, so two test workers built for the same
+	// remote under different provider names have to differ here as they would in a cluster.
+	providerUID := k8stypes.UID("uid-" + providerName)
 	objects = append(objects, &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      providerName,
 			Namespace: "default",
+			UID:       providerUID,
 		},
 		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
@@ -222,7 +227,7 @@ func newTestBranchWorker(
 		providerName,
 		"default",
 		branch,
-		RepoIdentity{URL: remoteURL},
+		RepoIdentity{ProviderUID: providerUID, URL: remoteURL},
 		nil,
 		BranchWorkerLimits{},
 	)

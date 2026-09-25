@@ -32,7 +32,7 @@ func TestPushAtomic_RejectionCarriesAdvertisedHash(t *testing.T) {
 	f.contend("OUTSIDE.md", "from-another-writer\n")
 	contendingHash := plumbing.NewHash(revParseMain(t, f.repoDir))
 
-	repo, err := gogit.PlainOpen(f.worker.repoPathForRemote(f.sim.RepoURL))
+	repo, err := gogit.PlainOpen(f.worker.repoPath())
 	require.NoError(t, err)
 
 	_, err = PushAtomic(f.worker.ctx, repo, f.worker.pushCycleRootHash,
@@ -67,7 +67,7 @@ func TestRunPushCycle_MovedRemote_DoesNotRefetchTheHash(t *testing.T) {
 	// The replay still has to land, or the saving would be bought with a dropped write.
 	remoteHash := revParseMain(t, f.repoDir)
 	assert.NotEmpty(t, remoteHash)
-	local, err := gogit.PlainOpen(f.worker.repoPathForRemote(f.sim.RepoURL))
+	local, err := gogit.PlainOpen(f.worker.repoPath())
 	require.NoError(t, err)
 	localRef, err := local.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)

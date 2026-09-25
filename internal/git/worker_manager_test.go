@@ -442,7 +442,7 @@ func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
 	worker, exists := manager.GetWorkerForTarget("repo1", testTargetNamespace, "main")
 	require.True(t, exists)
 	// Stand in for the clone a first publication would leave behind.
-	checkout := worker.repoPathForRemote("https://example.invalid/repo.git")
+	checkout := worker.repoPath()
 	require.NoError(t, os.MkdirAll(checkout, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(checkout, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
 
@@ -453,10 +453,10 @@ func TestReconcileWorkers_RemovesTheRetiredWorkersCheckout(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "the retired worker's checkout must go with it")
 }
 
-// TestRemoveLocalState_RefusesAWorkerWithNoIdentity. repoRootPath joins the three identity fields
-// into a fixed prefix, so a worker with empty fields resolves to the ROOT of every worker's state.
-// Deleting that would take out the live workers beside it, which is a far worse outcome than the
-// leak this reclaims.
+// TestRemoveLocalState_RefusesAWorkerWithNoIdentity. repoRootPath joins the identity and the
+// branch into a fixed prefix, so a worker with neither resolves to the ROOT of every worker's
+// state. Deleting that would take out the live workers beside it, which is a far worse outcome
+// than the leak this reclaims.
 func TestRemoveLocalState_RefusesAWorkerWithNoIdentity(t *testing.T) {
 	root := withTemporaryWorkerStateRoot(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "someone-elses-state"), 0o750))
@@ -473,17 +473,16 @@ func TestRemoveLocalState_RefusesAWorkerWithNoIdentity(t *testing.T) {
 // with it.
 func TestBranchPathComponent_KeepsOneBranchOutOfAnothersDirectory(t *testing.T) {
 	withTemporaryWorkerStateRoot(t)
-	parent := &BranchWorker{GitProviderNamespace: "shop", GitProviderRef: "repo1", Branch: "release"}
-	child := &BranchWorker{GitProviderNamespace: "shop", GitProviderRef: "repo1", Branch: "release/v1"}
+	provider := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
+	parent := &BranchWorker{repo: provider, Branch: "release"}
+	child := &BranchWorker{repo: provider, Branch: "release/v1"}
 
-	assert.NotContains(t, child.repoRootPath(), filepath.Dir(parent.repoRootPath())+string(filepath.Separator)+"repos",
-		"one branch's tree must not sit inside another's")
-	rel, err := filepath.Rel(filepath.Dir(parent.repoRootPath()), child.repoRootPath())
+	rel, err := filepath.Rel(parent.repoRootPath(), child.repoRootPath())
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(rel, ".."), "release/v1 must not be reachable from inside release")
 
 	// And names that sanitising alone would collapse stay apart.
-	lookalike := &BranchWorker{GitProviderNamespace: "shop", GitProviderRef: "repo1", Branch: "release-v1"}
+	lookalike := &BranchWorker{repo: provider, Branch: "release-v1"}
 	assert.NotEqual(t, child.repoRootPath(), lookalike.repoRootPath())
 }
 
@@ -497,4 +496,23 @@ func withTemporaryWorkerStateRoot(t *testing.T) string {
 	workerStateRoot = root
 	t.Cleanup(func() { workerStateRoot = previous })
 	return root
+}
+
+// TestRepoRootPath_IsKeyedByTheProviderIncarnation. The UID is the whole of the first path
+// component, which is what makes a repointed provider's worker unable to inherit, share or delete
+// the directory its predecessor was using: a repoint is a recreate, and a recreate mints a UID.
+func TestRepoRootPath_IsKeyedByTheProviderIncarnation(t *testing.T) {
+	withTemporaryWorkerStateRoot(t)
+	sameURL := "https://example.invalid/repo.git"
+	before := &BranchWorker{repo: RepoIdentity{ProviderUID: "uid-1", URL: sameURL}, Branch: "main"}
+	after := &BranchWorker{repo: RepoIdentity{ProviderUID: "uid-2", URL: sameURL}, Branch: "main"}
+
+	assert.NotEqual(t, before.repoRootPath(), after.repoRootPath(),
+		"the same URL under a recreated provider is a different checkout")
+
+	// A worker with no provider behind it — the CLI, and tests — has only its remote to be unique
+	// by, and two of them must still not share a directory.
+	cliA := &BranchWorker{repo: RepoIdentity{URL: "https://example.invalid/a.git"}, Branch: "main"}
+	cliB := &BranchWorker{repo: RepoIdentity{URL: "https://example.invalid/b.git"}, Branch: "main"}
+	assert.NotEqual(t, cliA.repoRootPath(), cliB.repoRootPath())
 }

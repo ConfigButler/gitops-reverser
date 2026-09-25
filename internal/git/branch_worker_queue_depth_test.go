@@ -87,7 +87,7 @@ func TestQueueDepthSamples_NotBlockedByASlowWorkerShutdown(t *testing.T) {
 
 // A replacement worker must not start while the one it replaces is still stopping.
 //
-// Workers for one BranchKey share an on-disk clone (repoPathForRemote is keyed by remote URL), so
+// Workers for one BranchKey share an on-disk clone (repoPath is keyed by the provider UID and branch), so
 // two live at once would operate on the same worktree. Detaching under m.mu and stopping outside it
 // keeps the scrape unblocked, but the guarantee has to survive that: lifecycleMu is what holds it.
 func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {

@@ -30,17 +30,6 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestRepoCacheKey_DeterministicAndDistinct(t *testing.T) {
-	a := repoCacheKey("https://example.com/foo.git")
-	b := repoCacheKey("https://example.com/foo.git")
-	c := repoCacheKey("https://example.com/bar.git")
-	d := repoCacheKey(" https://example.com/foo.git ")
-
-	require.Equal(t, a, b, "same URL should produce same cache key")
-	require.NotEqual(t, a, c, "different URL should produce different cache key")
-	require.Equal(t, a, d, "cache key should ignore surrounding whitespace")
-}
-
 // TestBranchWorker_EmptyRepository tests that BranchWorker properly handles empty repositories
 // that have no commits yet. This is a critical scenario for bootstrapping new repositories.
 func TestBranchWorker_EmptyRepository(t *testing.T) {
@@ -163,7 +152,7 @@ func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing
 	_, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "Bootstrap should not create the branch remotely")
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
@@ -222,7 +211,7 @@ func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathBootstrapsMissingFiles(
 	require.NoError(t, err)
 	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()), "Bootstrap should not create a remote commit")
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
@@ -265,7 +254,7 @@ func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *test
 	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -317,7 +306,7 @@ func TestBranchWorker_EnsurePathBootstrapped_ExistingFileNotOverwritten(t *testi
 	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	readmeContent, err := os.ReadFile(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
 	assert.Equal(t, customREADME, string(readmeContent), "Bootstrap must not overwrite existing files")
@@ -359,7 +348,7 @@ func TestBranchWorker_EnsurePathBootstrapped_EnableEncryptionLaterAddsSOPSConfig
 	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -423,7 +412,7 @@ func TestBranchWorker_EnsurePathBootstrapped_InvalidEncryptionSecretSkipsSOPSCon
 	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -477,7 +466,7 @@ func TestBranchWorker_EnsurePathBootstrapped_MissingSOPSKeySkipsSOPSConfig(t *te
 	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
@@ -558,7 +547,7 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	repoPath := worker.repoPathForRemote(remoteURL)
+	repoPath := worker.repoPath()
 	sopsConfig, err := os.ReadFile(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	require.NoError(t, err)
 	assert.Contains(t, string(sopsConfig), secretIdentity.Recipient().String())
@@ -649,7 +638,7 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
-	localRepoPath := worker.repoPathForRemote(remoteURL)
+	localRepoPath := worker.repoPath()
 	localRepo, err := git.PlainOpen(localRepoPath)
 	require.NoError(t, err)
 
@@ -719,7 +708,7 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 	worker.ctx = ctx
 
 	// Pre-create a stale local checkout while remote main is still at commit A.
-	staleRepoPath := worker.repoPathForRemote(remoteURL)
+	staleRepoPath := worker.repoPath()
 	staleReport, err := PrepareBranch(ctx, remoteURL, staleRepoPath, worker.Branch, nil)
 	require.NoError(t, err)
 	require.Equal(t, hashA.String(), staleReport.HEAD.Sha)

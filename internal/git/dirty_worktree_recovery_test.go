@@ -43,9 +43,9 @@ const leftoverPath = "team-b/leftover-from-a-failed-write.yaml"
 func stageLeftoverFromAFailedWrite(t *testing.T, worker *BranchWorker) {
 	t.Helper()
 
-	provider, err := worker.getGitProvider(worker.ctx)
+	_, err := worker.getGitProvider(worker.ctx)
 	require.NoError(t, err)
-	repoPath := worker.repoPathForRemote(provider.Spec.URL)
+	repoPath := worker.repoPath()
 
 	repo, err := gogit.PlainOpen(repoPath)
 	require.NoError(t, err)
@@ -91,9 +91,9 @@ func TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
-	provider, err := worker.getGitProvider(worker.ctx)
+	_, err := worker.getGitProvider(worker.ctx)
 	require.NoError(t, err)
-	repoPath := worker.repoPathForRemote(provider.Spec.URL)
+	repoPath := worker.repoPath()
 
 	// The cooldown is held, so write A commits locally and stays retained. That retention is what
 	// makes commitPendingWrites' own reset unavailable.
@@ -187,9 +187,9 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 			worker, _, _ := setupCommitPushSplitWorker(t)
 			createPlainGitTarget(t, worker, "team-a", "team-a")
 
-			provider, err := worker.getGitProvider(worker.ctx)
+			_, err := worker.getGitProvider(worker.ctx)
 			require.NoError(t, err)
-			repoPath := worker.repoPathForRemote(provider.Spec.URL)
+			repoPath := worker.repoPath()
 
 			loop := newBranchWorkerEventLoop(worker, time.Hour)
 			loop.lastPushAt = time.Now()

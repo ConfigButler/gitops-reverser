@@ -147,7 +147,7 @@ func TestEnsureWorker_ReplacementTakesTheOldCheckoutWithIt(t *testing.T) {
 	require.True(t, ok)
 
 	// Stand in for the clone a first publication would have left behind.
-	checkout := old.repoPathForRemote(oldURL)
+	checkout := old.repoPath()
 	require.NoError(t, os.MkdirAll(checkout, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(checkout, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600))
 
