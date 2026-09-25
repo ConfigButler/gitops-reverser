@@ -168,6 +168,14 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Constrained reverse actions for simple, known Kustomize-style mutations.
 
+- [ ] A `Writable` condition on `GitProvider`. A read probe rules out a bad URL, a dead credential
+  and a missing repository; it does not prove we can push, so a read-only token looks healthy right
+  up to the first write. A push session that sends nothing proves it, and behaves as expected
+  against GitHub. Two rules it needs: `False` only on an explicit refusal (a probe that could not
+  run leaves `Unknown`), and a failed probe never clears a proven denial, or a revoked token goes
+  green on the next network flap. Gating `Ready` on it is a second, separate release with an
+  upgrade note, because a provider that reads but cannot write goes `True` to `False` the day it
+  lands.
 - [ ] Better branching and promotion strategies.
 
 - [ ] Bi-directional GitOps alignment with controllers such as Flux and Argo CD.

@@ -98,14 +98,6 @@ lives in the window where nothing has been published. The one part that stood on
 shipped — the e2e rule barrier now requires `observedGeneration == generation` before it accepts
 `StreamsRunning=True`. The page carries the trigger conditions for picking the rest up.
 
-[`repository-status-surface.md`](design/repository-status-surface.md) fixes which object reports
-what about a mirror, and at what rate, with worked examples for two `GitTarget`s sharing one
-`GitProvider`, a `GitProvider` nothing mirrors to yet, and one whose credential cannot write. Its
-load-bearing distinction is delivery against publication: an observation reaches every target on a
-branch at once and in memory, while the status write it produces is sampled. It also settles how a
-wrong destination is found out without cloning it, and names the one kind of wrong that nothing can
-report at all.
-
 **The live workstream** is [`design/support-boundary/`](design/support-boundary/) — editing
 existing GitOps folders through the Kubernetes API. Start at
 [`support-contract.md`](design/support-boundary/support-contract.md) — **the single page that

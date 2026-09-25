@@ -33,7 +33,7 @@ import (
 // status.remote is SAMPLED onto that same tick: proving where the branch is and publishing it are
 // two different rates, and nothing in the data plane wakes a target because a branch moved. So
 // every wait on that stanza below is one steady tick wide, including the one after our OWN push.
-// That is the contract, not slack: see docs/design/repository-status-surface.md.
+// That is the contract, not slack: see docs/spec/status-conditions-guide.md.
 //
 // No reconcile-request annotation is used anywhere in this spec: an operator asking by hand is
 // precisely the case this feature exists to remove.
