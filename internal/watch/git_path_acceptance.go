@@ -3,6 +3,7 @@
 package watch
 
 import (
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -206,7 +207,7 @@ func (m *Manager) MarkTargetGitPathScanAccepted(gitDest types.ResourceReference)
 func acceptedGitPathStatus() GitPathAcceptanceStatus {
 	return GitPathAcceptanceStatus{
 		Accepted: true,
-		Reason:   "GitPathAccepted",
+		Reason:   fluxmeta.SucceededReason,
 		Message:  "GitTarget path accepted",
 	}
 }

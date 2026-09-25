@@ -140,9 +140,8 @@ const (
 	// and that answer is latched.
 	ReasonFactsReceived = "Received"
 
-	// ReasonValidated is the Validated=True reason.
-	ReasonValidated = "Validated"
-	// ReasonInCluster is the Validated=True reason for the in-cluster "default" provider.
+	// ReasonInCluster is the Validated=True reason for the in-cluster "default" provider. A remote
+	// provider that validates reports the shared ReasonSucceeded instead.
 	ReasonInCluster = "InCluster"
 	// ReasonKubeConfigInvalid is the Validated=False reason for a malformed or unsafe kubeconfig
 	// whose specific cause is carried in the message.
@@ -213,12 +212,10 @@ const (
 	// ReasonProgressing indicates that a stream or control-plane gate is still converging.
 	ReasonProgressing = fluxmeta.ProgressingReason
 
-	// ReasonChecking indicates that the controller is checking the resource status.
-	ReasonChecking = "Checking"
-	// ReasonReconciling indicates that reconciliation is still making progress.
-	ReasonReconciling = "Reconciling"
-	// ReasonStalled indicates that reconciliation is blocked until a human fixes the object or dependency.
-	ReasonStalled = "Stalled"
+	// ReasonFailed indicates that reconciliation is blocked until a human fixes the object or
+	// dependency. fluxmeta has no Stalled reason, and a reason restating the Stalled type would
+	// answer nothing, so this is the upstream Failed.
+	ReasonFailed = fluxmeta.FailedReason
 	// ReasonSecretNotFound indicates that the referenced secret was not found.
 	ReasonSecretNotFound = "SecretNotFound"
 	// ReasonSecretMalformed indicates that the referenced secret is invalid.

@@ -43,7 +43,7 @@ func TestRenderTokenDivergences_Fixtures(t *testing.T) {
 
 			got := RenderTokenDivergences(rendered, live)
 			if want.Condition == "True" {
-				require.Equal(t, "RenderMatchesLive", want.Reason)
+				require.Equal(t, "Succeeded", want.Reason)
 				require.Empty(t, got)
 				return
 			}

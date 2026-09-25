@@ -34,8 +34,7 @@ const (
 	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
 	WatchRuleReasonReady                 = ReasonSucceeded
-	WatchRuleReasonResourcesResolved     = "Resolved"
-	WatchRuleReasonUnresolvedResources   = "UnresolvedResources"
+	WatchRuleReasonResourcesNotServed    = "ResourcesNotServed"
 )
 
 // WatchRuleReconciler reconciles a WatchRule object.
@@ -237,10 +236,10 @@ func (r *WatchRuleReconciler) setResourceResolutionCondition(
 ) {
 	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)
 	status := metav1.ConditionFalse
-	reason := WatchRuleReasonUnresolvedResources
+	reason := WatchRuleReasonResourcesNotServed
 	if resolved {
 		status = metav1.ConditionTrue
-		reason = WatchRuleReasonResourcesResolved
+		reason = ReasonSucceeded
 	}
 	st.set(ConditionTypeResourcesResolved, status, reason, message)
 }

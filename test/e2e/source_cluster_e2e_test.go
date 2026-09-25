@@ -339,7 +339,7 @@ var _ = Describe("Manager source cluster / ClusterProvider attribution", Label("
 		DeferCleanup(func() { deleteClusterProvider(cpName) })
 		_, err := applyClusterProvider(cpName, cpName+"-kc", "", testNs)
 		Expect(err).NotTo(HaveOccurred())
-		verifyResourceCondition("clusterprovider", cpName, "", "Validated", "True", "Validated", "")
+		verifyResourceCondition("clusterprovider", cpName, "", "Validated", "True", "Succeeded", "")
 
 		target := "sc-unreachable-target"
 		_, err = applyGitTargetWithClusterProvider(testNs, target, providerName, "clusters/unreachable", cpName)

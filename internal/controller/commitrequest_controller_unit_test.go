@@ -164,7 +164,7 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 
 	got := fetchCommitRequest(t, c, "save-1")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
 	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionFalse, "")
 	requireCondition(t, got, ConditionTypeStalled, metav1.ConditionFalse, "")
@@ -283,7 +283,7 @@ func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
 
 	got := fetchCommitRequest(t, c, "save-fresh")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 }
 
@@ -434,7 +434,7 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 	assert.Zero(t, res.RequeueAfter, "webhook-disabled mode must not requeue waiting for an author")
 	got := fetchCommitRequest(t, c, "save-configured-author")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
 	assert.Equal(t, "c0ffee", got.Status.SHA)
 	require.Len(t, f.calls, 1, "the attach is sent immediately, with no attribution wait")
@@ -543,7 +543,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 			attributionFromAdmission,
 		)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 		requireCondition(t, cr, ConditionTypeReconciling, metav1.ConditionFalse, "")
 		requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionFalse, "")
 		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)

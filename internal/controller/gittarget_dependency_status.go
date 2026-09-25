@@ -23,7 +23,7 @@ func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) conditionV
 		}
 		if stalled := findCondition(target.Status.Conditions, GitTargetConditionStalled); stalled != nil &&
 			stalled.Status == metav1.ConditionTrue {
-			reason, message := conditionReasonMessage(stalled, ReasonStalled, "GitTarget is stalled")
+			reason, message := conditionReasonMessage(stalled, ReasonFailed, "GitTarget is stalled")
 			return conditionValue{Status: metav1.ConditionFalse, Reason: reason, Message: message}
 		}
 		reason, message := conditionReasonMessage(ready, ReasonProgressing, "GitTarget is not ready yet")

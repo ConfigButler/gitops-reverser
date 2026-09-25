@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -69,7 +70,6 @@ const (
 	GitTargetReasonMissingSecret        = "MissingSecret"
 	GitTargetReasonInvalidConfig        = "InvalidConfig"
 	GitTargetReasonSecretCreateDisabled = "SecretCreateDisabled"
-	GitTargetReasonGitPathAccepted      = "GitPathAccepted"
 	GitTargetReasonUnsupportedContent   = "UnsupportedContent"
 	// GitTargetReasonIgnoreShadowsManagedPath is the terminal reason for the one
 	// unrecoverable .gittargetignore footgun (docs/spec/gitpath-foreign-content-stringency.md
@@ -99,7 +99,6 @@ const (
 	// Git that nothing applies looks mirrored and is not. The remedy is the target's own template
 	// or path. The string must stay in sync with manifestanalyzer.GitPathRefusalReason.
 	GitTargetReasonUnrenderedPlacement    = "UnrenderedPlacement"
-	GitTargetReasonRenderMatchesLive      = "RenderMatchesLive"
 	GitTargetReasonRenderDoesNotMatchLive = "RenderDoesNotMatchLive"
 	GitTargetReasonRenderRechecking       = "Rechecking"
 
@@ -117,7 +116,7 @@ const (
 
 	// GitTargetReasonSuspended is Ready=True on a target whose spec.suspend stops it writing. It
 	// is True on purpose: suppressing writes on request is a configured outcome, not ill health.
-	GitTargetReasonSuspended = "Suspended"
+	GitTargetReasonSuspended = fluxmeta.SuspendedReason
 )
 
 const (
@@ -683,7 +682,7 @@ func gitPathAxis(gitPath watch.GitPathAcceptanceStatus) conditionValue {
 		}
 		return conditionValue{
 			Status:  metav1.ConditionTrue,
-			Reason:  GitTargetReasonGitPathAccepted,
+			Reason:  ReasonSucceeded,
 			Message: message,
 		}
 	}
@@ -702,7 +701,7 @@ func gitPathAxis(gitPath watch.GitPathAcceptanceStatus) conditionValue {
 func renderAxis(renderFidelity watch.RenderFidelityStatus) conditionValue {
 	value := conditionValue{
 		Status:  metav1.ConditionTrue,
-		Reason:  GitTargetReasonRenderMatchesLive,
+		Reason:  ReasonSucceeded,
 		Message: "Every rendered token matches live",
 	}
 	switch renderFidelity.State {

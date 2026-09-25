@@ -63,8 +63,6 @@ const (
 
 	// GitTargetReasonGitProviderNotReady is the GitProviderReady=False reason.
 	GitTargetReasonGitProviderNotReady = "GitProviderNotReady"
-	// GitTargetReasonGitProviderReady is the GitProviderReady=True reason.
-	GitTargetReasonGitProviderReady = "GitProviderReady"
 
 	// GitTargetConditionClusterProviderReady projects the referenced ClusterProvider's Ready onto
 	// the GitTarget, so one `kubectl get gittarget` shows whether the SOURCE cluster's provider is
@@ -76,8 +74,6 @@ const (
 	GitTargetConditionClusterProviderReady = "ClusterProviderReady"
 	// GitTargetReasonClusterProviderNotReady is the ClusterProviderReady=False/Unknown reason.
 	GitTargetReasonClusterProviderNotReady = "ClusterProviderNotReady"
-	// GitTargetReasonClusterProviderReady is the ClusterProviderReady=True reason.
-	GitTargetReasonClusterProviderReady = "ClusterProviderReady"
 )
 
 // resolveSourceClusterProvider reads the ClusterProvider this GitTarget mirrors through, ONCE per
@@ -128,7 +124,7 @@ func clusterProviderReadiness(cp *configbutleraiv1alpha3.ClusterProvider) condit
 	case c.Status == metav1.ConditionTrue:
 		return conditionValue{
 			Status:  metav1.ConditionTrue,
-			Reason:  GitTargetReasonClusterProviderReady,
+			Reason:  ReasonSucceeded,
 			Message: fmt.Sprintf("referenced ClusterProvider %q is Ready", name),
 		}
 	case c.Status == metav1.ConditionFalse:
@@ -183,7 +179,7 @@ func gitProviderReadiness(
 	case c.Status == metav1.ConditionTrue:
 		return conditionValue{
 			Status:  metav1.ConditionTrue,
-			Reason:  GitTargetReasonGitProviderReady,
+			Reason:  ReasonSucceeded,
 			Message: fmt.Sprintf("referenced GitProvider %s is Ready", key),
 		}
 	case c.Status == metav1.ConditionFalse:

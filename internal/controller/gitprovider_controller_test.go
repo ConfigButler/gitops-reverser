@@ -224,18 +224,18 @@ var _ = Describe("GitProvider Controller", func() {
 		})
 
 		It("should set initial checking condition", func() {
-			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonChecking, "Validating...")
+			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonProgressing, "Validating...")
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 			condition := gitProvider.Status.Conditions[0]
 			Expect(condition.Type).To(Equal("Ready"))
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(ReasonChecking))
+			Expect(condition.Reason).To(Equal(ReasonProgressing))
 			Expect(condition.Message).To(Equal("Validating..."))
 		})
 
 		It("should update an existing condition in place", func() {
-			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonChecking, "Checking...")
+			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonProgressing, "Checking...")
 			st.set(ConditionTypeReady, metav1.ConditionTrue, ReasonSucceeded, "Success!")
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
