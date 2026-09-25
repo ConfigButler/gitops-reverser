@@ -7,6 +7,119 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## One name per concept: reasons, columns, status fields and one spec block are renamed
+
+> [!WARNING]
+> **Breaking, in place, in `v1alpha3`.** There is no conversion and no alias for any old spelling.
+> One item fails **open**: a `ClusterProvider` that still sets `spec.qps` or `spec.burst` loses its
+> throttle and talks to its source cluster **faster**. Run the check under
+> [Before you upgrade](#before-you-upgrade) first.
+
+Every change here is a name. Nothing behaves differently. The rules the names now follow are in
+[`definitions.md`](definitions.md), and the plan is
+[`design/vocabulary-cleanup.md`](design/vocabulary-cleanup.md).
+
+### Before you upgrade
+
+`ClusterProvider.spec.qps` and `spec.burst` are `spec.client.qps` and `spec.client.burst`. The old
+fields are not refused, they are **pruned**: a manifest that still sets them applies cleanly, and
+the provider falls back to the operator-wide `--source-cluster-qps` and `--source-cluster-burst`.
+On a provider you throttled on purpose, that is more traffic. Find them before upgrading:
+
+```bash
+kubectl get clusterproviders -o json \
+  | jq -r '.items[] | select(.spec.qps != null or .spec.burst != null)
+      | "\(.metadata.name)\tqps=\(.spec.qps)\tburst=\(.spec.burst)"'
+```
+
+```yaml
+# before
+spec:
+  qps: 20
+  burst: 40
+# after
+spec:
+  client:
+    qps: 20
+    burst: 40
+```
+
+Apply the new spelling right after the upgrade, from the same manifest.
+
+### Condition reasons
+
+A reason no longer restates its condition type. Where a condition is `True` with nothing more to
+say, its reason is `Succeeded`, the shared Flux reason `Ready=True` already carries.
+
+| Kind | Condition | Old reason | Reason |
+| --- | --- | --- | --- |
+| `WatchRule`, `ClusterWatchRule` | `Ready` | `GitRepoConfigNotFound` | `GitProviderNotFound` |
+| `WatchRule`, `ClusterWatchRule` | `ResourcesResolved=True` | `Resolved` | `Succeeded` |
+| `WatchRule`, `ClusterWatchRule` | `ResourcesResolved=False` | `UnresolvedResources` | `ResourcesNotServed` |
+| `GitTarget` | `GitPathAccepted=True` | `GitPathAccepted` | `Succeeded` |
+| `GitTarget` | `RenderMatchesLive=True` | `RenderMatchesLive` | `Succeeded` |
+| `GitTarget` | `GitProviderReady=True` | `GitProviderReady` | `Succeeded` |
+| `GitTarget` | `ClusterProviderReady=True` | `ClusterProviderReady` | `Succeeded` |
+| `WatchRule`, `ClusterWatchRule` | `GitTargetReady=False`, from a stalled target with no reason of its own | `Stalled` | `Failed` |
+| `CommitRequest` | `Pushed=True` | `Pushed` | `Succeeded` |
+| `ClusterProvider` | `Validated=True`, remote provider | `Validated` | `Succeeded` |
+
+`Validated=True` on the in-cluster `default` provider is still `InCluster`, and `Suspended` is
+unchanged.
+
+**A reason is also a metrics label.** `gitopsreverser_resource_condition` carries the `reason` of
+`Ready`, `Reconciling` and `Stalled`, and three of the old reasons reach those on a rule:
+`GitRepoConfigNotFound`, `UnresolvedResources` and `Stalled`. A dashboard or alert selecting one of
+them **goes empty rather than erroring**; select `GitProviderNotFound`, `ResourcesNotServed` or
+`Failed`. The `True`-state reasons never reached the metric, because `Ready=True` was already
+`Succeeded`, but anything matching them in `kubectl` output or in `status.conditions` has to match
+on the condition type and status instead, which is what those reasons were restating.
+
+### Status fields
+
+| Kind | Old field | Field |
+| --- | --- | --- |
+| `CommitRequest` | `status.sha` | `status.commit` |
+| `GitTarget` | `status.remote.revision` | `status.remote.commit` |
+| `GitTarget` | `status.placement.resolvedAtRevision` | `status.placement.resolvedAtCommit` |
+| `GitTarget` | `status.retention.lastChangedTime` | `status.retention.lastChangedAt` |
+| `GitProvider` | `status.branches[].gitTargets` | `status.branches[].gitTargetCount` |
+
+Each holds the same value as before. The operator writes status, so there is nothing to migrate:
+the old field disappears and the new one appears on the next reconcile. Anything reading the old
+path reads empty. `GitTarget.status.streams` also carries `pendingSample`, the bounded list of
+types not yet streaming that the rule kinds already reported, and `status.retention.mode` is
+validated against `Never`, `OnEvent` and `Always`, the values `spec.prune.mode` already allows.
+
+### Printer columns
+
+| Kind | Old column | Column |
+| --- | --- | --- |
+| `GitTarget` | `ProviderReady`, `ClusterProviderReady` | removed |
+| `WatchRule`, `ClusterWatchRule` | `GitTargetReady` | removed |
+| `WatchRule`, `ClusterWatchRule` | `Target` | `GitTarget` |
+| `ClusterProvider` | `Facts` | `FactsReceived` |
+| `GitProvider`, `ClusterProvider`, `GitTarget` | `Status` | `Message` |
+| `CommitRequest` | `SHA` | `Commit` |
+| `WatchRule`, `ClusterWatchRule`, `CommitRequest` | | `Message` added, wide |
+| `WatchRule`, `ClusterWatchRule` | | `ResourcesResolved` added, wide |
+
+The removed columns only projected another object's `Ready`. The conditions are still set, still
+in `kubectl describe`, and still decide `Ready`, whose reason names the dependency when it is the
+cause. `Message` is second to last on every kind, immediately before `Age`.
+
+### Flag and chart values
+
+| Old | New |
+| --- | --- |
+| `--allow-insecure-git-http` | `--insecure-allow-git-http` |
+| `controllerManager.allowInsecureGitHTTP` | `controllerManager.insecureAllowGitHTTP` |
+| `controllerManager.gitRefreshInterval` | `git.refreshInterval` |
+
+The chart's values schema refuses the old keys, so `helm upgrade` fails naming them rather than
+ignoring them. A hand-written Deployment still passing `--allow-insecure-git-http` fails to start
+with `flag provided but not defined`.
+
 ## `GitTarget.status.remote` is sampled, and a `GitProvider` lists its branches
 
 **Not breaking for any field, and a change of promise for one.** `status.remote.revision` is a

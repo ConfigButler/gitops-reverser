@@ -540,7 +540,7 @@ drifted from the code, which is the argument against a second inventory rather t
 
 Metrics are not the whole surface. One misconfiguration is a **state**, not a rate, and it is
 reported as a condition on the object that carries it: `AuditFactsReceived` on `ClusterProvider`,
-with a default `FACTS` printer column.
+with a default `FACTSRECEIVED` printer column.
 
 A `ClusterProvider`'s readiness is watchable from Prometheus as
 `gitopsreverser_resource_condition{kind="ClusterProvider", type="Ready", status="False"} == 1`

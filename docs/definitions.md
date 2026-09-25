@@ -194,7 +194,7 @@ Kinds are PascalCase and singular. Fields are camelCase. A reference to another 
 `Ref` (`gitTargetRef`, `secretRef`, `knownHostsRef`), and a reference names the kind it points at,
 not the role it plays.
 
-A **block** groups two or more facts about one subject (`status.remote` holds a revision, a
+A **block** groups two or more facts about one subject (`status.remote` holds a commit, a
 timestamp and what proved it). A single fact stays flat (`GitProvider.status.signingPublicKey`).
 Do not create a block for one field, and do not leave three related fields flat.
 

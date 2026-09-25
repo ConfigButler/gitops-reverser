@@ -1,8 +1,9 @@
 # Vocabulary cleanup: one name per concept, as a breaking change
 
-> **design, decided**: not built yet, and nothing is open. The rules are in
-> [`../definitions.md`](../definitions.md); every call this page once left to the maintainer is
-> settled under "Decided: break it in place, and warn".
+> **built**: every item below shipped in one breaking release, recorded in
+> [`../UPGRADING.md`](../UPGRADING.md). The rules are in [`../definitions.md`](../definitions.md);
+> every call this page once left to the maintainer is settled under "Decided: break it in place,
+> and warn".
 > Index: [`../INDEX.md`](../INDEX.md)
 > Governed by: [`../facts/crd-upgrade-strategies.md`](../facts/crd-upgrade-strategies.md)
 > Completes: [`../config-flag-conventions.md`](../config-flag-conventions.md)
@@ -268,9 +269,11 @@ The four calls that were open, now settled:
 
 The one consequence worth writing down before it surprises someone: a renamed reason is also a
 **metrics label change**. `resource_condition` carries `reason`
-(`internal/controller/resource_condition_metrics.go`), so a dashboard or alert selecting on
-`reason="GitPathAccepted"` goes empty rather than erroring. That belongs in the `UPGRADING.md` entry
-next to the status-field renames, not only in the API section.
+(`internal/controller/resource_condition_metrics.go`), but only for `Ready`, `Reconciling` and
+`Stalled`. So the `True`-state collapse changes no series, because `Ready=True` was already
+`Succeeded`; the renames that do reach the metric are the three a rule's `Ready` can carry:
+`GitRepoConfigNotFound`, `UnresolvedResources` and `Stalled`. A dashboard selecting one of those goes
+empty rather than erroring, which is why the `UPGRADING.md` entry names them.
 
 ## Commit split
 
@@ -395,16 +398,15 @@ second answer that tells you something `Succeeded` cannot.
 The two provider gates sit side by side in wide output, and only one of them is abbreviated.
 
 ```text
-# before, -o wide (20 columns, the four provider/source ones shown)
-... STREAMSRUNNING   SOURCEREACHABLE   PROVIDERREADY   CLUSTERPROVIDERREADY   STATUS ...
-# after (23 columns)
-... STREAMSRUNNING   SOURCEREACHABLE   GITPROVIDERREADY   CLUSTERPROVIDERREADY   MESSAGE ...
-    plus VALIDATED and ENCRYPTIONCONFIGURED, which the controller sets and no column showed
+# before, -o wide (20 columns, the provider/source ones shown)
+... STREAMSRUNNING   SOURCEREACHABLE   PROVIDERREADY   CLUSTERPROVIDERREADY   STATUS ...   AGE
+# after (18 columns)
+... STREAMSRUNNING   SOURCEREACHABLE   ...   MESSAGE   AGE
 ```
 
 `SOURCEREACHABLE` stays: dropping `Cluster` from `SourceClusterReachable` collides with nothing.
-Dropping `Git` from `GitProviderReady` collides with `ClusterProviderReady`, which is why that one
-goes back to its full name.
+The two provider columns are gone rather than renamed, because each only projected another object's
+`Ready` (rule 8), and `MESSAGE` moves to second to last.
 
 ```yaml
 # before
@@ -477,6 +479,7 @@ rule   my-target    False   GitRepoConfigNotFound    0/0      4m
 # after
 NAME   GITTARGET    READY   REASON                  STREAMS   AGE
 rule   my-target    False   GitProviderNotFound      0/0      4m
+  -o wide: GITTARGETREADY is gone; RESOURCESRESOLVED and MESSAGE are added
 ```
 
 ```yaml

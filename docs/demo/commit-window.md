@@ -157,8 +157,8 @@ outcomes.
 kubectl get commitrequests -n gitops-reverser-quickstart-demo -o wide
 ```
 
-Look for `Pushed=True` and a `status.sha`. `Pushed` is a wide column; `Ready` and the commit SHA
-show without `-o wide`. A terminal `Ready=True` on its own does not prove a commit was pushed: it is
+Look for `Pushed=True` and a `status.commit`. `Pushed` is a wide column; `Ready` and the `COMMIT`
+column show without `-o wide`. A terminal `Ready=True` on its own does not prove a commit was pushed: it is
 also the outcome when there was nothing to save or no matching open window.
 
 Applying several resources sends separate API writes. The window groups their captured changes into

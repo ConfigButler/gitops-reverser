@@ -182,9 +182,9 @@ with how many reference each:
 status:
   branches:
     - name: main
-      gitTargets: 2
+      gitTargetCount: 2
     - name: release
-      gitTargets: 1
+      gitTargetCount: 1
 ```
 
 An absent `branches` is a third state, and a different one: nothing has read the `GitTarget`s yet,
@@ -242,8 +242,8 @@ certificates, and GitHub App credentials are **not supported**.
 
 Credentials are refused with `http://` GitProvider URLs by default. Use HTTPS or SSH for real
 repositories. For trusted in-cluster development Git servers that intentionally serve plain HTTP,
-start the manager with `--allow-insecure-git-http` or set
-`controllerManager.allowInsecureGitHTTP=true` in the Helm chart.
+start the manager with `--insecure-allow-git-http` or set
+`controllerManager.insecureAllowGitHTTP=true` in the Helm chart.
 
 > **A reused Secret needs write access.** Flux and Argo CD only *clone*, so their Git credentials are
 > often read-only (a read-only deploy key, a read-scoped token). GitOps Reverser **pushes** commits,
@@ -436,7 +436,7 @@ legitimate to grant on purpose, which is why it is explicit and defaults to fals
 
 `spec.kubeConfig` and `GitTarget.spec.clusterProviderRef` are immutable: changing either would silently
 make an existing materialization mean a different source cluster. Rotate credential *contents* in the
-referenced Secret instead. `qps` and `burst` optionally tune a remote provider's client; the
+referenced Secret instead. `client.qps` and `client.burst` optionally tune a remote provider's client; the
 `ClusterProvider` conditions validate its configuration, while the consuming `GitTarget` reports the
 live source reachability and stream state.
 
@@ -458,13 +458,13 @@ spec:
 ```
 
 The `AuditFactsReceived` condition reports whether that route has ever delivered, with a default
-`FACTS` printer column:
+`FACTSRECEIVED` printer column:
 
 ```console
 $ kubectl get clusterprovider
-NAME               READY   REASON      FACTS     AGE
-default            True    Succeeded   True      31m
-srcns-delegating   True    Succeeded   Unknown   4m
+NAME               READY   REASON      FACTSRECEIVED   AGE
+default            True    Succeeded   True            31m
+srcns-delegating   True    Succeeded   Unknown         4m
 ```
 
 - `True` / `Received`: a fact has arrived, and the message carries when the first one did.
@@ -792,7 +792,7 @@ status:
     mode: KustomizeOverlay              # Plain | KustomizeRoot | KustomizeOverlay
     renderRoot: .
     readOnlyBases: ["../../base"]
-    resolvedAtRevision: 9f3c1ab
+    resolvedAtCommit: 9f3c1ab
     resolvedAt: "2026-07-30T09:14:22Z"
 ```
 
@@ -813,7 +813,7 @@ status:
 - `readOnlyBases` are directories the folder renders but may never write to, spelled the way the
   overlay's own `resources:` spells them. Non-empty exactly when `mode` is `KustomizeOverlay`, and
   an edit landing on a document under one of them is what a `WriteBoundaryRefused` refusal is about.
-- `resolvedAtRevision` and `resolvedAt` date **the resolution**, not the last scan. They advance
+- `resolvedAtCommit` and `resolvedAt` date **the resolution**, not the last scan. They advance
   when the resolution changes, not on every scan of an unchanged folder, so a timestamp well in the
   past means the folder's shape has been stable, rather than that scanning stopped.
 
@@ -843,19 +843,19 @@ target has written anything:
 ```yaml
 status:
   remote:
-    revision: 4f2c1ab9e0...             # empty = the branch is not on the remote
+    commit: 4f2c1ab9e0...               # empty = the branch is not on the remote
     lastVerifiedAt: "2026-09-23T10:14:02Z"
     verifiedBy: Push                    # Push | Fetch
 ```
 
-- `revision` is where the branch is. Empty means the branch is not on the remote at all, which is
+- `commit` is where the branch is. Empty means the branch is not on the remote at all, which is
   not an error: a branch does not exist without a commit.
 - `lastVerifiedAt` answers **"has anything looked"**, which is the question
-  `placement.resolvedAtRevision` deliberately does not: that one dates the resolution, so an old
+  `placement.resolvedAtCommit` deliberately does not: that one dates the resolution, so an old
   value there means the folder's shape has been stable.
 - `verifiedBy` says what proved it. `Push` means the server accepted a ref update of ours, so this
-  revision is Reverser's own work. `Fetch` means it went and looked, and this is what was there.
-  A `Fetch` beside a revision none of your publications produced is how a **foreign push** to the
+  commit is Reverser's own work. `Fetch` means it went and looked, and this is what was there.
+  A `Fetch` beside a commit none of your publications produced is how a **foreign push** to the
   branch is read off `kubectl`.
 
 `kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.
@@ -872,13 +872,13 @@ for nothing. Writing it to status is not free: ten folders sharing a branch woul
 into ten status writes, each invalidating every watcher's cached copy of the type. So each target
 publishes what it holds **when it reconciles** (no commit wakes anybody), and writes this stanza
 at most once a minute however often it reconciles. Push and read status immediately, and you may
-see the previous revision until that target's next tick.
+see the previous commit until that target's next tick.
 
 Two corrections skip the once-a-minute floor, though not the reconcile that carries them: the
-**first** observation, and **taking back** a revision that names a repository the target no
+**first** observation, and **taking back** a commit that names a repository the target no
 longer points at (a recreated `GitProvider` with a different URL). And none of this promises
 anything about the branch itself: an unreachable remote yields no observation at all, which is
-exactly what the pair `revision` + `lastVerifiedAt` is there to say.
+exactly what the pair `commit` + `lastVerifiedAt` is there to say.
 
 `GitProvider.status.lastVerifiedAt` is the same word for the connection rather than the branch:
 when the credential and the repository were last proved together. It is never cleared, so
@@ -890,7 +890,7 @@ A target that is writing keeps its own view of Git current. One that has gone qu
 its previous answer indefinitely, because it is converged and its periodic passes publish status
 without touching Git, until somebody annotated it or it wrote again.
 
-`--git-refresh-interval` (Helm: `controllerManager.gitRefreshInterval`, default `10m`) bounds that.
+`--git-refresh-interval` (Helm: `git.refreshInterval`, default `10m`) bounds that.
 On the target's reconcile tick, a branch whose last observation is older than the interval is
 re-proved:
 
@@ -1061,7 +1061,7 @@ none of them is a failure: retention is the configured outcome, so no condition 
 
 ```console
 $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
-{"mode":"OnEvent","retainedDocuments":3,"lastChangedTime":"2026-07-21T13:20:00Z"}
+{"mode":"OnEvent","retainedDocuments":3,"lastChangedAt":"2026-07-21T13:20:00Z"}
 ```
 
 - `status.retention.retainedDocuments` is how many managed documents a converged mirror would not
@@ -1081,7 +1081,7 @@ counted, so a `Never` target can report `0` while still declining to mirror dele
 
 The count is refreshed when a resync runs, so it lags a change in the cluster until the next one.
 
-`lastChangedTime` records when the count or the effective mode last **changed**. It is not a
+`lastChangedAt` records when the count or the effective mode last **changed**. It is not a
 freshness signal and must not be read as one: a resync that re-reports the same numbers leaves it
 untouched, so an old timestamp is equally consistent with stable retention and with nothing having
 measured it since. The field is named for what it does.
@@ -1835,10 +1835,10 @@ Progress and outcome are reported through kstatus-compatible **conditions** (no 
 `kubectl get commitrequest` surfaces `Ready`, `AuthorAttributed`, and `Pushed`. Automation must stop
 on either `Ready=True` or `Stalled=True`; `kubectl wait --for=condition=Ready` alone keeps waiting on
 terminal failures. `Ready=True` includes successful no-commit outcomes. Require `Pushed=True` and
-`status.sha` for evidence that the request produced a pushed commit:
+`status.commit` for evidence that the request produced a pushed commit:
 
 - **Ready** (summary): `True` once the request reached a non-error terminal outcome. The `Ready`
-  condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.sha` set),
+  condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.commit` set),
   or a benign no-commit: `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. A failed finalize is
   `Ready=False` with reason `FinalizeFailed`.
 

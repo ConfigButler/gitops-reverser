@@ -298,7 +298,7 @@ Git edit can make that same captured API object require a real commit after repl
 A worker that stops while still holding the write fails the request with an error rather than
 leaving it to time out, so a shutdown mid-publication is reported as a failure and not as silence.
 
-Use `Pushed=True` plus `status.sha` when a particular commit must exist in Git. `Ready=True` also
+Use `Pushed=True` plus `status.commit` when a particular commit must exist in Git. `Ready=True` also
 covers successful outcomes with no commit. Status visibility follows the controller's polling
 cadence and Kubernetes status writes. The controller's safety timeout is `420s` from object
 creation; resolved worker outcomes are retained for `15m` with cleanup on subsequent resolutions.
