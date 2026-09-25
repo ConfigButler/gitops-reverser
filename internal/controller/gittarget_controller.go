@@ -849,7 +849,7 @@ func (r *GitTargetReconciler) publishGitObservations(
 
 	now := time.Now()
 	remote, remoteSeen := r.observeRemote(target, providerNS)
-	r.publishRemote(target, remote, remoteSeen, repo, now)
+	r.publishRemote(st, target, remote, remoteSeen, repo, now)
 	// Whether the refresh this reconcile goes on to enqueue will actually reach the remote: the
 	// worker spends a connection only when what it holds is older than the interval configured.
 	return r.GitRefreshInterval > 0 && (!remoteSeen || remote.Age(now) >= r.GitRefreshInterval)

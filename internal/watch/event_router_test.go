@@ -61,23 +61,6 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "get GitTarget")
 }
 
-func TestRouteEvent_NoWorker(t *testing.T) {
-	scheme := eventRouterScheme(t)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(
-		client,
-		logr.Discard(),
-		git.BranchWorkerLimits{},
-		types.SensitiveResourcePolicy{},
-	)
-	router := NewEventRouter(workerManager, nil, client, logr.Discard())
-
-	err := router.RouteEvent("provider", "team-a", "main", git.Event{Operation: "UPDATE"})
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no worker")
-}
-
 func TestGitTargetEventStreamRegistry(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()

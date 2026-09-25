@@ -7,6 +7,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -34,24 +35,40 @@ type remotePublicationLedger struct {
 }
 
 type remotePublication struct {
+	// uid is the GitTarget object the entry is about. A ledger keyed by namespace/name alone
+	// outlives the object that earned it: cleanup needs a reconcile that observes NotFound, and a
+	// delete followed quickly by a recreate can be reconciled from the successor directly. The
+	// successor would then inherit its predecessor's cooldown and have its FIRST observation
+	// suppressed, with nothing published to be a rate against.
+	uid  k8stypes.UID
 	at   time.Time
 	repo git.RepoIdentity
 }
 
-func (l *remotePublicationLedger) last(ref types.ResourceReference) (remotePublication, bool) {
+// last returns what this GitTarget published, and whether the ledger knows. An entry belonging to
+// a predecessor under the same name is not this object's, so it answers "nothing".
+func (l *remotePublicationLedger) last(ref types.ResourceReference, uid k8stypes.UID) (remotePublication, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entry, had := l.entries[ref.Key()]
-	return entry, had
+	if !had || entry.uid != uid {
+		return remotePublication{}, false
+	}
+	return entry, true
 }
 
-func (l *remotePublicationLedger) record(ref types.ResourceReference, at time.Time, repo git.RepoIdentity) {
+func (l *remotePublicationLedger) record(
+	ref types.ResourceReference,
+	uid k8stypes.UID,
+	at time.Time,
+	repo git.RepoIdentity,
+) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.entries == nil {
 		l.entries = map[string]remotePublication{}
 	}
-	l.entries[ref.Key()] = remotePublication{at: at, repo: repo}
+	l.entries[ref.Key()] = remotePublication{uid: uid, at: at, repo: repo}
 }
 
 func (l *remotePublicationLedger) forget(ref types.ResourceReference) {
@@ -102,6 +119,7 @@ func (r *GitTargetReconciler) observeRemote(
 // observation, which is the difference between "nothing has looked" and an answer, and any
 // correction that involves the repository changing under the target.
 func (r *GitTargetReconciler) publishRemote(
+	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
 	observed git.RemoteObservation,
 	seen bool,
@@ -109,7 +127,7 @@ func (r *GitTargetReconciler) publishRemote(
 	now time.Time,
 ) {
 	ref := types.NewResourceReference(target.Name, target.Namespace)
-	published, everPublished := r.remotePublications.last(ref)
+	published, everPublished := r.remotePublications.last(ref, target.UID)
 	// What this target PUBLISHED was proved against a repository it no longer points at: its
 	// GitProvider was recreated against a different URL.
 	staleRepository := everPublished && differentRepository(published.repo, repo)
@@ -118,7 +136,7 @@ func (r *GitTargetReconciler) publishRemote(
 		// Nothing proved about the repository in use now, so there is nothing to replace what is
 		// published with, and it has to go rather than go stale.
 		target.Status.Remote = nil
-		r.remotePublications.forget(ref)
+		st.afterPersist(func() { r.remotePublications.forget(ref) })
 		return
 	}
 	if !seen {
@@ -139,7 +157,10 @@ func (r *GitTargetReconciler) publishRemote(
 		return
 	}
 	target.Status.Remote = next
-	r.remotePublications.record(ref, now, observed.Repo)
+	// Only once the write has landed. A patch refused by the optimistic lock leaves the object
+	// holding the WINNER's older answer, and a ledger that recorded this publication anyway would
+	// hold the retry off behind a cooldown for a revision nobody can read.
+	st.afterPersist(func() { r.remotePublications.record(ref, target.UID, now, observed.Repo) })
 }
 
 // withdrawRemote decides whether what is published has to be taken back rather than replaced.
