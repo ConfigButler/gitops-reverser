@@ -27,10 +27,6 @@ spec:
     - jsonPath: .status.streams.summary
       name: Streams
       type: string
-    - jsonPath: .status.conditions[?(@.type=="GitTargetReady")].status
-      name: GitTargetReady
-      priority: 1
-      type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
       name: StreamsRunning
       priority: 1

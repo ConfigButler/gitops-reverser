@@ -60,14 +60,6 @@ spec:
       name: SourceReachable
       priority: 1
       type: string
-    - jsonPath: .status.conditions[?(@.type=="GitProviderReady")].status
-      name: ProviderReady
-      priority: 1
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="ClusterProviderReady")].status
-      name: ClusterProviderReady
-      priority: 1
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Status
       priority: 1
