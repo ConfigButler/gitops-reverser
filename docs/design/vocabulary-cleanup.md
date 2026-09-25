@@ -56,6 +56,26 @@ beats internal symmetry, the same argument that justifies aliasing Flux's condit
 was missing was not the PascalCase rule but its exception, which
 [`../definitions.md`](../definitions.md) rule 7 now states.
 
+### The enum casing question, asked and closed
+
+That one value raised a bigger question, since a breaking release is the moment to ask it: should the
+PascalCase enums be lowercase, the way much of Flux's surface is? **No, and nothing changes.** The
+evidence is in rule 7 and was measured rather than recalled.
+
+Kubernetes `core/v1` is PascalCase for every mode it invents, uppercase for acronyms, and lowercase
+only where a value names something outside the API (`linux`, `noexec`, `cpu`). Flux approximates that
+convention without holding it: it lowercases modes it invented itself (`extract;copy`,
+`none;client;server`, `enabled;warn;disabled`, `poller;legacy`), one of its enums mixes casing
+internally (`head;HEAD;Tag;TagAndHEAD`), and `HelmRelease.spec.uninstall.deletionPropagation` is
+`background;foreground;orphan` where the `metav1.DeletionPropagation` values it names are
+`Background`, `Foreground` and `Orphan`.
+
+So Flux is the wrong model for this specific rule, and our enums already match the right one: `Never`
+and `Always` and `Ignore` are literal `core/v1` values, and `ConfigMap;Secret` matches Flux's own
+`Secret;ConfigMap`. Flipping them to lowercase would move away from both projects at once. What the
+question did produce is the "who we borrow from, and for what" table at the top of
+[`../definitions.md`](../definitions.md), which exists so this is settled once instead of per field.
+
 ## The changes
 
 Grouped by surface, because the surface decides the migration cost. Every row cites the

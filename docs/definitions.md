@@ -15,6 +15,24 @@ It binds. A name in the code that contradicts a rule here is a defect, not a var
 cleanup that produced this page is tracked in
 [`design/vocabulary-cleanup.md`](design/vocabulary-cleanup.md).
 
+## Who we borrow from, and for what
+
+Two projects set precedent here, and they do not agree about everything, so the split is decided once
+rather than per field:
+
+| Surface | Follow | Because |
+|---|---|---|
+| condition reasons | Flux (`fluxcd/pkg/apis/meta`) | one alerting rule should span our kinds and the Flux kinds in the same cluster |
+| readiness shape (`Ready`, `Reconciling`, `Stalled`, `observedGeneration`) | Flux and kstatus | the tools that read a cluster's health read this shape |
+| flags and their chart values | Flux | [`config-flag-conventions.md`](config-flag-conventions.md) is built on it |
+| a field we mirror verbatim | Flux | `spec.accessFrom`, `meta.KubeConfigReference`, `suspend`, `sops` |
+| enum value shape | Kubernetes `core/v1` | Flux is inconsistent here, and `core/v1` is not. See rule 7 |
+| field, block and timestamp shape | Kubernetes API conventions, then Flux | rules 2 through 4 |
+
+Borrowing is not the same as guessing. A claim that "Flux does it this way" is checked against
+`external-sources/flux/` or the module cache before it decides anything, because twice now it has
+turned out to be the opposite of what was assumed.
+
 ## The two clusters, and the two directions
 
 Almost every naming mistake in this project's history came from one ambiguity: the word "cluster"
@@ -220,16 +238,31 @@ condition; `ResourcesNotServed` would name what happened.
 A reason never repeats a word the condition type already carries, and never says "yet": the
 `Unknown` status already says it.
 
-### 7. Enum values are PascalCase, unless the value is an ecosystem proper name
+### 7. An enum value we invent is PascalCase; a value that names something else keeps its spelling
 
 `Never`, `OnEvent`, `Always`, `Plain`, `KustomizeRoot`, `KustomizeOverlay`, `Push`, `Fetch`,
-`Ignore`, `PushEmptyCommit`, `ConfigMap`, `Secret`.
+`Ignore`, `PushEmptyCommit`, `ConfigMap`, `Secret`. An acronym stays uppercase (`HTTP`, not `Http`).
 
-The exception is a value that is the name of something outside this project, spelled the way the
-ecosystem spells it. `spec.encryption.provider: sops` is lowercase because Flux's
-`spec.decryption.provider` is, and matching it is worth more than internal symmetry. An exception
-has to be pointed at the thing it matches, as that one is; "it is a product name" on its own is not
-enough.
+The exception is a value that names a thing outside this API: a tool, an operating system, a
+protocol, a Kubernetes resource name. It keeps that thing's own spelling.
+`spec.encryption.provider: sops` is lowercase because SOPS spells itself that way and Flux's
+`spec.decryption.provider` value matches. An exception has to point at the thing it copies; "it is a
+product name" on its own is not enough.
+
+This rule is Kubernetes `core/v1`, measured rather than recalled. Every invented mode there is
+PascalCase (`Always`, `IfNotPresent`, `Never`, `ClusterFirst`, `Bidirectional`, `HostToContainer`,
+`BestEffort`, `DoNotSchedule`, `Retain`), acronyms are uppercase (`HTTP`, `TCP`, `SCTP`), and the
+lowercase values are all names of something else: `linux` and `windows` (operating systems),
+`noexec` and `nosuid` (Linux mount flags), `cpu` and `pods` (resource names).
+
+**Flux is not the model for this rule, and that is deliberate.** Its condition reasons and its flag
+conventions are what this project borrows from Flux, and it is worth being clear that enums are not:
+Flux lowercases several modes it invented itself (`extract;copy`, `none;client;server`, `asc;desc`,
+`enabled;warn;disabled`, `poller;legacy`, `small;medium;large`), one of its enums mixes casing inside
+itself (`head;HEAD;Tag;TagAndHEAD`), and `HelmRelease.spec.uninstall.deletionPropagation` is
+`background;foreground;orphan` where the `metav1.DeletionPropagation` values it names are `Background`,
+`Foreground` and `Orphan`. Where Flux and `core/v1` disagree about a value's shape, follow `core/v1`.
+Where they disagree about a *name* we are mirroring, follow Flux, which is the `sops` case.
 
 An enum on a status field carries the same `+kubebuilder:validation:Enum` as the spec field of the
 same type. A status mirror of a spec enum with no enum marker is a defect.
