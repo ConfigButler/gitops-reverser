@@ -53,6 +53,13 @@ Provider-specific setup that needed writing down:
 credential Secret is shaped differently from every other provider's, and the three test layers that
 cover a provider CI cannot reach.
 
+**Before you name anything:** [`definitions.md`](definitions.md) — one name per concept (cell, branch
+worker, author attribution, refusal, folder), the two clusters and the two namespace directions, and
+the nine rules that decide a CRD field, condition type, reason, enum value or printer column. It is
+the third of three rulebooks, beside [`style-guide.md`](style-guide.md) for prose and
+[`config-flag-conventions.md`](config-flag-conventions.md) for flags. A name that contradicts it is a
+defect rather than a variation.
+
 **Before you change any CRD field:**
 [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md) — the two honest strategies for
 removing or renaming one, a decision matrix keyed on whether pruning fails open or closed, and the
@@ -111,10 +118,11 @@ decided), **design, decided** (decision made, not built), **partly built**, **bu
 **deferred** (parked, kept as a decision record). The label is the first thing in the page,
 so you never have to read a proposal to find out it already shipped.
 
-### Open — 17 pages
+### Open — 18 pages
 
 | Doc | Open question |
 |---|---|
+| [`vocabulary-cleanup.md`](design/vocabulary-cleanup.md) | **design, proposed.** The plan that makes the API obey [`definitions.md`](definitions.md), in one breaking release: thirteen condition reasons (including `GitRepoConfigNotFound`, which names a kind that no longer exists, and six that answer "why are you True?" with their own name), seven printer columns, two status field renames, and one spec block. Records which of the audit's findings the existing rulebooks already settled, so they are not re-raised: the `insecure` flag split, bare-noun booleans, `--redis-addr`, and the lowercase `sops` enum are all correct as they stand. Open: whether the per-cluster throttle overrides move with a one-shot delete or a retain-and-refuse release, whether `Message` is added to all six kinds or dropped from the three that have it, and whether the True-state reasons collapse to `Succeeded` |
 | [`gittarget-red-status-plan.md`](design/gittarget-red-status-plan.md) | **design, partly built.** The smaller alternative to Git write preflight: make a `GitTarget` turn red and explain why no commit was made, without moving Git checks into the admission webhook and without adding a second state source. Keeps the existing kstatus trio and domain conditions, ranks the most likely operator-facing failures, and has now shipped the first status-transition slice: refusal messages republish when details change, scoped refusals cannot be cleared by unrelated scope success, `BlockMessage()` carries stable issue kind/path/actor detail, and the unsupported-folder e2e covers Git-side break and recovery. |
 | [`open-asks-priority.md`](design/open-asks-priority.md) | **the work queue.** Merges three overlapping backlogs — the downstream consumer asks, the API-surface block left unbuilt by the status and configuration-model review, and the config-surface proposal (B1–B6) — into one ordered queue under four stated tests, and says where we deliberately do **not** do what was asked. The standing caveat narrowed once the layout model reversed: a Tier 2 entry belongs to postponed [#294](https://github.com/ConfigButler/gitops-reverser/issues/294) only if it breaks a `GitTarget` field, and everything else is independently schedulable. Makes one design call against what was asked: **delete Option C sibling inference** rather than ship an off-switch for it, because it let a human's edit to the repository change operator behavior with nothing in status recording the move. That deletion has shipped, and "what the deletion taught" records what building it found. **F9 is Tier 1**: the only item whose answer is unknown rather than whose work is unscheduled, and it gates planning the enum work |
 | [`proving-the-metric-surface.md`](design/proving-the-metric-surface.md) | **design, partly built.** What identity an operator needs to locate a failure, and what an e2e check has to do to be worth trusting. Written after a metric value that was declared, switched on, surfaced as a condition reason and counted turned out to have no producer at all, and the check added to catch that class then skipped whenever the counter read zero — so deleting every recording call left the suite green. Two rules follow: an assertion must not take its trigger from the metric under test, and no enum value may be reachable only through an injected fake. Carries a cardinality policy that separates bounded configuration identity from per-request identity, a table of which instrument families should own `source_cluster` directly rather than by join, and the PromQL reasoning for `increase()` versus `max_over_time` (neither applies mechanically: one cannot see an event before the first sample, the other cannot reconstruct totals across a reset). Steps 1–4 are built; step 5, diagnostics export, the `e2e_run` scrape label and a pinned-seed regression are not |
