@@ -73,12 +73,14 @@ With attribution enabled, an unresolved event uses the explicit
 `unknown (attribution unresolved)` author. With attribution disabled, the configured committer
 also authors the change. A fact arriving after a commit is written does not rewrite it.
 
-The index determines what counts as a resolution. Its current removal lookup can hold an
-earlier writer's fact as a fallback and return it at grace expiry; see
-[`FactIndex.Await`](../../internal/queue/fact_index.go). Ordered delivery does not establish
-that this author caused a label-exit mutation. The proposed
+The index determines what counts as a resolution. For a removal query, even an exact UID/RV
+PATCH match is held while [`FactIndex.Await`](../../internal/queue/fact_index.go) waits for deletion
+evidence, up to the grace deadline. `ExactCapable=false` does not disable the exact lookup.
+When the exact fact is missing, an earlier writer's fallback can be returned at expiry; ordered
+delivery does not establish that this author caused a label-exit mutation. The proposed
 [filtered-removal attribution policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
-requires stricter evidence while preserving the same inline ordering. That policy is not built.
+requires stricter evidence and releases eligible exact matches immediately, preserving the same
+inline ordering. That policy is not built.
 
 ### Preserve ordered release if attribution becomes concurrent
 
@@ -159,6 +161,12 @@ test today.
   queue checks live in [`resync_push_test.go`](../../internal/git/resync_push_test.go).
 - Refuse an event because the worker queue is full. The routing error must leave its watch
   cursor unadvanced; queue admission is the boundary asserted by this check.
+- For the proposed selector replacement, pause the retired producer immediately before enqueue and
+  initialize the replacement. The retired work must enter ahead of the replacement snapshot or
+  be canceled. It cannot arrive behind that snapshot and restore an excluded object. The
+  [label-selection design](../design/watches-labels-simplification.md#scope-integration-and-queue-ordering)
+  requires a producer handoff for this case; the current cancellation checks alone do not
+  establish it.
 - Exercise overlapping watches with delayed attribution on one. Assert each watch's own order;
   do not infer a global mutation order from their combined arrivals. The label-selection design
   refuses conflicting selectors but retains the existing same-selector namespace overlap.
