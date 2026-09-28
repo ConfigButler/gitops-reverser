@@ -130,14 +130,14 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			Expect(k8sClient.Delete(ctx, clusterRule)).Should(Succeed())
 		})
 
-		// Note: Full integration tests with Ready GitRepoConfig are in E2E tests
-		// Unit tests cannot properly test this because GitRepoConfig controller
+		// Note: Full integration tests with Ready GitProvider are in E2E tests
+		// Unit tests cannot properly test this because GitProvider controller
 		// keeps reconciling and failing Git validation in test environment
-		PIt("should successfully reconcile with valid GitRepoConfig (tested in E2E)", func() {
+		PIt("should successfully reconcile with valid GitProvider (tested in E2E)", func() {
 			Skip("Requires real Git repository - tested in E2E tests")
 		})
 
-		PIt("should fail when GitRepoConfig does not allow cluster rules (tested in E2E)", func() {
+		PIt("should fail when GitProvider does not allow cluster rules (tested in E2E)", func() {
 			Skip("Requires real Git repository - tested in E2E tests")
 		})
 

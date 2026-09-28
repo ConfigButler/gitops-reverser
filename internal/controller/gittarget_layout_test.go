@@ -54,7 +54,7 @@ func TestPublishLayout_SingleKustomization(t *testing.T) {
 			Mode:       manifestanalyzer.LayoutModeKustomizeRoot,
 			RenderRoot: ".",
 		},
-		Revision:   "9f3c1ab",
+		Commit:     "9f3c1ab",
 		ResolvedAt: resolved,
 	}, true)
 
@@ -62,7 +62,7 @@ func TestPublishLayout_SingleKustomization(t *testing.T) {
 	assert.Equal(t, configbutleraiv1alpha3.PlacementModeKustomizeRoot, target.Status.Placement.Mode)
 	assert.Equal(t, ".", target.Status.Placement.RenderRoot)
 	assert.Empty(t, target.Status.Placement.ReadOnlyBases)
-	assert.Equal(t, "9f3c1ab", target.Status.Placement.ResolvedAtRevision)
+	assert.Equal(t, "9f3c1ab", target.Status.Placement.ResolvedAtCommit)
 	require.NotNil(t, target.Status.Placement.ResolvedAt)
 	assert.Equal(t, resolved, target.Status.Placement.ResolvedAt.Time.UTC())
 
@@ -114,7 +114,7 @@ func TestPublishLayout_StanzaRestatesNothingFromTheSpec(t *testing.T) {
 	var keys map[string]any
 	require.NoError(t, json.Unmarshal(published, &keys))
 	for key := range keys {
-		assert.Contains(t, []string{"mode", "renderRoot", "readOnlyBases", "resolvedAtRevision", "resolvedAt"},
+		assert.Contains(t, []string{"mode", "renderRoot", "readOnlyBases", "resolvedAtCommit", "resolvedAt"},
 			key, "an unexpected key reached the stanza; hold it against the rule on GitTargetPlacementStatus")
 	}
 }

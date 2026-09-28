@@ -475,7 +475,7 @@ justify, and on §1.6's numbers it does not justify it on traffic.
 metadata and stops. It does not re-evaluate the acceptance gate or re-resolve placement, because
 those reach status today only via the snapshot that §2.2 forbids here. So an idle target would
 fetch a fresh tree and report nothing about it. The round-trip-free answer is to **report the
-staleness rather than resolve it**: set `status.remote.revision` to the SHA the notification named
+staleness rather than resolve it**: set `status.remote.commit` to the commit the notification named
 and leave `lastFetchedAt` where it was. The two disagreeing is the signal, and it is honest.
 
 ### Option 4: take over the webhook and forward it

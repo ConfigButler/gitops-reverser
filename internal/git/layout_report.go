@@ -19,8 +19,8 @@ import (
 type LayoutReport struct {
 	manifestanalyzer.LayoutResolution
 
-	// Revision is the Git revision the scan read; ResolvedAt is when it ran.
-	Revision   string
+	// Commit is the commit hash the scan read; ResolvedAt is when it ran.
+	Commit     string
 	ResolvedAt time.Time
 }
 
@@ -58,7 +58,7 @@ func (w *BranchWorker) reportLayout(ctx context.Context, batch *writeBatch, revi
 		itypes.NewResourceReference(batch.target.name, batch.target.namespace),
 		LayoutReport{
 			LayoutResolution: resolution,
-			Revision:         revision,
+			Commit:           revision,
 			ResolvedAt:       time.Now(),
 		})
 }

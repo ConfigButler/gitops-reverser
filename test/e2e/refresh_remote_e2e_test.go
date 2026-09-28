@@ -96,14 +96,14 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 
 		// The push it just made IS an observation of the remote, made on the connection the push
 		// was opening anyway. That is the whole of decision 2, and it is visible here: status
-		// names the revision the server accepted, and says a Push proved it.
-		By("status.remote names the revision our own push established")
-		var pushedRevision string
+		// names the commit the server accepted, and says a Push proved it.
+		By("status.remote names the commit our own push established")
+		var pushedCommit string
 		Eventually(func(g Gomega) {
-			pushedRevision = gitTargetRemoteField(g, destName, testNs, "revision")
-			g.Expect(pushedRevision).NotTo(BeEmpty(), "a target that has pushed knows where its branch is")
+			pushedCommit = gitTargetRemoteField(g, destName, testNs, "commit")
+			g.Expect(pushedCommit).NotTo(BeEmpty(), "a target that has pushed knows where its branch is")
 			g.Expect(gitTargetRemoteField(g, destName, testNs, "verifiedBy")).To(Equal("Push"))
-			g.Expect(pushedRevision).To(Equal(remoteHeadSHA(g, repo.CheckoutDir)))
+			g.Expect(pushedCommit).To(Equal(remoteHeadSHA(g, repo.CheckoutDir)))
 		}, 7*time.Minute, 5*time.Second).Should(Succeed())
 
 		verifiedBefore := gitTargetRemoteField(Default, destName, testNs, "lastVerifiedAt")
@@ -115,14 +115,14 @@ var _ = Describe("Manager Remote Refresh", Label("manager", "refresh"), Ordered,
 		By("another writer pushes straight to Gitea, turning the folder into a kustomize root")
 		configureRepoOriginWithCredentials(repo, testNs)
 		pushKustomizationFromOutside(repo, gitPath)
-		movedRevision := remoteHeadSHA(Default, repo.CheckoutDir)
-		Expect(movedRevision).NotTo(Equal(pushedRevision))
+		movedCommit := remoteHeadSHA(Default, repo.CheckoutDir)
+		Expect(movedCommit).NotTo(Equal(pushedCommit))
 
 		// Nobody annotates anything. The steady tick arrives, the worker spends one ref
 		// advertisement, and what it saw reaches status.
 		By("the idle target notices, with nobody asking it to")
 		Eventually(func(g Gomega) {
-			g.Expect(gitTargetRemoteField(g, destName, testNs, "revision")).To(Equal(movedRevision),
+			g.Expect(gitTargetRemoteField(g, destName, testNs, "commit")).To(Equal(movedCommit),
 				"an idle target must follow the branch somebody else moved")
 			g.Expect(gitTargetRemoteField(g, destName, testNs, "verifiedBy")).To(Equal("Fetch"),
 				"we went and looked, and that is how a foreign push is read off kubectl")

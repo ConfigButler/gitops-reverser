@@ -126,7 +126,7 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			wantAttribution: true,
 		},
 		"credentialed git http opt-in": {
-			setValues:     []string{"controllerManager.allowInsecureGitHTTP=true"},
+			setValues:     []string{"controllerManager.insecureAllowGitHTTP=true"},
 			wantKeyPrefix: "gitops-reverser",
 			wantGitHTTP:   true,
 		},
@@ -167,7 +167,7 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			require.Equal(t, tc.wantHTTP2, cfg.enableHTTP2,
 				"servers.enableHTTP2 must reach the binary, and default to off")
 			require.Equal(t, tc.wantGitHTTP, cfg.credentialPolicy.AllowInsecureGitHTTP,
-				"controllerManager.allowInsecureGitHTTP must reach the binary")
+				"controllerManager.insecureAllowGitHTTP must reach the binary")
 			if tc.wantQueueDepth != 0 {
 				require.Equal(t, tc.wantQueueDepth, cfg.branchWorkerLimits.QueueDepth,
 					"controllerManager.branchWorkerQueueDepth must reach the binary")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,12 +50,6 @@ const (
 	GitTargetConditionStreamsRunning = ConditionTypeStreamsRunning
 )
 
-// GitTargetReasonReady is a backward-compatible alias used by existing tests.
-const GitTargetReasonReady = GitTargetConditionReady
-const GitTargetReasonConflict = GitTargetReasonTargetConflict
-const GitTargetConditionStreamsReady = GitTargetConditionStreamsRunning
-const GitTargetStreamsReadyReasonNotReady = GitTargetStreamsRunningReasonNotReady
-
 const (
 	// GitTargetReasonOK is the healthy reason. It is the shared Succeeded vocabulary rather than
 	// a per-kind spelling; the name is kept for call-site stability.
@@ -69,7 +64,6 @@ const (
 	GitTargetReasonMissingSecret        = "MissingSecret"
 	GitTargetReasonInvalidConfig        = "InvalidConfig"
 	GitTargetReasonSecretCreateDisabled = "SecretCreateDisabled"
-	GitTargetReasonGitPathAccepted      = "GitPathAccepted"
 	GitTargetReasonUnsupportedContent   = "UnsupportedContent"
 	// GitTargetReasonIgnoreShadowsManagedPath is the terminal reason for the one
 	// unrecoverable .gittargetignore footgun (docs/spec/gitpath-foreign-content-stringency.md
@@ -99,7 +93,6 @@ const (
 	// Git that nothing applies looks mirrored and is not. The remedy is the target's own template
 	// or path. The string must stay in sync with manifestanalyzer.GitPathRefusalReason.
 	GitTargetReasonUnrenderedPlacement    = "UnrenderedPlacement"
-	GitTargetReasonRenderMatchesLive      = "RenderMatchesLive"
 	GitTargetReasonRenderDoesNotMatchLive = "RenderDoesNotMatchLive"
 	GitTargetReasonRenderRechecking       = "Rechecking"
 
@@ -117,7 +110,7 @@ const (
 
 	// GitTargetReasonSuspended is Ready=True on a target whose spec.suspend stops it writing. It
 	// is True on purpose: suppressing writes on request is a configured outcome, not ill health.
-	GitTargetReasonSuspended = "Suspended"
+	GitTargetReasonSuspended = fluxmeta.SuspendedReason
 )
 
 const (
@@ -595,7 +588,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 		// same as "observed to be empty": the streams axis stays False and holds the target below
 		// Ready, and it says Progressing rather than NoResolvedTypes so the two are never confused.
 		streams := noResolvedStreamsSummary()
-		target.Status.Streams = gitTargetStreamsStatus(streams)
+		target.Status.Streams = streamsStatus(streams)
 		return dataPlaneObservation{
 			axes: gitTargetAxes{
 				Streams: conditionValue{
@@ -639,7 +632,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 		Render:  renderAxis(manager.RenderFidelityForGitTarget(gitDest)),
 	}
 
-	target.Status.Streams = gitTargetStreamsStatus(observation.streams)
+	target.Status.Streams = streamsStatus(observation.streams)
 	// Retention is read beside the others and projected the same way, but it feeds NO condition: a
 	// document kept by policy is the configured outcome, not a degraded target.
 	//
@@ -683,7 +676,7 @@ func gitPathAxis(gitPath watch.GitPathAcceptanceStatus) conditionValue {
 		}
 		return conditionValue{
 			Status:  metav1.ConditionTrue,
-			Reason:  GitTargetReasonGitPathAccepted,
+			Reason:  ReasonSucceeded,
 			Message: message,
 		}
 	}
@@ -702,7 +695,7 @@ func gitPathAxis(gitPath watch.GitPathAcceptanceStatus) conditionValue {
 func renderAxis(renderFidelity watch.RenderFidelityStatus) conditionValue {
 	value := conditionValue{
 		Status:  metav1.ConditionTrue,
-		Reason:  GitTargetReasonRenderMatchesLive,
+		Reason:  ReasonSucceeded,
 		Message: "Every rendered token matches live",
 	}
 	switch renderFidelity.State {
@@ -1418,16 +1411,6 @@ func clampIntToInt32(value int) int32 {
 	return int32(value)
 }
 
-func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3.GitTargetStreamsStatus {
-	return &configbutleraiv1alpha3.GitTargetStreamsStatus{
-		Summary:   streams.Summary(),
-		Total:     clampIntToInt32(streams.Total),
-		Ready:     clampIntToInt32(streams.Ready),
-		Replaying: clampIntToInt32(streams.Replaying),
-		Blocked:   clampIntToInt32(streams.Blocked),
-	}
-}
-
 // gitTargetRetentionStatus projects the data-plane retention roll-up.
 //
 // A summary that has never been reported projects to NIL rather than to a zero count, and the
@@ -1439,11 +1422,11 @@ func gitTargetRetentionStatus(summary watch.RetentionSummary) *configbutleraiv1a
 	if !summary.Reported {
 		return nil
 	}
-	changed := metav1.NewTime(summary.LastChangedTime)
+	changed := metav1.NewTime(summary.LastChangedAt)
 	return &configbutleraiv1alpha3.GitTargetRetentionStatus{
 		Mode:              summary.Mode,
 		RetainedDocuments: clampIntToInt32(summary.RetainedDocuments),
-		LastChangedTime:   &changed,
+		LastChangedAt:     &changed,
 	}
 }
 

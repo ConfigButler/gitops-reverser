@@ -51,8 +51,8 @@ func TestBranchInventory_CountsTheGitTargetsThatConfigureEachBranch(t *testing.T
 	})
 
 	assert.Equal(t, []configbutleraiv1alpha3.GitProviderBranchStatus{
-		{Name: "main", GitTargets: 3},
-		{Name: "rel", GitTargets: 1},
+		{Name: "main", GitTargetCount: 3},
+		{Name: "rel", GitTargetCount: 1},
 	}, got,
 		"every branch a live GitTarget of THIS provider configures, suspended ones included, sorted by name")
 }
@@ -91,12 +91,12 @@ func TestPublishBranchInventory_KeepsTheLastAnswerWhenTheTargetsCannotBeRead(t *
 	provider := &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "repo1", Namespace: "shop"},
 		Status: configbutleraiv1alpha3.GitProviderStatus{
-			Branches: []configbutleraiv1alpha3.GitProviderBranchStatus{{Name: "main", GitTargets: 2}},
+			Branches: []configbutleraiv1alpha3.GitProviderBranchStatus{{Name: "main", GitTargetCount: 2}},
 		},
 	}
 
 	require.Error(t, r.publishBranchInventory(context.Background(), provider))
-	assert.Equal(t, []configbutleraiv1alpha3.GitProviderBranchStatus{{Name: "main", GitTargets: 2}},
+	assert.Equal(t, []configbutleraiv1alpha3.GitProviderBranchStatus{{Name: "main", GitTargetCount: 2}},
 		provider.Status.Branches)
 }
 
@@ -117,6 +117,6 @@ func TestPublishBranchInventory_ReadsOnlyTheProvidersOwnNamespace(t *testing.T) 
 	}
 
 	require.NoError(t, r.publishBranchInventory(context.Background(), provider))
-	assert.Equal(t, []configbutleraiv1alpha3.GitProviderBranchStatus{{Name: "main", GitTargets: 1}},
+	assert.Equal(t, []configbutleraiv1alpha3.GitProviderBranchStatus{{Name: "main", GitTargetCount: 1}},
 		provider.Status.Branches)
 }

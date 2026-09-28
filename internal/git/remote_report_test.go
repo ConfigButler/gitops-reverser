@@ -33,7 +33,7 @@ func TestRecordRemoteObservation_DeliversOneFactToTheWholeBranch(t *testing.T) {
 
 	observed, known := m.RemoteForBranch(key)
 	require.True(t, known)
-	assert.Equal(t, "aaaa", observed.Revision)
+	assert.Equal(t, "aaaa", observed.Commit)
 	assert.Equal(t, ObservedByPush, observed.By)
 	assert.Equal(t, repo, observed.Repo, "a revision means nothing without the repository it is in")
 	assert.WithinDuration(t, time.Now(), observed.At, time.Minute)
@@ -82,7 +82,7 @@ func TestUpdateBranchMetadataFromPullReport_RecordsAnAbsentBranchAsNoRevision(t 
 
 	observed, known := w.LastRemoteObservation()
 	require.True(t, known)
-	assert.Empty(t, observed.Revision, "the branch is not there, and that is the observation")
+	assert.Empty(t, observed.Commit, "the branch is not there, and that is the observation")
 	assert.Equal(t, ObservedByFetch, observed.By)
 	assert.True(t, w.baseTrusted(), "the reset still happened: the worktree matches what the remote has")
 }
@@ -97,7 +97,7 @@ func TestUpdateBranchMetadataFromPullReport_RecordsTheFetchedHead(t *testing.T) 
 
 	observed, known := w.LastRemoteObservation()
 	require.True(t, known)
-	assert.Equal(t, "bbbb", observed.Revision)
+	assert.Equal(t, "bbbb", observed.Commit)
 	assert.Equal(t, ObservedByFetch, observed.By)
 }
 

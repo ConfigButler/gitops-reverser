@@ -31,6 +31,10 @@ const DefaultClusterProviderName = "default"
 // secretRef.name comes from the external meta.KubeConfigReference schema, which marks it required
 // but permits the empty string; an empty name can never resolve a Secret, so reject it here.
 // +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name) > 0",message="spec.kubeConfig.secretRef.name must not be empty"
+//
+// spec.qps and spec.burst moved to spec.client. A pruned field would apply cleanly and drop the
+// throttle without a word, so the old spellings stay in the schema only to be refused by name.
+// +kubebuilder:validation:XValidation:rule="!has(self.qps) && !has(self.burst)",message="spec.qps and spec.burst moved to spec.client.qps and spec.client.burst"
 type ClusterProviderSpec struct {
 	// KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach it
 	// (Flux's meta.KubeConfigReference, embedded verbatim). OMITTED means the operator's own
@@ -77,18 +81,19 @@ type ClusterProviderSpec struct {
 	// +kubebuilder:default=false
 	AllowAnySourceNamespace bool `json:"allowAnySourceNamespace,omitempty"`
 
-	// QPS overrides the operator's outgoing kube-client query-per-second throttle for this
-	// cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
-	// Ignored when kubeConfig is omitted (the in-cluster client is not per-provider).
+	// Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
+	// the built-in defaults apply (20 QPS, burst 30). Ignored when kubeConfig is omitted (the
+	// in-cluster client is not per-provider).
 	// +optional
-	// +kubebuilder:validation:Minimum=1
-	QPS *int32 `json:"qps,omitempty"`
+	Client *ClusterProviderClient `json:"client,omitempty"`
 
-	// Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
-	// operator-wide --source-cluster-burst applies. Ignored when kubeConfig is omitted.
+	// RemovedQPS is the old spelling of client.qps. It is never read; setting it is refused.
 	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Burst *int32 `json:"burst,omitempty"`
+	RemovedQPS *int32 `json:"qps,omitempty"`
+
+	// RemovedBurst is the old spelling of client.burst. It is never read; setting it is refused.
+	// +optional
+	RemovedBurst *int32 `json:"burst,omitempty"`
 
 	// Attribution groups this cluster's author-attribution settings. The block is spelled
 	// "attribution" rather than "authorAttribution" even though the operator flags are
@@ -96,6 +101,21 @@ type ClusterProviderSpec struct {
 	// source-cluster object already supplies that scope.
 	// +optional
 	Attribution *ClusterProviderAttribution `json:"attribution,omitempty"`
+}
+
+// ClusterProviderClient holds the per-cluster kube-client throttles.
+type ClusterProviderClient struct {
+	// QPS overrides the operator's outgoing kube-client query-per-second throttle for this
+	// cluster's watches and discovery. Omitted, the built-in default of 20 applies.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	QPS *int32 `json:"qps,omitempty"`
+
+	// Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
+	// built-in default of 30 applies.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Burst *int32 `json:"burst,omitempty"`
 }
 
 // ClusterProviderAttribution holds the per-cluster author-attribution settings. It exists as a
@@ -168,9 +188,9 @@ type ClusterProviderStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Facts",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
+// +kubebuilder:printcolumn:name="FactsReceived",type=string,JSONPath=`.status.conditions[?(@.type=="AuditFactsReceived")].status`
 // +kubebuilder:printcolumn:name="Validated",type=string,JSONPath=`.status.conditions[?(@.type=="Validated")].status`,priority=1
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a

@@ -420,7 +420,7 @@ func TestGitProviderConditions(t *testing.T) {
 		{metav1.ConditionTrue, ReasonSucceeded, "Repository connectivity validated"},
 		{metav1.ConditionFalse, ReasonConnectionFailed, "Failed to connect"},
 		{metav1.ConditionFalse, ReasonSecretNotFound, "Secret not found"},
-		{metav1.ConditionFalse, ReasonChecking, "Checking repository"},
+		{metav1.ConditionFalse, ReasonProgressing, "Checking repository"},
 	}
 
 	for _, tc := range testCases {

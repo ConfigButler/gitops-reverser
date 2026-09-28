@@ -234,7 +234,7 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 	l.w.Log.Info("CommitRequest resolved",
 		"request", id.Namespace+"/"+id.Name,
 		"outcome", string(result.Outcome),
-		"sha", result.SHA,
+		"commit", result.Commit,
 		"err", result.Err)
 }
 

@@ -22,14 +22,14 @@ spec:
       name: Reason
       type: string
     - jsonPath: .status.conditions[?(@.type=="AuditFactsReceived")].status
-      name: Facts
+      name: FactsReceived
       type: string
     - jsonPath: .status.conditions[?(@.type=="Validated")].status
       name: Validated
       priority: 1
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
-      name: Status
+      name: Message
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -182,12 +182,31 @@ spec:
                     type: string
                 type: object
               burst:
-                description: |-
-                  Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
-                  operator-wide --source-cluster-burst applies. Ignored when kubeConfig is omitted.
+                description: RemovedBurst is the old spelling of client.burst. It
+                  is never read; setting it is refused.
                 format: int32
-                minimum: 1
                 type: integer
+              client:
+                description: |-
+                  Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
+                  the built-in defaults apply (20 QPS, burst 30). Ignored when kubeConfig is omitted (the
+                  in-cluster client is not per-provider).
+                properties:
+                  burst:
+                    description: |-
+                      Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
+                      built-in default of 30 applies.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  qps:
+                    description: |-
+                      QPS overrides the operator's outgoing kube-client query-per-second throttle for this
+                      cluster's watches and discovery. Omitted, the built-in default of 20 applies.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
               kubeConfig:
                 description: |-
                   KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach it
@@ -268,12 +287,9 @@ spec:
                     must be specified
                   rule: '!has(self.configMapRef) || !has(self.secretRef)'
               qps:
-                description: |-
-                  QPS overrides the operator's outgoing kube-client query-per-second throttle for this
-                  cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
-                  Ignored when kubeConfig is omitted (the in-cluster client is not per-provider).
+                description: RemovedQPS is the old spelling of client.qps. It is never
+                  read; setting it is refused.
                 format: int32
-                minimum: 1
                 type: integer
             type: object
             x-kubernetes-validations:
@@ -287,6 +303,8 @@ spec:
             - message: spec.kubeConfig.secretRef.name must not be empty
               rule: '!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name)
                 > 0'
+            - message: spec.qps and spec.burst moved to spec.client.qps and spec.client.burst
+              rule: '!has(self.qps) && !has(self.burst)'
           status:
             description: status defines the observed state of ClusterProvider.
             properties:

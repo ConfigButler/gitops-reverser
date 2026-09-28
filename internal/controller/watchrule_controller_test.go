@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -240,24 +241,24 @@ var _ = Describe("WatchRule Controller", func() {
 				ReasonProgressing,
 			)
 
-			By("Reconciling the WatchRule directly")
-			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      "local-rule",
-					Namespace: "default",
-				},
-			})
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-
-			By("Verifying WatchRule is Ready")
+			By("Reconciling the WatchRule directly until its status reflects the settled GitTarget")
+			// The background WatchRuleReconciler may already have published a status from before
+			// the GitTarget had any condition (Ready=Unknown), and the direct reconcile can lose
+			// the status-write race to it, leaving that stale status in place. Retry the direct
+			// reconcile until a write that saw the settled GitTarget has landed.
+			ruleKey := types.NamespacedName{Name: "local-rule", Namespace: "default"}
 			updatedRule := &configbutleraiv1alpha3.WatchRule{}
-			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      "local-rule",
-				Namespace: "default",
-			}, updatedRule)
-			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: ruleKey})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+				g.Expect(k8sClient.Get(ctx, ruleKey, updatedRule)).To(Succeed())
+				ready := apimeta.FindStatusCondition(updatedRule.Status.Conditions, ConditionTypeReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Reason).To(Equal(ReasonProgressing))
+			}, "10s", "200ms").Should(Succeed())
 
 			By("Verifying WatchRule is reconciling until the GitTarget and streams are ready")
 			Expect(updatedRule.Status.Conditions).To(HaveLen(6))

@@ -106,10 +106,10 @@ func layoutCondition(report git.LayoutReport) (metav1.ConditionStatus, string) {
 // rationale block on GitTargetPlacementStatus.
 func placementStatus(report git.LayoutReport) *configbutleraiv1alpha3.GitTargetPlacementStatus {
 	status := &configbutleraiv1alpha3.GitTargetPlacementStatus{
-		Mode:               configbutleraiv1alpha3.PlacementMode(report.Mode),
-		RenderRoot:         report.RenderRoot,
-		ReadOnlyBases:      report.ReadOnlyBases,
-		ResolvedAtRevision: report.Revision,
+		Mode:             configbutleraiv1alpha3.PlacementMode(report.Mode),
+		RenderRoot:       report.RenderRoot,
+		ReadOnlyBases:    report.ReadOnlyBases,
+		ResolvedAtCommit: report.Commit,
 	}
 	if !report.ResolvedAt.IsZero() {
 		resolved := metav1.NewTime(report.ResolvedAt)

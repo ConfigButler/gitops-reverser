@@ -339,7 +339,7 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
   condition's `reason` carries `Committed`, `NoWindowInGrace`, `WindowMismatch`, `AlreadyPresent`, or
   `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False`, a correct
   non-error outcome, whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
-- `status.branch` / `status.sha`: set when the commit was pushed (`Pushed=True`).
+- `status.branch` / `status.commit`: set when the commit was pushed (`Pushed=True`).
 
 How attribution and finalization interact is described under
 [CommitRequest Finalize](#commitrequest-finalize).
@@ -582,8 +582,8 @@ flowchart TD
 ```
 
 For a `CommitRequest`, success is reported only after the push reaches the remote. If the push had to
-replay on top of someone else's commit, `status.sha` is the refreshed post-replay commit SHA, not the stale
-local SHA from before the retry.
+replay on top of someone else's commit, `status.commit` is the refreshed post-replay commit, not the stale
+local commit from before the retry.
 
 ***
 

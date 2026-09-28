@@ -87,7 +87,9 @@ without a kubeconfig.
   (given up, and nothing will retry without a human).
 - `status` is `True`, `False` or `Unknown`.
 - `reason` is the condition's reason as it stands — `ValidationFailed`, `UnsupportedContent`,
-  `ProviderNotFound` — which is what turns a count panel into a first guess.
+  `ProviderNotFound` — which is what turns a count panel into a first guess. It is the API's own
+  string, so a release that renames a reason changes the series a selector matches;
+  [`UPGRADING.md`](UPGRADING.md) lists every rename.
 
 **Each condition publishes three series, one per possible status, of which exactly one is `1`.**
 So every query below compares `== 1`; a selector without it matches the two zeroes as well. The
@@ -505,7 +507,7 @@ reaching an open window — but omitted messages, saves that were no-ops, and pu
 landed all read the same way here, because none of them produce a commit carrying a request
 message. Confirm against the requests themselves before changing the window: a request that
 attached reports `Ready=True`, one that produced a pushed commit also reports `Pushed=True` with
-`status.sha`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
+`status.commit`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
 without their message reaching a commit is the window worth tuning against `closeDelay`.
 
 `commit_requests_total` answers the same question in aggregate, which per-object conditions cannot:

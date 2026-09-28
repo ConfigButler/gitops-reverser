@@ -137,7 +137,7 @@ deletion; [`event_router.go`](../../internal/watch/event_router.go),
 
 What is left uncovered is one case: a repository whose folder was changed **by someone else** while
 our target wrote nothing. The reconcile-request annotation refreshes that on demand. A stale
-`resolvedAtRevision` on an idle target is a legible cost; a periodic scan on every target is not.
+`resolvedAtCommit` on an idle target is a legible cost; a periodic scan on every target is not.
 
 **Re-open trigger**: a user who needs an idle target's `status.placement` to track a repository other
 people edit, for whom the annotation is not enough. Then it is a scan cadence, named for scanning.
@@ -236,7 +236,7 @@ status:
   placement:
     mode: KustomizeRoot
     renderRoot: .
-    resolvedAtRevision: 9f3c1ab
+    resolvedAtCommit: 9f3c1ab
 ```
 
 **`status.lastHandledReconcileAt` was not built.** #326 tracks the last handled request in memory

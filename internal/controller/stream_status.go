@@ -26,8 +26,10 @@ func noResolvedStreamsSummary() watch.StreamSummary {
 	}
 }
 
-func watchRuleStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3.WatchRuleStreamsStatus {
-	return &configbutleraiv1alpha3.WatchRuleStreamsStatus{
+// streamsStatus projects a stream roll-up onto the status block a GitTarget and both rule kinds
+// share.
+func streamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3.StreamsStatus {
+	return &configbutleraiv1alpha3.StreamsStatus{
 		Summary:       streams.Summary(),
 		Total:         clampIntToInt32(streams.Total),
 		Ready:         clampIntToInt32(streams.Ready),

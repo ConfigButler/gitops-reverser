@@ -97,7 +97,7 @@ func TestWatchRuleSourceNamespaceKstatusContract(t *testing.T) {
 // prerequisite is healthy. Without this, a rule could report Ready while its gate said otherwise.
 func TestRuleReadiness_SourceAuthorizationIsAPrerequisite(t *testing.T) {
 	healthy := []metav1.Condition{
-		{Type: ConditionTypeResourcesResolved, Status: metav1.ConditionTrue, Reason: "Resolved"},
+		{Type: ConditionTypeResourcesResolved, Status: metav1.ConditionTrue, Reason: ReasonSucceeded},
 		{Type: ConditionTypeGitTargetReady, Status: metav1.ConditionTrue, Reason: "Ready"},
 		{Type: ConditionTypeStreamsRunning, Status: metav1.ConditionTrue, Reason: "Streaming"},
 	}

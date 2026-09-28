@@ -59,7 +59,7 @@ func TestCommitRequestMetric_TwoTargetsAreDistinguishable(t *testing.T) {
 		cr.Spec.GitTargetRef = meta.LocalObjectReference{Name: target}
 		c := newCommitRequestClient(t, nil, cr)
 		f := &fakeFinalizer{
-			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc", Branch: "main"},
+			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
 		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -83,7 +83,7 @@ func TestCommitRequestMetric_RepeatedSavesReuseOneSeries(t *testing.T) {
 		name := fmt.Sprintf("save-repeat-%d", i)
 		c := newCommitRequestClient(t, nil, newCommitRequest(name))
 		f := &fakeFinalizer{
-			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc", Branch: "main"},
+			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
 		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -166,7 +166,7 @@ func TestCommitRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.
 	}{
 		{
 			"committed",
-			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc", Branch: "main"},
+			git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			nil,
 			crOutcomeCommitted,
 		},
@@ -230,7 +230,7 @@ func TestCommitRequestMetric_ConflictRetriesIncrementOnce(t *testing.T) {
 	}
 	c := newCommitRequestClient(t, &fns, withInProgress(newCommitRequest("save-conflict")))
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -263,7 +263,7 @@ func TestCommitRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testi
 	}
 	c := newCommitRequestClient(t, &fns, withInProgress(newCommitRequest("save-lost")))
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}

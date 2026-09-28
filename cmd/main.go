@@ -66,11 +66,6 @@ const (
 	defaultAuditIdleTimeout         = 60 * time.Second
 	defaultAuditShutdownTimeout     = 10 * time.Second
 	defaultBranchBufferMaxSizeStr   = "8Mi"
-	// defaultSourceClusterQPS / -Burst are the client-side throttle for a remote source
-	// cluster reached via GitTarget.spec.kubeConfig — a conservative default since a remote is
-	// reached over a network the in-cluster config is not, and is only read (list/watch/get).
-	defaultSourceClusterQPS   = 20.0
-	defaultSourceClusterBurst = 30
 )
 
 func init() {
@@ -148,11 +143,9 @@ func main() {
 		// Resolve a source cluster (named by a GitTarget.spec.clusterProviderRef) into a
 		// rest.Config: look up the ClusterProvider by name, read its kubeConfig Secret from the
 		// operator namespace, and build the client. The manager client bypasses its cache for
-		// Secrets, so a rotated kubeconfig is seen without a Secret informer. Per-provider qps/burst
-		// override the global --source-cluster-qps/-burst defaults passed here.
+		// Secrets, so a rotated kubeconfig is seen without a Secret informer.
 		SourceClusters: watch.NewSecretSourceClusterResolver(
-			mgr.GetClient(), os.Getenv("POD_NAMESPACE"), cfg.kubeConfigSafety,
-			float32(cfg.sourceClusterQPS), cfg.sourceClusterBurst),
+			mgr.GetClient(), os.Getenv("POD_NAMESPACE"), cfg.kubeConfigSafety),
 	}
 
 	// Initialize EventRouter with all dependencies. The streaming-snapshot resync
@@ -462,11 +455,6 @@ type appConfig struct {
 	sensitiveResources types.SensitiveResourcePolicy
 	sshHostKeys        git.SSHHostKeyConfig
 	credentialPolicy   git.CredentialTransportPolicy
-	// sourceClusterQPS / sourceClusterBurst bound the rate at which the operator talks to a
-	// source cluster reached through a GitTarget.spec.kubeConfig. A remote is reached over a
-	// network the in-cluster config is not, so it carries client-side throttling by default.
-	sourceClusterQPS   float64
-	sourceClusterBurst int
 	// kubeConfigSafety is the exec / insecure-TLS opt-in for source-cluster kubeconfigs. Both
 	// default OFF: an operator-supplied kubeconfig is attacker-adjacent input, so unsafe
 	// kubeconfigs are REJECTED (a legible Validated=False), diverging from Flux's silent strip.
@@ -651,10 +639,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"",
 		"Comma-separated additional sensitive resources in resource or group/resource form.",
 	)
-	fs.Float64Var(&cfg.sourceClusterQPS, "source-cluster-qps", defaultSourceClusterQPS,
-		"Client-side QPS limit for talking to a source cluster reached via GitTarget.spec.kubeConfig.")
-	fs.IntVar(&cfg.sourceClusterBurst, "source-cluster-burst", defaultSourceClusterBurst,
-		"Client-side burst limit for talking to a source cluster reached via GitTarget.spec.kubeConfig.")
 	fs.BoolVar(&cfg.kubeConfigSafety.AllowExec, "insecure-kubeconfig-exec", false,
 		"Allow a source-cluster kubeconfig to use an exec auth provider (runs a binary in the "+
 			"operator Pod). Rejected by default; enabling this is a deliberate trust decision.")
@@ -667,7 +651,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.BoolVar(&cfg.sshHostKeys.AllowMissingKnownHosts, "insecure-allow-missing-known-hosts", false,
 		"INSECURE, dev/throwaway clusters only: permit SSH when no host-key source produced any "+
 			"known_hosts at all. A present-but-unparseable known_hosts is always a hard error.")
-	fs.BoolVar(&cfg.credentialPolicy.AllowInsecureGitHTTP, "allow-insecure-git-http", false,
+	fs.BoolVar(&cfg.credentialPolicy.AllowInsecureGitHTTP, "insecure-allow-git-http", false,
 		"INSECURE, dev/throwaway clusters only: permit credentials with http:// GitProvider URLs.")
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.

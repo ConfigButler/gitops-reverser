@@ -15,7 +15,7 @@ import (
 func layoutReportFor(reason manifestanalyzer.LayoutReason, root, revision string) git.LayoutReport {
 	return git.LayoutReport{
 		LayoutResolution: manifestanalyzer.LayoutResolution{Reason: reason, RenderRoot: root},
-		Revision:         revision,
+		Commit:           revision,
 		ResolvedAt:       time.Now(),
 	}
 }

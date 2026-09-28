@@ -85,7 +85,7 @@ func kubeconfigSecret(key, body string) *corev1.Secret {
 func newResolver(t *testing.T, safety kubeconfig.SafetyPolicy, objs ...client.Object) SourceClusterResolver {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(resolverScheme(t)).WithObjects(objs...).Build()
-	return NewSecretSourceClusterResolver(cl, resolverOperatorNS, safety, 20, 30)
+	return NewSecretSourceClusterResolver(cl, resolverOperatorNS, safety)
 }
 
 func TestResolveSourceCluster_ValidAppliesThrottleAndVersion(t *testing.T) {
@@ -96,8 +96,8 @@ func TestResolveSourceCluster_ValidAppliesThrottleAndVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "https://192.0.2.1:6443", cfg.Host)
-	assert.InDelta(t, 20.0, cfg.QPS, 0.001, "global source-cluster QPS applied")
-	assert.Equal(t, 30, cfg.Burst, "global source-cluster burst applied")
+	assert.InDelta(t, 20.0, cfg.QPS, 0.001, "the default source-cluster QPS applies")
+	assert.Equal(t, 30, cfg.Burst, "the default source-cluster burst applies")
 	assert.NotEmpty(t, version, "the provider generation + Secret resourceVersion form the version token")
 }
 
@@ -105,14 +105,13 @@ func TestResolveSourceCluster_PerProviderThrottleOverride(t *testing.T) {
 	qps := int32(5)
 	burst := int32(7)
 	provider := clusterProvider("value")
-	provider.Spec.QPS = &qps
-	provider.Spec.Burst = &burst
+	provider.Spec.Client = &configv1alpha3.ClusterProviderClient{QPS: &qps, Burst: &burst}
 	r := newResolver(t, kubeconfig.SafetyPolicy{}, provider, kubeconfigSecret("value", resolverKubeConfig))
 
 	cfg, _, err := r.ResolveSourceCluster(context.Background(), "prod-eu-1")
 	require.NoError(t, err)
-	assert.InDelta(t, 5.0, cfg.QPS, 0.001, "per-provider QPS overrides the global default")
-	assert.Equal(t, 7, cfg.Burst, "per-provider burst overrides the global default")
+	assert.InDelta(t, 5.0, cfg.QPS, 0.001, "spec.client.qps overrides the default")
+	assert.Equal(t, 7, cfg.Burst, "spec.client.burst overrides the default")
 }
 
 func TestResolveSourceCluster_KeyFallbackValueYaml(t *testing.T) {

@@ -3,6 +3,8 @@
 package watch
 
 import (
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
+
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -47,7 +49,7 @@ func (m *Manager) reconcileTargetRenderFidelity(
 func (m *Manager) RenderFidelityForGitTarget(target types.ResourceReference) RenderFidelityStatus {
 	gate := m.fidelityGate()
 	if gate == nil {
-		return git.RenderFidelityStatus{State: git.RenderFidelityTrue, Reason: "RenderMatchesLive",
+		return git.RenderFidelityStatus{State: git.RenderFidelityTrue, Reason: fluxmeta.SucceededReason,
 			Message: "Every rendered token matches live"}
 	}
 	return gate.Status(target)

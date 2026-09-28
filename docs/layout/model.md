@@ -384,7 +384,7 @@ status:
     mode: KustomizeOverlay               # Plain | KustomizeRoot | KustomizeOverlay
     renderRoot: .
     readOnlyBases: ["../../base"]        # non-empty exactly when mode is KustomizeOverlay
-    resolvedAtRevision: 9f3c1ab
+    resolvedAtCommit: 9f3c1ab
     resolvedAt: "2026-07-30T09:14:22Z"
 ```
 
@@ -421,7 +421,7 @@ field ships:
 - **No counters.** `placedResources`, `overriddenTypes` and `refusedResources` are metrics;
   `placements_total` carries them with better labels. A counter in status is a status write per
   event, which re-creates the self-triggering reconcile edge the status work already fixed once.
-- **`resolvedAtRevision`/`resolvedAt` date the RESOLUTION, not the last scan.** An unchanged
+- **`resolvedAtCommit`/`resolvedAt` date the RESOLUTION, not the last scan.** An unchanged
   resolution is not republished, so a timestamp well in the past means the folder's shape has been
   stable rather than that scanning stopped. The names say so, because `observed*` would read as
   "last looked".

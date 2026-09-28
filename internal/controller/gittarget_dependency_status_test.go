@@ -38,7 +38,7 @@ func TestGitTargetReadyProjectionChanged(t *testing.T) {
 	// contradicting the rule's own stream count.
 	assert.True(t, p.Update(event.UpdateEvent{
 		ObjectOld: gitTargetWithReady(1, metav1.ConditionFalse, "WatchError", "1/2 streams running"),
-		ObjectNew: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonReady, "all streams running"),
+		ObjectNew: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonOK, "all streams running"),
 	}), "a heal (status-only, same generation) must fire")
 
 	assert.True(t, p.Update(event.UpdateEvent{
@@ -47,8 +47,8 @@ func TestGitTargetReadyProjectionChanged(t *testing.T) {
 	}), "a reason move at the same status must fire")
 
 	assert.False(t, p.Update(event.UpdateEvent{
-		ObjectOld: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonReady, "all streams running"),
-		ObjectNew: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonReady, "all streams running"),
+		ObjectOld: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonOK, "all streams running"),
+		ObjectNew: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonOK, "all streams running"),
 	}), "an unchanged projection must not fire")
 
 	// Message is deliberately excluded: it moves with transient stream detail, and firing on it
@@ -59,15 +59,15 @@ func TestGitTargetReadyProjectionChanged(t *testing.T) {
 	}), "a message-only change must not fire")
 
 	assert.True(t, p.Update(event.UpdateEvent{
-		ObjectOld: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonReady, "ready"),
-		ObjectNew: gitTargetWithReady(2, metav1.ConditionTrue, GitTargetReasonReady, "ready"),
+		ObjectOld: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonOK, "ready"),
+		ObjectNew: gitTargetWithReady(2, metav1.ConditionTrue, GitTargetReasonOK, "ready"),
 	}), "a spec (generation) change must fire")
 
 	// A GitTarget that has not published Ready yet projects as Unknown, so the first publish is a
 	// move the rule has to see.
 	assert.True(t, p.Update(event.UpdateEvent{
 		ObjectOld: gitTargetWithReady(1, "", "", ""),
-		ObjectNew: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonReady, "ready"),
+		ObjectNew: gitTargetWithReady(1, metav1.ConditionTrue, GitTargetReasonOK, "ready"),
 	}), "the first Ready publish must fire")
 
 	assert.True(t, p.Create(event.CreateEvent{}))

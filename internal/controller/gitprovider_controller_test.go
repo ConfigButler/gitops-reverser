@@ -224,18 +224,18 @@ var _ = Describe("GitProvider Controller", func() {
 		})
 
 		It("should set initial checking condition", func() {
-			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonChecking, "Validating...")
+			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonProgressing, "Validating...")
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 			condition := gitProvider.Status.Conditions[0]
 			Expect(condition.Type).To(Equal("Ready"))
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(ReasonChecking))
+			Expect(condition.Reason).To(Equal(ReasonProgressing))
 			Expect(condition.Message).To(Equal("Validating..."))
 		})
 
 		It("should update an existing condition in place", func() {
-			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonChecking, "Checking...")
+			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonProgressing, "Checking...")
 			st.set(ConditionTypeReady, metav1.ConditionTrue, ReasonSucceeded, "Success!")
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
@@ -354,13 +354,13 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
-				{Name: "main", GitTargets: 2},
-				{Name: "release", GitTargets: 1},
+				{Name: "main", GitTargetCount: 2},
+				{Name: "release", GitTargetCount: 1},
 			}), "two folders share the main branch, and they share one branch worker with it")
 
 			Expect(k8sClient.Delete(ctx, targets[2])).To(Succeed())
 			Eventually(branches, "30s", "500ms").Should(Equal([]configbutleraiv1alpha3.GitProviderBranchStatus{
-				{Name: "main", GitTargets: 2},
+				{Name: "main", GitTargetCount: 2},
 			}), "a branch nothing references any more is not what this repository is for")
 		})
 

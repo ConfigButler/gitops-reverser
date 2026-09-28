@@ -69,7 +69,7 @@ were also de-serialized. Their real serial cause was **not** the shared audit
 *pipeline* — namespace-scoped WatchRules already route each spec's events only to
 its own GitTarget — but a shared *repo*: both borrowed one Gitea repo from a
 `sync.Once` helper and asserted on whole-branch state (`Commit Request` reads
-`HEAD`/`status.sha`; `Commit Window Batching` reads `git rev-list --count main`),
+`HEAD`/`status.commit`; `Commit Window Batching` reads `git rev-list --count main`),
 so the *other* audit spec's commits to the same `main` corrupted those reads.
 Each now provisions its **own** repo via `SetupRepo`, so the only writer to its
 `main` is its own GitTarget, fed exclusively by audit events from its own

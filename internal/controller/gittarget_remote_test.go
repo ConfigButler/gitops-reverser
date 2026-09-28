@@ -61,7 +61,7 @@ func remoteTestTarget() *configbutleraiv1alpha3.GitTarget {
 }
 
 func observation(revision string, at time.Time, by git.ObservationSource, repo git.RepoIdentity) git.RemoteObservation {
-	return git.RemoteObservation{Revision: revision, At: at, By: by, Repo: repo}
+	return git.RemoteObservation{Commit: revision, At: at, By: by, Repo: repo}
 }
 
 // TestPublishRemote_AbsentUntilSomethingLooks keeps the two "no revision" cases apart. Nothing has
@@ -92,7 +92,7 @@ func TestPublishRemote_AnObservationWithNoRevisionIsStillPublished(t *testing.T)
 	)
 
 	require.NotNil(t, target.Status.Remote)
-	assert.Empty(t, target.Status.Remote.Revision)
+	assert.Empty(t, target.Status.Remote.Commit)
 	assert.Equal(t, "Fetch", target.Status.Remote.VerifiedBy)
 	assert.Equal(t, at.Unix(), target.Status.Remote.LastVerifiedAt.Unix())
 }
@@ -111,19 +111,19 @@ func TestPublishRemote_TheFloorIsMeasuredFromTheLastWrite(t *testing.T) {
 	// Proved at +2s, written at +60s: a reconcile that happened to be late.
 	publishPersisted(r, target, observation("aaaa", start.Add(2*time.Second), git.ObservedByPush, git.RepoIdentity{}),
 		true, git.RepoIdentity{}, start.Add(time.Minute))
-	require.Equal(t, "aaaa", target.Status.Remote.Revision)
+	require.Equal(t, "aaaa", target.Status.Remote.Commit)
 
 	// Proved at +62s: newer than the published observation by a minute, two seconds after the write.
 	publishPersisted(r, target, observation("bbbb", start.Add(62*time.Second), git.ObservedByPush, git.RepoIdentity{}),
 		true, git.RepoIdentity{}, start.Add(62*time.Second))
 
-	assert.Equal(t, "aaaa", target.Status.Remote.Revision,
+	assert.Equal(t, "aaaa", target.Status.Remote.Commit,
 		"two status writes two seconds apart is exactly what the floor exists to prevent")
 
 	// A full interval after the WRITE, it publishes.
 	publishPersisted(r, target, observation("bbbb", start.Add(62*time.Second), git.ObservedByPush, git.RepoIdentity{}),
 		true, git.RepoIdentity{}, start.Add(2*time.Minute))
-	assert.Equal(t, "bbbb", target.Status.Remote.Revision)
+	assert.Equal(t, "bbbb", target.Status.Remote.Commit)
 }
 
 // TestPublishRemote_TheFirstObservationIsImmediate. The floor is on the RATE of writes, and the
@@ -143,7 +143,7 @@ func TestPublishRemote_TheFirstObservationIsImmediate(t *testing.T) {
 	)
 
 	require.NotNil(t, target.Status.Remote)
-	assert.Equal(t, "aaaa", target.Status.Remote.Revision)
+	assert.Equal(t, "aaaa", target.Status.Remote.Commit)
 }
 
 // TestPublishRemote_AConvergedTargetWritesNothing is the trap sameLayout was written to avoid: a
@@ -200,11 +200,11 @@ func TestPublishRemote_AReProvedRevisionRefreshesTheClock(t *testing.T) {
 func TestRemoteStatusIsNews_TheSameAnswerProvedASecondWayIsNot(t *testing.T) {
 	at := metav1.NewTime(time.Now())
 	published := &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
+		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
 	}
 
 	assert.False(t, remoteStatusIsNews(published, &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
+		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
 	}))
 }
 
@@ -214,9 +214,9 @@ func TestRemoteStatusIsNews_TheSameAnswerProvedASecondWayIsNot(t *testing.T) {
 func TestRemoteStatusIsNews_AMissingTimestampIsAlwaysNews(t *testing.T) {
 	at := metav1.NewTime(time.Now())
 	withClock := &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
+		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Fetch",
 	}
-	without := &configbutleraiv1alpha3.GitTargetRemoteStatus{Revision: "aaaa", VerifiedBy: "Fetch"}
+	without := &configbutleraiv1alpha3.GitTargetRemoteStatus{Commit: "aaaa", VerifiedBy: "Fetch"}
 
 	assert.True(t, remoteStatusIsNews(without, withClock))
 	assert.True(t, remoteStatusIsNews(withClock, without))
@@ -251,7 +251,7 @@ func TestPublishRemote_ASiblingsObservationCannotHideAStaleRepository(t *testing
 	target := remoteTestTarget()
 	at := time.Now()
 	publishPersisted(r, target, observation("aaaa", at, git.ObservedByPush, firstRepo), true, firstRepo, at)
-	require.Equal(t, "aaaa", target.Status.Remote.Revision)
+	require.Equal(t, "aaaa", target.Status.Remote.Commit)
 
 	// A sibling on the same branch has just proved the new repository; one second later, this
 	// target reconciles.
@@ -259,7 +259,7 @@ func TestPublishRemote_ASiblingsObservationCannotHideAStaleRepository(t *testing
 		true, secondRepo, at.Add(time.Second))
 
 	require.NotNil(t, target.Status.Remote)
-	assert.Equal(t, "bbbb", target.Status.Remote.Revision,
+	assert.Equal(t, "bbbb", target.Status.Remote.Commit,
 		"the repository changed under this target, so the correction does not wait for the floor")
 }
 
@@ -284,7 +284,7 @@ func TestPublishRemote_AnUnknownIdentityProvesNothing(t *testing.T) {
 			publishPersisted(r, target, observation("aaaa", at, git.ObservedByPush, tc.observed), true, tc.current, at)
 
 			require.NotNil(t, target.Status.Remote)
-			assert.Equal(t, "aaaa", target.Status.Remote.Revision)
+			assert.Equal(t, "aaaa", target.Status.Remote.Commit)
 		})
 	}
 }
@@ -303,7 +303,7 @@ func TestPublishRemote_TheNewRepositoryRepopulatesTheStanza(t *testing.T) {
 		true, secondRepo, at.Add(time.Second))
 
 	require.NotNil(t, target.Status.Remote)
-	assert.Equal(t, "bbbb", target.Status.Remote.Revision)
+	assert.Equal(t, "bbbb", target.Status.Remote.Commit)
 }
 
 // TestPublishRemote_ARestartPublishesAgainstTheObservationAlone. The ledger is in memory, so after
@@ -313,7 +313,7 @@ func TestPublishRemote_ARestartPublishesAgainstTheObservationAlone(t *testing.T)
 	target := remoteTestTarget()
 	at := metav1.NewTime(time.Now())
 	target.Status.Remote = &configbutleraiv1alpha3.GitTargetRemoteStatus{
-		Revision: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
+		Commit: "aaaa", LastVerifiedAt: &at, VerifiedBy: "Push",
 	}
 	fresh := &GitTargetReconciler{}
 
@@ -409,7 +409,7 @@ func TestPublishRemote_ADeletedTargetReleasesItsLedgerEntry(t *testing.T) {
 	publishPersisted(r, successor, observation("bbbb", at.Add(time.Second), git.ObservedByFetch, firstRepo),
 		true, firstRepo, at.Add(time.Second))
 	require.NotNil(t, successor.Status.Remote)
-	assert.Equal(t, "bbbb", successor.Status.Remote.Revision)
+	assert.Equal(t, "bbbb", successor.Status.Remote.Commit)
 }
 
 // TestRequeueForRemoteAnswer_ShortensOnlyWhenSomethingWasAsked. The refresh is enqueued during the
@@ -504,7 +504,7 @@ func TestPublishRemote_ARejectedPatchDoesNotAdvanceTheLedger(t *testing.T) {
 	published, had := f.r.remotePublications.last(ref, target.UID)
 	require.True(t, had)
 	assert.Equal(t, f.now, published.at, "and the cooldown starts when the write landed")
-	assert.Equal(t, "bbbb", fresh.Status.Remote.Revision)
+	assert.Equal(t, "bbbb", fresh.Status.Remote.Commit)
 }
 
 // TestPublishRemote_ARejectedWithdrawalKeepsTheLedgerEntry is the same rule for the correction.
@@ -565,7 +565,7 @@ func TestPublishRemote_TheCooldownStartsWhenTheWriteLands(t *testing.T) {
 		true, firstRepo, landed.Add(time.Second))
 	st.runPersisted()
 
-	assert.Equal(t, "aaaa", target.Status.Remote.Revision,
+	assert.Equal(t, "aaaa", target.Status.Remote.Commit,
 		"the floor runs from the write, not from the moment the slow pass started")
 }
 
@@ -595,7 +595,7 @@ func TestPublishRemote_AWriteThatDidNotLandDoesNotAdvanceTheLedger(t *testing.T)
 	publishPersisted(r, retried, observation("bbbb", at.Add(2*time.Second), git.ObservedByPush, firstRepo),
 		true, firstRepo, at.Add(2*time.Second))
 	require.NotNil(t, retried.Status.Remote)
-	assert.Equal(t, "bbbb", retried.Status.Remote.Revision)
+	assert.Equal(t, "bbbb", retried.Status.Remote.Commit)
 }
 
 // TestPublishRemote_ARecreatedTargetDoesNotInheritTheCooldown.
@@ -622,5 +622,5 @@ func TestPublishRemote_ARecreatedTargetDoesNotInheritTheCooldown(t *testing.T) {
 
 	require.NotNil(t, successor.Status.Remote,
 		"a target with nothing published has no rate to be limited to")
-	assert.Equal(t, "bbbb", successor.Status.Remote.Revision)
+	assert.Equal(t, "bbbb", successor.Status.Remote.Commit)
 }

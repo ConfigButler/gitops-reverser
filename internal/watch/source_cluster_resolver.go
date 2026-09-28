@@ -29,6 +29,14 @@ const sourceClusterDialTimeout = 15 * time.Second
 // to a remote is kept healthy rather than silently half-open.
 const sourceClusterKeepAlive = 30 * time.Second
 
+// defaultSourceClusterQPS / -Burst are the client-side throttle for a remote source cluster whose
+// ClusterProvider sets no spec.client: a remote is reached over a network the in-cluster config is
+// not, and is only read (list/watch/get).
+const (
+	defaultSourceClusterQPS   = 20
+	defaultSourceClusterBurst = 30
+)
+
 // secretSourceClusterResolver resolves a source-cluster NAME — a ClusterProvider's name, as
 // (api/v1alpha3).GitTarget.SourceCluster() carries it — into a rest.Config by looking up the
 // cluster-scoped ClusterProvider and reading its kubeConfig Secret from the OPERATOR NAMESPACE
@@ -55,12 +63,6 @@ type secretSourceClusterResolver struct {
 	// operator-supplied kubeconfig is attacker-adjacent input, so we REJECT rather than
 	// silently strip (diverging from Flux) unless a flag opts in.
 	safety kubeconfig.SafetyPolicy
-
-	// qps and burst are the GLOBAL defaults (--source-cluster-qps/-burst) bounding the rate at
-	// which the operator talks to a source cluster. A ClusterProvider may override them per
-	// cluster via spec.qps/spec.burst.
-	qps   float32
-	burst int
 }
 
 // NewSecretSourceClusterResolver builds the production source-cluster resolver.
@@ -68,15 +70,11 @@ func NewSecretSourceClusterResolver(
 	c client.Client,
 	operatorNamespace string,
 	safety kubeconfig.SafetyPolicy,
-	qps float32,
-	burst int,
 ) SourceClusterResolver {
 	return &secretSourceClusterResolver{
 		client:            c,
 		operatorNamespace: operatorNamespace,
 		safety:            safety,
-		qps:               qps,
-		burst:             burst,
 	}
 }
 
@@ -122,10 +120,7 @@ func (r *secretSourceClusterResolver) ResolveSourceCluster(
 	if err != nil {
 		return nil, "", fmt.Errorf("kubeconfig Secret %s key %q: %w", secretKey, usedKey, err)
 	}
-	if qps, burst := r.throttleFor(&provider); qps > 0 {
-		cfg.QPS = qps
-		cfg.Burst = burst
-	}
+	cfg.QPS, cfg.Burst = r.throttleFor(&provider)
 	// Bound CONNECTION SETUP so an unreachable remote surfaces as SourceClusterReachable=False
 	// promptly — but do NOT set rest.Config.Timeout, which applies to the full HTTP request and
 	// would cut off a long-lived watch every interval and churn reconnects. A dialer timeout bounds
@@ -141,17 +136,20 @@ func (r *secretSourceClusterResolver) ResolveSourceCluster(
 	return cfg, version, nil
 }
 
-// throttleFor returns the effective client QPS/burst for a provider: its per-provider override
-// when set, else the operator-wide default. A zero global default leaves the rest.Config defaults
-// untouched (the same behavior as before per-provider overrides existed).
+// throttleFor returns the effective client QPS/burst for a provider: its spec.client override
+// when set, else the built-in default.
 func (r *secretSourceClusterResolver) throttleFor(provider *configv1alpha3.ClusterProvider) (float32, int) {
-	qps := r.qps
-	burst := r.burst
-	if provider.Spec.QPS != nil {
-		qps = float32(*provider.Spec.QPS)
+	qps := float32(defaultSourceClusterQPS)
+	burst := defaultSourceClusterBurst
+	client := provider.Spec.Client
+	if client == nil {
+		return qps, burst
 	}
-	if provider.Spec.Burst != nil {
-		burst = int(*provider.Spec.Burst)
+	if client.QPS != nil {
+		qps = float32(*client.QPS)
+	}
+	if client.Burst != nil {
+		burst = int(*client.Burst)
 	}
 	return qps, burst
 }

@@ -50,7 +50,7 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 				conditionMap(ConditionTypeReconciling, "False", crReasonCommitted, "closed, committed, and pushed"),
 				conditionMap(ConditionTypeStalled, "False", crReasonCommitted, notStalledMessage),
 				conditionMap(ConditionTypeAuthorAttributed, "True", crReasonAttributedFromAdmission, "from admission"),
-				conditionMap(ConditionTypePushed, "True", crReasonPushed, "pushed"),
+				conditionMap(ConditionTypePushed, "True", ReasonSucceeded, "pushed"),
 			},
 			wantStatus: kstatus.CurrentStatus,
 		},

@@ -148,7 +148,7 @@ window, so treat live editing as a different way of making changes rather than a
 - Git history records the states the worker captured and published. Expect gaps between them.
 
 When a specific change has to be confirmed in Git, use a
-[`CommitRequest`](configuration.md#commitrequest). `Pushed=True` with `status.sha` and
+[`CommitRequest`](configuration.md#commitrequest). `Pushed=True` with `status.commit` and
 `status.branch` names the commit it produced.
 
 ## Why the loop stops

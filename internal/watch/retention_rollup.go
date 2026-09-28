@@ -30,10 +30,10 @@ type RetentionSummary struct {
 	Mode v1alpha3.PruneMode
 	// RetainedDocuments is the sum over the target's currently tracked scopes.
 	RetainedDocuments int
-	// LastChangedTime is when this roll-up last changed. It advances only in the mutation that
+	// LastChangedAt is when this roll-up last changed. It advances only in the mutation that
 	// moves the published count or mode, never on a re-report of the same numbers, so it dates the
 	// RESULT rather than the last scan. Non-zero whenever Reported is true.
-	LastChangedTime time.Time
+	LastChangedAt time.Time
 }
 
 // targetRetentionScope is one cell's count, stamped with the stream revision that produced it.
@@ -142,7 +142,7 @@ func (m *Manager) MarkTargetRetention(
 		// A field that moves without its subject moving is a status write with nothing to say.
 		//
 		// It therefore dates the RESULT, not the last scan, exactly as status.placement's
-		// resolvedAtRevision does and for the same reason. A timestamp well in the past means the
+		// resolvedAtCommit does and for the same reason. A timestamp well in the past means the
 		// retention has been stable, not that measuring stopped.
 		if changed {
 			state.observed = time.Now()
@@ -216,7 +216,7 @@ func (m *Manager) RetentionForGitTarget(gitDest types.ResourceReference) Retenti
 		Reported:          true,
 		Mode:              state.mode,
 		RetainedDocuments: state.total(),
-		LastChangedTime:   state.observed,
+		LastChangedAt:     state.observed,
 	}
 }
 

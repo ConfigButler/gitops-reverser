@@ -47,7 +47,7 @@ fails to render commits the message verbatim rather than losing the window. A pr
 newline is allowed, other ASCII controls and whitespace-only text are rejected. Validation never
 truncates accepted text. A no-op still creates no commit. The message does not change Git identities.
 
-Automation stops on `Ready=True` or `Stalled=True`. Require `Pushed=True` and `status.sha` when a
+Automation stops on `Ready=True` or `Stalled=True`. Require `Pushed=True` and `status.commit` when a
 pushed commit is required; `Ready=True` also includes successful no-commit outcomes.
 
 ## Authorship
@@ -80,7 +80,7 @@ object is visible.
 
 | Outcome | Conditions |
 |---|---|
-| Commit pushed | `Ready=True`, `Pushed=True`, reason `Committed`; `status.sha` and `status.branch` are set |
+| Commit pushed | `Ready=True`, `Pushed=True`, reason `Committed`; `status.commit` and `status.branch` are set |
 | No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindowInGrace` or `WindowMismatch` |
 | Window produced no diff, and the remote agreed | `Ready=True`, `Pushed=False`, reason `AlreadyPresent` |
 | Finalize or push error | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |

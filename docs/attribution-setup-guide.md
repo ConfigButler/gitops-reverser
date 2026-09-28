@@ -127,7 +127,7 @@ kubectl -n gitops-reverser rollout status deployment/gitops-reverser
 kubectl get clusterprovider default
 ```
 
-`FACTS=True` means the provider has received an attribution fact at least once. It is historical
+`FACTSRECEIVED=True` means the provider has received an attribution fact at least once. It is historical
 evidence, not a continuous health check. Receiver readiness alone does not prove API server delivery.
 
 Using your normal user credentials, mutate a ConfigMap covered by an existing ready `GitTarget`

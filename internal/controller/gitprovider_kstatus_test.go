@@ -21,9 +21,9 @@ func TestGitProviderKstatusContract(t *testing.T) {
 		{
 			name: "repository validation in progress",
 			conds: []map[string]interface{}{
-				conditionMap(ConditionTypeReady, "False", ReasonChecking, "Validating repository connectivity"),
-				conditionMap(ConditionTypeReconciling, "True", ReasonChecking, "Validating repository connectivity"),
-				conditionMap(ConditionTypeStalled, "False", ReasonChecking, "Reconciliation is making progress"),
+				conditionMap(ConditionTypeReady, "False", ReasonProgressing, "Validating repository connectivity"),
+				conditionMap(ConditionTypeReconciling, "True", ReasonProgressing, "Validating repository connectivity"),
+				conditionMap(ConditionTypeStalled, "False", ReasonProgressing, "Reconciliation is making progress"),
 			},
 			wantStatus: kstatus.InProgressStatus,
 		},

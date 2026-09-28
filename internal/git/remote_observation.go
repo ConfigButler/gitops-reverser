@@ -30,10 +30,10 @@ const (
 // never a bad write, and it is why anything published from this carries the timestamp beside the
 // revision.
 type RemoteObservation struct {
-	// Revision is the hash the branch is at on the remote. EMPTY means the advertisement did not
+	// Commit is the hash the branch is at on the remote. EMPTY means the advertisement did not
 	// carry the branch: a branch does not exist without a commit, so "no revision" and "no
 	// branch" are the same fact and do not need two fields.
-	Revision string
+	Commit string
 	// At is when the observation was made.
 	At time.Time
 	// By is what proved it.

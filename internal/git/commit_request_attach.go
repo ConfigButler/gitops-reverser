@@ -47,8 +47,8 @@ const (
 type FinalizeResult struct {
 	// Outcome is set when Err is nil.
 	Outcome FinalizeOutcome
-	// SHA is the resulting commit SHA when Outcome is FinalizeCommitted.
-	SHA string
+	// Commit is the resulting commit Commit when Outcome is FinalizeCommitted.
+	Commit string
 	// Branch is the branch the worker operates on.
 	Branch string
 	// Err is set when the request could not be completed.

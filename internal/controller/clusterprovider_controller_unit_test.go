@@ -85,14 +85,14 @@ func TestValidateProviderKubeConfig_AllScenarios(t *testing.T) {
 			name:       "valid via value.yaml fallback",
 			provider:   clusterProviderWithKubeConfig("prod-eu-1", "kc", ""),
 			secretData: map[string][]byte{"value.yaml": []byte(scValidKubeConfig)},
-			wantOK:     true, wantReason: ReasonValidated,
+			wantOK:     true, wantReason: ReasonSucceeded,
 		},
 		{
 			name:       "exec allowed when opted in",
 			provider:   clusterProviderWithKubeConfig("prod-eu-1", "kc", ""),
 			secretData: map[string][]byte{"value": []byte(scExecKubeConfig)},
 			safety:     kubeconfig.SafetyPolicy{AllowExec: true},
-			wantOK:     true, wantReason: ReasonValidated,
+			wantOK:     true, wantReason: ReasonSucceeded,
 		},
 	}
 	for _, tc := range tests {

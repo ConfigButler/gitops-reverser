@@ -41,7 +41,7 @@ The rule is already visible in the fields this project ships, and they are the w
 | Field | Moves when | Verdict |
 |---|---|---|
 | `status.placement.mode`, `.renderRoot`, `.readOnlyBases` | the folder's shape changes | status |
-| `status.placement.resolvedAtRevision` | the **resolution** changes, deliberately not on every scan | status |
+| `status.placement.resolvedAtCommit` | the **resolution** changes, deliberately not on every scan | status |
 | `status.streams` | counts that move when a stream's readiness changes | status |
 | `status.retention` | counts and a roll-up time that move when a **resync** reports, not per event | status |
 | placements, placement refusals | every placed or refused document | metric (`gitopsreverser_placements_total`, `_placement_refusals_total`) |
@@ -49,9 +49,9 @@ The rule is already visible in the fields this project ships, and they are the w
 | `GitTarget.status.remote` | the branch moves, so at workload rate | status, but **sampled** — see below |
 | a "last reconcile attempt" timestamp | every pass | removed, see below |
 
-`resolvedAtRevision` is the one worth reading twice, because it looks like a timestamp field and is
+`resolvedAtCommit` is the one worth reading twice, because it looks like a timestamp field and is
 not one. Re-stamping it on every scan would write status once per commit to the branch, whichever
-target caused that commit, so it dates the resolution and not the last scan. A revision older than
+target caused that commit, so it dates the resolution and not the last scan. A commit older than
 the branch head means the layout has been stable, not that nothing has looked.
 
 **The bound is on rate, not on human involvement.** A field written once per deliberate user action

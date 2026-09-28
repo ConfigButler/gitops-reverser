@@ -16,7 +16,7 @@ spec:
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.gitTargetRef.name
-      name: Target
+      name: GitTarget
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -27,12 +27,16 @@ spec:
     - jsonPath: .status.streams.summary
       name: Streams
       type: string
-    - jsonPath: .status.conditions[?(@.type=="GitTargetReady")].status
-      name: GitTargetReady
-      priority: 1
-      type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
       name: StreamsRunning
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="ResourcesResolved")].status
+      name: ResourcesResolved
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Message
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -247,7 +251,7 @@ spec:
                   types this rule resolves.
                 properties:
                   blocked:
-                    description: Blocked is how many resolved types cannot currently
+                    description: Blocked is how many tracked types cannot currently
                       be watched.
                     format: int32
                     type: integer
@@ -259,19 +263,24 @@ spec:
                     maxItems: 5
                     type: array
                   ready:
-                    description: Ready is how many resolved types are Streaming.
+                    description: Ready is how many tracked types are Streaming.
                     format: int32
                     type: integer
                   replaying:
-                    description: Replaying is how many resolved types are still replaying
+                    description: Replaying is how many tracked types are still replaying
                       their initial events.
                     format: int32
                     type: integer
                   summary:
-                    description: Summary is the display-only ready/total ratio.
+                    description: |-
+                      Summary is the display-only ready/total ratio, e.g. "3/4".
+
+                      It restates Ready and Total, which the API conventions would normally rule out. It exists
+                      solely to feed the Streams printer column: a column can read one JSONPath, not format two.
+                      Do not compute anything from it — read ready and total.
                     type: string
                   total:
-                    description: Total is how many types this rule resolves.
+                    description: Total is how many types are tracked.
                     format: int32
                     type: integer
                 required:

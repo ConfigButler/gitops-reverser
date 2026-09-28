@@ -155,7 +155,7 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	cr := newCommitRequest("save-1")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc123", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc123", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -164,11 +164,11 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 
 	got := fetchCommitRequest(t, c, "save-1")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
 	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionFalse, "")
 	requireCondition(t, got, ConditionTypeStalled, metav1.ConditionFalse, "")
-	assert.Equal(t, "abc123", got.Status.SHA)
+	assert.Equal(t, "abc123", got.Status.Commit)
 	assert.Equal(t, "main", got.Status.Branch)
 
 	require.Len(t, f.calls, 1)
@@ -198,7 +198,7 @@ func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindowInGrace)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindowInGrace)
 	requireCondition(t, got, ConditionTypeStalled, metav1.ConditionFalse, "")
-	assert.Empty(t, got.Status.SHA)
+	assert.Empty(t, got.Status.Commit)
 }
 
 // The author-bound refusal: an open window belonging to someone else is left
@@ -218,7 +218,7 @@ func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 	ready := requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonWindowMismatch)
 	assert.Equal(t, windowMismatchMessage, ready.Message)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, crReasonWindowMismatch)
-	assert.Empty(t, got.Status.SHA)
+	assert.Empty(t, got.Status.Commit)
 }
 
 // A matching window that finalized with no diff (loop prevention) reports the
@@ -237,7 +237,7 @@ func TestCommitRequestReconcile_AlreadyPresentRejected(t *testing.T) {
 	got := fetchCommitRequest(t, c, "save-noop")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonAlreadyPresent)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, crReasonAlreadyPresent)
-	assert.Empty(t, got.Status.SHA)
+	assert.Empty(t, got.Status.Commit)
 }
 
 // A resolved outcome that carries an error becomes a Failed (Stalled=True) request.
@@ -283,7 +283,7 @@ func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
 
 	got := fetchCommitRequest(t, c, "save-fresh")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 }
 
@@ -424,7 +424,7 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 	cr.CreationTimestamp = metav1.Now() // fresh: a waiting path would requeue instead of commit
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "c0ffee", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f} // AuthorLookup nil
@@ -434,9 +434,9 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 	assert.Zero(t, res.RequeueAfter, "webhook-disabled mode must not requeue waiting for an author")
 	got := fetchCommitRequest(t, c, "save-configured-author")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
-	assert.Equal(t, "c0ffee", got.Status.SHA)
+	assert.Equal(t, "c0ffee", got.Status.Commit)
 	require.Len(t, f.calls, 1, "the attach is sent immediately, with no attribution wait")
 	assert.Empty(t, f.calls[0].Author, "webhook-disabled mode attaches with a blank author")
 }
@@ -514,7 +514,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 	}
 	c := newCommitRequestClient(t, &fns, cr)
 	f := &fakeFinalizer{
-		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "ddd111", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "ddd111", Branch: "main"},
 		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -523,7 +523,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 
 	got := fetchCommitRequest(t, c, "save-retry")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-	assert.Equal(t, "ddd111", got.Status.SHA)
+	assert.Equal(t, "ddd111", got.Status.Commit)
 	require.Len(t, f.calls, 1, "the conflict retry must re-write status, not re-attach")
 }
 
@@ -536,18 +536,18 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 			&cr,
 			git.FinalizeResult{
 				Outcome: git.FinalizeCommitted,
-				SHA:     "abc",
+				Commit:  "abc",
 				Branch:  "main",
 			},
 			nil,
 			attributionFromAdmission,
 		)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
-		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
+		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
 		requireCondition(t, cr, ConditionTypeReconciling, metav1.ConditionFalse, "")
 		requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionFalse, "")
 		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
-		assert.Equal(t, "abc", cr.Status.SHA)
+		assert.Equal(t, "abc", cr.Status.Commit)
 		assert.Equal(t, "main", cr.Status.Branch)
 	})
 
@@ -558,7 +558,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindowInGrace)
 		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindowInGrace)
 		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
-		assert.Empty(t, cr.Status.SHA)
+		assert.Empty(t, cr.Status.Commit)
 	})
 
 	t.Run("window mismatch surfaces the reason", func(t *testing.T) {
@@ -574,13 +574,13 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil, attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonAlreadyPresent)
-		assert.Empty(t, cr.Status.SHA)
+		assert.Empty(t, cr.Status.Commit)
 	})
 
 	t.Run("finalize error stalls", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc"},
+			git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc"},
 			errors.New("boom"), attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonFinalizeFailed)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)

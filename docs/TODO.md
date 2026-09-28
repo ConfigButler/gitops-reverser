@@ -93,7 +93,7 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
-- [ ] Revisit `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap stops being
+- [ ] Revisit `StreamsStatus.PendingSample`, whose five-entry cap stops being
   representative now that `sourceNamespace: "*"` produces one cluster-wide cell instead of N named
   ones. This is all that survives of a "collapse the wildcard fan-out" item: the redefinition that
   shipped in [#330](https://github.com/ConfigButler/gitops-reverser/pull/330) deleted the fan-out

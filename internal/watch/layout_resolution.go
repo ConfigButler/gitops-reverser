@@ -51,7 +51,7 @@ func (m *Manager) LayoutForGitTarget(gitDest types.ResourceReference) (git.Layou
 // which would leave it permanently empty on exactly the targets it is meant to inform. What it
 // therefore means is the revision this resolution was FIRST observed at, not the latest scanned.
 func sameLayout(a, b git.LayoutReport) bool {
-	if a.Revision == "" && b.Revision != "" {
+	if a.Commit == "" && b.Commit != "" {
 		return false
 	}
 	if a.Reason != b.Reason || a.Mode != b.Mode || a.RenderRoot != b.RenderRoot {
