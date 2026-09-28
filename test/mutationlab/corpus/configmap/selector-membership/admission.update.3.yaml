@@ -15,7 +15,7 @@ request:
       creationTimestamp: <ts>
       labels:
         mutationlab.configbutler.ai/scenario: selector-membership
-        team: b
+        team: a
       managedFields:
       - apiVersion: v1
         fieldsType: FieldsV1
@@ -33,12 +33,12 @@ request:
         time: <ts>
       name: cm-member
       namespace: <ns-1>
-      resourceVersion: <rv-3>
-      uid: <uid-9>
+      resourceVersion: <rv-1>
+      uid: <uid-13>
   oldObject:
     apiVersion: v1
     data:
-      key: v2
+      key: v1
     kind: ConfigMap
     metadata:
       creationTimestamp: <ts>
@@ -62,8 +62,8 @@ request:
         time: <ts>
       name: cm-member
       namespace: <ns-1>
-      resourceVersion: <rv-3>
-      uid: <uid-9>
+      resourceVersion: <rv-1>
+      uid: <uid-13>
   operation: UPDATE
   options:
     apiVersion: meta.k8s.io/v1
@@ -80,8 +80,8 @@ request:
     group: ""
     resource: configmaps
     version: v1
-  uid: <uid-12>
+  uid: <uid-15>
   userInfo:
     groups:
     - system:authenticated
-    username: bob@example.com
+    username: alice@example.com

@@ -376,31 +376,34 @@ one-directional, and only one of the two tiers is gated: the exact tier is tried
 carrying a uid and a resourceVersion, a removal included. What an exact-capable event may not do is
 the reverse, reaching the tiers below.
 
-**A removal from a label-selected collection resolves only on evidence about that object.** When a
-rule carries `objectSelector`, a `DELETED` frame can mean the object stopped matching the selector
-rather than that it was deleted, and the watch cannot tell the two apart. A last-writer,
-collection, rv-only, or name fact answers "who last touched something like this", which cannot
-establish who changed a label. Two kinds of evidence qualify, both measured against a real API
-server in the mutationlab `selector-membership` scenario
-([`selector_membership_test.go`](../../test/mutationlab/e2e/selector_membership_test.go)):
+**A removal from a label-selected collection resolves on the exact write alone.** When a rule
+carries `objectSelector`, a `DELETED` frame can mean the object stopped matching the selector rather
+than that it was deleted, and the watch cannot tell the two apart. Such a removal reads only the fact
+at the object's exact `(uid, resourceVersion)`: a `patch`, `update`, or `delete` there names the
+actor, and ends the wait the moment it arrives. For a terminating object only a deletion there
+counts, since that slot can hold the finalizer patch, which names whoever cleared a finalizer rather
+than who asked for the deletion. Nothing else is consulted, and without that fact the removal is
+unresolved when the grace expires.
 
-- **The write at the object's exact `(uid, resourceVersion)`.** A label exit's `DELETED` carries
-  the object as it was before the write, at the resourceVersion the relabeling `patch` or `update`
-  produced, and that write's audit response carries the same resourceVersion. A `patch`, `update`,
-  or `delete` there names the actor, and ends the wait the moment it arrives. For a terminating
-  object only a deletion counts there: that slot can hold the finalizer patch, which names whoever
-  cleared a finalizer rather than who asked for the deletion.
-- **A deletion of the same uid that cannot postdate the removal.** An immediate delete is answered
-  with a `Status` that names the uid in its `details` and carries no resourceVersion, so its fact
-  has none. A finalizer-held deletion's `delete` and the finalizer `patch` both carry the
-  resourceVersion the deletion stamped, and the final `DELETED` comes one step later. So a live
-  object accepts a deletion fact without a resourceVersion, and a terminating one a deletion fact
-  at or before its own. A label exit produces no deletion fact for its uid; the bound refuses an
-  object relabeled out and then deleted within the grace.
+The shapes behind this were measured against a real API server in the mutationlab
+`selector-membership` scenario
+([`selector_membership_test.go`](../../test/mutationlab/e2e/selector_membership_test.go)), and
+[`fact_index_selector_corpus_test.go`](../../internal/queue/fact_index_selector_corpus_test.go)
+replays them in every delivery order:
 
-Without eligible evidence the removal is unresolved when the grace expires. An unselected removal,
-and a `MODIFIED` frame carrying a `deletionTimestamp` (deletion as intent, §1), keep the rules
-above.
+- A label exit's `DELETED` carries the object as it was before the write, at the resourceVersion the
+  relabeling write produced, and that write's audit response carries the same one. The exit is
+  always attributable when its fact arrives.
+- A deletion never carries the `DELETED` frame's resourceVersion. An immediate delete is answered
+  with a `Status` naming only the uid, and a finalizer-held one is stamped one step before its
+  final `DELETED`. So a real deletion from a selected collection is unresolved here. A
+  finalizer-held one was already attributed when its `deletionTimestamp` arrived (§1).
+- A deletion fact keyed by the uid alone is not evidence, however close it looks. An object
+  relabeled out and then deleted by someone else leaves exactly such a fact, and it can arrive
+  before the exit's own fact, or instead of it. It identifies the object, not the removal.
+
+An unselected removal, and a `MODIFIED` frame carrying a `deletionTimestamp` (deletion as intent,
+§1), keep the rules above. Uncertain authorship costs the commit its author, never the removal.
 
 ### The wait
 

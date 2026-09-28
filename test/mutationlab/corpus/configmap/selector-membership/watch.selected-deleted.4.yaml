@@ -25,6 +25,6 @@ object:
       time: <ts>
     name: cm-member
     namespace: <ns-1>
-    resourceVersion: <rv-7>
-    uid: <uid-9>
+    resourceVersion: <rv-5>
+    uid: <uid-13>
 type: DELETED

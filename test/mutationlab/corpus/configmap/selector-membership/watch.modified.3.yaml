@@ -7,7 +7,7 @@ object:
     creationTimestamp: <ts>
     labels:
       mutationlab.configbutler.ai/scenario: selector-membership
-      team: b
+      team: a
     managedFields:
     - apiVersion: v1
       fieldsType: FieldsV1
@@ -25,6 +25,6 @@ object:
       time: <ts>
     name: cm-member
     namespace: <ns-1>
-    resourceVersion: <rv-5>
-    uid: <uid-9>
+    resourceVersion: <rv-3>
+    uid: <uid-13>
 type: MODIFIED

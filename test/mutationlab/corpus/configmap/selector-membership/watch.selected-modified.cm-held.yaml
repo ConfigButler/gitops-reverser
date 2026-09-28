@@ -33,5 +33,5 @@ object:
     name: cm-held
     namespace: <ns-1>
     resourceVersion: <rv-11>
-    uid: <uid-4>
+    uid: <uid-8>
 type: MODIFIED

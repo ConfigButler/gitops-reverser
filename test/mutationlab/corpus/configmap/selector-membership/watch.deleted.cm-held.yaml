@@ -33,5 +33,5 @@ object:
     name: cm-held
     namespace: <ns-1>
     resourceVersion: <rv-12>
-    uid: <uid-4>
+    uid: <uid-8>
 type: DELETED

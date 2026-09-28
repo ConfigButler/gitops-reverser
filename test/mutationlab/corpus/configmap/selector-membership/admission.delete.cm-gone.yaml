@@ -35,7 +35,7 @@ request:
       name: cm-gone
       namespace: <ns-1>
       resourceVersion: <rv-8>
-      uid: <uid-1>
+      uid: <uid-5>
   operation: DELETE
   options:
     apiVersion: meta.k8s.io/v1
@@ -52,7 +52,7 @@ request:
     group: ""
     resource: configmaps
     version: v1
-  uid: <uid-3>
+  uid: <uid-7>
   userInfo:
     groups:
     - system:authenticated

@@ -40,7 +40,7 @@ request:
       name: cm-held
       namespace: <ns-1>
       resourceVersion: <rv-10>
-      uid: <uid-4>
+      uid: <uid-8>
   operation: DELETE
   options:
     apiVersion: meta.k8s.io/v1
@@ -57,7 +57,7 @@ request:
     group: ""
     resource: configmaps
     version: v1
-  uid: <uid-6>
+  uid: <uid-10>
   userInfo:
     groups:
     - system:authenticated

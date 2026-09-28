@@ -26,5 +26,5 @@ object:
     name: cm-member
     namespace: <ns-1>
     resourceVersion: <rv-3>
-    uid: <uid-9>
+    uid: <uid-13>
 type: MODIFIED

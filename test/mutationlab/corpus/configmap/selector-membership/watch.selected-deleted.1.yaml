@@ -23,8 +23,8 @@ object:
       manager: e2e.test
       operation: Update
       time: <ts>
-    name: cm-gone
+    name: cm-exit-deleted
     namespace: <ns-1>
-    resourceVersion: <rv-9>
+    resourceVersion: <rv-14>
     uid: <uid-1>
 type: DELETED

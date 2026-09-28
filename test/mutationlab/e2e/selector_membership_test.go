@@ -31,6 +31,7 @@ import (
 const (
 	membershipAlice      = "alice@example.com"
 	membershipBob        = "bob@example.com"
+	membershipCarol      = "carol@example.com"
 	membershipController = "membership-finalizer-controller"
 	membershipSelector   = "team=a"
 	membershipSentinel   = "cm-sentinel"
@@ -49,6 +50,7 @@ func TestSelectorMembership(t *testing.T) {
 
 	alice := h.membershipActor(ctx, t, s, membershipAlice)
 	bob := h.membershipActor(ctx, t, s, membershipBob)
+	carol := h.membershipActor(ctx, t, s, membershipCarol)
 	controller := h.asServiceAccount(ctx, t, s.ns, membershipController)
 
 	start, err := h.kube.CoreV1().ConfigMaps(s.ns).List(ctx, metav1.ListOptions{})
@@ -71,7 +73,7 @@ func TestSelectorMembership(t *testing.T) {
 		filteredDone <- membershipProbe{records: records, err: probeErr}
 	}()
 
-	membershipSequence(ctx, t, s, alice, bob, controller)
+	membershipSequence(ctx, t, s, membershipActors{alice: alice, bob: bob, carol: carol, controller: controller})
 
 	probe := <-filteredDone
 	if probe.err != nil {
@@ -113,12 +115,16 @@ func (h *harness) membershipActor(ctx context.Context, t *testing.T, s scenario,
 	return h.asActor(t, user, "system:authenticated")
 }
 
+// membershipActors are the identities the sequence writes as.
+type membershipActors struct {
+	alice, bob, carol, controller kubernetes.Interface
+}
+
 // membershipSequence performs the writes, in order. Each step names the membership transition it
 // exists to capture.
-func membershipSequence(
-	ctx context.Context, t *testing.T, s scenario, alice, bob, controller kubernetes.Interface,
-) {
+func membershipSequence(ctx context.Context, t *testing.T, s scenario, actors membershipActors) {
 	t.Helper()
+	alice, bob, carol, controller := actors.alice, actors.bob, actors.carol, actors.controller
 	cms := func(c kubernetes.Interface) corev1client.ConfigMapInterface { return c.CoreV1().ConfigMaps(s.ns) }
 	labeled := func(name, team string, finalizers ...string) *corev1.ConfigMap {
 		meta := s.meta(name)
@@ -173,6 +179,13 @@ func membershipSequence(
 	must("create cm-held", err)
 	must("delete cm-held", cms(alice).Delete(ctx, "cm-held", metav1.DeleteOptions{}))
 	patch(controller, "cm-held", `{"metadata":{"finalizers":null}}`)
+	// Leaves by relabeling, THEN is deleted by someone else: Bob takes it out of the selection and
+	// Carol deletes the same uid afterwards. The selected stream sees only the exit; Carol's delete
+	// is a uid-only fact about the same object that did not cause that exit.
+	_, err = cms(alice).Create(ctx, labeled("cm-exit-deleted", "a"), metav1.CreateOptions{})
+	must("create cm-exit-deleted", err)
+	patch(bob, "cm-exit-deleted", `{"metadata":{"labels":{"team":null}}}`)
+	must("delete cm-exit-deleted", cms(carol).Delete(ctx, "cm-exit-deleted", metav1.DeleteOptions{}))
 	// Ends the probe.
 	_, err = cms(alice).Create(ctx, labeled(membershipSentinel, "a"), metav1.CreateOptions{})
 	must("create the sentinel", err)
@@ -187,9 +200,10 @@ func assertMembershipLaws(
 	assertMembershipStreams(t, filtered, rest)
 	assertExitsAndReentry(t, filtered, rest, memberUID)
 	assertDeletionEvidence(t, filtered, rest)
+	assertExitThenDeletion(t, filtered, rest)
 
 	var committed []mutationlab.Record
-	for _, name := range []string{"cm-member", "cm-outsider", "cm-gone", "cm-held"} {
+	for _, name := range []string{"cm-member", "cm-outsider", "cm-gone", "cm-held", "cm-exit-deleted"} {
 		committed = append(committed, markedFiltered(recordsNamed(filtered, name, mutationlab.SourceWatch))...)
 		committed = append(committed, recordsNamed(rest, name, "")...)
 	}
@@ -206,14 +220,17 @@ func assertMembershipStreams(t *testing.T, filtered, rest []mutationlab.Record) 
 		"cm-outsider": nil,
 		"cm-gone":     {"ADDED", "DELETED"},
 		"cm-held":     {"ADDED", "MODIFIED", "DELETED"},
+		// The deletion after the exit is invisible to the selection: the object had already left.
+		"cm-exit-deleted": {"ADDED", "DELETED"},
 	} {
 		if got := watchTypes(filtered, name); !slices.Equal(got, want) {
 			t.Errorf("selected stream for %s = %v, want %v", name, got, want)
 		}
 	}
 	for name, want := range map[string][]string{
-		"cm-member":   {"ADDED", "MODIFIED", "MODIFIED", "MODIFIED", "MODIFIED"},
-		"cm-outsider": {"ADDED", "MODIFIED"},
+		"cm-member":       {"ADDED", "MODIFIED", "MODIFIED", "MODIFIED", "MODIFIED"},
+		"cm-outsider":     {"ADDED", "MODIFIED"},
+		"cm-exit-deleted": {"ADDED", "MODIFIED", "DELETED"},
 	} {
 		if got := watchTypes(rest, name); !slices.Equal(got, want) {
 			t.Errorf("unfiltered stream for %s = %v, want %v", name, got, want)
@@ -306,6 +323,31 @@ func assertDeletionEvidence(t *testing.T, filtered, rest []mutationlab.Record) {
 	if !rvBefore(t, stamped, held[0].Key.ResourceVersion) {
 		t.Errorf("the final DELETED rv %q does not come after the stamped rv %q",
 			held[0].Key.ResourceVersion, stamped)
+	}
+}
+
+// Law 7 — a label exit followed by a deletion of the same uid by someone else. The selected stream
+// holds ONE removal, the exit, at the relabeling patch's resourceVersion. The later delete is
+// answered with a Status naming that same uid and no resourceVersion. A uid-only deletion fact
+// therefore exists for an object whose selected removal it did not cause, which is why a filtered
+// removal is attributed on the exact (uid, resourceVersion) write alone: accepting the uid-only fact
+// names the deleter for the exit whenever the exit's own fact is late or missing.
+func assertExitThenDeletion(t *testing.T, filtered, rest []mutationlab.Record) {
+	t.Helper()
+	exits := watchesNamed(filtered, "cm-exit-deleted", "DELETED")
+	bobPatch := auditBy(t, rest, "cm-exit-deleted", "patch", membershipBob)
+	carolDelete := auditBy(t, rest, "cm-exit-deleted", "delete", membershipCarol)
+	if len(exits) != 1 || bobPatch == nil || carolDelete == nil {
+		t.Fatalf("want cm-exit-deleted's one selected DELETED, Bob's patch and Carol's delete")
+	}
+	if rv := auditResponseResourceVersion(t, bobPatch); rv != exits[0].Key.ResourceVersion {
+		t.Errorf("the exit's DELETED rv %q, Bob's patch rv %q", exits[0].Key.ResourceVersion, rv)
+	}
+	if rv := auditResponseResourceVersion(t, carolDelete); rv != "" {
+		t.Errorf("Carol's delete carries rv %q; want a Status without one", rv)
+	}
+	if uid := auditStatusUID(t, carolDelete); uid != exits[0].Key.UID {
+		t.Errorf("Carol's delete names uid %q; want the exited object's %q", uid, exits[0].Key.UID)
 	}
 }
 

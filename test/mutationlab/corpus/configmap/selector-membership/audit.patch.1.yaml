@@ -1,20 +1,25 @@
 annotations:
   authorization.k8s.io/decision: allow
-  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "membership-finalizer-controller/<ns-1>"
-    of Role "membership-finalizer-controller" to ServiceAccount "membership-finalizer-controller/lab-actors"'
+  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "scenario-bob/<ns-1>"
+    of Role "scenario-bob" to User "bob@example.com"'
   validate-all.configbutler.ai/scenario: selector-membership
-auditID: <auditID-5>
+auditID: <auditID-3>
+impersonatedUser:
+  groups:
+  - system:authenticated
+  username: bob@example.com
 level: RequestResponse
 objectRef:
   apiVersion: v1
-  name: cm-held
+  name: cm-exit-deleted
   namespace: <ns-1>
   resource: configmaps
 requestObject:
   metadata:
-    finalizers: null
+    labels:
+      team: null
 requestReceivedTimestamp: <ts>
-requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-held
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-exit-deleted
 responseObject:
   apiVersion: v1
   data:
@@ -22,15 +27,12 @@ responseObject:
   kind: ConfigMap
   metadata:
     creationTimestamp: <ts>
-    deletionGracePeriodSeconds: 0
-    deletionTimestamp: <ts>
     labels:
       mutationlab.configbutler.ai/scenario: selector-membership
-      team: a
-    name: cm-held
+    name: cm-exit-deleted
     namespace: <ns-1>
-    resourceVersion: <rv-11>
-    uid: <uid-4>
+    resourceVersion: <rv-14>
+    uid: <uid-1>
 responseStatus:
   code: 200
   metadata: {}
@@ -41,12 +43,10 @@ stageTimestamp: <ts>
 user:
   extra:
     authentication.kubernetes.io/credential-id:
-    - <credential-1>
+    - <credential-2>
   groups:
-  - system:serviceaccounts
-  - system:serviceaccounts:lab-actors
+  - system:masters
   - system:authenticated
-  uid: <uid-8>
-  username: system:serviceaccount:lab-actors:membership-finalizer-controller
+  username: system:admin
 userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
 verb: patch

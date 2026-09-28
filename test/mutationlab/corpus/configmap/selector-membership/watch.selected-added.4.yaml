@@ -1,7 +1,7 @@
 object:
   apiVersion: v1
   data:
-    key: v2
+    key: v1
   kind: ConfigMap
   metadata:
     creationTimestamp: <ts>
@@ -25,6 +25,6 @@ object:
       time: <ts>
     name: cm-member
     namespace: <ns-1>
-    resourceVersion: <rv-6>
-    uid: <uid-9>
+    resourceVersion: <rv-1>
+    uid: <uid-13>
 type: ADDED

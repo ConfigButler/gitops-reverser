@@ -23,6 +23,6 @@ object:
       time: <ts>
     name: cm-exit-deleted
     namespace: <ns-1>
-    resourceVersion: <rv-14>
+    resourceVersion: <rv-15>
     uid: <uid-1>
-type: MODIFIED
+type: DELETED

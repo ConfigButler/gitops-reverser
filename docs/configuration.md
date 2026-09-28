@@ -1809,9 +1809,10 @@ object left, or came back, and that nothing else in the render changed. The
 writable at all.
 
 **Attribution of a removal.** With [audit attribution](attribution-setup-guide.md) on, an object
-leaving a selected collection is attributed only to evidence about that object: the label change
-at the removal's exact version, or the deletion of that object. When neither arrives, the commit
-author is unresolved rather than whoever last wrote the object. See the
+leaving a selected collection is attributed only to the write that produced that removal: the label
+change. A deletion from a selected collection never carries that evidence, so its removal commit is
+authored unresolved; a deletion that waited on a finalizer was already attributed when it was
+requested. The document is removed either way. See the
 [attribution contract](spec/attribution.md#four-rules-that-are-easy-to-miss).
 
 ## `ClusterWatchRule`

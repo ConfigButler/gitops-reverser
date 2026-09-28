@@ -26,5 +26,5 @@ object:
     name: cm-member
     namespace: <ns-1>
     resourceVersion: <rv-1>
-    uid: <uid-9>
+    uid: <uid-13>
 type: ADDED

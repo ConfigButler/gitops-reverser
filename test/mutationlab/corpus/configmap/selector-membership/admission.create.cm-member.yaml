@@ -33,7 +33,7 @@ request:
         time: <ts>
       name: cm-member
       namespace: <ns-1>
-      uid: <uid-9>
+      uid: <uid-13>
   oldObject: null
   operation: CREATE
   options:
@@ -51,7 +51,7 @@ request:
     group: ""
     resource: configmaps
     version: v1
-  uid: <uid-10>
+  uid: <uid-14>
   userInfo:
     groups:
     - system:authenticated

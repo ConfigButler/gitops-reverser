@@ -3,7 +3,7 @@ annotations:
   authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "scenario-ali/<ns-1>"
     of Role "scenario-ali" to User "alice@example.com"'
   validate-all.configbutler.ai/scenario: selector-membership
-auditID: <auditID-6>
+auditID: <auditID-9>
 impersonatedUser:
   groups:
   - system:authenticated
@@ -40,7 +40,7 @@ responseObject:
     name: cm-member
     namespace: <ns-1>
     resourceVersion: <rv-1>
-    uid: <uid-9>
+    uid: <uid-13>
 responseStatus:
   code: 201
   metadata: {}

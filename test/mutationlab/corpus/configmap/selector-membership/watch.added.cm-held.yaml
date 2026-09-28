@@ -31,5 +31,5 @@ object:
     name: cm-held
     namespace: <ns-1>
     resourceVersion: <rv-10>
-    uid: <uid-4>
+    uid: <uid-8>
 type: ADDED
