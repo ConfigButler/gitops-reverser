@@ -36,22 +36,22 @@ type RetentionSummary struct {
 	LastChangedAt time.Time
 }
 
-// targetRetentionScope is one cell's count, stamped with the stream revision that produced it.
+// targetRetentionScope is one collection's count, stamped with the stream revision that produced it.
 type targetRetentionScope struct {
 	revision uint64
 	retained int
 	reported bool
 	// reportedRevision is the revision of the report that produced `retained`. It separates a
 	// stream RE-reporting under the revision it already reported (routine, every resync) from a
-	// NEW incarnation measuring the cell afresh and arriving at the same number. Only the second
+	// NEW incarnation measuring the collection afresh and arriving at the same number. Only the second
 	// is interesting: it is the one an unchanged published count can be hiding.
 	reportedRevision uint64
 }
 
-// targetRetentionState is one GitTarget's per-cell counts, covering exactly the cells its
+// targetRetentionState is one GitTarget's per-collection counts, covering exactly the collections its
 // current watch plan selects.
 type targetRetentionState struct {
-	scopes   map[types.CellKey]targetRetentionScope
+	scopes   map[types.CollectionKey]targetRetentionScope
 	mode     v1alpha3.PruneMode
 	observed time.Time
 }
@@ -76,16 +76,16 @@ func (s targetRetentionState) anyReported() bool {
 // MarkTargetRetention records what one scope's resync retained.
 //
 // Scope lifecycle is handled by the watch plan rather than by eviction here:
-// retainTargetRetentionScopes installs the selected cells and the revision each one's stream
-// reports under, so a cell that leaves the plan takes its count with it, and a stale in-flight
+// retainTargetRetentionScopes installs the selected collections and the revision each one's stream
+// reports under, so a collection that leaves the plan takes its count with it, and a stale in-flight
 // reply from a cancelled watch — which carries the retired stream's revision — cannot resurrect
-// or overwrite a count. A report for a cell the plan does not hold is dropped for the same
+// or overwrite a count. A report for a collection the plan does not hold is dropped for the same
 // reason.
 //
 // Zero is recorded as actively as any other number: it is the converged signal.
 func (m *Manager) MarkTargetRetention(
 	gitDest types.ResourceReference,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	revision uint64,
 	mode v1alpha3.PruneMode,
 	retained int,
@@ -96,7 +96,7 @@ func (m *Manager) MarkTargetRetention(
 	// target would enqueue on every resync of every scope forever.
 	// A dropped report is recorded, not swallowed. Dropping is correct -- it is how a tail from a
 	// replaced stream is kept out -- but the CONSEQUENCE is that the published count no longer
-	// describes the mirror, and nothing re-measures it until the plan next restarts this cell,
+	// describes the mirror, and nothing re-measures it until the plan next restarts this collection,
 	// which for a settled target is the steady requeue away. A roll-up that silently stops
 	// advancing is the same class of invisible failure the storm was: it reads exactly like a
 	// converged one.
@@ -105,9 +105,9 @@ func (m *Manager) MarkTargetRetention(
 	var remeasured, changed bool
 	m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		state := s.retention[gitDest.Key()]
-		scope, selected := state.scopes[cell]
+		scope, selected := state.scopes[collection]
 		if !selected {
-			dropped = "the cell is not in the current watch plan"
+			dropped = "the collection is not in the current watch plan"
 			return false
 		}
 		if revision != scope.revision {
@@ -129,7 +129,7 @@ func (m *Manager) MarkTargetRetention(
 		scope.retained = retained
 		scope.reported = true
 		scope.reportedRevision = revision
-		state.scopes[cell] = scope
+		state.scopes[collection] = scope
 		state.mode = mode.OrDefault()
 		s.retention[gitDest.Key()] = state
 		changed = !priorReported || state.total() != priorTotal || state.mode != priorMode
@@ -152,8 +152,8 @@ func (m *Manager) MarkTargetRetention(
 	})
 	if dropped != "" {
 		m.Log.WithName("retention").Info(
-			"retention report dropped; the published count is now stale until this cell is replanned",
-			"gitDest", gitDest.String(), "cell", cell.String(), "reason", dropped,
+			"retention report dropped; the published count is now stale until this collection is replanned",
+			"gitDest", gitDest.String(), "collection", collection.String(), "reason", dropped,
 			"reportedRevision", revision, "installedRevision", installed, "retained", retained)
 		return
 	}
@@ -163,18 +163,18 @@ func (m *Manager) MarkTargetRetention(
 	// refusals above have been logged since c24844a1; the acceptances were not, and that asymmetry
 	// is why B could be narrowed to this function and no further.
 	//
-	// Info is reserved for the one shape that is genuinely ambiguous: a cell RE-MEASURED under a
+	// Info is reserved for the one shape that is genuinely ambiguous: a collection RE-MEASURED under a
 	// new revision that arrived at the number already published, so the mutation was discarded and
 	// status did not move. A stream re-reporting under the revision it already reported is routine
 	// -- it happens on every resync of every steady scope, and logging it at Info put ~100 lines
 	// into a single e2e run, which is how a diagnostic becomes noise instead of evidence.
 	log := m.Log.WithName("retention").WithValues(
-		"gitDest", gitDest.String(), "cell", cell.String(),
+		"gitDest", gitDest.String(), "collection", collection.String(),
 		"revision", revision, "mode", string(mode.OrDefault()), "retained", retained)
 	switch {
 	case !changed && remeasured:
 		log.Info("retention report accepted but published nothing; a fresh measurement of this " +
-			"cell produced the count already published")
+			"collection produced the count already published")
 	case !changed:
 		log.V(1).Info("retention report accepted; nothing an operator sees moved")
 	default:
@@ -183,22 +183,22 @@ func (m *Manager) MarkTargetRetention(
 	}
 }
 
-// retainTargetRetentionScopes installs the cells the current watch plan selects, and the stream
-// revision each one reports under. A cell that left the plan is dropped along with its count; a
-// cell that stayed keeps the count it last reported, because its stream may not have moved.
+// retainTargetRetentionScopes installs the collections the current watch plan selects, and the stream
+// revision each one reports under. A collection that left the plan is dropped along with its count; a
+// collection that stayed keeps the count it last reported, because its stream may not have moved.
 func (m *Manager) retainTargetRetentionScopes(
 	gitDest types.ResourceReference,
-	revisions map[types.CellKey]uint64,
+	revisions map[types.CollectionKey]uint64,
 ) {
 	m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		state := s.retention[gitDest.Key()]
-		next := make(map[types.CellKey]targetRetentionScope, len(revisions))
-		for cell, revision := range revisions {
-			scope := state.scopes[cell]
+		next := make(map[types.CollectionKey]targetRetentionScope, len(revisions))
+		for collection, revision := range revisions {
+			scope := state.scopes[collection]
 			// A restarted stream reports under a new revision. Its previous count stands until the
 			// replacement reports, which is a truer answer than zeroing a scope nobody re-measured.
 			scope.revision = revision
-			next[cell] = scope
+			next[collection] = scope
 		}
 		state.scopes = next
 		s.retention[gitDest.Key()] = state

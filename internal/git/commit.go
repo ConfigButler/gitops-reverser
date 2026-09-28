@@ -61,11 +61,11 @@ func renderReconcileCommitMessage(
 		ResourceVersion: resourceVersion,
 	}
 	if scope != nil {
-		data.Group = scope.Cell.Group
+		data.Group = scope.Collection.Group
 		data.Version = scope.Version
-		data.Resource = scope.Cell.Resource
-		data.APIVersion = buildAPIVersion(scope.Cell.Group, scope.Version)
-		data.Namespace = scope.Cell.Namespace
+		data.Resource = scope.Collection.Resource
+		data.APIVersion = buildAPIVersion(scope.Collection.Group, scope.Version)
+		data.Namespace = scope.Collection.Namespace
 	}
 	return renderCommitTemplate("reconcile", config.Message.ReconcileTemplate, data)
 }

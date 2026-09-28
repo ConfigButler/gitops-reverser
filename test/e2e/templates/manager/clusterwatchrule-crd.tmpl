@@ -7,7 +7,6 @@ spec:
     name: {{ .DestinationName }}
     namespace: {{ .Namespace }}
   rules:
-  - operations: [CREATE, UPDATE, DELETE]
-    apiGroups: [apiextensions.k8s.io]
+  - apiGroups: [apiextensions.k8s.io]
     apiVersions: [v1]
     resources: [customresourcedefinitions]

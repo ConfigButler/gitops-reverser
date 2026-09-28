@@ -9,7 +9,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -29,7 +28,7 @@ func callSkip(m *Manager, gitDest types.ResourceReference, uid, content, op stri
 		Identifier: types.NewResourceIdentifier("apps", "v1", "deployments", "ns", "d"),
 		Operation:  op,
 	}
-	if op != string(configv1alpha3.OperationDelete) {
+	if op != string(types.OperationDelete) {
 		event.Object = &unstructured.Unstructured{Object: map[string]interface{}{
 			"apiVersion": "apps/v1",
 			"kind":       "Deployment",
@@ -44,9 +43,9 @@ func TestSkipUnchangedLiveUpdate(t *testing.T) {
 	m := &Manager{}
 	dest := types.NewResourceReference("gt", "ns")
 
-	create := string(configv1alpha3.OperationCreate)
-	update := string(configv1alpha3.OperationUpdate)
-	del := string(configv1alpha3.OperationDelete)
+	create := string(types.OperationCreate)
+	update := string(types.OperationUpdate)
+	del := string(types.OperationDelete)
 
 	// A CREATE always routes and seeds the cache.
 	assert.False(t, callSkip(m, dest, "uid-1", "A", create), "CREATE must always route")
@@ -69,7 +68,7 @@ func TestSkipUnchangedLiveUpdate(t *testing.T) {
 func TestSkipUnchangedLiveUpdate_FirstSeenUpdateRoutes(t *testing.T) {
 	m := &Manager{}
 	dest := types.NewResourceReference("gt", "ns")
-	assert.False(t, callSkip(m, dest, "uid-x", "A", string(configv1alpha3.OperationUpdate)),
+	assert.False(t, callSkip(m, dest, "uid-x", "A", string(types.OperationUpdate)),
 		"a first-seen UPDATE has no baseline and must route")
 }
 
@@ -80,7 +79,7 @@ func TestSkipUnchangedLiveUpdate_PerGitTargetIsolation(t *testing.T) {
 	destA := types.NewResourceReference("gt-a", "ns")
 	destB := types.NewResourceReference("gt-b", "ns")
 
-	create := string(configv1alpha3.OperationCreate)
+	create := string(types.OperationCreate)
 	assert.False(t, callSkip(m, destA, "uid-1", "A", create))
 	// destB has never seen this object: its CREATE still routes.
 	assert.False(t, callSkip(m, destB, "uid-1", "A", create), "a different GitTarget dedups independently")

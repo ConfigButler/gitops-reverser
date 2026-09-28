@@ -16,15 +16,15 @@ import (
 func TestStreamSummaryForTypes_AggregatesByType(t *testing.T) {
 	configmaps := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	secrets := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-	expected := []types.CellKey{
-		types.CellKeyFor(configmaps, "a"),
-		types.CellKeyFor(configmaps, "b"),
-		types.CellKeyFor(secrets, "a"),
+	expected := []types.CollectionKey{
+		types.CollectionKeyFor(configmaps, "a"),
+		types.CollectionKeyFor(configmaps, "b"),
+		types.CollectionKeyFor(secrets, "a"),
 	}
-	states := map[types.CellKey]targetStreamStatus{
-		types.CellKeyFor(configmaps, "a"): {state: StreamStateStreaming},
-		types.CellKeyFor(configmaps, "b"): {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
-		types.CellKeyFor(secrets, "a"):    {state: StreamStateStreaming},
+	states := map[types.CollectionKey]targetStreamStatus{
+		types.CollectionKeyFor(configmaps, "a"): {state: StreamStateStreaming},
+		types.CollectionKeyFor(configmaps, "b"): {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
+		types.CollectionKeyFor(secrets, "a"):    {state: StreamStateStreaming},
 	}
 
 	summary := streamSummaryForTypes(expected, states, nil)
@@ -39,10 +39,10 @@ func TestStreamSummaryForTypes_AggregatesByType(t *testing.T) {
 func TestStreamSummaryForTypes_BlockedOutranksReplaying(t *testing.T) {
 	configmaps := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	secrets := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-	expected := []types.CellKey{types.CellKeyFor(configmaps, ""), types.CellKeyFor(secrets, "")}
-	states := map[types.CellKey]targetStreamStatus{
-		types.CellKeyFor(configmaps, ""): {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
-		types.CellKeyFor(secrets, ""):    {state: StreamStateBlocked, reason: StreamReasonWatchError},
+	expected := []types.CollectionKey{types.CollectionKeyFor(configmaps, ""), types.CollectionKeyFor(secrets, "")}
+	states := map[types.CollectionKey]targetStreamStatus{
+		types.CollectionKeyFor(configmaps, ""): {state: StreamStateReplaying, reason: StreamReasonInitialReplay},
+		types.CollectionKeyFor(secrets, ""):    {state: StreamStateBlocked, reason: StreamReasonWatchError},
 	}
 
 	summary := streamSummaryForTypes(expected, states, nil)
@@ -56,20 +56,20 @@ func TestStreamSummaryForTypes_BlockedOutranksReplaying(t *testing.T) {
 
 // The regression this keying exists to prevent. A rule can match two SERVED VERSIONS of one
 // resource (a `*` apiVersions wildcard over, say, autoscaling/v1 and autoscaling/v2), while the
-// declared set runs exactly one stream for that cell. Expecting a per-version stream meant
+// declared set runs exactly one stream for that collection. Expecting a per-version stream meant
 // expecting one that by construction never exists, and the rule reported permanently
 // not-ready while its stream ran perfectly.
 func TestStreamSummaryForTypes_TwoServedVersionsAreOneStream(t *testing.T) {
 	v1 := schema.GroupVersionResource{Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"}
 	v2 := schema.GroupVersionResource{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"}
-	expected := []types.CellKey{types.CellKeyFor(v1, "team-a"), types.CellKeyFor(v2, "team-a")}
-	states := map[types.CellKey]targetStreamStatus{
-		types.CellKeyFor(v2, "team-a"): {state: StreamStateStreaming},
+	expected := []types.CollectionKey{types.CollectionKeyFor(v1, "team-a"), types.CollectionKeyFor(v2, "team-a")}
+	states := map[types.CollectionKey]targetStreamStatus{
+		types.CollectionKeyFor(v2, "team-a"): {state: StreamStateStreaming},
 	}
 
 	summary := streamSummaryForTypes(expected, states, nil)
 
-	assert.Equal(t, 1, summary.Total, "one cell is one stream, whatever versions serve it")
+	assert.Equal(t, 1, summary.Total, "one collection is one stream, whatever versions serve it")
 	assert.Equal(t, 1, summary.Ready)
 	assert.True(t, summary.StreamsRunning())
 }
@@ -80,7 +80,7 @@ func TestStreamSummaryForTypes_TwoServedVersionsAreOneStream(t *testing.T) {
 func TestMarkTargetStreamState_NotifiesOnTheTransitionOnly(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	gitDest := types.NewResourceReference("target", "team-a")
-	cell := types.CellKeyFor(configmapsGVR, "apps")
+	collection := types.CollectionKeyFor(configmapsGVR, "apps")
 
 	// One subscriber per consumer, because a Go channel has one consumer and three controllers
 	// project this state.
@@ -92,7 +92,7 @@ func TestMarkTargetStreamState_NotifiesOnTheTransitionOnly(t *testing.T) {
 	// stale status where a dropped stream transition costs ten seconds.
 	acceptanceEvents := m.GitPathEvents()
 
-	m.markTargetStreamState(gitDest, cell, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
+	m.markTargetStreamState(gitDest, collection, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
 	for name, ch := range map[string]<-chan event.GenericEvent{
 		"watch rules": ruleEvents, "cluster watch rules": clusterRuleEvents, "the GitTarget": targetEvents,
 	} {
@@ -112,14 +112,14 @@ func TestMarkTargetStreamState_NotifiesOnTheTransitionOnly(t *testing.T) {
 
 	// The data plane reports readiness continuously. An event per REPORT rather than per CHANGE
 	// would enqueue every rule of a target on every watch event it handles.
-	m.markTargetStreamState(gitDest, cell, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
+	m.markTargetStreamState(gitDest, collection, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
 	select {
 	case <-ruleEvents:
 		t.Fatal("a re-report of an unchanged state must not enqueue anything")
 	default:
 	}
 
-	m.markTargetStreamState(gitDest, cell, StreamStateStreaming, StreamReasonAllStreamsReady, "streaming")
+	m.markTargetStreamState(gitDest, collection, StreamStateStreaming, StreamReasonAllStreamsReady, "streaming")
 	select {
 	case <-ruleEvents:
 	default:

@@ -189,11 +189,11 @@ boundary, the commit, the push. Background:
 
 | Metric | Type | Labels | Notes |
 | --- | --- | --- | --- |
-| `watch_events_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The ingest census: every delivered watch event, exactly once. `outcome` is `routed` / `unchanged` / `operation_filtered` / `not_object` / `bookmark` / `shutdown` / `stream_error` / `route_failed`. |
+| `watch_events_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The ingest census: every delivered watch event, exactly once. `outcome` is `routed` / `unchanged` / `not_object` / `bookmark` / `shutdown` / `stream_error` / `route_failed`. |
 | `watch_event_handling_seconds` | histogram | `group`, `version`, `resource` | How long a stream was **busy** on one event, attribution wait included. Occupancy, not queue delay. |
 | `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `closed` (the API server's routine watch timeout: the most common ending on a healthy cluster) / `expired` (cursor out of history, forcing a rebuild) / `error` / `stopped`. |
 | `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | Time to `initial-events-end`: what a `410` storm charges. |
-| `watch_recovery_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `resource`, `mode` | One per completed recovery. `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. No `version`: a recovery covers a cell. |
+| `watch_recovery_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `resource`, `mode` | One per completed recovery. `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. No `version`: a recovery covers a resource collection. |
 | `watch_types` | gauge | `source_cluster`, `gittarget_namespace`, `gittarget_name`, `state` | Types this target resolves, by `streaming` / `replaying` / `blocked`. `sum` is the resolved total. |
 | `watch_streams_open` | gauge | `source_cluster`, `gittarget_namespace`, `gittarget_name` | Watch **sessions** currently open against the source cluster. Not the same as types: one type across three namespaces is three sessions. |
 | `git_documents_total` | counter | `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource`, `outcome` | The write-boundary census, per **document**. `outcome` is `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained` / `refused`. |
@@ -320,7 +320,7 @@ red trains people to ignore it. Four classes:
 
 | Class | Values | Read as |
 | --- | --- | --- |
-| **expected** | `routed`, `unchanged`, `operation_filtered`, `bookmark`, `shutdown`, `written`, `deleted_live`, `deleted_sweep`, `retained`, `cached` | the pipeline working. `unchanged` is a document considered and found identical; `refused` is a document the writer declined to place, which is loss |
+| **expected** | `routed`, `unchanged`, `bookmark`, `shutdown`, `written`, `deleted_live`, `deleted_sweep`, `retained`, `cached` | the pipeline working. `unchanged` is a document considered and found identical; `refused` is a document the writer declined to place, which is loss |
 | **degraded** | `author_kind="unresolved"`, `mode="list_fallback"`, `not_object`, `stream_error`, weak attribution tiers | working, on weaker evidence |
 | **recoverable** | `git_pushes_total{outcome="failed"}` — the writes are retained and retried | alert on it **sustained with no successes**, never on one occurrence |
 | **loss** | `route_failed`, any `git_queue_drops_total`, any `git_commit_failures_total`, `placement_refusals_total`, `git_documents_total{outcome="refused"}` | an observed change that did not reach Git |

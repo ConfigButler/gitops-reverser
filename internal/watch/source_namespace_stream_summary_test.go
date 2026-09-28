@@ -37,10 +37,10 @@ func srcnsSummaryManager(t *testing.T) *Manager {
 	}
 }
 
-// seedStreamState records one target's per-cell stream status, the surface the summary reads.
+// seedStreamState records one target's per-collection stream status, the surface the summary reads.
 func (m *Manager) seedStreamState(gitDest types.ResourceReference, key targetWatchKey, status targetStreamStatus) {
 	m.mutateWatchPlane(func(s *watchPlaneState) bool {
-		return setStreamState(s, gitDest.Key(), key.Cell(), status)
+		return setStreamState(s, gitDest.Key(), key.Collection(), status)
 	})
 }
 
@@ -111,7 +111,7 @@ func TestStreamSummaryForWatchRule_WrongNamespaceKeyMisses(t *testing.T) {
 	assert.False(t, summary.StreamsRunning())
 }
 
-// A wildcard resolves to the CLUSTER-WIDE cell — the empty namespace — which exists only in the
+// A wildcard resolves to the CLUSTER-WIDE collection — the empty namespace — which exists only in the
 // compiled rule. A summary rebuilt from the spec would look for a stream under the rule's own
 // namespace, find nothing, and report a perfectly healthy rule as permanently not-ready.
 func TestStreamSummaryForWatchRule_WildcardReadsTheCompiledRule(t *testing.T) {
@@ -146,12 +146,12 @@ func TestStreamSummaryForWatchRule_WildcardIsNotFoundUnderANamedKey(t *testing.T
 	summary := m.StreamSummaryForWatchRule(rule)
 
 	assert.False(t, summary.StreamsRunning(),
-		"the cluster-wide cell is a PEER of a named one, so a named stream does not satisfy it")
+		"the cluster-wide collection is a PEER of a named one, so a named stream does not satisfy it")
 }
 
 // The roll-up folds every resolved namespace of a type, so one namespace still replaying holds the
 // type back. Reachable now through two named items rather than through a wildcard, which resolves
-// to a single cell.
+// to a single collection.
 func TestStreamSummaryForWatchRule_OnePendingNamespaceHoldsTheTypeBack(t *testing.T) {
 	m := srcnsSummaryManager(t)
 	rule := srcnsOverrideRule("repo-config")

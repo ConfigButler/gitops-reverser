@@ -73,9 +73,9 @@ func (s StreamSummary) StreamsRunning() bool {
 }
 
 // markTargetStreamState is a stream goroutine's report of its own readiness, recorded under its
-// CELL rather than under the (versioned) key the stream happens to run at. The rule-level roll-up
+// COLLECTION rather than under the (versioned) key the stream happens to run at. The rule-level roll-up
 // resolves what it expects from the type registry, which serves one record per version, while the
-// declared stream set runs one stream per cell. Keyed by version, a rule matching two served
+// declared stream set runs one stream per collection. Keyed by version, a rule matching two served
 // versions of one resource would expect a stream that by construction never exists, and would
 // report permanently not-ready while its stream ran perfectly.
 //
@@ -84,19 +84,19 @@ func (s StreamSummary) StreamsRunning() bool {
 // cancelled never contends for the lock the cancellation was issued under.
 func (m *Manager) markTargetStreamState(
 	gitDest types.ResourceReference,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	state StreamState,
 	reason string,
 	message string,
 ) {
 	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
-		return setStreamState(s, gitDest.Key(), cell, targetStreamStatus{
+		return setStreamState(s, gitDest.Key(), collection, targetStreamStatus{
 			state:   state,
 			reason:  reason,
 			message: message,
 		})
 	})
-	// A cell reaching Streaming is the last thing that has to happen before this target and every
+	// A collection reaching Streaming is the last thing that has to happen before this target and every
 	// rule pointing at it can honestly say StreamsRunning=True, so the transition is worth an
 	// event. Without one the data plane converges in about two seconds and the status follows up
 	// to ten seconds later, on RequeueStreamSettleInterval, having learned nothing in between.
@@ -114,22 +114,22 @@ func (m *Manager) markTargetStreamState(
 	}
 }
 
-// setStreamState records one cell's status and reports whether it moved.
+// setStreamState records one collection's status and reports whether it moved.
 func setStreamState(
 	s *watchPlaneState,
 	targetKey string,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	status targetStreamStatus,
 ) bool {
 	states := s.streams[targetKey]
 	if states == nil {
-		states = map[types.CellKey]targetStreamStatus{}
+		states = map[types.CollectionKey]targetStreamStatus{}
 		s.streams[targetKey] = states
 	}
-	if prior, had := states[cell]; had && prior == status {
+	if prior, had := states[collection]; had && prior == status {
 		return false
 	}
-	states[cell] = status
+	states[collection] = status
 	return true
 }
 
@@ -139,9 +139,8 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 	if !ok {
 		return streamSummaryForTypes(nil, nil, nil)
 	}
-	specs := targetWatchSpecs(table)
 	names := streamDisplayNamesForTable(table)
-	return m.streamSummaryForExpectedKeys(gitDest, cellsForWatchKeys(sortedTargetWatchSpecKeys(specs)), names)
+	return m.streamSummaryForExpectedKeys(gitDest, collectionsForWatchKeys(targetWatchKeys(table)), names)
 }
 
 // StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule, resolved
@@ -172,19 +171,19 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 	reg := m.registryForGitTarget(gitDest)
 	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 	records := reg.Followable()
-	var cells []types.CellKey
+	var collections []types.CollectionKey
 	names := map[schema.GroupResource]string{}
 	for _, rr := range compiled.ResourceRules {
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 		for _, rec := range matched {
 			for _, namespace := range rr.SourceNamespaces {
-				cells = append(cells, types.CellKeyFor(rec.Identity.GVR, namespace))
+				collections = append(collections, types.CollectionKeyFor(rec.Identity.GVR, namespace))
 			}
 			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCells(cells), names)
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCollections(collections), names)
 }
 
 // StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule, resolved
@@ -195,30 +194,30 @@ func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWa
 	reg := m.registryForGitTarget(gitDest)
 	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 	records := reg.Followable()
-	var cells []types.CellKey
+	var collections []types.CollectionKey
 	names := map[schema.GroupResource]string{}
 	for _, rr := range rule.Spec.Rules {
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 		for _, rec := range matched {
-			cells = append(cells, types.CellKeyFor(rec.Identity.GVR, ""))
+			collections = append(collections, types.CollectionKeyFor(rec.Identity.GVR, ""))
 			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCells(cells), names)
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCollections(collections), names)
 }
 
 func (m *Manager) streamSummaryForExpectedKeys(
 	gitDest types.ResourceReference,
-	expected []types.CellKey,
+	expected []types.CollectionKey,
 	displayNames map[schema.GroupResource]string,
 ) StreamSummary {
 	return streamSummaryForTypes(expected, m.watchPlane().streams[gitDest.Key()], displayNames)
 }
 
 func streamSummaryForTypes(
-	expected []types.CellKey,
-	states map[types.CellKey]targetStreamStatus,
+	expected []types.CollectionKey,
+	states map[types.CollectionKey]targetStreamStatus,
 	displayNames map[schema.GroupResource]string,
 ) StreamSummary {
 	byGVR := streamStatusesByType(expected, states)
@@ -230,20 +229,20 @@ func streamSummaryForTypes(
 	return out
 }
 
-// streamStatusesByType reduces the per-cell states to one row per TYPE: a rule watching one
+// streamStatusesByType reduces the per-collection states to one row per TYPE: a rule watching one
 // resource in three namespaces reports one stream, in its weakest state, which is the ratio
 // users have always seen in status.
 func streamStatusesByType(
-	expected []types.CellKey,
-	states map[types.CellKey]targetStreamStatus,
+	expected []types.CollectionKey,
+	states map[types.CollectionKey]targetStreamStatus,
 ) map[schema.GroupResource]targetStreamStatus {
 	byType := map[schema.GroupResource]targetStreamStatus{}
-	for _, cell := range deduplicateCells(expected) {
-		status, ok := states[cell]
+	for _, collection := range deduplicateCollections(expected) {
+		status, ok := states[collection]
 		if !ok {
 			status = targetStreamStatus{state: StreamStateReplaying, reason: StreamReasonInitialReplay}
 		}
-		gr := schema.GroupResource{Group: cell.Group, Resource: cell.Resource}
+		gr := schema.GroupResource{Group: collection.Group, Resource: collection.Resource}
 		current, seen := byType[gr]
 		if !seen || strongerStreamStatus(status, current) {
 			byType[gr] = status
@@ -370,24 +369,24 @@ func groupResourceDisplayName(gr schema.GroupResource) string {
 	return gr.Resource + "." + gr.Group
 }
 
-// cellsForWatchKeys projects a declared stream set onto the cells it covers.
-func cellsForWatchKeys(keys []targetWatchKey) []types.CellKey {
-	out := make([]types.CellKey, 0, len(keys))
+// collectionsForWatchKeys projects a declared stream set onto the collections it covers.
+func collectionsForWatchKeys(keys []targetWatchKey) []types.CollectionKey {
+	out := make([]types.CollectionKey, 0, len(keys))
 	for _, key := range keys {
-		out = append(out, key.Cell())
+		out = append(out, key.Collection())
 	}
 	return out
 }
 
-func deduplicateCells(cells []types.CellKey) []types.CellKey {
-	seen := map[types.CellKey]struct{}{}
-	out := make([]types.CellKey, 0, len(cells))
-	for _, cell := range cells {
-		if _, ok := seen[cell]; ok {
+func deduplicateCollections(collections []types.CollectionKey) []types.CollectionKey {
+	seen := map[types.CollectionKey]struct{}{}
+	out := make([]types.CollectionKey, 0, len(collections))
+	for _, collection := range collections {
+		if _, ok := seen[collection]; ok {
 			continue
 		}
-		seen[cell] = struct{}{}
-		out = append(out, cell)
+		seen[collection] = struct{}{}
+		out = append(out, collection)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out

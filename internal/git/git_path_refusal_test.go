@@ -30,37 +30,37 @@ func refusedError() error {
 
 // captureRefusals installs a recording reporter on a bare worker.
 type capturedRefusal struct {
-	target types.ResourceReference
-	cell   types.CellKey
+	target     types.ResourceReference
+	collection types.CollectionKey
 }
 
 func captureRefusals(w *BranchWorker) *[]capturedRefusal {
 	seen := &[]capturedRefusal{}
 	w.pathRefusal = func(
 		target types.ResourceReference,
-		cell types.CellKey,
+		collection types.CollectionKey,
 		_ *manifestanalyzer.AcceptanceRefusedError,
 	) {
-		*seen = append(*seen, capturedRefusal{target: target, cell: cell})
+		*seen = append(*seen, capturedRefusal{target: target, collection: collection})
 	}
 	return seen
 }
 
-func TestReportPathRefusal_ReportsAttributedRefusalWithSourceCell(t *testing.T) {
+func TestReportPathRefusal_ReportsAttributedRefusalWithSourceCollection(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	seen := &[]types.ResourceReference{}
-	cell := types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "apps")
+	collection := types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "apps")
 
 	w.pathRefusal = func(
 		target types.ResourceReference,
-		gotCell types.CellKey,
+		gotCollection types.CollectionKey,
 		_ *manifestanalyzer.AcceptanceRefusedError,
 	) {
 		*seen = append(*seen, target)
-		assert.Equal(t, cell, gotCell)
+		assert.Equal(t, collection, gotCollection)
 	}
 
-	isRefusal, refused := w.reportPathRefusal(refusedError(), "podinfo-test", "team-a", cell)
+	isRefusal, refused := w.reportPathRefusal(refusedError(), "podinfo-test", "team-a", collection)
 	assert.True(t, isRefusal)
 	assert.NotNil(t, refused, "a refusal must hand its issues back for the caller to act on")
 	require.Len(t, *seen, 1)
@@ -73,7 +73,8 @@ func TestReportPathRefusal_PassesThroughNonRefusal(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	seen := captureRefusals(w)
 
-	isRefusal, refused := w.reportPathRefusal(errors.New("remote hung up"), "podinfo-test", "team-a", types.CellKey{})
+	isRefusal, refused := w.reportPathRefusal(
+		errors.New("remote hung up"), "podinfo-test", "team-a", types.CollectionKey{})
 	assert.False(t, isRefusal)
 	assert.Nil(t, refused)
 	assert.Empty(t, *seen, "a transient write fault must not be reported as a Git path refusal")
@@ -92,7 +93,7 @@ func TestReportPathRefusal_UnattributableRefusalIsNotRecorded(t *testing.T) {
 		w := &BranchWorker{Log: logr.Discard()}
 		seen := captureRefusals(w)
 
-		gotRefusal, _ := w.reportPathRefusal(refusedError(), c.name, c.ns, types.CellKey{})
+		gotRefusal, _ := w.reportPathRefusal(refusedError(), c.name, c.ns, types.CollectionKey{})
 		assert.True(t, gotRefusal,
 			"an unattributable refusal is still a refusal, not a write fault")
 		assert.Empty(t, *seen,

@@ -12,10 +12,13 @@
 > why facts are a per-type stream rather than a keyspace.
 >
 > What is still **open** is not here. It is ranked in
-> [`../design/open-asks-priority.md`](../design/open-asks-priority.md), and the one decision with
-> its own record is [`../design/attribution-removal-wait-options.md`](../design/attribution-removal-wait-options.md).
+> [`../design/open-asks-priority.md`](../design/open-asks-priority.md). Removal-wait alternatives are in
+> [`../design/attribution-removal-wait-options.md`](../design/attribution-removal-wait-options.md).
+> The [planned filtered-removal policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
+> adds stricter evidence and immediate release of eligible exact matches for label-filtered
+> `DELETED` events. It is not implemented; the behavior below remains the current contract.
 >
-> Related: [`../facts/watch-event-ordering-and-attribution-grace.md`](../facts/watch-event-ordering-and-attribution-grace.md),
+> Related: [`watch-event-ordering-and-attribution-grace.md`](watch-event-ordering-and-attribution-grace.md),
 > [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md),
 > [`../attribution-setup-guide.md`](../attribution-setup-guide.md),
 > [`../interpreting-metrics.md`](../interpreting-metrics.md).

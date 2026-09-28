@@ -39,7 +39,7 @@ type RenderFidelityStatus struct {
 }
 
 // pendingScopeSampleLimit bounds how many pending scopes the condition message names. A target
-// can watch many cells, and a condition message is read by humans and matched by tests; the count
+// can watch many collections, and a condition message is read by humans and matched by tests; the count
 // in front of the list stays exact whatever the list is truncated to.
 const pendingScopeSampleLimit = 5
 
@@ -64,7 +64,7 @@ type renderFidelityTargetState struct {
 	// because that is the cheapest place to keep a monotonic source; what a report is judged
 	// against is the SCOPE's revision.
 	revision uint64
-	scopes   map[types.CellKey]renderFidelityScopeResult
+	scopes   map[types.CollectionKey]renderFidelityScopeResult
 	// awaitingFreshMeasurement says that everything this target has proved describes a repository
 	// it no longer writes to, so nothing it holds may admit a write. Only a COMPLETE fresh
 	// measurement clears it, which is the rule writeDivergence already lives by.
@@ -81,10 +81,10 @@ type renderFidelityTargetState struct {
 // machine. A restarted scope closes writes until it reports clean again. A single divergence
 // latches False for that scope's revision; a later success from another scope cannot reopen it.
 //
-// Revisions are PER SCOPE rather than per target, because the watch plan is applied per cell:
-// a cell whose stream is left running across a plan change keeps its result and its revision,
-// and only the cells that were started or restarted go back to pending. A target-wide epoch
-// would have marked every cell pending on every plan edit — closing writes on a target whose
+// Revisions are PER SCOPE rather than per target, because the watch plan is applied per collection:
+// a collection whose stream is left running across a plan change keeps its result and its revision,
+// and only the collections that were started or restarted go back to pending. A target-wide epoch
+// would have marked every collection pending on every plan edit — closing writes on a target whose
 // streams never moved — and would have cleared a divergence that nothing re-measured.
 type RenderFidelityGate struct {
 	mu      sync.RWMutex
@@ -100,7 +100,7 @@ func NewRenderFidelityGate() *RenderFidelityGate {
 // Reconcile installs target's current scope set and returns the revision every scope must
 // report under, alongside the resulting status.
 //
-// A scope is one independently replayed target-watch cell, so the namespace is part of it: a
+// A scope is one independently replayed target-watch collection, so the namespace is part of it: a
 // GitTarget can watch one type in more than one namespace, and each reports its own result.
 //
 //   - a scope in restarted is given a FRESH revision and goes back to pending;
@@ -116,21 +116,21 @@ func NewRenderFidelityGate() *RenderFidelityGate {
 // It returns Unknown while scopes are pending, or True for the vacuous zero-scope case.
 func (g *RenderFidelityGate) Reconcile(
 	target types.ResourceReference,
-	scopes []types.CellKey,
-	restarted []types.CellKey,
-) (RenderFidelityStatus, map[types.CellKey]uint64) {
+	scopes []types.CollectionKey,
+	restarted []types.CollectionKey,
+) (RenderFidelityStatus, map[types.CollectionKey]uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.targets == nil {
 		g.targets = map[string]renderFidelityTargetState{}
 	}
-	restart := make(map[types.CellKey]struct{}, len(restarted))
+	restart := make(map[types.CollectionKey]struct{}, len(restarted))
 	for _, scope := range restarted {
 		restart[scope] = struct{}{}
 	}
 	state := g.targets[target.Key()]
-	next := make(map[types.CellKey]renderFidelityScopeResult, len(scopes))
-	revisions := make(map[types.CellKey]uint64, len(scopes))
+	next := make(map[types.CollectionKey]renderFidelityScopeResult, len(scopes))
+	revisions := make(map[types.CollectionKey]uint64, len(scopes))
 	fresh := 0
 	for _, scope := range scopes {
 		result, carried := state.scopes[scope]
@@ -169,7 +169,7 @@ func (g *RenderFidelityGate) Reconcile(
 func (g *RenderFidelityGate) RecordScopeClean(
 	target types.ResourceReference,
 	revision uint64,
-	scope types.CellKey,
+	scope types.CollectionKey,
 ) (RenderFidelityStatus, bool) {
 	return g.recordScope(target, revision, scope, nil)
 }
@@ -179,7 +179,7 @@ func (g *RenderFidelityGate) RecordScopeClean(
 func (g *RenderFidelityGate) RecordScopeDivergence(
 	target types.ResourceReference,
 	revision uint64,
-	scope types.CellKey,
+	scope types.CollectionKey,
 	divergence manifestanalyzer.RenderDivergence,
 ) (RenderFidelityStatus, bool) {
 	return g.recordScope(target, revision, scope, &divergence)
@@ -188,7 +188,7 @@ func (g *RenderFidelityGate) RecordScopeDivergence(
 func (g *RenderFidelityGate) recordScope(
 	target types.ResourceReference,
 	revision uint64,
-	scope types.CellKey,
+	scope types.CollectionKey,
 	divergence *manifestanalyzer.RenderDivergence,
 ) (RenderFidelityStatus, bool) {
 	g.mu.Lock()
@@ -282,7 +282,7 @@ func (g *RenderFidelityGate) Invalidate(target types.ResourceReference) {
 		g.targets = map[string]renderFidelityTargetState{}
 	}
 	state := g.targets[target.Key()]
-	pending := make(map[types.CellKey]renderFidelityScopeResult, len(state.scopes))
+	pending := make(map[types.CollectionKey]renderFidelityScopeResult, len(state.scopes))
 	for scope := range state.scopes {
 		state.revision++
 		pending[scope] = renderFidelityScopeResult{revision: state.revision}
@@ -314,7 +314,7 @@ func reduceRenderFidelity(state renderFidelityTargetState) RenderFidelityStatus 
 	if state.writeDivergence != nil {
 		return renderFidelityDivergedStatus(state, *state.writeDivergence, countCleanScopes(state))
 	}
-	scopes := make([]types.CellKey, 0, len(state.scopes))
+	scopes := make([]types.CollectionKey, 0, len(state.scopes))
 	for scope := range state.scopes {
 		scopes = append(scopes, scope)
 	}
@@ -355,7 +355,7 @@ func reduceRenderFidelity(state renderFidelityTargetState) RenderFidelityStatus 
 // The revision is part of the answer, not decoration. The failure mode this diagnoses is a scope
 // holding a revision that no running stream will ever report under, so "which revision" is
 // exactly what separates "still replaying" from "stuck for ever".
-func pendingScopesMessage(state renderFidelityTargetState, scopes []types.CellKey, clean int) string {
+func pendingScopesMessage(state renderFidelityTargetState, scopes []types.CollectionKey, clean int) string {
 	names := make([]string, 0, len(scopes))
 	for _, scope := range scopes {
 		result := state.scopes[scope]

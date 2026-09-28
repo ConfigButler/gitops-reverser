@@ -24,7 +24,7 @@ GitTarget object. It does not move when a WatchRule or ClusterWatchRule changes.
 
 `StreamsRunning=True` answers whether every stream in the current applied plan is streaming. A
  target can therefore report healthy streams for its old plan while a newly added rule is still
-waiting for the owner loop to apply its new cell.
+waiting for the owner loop to apply its new collection.
 
 The target-level question is:
 

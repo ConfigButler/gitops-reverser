@@ -26,105 +26,87 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestTargetWatchSpecs_UsesOneWatchPerScope(t *testing.T) {
+func TestTargetWatchKeys_UsesOneWatchPerScope(t *testing.T) {
+	clusterRoles := schema.GroupVersionResource{
+		Group:    "rbac.authorization.k8s.io",
+		Version:  "v1",
+		Resource: "clusterroles",
+	}
 	table := WatchedTypeTable{
 		GitDest: types.NewResourceReference("target", "default"),
 		Types: []WatchedType{
-			{
-				GVR: configmapsGVR,
-				NamespaceOps: map[string]OperationSet{
-					"apps": {"CREATE": struct{}{}},
-					"ops":  {"UPDATE": struct{}{}},
-				},
-			},
-			{
-				GVR: schema.GroupVersionResource{
-					Group:    "rbac.authorization.k8s.io",
-					Version:  "v1",
-					Resource: "clusterroles",
-				},
-				NamespaceOps: map[string]OperationSet{
-					"": {"*": struct{}{}},
-				},
-			},
+			{GVR: configmapsGVR, NamespaceScopes: map[string]struct{}{"apps": {}, "ops": {}}},
+			{GVR: clusterRoles, NamespaceScopes: map[string]struct{}{"": {}}},
 		},
 	}
 
-	specs := targetWatchSpecs(table)
-
-	require.Len(t, specs, 3)
-	assert.Equal(t, "[CREATE]", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}])
-	assert.Equal(t, "[UPDATE]", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "ops"}])
-	assert.Equal(t, "[*]", specs[targetWatchKey{
-		GVR: schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
-	}])
+	assert.Equal(t, []targetWatchKey{
+		{GVR: configmapsGVR, Namespace: "apps"},
+		{GVR: configmapsGVR, Namespace: "ops"},
+		{GVR: clusterRoles},
+	}, targetWatchKeys(table))
 }
 
-// A cluster-wide selection and a named-namespace selection on the SAME GVR are two streams,
-// each keeping its own operation filters. Collapsing them to one all-namespaces watch gave the
-// named rule events from every namespace the credential could read, under the cluster-wide
-// rule's operation filter rather than its own.
-func TestTargetWatchSpecs_NamedAndClusterWideScopesStayDistinctStreams(t *testing.T) {
+// A cluster-wide selection and a named-namespace selection on the SAME GVR are two streams.
+// Collapsing them to one all-namespaces watch gave the named rule events from every namespace
+// the credential could read.
+func TestTargetWatchKeys_NamedAndClusterWideScopesStayDistinctStreams(t *testing.T) {
 	table := WatchedTypeTable{
 		GitDest: types.NewResourceReference("target", "default"),
 		Types: []WatchedType{{
-			GVR: configmapsGVR,
-			NamespaceOps: map[string]OperationSet{
-				"":       {"UPDATE": struct{}{}},
-				"team-a": {"CREATE": struct{}{}},
-			},
+			GVR:             configmapsGVR,
+			NamespaceScopes: map[string]struct{}{"": {}, "team-a": {}},
 		}},
 	}
 
-	specs := targetWatchSpecs(table)
-
-	require.Len(t, specs, 2, "a cluster-wide selection must not swallow the named-namespace stream")
-	assert.Equal(t, "[UPDATE]", specs[targetWatchKey{GVR: configmapsGVR}],
-		"the cluster-wide stream keeps its own operation set")
-	assert.Equal(t, "[CREATE]", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "team-a"}],
-		"the named stream keeps its own operation set instead of inheriting the cluster-wide one")
+	assert.Equal(t, []targetWatchKey{
+		{GVR: configmapsGVR},
+		{GVR: configmapsGVR, Namespace: "team-a"},
+	}, targetWatchKeys(table), "a cluster-wide selection must not swallow the named-namespace stream")
 }
 
-// Two served versions of one resource, selected under the same scope, are ONE cell: one sweep
+// Two served versions of one resource, selected under the same scope, are ONE collection: one sweep
 // boundary, one render-fidelity scope, one coalescing key. Streaming both would put two
 // snapshots on that boundary, each sweeping the documents the other gathered.
-func TestTargetWatchStreams_OneStreamPerCellAcrossServedVersions(t *testing.T) {
+func TestTargetWatchStreams_OneStreamPerCollectionAcrossServedVersions(t *testing.T) {
 	v1beta1 := schema.GroupVersionResource{Group: "apps", Version: "v1beta1", Resource: "deployments"}
 	v1 := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 	table := WatchedTypeTable{
 		GitDest: types.NewResourceReference("target", "default"),
 		Types: []WatchedType{
-			{GVR: v1beta1, NamespaceOps: map[string]OperationSet{"team-a": {"CREATE": struct{}{}}}},
-			{GVR: v1, Preferred: true, NamespaceOps: map[string]OperationSet{"team-a": {"UPDATE": struct{}{}}}},
+			{GVR: v1beta1, NamespaceScopes: map[string]struct{}{"team-a": {}}},
+			{GVR: v1, Preferred: true, NamespaceScopes: map[string]struct{}{"team-a": {}}},
 		},
 	}
 
 	streams := targetWatchStreams(table)
 
-	require.Len(t, streams, 1, "one cell is one stream, whatever versions serve it")
-	ops, ok := streams[targetWatchKey{GVR: v1, Namespace: "team-a"}]
+	require.Len(t, streams, 1, "one collection is one stream, whatever versions serve it")
+	_, ok := streams[targetWatchKey{GVR: v1, Namespace: "team-a"}]
 	require.True(t, ok, "the preferred served version is the one streamed")
-	assert.True(t, ops.Match("CREATE"),
-		"the collapsed record's operation filter is unioned in, so no rule loses coverage")
-	assert.True(t, ops.Match("UPDATE"))
-	assert.False(t, ops.Match("DELETE"))
 }
 
 // The choice must be stable: a re-declare that flapped the served version would cancel the
-// stream and replay the whole cell every time.
+// stream and replay the whole collection every time.
 func TestTargetWatchStreams_ServedVersionChoiceIsStable(t *testing.T) {
 	v1 := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 	v2 := schema.GroupVersionResource{Group: "apps", Version: "v2", Resource: "deployments"}
-	ops := map[string]OperationSet{"": {"*": struct{}{}}}
-	ascending := WatchedTypeTable{Types: []WatchedType{{GVR: v1, NamespaceOps: ops}, {GVR: v2, NamespaceOps: ops}}}
-	descending := WatchedTypeTable{Types: []WatchedType{{GVR: v2, NamespaceOps: ops}, {GVR: v1, NamespaceOps: ops}}}
+	scopes := map[string]struct{}{"": {}}
+	ascending := WatchedTypeTable{Types: []WatchedType{
+		{GVR: v1, NamespaceScopes: scopes}, {GVR: v2, NamespaceScopes: scopes},
+	}}
+	descending := WatchedTypeTable{Types: []WatchedType{
+		{GVR: v2, NamespaceScopes: scopes}, {GVR: v1, NamespaceScopes: scopes},
+	}}
 
-	assert.Equal(t, targetWatchSpecs(ascending), targetWatchSpecs(descending),
+	assert.Equal(t, targetWatchKeys(ascending), targetWatchKeys(descending),
 		"neither declaration order nor map iteration may decide which version streams")
 	_, ok := targetWatchStreams(ascending)[targetWatchKey{GVR: v2}]
 	assert.True(t, ok, "with no preferred record the higher-sorting version wins, deterministically")
 }
 
+// A served-version change is the specification change that restarts a collection: the same
+// collection reopens at the new version, and its first session replays rather than resuming.
 func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -151,8 +133,8 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 	first := WatchedTypeTable{
 		GitDest: gitDest,
 		Types: []WatchedType{{
-			GVR:          configmapsGVR,
-			NamespaceOps: map[string]OperationSet{"apps": {"CREATE": struct{}{}}},
+			GVR:             configmapsGVR,
+			NamespaceScopes: map[string]struct{}{"apps": {}},
 		}},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, first))
@@ -168,8 +150,8 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 	changed := WatchedTypeTable{
 		GitDest: gitDest,
 		Types: []WatchedType{{
-			GVR:          configmapsGVR,
-			NamespaceOps: map[string]OperationSet{"apps": {"UPDATE": struct{}{}}},
+			GVR:             schema.GroupVersionResource{Version: "v2", Resource: "configmaps"},
+			NamespaceScopes: map[string]struct{}{"apps": {}},
 		}},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, changed))
@@ -196,7 +178,7 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 		watch.Event{Type: watch.Added, Object: obj},
 	)
 
@@ -211,10 +193,10 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 	assert.Empty(t, event.Object.GetResourceVersion(), "live events are sanitized before entering Git")
 }
 
-// The source cell is stamped where it is known. Downstream it cannot be reconstructed: a
-// cluster-wide and a namespaced stream deliver the same object, so the producing cell is not
+// The source collection is stamped where it is known. Downstream it cannot be reconstructed: a
+// cluster-wide and a namespaced stream deliver the same object, so the producing collection is not
 // recoverable from the event itself.
-func TestRouteLiveTargetWatchEvent_StampsTheProducingCell(t *testing.T) {
+func TestRouteLiveTargetWatchEvent_StampsTheProducingCollection(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	enqueuer := &recordingEnqueuer{}
 	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
@@ -225,7 +207,6 @@ func TestRouteLiveTargetWatchEvent_StampsTheProducingCell(t *testing.T) {
 	manager := &Manager{EventRouter: router}
 	watching := targetWatchStream{
 		key: targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		ops: OperationSet{"CREATE": struct{}{}},
 	}
 
 	_, err := manager.routeLiveTargetWatchEvent(
@@ -238,11 +219,16 @@ func TestRouteLiveTargetWatchEvent_StampsTheProducingCell(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, enqueuer.events, 1)
-	assert.Equal(t, types.CellKeyFor(configmapsGVR, "apps"), enqueuer.events[0].SourceCell)
+	assert.Equal(t, types.CollectionKeyFor(configmapsGVR, "apps"), enqueuer.events[0].SourceCollection)
 }
 
-func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
-	gitDest := types.NewResourceReference("target", "default")
+// A selected collection is observed through its whole lifecycle: there is no per-rule operation
+// filter left to drop a create, an update or a deletion before it reaches the writer. What a
+// deletion does to Git is the GitTarget's prune mode, decided downstream.
+func TestRouteLiveTargetWatchEvent_ForwardsEveryObjectEventType(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	gitDest := types.NewResourceReference("my-target", "my-ns")
 	enqueuer := &recordingEnqueuer{}
 	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
 	router := &EventRouter{
@@ -250,17 +236,24 @@ func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
 		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
 	}
 	manager := &Manager{EventRouter: router}
+	watching := testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"})
 
-	_, err := manager.routeLiveTargetWatchEvent(
-		context.Background(),
-		logr.Discard(),
-		gitDest,
-		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"DELETE": struct{}{}}),
-		watch.Event{Type: watch.Modified, Object: configMapObject("13")},
-	)
+	for _, ev := range []watch.Event{
+		{Type: watch.Added, Object: configMapObject("12")},
+		{Type: watch.Modified, Object: terminatingConfigMapObject("13")},
+		{Type: watch.Deleted, Object: configMapObject("14")},
+	} {
+		_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, watching, ev)
+		require.NoError(t, err)
+	}
 
-	require.NoError(t, err)
-	assert.Empty(t, enqueuer.events)
+	require.Len(t, enqueuer.events, 3, "every object event reaches the writer")
+	assert.Equal(t, "CREATE", enqueuer.events[0].Operation)
+	assert.Equal(t, "DELETE", enqueuer.events[1].Operation)
+	assert.Equal(t, "DELETE", enqueuer.events[2].Operation)
+	routed, ok := telemetry.CollectInt64Sum(reader, watchEventsMetric, ingestMatch(watchOutcomeRouted))
+	require.True(t, ok)
+	assert.Equal(t, int64(3), routed, "each delivered event is counted once, as routed")
 }
 
 func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
@@ -288,7 +281,7 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 		watch.Event{Type: watch.Added, Object: configMapObject("12")},
 	)
 
@@ -316,7 +309,7 @@ func TestRouteLiveTargetWatchEvent_DeletionTimestampRendersAsDelete(t *testing.T
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"DELETE": struct{}{}}),
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")},
 	)
 
@@ -344,7 +337,7 @@ func TestRouteLiveTargetWatchEvent_ModifiedWithoutDeletionTimestampRendersAsUpda
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"UPDATE": struct{}{}}),
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 		watch.Event{Type: watch.Modified, Object: configMapObject("21")},
 	)
 
@@ -368,12 +361,11 @@ func TestRouteLiveTargetWatchEvent_TerminatingThenDeletedAreIdenticalRemovals(t 
 	}
 	manager := &Manager{EventRouter: router}
 	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-	ops := OperationSet{"DELETE": struct{}{}}
 
-	_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, testStream(key, ops),
+	_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, testStream(key),
 		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")})
 	require.NoError(t, err)
-	_, err = manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, testStream(key, ops),
+	_, err = manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, testStream(key),
 		watch.Event{Type: watch.Deleted, Object: configMapObject("22")})
 	require.NoError(t, err)
 
@@ -394,7 +386,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		testStream(key, nil),
+		testStream(key),
 		watch.Event{Type: watch.Added, Object: configMapObject("10")},
 		true,
 		&replay,
@@ -410,7 +402,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		testStream(key, nil),
+		testStream(key),
 		watch.Event{Type: watch.Bookmark, Object: bookmark},
 		true,
 		&replay,
@@ -440,7 +432,7 @@ func TestTargetWatchReplayAndStream_ReturnsWhenContextCancels(t *testing.T) {
 			ctx,
 			logr.Discard(),
 			types.NewResourceReference("target", "default"),
-			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil),
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 			false,
 		)
 	}()
@@ -493,7 +485,7 @@ func TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden(t *testi
 			ctx,
 			logr.Discard(),
 			gitDest,
-			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil),
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 			true,
 		)
 	}()
@@ -553,7 +545,7 @@ func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
 			ctx,
 			logr.Discard(),
 			gitDest,
-			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil),
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 			true,
 		)
 	}()
@@ -599,24 +591,13 @@ func TestOpenTargetWatch_UsesConfiguredHook(t *testing.T) {
 }
 
 func TestTargetWatchOperationHelpers(t *testing.T) {
-	specs := map[targetWatchKey]string{
-		{GVR: configmapsGVR, Namespace: "b"}: "[CREATE]",
-		{GVR: configmapsGVR, Namespace: "a"}: "[UPDATE]",
-	}
-	keys := sortedTargetWatchSpecKeys(specs)
+	keys := sortedTargetWatchKeys(map[targetWatchKey]struct{}{
+		{GVR: configmapsGVR, Namespace: "b"}: {},
+		{GVR: configmapsGVR, Namespace: "a"}: {},
+	})
 	require.Len(t, keys, 2)
 	assert.Equal(t, "a", keys[0].Namespace)
 
-	table := WatchedTypeTable{Types: []WatchedType{{
-		GVR:          configmapsGVR,
-		NamespaceOps: map[string]OperationSet{"": {"CREATE": struct{}{}}},
-	}}}
-	streams := targetWatchStreams(table)
-	require.Len(t, streams, 1)
-	assert.True(t, streams[targetWatchKey{GVR: configmapsGVR}].Match("CREATE"))
-	assert.False(t, streams[targetWatchKey{GVR: configmapsGVR}].Match("UPDATE"))
-	assert.True(t, OperationSet(nil).Match("DELETE"))
-	assert.True(t, OperationSet{"*": struct{}{}}.Match("UPDATE"))
 	assert.Equal(t, "DELETE", operationForWatchEvent(watch.Deleted))
 	assert.Empty(t, operationForWatchEvent(watch.Error))
 
@@ -637,7 +618,7 @@ func TestFoldTargetReplayEvent_AccumulatesUntilInitialEventsBookmark(t *testing.
 	done, rv, err := manager.foldTargetReplayEvent(
 		logr.Discard(),
 		gitDest,
-		testStream(key, nil),
+		testStream(key),
 		watch.Event{Type: watch.Added, Object: configMapObject("10")},
 		&desired,
 	)
@@ -652,7 +633,7 @@ func TestFoldTargetReplayEvent_AccumulatesUntilInitialEventsBookmark(t *testing.
 	done, rv, err = manager.foldTargetReplayEvent(
 		logr.Discard(),
 		gitDest,
-		testStream(key, nil),
+		testStream(key),
 		watch.Event{Type: watch.Bookmark, Object: bookmark},
 		&desired,
 	)
@@ -669,9 +650,8 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	childCtx, childCancel := context.WithCancel(ctx)
 	watchKey := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	manager := &Manager{}
-	manager.targetWatchSet(gitDest).streams[watchKey.Cell()] = &runningTargetWatch{
-		key:  watchKey,
-		spec: "[*]",
+	manager.targetWatchSet(gitDest).streams[watchKey.Collection()] = &runningTargetWatch{
+		key: watchKey,
 		cancel: func() {
 			childCancel()
 			close(cancelled)
@@ -720,7 +700,7 @@ func TestTargetWatchReplayAndStream_ExpiredCursorFallsBackToFreshReplay(t *testi
 	go func() {
 		done <- manager.targetWatchReplayAndStream(
 			ctx, logr.Discard(), gitDest,
-			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil), true,
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}), true,
 		)
 	}()
 
@@ -949,7 +929,7 @@ func TestFollowFactsForWatch_IsANoOpWithoutAttribution(t *testing.T) {
 }
 
 // planTestManager is a manager whose target watches open fake watches, recording each one so a
-// test can tell which cells were started and which were left alone.
+// test can tell which collections were started and which were left alone.
 func planTestManager(t *testing.T, gitDest types.ResourceReference) (*Manager, chan openedWatch) {
 	t.Helper()
 	opened := make(chan openedWatch, 8)
@@ -971,15 +951,15 @@ func planTestManager(t *testing.T, gitDest types.ResourceReference) (*Manager, c
 	return manager, opened
 }
 
-// planTable is a one-type table watching the given namespaces for CREATE.
+// planTable is a one-type table watching the given namespaces.
 func planTable(gitDest types.ResourceReference, namespaces ...string) WatchedTypeTable {
-	ops := map[string]OperationSet{}
+	scopes := map[string]struct{}{}
 	for _, ns := range namespaces {
-		ops[ns] = OperationSet{"CREATE": struct{}{}}
+		scopes[ns] = struct{}{}
 	}
 	return WatchedTypeTable{
 		GitDest: gitDest,
-		Types:   []WatchedType{{GVR: configmapsGVR, NamespaceOps: ops}},
+		Types:   []WatchedType{{GVR: configmapsGVR, NamespaceScopes: scopes}},
 	}
 }
 
@@ -996,10 +976,10 @@ func assertStopped(t *testing.T, w openedWatch) {
 		"expected the stream for namespace %q to be cancelled", w.namespace)
 }
 
-// The performance goal of the whole refactor: adding a rule starts ONE cell, and every cell
+// The performance goal of the whole refactor: adding a rule starts ONE collection, and every collection
 // already running keeps running. Replacing the set wholesale replayed all of them into a queue
 // shared with every other tenant on the branch.
-func TestReplaceGitTargetWatches_AddingARuleStartsOnlyTheNewCell(t *testing.T) {
+func TestReplaceGitTargetWatches_AddingARuleStartsOnlyTheNewCollection(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1012,14 +992,14 @@ func TestReplaceGitTargetWatches_AddingARuleStartsOnlyTheNewCell(t *testing.T) {
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, planTable(gitDest, "apps", "ops")))
 
 	started := receiveOpenedWatch(t, opened)
-	assert.Equal(t, "ops", started.namespace, "only the new cell is started")
+	assert.Equal(t, "ops", started.namespace, "only the new collection is started")
 	assertNoOpenedWatch(t, opened)
 	assertStillRunning(t, apps)
 }
 
-// Removing one of several rules cancels that cell alone. It never touches files: the mirror is
+// Removing one of several rules cancels that collection alone. It never touches files: the mirror is
 // converged afterwards by a Git-side sweep.
-func TestReplaceGitTargetWatches_RemovingARuleStopsOnlyThatCell(t *testing.T) {
+func TestReplaceGitTargetWatches_RemovingARuleStopsOnlyThatCollection(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1035,13 +1015,13 @@ func TestReplaceGitTargetWatches_RemovingARuleStopsOnlyThatCell(t *testing.T) {
 	assertStopped(t, byNamespace["ops"])
 	assertStillRunning(t, byNamespace["apps"])
 	assertNoOpenedWatch(t, opened)
-	_, stillTracked := manager.targetWatches[gitDest.Key()].streams[types.CellKeyFor(configmapsGVR, "ops")]
-	assert.False(t, stillTracked, "a stopped cell's key is dropped")
+	_, stillTracked := manager.targetWatches[gitDest.Key()].streams[types.CollectionKeyFor(configmapsGVR, "ops")]
+	assert.False(t, stillTracked, "a stopped collection's key is dropped")
 }
 
-// An operation-filter change invalidates the running stream, so that cell restarts — and only
-// that cell. A diff comparing keys alone would have called it a keep.
-func TestReplaceGitTargetWatches_AnOperationEditRestartsThatCellAlone(t *testing.T) {
+// A served-version change invalidates the running stream, so that collection restarts — and only
+// that collection. A diff comparing collection keys alone would have called it a keep.
+func TestReplaceGitTargetWatches_AVersionEditRestartsThatCollectionAlone(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1053,27 +1033,27 @@ func TestReplaceGitTargetWatches_AnOperationEditRestartsThatCellAlone(t *testing
 
 	edited := WatchedTypeTable{
 		GitDest: gitDest,
-		Types: []WatchedType{{
-			GVR: configmapsGVR,
-			NamespaceOps: map[string]OperationSet{
-				"apps": {"UPDATE": struct{}{}},
-				"ops":  {"CREATE": struct{}{}},
+		Types: []WatchedType{
+			{GVR: configmapsGVR, NamespaceScopes: map[string]struct{}{"ops": {}}},
+			{
+				GVR:             schema.GroupVersionResource{Version: "v2", Resource: "configmaps"},
+				NamespaceScopes: map[string]struct{}{"apps": {}},
 			},
-		}},
+		},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, edited))
 
 	restarted := receiveOpenedWatch(t, opened)
 	assert.Equal(t, "apps", restarted.namespace)
-	assert.True(t, *restarted.opts.SendInitialEvents, "a restarted cell replays under its fresh revision")
+	assert.True(t, *restarted.opts.SendInitialEvents, "a restarted collection replays under its fresh revision")
 	assertNoOpenedWatch(t, opened)
 	assertStopped(t, byNamespace["apps"])
 	assertStillRunning(t, byNamespace["ops"])
 }
 
-// Readiness is per cell, so a cell that is merely KEPT holds the result its own replay produced.
+// Readiness is per collection, so a collection that is merely KEPT holds the result its own replay produced.
 // Resetting it would report a target as replaying because an unrelated rule was added.
-func TestReplaceGitTargetWatches_KeptCellKeepsItsReadinessResult(t *testing.T) {
+func TestReplaceGitTargetWatches_KeptCollectionKeepsItsReadinessResult(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1091,15 +1071,15 @@ func TestReplaceGitTargetWatches_KeptCellKeepsItsReadinessResult(t *testing.T) {
 	receiveOpenedWatch(t, opened)
 
 	states := manager.watchPlane().streams[gitDest.Key()]
-	apps := states[types.CellKeyFor(configmapsGVR, "apps")]
-	ops := states[types.CellKeyFor(configmapsGVR, "ops")]
-	assert.Equal(t, StreamStateStreaming, apps.state, "a kept cell keeps its prior result")
-	assert.Equal(t, StreamStateReplaying, ops.state, "a started cell is pending its first replay")
+	apps := states[types.CollectionKeyFor(configmapsGVR, "apps")]
+	ops := states[types.CollectionKeyFor(configmapsGVR, "ops")]
+	assert.Equal(t, StreamStateStreaming, apps.state, "a kept collection keeps its prior result")
+	assert.Equal(t, StreamStateReplaying, ops.state, "a started collection is pending its first replay")
 }
 
-// A forced recheck is a recovery, not a fifth outcome: every cell restarts, including one that
+// A forced recheck is a recovery, not a fifth outcome: every collection restarts, including one that
 // did not change, which is what gives a widened prune policy a snapshot to sweep against.
-func TestReplaceGitTargetWatches_ForceRestartsEveryCell(t *testing.T) {
+func TestReplaceGitTargetWatches_ForceRestartsEveryCollection(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1137,7 +1117,7 @@ func TestRouteLiveTargetWatchEvent_ACancelledStreamStopsEnqueuing(t *testing.T) 
 		ctx,
 		logr.Discard(),
 		gitDest,
-		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 		watch.Event{Type: watch.Added, Object: configMapObject("12")},
 	)
 
@@ -1173,7 +1153,7 @@ func TestRouteLiveTargetWatchEvent_ClassifiesExpiredCursorAtTheBoundary(t *testi
 				context.Background(),
 				logr.Discard(),
 				types.NewResourceReference("target", "default"),
-				testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+				testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 				watch.Event{Type: watch.Error, Object: tc.status},
 			)
 
@@ -1206,7 +1186,7 @@ func TestRouteLiveTargetWatchEvent_CountsNonExpiredErrorFrames(t *testing.T) {
 		context.Background(),
 		logr.Discard(),
 		types.NewResourceReference("target", "default"),
-		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}),
 		watch.Event{Type: watch.Error, Object: &metav1.Status{
 			Reason: metav1.StatusReasonInternalError, Message: "boom",
 		}},

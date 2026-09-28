@@ -103,7 +103,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 		context.Background(),
 		types.NewResourceReference("team-a-config", "team-a"),
 		git.ResyncScopeFor(configmapsGVR, ""),
-		types.CellKey{},
+		types.CollectionKey{},
 		nil,
 		"12",
 		false,
@@ -137,7 +137,7 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 		context.Background(),
 		types.NewResourceReference("deleted-target", "team-a"),
 		git.ResyncScopeFor(configmapsGVR, ""),
-		types.CellKey{},
+		types.CollectionKey{},
 		nil,
 		"12",
 		false,
@@ -173,7 +173,7 @@ func TestDrainScopedResync_TreatsSupersededAsSuccess(t *testing.T) {
 		defer close(done)
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
-			types.CellKeyFor(configmapsGVR, ""),
+			types.CollectionKeyFor(configmapsGVR, ""),
 			"sweep",
 			0,
 			resultCh,
@@ -204,7 +204,7 @@ func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	go func() {
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
-			types.CellKeyFor(configmapsGVR, ""),
+			types.CollectionKeyFor(configmapsGVR, ""),
 			"reconcile",
 			0,
 			resultCh,
@@ -244,7 +244,7 @@ func TestDrainScopedResync_RefusalMarksGitPathRefused(t *testing.T) {
 	resultCh := make(chan git.ResyncResult, 1)
 	resultCh <- git.ResyncResult{Err: fmt.Errorf("execute pending writes: %w", refusal)}
 
-	router.drainScopedResync(gitDest, key.Cell(), "reconcile", 0, resultCh)
+	router.drainScopedResync(gitDest, key.Collection(), "reconcile", 0, resultCh)
 
 	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
 
@@ -376,7 +376,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 //
 // enqueueReplayResync used to return on !enqueued BEFORE starting the drain, leaving that reply in
 // a buffered channel nobody read. With it went the only calls that mark acceptance, render
-// fidelity and retention for the cell, so the render-fidelity scope owed a report under a revision
+// fidelity and retention for the collection, so the render-fidelity scope owed a report under a revision
 // no running stream would ever report again — which pins the GitTarget at Ready=False and, through
 // GitTargetReady, every WatchRule pointing at it.
 //
@@ -395,14 +395,14 @@ func TestDrainScopedResync_QueueFullIsDrainedNotOrphaned(t *testing.T) {
 	router := NewEventRouter(workerManager, mgr, client, logr.Discard())
 
 	gitDest := types.NewResourceReference("team-a-config", "team-a")
-	cell := types.CellKeyFor(configmapsGVR, "")
+	collection := types.CollectionKeyFor(configmapsGVR, "")
 	resultCh := make(chan git.ResyncResult, 1)
 	resultCh <- git.ResyncResult{Err: git.ErrFinalizeQueueFull}
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		router.drainScopedResync(gitDest, cell, "reconcile", 1, resultCh)
+		router.drainScopedResync(gitDest, collection, "reconcile", 1, resultCh)
 	}()
 
 	select {

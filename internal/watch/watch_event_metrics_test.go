@@ -47,23 +47,22 @@ func TestRecordWatchEvent_CountsPerTargetTypeAndOutcome(t *testing.T) {
 	assert.Equal(t, int64(1), unchanged)
 }
 
-// A filtered event and a lost one must be different series, because they mean opposite things: one
-// is the rules working, the other is an observed change that never reached Git. Folding them
+// An unchanged event and a lost one must be different series, because they mean opposite things:
+// one is the pipeline working, the other is an observed change that never reached Git. Folding them
 // together is exactly what made "nothing is happening" and "delivery is failing" look alike.
-func TestRecordWatchEvent_LossIsDistinctFromFiltering(t *testing.T) {
+func TestRecordWatchEvent_LossIsDistinctFromUnchanged(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	gitDest := types.NewResourceReference("my-target", "my-ns")
 	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 
-	recordWatchEvent(t.Context(), gitDest, gvr, watchOutcomeOperationFiltered)
+	recordWatchEvent(t.Context(), gitDest, gvr, watchOutcomeUnchanged)
 	recordWatchEvent(t.Context(), gitDest, gvr, watchOutcomeRouteFailed)
 
-	filtered, ok := telemetry.CollectInt64Sum(reader, watchEventsMetric,
-		ingestMatch(watchOutcomeOperationFiltered))
+	unchanged, ok := telemetry.CollectInt64Sum(reader, watchEventsMetric, ingestMatch(watchOutcomeUnchanged))
 	require.True(t, ok)
-	assert.Equal(t, int64(1), filtered)
+	assert.Equal(t, int64(1), unchanged)
 
 	lost, ok := telemetry.CollectInt64Sum(reader, watchEventsMetric, ingestMatch(watchOutcomeRouteFailed))
 	require.True(t, ok)
@@ -102,7 +101,7 @@ func TestSessionEndReason_ACleanCloseIsNotAnError(t *testing.T) {
 		"teardown still outranks the close it causes")
 }
 
-// The recovery counter carries group/resource and no version: a recovery covers a CELL, and the
+// The recovery counter carries group/resource and no version: a recovery covers a COLLECTION, and the
 // per-type reconcile path does not know a served version. An empty version label on one arm beside
 // a populated one on another would be worse than no label at all.
 func TestRecordWatchRecovery_CarriesNoVersionLabel(t *testing.T) {

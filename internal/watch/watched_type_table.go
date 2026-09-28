@@ -12,41 +12,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// OperationSet is the set of operation filters recorded for a watched type in one
-// namespace. The sentinel "*" means all operations and subsumes the rest, exactly
-// as the effective-plan hash encodes operations today.
-type OperationSet map[string]struct{}
-
-// add folds a rule's operation slice into the set, normalising an empty slice and
-// the explicit OperationAll to the "*" sentinel.
-func (s OperationSet) add(ops []configv1alpha3.OperationType) {
-	if len(ops) == 0 {
-		s["*"] = struct{}{}
-		return
-	}
-	for _, op := range ops {
-		if op == configv1alpha3.OperationAll {
-			s["*"] = struct{}{}
-			continue
-		}
-		s[string(op)] = struct{}{}
-	}
-}
-
-// Sorted returns the operations in a stable order, collapsing to ["*"] when the
-// all-operations sentinel is present.
-func (s OperationSet) Sorted() []string {
-	if _, all := s["*"]; all {
-		return []string{"*"}
-	}
-	out := make([]string, 0, len(s))
-	for op := range s {
-		out = append(out, op)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // WatchedType is one followable type a GitTarget watches: a (GVK, GVR, scope) triple
 // plus the namespace scope and served-version metadata, projected straight from the
 // type registry's followable set. The registry owns identity (GVK<->GVR is 1:1 there),
@@ -60,11 +25,10 @@ type WatchedType struct {
 	ServedVersion string
 	Preferred     bool
 
-	// NamespaceOps maps each watched namespace to the union of operation filters
-	// for this type in that namespace. The empty-string key is a cluster-wide
-	// stream: a cluster-scoped resource, or a namespaced resource a ClusterWatchRule
-	// follows across every namespace.
-	NamespaceOps map[string]OperationSet
+	// NamespaceScopes is the set of namespaces this type is watched in. The empty-string
+	// key is a cluster-wide collection: a cluster-scoped resource, or a namespaced resource
+	// a WatchRule follows across every namespace.
+	NamespaceScopes map[string]struct{}
 }
 
 // ClusterWide reports whether this type is gathered under a cluster-wide scope: true for a
@@ -73,7 +37,7 @@ type WatchedType struct {
 // namespaced type may carry the cluster-wide scope alongside named ones, and each is streamed
 // in its own right. Use WatchScopes to enumerate them.
 func (t WatchedType) ClusterWide() bool {
-	_, ok := t.NamespaceOps[""]
+	_, ok := t.NamespaceScopes[""]
 	return ok
 }
 
@@ -84,18 +48,17 @@ func (t WatchedType) ClusterWide() bool {
 //
 // A cluster-wide selection does NOT suppress co-resident named namespaces. A WatchRule
 // scoped to one namespace and a ClusterWatchRule scoped cluster-wide, on the same GVR and
-// the same GitTarget, stay two scopes here, each keeping its own operation filters. This
-// previously collapsed to a single cluster-wide scope, which silently widened the named
-// rule's stream to every namespace the credential could read and discarded its operation
-// set — a gate bypass once a WatchRule declares the source namespaces it is authorized
-// for.
+// the same GitTarget, stay two scopes here. This previously collapsed to a single
+// cluster-wide scope, which silently widened the named rule's stream to every namespace the
+// credential could read — a gate bypass once a WatchRule declares the source namespaces it
+// is authorized for.
 //
 // Every read site must project the same scope set, because a gather's scope becomes the
 // mark-and-sweep's scope: a gather wider than the stream that triggered it deletes
 // managed documents that were never in scope (see git.ResyncScope).
 func (t WatchedType) WatchScopes() []string {
-	out := make([]string, 0, len(t.NamespaceOps))
-	for ns := range t.NamespaceOps {
+	out := make([]string, 0, len(t.NamespaceScopes))
+	for ns := range t.NamespaceScopes {
 		out = append(out, ns)
 	}
 	sort.Strings(out)
@@ -117,23 +80,21 @@ type WatchedTypeTable struct {
 }
 
 // watchSelection is one followable registry record a rule selected for a GitTarget,
-// with the namespace it was selected under ("" = cluster-wide stream) and the rule's
-// operation filters.
+// with the namespace it was selected under ("" = cluster-wide collection).
 type watchSelection struct {
 	record    typeset.TypeRecord
 	namespace string
-	ops       []configv1alpha3.OperationType
 }
 
-// watchedTypeAccum accumulates one followable record's namespace/operation scope while
-// folding a GitTarget's selections.
+// watchedTypeAccum accumulates one followable record's namespace scopes while folding a
+// GitTarget's selections.
 type watchedTypeAccum struct {
-	record       typeset.TypeRecord
-	namespaceOps map[string]OperationSet
+	record          typeset.TypeRecord
+	namespaceScopes map[string]struct{}
 }
 
 // buildWatchedTypeTable folds a GitTarget's selected followable records into its
-// watched-type table, unioning each record's per-namespace operation filters. Identity
+// watched-type table, deduplicating each record's namespace scopes. Identity
 // and followability are already settled by the registry, so this is a pure fold with no
 // catalog lookup and no conflict decision.
 func buildWatchedTypeTable(
@@ -146,36 +107,31 @@ func buildWatchedTypeTable(
 		gvr := sel.record.Identity.GVR
 		acc := byGVR[gvr]
 		if acc == nil {
-			acc = &watchedTypeAccum{record: sel.record, namespaceOps: map[string]OperationSet{}}
+			acc = &watchedTypeAccum{record: sel.record, namespaceScopes: map[string]struct{}{}}
 			byGVR[gvr] = acc
 		}
-		opSet := acc.namespaceOps[sel.namespace]
-		if opSet == nil {
-			opSet = OperationSet{}
-			acc.namespaceOps[sel.namespace] = opSet
-		}
-		opSet.add(sel.ops)
+		acc.namespaceScopes[sel.namespace] = struct{}{}
 	}
 
 	table := WatchedTypeTable{GitDest: gitDest, ResolvedAt: generation}
 	for _, acc := range byGVR {
-		table.Types = append(table.Types, watchedTypeFromRecord(acc.record, acc.namespaceOps))
+		table.Types = append(table.Types, watchedTypeFromRecord(acc.record, acc.namespaceScopes))
 	}
 	sortWatchedTypes(table.Types)
 	return table
 }
 
 // watchedTypeFromRecord copies a followable registry record's identity into a
-// WatchedType, attaching the per-namespace operation scope the rules folded.
-func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceOps map[string]OperationSet) WatchedType {
+// WatchedType, attaching the namespace scopes the rules folded.
+func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceScopes map[string]struct{}) WatchedType {
 	return WatchedType{
-		GVK:           rec.Identity.GVK,
-		GVR:           rec.Identity.GVR,
-		Namespaced:    rec.Identity.Scope == typeset.ScopeNamespaced,
-		Scope:         resourceScopeFor(rec.Identity.Scope),
-		ServedVersion: rec.Identity.GVR.Version,
-		Preferred:     rec.Preferred,
-		NamespaceOps:  namespaceOps,
+		GVK:             rec.Identity.GVK,
+		GVR:             rec.Identity.GVR,
+		Namespaced:      rec.Identity.Scope == typeset.ScopeNamespaced,
+		Scope:           resourceScopeFor(rec.Identity.Scope),
+		ServedVersion:   rec.Identity.GVR.Version,
+		Preferred:       rec.Preferred,
+		NamespaceScopes: namespaceScopes,
 	}
 }
 

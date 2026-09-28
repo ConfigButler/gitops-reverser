@@ -136,8 +136,8 @@ var (
 	// WatchEventsTotal is the ingest census: every event a target watch delivers is counted here
 	// exactly once, labelled by {gittarget_namespace, gittarget_name, group, version, resource,
 	// outcome}. It is the first stage of the pipeline and, until it existed, the only stage with no
-	// instrument at all — "nothing is happening", "the rules filtered everything" and "delivery is
-	// failing" were indistinguishable from outside.
+	// instrument at all — "nothing is happening", "nothing changed" and "delivery is failing"
+	// were indistinguishable from outside.
 	//
 	// outcome is a frozen enum, and its values fall into three classes rather than "healthy and
 	// unhealthy" — several of these are correct outcomes:
@@ -146,7 +146,6 @@ var (
 	//     routed              — reached the writer. The number the funnel starts from.
 	//     unchanged           — a live UPDATE whose sanitized content equals what Git already
 	//                           holds: the /status-churn case, expected in volume.
-	//     operation_filtered  — the rule's operation set does not select this verb.
 	//     bookmark            — a watch bookmark, carrying cursor progress and no object.
 	//     shutdown            — the stream was cancelled while the event waited for its author.
 	//                           Not loss: a restart replays and resyncs the object.
@@ -211,7 +210,7 @@ var (
 	// It was called TargetReconcileCompletedTotal with a `trigger` label whose documented value
 	// (`rule_change`) the code never emitted. The name described the caller rather than the event.
 	//
-	// No `version` label: a recovery covers a CELL, which is keyed by group/resource, and the
+	// No `version` label: a recovery covers a COLLECTION, which is keyed by group/resource, and the
 	// per-type reconcile path genuinely does not know a served version. An empty version on that
 	// arm beside a populated one on the cursor-resume arm would be worse than no label.
 	//

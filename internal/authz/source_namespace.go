@@ -50,7 +50,7 @@ type SourceNamespaceDecision struct {
 	Requested string
 	// Namespaces is the RESOLVED source-namespace set this item watches. It is a single-element
 	// slice in every case: one name, or the EMPTY STRING for a wildcard, which the planner reads as
-	// the cluster-wide cell. It is meaningful only when the item is admitted.
+	// the cluster-wide collection. It is meaningful only when the item is admitted.
 	Namespaces []string
 	// Allowed reports whether the item may contribute selections.
 	Allowed bool
@@ -188,9 +188,9 @@ func (g *itemGate) decide(
 	base.Allowed = true
 	base.Reason = ReasonSourceNamespaceAllowed
 	if item.IsSourceNamespaceWildcard() {
-		// The empty namespace IS the cluster-wide cell: openTargetList and openTargetWatch branch on
+		// The empty namespace IS the cluster-wide collection: openTargetList and openTargetWatch branch on
 		// it, and for a namespaced GVR it is the all-namespaces collection. It is a peer of any
-		// named-namespace cell on the same type, never a replacement for one.
+		// named-namespace collection on the same type, never a replacement for one.
 		base.Namespaces = []string{""}
 		base.Message = fmt.Sprintf(
 			"%s: ClusterProvider %q sets spec.allowAnySourceNamespace, so this item watches every "+

@@ -22,7 +22,7 @@ func scanRefusal() *manifestanalyzer.AcceptanceRefusedError {
 	}
 }
 
-func configMapCell() types.CellKey { return types.CellKey{Resource: "configmaps"} }
+func configMapCollection() types.CollectionKey { return types.CollectionKey{Resource: "configmaps"} }
 
 // TestReportGitPathScan_RaisesAndRecovers is the pair the refresher needs: a read publishes a
 // refusal nobody tried to write, and a later read that passes takes it back. Both wake the
@@ -36,7 +36,7 @@ func TestReportGitPathScan_RaisesAndRecovers(t *testing.T) {
 
 	status := m.GitPathAcceptanceForGitTarget(gitDest)
 	assert.False(t, status.Accepted)
-	assert.False(t, status.RefusedCellSet, "a whole-folder scan has no cell to scope it to")
+	assert.False(t, status.RefusedCollectionSet, "a whole-folder scan has no collection to scope it to")
 	require.Len(t, events, 1)
 
 	m.ReportGitPathScan(gitDest, nil)
@@ -56,13 +56,13 @@ func TestGitPathAcceptance_AStandingRefusalIsReportedOnceByEachProducer(t *testi
 	gitDest := types.NewResourceReference("checkout", "shop")
 
 	m.ReportGitPathScan(gitDest, scanRefusal())
-	m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "Unsupported", "the same folder, from a write")
+	m.MarkTargetGitPathScopeRefused(gitDest, configMapCollection(), "Unsupported", "the same folder, from a write")
 	settled := len(events)
 
 	// Three more rounds of exactly what is already known.
 	for range 3 {
 		m.ReportGitPathScan(gitDest, scanRefusal())
-		m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "Unsupported", "the same folder, from a write")
+		m.MarkTargetGitPathScopeRefused(gitDest, configMapCollection(), "Unsupported", "the same folder, from a write")
 	}
 
 	assert.Len(t, events, settled,
@@ -78,22 +78,28 @@ func TestGitPathAcceptance_AScanNeverErasesAnUnresolvedWriteRefusal(t *testing.T
 	m := &Manager{}
 	gitDest := types.NewResourceReference("checkout", "shop")
 
-	m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "WriteBoundary", "this write may not touch that file")
+	m.MarkTargetGitPathScopeRefused(
+		gitDest,
+		configMapCollection(),
+		"WriteBoundary",
+		"this write may not touch that file",
+	)
 	m.ReportGitPathScan(gitDest, scanRefusal())
 	m.ReportGitPathScan(gitDest, nil)
 
 	status := m.GitPathAcceptanceForGitTarget(gitDest)
 	require.False(t, status.Accepted, "no write has proved the write-boundary refusal resolved")
 	assert.Equal(t, "WriteBoundary", status.Reason)
-	assert.Equal(t, configMapCell(), status.RefusedCell, "and its cell survived, so recovery still has a key")
+	assert.Equal(t, configMapCollection(), status.RefusedCollection,
+		"and its collection survived, so recovery still has a key")
 
 	// The write's own recovery still works, and clears it.
-	m.MarkTargetGitPathScopeAccepted(gitDest, configMapCell())
+	m.MarkTargetGitPathScopeAccepted(gitDest, configMapCollection())
 	assert.True(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
 }
 
 // TestGitPathAcceptance_AScanRefusalIsRecordedEvenWhenItReadsLikeTheWriteRefusal. A write refusal
-// can be unscoped — a commit window spanning several cells reports one — and a scan refusal about
+// can be unscoped — a commit window spanning several collections reports one — and a scan refusal about
 // the same folder can carry the same reason and message. Dropping the scan's verdict for looking
 // identical left a record whose provenance said "write", so the later clean scan could not clear
 // it and the target stayed refused with nothing able to recover it.
@@ -123,19 +129,19 @@ func TestMarkTargetGitPathScopeAccepted_ClearsTheScanVerdictToo(t *testing.T) {
 	gitDest := types.NewResourceReference("checkout", "shop")
 
 	m.ReportGitPathScan(gitDest, scanRefusal())
-	m.MarkTargetGitPathScopeAccepted(gitDest, configMapCell())
+	m.MarkTargetGitPathScopeAccepted(gitDest, configMapCollection())
 
 	assert.True(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
 }
 
-// TestMarkTargetGitPathScopeAccepted_LeavesAnotherCellsRefusal keeps the rule the scoping exists
+// TestMarkTargetGitPathScopeAccepted_LeavesAnotherCollectionsRefusal keeps the rule the scoping exists
 // for: a successful replay of one type must not hide a still impossible path in another.
-func TestMarkTargetGitPathScopeAccepted_LeavesAnotherCellsRefusal(t *testing.T) {
+func TestMarkTargetGitPathScopeAccepted_LeavesAnotherCollectionsRefusal(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("checkout", "shop")
 
-	m.MarkTargetGitPathScopeRefused(gitDest, configMapCell(), "WriteBoundary", "configmaps are stuck")
-	m.MarkTargetGitPathScopeAccepted(gitDest, types.CellKey{Resource: "secrets"})
+	m.MarkTargetGitPathScopeRefused(gitDest, configMapCollection(), "WriteBoundary", "configmaps are stuck")
+	m.MarkTargetGitPathScopeAccepted(gitDest, types.CollectionKey{Resource: "secrets"})
 
 	assert.False(t, m.GitPathAcceptanceForGitTarget(gitDest).Accepted)
 }

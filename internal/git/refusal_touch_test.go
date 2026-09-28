@@ -61,10 +61,10 @@ func editingRef() itypes.ResourceReference {
 	return itypes.NewResourceReference("editing", "team-a")
 }
 
-// refusalKeyFor is the (target, cell) a refusal is filed under. Most tests care about one cell and
+// refusalKeyFor is the (target, collection) a refusal is filed under. Most tests care about one collection and
 // name it here so the key they arm is the key they assert on.
 func refusalKeyFor(target itypes.ResourceReference, resource string) refusalKey {
-	return refusalKey{target: target, cell: itypes.CellKey{Resource: resource, Namespace: target.Namespace}}
+	return refusalKey{target: target, collection: itypes.CollectionKey{Resource: resource, Namespace: target.Namespace}}
 }
 
 func editingKey() refusalKey { return refusalKeyFor(editingRef(), "deployments") }

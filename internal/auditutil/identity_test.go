@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 func rawCommitRequestBody(t *testing.T, namespace, name, uid string) *runtime.Unknown {
@@ -46,7 +46,7 @@ func TestIdentityFromAuditEvent_ObjectRefWins(t *testing.T) {
 	}
 	ev.ResponseObject = rawCommitRequestBody(t, "team-a", "save-from-body", "uid-from-body")
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationCreate)
+	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
 	assert.Equal(t, "team-a", got.Namespace)
 	assert.Equal(t, "save-1", got.Name, "objectRef.name must win when present")
@@ -66,7 +66,7 @@ func TestIdentityFromAuditEvent_BackfillsNameFromResponseObject(t *testing.T) {
 	}
 	ev.ResponseObject = rawCommitRequestBody(t, "team-a", "save-generated-abcde", "uid-resp")
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationCreate)
+	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
 	assert.Equal(t, "team-a", got.Namespace)
 	assert.Equal(t, "save-generated-abcde", got.Name,
@@ -84,7 +84,7 @@ func TestIdentityFromAuditEvent_BackfillsNamespaceFromBody(t *testing.T) {
 	}
 	ev.ResponseObject = rawCommitRequestBody(t, "team-from-body", "save-x", "uid-x")
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationCreate)
+	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
 	assert.Equal(t, "team-from-body", got.Namespace,
 		"missing objectRef.namespace must be backfilled from the audit body")
@@ -104,7 +104,7 @@ func TestIdentityFromAuditEvent_FallsBackToRequestObject_NonDelete(t *testing.T)
 	// ResponseObject but must fall back to RequestObject when it is absent.
 	ev.RequestObject = rawCommitRequestBody(t, "team-a", "save-from-request", "uid-req")
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationCreate)
+	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
 	assert.Equal(t, "save-from-request", got.Name)
 	assert.Equal(t, types.UID("uid-req"), got.UID)
@@ -123,7 +123,7 @@ func TestIdentityFromAuditEvent_DeletePrefersRequestObject(t *testing.T) {
 	ev.RequestObject = rawCommitRequestBody(t, "team-a", "from-request", "uid-req")
 	ev.ResponseObject = rawCommitRequestBody(t, "team-a", "from-response", "uid-resp")
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationDelete)
+	got := IdentityFromAuditEvent(ev, itypes.OperationDelete)
 
 	assert.Equal(t, "from-request", got.Name,
 		"delete operations must prefer requestObject for identity")
@@ -140,7 +140,7 @@ func TestIdentityFromAuditEvent_NoBodyKeepsObjectRef(t *testing.T) {
 		},
 	}
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationCreate)
+	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
 	assert.Equal(t, "team-a", got.Namespace)
 	assert.Equal(t, "save-1", got.Name)
@@ -150,7 +150,7 @@ func TestIdentityFromAuditEvent_NoBodyKeepsObjectRef(t *testing.T) {
 func TestIdentityFromAuditEvent_NoObjectRefNoBody(t *testing.T) {
 	ev := auditv1.Event{Verb: "create"}
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationCreate)
+	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
 	assert.Empty(t, got.Namespace)
 	assert.Empty(t, got.Name)
@@ -167,7 +167,7 @@ func TestIdentityFromAuditEvent_IgnoresMalformedBody(t *testing.T) {
 	}
 	ev.ResponseObject = &runtime.Unknown{Raw: []byte("not-json")}
 
-	got := IdentityFromAuditEvent(ev, configv1alpha3.OperationCreate)
+	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
 	// Should not panic and should keep the objectRef-derived fields.
 	assert.Equal(t, "team-a", got.Namespace)

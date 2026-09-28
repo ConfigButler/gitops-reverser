@@ -42,14 +42,6 @@ type ClusterWatchRuleSpec struct {
 // ClusterResourceRule defines which CLUSTER-SCOPED resources to watch. It deliberately has no
 // sourceNamespace: cluster-scoped objects have no namespace, so there is nothing to select.
 type ClusterResourceRule struct {
-	// Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
-	// Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
-	// Examples:
-	//   - ["CREATE", "UPDATE"] watches only creation and updates
-	//   - ["*"] or [] watches all operations
-	// +optional
-	Operations []OperationType `json:"operations,omitempty"`
-
 	// APIGroups to match. Empty string ("") matches the core API group.
 	// If omitted, GitOps Reverser resolves the resource name across all served API groups.
 	// Wildcards supported: "*" matches all groups.

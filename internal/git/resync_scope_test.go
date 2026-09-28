@@ -103,7 +103,7 @@ func TestResyncScope_StringIsNilSafeAndNamesTheNamespace(t *testing.T) {
 
 	allNamespaces := resyncScopePtr(configmapsGVRForScope, "")
 	assert.Equal(t, "configmaps", allNamespaces.String(),
-		"the scope renders its cell, which carries no served version: a version bump must not "+
+		"the scope renders its collection, which carries no served version: a version bump must not "+
 			"split the deferred-heal key or the coalescing key for one sweep boundary")
 
 	scoped := resyncScopePtr(configmapsGVRForScope, "team-a")
@@ -224,14 +224,14 @@ func TestResync_ClusterWideScopeStillSweepsEveryNamespace(t *testing.T) {
 // A scope's identity must round-trip to the boundary it sweeps. It did not: the scope carried
 // a full GVR while Matches compared group, resource and namespace only, so two served versions
 // of one resource were two coalescing keys, two deferred-heal keys and two render-fidelity
-// scopes — over one sweep boundary. The version is now data on the scope, and the cell is the
+// scopes — over one sweep boundary. The version is now data on the scope, and the collection is the
 // identity.
 func TestResyncScope_ServedVersionIsDataNotIdentity(t *testing.T) {
 	v1 := ResyncScopeFor(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "team-a")
 	v1beta1 := ResyncScopeFor(
 		schema.GroupVersionResource{Group: "apps", Version: "v1beta1", Resource: "deployments"}, "team-a")
 
-	assert.Equal(t, v1.Cell, v1beta1.Cell, "one sweep boundary is one identity")
+	assert.Equal(t, v1.Collection, v1beta1.Collection, "one sweep boundary is one identity")
 	assert.Equal(t, "v1", v1.Version, "the served version survives as data")
 	assert.Equal(t, "v1beta1", v1beta1.Version)
 	assert.Equal(t,

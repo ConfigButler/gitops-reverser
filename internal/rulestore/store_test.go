@@ -47,7 +47,6 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{
 				{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"pods"},
@@ -135,7 +134,6 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			Rules: []configv1alpha3.ClusterResourceRule{
 				{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"nodes"},
@@ -261,7 +259,6 @@ func TestGetMatchingRules(t *testing.T) {
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{
 				{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"pods"},
@@ -276,7 +273,6 @@ func TestGetMatchingRules(t *testing.T) {
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{
 				{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 					APIGroups:   []string{"apps"},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"deployments"},
@@ -295,7 +291,6 @@ func TestGetMatchingRules(t *testing.T) {
 	tests := []struct {
 		name            string
 		resourcePlural  string
-		operation       configv1alpha3.OperationType
 		apiGroup        string
 		apiVersion      string
 		isClusterScoped bool
@@ -303,9 +298,8 @@ func TestGetMatchingRules(t *testing.T) {
 		expectedNames   []string
 	}{
 		{
-			name:            "Match pod CREATE",
+			name:            "Match pod",
 			resourcePlural:  "pods",
-			operation:       configv1alpha3.OperationCreate,
 			apiGroup:        "",
 			apiVersion:      "v1",
 			isClusterScoped: false,
@@ -313,29 +307,8 @@ func TestGetMatchingRules(t *testing.T) {
 			expectedNames:   []string{"pod-create-rule"},
 		},
 		{
-			name:            "No match pod UPDATE",
-			resourcePlural:  "pods",
-			operation:       configv1alpha3.OperationUpdate,
-			apiGroup:        "",
-			apiVersion:      "v1",
-			isClusterScoped: false,
-			expectedCount:   0,
-			expectedNames:   []string{},
-		},
-		{
-			name:            "Match deployment CREATE",
+			name:            "Match deployment",
 			resourcePlural:  "deployments",
-			operation:       configv1alpha3.OperationCreate,
-			apiGroup:        "apps",
-			apiVersion:      "v1",
-			isClusterScoped: false,
-			expectedCount:   1,
-			expectedNames:   []string{"deployment-rule"},
-		},
-		{
-			name:            "Match deployment UPDATE (OperationAll)",
-			resourcePlural:  "deployments",
-			operation:       configv1alpha3.OperationUpdate,
 			apiGroup:        "apps",
 			apiVersion:      "v1",
 			isClusterScoped: false,
@@ -345,7 +318,6 @@ func TestGetMatchingRules(t *testing.T) {
 		{
 			name:            "No match cluster-scoped resource",
 			resourcePlural:  "nodes",
-			operation:       configv1alpha3.OperationCreate,
 			apiGroup:        "",
 			apiVersion:      "v1",
 			isClusterScoped: true,
@@ -359,7 +331,6 @@ func TestGetMatchingRules(t *testing.T) {
 			matches := store.GetMatchingRules(
 				nil,
 				tt.resourcePlural,
-				tt.operation,
 				tt.apiGroup,
 				tt.apiVersion,
 				tt.isClusterScoped,
@@ -385,112 +356,6 @@ func TestGetMatchingRules(t *testing.T) {
 	}
 }
 
-// TestGetMatchingRules_OverlappingRulesUnionOperations pins the semantics for
-// "two WatchRules match the same resource": operations *add up* (union), there
-// is no first-wins precedence and no single rule that "owns" the resource.
-//
-// Matching is evaluated per-operation: GetMatchingRules returns every rule whose
-// operation set includes the operation being tested (an empty set means all).
-// So for pods covered by rule A=[CREATE] and rule B=[UPDATE]:
-//   - a CREATE matches A only,
-//   - an UPDATE matches B only,
-//   - a DELETE matches neither (the union is exactly {CREATE, UPDATE}, not "all"),
-//   - and when two rules both cover CREATE, *both* are returned (additive, not
-//     deduped to one).
-//
-// This matters for the per-target effective watch plan
-// (docs/spec/gittarget-isolation-on-rule-change.md): a target's watched
-// operation set for a GVR is the union across its rules, and each returned
-// CompiledRule carries its own GitTarget, so two complementary rules pointing at
-// the same target make that target watch the union.
-func TestGetMatchingRules_OverlappingRulesUnionOperations(t *testing.T) {
-	store := NewStore()
-
-	podsRule := func(name string, ops ...configv1alpha3.OperationType) configv1alpha3.WatchRule {
-		r := configv1alpha3.WatchRule{
-			Spec: configv1alpha3.WatchRuleSpec{
-				Rules: []configv1alpha3.ResourceRule{{
-					Operations:  ops,
-					APIGroups:   []string{""},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"pods"},
-				}},
-			},
-		}
-		r.Name = name
-		r.Namespace = "default"
-		return r
-	}
-
-	// Two rules covering the same resource with complementary operations, plus a
-	// second CREATE rule to prove matches are additive rather than first-wins.
-	store.AddOrUpdateWatchRule(
-		podsRule("pod-create", configv1alpha3.OperationCreate),
-		ownNamespaceScope(podsRule("pod-create", configv1alpha3.OperationCreate)),
-		"dest-a", "default", "repo", "gitops-system", "main", "a")
-	store.AddOrUpdateWatchRule(
-		podsRule("pod-update", configv1alpha3.OperationUpdate),
-		ownNamespaceScope(podsRule("pod-update", configv1alpha3.OperationUpdate)),
-		"dest-a", "default", "repo", "gitops-system", "main", "a")
-	store.AddOrUpdateWatchRule(
-		podsRule("pod-create-2", configv1alpha3.OperationCreate),
-		ownNamespaceScope(podsRule("pod-create-2", configv1alpha3.OperationCreate)),
-		"dest-b", "default", "repo", "gitops-system", "main", "b")
-
-	tests := []struct {
-		name          string
-		operation     configv1alpha3.OperationType
-		expectedNames []string
-	}{
-		{
-			name:          "CREATE returns both CREATE rules (additive, not first-wins)",
-			operation:     configv1alpha3.OperationCreate,
-			expectedNames: []string{"pod-create", "pod-create-2"},
-		},
-		{
-			name:          "UPDATE returns the UPDATE rule (operations union across rules)",
-			operation:     configv1alpha3.OperationUpdate,
-			expectedNames: []string{"pod-update"},
-		},
-		{
-			name:          "DELETE matches nothing (union is exactly CREATE+UPDATE, not all)",
-			operation:     configv1alpha3.OperationDelete,
-			expectedNames: []string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			matches := store.GetMatchingRules(nil, "pods", tt.operation, "", "v1", false)
-
-			gotNames := make(map[string]struct{}, len(matches))
-			for _, m := range matches {
-				gotNames[m.Source.Name] = struct{}{}
-			}
-
-			if len(matches) != len(tt.expectedNames) {
-				t.Errorf("expected %d matches %v, got %d %v",
-					len(tt.expectedNames), tt.expectedNames, len(matches), keys(gotNames))
-			}
-			for _, want := range tt.expectedNames {
-				if _, ok := gotNames[want]; !ok {
-					t.Errorf("expected rule %q to match %s, got %v",
-						want, tt.operation, keys(gotNames))
-				}
-			}
-		})
-	}
-}
-
-// keys returns the keys of a set, for readable test failure messages.
-func keys(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
 func TestRuleStore_Readiness(t *testing.T) {
 	store := NewStore()
 	if store.IsReady() {
@@ -501,6 +366,43 @@ func TestRuleStore_Readiness(t *testing.T) {
 
 	if !store.IsReady() {
 		t.Fatal("store must report ready after MarkReady")
+	}
+}
+
+// TestGetMatchingRules_OverlappingRulesAreAdditive pins the semantics for "two WatchRules match
+// the same resource": both are returned, with no first-wins precedence and no single rule that
+// "owns" the resource. Each returned CompiledRule carries its own GitTarget, so the per-target
+// watch plan (docs/spec/gittarget-isolation-on-rule-change.md) sees every rule that selects it.
+func TestGetMatchingRules_OverlappingRulesAreAdditive(t *testing.T) {
+	store := NewStore()
+
+	podsRule := func(name string) configv1alpha3.WatchRule {
+		r := configv1alpha3.WatchRule{
+			Spec: configv1alpha3.WatchRuleSpec{
+				Rules: []configv1alpha3.ResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"pods"},
+				}},
+			},
+		}
+		r.Name = name
+		r.Namespace = "default"
+		return r
+	}
+	for _, name := range []string{"pods-a", "pods-b"} {
+		rule := podsRule(name)
+		store.AddOrUpdateWatchRule(rule, ownNamespaceScope(rule), "dest-a", "default", "repo",
+			"gitops-system", "main", "a")
+	}
+
+	matches := store.GetMatchingRules(nil, "pods", "", "v1", false)
+	got := map[string]bool{}
+	for _, m := range matches {
+		got[m.Source.Name] = true
+	}
+	if len(matches) != 2 || !got["pods-a"] || !got["pods-b"] {
+		t.Fatalf("both overlapping rules must match, got %v", got)
 	}
 }
 
@@ -516,7 +418,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			Rules: []configv1alpha3.ClusterResourceRule{
 				{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"nodes"},
@@ -532,7 +433,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			Rules: []configv1alpha3.ClusterResourceRule{
 				{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"pods"},
@@ -564,7 +464,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 	tests := []struct {
 		name            string
 		resourcePlural  string
-		operation       configv1alpha3.OperationType
 		apiGroup        string
 		apiVersion      string
 		isClusterScoped bool
@@ -574,7 +473,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		{
 			name:            "Match cluster-scoped nodes",
 			resourcePlural:  "nodes",
-			operation:       configv1alpha3.OperationCreate,
 			apiGroup:        "",
 			apiVersion:      "v1",
 			isClusterScoped: true,
@@ -584,7 +482,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		{
 			name:            "No match: a namespaced object never matches a ClusterWatchRule",
 			resourcePlural:  "pods",
-			operation:       configv1alpha3.OperationUpdate,
 			apiGroup:        "",
 			apiVersion:      "v1",
 			isClusterScoped: false,
@@ -594,7 +491,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		{
 			name:            "No match: cluster rule doesn't match namespaced scope",
 			resourcePlural:  "nodes",
-			operation:       configv1alpha3.OperationCreate,
 			apiGroup:        "",
 			apiVersion:      "v1",
 			isClusterScoped: false,
@@ -607,7 +503,6 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			matches := store.GetMatchingClusterRules(
 				tt.resourcePlural,
-				tt.operation,
 				tt.apiGroup,
 				tt.apiVersion,
 				tt.isClusterScoped,
@@ -662,59 +557,6 @@ func TestResourceMatching(t *testing.T) {
 			if result != tt.shouldMatch {
 				t.Errorf("Expected match=%v for pattern '%s' against '%s', got %v",
 					tt.shouldMatch, tt.ruleResource, tt.resourcePlural, result)
-			}
-		})
-	}
-}
-
-// TestOperationMatching verifies operation matching logic, for both rule kinds at once.
-func TestOperationMatching(t *testing.T) {
-	tests := []struct {
-		name           string
-		ruleOperations []configv1alpha3.OperationType
-		operation      configv1alpha3.OperationType
-		shouldMatch    bool
-	}{
-		{"Empty matches all", []configv1alpha3.OperationType{}, configv1alpha3.OperationCreate, true},
-		{
-			"Wildcard matches all",
-			[]configv1alpha3.OperationType{configv1alpha3.OperationAll},
-			configv1alpha3.OperationCreate,
-			true,
-		},
-		{
-			"Exact match CREATE",
-			[]configv1alpha3.OperationType{configv1alpha3.OperationCreate},
-			configv1alpha3.OperationCreate,
-			true,
-		},
-		{
-			"No match CREATE vs UPDATE",
-			[]configv1alpha3.OperationType{configv1alpha3.OperationCreate},
-			configv1alpha3.OperationUpdate,
-			false,
-		},
-		{
-			"Multiple operations match",
-			[]configv1alpha3.OperationType{configv1alpha3.OperationCreate, configv1alpha3.OperationUpdate},
-			configv1alpha3.OperationUpdate,
-			true,
-		},
-		{
-			"Multiple operations no match",
-			[]configv1alpha3.OperationType{configv1alpha3.OperationCreate, configv1alpha3.OperationUpdate},
-			configv1alpha3.OperationDelete,
-			false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			selector := compiledSelector{Operations: tt.ruleOperations}
-
-			result := selector.matchesOperations(tt.operation)
-			if result != tt.shouldMatch {
-				t.Errorf("Expected match=%v, got %v", tt.shouldMatch, result)
 			}
 		})
 	}
@@ -889,7 +731,7 @@ func TestConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for range numOperations {
 				_ = store.SnapshotWatchRules()
-				_ = store.GetMatchingRules(nil, "pods", configv1alpha3.OperationCreate, "", "v1", false)
+				_ = store.GetMatchingRules(nil, "pods", "", "v1", false)
 			}
 		}()
 	}
@@ -911,12 +753,10 @@ func TestMultipleResourceRules(t *testing.T) {
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{
 				{
-					Operations: []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
-					Resources:  []string{"pods"},
+					Resources: []string{"pods"},
 				},
 				{
-					Operations: []configv1alpha3.OperationType{configv1alpha3.OperationUpdate},
-					Resources:  []string{"services"},
+					Resources: []string{"services"},
 				},
 			},
 		},
@@ -927,22 +767,16 @@ func TestMultipleResourceRules(t *testing.T) {
 	store.AddOrUpdateWatchRule(
 		rule, ownNamespaceScope(rule), "dest", "default", "repo", "gitops-system", "main", "test")
 
-	// Should match pod CREATE
-	matches := store.GetMatchingRules(nil, "pods", configv1alpha3.OperationCreate, "", "v1", false)
-	if len(matches) != 1 {
-		t.Errorf("Expected to match pod CREATE, got %d matches", len(matches))
+	// Either item selects its resource: the items are a logical OR.
+	for _, resource := range []string{"pods", "services"} {
+		if matches := store.GetMatchingRules(nil, resource, "", "v1", false); len(matches) != 1 {
+			t.Errorf("Expected to match %s, got %d matches", resource, len(matches))
+		}
 	}
 
-	// Should match service UPDATE
-	matches = store.GetMatchingRules(nil, "services", configv1alpha3.OperationUpdate, "", "v1", false)
-	if len(matches) != 1 {
-		t.Errorf("Expected to match service UPDATE, got %d matches", len(matches))
-	}
-
-	// Should NOT match pod UPDATE
-	matches = store.GetMatchingRules(nil, "pods", configv1alpha3.OperationUpdate, "", "v1", false)
-	if len(matches) != 0 {
-		t.Errorf("Should not match pod UPDATE, got %d matches", len(matches))
+	// A resource neither item names is not selected.
+	if matches := store.GetMatchingRules(nil, "configmaps", "", "v1", false); len(matches) != 0 {
+		t.Errorf("Should not match configmaps, got %d matches", len(matches))
 	}
 }
 
@@ -957,7 +791,6 @@ func TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule(t *testing
 	rule := configv1alpha3.WatchRule{
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{{
-				Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"services"},
@@ -974,7 +807,7 @@ func TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule(t *testing
 	sameNSObject.SetNamespace("tilt-playground")
 
 	// Same namespace as rule — MUST match.
-	sameNS := store.GetMatchingRules(sameNSObject, "services", configv1alpha3.OperationCreate, "", "v1", false)
+	sameNS := store.GetMatchingRules(sameNSObject, "services", "", "v1", false)
 	if len(sameNS) != 1 {
 		t.Errorf("expected same-namespace match to return 1 rule, got %d", len(sameNS))
 	}
@@ -983,7 +816,7 @@ func TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule(t *testing
 	foreignNSObject.SetNamespace("gitops-reverser")
 
 	// Different namespace — MUST NOT match.
-	foreignNS := store.GetMatchingRules(foreignNSObject, "services", configv1alpha3.OperationCreate, "", "v1", false)
+	foreignNS := store.GetMatchingRules(foreignNSObject, "services", "", "v1", false)
 	if len(foreignNS) != 0 {
 		t.Fatalf("expected foreign-namespace match to return 0 rules, got %d", len(foreignNS))
 	}
@@ -996,7 +829,6 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 	rule := configv1alpha3.WatchRule{
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{{
-				Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"services"},
@@ -1014,7 +846,6 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 			Spec: configv1alpha3.ClusterWatchRuleSpec{
 				GitTargetRef: meta.NamespacedObjectReference{Name: "cluster-target", Namespace: "ops"},
 				Rules: []configv1alpha3.ClusterResourceRule{{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"services"},
@@ -1028,7 +859,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 		obj := &unstructured.Unstructured{}
 		obj.SetNamespace("tilt-playground")
 
-		matches := store.GetMatchingRules(obj, "services", configv1alpha3.OperationCreate, "", "v1", false)
+		matches := store.GetMatchingRules(obj, "services", "", "v1", false)
 		if len(matches) != 1 {
 			t.Fatalf("expected same-namespace match to return 1 rule, got %d", len(matches))
 		}
@@ -1038,7 +869,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 		obj := &unstructured.Unstructured{}
 		obj.SetNamespace("gitops-reverser")
 
-		matches := store.GetMatchingRules(obj, "services", configv1alpha3.OperationCreate, "", "v1", false)
+		matches := store.GetMatchingRules(obj, "services", "", "v1", false)
 		if len(matches) != 0 {
 			t.Fatalf("expected foreign-namespace match to return 0 rules, got %d", len(matches))
 		}
@@ -1047,7 +878,6 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 	t.Run("a ClusterWatchRule never matches a namespaced object", func(t *testing.T) {
 		matches := store.GetMatchingClusterRules(
 			"services",
-			configv1alpha3.OperationCreate,
 			"",
 			"v1",
 			false,
@@ -1106,7 +936,7 @@ func TestGetMatchingRules_PerItemSourceNamespaces(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			matches := store.GetMatchingRules(
-				object(tc.namespace), tc.resource, configv1alpha3.OperationCreate, "", "v1", false)
+				object(tc.namespace), tc.resource, "", "v1", false)
 			if len(matches) != tc.want {
 				t.Fatalf("expected %d matches, got %d", tc.want, len(matches))
 			}
@@ -1138,7 +968,7 @@ func TestGetMatchingRules_WildcardItemMatchesEveryResolvedNamespace(t *testing.T
 		obj := &unstructured.Unstructured{}
 		obj.SetNamespace(ns)
 		if got := store.GetMatchingRules(
-			obj, "configmaps", configv1alpha3.OperationCreate, "", "v1", false); len(got) != 1 {
+			obj, "configmaps", "", "v1", false); len(got) != 1 {
 			t.Fatalf("expected the wildcard item to match %s, got %d matches", ns, len(got))
 		}
 	}
@@ -1146,7 +976,7 @@ func TestGetMatchingRules_WildcardItemMatchesEveryResolvedNamespace(t *testing.T
 	obj := &unstructured.Unstructured{}
 	obj.SetNamespace("tenant-acme")
 	if got := store.GetMatchingRules(
-		obj, "configmaps", configv1alpha3.OperationCreate, "", "v1", false); len(got) != 0 {
+		obj, "configmaps", "", "v1", false); len(got) != 0 {
 		t.Fatalf("a wildcard resolves to the ADMITTED set only; the rule's own namespace is not "+
 			"implicitly included, got %d matches", len(got))
 	}
@@ -1165,13 +995,11 @@ func TestGetMatchingRules_WildcardItemMatchesEveryResolvedNamespace(t *testing.T
 func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 	t.Parallel()
 
-	operations := []configv1alpha3.OperationType{configv1alpha3.OperationCreate}
 	store := NewStore()
 
 	watchRule := configv1alpha3.WatchRule{
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{{
-				Operations:  operations,
 				APIGroups:   []string{"apps"},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"deployments"},
@@ -1188,7 +1016,6 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 	clusterRule := configv1alpha3.ClusterWatchRule{
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			Rules: []configv1alpha3.ClusterResourceRule{{
-				Operations:  operations,
 				APIGroups:   []string{"apps"},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"deployments"},
@@ -1205,28 +1032,25 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 	foreign.SetNamespace("tenant-other")
 
 	probes := []struct {
-		name      string
-		object    *unstructured.Unstructured
-		resource  string
-		operation configv1alpha3.OperationType
-		group     string
-		version   string
-		want      bool
+		name     string
+		object   *unstructured.Unstructured
+		resource string
+		group    string
+		version  string
+		want     bool
 		// clusterWant differs only where scope, not the selector, decides.
 		clusterWant *bool
 	}{
 		{name: "exact hit", object: inScope, resource: "deployments",
-			operation: configv1alpha3.OperationCreate, group: "apps", version: "v1", want: true},
-		{name: "operation not selected", object: inScope, resource: "deployments",
-			operation: configv1alpha3.OperationDelete, group: "apps", version: "v1", want: false},
+			group: "apps", version: "v1", want: true},
 		{name: "wrong group", object: inScope, resource: "deployments",
-			operation: configv1alpha3.OperationCreate, group: "batch", version: "v1", want: false},
+			group: "batch", version: "v1", want: false},
 		{name: "wrong version", object: inScope, resource: "deployments",
-			operation: configv1alpha3.OperationCreate, group: "apps", version: "v2", want: false},
+			group: "apps", version: "v2", want: false},
 		{name: "wrong resource", object: inScope, resource: "statefulsets",
-			operation: configv1alpha3.OperationCreate, group: "apps", version: "v1", want: false},
+			group: "apps", version: "v1", want: false},
 		{name: "unauthorized namespace", object: foreign, resource: "deployments",
-			operation: configv1alpha3.OperationCreate, group: "apps", version: "v1",
+			group: "apps", version: "v1",
 			want: false, clusterWant: ptr(true)},
 	}
 
@@ -1235,7 +1059,7 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 			t.Parallel()
 
 			namespaced := store.GetMatchingRules(
-				probe.object, probe.resource, probe.operation, probe.group, probe.version, false)
+				probe.object, probe.resource, probe.group, probe.version, false)
 			if got := len(namespaced) == 1; got != probe.want {
 				t.Errorf("WatchRule routing: want match=%v, got %v", probe.want, got)
 			}
@@ -1247,7 +1071,7 @@ func TestSharedSelector_RoutesAlikeThroughBothEntryPoints(t *testing.T) {
 				wantCluster = *probe.clusterWant
 			}
 			cluster := store.GetMatchingClusterRules(
-				probe.resource, probe.operation, probe.group, probe.version, true, nil)
+				probe.resource, probe.group, probe.version, true, nil)
 			if got := len(cluster) == 1; got != wantCluster {
 				t.Errorf("ClusterWatchRule routing: want match=%v, got %v", wantCluster, got)
 			}
@@ -1298,10 +1122,9 @@ func TestSnapshotWatchRules_SourceNamespacesStayDefensivelyCopied(t *testing.T) 
 func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 	t.Parallel()
 
-	// selectorOf reads the four slices back off whichever kind the case compiled, so one table can
+	// selectorOf reads the three slices back off whichever kind the case compiled, so one table can
 	// assert the same property for both.
 	type selectors struct {
-		operations  []configv1alpha3.OperationType
 		apiGroups   []string
 		apiVersions []string
 		resources   []string
@@ -1317,7 +1140,6 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 			name: "WatchRule",
 			install: func(store *RuleStore) (func(), func() selectors) {
 				item := configv1alpha3.ResourceRule{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
 					APIGroups:   []string{"apps"},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"deployments"},
@@ -1331,13 +1153,12 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 					"provider", "tenant-acme", "main", "clusters")
 
 				return func() {
-						item.Operations[0] = configv1alpha3.OperationDelete
 						item.APIGroups[0] = "batch"
 						item.APIVersions[0] = "v2"
 						item.Resources[0] = "statefulsets"
 					}, func() selectors {
 						snap := store.SnapshotWatchRules()[0].ResourceRules[0]
-						return selectors{snap.Operations, snap.APIGroups, snap.APIVersions, snap.Resources}
+						return selectors{snap.APIGroups, snap.APIVersions, snap.Resources}
 					}
 			},
 		},
@@ -1345,7 +1166,6 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 			name: "ClusterWatchRule",
 			install: func(store *RuleStore) (func(), func() selectors) {
 				item := configv1alpha3.ClusterResourceRule{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
 					APIGroups:   []string{"apps"},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"deployments"},
@@ -1360,29 +1180,24 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 					"tenant-acme", "main", "clusters")
 
 				return func() {
-						item.Operations[0] = configv1alpha3.OperationDelete
 						item.APIGroups[0] = "batch"
 						item.APIVersions[0] = "v2"
 						item.Resources[0] = "statefulsets"
 					}, func() selectors {
 						snap := store.SnapshotClusterWatchRules()[0].Rules[0]
-						return selectors{snap.Operations, snap.APIGroups, snap.APIVersions, snap.Resources}
+						return selectors{snap.APIGroups, snap.APIVersions, snap.Resources}
 					}
 			},
 		},
 	}
 
 	want := selectors{
-		operations:  []configv1alpha3.OperationType{configv1alpha3.OperationCreate},
 		apiGroups:   []string{"apps"},
 		apiVersions: []string{"v1"},
 		resources:   []string{"deployments"},
 	}
 	assertSelectors := func(t *testing.T, boundary string, got selectors) {
 		t.Helper()
-		if got.operations[0] != want.operations[0] {
-			t.Errorf("%s: operations reached the store: %v", boundary, got.operations)
-		}
 		if got.apiGroups[0] != want.apiGroups[0] {
 			t.Errorf("%s: apiGroups reached the store: %v", boundary, got.apiGroups)
 		}
@@ -1407,7 +1222,6 @@ func TestStore_OwnsItsSelectorSlices(t *testing.T) {
 
 			// Boundary two: a snapshot the store handed out, which callers may freely modify.
 			snapshot := stored()
-			snapshot.operations[0] = configv1alpha3.OperationDelete
 			snapshot.apiGroups[0] = "batch"
 			snapshot.apiVersions[0] = "v2"
 			snapshot.resources[0] = "statefulsets"

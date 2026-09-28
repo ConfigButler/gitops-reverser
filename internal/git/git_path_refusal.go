@@ -29,7 +29,7 @@ func (w *BranchWorker) normalWritesAllowed(targetName, targetNamespace string) b
 // why the reason mapping lives there and not here.
 type PathRefusalReporter func(
 	target itypes.ResourceReference,
-	cell itypes.CellKey,
+	collection itypes.CollectionKey,
 	refused *manifestanalyzer.AcceptanceRefusedError,
 )
 
@@ -40,7 +40,7 @@ type PathRefusalReporter func(
 // two are not the same fact. A refusal reported here was found by READING, with nobody writing
 // and nothing lost yet; one reported through PathRefusalReporter aborted a write that had work in
 // hand. They also recover differently — see Manager.MarkTargetGitPathScanAccepted — and a single
-// hook would have had to carry a cell that a whole-folder scan does not have.
+// hook would have had to carry a collection that a whole-folder scan does not have.
 type ScanAcceptanceReporter func(
 	target itypes.ResourceReference,
 	refused *manifestanalyzer.AcceptanceRefusedError,
@@ -73,7 +73,7 @@ func (w *BranchWorker) reportScanAcceptance(
 // a healthy target elsewhere.
 //
 // Recovery is the resync path's job: once the human fixes the Git path, the next successful resync
-// for the same cell clears the condition. A live write never clears it, because a live write that
+// for the same collection clears the condition. A live write never clears it, because a live write that
 // happens to avoid the offending file proves nothing about the rest of the subtree.
 //
 // The *AcceptanceRefusedError is returned alongside so the caller can decide what the refusal
@@ -83,7 +83,7 @@ func (w *BranchWorker) reportPathRefusal(
 	err error,
 	targetName string,
 	targetNamespace string,
-	cell itypes.CellKey,
+	collection itypes.CollectionKey,
 ) (bool, *manifestanalyzer.AcceptanceRefusedError) {
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	if !errors.As(err, &refused) {
@@ -98,9 +98,9 @@ func (w *BranchWorker) reportPathRefusal(
 	}
 	target := itypes.NewResourceReference(targetName, targetNamespace)
 	w.Log.Info("Live write refused: unsupported GitTarget path content",
-		"gitTarget", target.String(), "sourceCell", sourceCellForLog(cell), "detail", refused.Error())
+		"gitTarget", target.String(), "sourceCollection", sourceCollectionForLog(collection), "detail", refused.Error())
 	if w.pathRefusal != nil {
-		w.pathRefusal(target, cell, refused)
+		w.pathRefusal(target, collection, refused)
 	}
 	return true, refused
 }

@@ -7,7 +7,6 @@ spec:
   gitTargetRef:
     name: example-target
   rules:
-    - operations: [CREATE, UPDATE, DELETE]
-      apiGroups: [""]
+    - apiGroups: [""]
       apiVersions: ["v1"]
       resources: ["configmaps"]

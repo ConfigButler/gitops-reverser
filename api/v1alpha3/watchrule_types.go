@@ -9,21 +9,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// OperationType specifies the type of operation that triggers a watch event.
-// +kubebuilder:validation:Enum=CREATE;UPDATE;DELETE;*
-type OperationType string
-
-const (
-	// OperationCreate matches resource creation events.
-	OperationCreate OperationType = "CREATE"
-	// OperationUpdate matches resource update events.
-	OperationUpdate OperationType = "UPDATE"
-	// OperationDelete matches resource deletion events.
-	OperationDelete OperationType = "DELETE"
-	// OperationAll matches all operation types.
-	OperationAll OperationType = "*"
-)
-
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
 // carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
@@ -36,7 +21,9 @@ type WatchRuleSpec struct {
 
 	// Rules define which resources to watch, and in which source namespaces.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
-	// Each rule can specify operations, API groups, versions, resource types, and a source namespace.
+	// Each rule can specify API groups, versions, resource types, and a source namespace.
+	// A selected resource collection is observed through its whole lifecycle; the GitTarget's
+	// spec.prune.mode decides whether an observed removal deletes the Git document.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	Rules []ResourceRule `json:"rules"`
@@ -46,14 +33,6 @@ type WatchRuleSpec struct {
 // Omitted API groups and versions are resolved from the served Kubernetes API surface.
 // All fields except Resources are optional.
 type ResourceRule struct {
-	// Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
-	// Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
-	// Examples:
-	//   - ["CREATE", "UPDATE"] watches only creation and updates, ignoring deletions
-	//   - ["*"] or [] watches all operations
-	// +optional
-	Operations []OperationType `json:"operations,omitempty"`
-
 	// APIGroups to match. Empty string ("") matches the core API group.
 	// If omitted, GitOps Reverser resolves the resource name across all served API groups.
 	// Wildcards supported: "*" matches all groups.
@@ -104,11 +83,10 @@ type ResourceRule struct {
 	// A denied explicit name refuses the WHOLE WatchRule rather than trimming that item: mirroring
 	// two of the three namespaces a rule asked for is worse than a loud failure.
 	//
-	// A cluster-wide cell is a PEER of a named-namespace cell on the same type, never a
-	// replacement: each rule carries its own operations filter, and collapsing the two once widened
-	// a named rule's stream while discarding that filter (see CellKey in internal/types/cell.go).
-	// A target carrying both therefore runs two streams over overlapping objects, and that is
-	// correct.
+	// A cluster-wide collection is a PEER of a named-namespace collection on the same type, never a
+	// replacement: collapsing the two once widened a named rule's stream to every namespace its
+	// credential could read (see CollectionKey in internal/types/collection.go). A target carrying
+	// both therefore runs two streams over overlapping objects, and that is correct.
 
 	// SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
 	// mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
@@ -140,7 +118,7 @@ const SourceNamespaceWildcard = "*"
 // EffectiveSourceNamespace is the source-cluster namespace this ITEM names, given the namespace of
 // the WatchRule that carries it: spec.rules[].sourceNamespace when set, and the rule's OWN
 // namespace otherwise. For a wildcard item it returns "*", which is not a namespace name: the
-// caller compiles it to the cluster-wide cell (the empty namespace) rather than watching it.
+// caller compiles it to the cluster-wide collection (the empty namespace) rather than watching it.
 //
 // It is controller logic rather than an API-server default because an apiserver default cannot
 // refer to metadata.namespace.

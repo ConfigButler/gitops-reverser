@@ -17,21 +17,21 @@ type gitPathRefusal struct {
 	Refused bool
 	Reason  string
 	Message string
-	// Cell is the watched cell a WRITE refusal was found for, and CellSet says whether it was
+	// Collection is the watched collection a WRITE refusal was found for, and CollectionSet says whether it was
 	// scoped at all. Recovery compares it, so an unrelated successful resync cannot clear a
 	// refusal it proved nothing about.
-	Cell    types.CellKey
-	CellSet bool
-	At      metav1.Time
+	Collection    types.CollectionKey
+	CollectionSet bool
+	At            metav1.Time
 }
 
 // gitPathAcceptance holds the two verdicts about one folder SEPARATELY, and that separation is the
 // design rather than an implementation detail.
 //
 // Two producers answer the same question and they are not interchangeable. A WRITE refusal is
-// evidence that something with work in hand could not proceed; it names a cell, and only a resync
-// that wrote that cell proves it gone. A SCAN refusal is evidence that a read of the folder found
-// structure nobody can write; it has no cell, and the read that raised it is what clears it.
+// evidence that something with work in hand could not proceed; it names a collection, and only a resync
+// that wrote that collection proves it gone. A SCAN refusal is evidence that a read of the folder found
+// structure nobody can write; it has no collection, and the read that raised it is what clears it.
 //
 // They shared one slot in the first cut, and every one of the three defects a review found came
 // from that: each producer overwrote the other's verdict, so a scan could erase an unresolved
@@ -49,17 +49,17 @@ type gitPathAcceptance struct {
 // The precedence is fixed rather than most-recent on purpose. Recency would let two producers
 // running at their own cadences move the published view back and forth, which is the feedback
 // loop this structure exists to remove. A write refusal wins because it is the more actionable of
-// the two: it names the cell whose successful resync is the way out.
+// the two: it names the collection whose successful resync is the way out.
 func (a gitPathAcceptance) published() GitPathAcceptanceStatus {
 	switch {
 	case a.write.Refused:
 		return GitPathAcceptanceStatus{
-			Accepted:       false,
-			Reason:         a.write.Reason,
-			Message:        a.write.Message,
-			At:             a.write.At,
-			RefusedCell:    a.write.Cell,
-			RefusedCellSet: a.write.CellSet,
+			Accepted:             false,
+			Reason:               a.write.Reason,
+			Message:              a.write.Message,
+			At:                   a.write.At,
+			RefusedCollection:    a.write.Collection,
+			RefusedCollectionSet: a.write.CollectionSet,
 		}
 	case a.scan.Refused:
 		return GitPathAcceptanceStatus{
@@ -79,8 +79,8 @@ func sameAs(a, b GitPathAcceptanceStatus) bool {
 	return a.Accepted == b.Accepted &&
 		a.Reason == b.Reason &&
 		a.Message == b.Message &&
-		a.RefusedCell == b.RefusedCell &&
-		a.RefusedCellSet == b.RefusedCellSet
+		a.RefusedCollection == b.RefusedCollection &&
+		a.RefusedCollectionSet == b.RefusedCollectionSet
 }
 
 // ReportGitPathRefusal records a write plan the branch worker refused on a live-event path,
@@ -90,21 +90,21 @@ func sameAs(a, b GitPathAcceptanceStatus) bool {
 // whether it was a live write or a background resync that hit it.
 func (m *Manager) ReportGitPathRefusal(
 	gitDest types.ResourceReference,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	refused *manifestanalyzer.AcceptanceRefusedError,
 ) {
 	if refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive) {
 		m.MarkTargetRenderFidelityDiverged(gitDest, renderFidelityDivergence(refused))
 		return
 	}
-	m.MarkTargetGitPathScopeRefused(gitDest, cell, gitPathRefusalReason(refused), refused.BlockMessage())
+	m.MarkTargetGitPathScopeRefused(gitDest, collection, gitPathRefusalReason(refused), refused.BlockMessage())
 }
 
 // ReportGitPathScan publishes what a read-only scan of the folder found: a structural refusal
 // nobody tried to write, or its recovery when refused is nil.
 //
 // It is the refresher's channel, and it is separate from ReportGitPathRefusal because a scan has
-// no cell: it reads the whole folder, so its verdict is target-wide and cannot take part in the
+// no collection: it reads the whole folder, so its verdict is target-wide and cannot take part in the
 // scoped recovery that write refusals depend on.
 //
 // Structure-only acceptance cannot produce a render-fidelity issue — that one needs the live
@@ -128,7 +128,7 @@ func (m *Manager) ReportGitPathScan(
 // snapshot and enqueues a reconcile, so the happy-path resync stream does not enqueue one per
 // event.
 func (m *Manager) MarkTargetGitPathRefused(gitDest types.ResourceReference, reason, message string) {
-	m.MarkTargetGitPathScopeRefused(gitDest, types.CellKey{}, reason, message)
+	m.MarkTargetGitPathScopeRefused(gitDest, types.CollectionKey{}, reason, message)
 }
 
 // MarkTargetGitPathScopeRefused records that a scoped writer pass failed the structure-only
@@ -136,18 +136,18 @@ func (m *Manager) MarkTargetGitPathRefused(gitDest types.ResourceReference, reas
 // unrelated successful resync from clearing it.
 func (m *Manager) MarkTargetGitPathScopeRefused(
 	gitDest types.ResourceReference,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	reason string,
 	message string,
 ) {
 	m.mutateGitPathAcceptance(gitDest, func(a *gitPathAcceptance) {
 		a.write = gitPathRefusal{
-			Refused: true,
-			Reason:  reason,
-			Message: message,
-			Cell:    cell,
-			CellSet: cell != (types.CellKey{}),
-			At:      metav1.Now(),
+			Refused:       true,
+			Reason:        reason,
+			Message:       message,
+			Collection:    collection,
+			CollectionSet: collection != (types.CollectionKey{}),
+			At:            metav1.Now(),
 		}
 	})
 }
@@ -173,19 +173,19 @@ func (m *Manager) MarkTargetGitPathAccepted(gitDest types.ResourceReference) {
 }
 
 // MarkTargetGitPathScopeAccepted clears a write refusal only when the successful resync covered
-// the same cell that produced it. A successful replay of secrets must not hide a still impossible
+// the same collection that produced it. A successful replay of secrets must not hide a still impossible
 // configmaps path, because the GitTarget status is the operator's only durable clue.
 //
 // It clears the SCAN verdict unconditionally, and that asymmetry is deliberate: the resync ran the
 // same structure-only gate the scan runs, over the same folder, and passed. That is strictly
 // stronger evidence than a read, so a scan refusal left standing beside it would be stale.
-func (m *Manager) MarkTargetGitPathScopeAccepted(gitDest types.ResourceReference, cell types.CellKey) {
+func (m *Manager) MarkTargetGitPathScopeAccepted(gitDest types.ResourceReference, collection types.CollectionKey) {
 	m.mutateGitPathAcceptance(gitDest, func(a *gitPathAcceptance) {
 		a.scan = gitPathRefusal{}
 		if !a.write.Refused {
 			return
 		}
-		if cell != (types.CellKey{}) && (!a.write.CellSet || a.write.Cell != cell) {
+		if collection != (types.CollectionKey{}) && (!a.write.CollectionSet || a.write.Collection != collection) {
 			return
 		}
 		a.write = gitPathRefusal{}

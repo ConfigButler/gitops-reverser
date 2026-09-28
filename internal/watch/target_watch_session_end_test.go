@@ -115,16 +115,16 @@ func TestRunTargetWatch_CleanCloseIsSilentAndTheNextOpenReports(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		manager.runTargetWatch(ctx, logr.Discard(), gitDest, testStream(key, nil))
+		manager.runTargetWatch(ctx, logr.Discard(), gitDest, testStream(key))
 	}()
 
-	// The first session opens and marks the cell Replaying while it folds initial events.
+	// The first session opens and marks the collection Replaying while it folds initial events.
 	require.Eventually(t, func() bool {
 		return streamStateFor(manager, gitDest, key) == StreamStateReplaying
-	}, time.Second, 10*time.Millisecond, "the first session marks its cell replaying")
+	}, time.Second, 10*time.Millisecond, "the first session marks its collection replaying")
 
 	// Now end that session the way the API server ends one: close the result channel. This is a
-	// clean end, and it must publish NOTHING — the cell keeps the state the session left it in.
+	// clean end, and it must publish NOTHING — the collection keeps the state the session left it in.
 	firstWatch.Stop()
 	assert.Never(t, func() bool {
 		return streamStateFor(manager, gitDest, key) == StreamStateBlocked
@@ -147,7 +147,7 @@ func TestRunTargetWatch_CleanCloseIsSilentAndTheNextOpenReports(t *testing.T) {
 }
 
 func streamStatusFor(m *Manager, gitDest types.ResourceReference, key targetWatchKey) targetStreamStatus {
-	return m.watchPlane().streams[gitDest.Key()][key.Cell()]
+	return m.watchPlane().streams[gitDest.Key()][key.Collection()]
 }
 
 func streamStateFor(m *Manager, gitDest types.ResourceReference, key targetWatchKey) StreamState {

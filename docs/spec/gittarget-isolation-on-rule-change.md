@@ -1,11 +1,13 @@
 # GitTarget Isolation on Rule Changes
 
 > **Status: ✅ Implemented and shipped.** Snapshot selection is now driven purely
-> by a per-target *effective watch plan* hash (resolved GVR + scope + unioned
-> operations + destination); the global `force` flag is gone. Validated by unit
+> by a per-target *effective watch plan* hash (resolved GVR + scope +
+> destination); the global `force` flag is gone. Validated by unit
 > tests, a non-Serial e2e regression, and a `--procs=4` smoke run (21/21). See
 > the Rollout Plan below for the per-step landing notes. The sections before it
-> are kept as the original design rationale.
+> are kept as the original design rationale. Rule `operations` were later removed
+> from both rule kinds ([collection rename](../design/collection-terminology-rename.md)),
+> so the plan no longer carries an operation component.
 
 ## Problem
 
@@ -170,7 +172,7 @@ This is the target-scoped half. `currentRuleSetSnapshots()` walks the same
 `RuleStore`, but instead of flattening everything into one GVR set it groups
 entries **by GitTarget** (`gitDest.Key()`) and hashes each group. Today it hashes
 the raw rule text; after the fix it hashes the target's *effective watch plan*
-(resolved GVR + scope + operations + destination — see Section 2):
+(resolved GVR + scope + destination — see Section 2):
 
 ```text
 RuleStore ─► currentRuleSetSnapshots() ─► []ruleSetSnapshotTarget{gitDest, hash}
@@ -268,7 +270,6 @@ already captures it:
 |---|---|---|
 | `apiGroups` / `apiVersions` / `resources` (incl. wildcards) | **Replace** with the resolved GVR set | These are *inputs* to resolution; the resolved GVR is the *output*, intersected with the catalog. The resolved set is strictly more accurate — it catches wildcard-meets-new-CRD, which the raw patterns miss. Hashing the raw patterns is exactly the blind spot that forced `force` to exist. |
 | `scope` (namespaced/cluster) | **Replace** with resolved namespace scope | An input to namespace resolution; the resolved scope subsumes it. |
-| `operations` | **Keep** | Not part of GVR resolution. Changes *which events* become commits (the existing narrowing test depends on an operations-only change still emitting a snapshot). |
 | destination: `provider` / `branch` / `path` | **Keep** | Not part of GVR resolution. Changes *where* writes land. |
 | source rule identity (namespace/name) | **Drop** | Pure identity — it does not change the effective watch surface. A redundant duplicate rule resolving to the same plan should not trigger a no-op snapshot. |
 
@@ -277,18 +278,15 @@ non-resolvable fields that still affect writes:
 
 - **resolved GVR** (the missing ingredient today)
 - resolved namespace / cluster scope
-- operations
 - destination details that affect writes: provider, branch, and path
 
-When more than one rule for the same target resolves to the same GVR, the plan
-entry's `operations` is the **union** across those rules — operations add up,
-there is no first-wins precedence. This matches how matching already works:
-`RuleStore.GetMatchingRules` evaluates per-operation and returns every rule whose
-operation set covers it, so a resource covered by rule A=`[CREATE]` and rule
-B=`[UPDATE]` is effectively watched for both. The plan builder must preserve that
-union rather than letting one rule's operations shadow another's. This invariant
-is pinned by `TestGetMatchingRules_OverlappingRulesUnionOperations` in
-`internal/rulestore/store_test.go`.
+When more than one rule for the same target selects the same GVR and namespace
+scope, they select **one** resource collection: the plan holds one entry, and
+there is no first-wins precedence between the rules. `RuleStore.GetMatchingRules`
+returns every rule that selects a resource, pinned by
+`TestGetMatchingRules_OverlappingRulesAreAdditive` in
+`internal/rulestore/store_test.go`. Every selected collection observes creates,
+updates, and deletions; the target's `spec.prune.mode` decides what a removal does.
 
 Then:
 
@@ -379,9 +377,8 @@ cross-spec timing in the full e2e suite.
    dimension) pin the surrounding contract.
 2. ✅ Done — `currentRuleSetSnapshots` now hashes the effective watch plan via a
    `targetWatchPlan`: it **replaces** the raw resource-matching patterns and
-   scope with the resolved GVR + namespace scope, **keeps** operations
-   (unioned across rules per GVR) and the destination (provider/branch/path),
-   and **drops** source rule identity. A target with no resolvable rules has an
+   scope with the resolved GVR + namespace scope, **keeps** the destination
+   (provider/branch/path), and **drops** source rule identity. A target with no resolvable rules has an
    empty plan and is omitted.
 3. ✅ Done — `snapshotTargetsNeedingDelivery` no longer takes a `force` argument;
    selection relies solely on per-target hash diffs.

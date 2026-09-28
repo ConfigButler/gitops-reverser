@@ -18,7 +18,7 @@ import (
 //
 // The refusal has to be the right KIND, and choosing it is most of what this spec is about. A
 // folder-level refusal (a foreign file, unparseable YAML) is normally found by the per-type
-// reconcile, which blocks the cell through the event router and never reaches the live-write path
+// reconcile, which blocks the collection through the event router and never reaches the live-write path
 // the action hangs off. It is also the case where an empty commit achieves nothing: only a human
 // can repair a folder.
 //

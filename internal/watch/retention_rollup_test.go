@@ -15,16 +15,19 @@ import (
 )
 
 var (
-	retentionCMScope     = types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
-	retentionSecretScope = types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
+	retentionCMScope = types.CollectionKeyFor(
+		schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+		"",
+	)
+	retentionSecretScope = types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
 )
 
-// retentionPlan installs the cells a watch plan selects at the given stream revision, the step
-// every declaration performs before those cells' resyncs can report.
-func retentionPlan(m *Manager, gitDest types.ResourceReference, revision uint64, cells ...types.CellKey) {
-	revisions := make(map[types.CellKey]uint64, len(cells))
-	for _, cell := range cells {
-		revisions[cell] = revision
+// retentionPlan installs the collections a watch plan selects at the given stream revision, the step
+// every declaration performs before those collections' resyncs can report.
+func retentionPlan(m *Manager, gitDest types.ResourceReference, revision uint64, collections ...types.CollectionKey) {
+	revisions := make(map[types.CollectionKey]uint64, len(collections))
+	for _, collection := range collections {
+		revisions[collection] = revision
 	}
 	m.retainTargetRetentionScopes(gitDest, revisions)
 }
@@ -94,9 +97,9 @@ func TestRetentionRollup_ANewPlanDropsScopesThatLeftIt(t *testing.T) {
 		"a scope that left the plan must take its count with it")
 }
 
-// A kept cell's stream is not restarted, so nothing re-reports for it. Its count has to survive
+// A kept collection's stream is not restarted, so nothing re-reports for it. Its count has to survive
 // the plan change, or every unrelated rule edit would zero a target's retention until the next
-// resync of a cell that never moved.
+// resync of a collection that never moved.
 func TestRetentionRollup_AKeptScopeKeepsItsCount(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
@@ -104,7 +107,7 @@ func TestRetentionRollup_AKeptScopeKeepsItsCount(t *testing.T) {
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 2)
 
 	// A rule is added: secrets start at a fresh revision, configmaps keep theirs.
-	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{
+	m.retainTargetRetentionScopes(gitDest, map[types.CollectionKey]uint64{
 		retentionCMScope: 1, retentionSecretScope: 2,
 	})
 
@@ -200,30 +203,30 @@ func TestRetentionRollup_EnqueuesOnChangeOnly(t *testing.T) {
 }
 
 // A dropped retention report leaves the published count describing a mirror that has moved on,
-// and nothing re-measures it until the cell is replanned — which for a settled target is the
+// and nothing re-measures it until the collection is replanned — which for a settled target is the
 // steady requeue away. Dropping is correct; dropping SILENTLY is what made a reproducible CI
 // failure (retainedDocuments stuck at its pre-sweep value after prune.mode was widened,
 // on a target whose files had been swept) take log archaeology to narrow and still not name.
 func TestRetentionRollup_ADroppedReportSaysSoAndWhy(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
-		cell          types.CellKey
+		collection    types.CollectionKey
 		revision      uint64
 		wantReason    string
 		wantInstalled string
 	}{
 		{
 			name:          "a stream the plan has replaced",
-			cell:          retentionCMScope,
+			collection:    retentionCMScope,
 			revision:      1,
 			wantReason:    "the reporting stream has been replaced",
 			wantInstalled: `"installedRevision"=2`,
 		},
 		{
-			name:          "a cell the plan no longer holds",
-			cell:          retentionSecretScope,
+			name:          "a collection the plan no longer holds",
+			collection:    retentionSecretScope,
 			revision:      2,
-			wantReason:    "the cell is not in the current watch plan",
+			wantReason:    "the collection is not in the current watch plan",
 			wantInstalled: `"installedRevision"=0`,
 		},
 	} {
@@ -234,7 +237,7 @@ func TestRetentionRollup_ADroppedReportSaysSoAndWhy(t *testing.T) {
 			retentionPlan(m, gitDest, 2, retentionCMScope)
 			m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneOnEvent, 1)
 
-			m.MarkTargetRetention(gitDest, tc.cell, tc.revision, v1alpha3.PruneOnEvent, 0)
+			m.MarkTargetRetention(gitDest, tc.collection, tc.revision, v1alpha3.PruneOnEvent, 0)
 
 			assert.Equal(t, 1, m.RetentionForGitTarget(gitDest).RetainedDocuments,
 				"the drop itself still stands: a stale report must not move the count")
@@ -269,27 +272,27 @@ func TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing(t *testing
 	log, lines := recordingLogger()
 	m := &Manager{Log: log}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
-	cell := types.CellKeyFor(configmapsGVR, "apps")
-	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 7})
+	collection := types.CollectionKeyFor(configmapsGVR, "apps")
+	m.retainTargetRetentionScopes(gitDest, map[types.CollectionKey]uint64{collection: 7})
 
 	// First report publishes: it moves Reported from false to true.
-	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+	m.MarkTargetRetention(gitDest, collection, 7, v1alpha3.PruneOnEvent, 2)
 	require.Equal(t, 2, m.RetentionForGitTarget(gitDest).RetainedDocuments)
 
 	// A re-report under the SAME revision is routine — every resync of a steady scope does it —
 	// and must stay quiet, or the diagnostic drowns in its own noise.
-	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+	m.MarkTargetRetention(gitDest, collection, 7, v1alpha3.PruneOnEvent, 2)
 	assert.NotContains(t, strings.Join(*lines, "\n"), "published nothing",
 		"a re-report under the revision already reported is routine and must not be Info")
 
-	// A RE-MEASUREMENT: the plan restarts the cell, the replacement stream reports under its new
+	// A RE-MEASUREMENT: the plan restarts the collection, the replacement stream reports under its new
 	// revision, and arrives at the number already published. The mutation is discarded and status
 	// does not move — the one shape a stale published count can hide behind.
-	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 8})
-	m.MarkTargetRetention(gitDest, cell, 8, v1alpha3.PruneOnEvent, 2)
+	m.retainTargetRetentionScopes(gitDest, map[types.CollectionKey]uint64{collection: 8})
+	m.MarkTargetRetention(gitDest, collection, 8, v1alpha3.PruneOnEvent, 2)
 
 	assert.Contains(t, strings.Join(*lines, "\n"),
-		"a fresh measurement of this cell produced the count already published")
+		"a fresh measurement of this collection produced the count already published")
 }
 
 // A re-measurement announces itself ONCE.
@@ -297,26 +300,26 @@ func TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing(t *testing
 // The Info log above is deliberate and rare: it marks the one shape a stale published count can
 // hide behind. It only stays rare if the revision marker survives the report that raised it — and
 // mutateWatchPlane discards the whole clone when the mutation reports no operator-visible change,
-// which dropped the marker with it. Every later resync of that cell then looked like a fresh
+// which dropped the marker with it. Every later resync of that collection then looked like a fresh
 // re-measurement and said so again, turning a diagnostic into the noise it was written to avoid.
 func TestMarkTargetRetention_RemeasurementIsAnnouncedOnce(t *testing.T) {
 	log, lines := recordingLogger()
 	m := &Manager{Log: log}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
-	cell := types.CellKeyFor(configmapsGVR, "apps")
+	collection := types.CollectionKeyFor(configmapsGVR, "apps")
 
-	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 7})
-	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+	m.retainTargetRetentionScopes(gitDest, map[types.CollectionKey]uint64{collection: 7})
+	m.MarkTargetRetention(gitDest, collection, 7, v1alpha3.PruneOnEvent, 2)
 
-	// The cell restarts and its replacement reports the same count under a new revision: one
+	// The collection restarts and its replacement reports the same count under a new revision: one
 	// announcement. Every resync after it is routine, under a revision now already reported.
-	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 8})
+	m.retainTargetRetentionScopes(gitDest, map[types.CollectionKey]uint64{collection: 8})
 	for range 4 {
-		m.MarkTargetRetention(gitDest, cell, 8, v1alpha3.PruneOnEvent, 2)
+		m.MarkTargetRetention(gitDest, collection, 8, v1alpha3.PruneOnEvent, 2)
 	}
 
 	announcements := strings.Count(strings.Join(*lines, "\n"),
-		"a fresh measurement of this cell produced the count already published")
+		"a fresh measurement of this collection produced the count already published")
 	assert.Equal(t, 1, announcements,
 		"the marker must persist so a re-measurement is announced once, not on every later resync")
 }
@@ -327,14 +330,14 @@ func TestMarkTargetRetention_UnchangedRemeasurementPublishesNothing(t *testing.T
 	log, _ := recordingLogger()
 	m := &Manager{Log: log}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
-	cell := types.CellKeyFor(configmapsGVR, "apps")
+	collection := types.CollectionKeyFor(configmapsGVR, "apps")
 
-	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 7})
-	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+	m.retainTargetRetentionScopes(gitDest, map[types.CollectionKey]uint64{collection: 7})
+	m.MarkTargetRetention(gitDest, collection, 7, v1alpha3.PruneOnEvent, 2)
 	before := m.RetentionForGitTarget(gitDest)
 
-	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 8})
-	m.MarkTargetRetention(gitDest, cell, 8, v1alpha3.PruneOnEvent, 2)
+	m.retainTargetRetentionScopes(gitDest, map[types.CollectionKey]uint64{collection: 8})
+	m.MarkTargetRetention(gitDest, collection, 8, v1alpha3.PruneOnEvent, 2)
 
 	after := m.RetentionForGitTarget(gitDest)
 	assert.Equal(t, before.RetainedDocuments, after.RetainedDocuments)

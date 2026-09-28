@@ -20,14 +20,14 @@ import (
 // snapshot rather than a critical section, and targetWatchesMu / targetRetentionMu guarded maps
 // whose only writers are now reports.
 type watchPlaneState struct {
-	// streams is the readiness surface, keyed by GitTarget and CELL — not by the served version
+	// streams is the readiness surface, keyed by GitTarget and COLLECTION — not by the served version
 	// the stream runs at. See markTargetStreamState for why the version is absent.
-	streams map[string]map[types.CellKey]targetStreamStatus
+	streams map[string]map[types.CollectionKey]targetStreamStatus
 	// acceptance is the target-side structure-gate projection, published as GitPathAccepted.
 	acceptance map[string]gitPathAcceptance
 	// fidelity is the projected state of the shared worker gate, published as RenderMatchesLive.
 	fidelity map[string]git.RenderFidelityStatus
-	// retention is each GitTarget's per-cell retained-document counts, epoch-keyed so a cell that
+	// retention is each GitTarget's per-collection retained-document counts, epoch-keyed so a collection that
 	// leaves the watch plan takes its count with it.
 	retention map[string]targetRetentionState
 	// uids maps a GitTarget key to the object UID captured at declare. The data plane keys resume
@@ -94,7 +94,7 @@ func (s DeclareStatus) Settled() bool {
 
 func newWatchPlaneState() *watchPlaneState {
 	return &watchPlaneState{
-		streams:     map[string]map[types.CellKey]targetStreamStatus{},
+		streams:     map[string]map[types.CollectionKey]targetStreamStatus{},
 		acceptance:  map[string]gitPathAcceptance{},
 		fidelity:    map[string]git.RenderFidelityStatus{},
 		retention:   map[string]targetRetentionState{},
@@ -108,11 +108,11 @@ func newWatchPlaneState() *watchPlaneState {
 }
 
 // clone copies the state deeply enough that the published predecessor stays immutable: the
-// nested per-cell maps are copied too, because a reader holding the old snapshot must not see a
-// cell appear inside it.
+// nested per-collection maps are copied too, because a reader holding the old snapshot must not see a
+// collection appear inside it.
 func (s *watchPlaneState) clone() *watchPlaneState {
 	out := &watchPlaneState{
-		streams:     make(map[string]map[types.CellKey]targetStreamStatus, len(s.streams)),
+		streams:     make(map[string]map[types.CollectionKey]targetStreamStatus, len(s.streams)),
 		acceptance:  copyMap(s.acceptance),
 		fidelity:    copyMap(s.fidelity),
 		retention:   make(map[string]targetRetentionState, len(s.retention)),
@@ -123,8 +123,8 @@ func (s *watchPlaneState) clone() *watchPlaneState {
 		passes:      copyMap(s.passes),
 		layouts:     copyMap(s.layouts),
 	}
-	for key, cells := range s.streams {
-		out.streams[key] = copyMap(cells)
+	for key, collections := range s.streams {
+		out.streams[key] = copyMap(collections)
 	}
 	for key, state := range s.retention {
 		state.scopes = copyMap(state.scopes)

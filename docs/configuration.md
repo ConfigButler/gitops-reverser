@@ -100,7 +100,6 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `rules[].resources` | **required** | Plural resource names to watch |
 | `rules[].apiGroups` | resolved from the resource name | API groups to match. `[""]` is the core group. Omitted resolves the named resource across the served surface, and selects nothing when more than one group serves that name |
 | `rules[].apiVersions` | the preferred served version | API versions to match. `["*"]` watches every served version |
-| `rules[].operations` | `CREATE`, `UPDATE`, `DELETE` | Which operations produce a write |
 | `rules[].sourceNamespace` | the rule's own namespace | Namespace to watch in the source cluster, or `*`. See [watching a different source namespace](#watching-a-different-source-namespace) |
 
 ### `ClusterWatchRule` (cluster-scoped): what to capture, cluster-wide
@@ -113,7 +112,6 @@ The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespa
 | `rules[].resources` | **required** | Plural cluster-scoped resource names to watch |
 | `rules[].apiGroups` | resolved from the resource name | API groups to match. Omitted resolves the named resource across the served surface, and selects nothing when more than one group serves that name |
 | `rules[].apiVersions` | the preferred served version | API versions to match. `["*"]` watches every served version |
-| `rules[].operations` | `CREATE`, `UPDATE`, `DELETE` | Which operations produce a write |
 
 ### `CommitRequest` (namespaced): save now
 
@@ -1675,9 +1673,9 @@ namespace. Connection count is bounded per matched type, but object count, traff
 still grow with the cluster. Access is bounded by the source credential's RBAC
 and by nothing else, which is why it is refused outright while `allowAnySourceNamespace` is false.
 
-A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates: each rule
-carries its own `operations` filter, so a target holding both runs two streams over overlapping
-objects. That is correct rather than something to tune away.
+A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates: each is its
+own resource collection, so a target holding both runs two streams over overlapping objects. That is
+correct rather than something to tune away.
 
 The outcome for all items is aggregated into one `SourceNamespaceAuthorized` condition, also shown by
 `kubectl get watchrules -o wide`. A **denied** explicit name refuses the whole `WatchRule`
@@ -1694,10 +1692,11 @@ A namespace allow-list cannot partition **cluster-scoped** objects, which have n
 see another tenant's cluster-scoped objects, give each tenant its own `ClusterProvider` and
 credential, so that credential's RBAC is the boundary.
 
-Each entry in `spec.rules` is a logical OR. A resource matching any rule is watched. The rule fields
-are:
+Each entry in `spec.rules` is a logical OR. A resource matching any rule is watched. A rule selects
+whole resource collections: every selected collection is observed through creates, updates, and
+deletions, and the `GitTarget`'s [deletion policy](#deletion-policy-specprunemode) decides whether an
+observed removal deletes the Git document. There is no per-rule operation filter. The rule fields are:
 
-- `operations`: `CREATE`, `UPDATE`, `DELETE`, or `*`; omitted means all operations.
 - `apiGroups`: `""` for the core group, `*` for all groups, or omitted to resolve the named resource
   across the served API surface. A name served by more than one group is ambiguous when the group is
   omitted, and is watched in none of them: name the group.
@@ -1719,8 +1718,7 @@ spec:
   gitTargetRef:
     name: example-target
   rules:
-    - operations: [CREATE, UPDATE, DELETE]
-      apiGroups: [""]
+    - apiGroups: [""]
       apiVersions: ["v1"]
       resources: ["configmaps", "secrets"]
 ```
@@ -1750,8 +1748,7 @@ spec:
     name: example-target
     namespace: default
   rules:
-    - operations: [CREATE, UPDATE, DELETE]
-      apiGroups: ["rbac.authorization.k8s.io"]
+    - apiGroups: ["rbac.authorization.k8s.io"]
       apiVersions: ["v1"]
       resources: ["clusterroles", "clusterrolebindings"]
 ```

@@ -569,11 +569,6 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "operations": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": { "enum": ["CREATE", "UPDATE", "DELETE"] }
-                  },
                   "apiGroups": { "type": "array", "items": { "type": "string" } },
                   "apiVersions": { "type": "array", "items": { "type": "string" } },
                   "resources": { "type": "array", "items": { "type": "string" } }

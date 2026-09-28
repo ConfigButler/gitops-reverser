@@ -61,3 +61,4 @@ loadtest
 .claude/*
 .agents/*
 /external-sources/
+/docs/local-only/*

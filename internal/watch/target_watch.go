@@ -21,7 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/utils/ptr"
 
-	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
@@ -52,45 +51,44 @@ func targetWatchClosedErr(ctx context.Context) error {
 	}
 }
 
-// targetWatchSet is one GitTarget's running streams, keyed by the cell each one covers. The
-// plan is applied cell by cell, so cancellation is too: there is no set-wide cancel, because a
-// single one is what made adding a rule replay every unrelated cell into a queue shared with
+// targetWatchSet is one GitTarget's running streams, keyed by the collection each one covers. The
+// plan is applied collection by collection, so cancellation is too: there is no set-wide cancel, because a
+// single one is what made adding a rule replay every unrelated collection into a queue shared with
 // other tenants.
 type targetWatchSet struct {
-	streams map[types.CellKey]*runningTargetWatch
+	streams map[types.CollectionKey]*runningTargetWatch
 }
 
 // runningTargetWatch is one live stream: what it was started for, and how to stop it.
 type runningTargetWatch struct {
 	key    targetWatchKey
-	spec   string
 	cancel context.CancelFunc
 }
 
 // plan is the set's side of the diff: what is running right now.
 func (s *targetWatchSet) plan() targetWatchPlan {
-	plan := targetWatchPlan{Cells: make(map[types.CellKey]cellSpec, len(s.streams))}
-	for cell, running := range s.streams {
-		plan.Cells[cell] = cellSpec{Operations: running.spec, Version: running.key.GVR.Version}
+	plan := targetWatchPlan{Collections: make(map[types.CollectionKey]watchSpec, len(s.streams))}
+	for collection, running := range s.streams {
+		plan.Collections[collection] = watchSpec{Version: running.key.GVR.Version}
 	}
 	return plan
 }
 
-// stop cancels one cell's stream and drops it. It never touches files: a deselected cell's
+// stop cancels one collection's stream and drops it. It never touches files: a deselected collection's
 // documents are converged by a Git-side sweep, not by the watch layer.
-func (s *targetWatchSet) stop(cell types.CellKey) {
-	running, ok := s.streams[cell]
+func (s *targetWatchSet) stop(collection types.CollectionKey) {
+	running, ok := s.streams[collection]
 	if !ok {
 		return
 	}
 	running.cancel()
-	delete(s.streams, cell)
+	delete(s.streams, collection)
 }
 
 // stopAll cancels every stream, for a GitTarget that is going away.
 func (s *targetWatchSet) stopAll() {
-	for cell := range s.streams {
-		s.stop(cell)
+	for collection := range s.streams {
+		s.stop(collection)
 	}
 }
 
@@ -99,41 +97,41 @@ type targetWatchKey struct {
 	Namespace string
 }
 
-// targetWatchStream is one running target watch: the cell it covers and the operation filter
-// it applies.
+// targetWatchStream is one running target watch: the collection it covers. It observes every
+// object event in that collection; the GitTarget's prune mode, not the stream, decides what a
+// removal does to Git.
 //
 // Nothing about a stream fences the work it queues. Once an item is on the branch worker's
 // FIFO it will be applied, and a canceled stream's goroutine can still be in flight, so a
-// short tail of writes from a deselected cell is accepted rather than rejected on arrival. The
+// short tail of writes from a deselected collection is accepted rather than rejected on arrival. The
 // plan is applied by canceling streams, at the producer.
 type targetWatchStream struct {
 	key targetWatchKey
-	ops OperationSet
 	// refreshRemote asks the worker to inspect the remote tip before applying this stream's
 	// replay. It is set on forced GitTarget rechecks, where a human may have fixed or broken the
 	// folder directly in Git and the local checkout is the stale thing being tested.
 	refreshRemote bool
-	// revision is the incarnation of this stream's CELL, issued by the render-fidelity gate
+	// revision is the incarnation of this stream's COLLECTION, issued by the render-fidelity gate
 	// when the stream was started. It is captured at start, not read when a replay result is
 	// ready: a cancelled stream that read the current revision on its way out would report its
-	// scope clean under a revision it never replayed for. Since a fidelity scope is a cell, a
-	// stream retired by a served-version change lands on the live cell's scope rather than
+	// scope clean under a revision it never replayed for. Since a fidelity scope is a collection, a
+	// stream retired by a served-version change lands on the live collection's scope rather than
 	// missing it, so the capture is what keeps it out.
 	revision uint64
 }
 
-// sourceCell is what this stream stamps on the work it queues: the cell that produced it.
-func (s targetWatchStream) sourceCell() types.CellKey {
-	return s.key.Cell()
+// sourceCollection is what this stream stamps on the work it queues: the collection that produced it.
+func (s targetWatchStream) sourceCollection() types.CollectionKey {
+	return s.key.Collection()
 }
 
-// Cell is this stream's identity everywhere it crosses a subsystem boundary: the sweep scope
-// its replay runs under, the render-fidelity scope it reports into, and the source cell stamped
+// Collection is this stream's identity everywhere it crosses a subsystem boundary: the sweep scope
+// its replay runs under, the render-fidelity scope it reports into, and the source collection stamped
 // on the work it queues. The served version stays on the key — a stream has to open a watch
-// with a concrete version — but it is not part of the cell, so the key always round-trips to
+// with a concrete version — but it is not part of the collection, so the key always round-trips to
 // the boundary it sweeps.
-func (k targetWatchKey) Cell() types.CellKey {
-	return types.CellKeyFor(k.GVR, k.Namespace)
+func (k targetWatchKey) Collection() types.CollectionKey {
+	return types.CollectionKeyFor(k.GVR, k.Namespace)
 }
 
 // ensureGitTargetWatches makes the GitTarget's raw watch set match its current claimed,
@@ -206,13 +204,11 @@ func (m *Manager) replaceGitTargetWatches(
 	table WatchedTypeTable,
 	forceRecheck ...bool,
 ) error {
-	streams := targetWatchStreams(table)
-	specs := renderTargetWatchSpecs(streams)
-	keys := sortedTargetWatchSpecKeys(specs)
+	keys := targetWatchKeys(table)
 	force := len(forceRecheck) > 0 && forceRecheck[0]
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 
-	desired, err := targetWatchPlanFor(specs)
+	desired, err := targetWatchPlanFor(keys)
 	if err != nil {
 		return fmt.Errorf("build the watch plan for %s: %w", table.GitDest.String(), err)
 	}
@@ -220,22 +216,22 @@ func (m *Manager) replaceGitTargetWatches(
 	set := m.targetWatchSet(table.GitDest)
 	previous := set.plan()
 	diff := diffTargetWatchPlans(previous, desired, force)
-	// Cancel before starting: a restarted cell's replacement must not race its predecessor for
-	// the same cell's readiness and fidelity result.
-	for _, cell := range diff.Stop {
-		set.stop(cell)
+	// Cancel before starting: a restarted collection's replacement must not race its predecessor for
+	// the same collection's readiness and fidelity result.
+	for _, collection := range diff.Stop {
+		set.stop(collection)
 	}
-	for _, cell := range diff.Restart {
-		set.stop(cell)
+	for _, collection := range diff.Restart {
+		set.stop(collection)
 	}
-	starting := append(append([]types.CellKey{}, diff.Start...), diff.Restart...)
-	sortCells(starting)
-	cells := cellsForWatchKeys(keys)
-	m.resetTargetStreamStates(table.GitDest, cells, starting)
-	revisions, fidelityChanged := m.reconcileTargetRenderFidelity(table.GitDest, cells, starting)
-	started := m.startTargetWatchStreams(ctx, set, keysByCell(keys), streams, specs, revisions, starting, force)
+	starting := append(append([]types.CollectionKey{}, diff.Start...), diff.Restart...)
+	sortCollections(starting)
+	collections := collectionsForWatchKeys(keys)
+	m.resetTargetStreamStates(table.GitDest, collections, starting)
+	revisions, fidelityChanged := m.reconcileTargetRenderFidelity(table.GitDest, collections, starting)
+	started := m.startTargetWatchStreams(ctx, set, keysByCollection(keys), revisions, starting, force)
 
-	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
+	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(collections, revisions))
 	if fidelityChanged {
 		m.enqueueGitTargetReconcile(table.GitDest)
 	}
@@ -248,7 +244,7 @@ func (m *Manager) replaceGitTargetWatches(
 	// delivered on two streams, which is legitimate scoping but doubles the events for
 	// objects in that namespace. That is invisible in a bare count.
 	log.V(1).Info("watch-first target watch set reconciled",
-		"watchCount", len(keys), "streams", describeWatchKeys(keys, specs))
+		"watchCount", len(keys), "streams", describeWatchKeys(keys))
 	return nil
 }
 
@@ -259,7 +255,7 @@ func (m *Manager) targetWatchSet(gitDest types.ResourceReference) *targetWatchSe
 	}
 	set := m.targetWatches[gitDest.Key()]
 	if set == nil {
-		set = &targetWatchSet{streams: map[types.CellKey]*runningTargetWatch{}}
+		set = &targetWatchSet{streams: map[types.CollectionKey]*runningTargetWatch{}}
 		m.targetWatches[gitDest.Key()] = set
 	}
 	return set
@@ -272,33 +268,30 @@ type startingTargetWatch struct {
 	stream targetWatchStream
 }
 
-// startTargetWatchStreams registers one stream per cell in starting, each with its own cancel,
+// startTargetWatchStreams registers one stream per collection in starting, each with its own cancel,
 // and returns them to be launched once the whole plan has been applied. Owner-loop only.
 func (m *Manager) startTargetWatchStreams(
 	ctx context.Context,
 	set *targetWatchSet,
-	byCell map[types.CellKey]targetWatchKey,
-	streams map[targetWatchKey]OperationSet,
-	specs map[targetWatchKey]string,
-	revisions map[types.CellKey]uint64,
-	starting []types.CellKey,
+	byCollection map[types.CollectionKey]targetWatchKey,
+	revisions map[types.CollectionKey]uint64,
+	starting []types.CollectionKey,
 	refreshRemote bool,
 ) []startingTargetWatch {
 	out := make([]startingTargetWatch, 0, len(starting))
-	for _, cell := range starting {
-		watchKey, ok := byCell[cell]
+	for _, collection := range starting {
+		watchKey, ok := byCollection[collection]
 		if !ok {
 			continue
 		}
 		streamCtx, cancel := context.WithCancel(m.streamParent(ctx))
-		set.streams[cell] = &runningTargetWatch{key: watchKey, spec: specs[watchKey], cancel: cancel}
+		set.streams[collection] = &runningTargetWatch{key: watchKey, cancel: cancel}
 		out = append(out, startingTargetWatch{
 			ctx: streamCtx,
 			stream: targetWatchStream{
 				key:           watchKey,
-				ops:           streams[watchKey],
 				refreshRemote: refreshRemote,
-				revision:      revisions[cell],
+				revision:      revisions[collection],
 			},
 		})
 	}
@@ -314,28 +307,28 @@ func (m *Manager) streamParent(fallback context.Context) context.Context {
 	return fallback
 }
 
-// keysByCell indexes the declared keys by the cell each one covers. targetWatchStreams
-// guarantees one key per cell, which targetWatchPlanFor has already asserted by this point.
-func keysByCell(keys []targetWatchKey) map[types.CellKey]targetWatchKey {
-	out := make(map[types.CellKey]targetWatchKey, len(keys))
+// keysByCollection indexes the declared keys by the collection each one covers. targetWatchStreams
+// guarantees one key per collection, which targetWatchPlanFor has already asserted by this point.
+func keysByCollection(keys []targetWatchKey) map[types.CollectionKey]targetWatchKey {
+	out := make(map[types.CollectionKey]targetWatchKey, len(keys))
 	for _, key := range keys {
-		out[key.Cell()] = key
+		out[key.Collection()] = key
 	}
 	return out
 }
 
-// resetTargetStreamStates makes the readiness surface match the plan: cells that left it are
-// dropped, and the cells whose streams are being started or restarted go back to replaying. A
-// cell that is merely KEPT keeps its prior clean or divergent result, because an unrelated plan
+// resetTargetStreamStates makes the readiness surface match the plan: collections that left it are
+// dropped, and the collections whose streams are being started or restarted go back to replaying. A
+// collection that is merely KEPT keeps its prior clean or divergent result, because an unrelated plan
 // change is no evidence about it.
 func (m *Manager) resetTargetStreamStates(
 	gitDest types.ResourceReference,
-	declared []types.CellKey,
-	replaying []types.CellKey,
+	declared []types.CollectionKey,
+	replaying []types.CollectionKey,
 ) {
-	selected := make(map[types.CellKey]struct{}, len(declared))
-	for _, cell := range declared {
-		selected[cell] = struct{}{}
+	selected := make(map[types.CollectionKey]struct{}, len(declared))
+	for _, collection := range declared {
+		selected[collection] = struct{}{}
 	}
 	replay := targetStreamStatus{
 		state:   StreamStateReplaying,
@@ -346,18 +339,18 @@ func (m *Manager) resetTargetStreamStates(
 		targetKey := gitDest.Key()
 		states := s.streams[targetKey]
 		if states == nil {
-			states = map[types.CellKey]targetStreamStatus{}
+			states = map[types.CollectionKey]targetStreamStatus{}
 			s.streams[targetKey] = states
 		}
 		changed := false
-		for cell := range states {
-			if _, ok := selected[cell]; !ok {
-				delete(states, cell)
+		for collection := range states {
+			if _, ok := selected[collection]; !ok {
+				delete(states, collection)
 				changed = true
 			}
 		}
-		for _, cell := range replaying {
-			if setStreamState(s, targetKey, cell, replay) {
+		for _, collection := range replaying {
+			if setStreamState(s, targetKey, collection, replay) {
 				changed = true
 			}
 		}
@@ -365,16 +358,16 @@ func (m *Manager) resetTargetStreamStates(
 	})
 }
 
-// describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>=<ops>"
-// so a declare log names exactly what is being watched and under which operation filter.
-func describeWatchKeys(keys []targetWatchKey, specs map[targetWatchKey]string) string {
+// describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>"
+// so a declare log names exactly what is being watched.
+func describeWatchKeys(keys []targetWatchKey) string {
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
 		scope := key.Namespace
 		if scope == "" {
 			scope = "*cluster-wide*"
 		}
-		parts = append(parts, fmt.Sprintf("%s@%s=%s", key.GVR.String(), scope, specs[key]))
+		parts = append(parts, fmt.Sprintf("%s@%s", key.GVR.String(), scope))
 	}
 	return strings.Join(parts, " | ")
 }
@@ -399,55 +392,45 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	m.forgetTargetRetention(gitDest)
 }
 
-// targetWatchStreams computes a GitTarget's declared stream set: ONE stream per cell, carrying
-// the served version it opens at and the union of the operation filters that selected it.
+// targetWatchStreams computes a GitTarget's declared stream set: ONE stream per collection, carrying
+// the served version it opens at.
 //
-// One stream per cell is the invariant the whole sweep boundary rests on. A cell is
-// group/resource/namespace (types.CellKey), so two followable records of one logical resource
-// at different served versions, selected under the same scope, are ONE cell: one sweep
+// One stream per collection is the invariant the whole sweep boundary rests on. A collection is
+// group/resource/namespace (types.CollectionKey), so two followable records of one logical resource
+// at different served versions, selected under the same scope, are ONE collection: one sweep
 // boundary, one render-fidelity scope, one coalescing key. Streaming both would mean two
 // snapshots of one boundary, each sweeping the documents the other gathered. So the version is
-// chosen once, deterministically, and the operation filters are unioned rather than dropped, so
-// no rule loses coverage to the collapse.
+// chosen once, deterministically.
 //
 // A cluster-wide scope ("") stays a peer of any named namespace on the same type, never a
-// replacement for it: collapsing THOSE widened the named rule's stream and dropped its
-// operation set (pr2-stream-scope-collapse.md). They are different cells, and both stream.
-func targetWatchStreams(table WatchedTypeTable) map[targetWatchKey]OperationSet {
-	chosen := map[types.CellKey]targetWatchKey{}
-	chosenPreferred := map[types.CellKey]bool{}
-	ops := map[types.CellKey]OperationSet{}
+// replacement for it: collapsing THOSE widened the named rule's stream
+// (pr2-stream-scope-collapse.md). They are different collections, and both stream.
+func targetWatchStreams(table WatchedTypeTable) map[targetWatchKey]struct{} {
+	chosen := map[types.CollectionKey]targetWatchKey{}
+	chosenPreferred := map[types.CollectionKey]bool{}
 	for _, wt := range table.Types {
 		for _, ns := range wt.WatchScopes() {
-			cell := types.CellKeyFor(wt.GVR, ns)
+			collection := types.CollectionKeyFor(wt.GVR, ns)
 			candidate := targetWatchKey{GVR: wt.GVR, Namespace: ns}
-			if prior, seen := chosen[cell]; !seen ||
-				preferServedVersion(prior, chosenPreferred[cell], candidate, wt.Preferred) {
-				chosen[cell] = candidate
-				chosenPreferred[cell] = wt.Preferred
-			}
-			set, ok := ops[cell]
-			if !ok {
-				set = OperationSet{}
-				ops[cell] = set
-			}
-			for op := range wt.NamespaceOps[ns] {
-				set[op] = struct{}{}
+			if prior, seen := chosen[collection]; !seen ||
+				preferServedVersion(prior, chosenPreferred[collection], candidate, wt.Preferred) {
+				chosen[collection] = candidate
+				chosenPreferred[collection] = wt.Preferred
 			}
 		}
 	}
-	out := make(map[targetWatchKey]OperationSet, len(chosen))
-	for cell, key := range chosen {
-		out[key] = ops[cell]
+	out := make(map[targetWatchKey]struct{}, len(chosen))
+	for _, key := range chosen {
+		out[key] = struct{}{}
 	}
 	return out
 }
 
 // preferServedVersion reports whether the candidate should replace the currently chosen stream
-// for one cell. The API server's preferred version wins; between two non-preferred (or two
+// for one collection. The API server's preferred version wins; between two non-preferred (or two
 // preferred) records the higher-sorting version wins, which is arbitrary but STABLE — a rule
 // edit or a rediscovery must not flap the served version, because every flap would cancel the
-// stream and replay the whole cell.
+// stream and replay the whole collection.
 func preferServedVersion(
 	prior targetWatchKey,
 	priorPreferred bool,
@@ -460,25 +443,15 @@ func preferServedVersion(
 	return candidate.GVR.Version > prior.GVR.Version
 }
 
-// targetWatchSpecs renders the declared stream set as the comparable per-stream spec:
-// everything about a stream that, when it changes, invalidates the running one. The
-// operations are rendered to their canonical string because a map is neither comparable
-// nor safe to retain by reference.
-func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
-	return renderTargetWatchSpecs(targetWatchStreams(table))
+// targetWatchKeys returns the declared stream set in a stable order: one key per collection,
+// carrying the served version its watch opens at.
+func targetWatchKeys(table WatchedTypeTable) []targetWatchKey {
+	return sortedTargetWatchKeys(targetWatchStreams(table))
 }
 
-func renderTargetWatchSpecs(streams map[targetWatchKey]OperationSet) map[targetWatchKey]string {
-	out := make(map[targetWatchKey]string, len(streams))
-	for key, ops := range streams {
-		out[key] = operationSpec(ops)
-	}
-	return out
-}
-
-func sortedTargetWatchSpecKeys(specs map[targetWatchKey]string) []targetWatchKey {
-	out := make([]targetWatchKey, 0, len(specs))
-	for key := range specs {
+func sortedTargetWatchKeys(keys map[targetWatchKey]struct{}) []targetWatchKey {
+	out := make([]targetWatchKey, 0, len(keys))
+	for key := range keys {
 		out = append(out, key)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -488,13 +461,6 @@ func sortedTargetWatchSpecKeys(specs map[targetWatchKey]string) []targetWatchKey
 		return out[i].GVR.String() < out[j].GVR.String()
 	})
 	return out
-}
-
-func operationSpec(ops OperationSet) string {
-	if len(ops) == 0 {
-		return "*"
-	}
-	return fmt.Sprint(ops.Sorted())
 }
 
 func (m *Manager) runTargetWatch(
@@ -511,7 +477,7 @@ func (m *Manager) runTargetWatch(
 	releaseFacts := m.followFactsForWatch(gitDest, stream.key)
 	defer releaseFacts()
 
-	// Starting a stream issues its cell a fresh fidelity revision, so its first session must
+	// Starting a stream issues its collection a fresh fidelity revision, so its first session must
 	// replay even when a durable cursor exists: resuming would leave that scope pending under
 	// the new revision forever. Later reconnects may resume from their cursors because they stay
 	// within the same stream, and so within the same revision.
@@ -534,7 +500,7 @@ func (m *Manager) runTargetWatch(
 		}
 		if err != nil {
 			if state, reason, mark := targetStreamStateForSessionEnd(err); mark {
-				m.markTargetStreamState(gitDest, stream.key.Cell(), state, reason, err.Error())
+				m.markTargetStreamState(gitDest, stream.key.Collection(), state, reason, err.Error())
 			}
 			log.Info("target watch session ended; reconnecting",
 				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
@@ -549,7 +515,7 @@ func (m *Manager) runTargetWatch(
 // grading is worth publishing at all.
 //
 // A session ENDING says only that it ended. Whether anything is WRONG is the next open's answer,
-// and every open-failure path below already marks the cell Blocked/WatchError one backoff later.
+// and every open-failure path below already marks the collection Blocked/WatchError one backoff later.
 // Reporting a clean end as Blocked cost a Warning event, a Ready flip and a cadence change on a
 // perfectly healthy cluster, every time the API server hit its randomized watch timeout — roughly
 // every forty minutes, per type. The protocol working is not a failure.
@@ -610,7 +576,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndedExpired)
 		m.markTargetStreamState(
 			gitDest,
-			stream.key.Cell(),
+			stream.key.Collection(),
 			StreamStateReplaying,
 			StreamReasonExpiredResourceVersion,
 			"stored watch cursor expired; rebuilding from a fresh replay",
@@ -633,7 +599,7 @@ func (m *Manager) targetWatchReplayAndStream(
 	}
 	m.markTargetStreamState(
 		gitDest,
-		stream.key.Cell(),
+		stream.key.Collection(),
 		StreamStateReplaying,
 		reason,
 		"target watch replay in progress",
@@ -652,7 +618,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key.Cell(),
+			stream.key.Collection(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -732,7 +698,7 @@ func (m *Manager) targetWatchResumeAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key.Cell(),
+			stream.key.Collection(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -752,7 +718,7 @@ func (m *Manager) targetWatchResumeAndStream(
 		"namespace", stream.key.Namespace, "resourceVersion", cursor)
 	m.markTargetStreamState(
 		gitDest,
-		stream.key.Cell(),
+		stream.key.Collection(),
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch resumed from durable cursor",
@@ -777,7 +743,7 @@ func (m *Manager) targetWatchListAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key.Cell(),
+			stream.key.Collection(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -802,7 +768,7 @@ func (m *Manager) targetWatchListAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key.Cell(),
+			stream.key.Collection(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -827,7 +793,7 @@ func (m *Manager) targetWatchListAndStream(
 		"count", len(desired), "resourceVersion", resourceVersion)
 	m.markTargetStreamState(
 		gitDest,
-		stream.key.Cell(),
+		stream.key.Collection(),
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch list fallback complete",
@@ -864,7 +830,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 	*replay = nil
 	m.markTargetStreamState(
 		gitDest,
-		stream.key.Cell(),
+		stream.key.Collection(),
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch replay complete",
@@ -923,7 +889,7 @@ func (m *Manager) enqueueReplayResync(
 	}
 	// Cancellation has to be prompt on the PRODUCER side: nothing filters the branch worker's
 	// queue, so what bounds a retired stream's tail is how quickly it stops enqueuing. A snapshot
-	// gathered for a cell that has since been stopped or restarted has nothing left to report
+	// gathered for a collection that has since been stopped or restarted has nothing left to report
 	// into either.
 	select {
 	case <-ctx.Done():
@@ -932,12 +898,12 @@ func (m *Manager) enqueueReplayResync(
 	}
 	// The stream's PLAN revision (stream.revision, a render-fidelity generation counter — not the
 	// resourceVersion this snapshot is pinned to) is the one this stream was STARTED with, never
-	// the cell's current one. A cancelled stream can still be in flight with a replay result, and
+	// the collection's current one. A cancelled stream can still be in flight with a replay result, and
 	// reading that revision here would let it report a scope clean under a revision it never
 	// replayed for — reopening writes on the strength of a snapshot the new plan never gathered.
 	// The gate already ignores a superseded revision; capturing it at start is what makes it stale.
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, resourceVersion, false,
+		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), desired, resourceVersion, false,
 		stream.refreshRemote)
 	if err != nil {
 		return err
@@ -946,14 +912,14 @@ func (m *Manager) enqueueReplayResync(
 	// case: EnqueueResync has ALREADY delivered ErrFinalizeQueueFull on the reply channel for the
 	// drain to record, so returning here instead left that reply in a buffered channel nobody ever
 	// read -- and with it went the only calls that mark acceptance, render fidelity and retention
-	// for this cell. The render-fidelity scope then owed a report under a revision no running
+	// for this collection. The render-fidelity scope then owed a report under a revision no running
 	// stream would ever report again, which pins the GitTarget at Ready=False and, through it,
 	// every WatchRule pointing at it.
 	//
 	// The stream.key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
-	go m.EventRouter.drainScopedResync(gitDest, stream.key.Cell(), "reconcile", stream.revision, resultCh)
+	go m.EventRouter.drainScopedResync(gitDest, stream.key.Collection(), "reconcile", stream.revision, resultCh)
 	if !enqueued {
 		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
 			stream.key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
@@ -1075,15 +1041,11 @@ func (m *Manager) routeLiveTargetWatchEvent(
 			return rv, nil
 		}
 		op := operationForLiveTargetWatchEvent(ev.Type, u)
-		if !stream.ops.Match(op) {
-			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeOperationFiltered)
-			return rv, nil
-		}
 		event := targetWatchGitEvent(stream.key.GVR, u, op)
-		// Stamp the producing cell and stream incarnation before the event leaves the stream.
+		// Stamp the producing collection and stream incarnation before the event leaves the stream.
 		// It is the only place both are known: downstream, a cluster-wide and a namespaced
-		// stream deliver the same object and the cell can no longer be recovered from it.
-		event.SourceCell = stream.sourceCell()
+		// stream deliver the same object and the collection can no longer be recovered from it.
+		event.SourceCollection = stream.sourceCollection()
 		// Carry the source cluster so the git writer resolves this document's GVK->GVR
 		// against the cluster it was watched on, never a union of all clusters.
 		event.SourceCluster = m.clusterIDForGitTarget(gitDest)
@@ -1159,7 +1121,7 @@ func (m *Manager) attachAuthor(
 	// deletionTimestamp, both mapped to OperationDelete) has an RV that never matches the
 	// author fact's post-write RV, so it may consult the /last pointer; a create/update is
 	// exact-capable and must not fall through to /last.
-	exactCapable := event.Operation != string(configv1alpha3.OperationDelete)
+	exactCapable := event.Operation != string(types.OperationDelete)
 	// event.SourceCluster (stamped just above, before this call) is the ClusterProvider NAME this
 	// event was watched on; auditRouteForCluster turns it into the AUDIT ROUTE the handler filed
 	// facts under. The two differ whenever several providers name one cluster: an API server has one
@@ -1209,7 +1171,7 @@ func (m *Manager) skipUnchangedLiveUpdate(
 	op string,
 ) bool {
 	key := liveContentDedupKey(gitDest, gvr, u)
-	if op == string(configv1alpha3.OperationDelete) {
+	if op == string(types.OperationDelete) {
 		m.liveContentDedup.Delete(key)
 		return false
 	}
@@ -1217,7 +1179,7 @@ func (m *Manager) skipUnchangedLiveUpdate(
 	if !ok {
 		return false
 	}
-	if op == string(configv1alpha3.OperationUpdate) {
+	if op == string(types.OperationUpdate) {
 		if prev, loaded := m.liveContentDedup.Load(key); loaded {
 			if prevHash, isStr := prev.(string); isStr && prevHash == hash {
 				return true
@@ -1272,7 +1234,7 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 		ResourceVersion: u.GetResourceVersion(),
 		Generation:      u.GetGeneration(),
 	}
-	if op != string(configv1alpha3.OperationDelete) {
+	if op != string(types.OperationDelete) {
 		event.Object = sanitize.Sanitize(u)
 	}
 	return event
@@ -1281,11 +1243,11 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 func operationForWatchEvent(eventType watch.EventType) string {
 	switch eventType {
 	case watch.Added:
-		return string(configv1alpha3.OperationCreate)
+		return string(types.OperationCreate)
 	case watch.Modified:
-		return string(configv1alpha3.OperationUpdate)
+		return string(types.OperationUpdate)
 	case watch.Deleted:
-		return string(configv1alpha3.OperationDelete)
+		return string(types.OperationDelete)
 	case watch.Bookmark, watch.Error:
 		return ""
 	default:
@@ -1305,22 +1267,9 @@ func operationForWatchEvent(eventType watch.EventType) string {
 // holds. See docs/spec/attribution.md §1.
 func operationForLiveTargetWatchEvent(eventType watch.EventType, u *unstructured.Unstructured) string {
 	if u != nil && u.GetDeletionTimestamp() != nil {
-		return string(configv1alpha3.OperationDelete)
+		return string(types.OperationDelete)
 	}
 	return operationForWatchEvent(eventType)
-}
-
-// Match reports whether the operation is included in the operation set. A nil or
-// empty set means all operations, matching WatchRule semantics.
-func (s OperationSet) Match(op string) bool {
-	if len(s) == 0 {
-		return true
-	}
-	if _, ok := s["*"]; ok {
-		return true
-	}
-	_, ok := s[op]
-	return ok
 }
 
 // openTargetWatch opens a watch against the cluster the GitTarget mirrors from. clusterID is
@@ -1534,17 +1483,19 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// streamRevisions is the per-cell revision map every consumer of a stream's reports is keyed by.
+// streamRevisions is the per-collection revision map every consumer of a stream's reports is keyed by.
 // It fills in zeros when no shared render-fidelity gate is wired — the legacy data path, where a
 // zero revision is what the mark functions already treat as "not gated" — so the retention
-// roll-up still tracks exactly the cells the plan selects.
-func streamRevisions(cells []types.CellKey, revisions map[types.CellKey]uint64) map[types.CellKey]uint64 {
+// roll-up still tracks exactly the collections the plan selects.
+func streamRevisions(
+	collections []types.CollectionKey, revisions map[types.CollectionKey]uint64,
+) map[types.CollectionKey]uint64 {
 	if revisions != nil {
 		return revisions
 	}
-	out := make(map[types.CellKey]uint64, len(cells))
-	for _, cell := range cells {
-		out[cell] = 0
+	out := make(map[types.CollectionKey]uint64, len(collections))
+	for _, collection := range collections {
+		out[collection] = 0
 	}
 	return out
 }

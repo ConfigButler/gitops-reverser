@@ -114,28 +114,28 @@ func TestRenderFidelityGate_PendingScopeCannotOpenLiveWindow(t *testing.T) {
 }
 
 // restartAll is the whole-plan reconcile: every scope is restarted, which is what a forced
-// recheck does and what every declaration did before the plan was diffed per cell.
+// recheck does and what every declaration did before the plan was diffed per collection.
 func restartAll(
 	gate *RenderFidelityGate,
 	target types.ResourceReference,
-	scopes ...types.CellKey,
-) (RenderFidelityStatus, map[types.CellKey]uint64) {
+	scopes ...types.CollectionKey,
+) (RenderFidelityStatus, map[types.CollectionKey]uint64) {
 	return gate.Reconcile(target, scopes, scopes)
 }
 
-func fidelityScope(group, resource string) types.CellKey {
-	return types.CellKeyFor(
+func fidelityScope(group, resource string) types.CollectionKey {
+	return types.CollectionKeyFor(
 		schema.GroupVersionResource{Group: group, Version: "v1", Resource: resource}, "default")
 }
 
-// The scope set is keyed by cell, so a stream that reports its result after a served-version
+// The scope set is keyed by collection, so a stream that reports its result after a served-version
 // bump still lands on the scope its revision was issued for. Keying on the full GVR left the result
 // matching nothing, and the target stayed Unknown — writes closed — until the next restart.
 func TestRenderFidelityGate_ScopeIdentityIgnoresServedVersion(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.ResourceReference{Namespace: "default", Name: "app"}
-	deployments := func(version string) types.CellKey {
-		return types.CellKeyFor(
+	deployments := func(version string) types.CollectionKey {
+		return types.CollectionKeyFor(
 			schema.GroupVersionResource{Group: "apps", Version: version, Resource: "deployments"}, "team-a")
 	}
 
@@ -143,12 +143,12 @@ func TestRenderFidelityGate_ScopeIdentityIgnoresServedVersion(t *testing.T) {
 	require.Equal(t, RenderFidelityUnknown, status.State)
 
 	status, applied := gate.RecordScopeClean(target, revisions[deployments("v1")], deployments("v1beta1"))
-	require.True(t, applied, "the same cell, observed at another served version, is the same scope")
+	require.True(t, applied, "the same collection, observed at another served version, is the same scope")
 	assert.Equal(t, RenderFidelityTrue, status.State)
 }
 
-// The point of a per-scope revision: a plan change that leaves a cell's stream running must not
-// ask that cell to prove itself again. A target-wide epoch closed writes on every plan edit.
+// The point of a per-scope revision: a plan change that leaves a collection's stream running must not
+// ask that collection to prove itself again. A target-wide epoch closed writes on every plan edit.
 func TestRenderFidelityGate_KeptScopeKeepsItsResult(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.NewResourceReference("apps", "default")
@@ -160,16 +160,16 @@ func TestRenderFidelityGate_KeptScopeKeepsItsResult(t *testing.T) {
 	require.True(t, applied)
 	require.True(t, gate.AllowsWrites(target))
 
-	// A second cell joins the plan. Only it is restarted.
+	// A second collection joins the plan. Only it is restarted.
 	status, next := gate.Reconcile(target,
-		[]types.CellKey{deployment, configMap}, []types.CellKey{configMap})
-	assert.Equal(t, RenderFidelityUnknown, status.State, "the new cell has not replayed yet")
-	assert.Equal(t, revisions[deployment], next[deployment], "a kept cell keeps its revision")
+		[]types.CollectionKey{deployment, configMap}, []types.CollectionKey{configMap})
+	assert.Equal(t, RenderFidelityUnknown, status.State, "the new collection has not replayed yet")
+	assert.Equal(t, revisions[deployment], next[deployment], "a kept collection keeps its revision")
 
 	status, applied = gate.RecordScopeClean(target, next[configMap], configMap)
 	require.True(t, applied)
 	assert.Equal(t, RenderFidelityTrue, status.State,
-		"the kept cell's earlier result still counts, so one replay is enough")
+		"the kept collection's earlier result still counts, so one replay is enough")
 }
 
 // A target held open by a divergence stays held: adding a WatchRule is no evidence that the
@@ -186,15 +186,15 @@ func TestRenderFidelityGate_UnrelatedPlanChangeCannotClearADivergence(t *testing
 	require.True(t, applied)
 
 	status, next := gate.Reconcile(target,
-		[]types.CellKey{deployment, configMap}, []types.CellKey{configMap})
+		[]types.CollectionKey{deployment, configMap}, []types.CollectionKey{configMap})
 	assert.Equal(t, RenderFidelityFalse, status.State)
 	_, applied = gate.RecordScopeClean(target, next[configMap], configMap)
 	require.True(t, applied)
 	assert.Equal(t, RenderFidelityFalse, gate.Status(target).State,
-		"only a replay of the DIVERGENT cell may clear it")
+		"only a replay of the DIVERGENT collection may clear it")
 
 	status, reopened := gate.Reconcile(target,
-		[]types.CellKey{deployment, configMap}, []types.CellKey{deployment})
+		[]types.CollectionKey{deployment, configMap}, []types.CollectionKey{deployment})
 	assert.Equal(t, RenderFidelityUnknown, status.State)
 	_, applied = gate.RecordScopeClean(target, reopened[deployment], deployment)
 	require.True(t, applied)
@@ -208,7 +208,7 @@ func TestRenderFidelityGate_WriteDivergenceClearsOnlyOnAFullRestart(t *testing.T
 	target := types.NewResourceReference("apps", "default")
 	deployment := fidelityScope("apps", "deployments")
 	configMap := fidelityScope("", "configmaps")
-	scopes := []types.CellKey{deployment, configMap}
+	scopes := []types.CollectionKey{deployment, configMap}
 
 	_, revisions := restartAll(gate, target, scopes...)
 	for _, scope := range scopes {
@@ -218,11 +218,11 @@ func TestRenderFidelityGate_WriteDivergenceClearsOnlyOnAFullRestart(t *testing.T
 	gate.Fail(target, manifestanalyzer.RenderDivergence{Field: "data.region", Token: "${REGION}"})
 	require.False(t, gate.AllowsWrites(target))
 
-	_, partial := gate.Reconcile(target, scopes, []types.CellKey{deployment})
+	_, partial := gate.Reconcile(target, scopes, []types.CollectionKey{deployment})
 	_, applied := gate.RecordScopeClean(target, partial[deployment], deployment)
 	require.True(t, applied)
 	assert.Equal(t, RenderFidelityFalse, gate.Status(target).State,
-		"restarting one cell is not a fresh measurement of the target")
+		"restarting one collection is not a fresh measurement of the target")
 
 	status, full := restartAll(gate, target, scopes...)
 	assert.Equal(t, RenderFidelityUnknown, status.State, "the write divergence is cleared, not the pending scopes")
@@ -233,7 +233,7 @@ func TestRenderFidelityGate_WriteDivergenceClearsOnlyOnAFullRestart(t *testing.T
 	assert.True(t, gate.AllowsWrites(target))
 }
 
-// A cell that left the plan is gone: its stream's tail cannot report into it, and its absence
+// A collection that left the plan is gone: its stream's tail cannot report into it, and its absence
 // cannot hold the target Unknown.
 func TestRenderFidelityGate_DroppedScopeStopsCounting(t *testing.T) {
 	gate := NewRenderFidelityGate()
@@ -246,11 +246,11 @@ func TestRenderFidelityGate_DroppedScopeStopsCounting(t *testing.T) {
 	require.True(t, applied)
 	require.Equal(t, RenderFidelityUnknown, gate.Status(target).State)
 
-	status, _ := gate.Reconcile(target, []types.CellKey{deployment}, nil)
-	assert.Equal(t, RenderFidelityTrue, status.State, "the pending cell left the plan with its stream")
+	status, _ := gate.Reconcile(target, []types.CollectionKey{deployment}, nil)
+	assert.Equal(t, RenderFidelityTrue, status.State, "the pending collection left the plan with its stream")
 
 	_, applied = gate.RecordScopeClean(target, revisions[configMap], configMap)
-	assert.False(t, applied, "a dropped cell's tail reports into nothing")
+	assert.False(t, applied, "a dropped collection's tail reports into nothing")
 }
 
 // A plan that selects nothing restarts every scope only vacuously, which is the absence of a
@@ -305,13 +305,13 @@ func TestRenderFidelityGate_PendingMessageNamesTheScope(t *testing.T) {
 	assert.Contains(t, status.Message, fmt.Sprintf("revision %d", revisions[configMap]))
 }
 
-// TestRenderFidelityGate_PendingMessageIsBounded keeps an unbounded cell set from producing an
+// TestRenderFidelityGate_PendingMessageIsBounded keeps an unbounded collection set from producing an
 // unbounded condition message, while keeping the COUNT exact — a truncated list that also
 // truncated the count would understate how far from converged the target is.
 func TestRenderFidelityGate_PendingMessageIsBounded(t *testing.T) {
 	gate := NewRenderFidelityGate()
 	target := types.NewResourceReference("apps", "default")
-	scopes := make([]types.CellKey, 0, pendingScopeSampleLimit+3)
+	scopes := make([]types.CollectionKey, 0, pendingScopeSampleLimit+3)
 	for i := range pendingScopeSampleLimit + 3 {
 		scopes = append(scopes, fidelityScope("apps", fmt.Sprintf("kind%02d", i)))
 	}

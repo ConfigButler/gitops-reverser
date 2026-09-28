@@ -101,12 +101,12 @@ box names the function that does the work.
 flowchart TD
   subgraph owner["internal/watch — owner loop (single goroutine)"]
     PLAN["replaceGitTargetWatches()<br/>target_watch.go"]
-    GATE0["RenderFidelityGate.Reconcile()<br/>issues one revision per cell"]
+    GATE0["RenderFidelityGate.Reconcile()<br/>issues one revision per collection"]
     START["startTargetWatchStreams()<br/>stream carries its revision"]
     PLAN --> GATE0 --> START
   end
 
-  subgraph cell["per-cell stream goroutine (one per watched cell)"]
+  subgraph collection["per-collection stream goroutine (one per watched collection)"]
     REPLAY["runTargetWatch() → replay complete"]
     ENQ["enqueueReplayResync()<br/>→ enqueueScopedResync()"]
     START --> REPLAY --> ENQ
@@ -120,7 +120,7 @@ flowchart TD
 
   subgraph drain["drain goroutine (one per resync)"]
     DRAIN["drainScopedResync()"]
-    MARK["MarkTargetRenderFidelityScopeClean(revision, cell)"]
+    MARK["MarkTargetRenderFidelityScopeClean(revision, collection)"]
     REPLY --> DRAIN --> MARK
   end
 
@@ -166,8 +166,8 @@ Two properties of this picture did most of the damage during the investigation:
 
 ### 2.3 The race itself
 
-Concurrency is what makes the conflict, and a scope-per-cell design supplies it: each scope report
-enqueues the GitTarget, so a 61-scope target produced ~66 reconciles in four seconds.
+Concurrency is what makes the conflict, and a scope-per-collection design supplies it: each scope
+report enqueues the GitTarget, so a 61-scope target produced ~66 reconciles in four seconds.
 
 ```mermaid
 sequenceDiagram
@@ -247,11 +247,11 @@ designed to lose sometimes.
 
 Recorded so they are not re-derived.
 
-**A1/A2 — cell-identity mismatch.** The theory was that the rule's expected cell set and the plan's
-opened set were computed from different snapshots. A diagnostic was built for it, and a narrowing
-fix written and reverted for breaking three tests that deliberately encode the opposite invariant.
-The diagnostic then fired **zero times** for the rule that failed. It was instrumenting the wrong
-subsystem: the cells never disagreed.
+**A1/A2 — collection-identity mismatch.** The theory was that the rule's expected collection set
+and the plan's opened set were computed from different snapshots. A diagnostic was built for it,
+and a narrowing fix written and reverted for breaking three tests that deliberately encode the
+opposite invariant. The diagnostic then fired **zero times** for the rule that failed. It was
+instrumenting the wrong subsystem: the collections never disagreed.
 
 **A stale prune mode on the resync** (Failure B's first theory, §3.3) — implemented, passed the very
 spec it targeted once, and reverted when the logs contradicted its mechanism.
@@ -267,7 +267,7 @@ Six components in this chain logged what they REJECTED and said nothing about wh
 | --- | --- | --- |
 | the render-fidelity condition | a constant string naming nothing | names each pending scope and the revision it owes |
 | `recordScope` revision mismatch | silent | recorded on the scope, surfaced in the condition |
-| `recordScope` `!found` guards | silent | logged, naming cell and revision |
+| `recordScope` `!found` guards | silent | logged, naming collection and revision |
 | zero-revision report | silent early return | logged as anomalous |
 | fidelity accept path | silent | logged (this is what proved the gate converged) |
 | retention roll-up accept | silent | Info on the one ambiguous shape, V(1) otherwise |
@@ -404,7 +404,7 @@ one behavioural fix (§4.9) is four lines.
 | 1 | The render-fidelity condition names its pending scopes and the revision each owes, instead of a constant string | `c87db68d` |
 | 2 | Deleted `explainNotRunning` / `notRunningHypothesis` / `cellNames` — ~70 lines aimed at the wrong subsystem — and lowered the supersession log | `17a57352` |
 | 3 | The resync drain starts even when the enqueue was dropped, so a queue-full reply is read by the drain the contract promises will read it | `fc04b15b` |
-| 4 | All four fidelity refusal branches name the cell, the revision and the gate's message | `32b75e02` |
+| 4 | All four fidelity refusal branches name the collection, the revision and the gate's message | `32b75e02` |
 | 5 | A refused revision is recorded on the scope and surfaced in the condition | `f1ae80a9` |
 | 6 | The retention roll-up reports the one ambiguous acceptance (re-measured, same answer) at Info and the routine one at `V(1)` | `8ceb5902` |
 | 7 | The fidelity accept path is logged — this is what proved the gate converges | `e3356796` |
@@ -443,7 +443,7 @@ The chain in §2.2 is instrumented at every hop, so a reproduction should be rea
 | `status write lost a race` on the target, then a stale condition | A's mechanism, recurring — check the requeue that followed it |
 | `render scope result accepted` … `state:True`, condition still stale | the gate is fine; the failure is downstream in publication |
 | `a render scope result was not applied` | the gate refused a report — read `reportedRevision` against the owed revision |
-| `stream carries no revision` | the plan pass and the gate disagree about the cell |
+| `stream carries no revision` | the plan pass and the gate disagree about the collection |
 | `a GitTarget reconcile request was dropped` | a load-bearing notification was crowded out |
 | `retention report accepted but published nothing` | a re-measurement produced the count already published — the bug is upstream of the roll-up |
 | `superseded by a newer resync` | the coalescing path skipped this scope's reports; check the replacement reported |

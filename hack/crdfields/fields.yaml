@@ -151,9 +151,6 @@ kinds:
       - path: rules.apiVersions
         default: the preferred served version
         doc: API versions to match. `["*"]` watches every served version
-      - path: rules.operations
-        default: "`CREATE`, `UPDATE`, `DELETE`"
-        doc: Which operations produce a write
       - path: rules.sourceNamespace
         default: the rule's own namespace
         doc: >-
@@ -178,9 +175,6 @@ kinds:
       - path: rules.apiVersions
         default: the preferred served version
         doc: API versions to match. `["*"]` watches every served version
-      - path: rules.operations
-        default: "`CREATE`, `UPDATE`, `DELETE`"
-        doc: Which operations produce a write
 
   - kind: CommitRequest
     title: "`CommitRequest` (namespaced): save now"

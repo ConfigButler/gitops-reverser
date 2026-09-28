@@ -233,7 +233,7 @@ and can be absent, including a pure sweep. Guard optional values as in the examp
 `{{.Revision}}` is rejected, and the `GitTarget` says so on its `Validated` condition. See
 [the upgrade note](UPGRADING.md#reconciletemplates-revision-is-now-resourceversion).
 
-A reconcile runs per *cell* (a (type, namespace) pair) rather than per target, so a
+A reconcile runs per *resource collection* (a (type, namespace) pair) rather than per target, so a
 namespace-scoped run covers exactly one namespace and the default subject names it:
 
 ```text
