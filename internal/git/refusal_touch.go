@@ -31,25 +31,25 @@ import (
 // a second apart are served by one commit, and the reconcile it triggers covers both.
 const refusalTouchInterval = time.Minute
 
-// refusalKey identifies ONE unresolved refusal: the GitTarget that owns it, and the watched cell
+// refusalKey identifies ONE unresolved refusal: the GitTarget that owns it, and the watched collection
 // it is about.
 //
-// The cell is in the key because a review found what a target-wide key gets wrong in both
+// The collection is in the key because a review found what a target-wide key gets wrong in both
 // directions. A target watches several types; a successful ConfigMap resync says nothing about a
 // Deployment that is still refused, so clearing the whole target on it re-armed the standing
-// refusal and the commit loop came back. And a queued commit for one cell must survive another
-// cell recovering. This is the same granularity the GitPathAccepted condition already uses — the
-// watch layer blocks and clears per cell — so the memory and the status now agree about what is
+// refusal and the commit loop came back. And a queued commit for one collection must survive another
+// collection recovering. This is the same granularity the GitPathAccepted condition already uses — the
+// watch layer blocks and clears per collection — so the memory and the status now agree about what is
 // still refused.
 //
-// The zero cell is the whole-GitTarget evaluation, which speaks for everything the target holds.
+// The zero collection is the whole-GitTarget evaluation, which speaks for everything the target holds.
 type refusalKey struct {
-	target itypes.ResourceReference
-	cell   itypes.CellKey
+	target     itypes.ResourceReference
+	collection itypes.CollectionKey
 }
 
 func (k refusalKey) String() string {
-	return k.target.String() + " " + sourceCellForLog(k.cell)
+	return k.target.String() + " " + sourceCollectionForLog(k.collection)
 }
 
 // executeRefusalTouch creates the empty commit. The tree is untouched on purpose, so
@@ -185,7 +185,7 @@ func (l *branchWorkerEventLoop) touchBranchForRefusal(
 	targetName, targetNamespace, detail string,
 	refused *manifestanalyzer.AcceptanceRefusedError,
 	observation string,
-	cell itypes.CellKey,
+	collection itypes.CollectionKey,
 ) {
 	if targetName == "" || targetNamespace == "" {
 		return
@@ -199,15 +199,15 @@ func (l *branchWorkerEventLoop) touchBranchForRefusal(
 	if !l.w.refusalConsent(l.w.ctx, target) {
 		return
 	}
-	key := refusalKey{target: target, cell: cell}
+	key := refusalKey{target: target, collection: collection}
 
-	// An observation this cell's last commit already covered is not a new trigger. Checked here,
+	// An observation this collection's last commit already covered is not a new trigger. Checked here,
 	// after consent and before the rate limit, so a recheck of unchanged input neither commits nor
 	// arms the trailing timer: arming it would turn the rate limit into a schedule, which is the
 	// loop this fence exists to close.
 	if l.w.refusalAlreadyCovered(key, observation) {
 		l.w.Log.V(1).Info("Refusal unchanged since the last empty commit; not committing again",
-			"gitTarget", target.String(), "sourceCell", sourceCellForLog(cell), "branch", l.w.Branch)
+			"gitTarget", target.String(), "sourceCollection", sourceCollectionForLog(collection), "branch", l.w.Branch)
 		return
 	}
 
@@ -318,7 +318,7 @@ func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation stri
 	w.coveredRefusal[key] = observation
 }
 
-// refusalRecovered records that an evaluation for this target and cell was ACCEPTED, so whatever
+// refusalRecovered records that an evaluation for this target and collection was ACCEPTED, so whatever
 // refusal was outstanding there is over: the memory of what the last commit covered is dropped,
 // and any commit still queued for it is cancelled.
 //
@@ -333,26 +333,26 @@ func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation stri
 // cannot tell the second from the first, so only the acceptance in between can. Cancelling the
 // queued commit is the other half: an obligation whose object has since been accepted has nothing
 // left to ask for, and firing it anyway would move the branch for a refusal that no longer exists.
-func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference, cell itypes.CellKey) {
+func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference, collection itypes.CollectionKey) {
 	if target.Name == "" || target.Namespace == "" {
 		return
 	}
-	l.w.clearRefusalObservations(target, cell)
+	l.w.clearRefusalObservations(target, collection)
 	for _, key := range sortedRefusalKeys(l.refusalPending) {
-		if key.target == target && (cell == (itypes.CellKey{}) || key.cell == cell) {
+		if key.target == target && (collection == (itypes.CollectionKey{}) || key.collection == collection) {
 			delete(l.refusalPending, key)
 		}
 	}
 	l.rearmRefusalTimer()
 }
 
-// clearRefusalObservations forgets what this cell's last empty commit covered. The ZERO cell is a
-// whole-GitTarget evaluation, which does speak for every cell, so it clears all of them.
-func (w *BranchWorker) clearRefusalObservations(target itypes.ResourceReference, cell itypes.CellKey) {
+// clearRefusalObservations forgets what this collection's last empty commit covered. The ZERO collection is a
+// whole-GitTarget evaluation, which does speak for every collection, so it clears all of them.
+func (w *BranchWorker) clearRefusalObservations(target itypes.ResourceReference, collection itypes.CollectionKey) {
 	w.refusalTouchMu.Lock()
 	defer w.refusalTouchMu.Unlock()
-	if cell != (itypes.CellKey{}) {
-		delete(w.coveredRefusal, refusalKey{target: target, cell: cell})
+	if collection != (itypes.CollectionKey{}) {
+		delete(w.coveredRefusal, refusalKey{target: target, collection: collection})
 		return
 	}
 	for key := range w.coveredRefusal {
@@ -427,9 +427,9 @@ func (l *branchWorkerEventLoop) flushPendingRefusalTouch() {
 		if !l.w.refusalConsent(l.w.ctx, entry.key.target) {
 			continue
 		}
-		// Re-checked here as well as on arrival: another commit for this cell may have been made
+		// Re-checked here as well as on arrival: another commit for this collection may have been made
 		// while this entry waited, and if it covered the same observation this one has nothing
-		// left to ask for. An entry whose cell RECOVERED in the meantime is not here at all —
+		// left to ask for. An entry whose collection RECOVERED in the meantime is not here at all —
 		// refusalRecovered removed it.
 		if l.w.refusalAlreadyCovered(entry.key, entry.observation) {
 			continue
@@ -505,7 +505,7 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, obser
 // Every other refusal means the folder is unusable. An empty commit cannot fix a folder, only a
 // human can, and the reconciler may be mid-way through its own corrections there, so those are
 // left alone. They also reach a different reporter entirely: a folder-level refusal is normally
-// found by the per-type reconcile, which blocks the cell through the event router rather than
+// found by the per-type reconcile, which blocks the collection through the event router rather than
 // coming through here at all.
 func refusalIsAWriteBoundary(refused *manifestanalyzer.AcceptanceRefusedError) bool {
 	if refused == nil || !refused.AllIssuesOfKinds(

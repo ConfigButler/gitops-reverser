@@ -7,6 +7,75 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Rules select whole resource collections: `rules[].operations` is gone
+
+> [!WARNING]
+> **Breaking, in place, in `v1alpha3`.** `WatchRule` and `ClusterWatchRule` no longer have
+> `spec.rules[].operations`. A rule that listed a subset such as `[CREATE]` now also mirrors updates
+> and removals. If Git documents must survive removals from the cluster, set the target's
+> `spec.prune.mode` to `Never` **before** upgrading.
+
+A rule selects resource collections, and every selected collection is observed through its whole
+lifecycle: creates, updates, and deletions. What an observed removal does to Git is the
+`GitTarget`'s [deletion policy](configuration.md#deletion-policy-specprunemode), and nothing else:
+
+| `spec.prune.mode` | Observed removal | Absent from a complete snapshot |
+|---|---|---|
+| `Never` | Git document kept | Git document kept |
+| `OnEvent` (default) | Git document removed | Git document kept |
+| `Always` | Git document removed | Git document removed |
+
+The filter never described the object set consistently. It was applied only to live events after
+the API server delivered them, so a create-only rule still wrote every existing object during
+initialization, and excluding `DELETE` never stopped `Always` from sweeping an absent document.
+
+### Before you upgrade
+
+Find the rules that set the field:
+
+```bash
+kubectl get watchrules,clusterwatchrules -A -o json \
+  | jq -r '.items[] | select(any(.spec.rules[]; has("operations")))
+      | "\(.kind)\t\(.metadata.namespace // "-")\t\(.metadata.name)"'
+```
+
+For each one that relied on dropping `DELETE`, set `spec.prune.mode: Never` on its `GitTarget`.
+The policy covers the whole target; a target fed by several rules cannot keep one rule's removals
+and apply another's. There is no replacement for a create-only or update-only mirror.
+
+### After the upgrade
+
+Remove `operations` from your manifests and Helm values. A leftover field is not deletion
+protection, and whether it fails loudly depends on how it is applied:
+
+- A request with [field validation](https://kubernetes.io/docs/reference/using-api/api-concepts/#field-validation)
+  `Strict` (the `kubectl` default) is **refused** with `unknown field "spec.rules[0].operations"`.
+- `Warn` and `Ignore` **accept** the request and
+  [prune](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#field-pruning)
+  the field, so the rule observes every event.
+- The chart's `quickstart.watchRule.rules[]` refuses the key in `values.schema.json`, which fails
+  `helm install`, `upgrade`, and `template`.
+
+Each running watch starts with a complete snapshot, so current objects converge after the upgrade.
+A snapshot cannot recover a deletion the old filter discarded: under `OnEvent` a document for an
+object deleted while `DELETE` was filtered stays in Git, and `Always` removes it on its next sweep.
+
+### Metrics and logs
+
+`gitopsreverser_watch_events_total` no longer has the `operation_filtered` outcome. The remaining
+outcomes and their meanings are unchanged.
+
+Log fields that named the watched object set use the Kubernetes term:
+
+| Old key | New key |
+|---|---|
+| `cell` | `collection` |
+| `sourceCell` | `sourceCollection` |
+| `keepCells`, `startCells`, `restartCells`, `stopCells` | `keepCollections`, `startCollections`, `restartCollections`, `stopCollections` |
+
+Plan descriptions in those logs drop the operation suffix: a collection renders as
+`configmaps in team-a@v1` rather than `configmaps in team-a=[*]@v1`.
+
 ## One name per concept: reasons, columns, status fields and one spec block are renamed
 
 > [!WARNING]
@@ -554,7 +623,7 @@ is unaffected. That makes `LabelValue` empty for any commit containing a `DELETE
 
 `reconcileTemplate` gains no fields, but its **default** now names the namespace of a
 namespace-scoped reconcile: `chore: reconcile 4 configmaps in team-a (last resourceVersion: 1331)`.
-A reconcile runs per (type, namespace) cell, so that run covered exactly one namespace, and without
+A reconcile runs per (type, namespace) resource collection, so that run covered exactly one namespace, and without
 the name a target watching one type in several namespaces wrote identical subjects for each. A
 whole-target or all-namespaces reconcile is unchanged, because an empty `Namespace` there means the
 run was not namespace-scoped at all — a fact no single word states truthfully, so the subject
@@ -654,7 +723,7 @@ this is an observability change, and no mirror behaves differently because of it
 | `branch_worker_queue_depth` | `git_queue_depth` | same labels, and read at scrape time rather than published by the worker loop, so it no longer reports 0 while a stalled loop holds work |
 | `objects_written_total`, `resync_sweep_deletes_total`, `prune_retained_documents_total` | `git_documents_total{outcome}` | one counter over one population. `outcome` is `written` / `deleted_live` / `deleted_sweep` / `unchanged` / `retained`. The old counters measured input EVENTS in a flush, not documents, so the numbers change as well as the names |
 | `resync_background_failures_total` | `git_resync_failures_total` | same labels |
-| `target_reconcile_completed_total{trigger}` | `watch_recovery_total{mode}` | `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. The old `trigger` label documented a value (`rule_change`) the code never emitted. It carries `group` and `resource` but no `version`: a recovery covers a cell, which has no served version |
+| `target_reconcile_completed_total{trigger}` | `watch_recovery_total{mode}` | `mode` is `cursor_resume` / `type_reconcile` / `replay` / `list_fallback`. The old `trigger` label documented a value (`rule_change`) the code never emitted. It carries `group` and `resource` but no `version`: a recovery covers a resource collection, which has no served version |
 | `watched_types` | `watch_types{state}` | `state` is `streaming` / `replaying` / `blocked`; `sum by (gittarget_name)` is the old value, and `state="blocked"` is the difference between resolved and running |
 | `watch_plan_oldest_dirty_age_seconds` | `watch_plan_oldest_dirty_since_timestamp_seconds` | a Unix timestamp, so read it as `time() - <gauge>`. The age froze during exactly the stall it was there to report, because the loop that publishes it was the loop that was stuck |
 | `secret_encryption_{attempts,success,failures,cache_hits,marker_skips}_total` | `secret_encryptions_total{outcome}` | `outcome` is `encrypted` / `failed` / `cached`. The old `cache_hits / attempts` "cache effectiveness" ratio divided over disjoint populations and could exceed 1; use `sum by (outcome) (rate(...))` |

@@ -148,28 +148,28 @@ source cluster, which is the cost this whole exercise is trying to remove. Three
 | **Keep enumeration** | as today, against some other policy | keeps the cross-cluster `Namespace` read, which was the point of the deletion |
 
 **Decided: redefine as cluster-wide**, rejected outright while `allowAnySourceNamespace` is false.
-It applies to **both** halves of a cell's traffic (the initial list that warms the cell, and the
-watch that follows it), because they are the same collection read two ways, and splitting them
-would mean enumerating namespaces for the replay after all, which is the read this exercise
-deletes.
+It applies to **both** halves of a collection's traffic (the initial list that warms the
+collection, and the watch that follows it), because they are the same collection read two ways,
+and splitting them would mean enumerating namespaces for the replay after all, which is the read
+this exercise deletes.
 
 The plumbing already exists, which makes this the cheapest of the three as well as the clearest.
-`CellKey.Namespace` is already documented as "empty is a genuinely cluster-wide (all-namespaces)
-cell" ([`cell.go`](../../internal/types/cell.go)), and both
+`CollectionKey.Namespace` is already documented as "empty is a genuinely cluster-wide
+(all-namespaces) collection" ([`collection.go`](../../internal/types/collection.go)), and both
 [`openTargetWatch`](../../internal/watch/target_watch.go) and `openTargetList` already branch on
 it: a non-empty namespace calls `resource.Namespace(ns)`, an empty one calls `resource.Watch`
 directly, which for a namespaced GVR is the all-namespaces collection. Readiness, retention
-rollup, and event routing all key on `CellKey` already, and records carry the object's own
-`u.GetNamespace()` rather than the cell's, so placement is unaffected. What changes is only the
-planner: `*` compiles to one cell instead of calling `EnumerateSourceNamespaces` for N. That is a
-deletion in `watchrule_compile.go`, not new machinery.
+rollup, and event routing all key on `CollectionKey` already, and records carry the object's own
+`u.GetNamespace()` rather than the collection's, so placement is unaffected. What changes is only
+the planner: `*` compiles to one collection instead of calling `EnumerateSourceNamespaces` for N.
+That is a deletion in `watchrule_compile.go`, not new machinery.
 
-One trap, and the code already records it. A cluster-wide cell is a **peer** of a named-namespace
-cell on the same type, never a replacement, because each rule carries its own `operations` filter.
-`CellKey`'s doc comment names the bug from a previous attempt: collapsing the two "widened the named
-rule's stream to every namespace its credential could read and discarded its operation filter". So
-a target carrying both `*` and a named rule for one type runs two streams over overlapping objects,
-and that is correct rather than something to optimize away.
+One trap, and the code already records it. A cluster-wide collection is a **peer** of a
+named-namespace collection on the same type, never a replacement. `CollectionKey`'s doc comment
+names the bug from a previous attempt: collapsing the two "widened the named rule's stream to every
+namespace its credential could read". So a target carrying both `*` and a named rule for one type
+runs two streams over overlapping objects, and that is correct rather than something to optimize
+away.
 It is what a Kubernetes reader expects `*` to mean, and its failure is a clean 403 rather than a
 silent empty set.
 
@@ -220,7 +220,7 @@ authorization and would read better elsewhere.
 
 A `SelfSubjectAccessReview` pass under the provider's own credential. It needs no new grant, since
 every identity may issue one, and it reports two things a user cannot otherwise get: which of the
-requested cells are reachable, and whether write verbs are permitted on them.
+requested collections are reachable, and whether write verbs are permitted on them.
 
 Phrase the condition as **"no write permission observed for the requested resources at review
 time"**. It cannot prove the mirror is unable to write: a review covers the verbs and resources
@@ -257,8 +257,8 @@ Then the deletion, then the `SelfSubjectAccessReview` work, which is additive an
 ## Open questions
 
 - ~~Which `*` option is taken.~~ **Decided: cluster-wide**, list and watch both, above.
-- `CellKey.String()` renders an empty namespace as a bare type name ("configmaps"), which read as
-  cluster-scoped when only `ClusterWatchRule` produced those cells. Once `*` produces them for
+- `CollectionKey.String()` renders an empty namespace as a bare type name ("configmaps"), which read as
+  cluster-scoped when only `ClusterWatchRule` produced those collections. Once `*` produces them for
   namespaced types it wants a distinct rendering, "configmaps in all namespaces" or similar, in
   logs and status messages.
 - Does the chart keep an `allowAnySourceNamespace` value, and does the quickstart set it true? A

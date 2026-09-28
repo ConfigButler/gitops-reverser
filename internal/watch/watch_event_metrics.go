@@ -16,24 +16,23 @@ import (
 )
 
 // The ingest stage's instruments. Until these existed the first stage of the pipeline emitted
-// nothing at all, so "nothing is happening", "the rules filtered everything" and "delivery is
-// failing" were indistinguishable from outside — and the funnel could not be drawn at all.
+// nothing at all, so "nothing is happening", "nothing changed" and "delivery is failing" were
+// indistinguishable from outside — and the funnel could not be drawn at all.
 //
 // routeLiveTargetWatchEvent is the single honest boundary: one switch carrying every terminal
 // branch an event can take. Counting there rather than at each branch's site is what makes the
 // census exhaustive by construction.
 
 // Ingest outcomes. See telemetry.WatchEventsTotal for what each class means; the short version is
-// that only routeFailed is loss, and unchanged/operationFiltered/bookmark are the pipeline working.
+// that only routeFailed is loss, and unchanged/bookmark are the pipeline working.
 const (
-	watchOutcomeRouted            = "routed"
-	watchOutcomeUnchanged         = "unchanged"
-	watchOutcomeOperationFiltered = "operation_filtered"
-	watchOutcomeNotObject         = "not_object"
-	watchOutcomeBookmark          = "bookmark"
-	watchOutcomeRouteFailed       = "route_failed"
-	watchOutcomeShutdown          = "shutdown"
-	watchOutcomeStreamError       = "stream_error"
+	watchOutcomeRouted      = "routed"
+	watchOutcomeUnchanged   = "unchanged"
+	watchOutcomeNotObject   = "not_object"
+	watchOutcomeBookmark    = "bookmark"
+	watchOutcomeRouteFailed = "route_failed"
+	watchOutcomeShutdown    = "shutdown"
+	watchOutcomeStreamError = "stream_error"
 )
 
 // Watch session end reasons.
@@ -60,7 +59,7 @@ func gvrAttrs(gvr schema.GroupVersionResource) []attribute.KeyValue {
 }
 
 // groupResourceAttrs is the {group, resource} pair, for the instruments whose unit of work is a
-// CELL rather than a served version. CellKey carries no version, so a recovery counted from the
+// COLLECTION rather than a served version. CollectionKey carries no version, so a recovery counted from the
 // per-type reconcile path genuinely does not know one; an empty `version` on that arm beside a
 // populated one on the cursor-resume arm would be worse than no label at all.
 func groupResourceAttrs(group, resource string) []attribute.KeyValue {

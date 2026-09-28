@@ -57,7 +57,8 @@ spec:
       resources: [configmaps, serviceaccounts]
 ```
 
-Omitting `operations` selects `CREATE`, `UPDATE`, and `DELETE` by default.
+The rule mirrors each selected collection's creates, updates, and deletions; the target's
+`spec.prune.mode` decides whether a deletion removes the Git document.
 
 Two fields exist for the sake of a legible demo rather than because the window needs them:
 

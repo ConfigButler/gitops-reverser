@@ -96,7 +96,9 @@ spec:
                 description: |-
                   Rules define which resources to watch, and in which source namespaces.
                   Multiple rules create a logical OR - a resource matching ANY rule is watched.
-                  Each rule can specify operations, API groups, versions, resource types, and a source namespace.
+                  Each rule can specify API groups, versions, resource types, and a source namespace.
+                  A selected resource collection is observed through its whole lifecycle; the GitTarget's
+                  spec.prune.mode decides whether an observed removal deletes the Git document.
                 items:
                   description: |-
                     ResourceRule defines a set of namespaced resources to watch.
@@ -132,23 +134,6 @@ spec:
                         several versions of a group/resource and keep them in separate files, give the
                         GitTarget a placement template that includes {version} (see GitTargetPlacementSpec).
                       items:
-                        type: string
-                      type: array
-                    operations:
-                      description: |-
-                        Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
-                        Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
-                        Examples:
-                          - ["CREATE", "UPDATE"] watches only creation and updates, ignoring deletions
-                          - ["*"] or [] watches all operations
-                      items:
-                        description: OperationType specifies the type of operation
-                          that triggers a watch event.
-                        enum:
-                        - CREATE
-                        - UPDATE
-                        - DELETE
-                        - '*'
                         type: string
                       type: array
                     resources:

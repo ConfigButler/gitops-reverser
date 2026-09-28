@@ -203,8 +203,8 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 			"SourceNamespaceAuthorized", "True", "SourceNamespaceAllowed", "")
 		// Gate on THIS rule's streams, not the target's roll-up. The roll-up answers "is every
 		// stream this target has running", which a target that was already mirroring answers True
-		// to before the new rule's cell has been planned at all. What this spec depends on is the
-		// new cell, and the rule-scoped summary is the thing that names it.
+		// to before the new rule's collection has been planned at all. What this spec depends on is the
+		// new collection, and the rule-scoped summary is the thing that names it.
 		waitForWatchRuleStreamsRunning(overrideRule, testNs)
 		DeferCleanup(func() { cleanupWatchRule(overrideRule, testNs) })
 

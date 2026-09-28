@@ -137,10 +137,9 @@ func (m *Manager) watchTypeSamples() []telemetry.GaugeSample {
 	const statesPerTarget = 3
 	samples := make([]telemetry.GaugeSample, 0, len(tables)*statesPerTarget)
 	for _, table := range tables {
-		specs := targetWatchSpecs(table)
 		summary := m.streamSummaryForExpectedKeys(
 			table.GitDest,
-			cellsForWatchKeys(sortedTargetWatchSpecKeys(specs)),
+			collectionsForWatchKeys(targetWatchKeys(table)),
 			streamDisplayNamesForTable(table),
 		)
 		// A fixed order, not a map range: the samples are what a scrape reads, and an exporter's
@@ -334,14 +333,11 @@ func (m *Manager) collectWatchRuleSelections(
 				//
 				// A WILDCARD item emits the empty key deliberately: "*" is one cluster-wide list
 				// and watch, which for a namespaced GVR is the all-namespaces collection. That
-				// cell is a PEER of any named-namespace cell on the same type, never a
-				// replacement, because each rule carries its own operations filter — collapsing
-				// the two once widened a named rule's stream and discarded that filter (CellKey in
-				// internal/types/cell.go). An omitted item still resolves to a concrete name.
+				// collection is a PEER of any named-namespace collection on the same type, never a
+				// replacement — collapsing the two once widened a named rule's stream (CollectionKey
+				// in internal/types/collection.go). An omitted item still resolves to a concrete name.
 				for _, namespace := range rr.SourceNamespaces {
-					ts.selections = append(ts.selections, watchSelection{
-						record: rec, namespace: namespace, ops: rr.Operations,
-					})
+					ts.selections = append(ts.selections, watchSelection{record: rec, namespace: namespace})
 				}
 			}
 		}
@@ -367,9 +363,7 @@ func (m *Manager) collectClusterWatchRuleSelections(
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 			for _, rec := range matched {
-				ts.selections = append(ts.selections, watchSelection{
-					record: rec, namespace: "", ops: rr.Operations,
-				})
+				ts.selections = append(ts.selections, watchSelection{record: rec, namespace: ""})
 			}
 		}
 	}
@@ -532,7 +526,7 @@ func (m *Manager) rulesFingerprint() uint64 {
 // watches. Each item's src= component MUST be that item's RESOLVED source-namespace SET, not the
 // WatchRule object's own namespace and not the requested value.
 //
-// It is now derivable from the rule spec alone: a wildcard resolves to the one cluster-wide cell
+// It is now derivable from the rule spec alone: a wildcard resolves to the one cluster-wide collection
 // rather than to a set that depended on a GitTarget policy and another cluster's Namespace labels.
 // It stays keyed on the RESOLVED set anyway, because the two still differ for a wildcard — "*"
 // resolves to the empty namespace — and because a fingerprint that describes what is actually
@@ -544,10 +538,9 @@ func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 		rule.GitTargetNamespace, rule.GitTargetRef,
 		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
 	for _, rr := range rule.ResourceRules {
-		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;op=%s;src=%s]",
+		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;src=%s]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
-			strings.Join(rr.Resources, ","), operationsString(rr.Operations),
-			strings.Join(rr.SourceNamespaces, ","))
+			strings.Join(rr.Resources, ","), strings.Join(rr.SourceNamespaces, ","))
 	}
 	return b.String()
 }
@@ -561,20 +554,9 @@ func clusterWatchRuleFingerprint(rule rulestore.CompiledClusterRule) string {
 		rule.GitTargetNamespace, rule.GitTargetRef,
 		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
 	for _, rr := range rule.Rules {
-		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;op=%s]",
+		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
-			strings.Join(rr.Resources, ","), operationsString(rr.Operations))
+			strings.Join(rr.Resources, ","))
 	}
 	return b.String()
-}
-
-func operationsString(ops []configv1alpha3.OperationType) string {
-	if len(ops) == 0 {
-		return ""
-	}
-	out := make([]string, len(ops))
-	for i, op := range ops {
-		out[i] = string(op)
-	}
-	return strings.Join(out, ",")
 }

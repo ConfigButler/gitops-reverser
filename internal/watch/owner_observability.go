@@ -186,15 +186,14 @@ func (m *Manager) clearDeclareForce(ref types.ResourceReference, consumed uint64
 // watchPlanFingerprint renders one GitTarget's declared stream set to a comparable value, so two
 // projections of the tables can be diffed per target without keeping a type-to-target index.
 //
-// It hashes exactly what the plan is built from — the cell each stream covers, the version it
-// opens at, and the operation filter it applies — so a catalog change that moves none of those
-// for a target is, correctly, no reason to replan it.
+// It hashes exactly what the plan is built from — the collection each stream covers and the
+// version it opens at — so a catalog change that moves neither for a target is, correctly, no
+// reason to replan it.
 func watchPlanFingerprint(table WatchedTypeTable) uint64 {
-	specs := targetWatchSpecs(table)
-	keys := sortedTargetWatchSpecKeys(specs)
+	keys := targetWatchKeys(table)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		parts = append(parts, fmt.Sprintf("%s@%s=%s", key.GVR.String(), key.Namespace, specs[key]))
+		parts = append(parts, fmt.Sprintf("%s@%s", key.GVR.String(), key.Namespace))
 	}
 	return xxhash.Sum64String(strings.Join(parts, "\x00"))
 }

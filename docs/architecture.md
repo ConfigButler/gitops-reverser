@@ -288,19 +288,19 @@ events to a same namespace `GitTarget`; each of its rule items names the source 
 A `ClusterWatchRule` selects CLUSTER SCOPED resources, with an explicit namespace `gitTargetRef` and no
 namespace selection of its own. Both share the rule model:
 
-- `spec.rules[]`: OR resource rules (`MinItems=1`).
-- `rules[].operations`: `CREATE` / `UPDATE` / `DELETE` / `*`; omitted means all.
+- `spec.rules[]`: OR resource rules (`MinItems=1`). A rule selects whole resource collections: every
+  selected collection is observed through creates, updates, and deletions, and the `GitTarget`'s
+  `spec.prune.mode` decides whether an observed removal deletes the Git document.
 - `rules[].apiGroups`: omitted resolves the named resource across served groups; `""` is the core
   group; `*` is all.
 - `rules[].apiVersions`: omitted means the preferred served version.
 - `rules[].resources`: plural resource names or `*`.
 - `WatchRule` adds `rules[].sourceNamespace`: omitted for the rule's own namespace, an exact name, or
   `*` for every namespace the source credential can read. Anything but the rule's own namespace passes
-  the source-namespace gate (`SourceNamespaceAuthorized`). A `*` compiles to ONE cluster-wide cell
-  (the empty namespace, which for a namespaced GVR is the all-namespaces collection), so it opens one
-  stream and one list per matched type however large the cluster is. That cell is a peer of any
-  named-namespace cell on the same type, never a replacement: each rule keeps its own operations
-  filter.
+  the source-namespace gate (`SourceNamespaceAuthorized`). A `*` compiles to ONE cluster-wide
+  collection (the empty namespace, which for a namespaced GVR is the all-namespaces collection), so it
+  opens one stream and one list per matched type however large the cluster is. That collection is a
+  peer of any named-namespace collection on the same type, never a replacement.
 - `ClusterWatchRule` has no scope or namespace choice of its own: the kind is the choice.
 
 Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
@@ -1029,14 +1029,13 @@ intersection gets a watch.
 - **Source**: [internal/watch/watched_type_table.go](../internal/watch/watched_type_table.go)
 
 A projection for each `GitTarget` from the type registry, filtered by that target's rules, recording
-resolved GVK/GVR/scope plus namespace and operation coverage. **This is where rule matching effectively
+resolved GVK/GVR/scope plus namespace coverage. **This is where rule matching effectively
 happens:** it resolves the set of `(GVR, scope)` a `GitTarget` claims, so the watch manager opens one
 watch per claimed ∩ followable `(GVR, scope)` and scopes each watch's events back to that GitTarget's
-source namespaces. A `sourceNamespace: "*"` rule resolves here to ONE cluster-wide cell (the empty
-namespace, which for a namespaced GVR is the all-namespaces collection), so it has a single stream
-and a single mark-and-sweep boundary however many namespaces it covers. That cell is a peer of any
-named-namespace cell on the same type, never a replacement for one: each rule keeps its own
-operation filter.
+source namespaces. A `sourceNamespace: "*"` rule resolves here to ONE cluster-wide collection (the
+empty namespace, which for a namespaced GVR is the all-namespaces collection), so it has a single
+stream and a single mark-and-sweep boundary however many namespaces it covers. That collection is a
+peer of any named-namespace collection on the same type, never a replacement for one.
 
 ***
 
@@ -1069,11 +1068,12 @@ selection, and builds the collection watch plan.
 
 On each GitTarget reconcile, rule resolution combines selection with discovery and mirroring
 eligibility. `targetWatchStreams` groups selected served versions by group/resource/namespace,
-chooses one version per collection, and unions the current operation filters. The plan diff
-keeps unaffected watches running and starts or replaces only changed entries.
+and chooses one version per collection. The plan diff keeps unaffected watches running, starts
+new collections, and replaces a collection only when its served version changes.
 
 Each managed watch has one goroutine. Its first attempt requests initial state, enqueues scoped
-snapshot reconciliation, and then routes live events through filtering and author resolution.
+snapshot reconciliation, and then routes every live object event through unchanged-content
+suppression and author resolution.
 Later attempts may resume a cursor; see
 [Recovery: resume, replay, or list plus mark-and-sweep](#recovery-resume-replay-or-list-plus-mark-and-sweep).
 
@@ -1472,7 +1472,7 @@ as one funnel and its loss paths as one selector:
 - **Ingest.** `gitopsreverser_watch_events_total{gittarget_*,group,version,resource,outcome}` counts
   every delivered watch event exactly once, at `routeLiveTargetWatchEvent`, the single switch
   carrying every terminal branch. `outcome` separates the pipeline working (`routed`, `unchanged`,
-  `operation_filtered`, `bookmark`) from loss (`route_failed`). Beside it,
+  `bookmark`) from loss (`route_failed`). Beside it,
   `_watch_event_handling_seconds` (stream occupancy, the head-of-line signal),
   `_watch_sessions_ended_total{reason}` and `_watch_replay_duration_seconds` (`410` pressure and
   what a rebuild costs), `_watch_recovery_total{mode}`, and `_watch_types{state}`.

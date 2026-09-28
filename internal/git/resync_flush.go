@@ -175,15 +175,15 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 
 	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
 		// A refusal reaches the caller on ResyncResult.Err, where the watch layer classifies it
-		// and blocks the cell. spec.onRefusal needs it HERE too, and this is the path that
+		// and blocks the collection. spec.onRefusal needs it HERE too, and this is the path that
 		// matters: a per-type reconcile evaluates the same objects a live write would, so it is
 		// normally what discovers a write-boundary refusal first. Hooking only the live-event path
-		// left the action almost unreachable, because by the time an edit arrives the cell this
+		// left the action almost unreachable, because by the time an edit arrives the collection this
 		// refusal blocks is already blocked.
 		var refused *manifestanalyzer.AcceptanceRefusedError
 		if errors.As(err, &refused) {
 			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
-				refusalObservationForDesired(req.Desired, refused), req.refusalCell())
+				refusalObservationForDesired(req.Desired, refused), req.refusalCollection())
 		}
 		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
 		req.reply(ResyncResult{Err: err})
@@ -194,10 +194,10 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	// last empty commit covered is forgotten and any commit still queued for it is cancelled. This
 	// is the recovery path the dedupe depends on — a per-type reconcile runs after the reconciler
 	// reverts the edit, and it is what makes the NEXT refusal, including a re-made byte-identical
-	// one, a new trigger rather than a repeat. Scoped to the cell this request evaluated, because
+	// one, a new trigger rather than a repeat. Scoped to the collection this request evaluated, because
 	// a ConfigMap resync succeeding is no evidence about a Deployment that is still refused.
 	l.refusalRecovered(
-		itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace), req.refusalCell())
+		itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace), req.refusalCollection())
 
 	// Only retain the resync's own pending write when it actually committed. A no-op
 	// resync (e.g. the empty initial snapshot before any rule selects a resource)

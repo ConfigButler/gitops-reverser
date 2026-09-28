@@ -104,16 +104,16 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 // the cluster has already moved past.
 func TestEnqueueResync_CoalescingCarriesTheSurvivingRequest(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
-	cell := types.CellKeyFor(configmapsGVRForScope, "team-a")
+	collection := types.CollectionKeyFor(configmapsGVRForScope, "team-a")
 	scope := ResyncScopeFor(configmapsGVRForScope, "team-a")
 
 	require.True(t, w.EnqueueResync(&ResyncRequest{
 		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "1", Scope: &scope,
-		SourceCell: cell, Result: make(chan ResyncResult, 1),
+		SourceCollection: collection, Result: make(chan ResyncResult, 1),
 	}))
 	require.True(t, w.EnqueueResync(&ResyncRequest{
 		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "2", Scope: &scope,
-		SourceCell: cell, Result: make(chan ResyncResult, 1),
+		SourceCollection: collection, Result: make(chan ResyncResult, 1),
 	}))
 
 	item := <-w.eventQueue
@@ -121,7 +121,7 @@ func TestEnqueueResync_CoalescingCarriesTheSurvivingRequest(t *testing.T) {
 	current := w.takePendingResync(item.Resync)
 	assert.Equal(t, "2", current.ResourceVersion,
 		"the newer snapshot is the one that runs, at the marker's position")
-	assert.Equal(t, cell, current.SourceCell, "and it still names the cell that gathered it")
+	assert.Equal(t, collection, current.SourceCollection, "and it still names the collection that gathered it")
 }
 
 // TestEnqueueResync_AcceptedRequestAlwaysRuns pins the atomicity of insert-and-queue

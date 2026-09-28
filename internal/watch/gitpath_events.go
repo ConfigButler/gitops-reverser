@@ -60,7 +60,7 @@ func (m *Manager) enqueueGitTargetReconcile(gitDest types.ResourceReference) {
 	}
 }
 
-// StreamStateEvents returns a channel carrying a GenericEvent for the GitTarget whose per-cell
+// StreamStateEvents returns a channel carrying a GenericEvent for the GitTarget whose per-collection
 // stream readiness just changed, so a controller projecting that readiness re-reconciles on the
 // transition instead of on its next periodic requeue.
 //
@@ -87,7 +87,7 @@ func (m *Manager) StreamStateEvents() <-chan event.GenericEvent {
 // Keeping the two channels apart is the point, because every send here is best-effort and a full
 // buffer is a DROP. GitPathEvents carries acceptance, render-fidelity and retention transitions,
 // and losing one of those costs up to RequeueSteadyInterval — five minutes of status describing a
-// sweep that already happened. Stream transitions are higher-volume (every cell, on every plan
+// sweep that already happened. Stream transitions are higher-volume (every collection, on every plan
 // change, plus a flap per distinct error message) and losing one costs at most
 // RequeueStreamSettleInterval. Put them in one buffer and the cheap events CROWD OUT the expensive
 // ones under exactly the load where it matters least to lose them and most to keep them.

@@ -211,7 +211,7 @@ during an incident and cheap enough not to cause one; the last two are about whe
 
    | Class | Means | Belongs on the exceptions panel? |
    |---|---|---|
-   | **expected** | the pipeline working: `routed`, `unchanged`, `operation_filtered`, `cached`, `retained`, `deleted_*` | no |
+   | **expected** | the pipeline working: `routed`, `unchanged`, `cached`, `retained`, `deleted_*` | no |
    | **degraded** | it worked, on weaker evidence or in a fallback shape: `name` and `deletecollection_scope` tiers, `list_fallback` recovery, `unresolved` authorship | no, but a trend panel |
    | **recoverable** | it failed and will be retried: a failed push holding its writes, a resync that will re-run | only as a rate, never as a loss total |
    | **loss** | an observed change that did not reach Git and nothing will retry: `route_failed`, a queue drop, a placement refusal, a trimmed fact | yes |
@@ -263,7 +263,7 @@ flowchart TB
     subgraph WATCHPATH["Object state: internal/watch"]
         W["watch session"] -->|"watch_events_total"| R["routeLiveTargetWatchEvent"]
         WS["session ends"] -.->|"watch_sessions_ended_total{reason}<br/>watch_replay_duration_seconds"| W
-        R -->|"outcome=unchanged / operation_filtered / not_object"| DROPF(["filtered: expected"])
+        R -->|"outcome=unchanged / not_object"| DROPF(["filtered: expected"])
         R -->|"outcome=route_failed"| DROPR(["LOSS: until the next resync"])
     end
     subgraph AUDITPATH["Authorship (optional): internal/webhook + internal/queue"]
@@ -295,7 +295,7 @@ drawn apart, and why an audit outage is never a mirror outage.
 
 | Stage | Counter | Expected values | Loss |
 |---|---|---|---|
-| 1 Ingest | `watch_events_total` | `routed`, `unchanged`, `operation_filtered`, `bookmark`, `shutdown` | `route_failed` |
+| 1 Ingest | `watch_events_total` | `routed`, `unchanged`, `bookmark`, `shutdown` | `route_failed` |
 | 2 Queue | `git_queue_drops_total` | (no increment) | every increment |
 | 3 Write | `git_documents_total` | `written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained` | `placement_refusals_total`, beside it |
 | 4 Commit | `git_commits_total` | all: recorded on a successful push, so it cannot claim a commit the remote never took |: |

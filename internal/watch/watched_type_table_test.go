@@ -79,52 +79,24 @@ func TestBuildWatchedTypeTable_ClusterWideDoesNotCollapseNamedNamespaces(t *test
 	assert.True(t, wt.ClusterWide(), "the cluster-wide scope is still present")
 	assert.Equal(t, []string{"", "team-a"}, wt.WatchScopes(),
 		"a cluster-wide selection must not swallow a co-resident named namespace")
-	assert.Contains(t, wt.NamespaceOps, "")
-	assert.Contains(t, wt.NamespaceOps, "team-a")
+	assert.Contains(t, wt.NamespaceScopes, "")
+	assert.Contains(t, wt.NamespaceScopes, "team-a")
 }
 
-// Each scope keeps its own operation filters. A CREATE-only WatchRule co-resident with an
-// UPDATE-only ClusterWatchRule must not have its filter replaced by the cluster-wide one.
-func TestBuildWatchedTypeTable_ClusterWideDoesNotCollapseNamedOperationSets(t *testing.T) {
+// Duplicate selections of one namespace fold into one scope: two rules selecting the same type in
+// the same namespace are one collection, and nothing about either rule survives beyond that scope.
+func TestBuildWatchedTypeTable_DuplicateSelectionsShareOneScope(t *testing.T) {
 	cm := nsRecord("", "configmaps", "ConfigMap")
 	selections := []watchSelection{
-		{record: cm, namespace: "team-a", ops: []configv1alpha3.OperationType{configv1alpha3.OperationCreate}},
-		{record: cm, namespace: "", ops: []configv1alpha3.OperationType{configv1alpha3.OperationUpdate}},
+		{record: cm, namespace: "team-a"},
+		{record: cm, namespace: "team-a"},
+		{record: cm, namespace: "team-b"},
 	}
 
 	table := buildWatchedTypeTable(testGitDest(), 1, selections)
 
 	require.Len(t, table.Types, 1)
-	wt := table.Types[0]
-	assert.Equal(t, []string{"CREATE"}, wt.NamespaceOps["team-a"].Sorted())
-	assert.Equal(t, []string{"UPDATE"}, wt.NamespaceOps[""].Sorted())
-}
-
-func TestBuildWatchedTypeTable_OperationsUnionPerNamespace(t *testing.T) {
-	cm := nsRecord("", "configmaps", "ConfigMap")
-	selections := []watchSelection{
-		{record: cm, namespace: "team-a", ops: []configv1alpha3.OperationType{configv1alpha3.OperationCreate}},
-		{record: cm, namespace: "team-a", ops: []configv1alpha3.OperationType{configv1alpha3.OperationUpdate}},
-		{record: cm, namespace: "team-b", ops: []configv1alpha3.OperationType{configv1alpha3.OperationAll}},
-	}
-
-	table := buildWatchedTypeTable(testGitDest(), 1, selections)
-
-	require.Len(t, table.Types, 1)
-	wt := table.Types[0]
-	assert.Equal(t, []string{"CREATE", "UPDATE"}, wt.NamespaceOps["team-a"].Sorted())
-	assert.Equal(t, []string{"*"}, wt.NamespaceOps["team-b"].Sorted())
-}
-
-func TestBuildWatchedTypeTable_EmptyOperationsAreAllOperations(t *testing.T) {
-	selections := []watchSelection{
-		{record: nsRecord("", "configmaps", "ConfigMap"), namespace: "team-a"},
-	}
-
-	table := buildWatchedTypeTable(testGitDest(), 1, selections)
-
-	require.Len(t, table.Types, 1)
-	assert.Equal(t, []string{"*"}, table.Types[0].NamespaceOps["team-a"].Sorted())
+	assert.Equal(t, []string{"team-a", "team-b"}, table.Types[0].WatchScopes())
 }
 
 func TestBuildWatchedTypeTable_ClusterScopedType(t *testing.T) {

@@ -48,7 +48,9 @@ agent over MCP.
 
 Custom resources configure it: `GitProvider` for repository and credentials, `GitTarget` for branch
 and folder, `WatchRule` or `ClusterWatchRule` for what to capture, and `ClusterProvider` for the
-source cluster, created as `default` on install. See [Configuration](docs/configuration.md).
+source cluster, created as `default` on install. A rule selects whole resource collections, including
+their deletions; the `GitTarget`'s prune mode decides whether a deletion removes the file from Git.
+See [Configuration](docs/configuration.md).
 
 By default it watches its own cluster. Add more of each as you need them: one operator can serve
 several source clusters, repositories, branches, and folders.

@@ -28,7 +28,7 @@ func TestResyncScopeForWatchKey_CarriesBothHalvesOfTheScope(t *testing.T) {
 		// A ClusterWatchRule's stream gathers every namespace, so its sweep must too.
 		scope := resyncScopeForWatchKey(targetWatchKey{GVR: gvr})
 		assert.Equal(t, git.ResyncScopeFor(gvr, ""), scope)
-		assert.Empty(t, scope.Cell.Namespace)
+		assert.Empty(t, scope.Collection.Namespace)
 	})
 
 	t.Run("two namespaces of one type produce distinct scopes", func(t *testing.T) {

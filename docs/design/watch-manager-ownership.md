@@ -16,7 +16,7 @@ the data plane reports back through the same channel, and every change to one Gi
 configuration inside a 2s silence window becomes a single pass over it.
 
 This is a follow-up to [target-watch-plan.md](target-watch-plan.md). That plan made the
-WORK cheap, per cell. This one is about how often the work is asked for, by whom, and
+WORK cheap, per collection. This one is about how often the work is asked for, by whom, and
 what happens when one target's work will not finish.
 
 ## What happens today
@@ -82,7 +82,7 @@ others.
 
 ```text
 controllers  ──Trigger{target, uid, reason}──┐
-streams      ──Report{target, cell, state, revision}──┤
+streams      ──Report{target, collection, state, revision}──┤
 branch workers ──Report{target, fidelity|retention}──┤
                                                      ▼
                                               owner loop
@@ -97,9 +97,9 @@ controllers  ──read latest snapshot─────────────�
 sets and the per-target captures. Nothing else mutates them.
 
 **Cancellation is requested by the owner, and completion is reported back.** The owner
-decides that a cell stops; the stream goroutine observes its context, unwinds, and posts
+decides that a collection stops; the stream goroutine observes its context, unwinds, and posts
 a report. It does not reach back for a manager lock on its way out. That inverts what
-change 2 does today, where `set.stop(cell)` runs `cancel()` while holding
+change 2 does today, where `set.stop(collection)` runs `cancel()` while holding
 `targetWatchesMu` and the woken goroutine then contends for the same mutex.
 
 **Reads are snapshot reads.** The owner publishes an immutable projection after each
@@ -179,7 +179,7 @@ regression. That is now **reversed**, and the reason is the case above.
 Applying a GitTarget together with its rules is the normal way this configuration
 arrives, and object order within an apply is not guaranteed. If the GitTarget is
 declared the instant it lands, it is declared with **no rules yet**: a plan with zero
-cells, immediately superseded as each rule arrives. The "responsive" version therefore
+collections, immediately superseded as each rule arrives. The "responsive" version therefore
 manufactures a transient empty plan on every cold start, and then does the real work four
 times over.
 
@@ -240,9 +240,9 @@ So the isolation boundary is **per target**:
   a yield rather than a drop.
 
 **A timeout must never install an empty plan.** A pass that could not gather is not a
-pass that found nothing, and the difference is the whole of "What a cell leaving means"
-in [target-watch-plan.md](target-watch-plan.md): an ungatherable cell must never present
-as an absent one. So a deadline produces exactly this and nothing else:
+pass that found nothing, and the difference is the whole of "What a collection leaving
+means" in [target-watch-plan.md](target-watch-plan.md): an ungatherable collection must never
+present as an absent one. So a deadline produces exactly this and nothing else:
 
 ```text
 pass failed
@@ -448,7 +448,7 @@ are deliberately not merged into the trigger queue, and
   a stale snapshot overtaking a newer write. This page is about the trigger side of the
   watch manager. They are different queues with different failure modes, and neither
   substitutes for the other.
-- **The per-cell diff.** The plan classification is what makes an unnecessary pass
+- **The per-collection diff.** The plan classification is what makes an unnecessary pass
   cheap; this makes the pass unnecessary less often. Both are worth having.
 - **Leader election.** The manager already runs only on the elected leader
   (`NeedLeaderElection`), so a single owner loop adds no new assumption.
@@ -574,13 +574,13 @@ deadline, so its context is cancelled the moment it returns — and streams were
 children of it. Every stream therefore died the instant its plan finished being applied.
 
 The signature is worth recording, because it reads like health: the plan log says `start:1`, the
-stream set holds the cell, and every later pass reports it as `keep:1` and so never restarts it.
+stream set holds the collection, and every later pass reports it as `keep:1` and so never restarts it.
 Readiness never leaves `Replaying`, the render-fidelity gate never leaves `Rechecking`, and every
 WatchRule pointing at that target sits `Ready=False` forever. Nothing logs an error, because
 nothing failed.
 
 So the parent of a target watch is `Manager.watchLifetime`, set once by `Start`. Cancelling one
-stream is the owner's decision, made per cell through the plan diff — never a side effect of a
+stream is the owner's decision, made per collection through the plan diff — never a side effect of a
 context going out of scope. The pass deadline bounds the pass.
 
 ### Toggling a rule off and on inside the window is not a replay
@@ -609,7 +609,7 @@ rule has been planned at all, and it is published by a different controller than
 compiled the rule — so it can still be describing the previous plan.
 
 A rule's own `StreamsRunning` has neither problem: it is written by the reconcile that compiled the
-rule, from the rule's own compiled cells. It is the right gate whenever a spec changes a rule on a
+rule, from the rule's own compiled collections. It is the right gate whenever a spec changes a rule on a
 target that is already mirroring, and `waitForWatchRuleStreamsRunning` existed unused for exactly
 this.
 

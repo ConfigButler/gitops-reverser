@@ -45,7 +45,7 @@ func TestFoldTargetReplayEvent_SkipsTerminatingObjects(t *testing.T) {
 			done, rv, err := manager.foldTargetReplayEvent(
 				logr.Discard(),
 				types.NewResourceReference("target", "default"),
-				testStream(key, nil),
+				testStream(key),
 				watch.Event{Type: eventType, Object: terminatingConfigMapObject("7")},
 				&desired,
 			)

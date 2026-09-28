@@ -72,9 +72,9 @@ type Observer func(LifecycleEvent)
 // only signal that can tell a type genuinely withdrawn (a settled TypeRemoved, past
 // RemovalGrace) from a discovery wobble, and mistaking the second for the first is what deletes
 // a user's manifests. Its consumer is the `stop` classification in
-// docs/design/target-watch-plan.md, "What a cell leaving means". Subscribing and classifying is
+// docs/design/target-watch-plan.md, "What a collection leaving means". Subscribing and classifying is
 // the first half of that plan's third change and needs nothing decided first: a settled removal
-// drops its cell from the plan, and the Git-side sweep converges the mirror under the target's
+// drops its collection from the plan, and the Git-side sweep converges the mirror under the target's
 // existing spec.prune.mode. Only removal on INTENT waits on an open decision. Do not delete this
 // as dead: rebuilding the settle window and the grace correctly is the expensive half, and it is
 // already written and tested here. The Materializer, which consumed these events before the

@@ -274,7 +274,7 @@ func TestWatchPlanFingerprint_MovesOnTheStreamSetAndNotOnTheTargetName(t *testin
 }
 
 // A timeout must never install an empty plan. A pass that could not gather is not a pass that
-// found nothing, and an ungatherable cell must never present as an absent one.
+// found nothing, and an ungatherable collection must never present as an absent one.
 func TestOwner_AFailedPassLeavesTheRunningPlanUntouched(t *testing.T) {
 	m := ownerTestManager()
 	// Discovery is broken, so this cluster's API surface can never be observed.
@@ -432,7 +432,7 @@ func TestOwner_APassNeverDialsForAnUnobservedCluster(t *testing.T) {
 // A pass runs under a deadline, and its context is cancelled the moment it returns. A stream
 // parented to it therefore dies the instant the plan finishes being applied — the plan reads as
 // applied while nothing is watching, readiness never leaves Replaying, and the next pass sees the
-// cell as KEPT so it never restarts either. A stream's lifetime is the manager's.
+// collection as KEPT so it never restarts either. A stream's lifetime is the manager's.
 func TestOwner_AStreamOutlivesThePassThatStartedIt(t *testing.T) {
 	lifetime, stopManager := context.WithCancel(context.Background())
 	defer stopManager()
@@ -453,11 +453,9 @@ func TestOwner_AStreamOutlivesThePassThatStartedIt(t *testing.T) {
 	started := m.startTargetWatchStreams(
 		passCtx,
 		m.targetWatchSet(gitDest),
-		keysByCell([]targetWatchKey{{GVR: configmapsGVR, Namespace: "apps"}}),
-		map[targetWatchKey]OperationSet{},
-		map[targetWatchKey]string{},
-		map[types.CellKey]uint64{},
-		[]types.CellKey{types.CellKeyFor(configmapsGVR, "apps")},
+		keysByCollection([]targetWatchKey{{GVR: configmapsGVR, Namespace: "apps"}}),
+		map[types.CollectionKey]uint64{},
+		[]types.CollectionKey{types.CollectionKeyFor(configmapsGVR, "apps")},
 		false,
 	)
 	require.Len(t, started, 1)
@@ -468,7 +466,7 @@ func TestOwner_AStreamOutlivesThePassThatStartedIt(t *testing.T) {
 
 	require.NoError(t, streamCtx.Err(), "the stream must survive the pass that started it")
 
-	// It is the MANAGER's lifetime that ends it — and, before that, the owner's own per-cell
+	// It is the MANAGER's lifetime that ends it — and, before that, the owner's own per-collection
 	// cancel through the plan diff.
 	stopManager()
 	assert.Eventually(t, func() bool { return streamCtx.Err() != nil }, time.Second, 5*time.Millisecond,

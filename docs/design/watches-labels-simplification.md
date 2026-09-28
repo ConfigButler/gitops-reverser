@@ -2,7 +2,8 @@
 
 > **Design requirements; implementation pending.** All three prune modes, including `Always`
 > with supported Kustomize layouts, are required from the first release.
-> **Step 2 of 2:** implement after the [collection rename and event-filter removal](collection-terminology-rename.md).
+> **Step 2 of 2.** Step 1, the [collection rename and event-filter removal](collection-terminology-rename.md),
+> has shipped.
 > [Issue #146](https://github.com/ConfigButler/gitops-reverser/issues/146).
 > Index: [`../INDEX.md`](../INDEX.md). Checked: 2026-09-28, source at `69836e70`.
 > Related: [Kubernetes watch facts](../facts/kubernetes-watch-options.md),
@@ -46,14 +47,14 @@ comparison. Preserve unsanitized watch provenance for attribution.
 
 ## One collection is one list/watch request
 
-Extend `CollectionKey` from step 1 (currently [`CellKey`](../../internal/types/cell.go)) within a GitTarget:
+Extend [`CollectionKey`](../../internal/types/collection.go) within a GitTarget:
 
 ```text
 collection: group, resource, namespace ("" = all namespaces), canonical label selector
-watch spec: served version
+watch spec: served version (watchSpec)
 ```
 
-Step 1 removes rule operation filters. Deduplicate identical collections and choose their served
+Rules have no operation filter. Deduplicate identical collections and choose their served
 version deterministically; every collection observes all object event types. Served version remains
 data, so changing it does not move Git files. Keep each selector attached to its own collection.
 
@@ -270,8 +271,7 @@ retention counts, and unresolved attribution. These are consequences of the chos
 
 Filtered requests reduce transferred objects but add watches; measure the cost. Keep requests
 filtered because [authorization can depend on selectors](../facts/kubernetes-watch-options.md#selectors-and-authorization).
-A denial cannot become an empty snapshot. Field selectors remain separate work; the collection
-rename and operation-filter removal are prerequisites in step 1. Different selectors over
+A denial cannot become an empty snapshot. Field selectors remain separate work. Different selectors over
 overlapping scopes need union membership and stale-observation handling; independent sweeps are
 insufficient. The existing same-selector overlap ordering gap also remains outside this change.
 

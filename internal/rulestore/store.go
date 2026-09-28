@@ -38,8 +38,8 @@ type CompiledRule struct {
 	ResourceRules []CompiledResourceRule
 }
 
-// compiledSelector is the TYPE filter both rule kinds compile to: the operations, groups, versions
-// and resource plurals an item selects, with nothing about where the object lives.
+// compiledSelector is the TYPE filter both rule kinds compile to: the groups, versions and
+// resource plurals an item selects, with nothing about where the object lives.
 //
 // It is one type because the answer has to be one answer. The namespaced and cluster-scoped rules
 // carried byte-identical copies of all four checks, so a fix to how a wildcard or a subresource
@@ -47,8 +47,6 @@ type CompiledRule struct {
 // different call paths, so nothing failed loudly when they disagreed. Scope is the only axis the
 // two rules genuinely differ on, and it stays outside: see CompiledResourceRule.SourceNamespaces.
 type compiledSelector struct {
-	// Operations specifies which operations trigger this rule.
-	Operations []configv1alpha3.OperationType
 	// APIGroups specifies which API groups this rule matches.
 	APIGroups []string
 	// APIVersions specifies which API versions this rule matches.
@@ -60,13 +58,12 @@ type compiledSelector struct {
 // clone returns a selector sharing no backing array with the receiver.
 //
 // The store hands compiled rules to callers and takes them from a CR it does not own, so every
-// crossing of that boundary copies. Struct assignment is not enough: it duplicates four slice
+// crossing of that boundary copies. Struct assignment is not enough: it duplicates three slice
 // HEADERS, leaving the store's rule and the caller's snapshot writing through to the same arrays —
 // and a caller writing there reaches store state behind the mutex entirely. An empty slice clones
 // to nil, which every reader here already treats as "match all", exactly as before.
 func (s *compiledSelector) clone() compiledSelector {
 	return compiledSelector{
-		Operations:  append([]configv1alpha3.OperationType(nil), s.Operations...),
 		APIGroups:   append([]string(nil), s.APIGroups...),
 		APIVersions: append([]string(nil), s.APIVersions...),
 		Resources:   append([]string(nil), s.Resources...),
@@ -197,7 +194,6 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 			namespaces = append([]string(nil), sourceNamespaces[i]...)
 		}
 		selector := compiledSelector{
-			Operations:  r.Operations,
 			APIGroups:   r.APIGroups,
 			APIVersions: r.APIVersions,
 			Resources:   r.Resources,
@@ -267,7 +263,6 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 
 	for _, r := range rule.Spec.Rules {
 		selector := compiledSelector{
-			Operations:  r.Operations,
 			APIGroups:   r.APIGroups,
 			APIVersions: r.APIVersions,
 			Resources:   r.Resources,
@@ -314,14 +309,12 @@ func (s *RuleStore) IsReady() bool {
 // Parameters:
 //   - obj: The Kubernetes object to match; its namespace is used for WatchRule filtering
 //   - resourcePlural: The plural form of the resource (e.g., "pods", "deployments")
-//   - operation: The operation type (CREATE, UPDATE, DELETE)
 //   - apiGroup: The API group of the resource (empty string for core API)
 //   - apiVersion: The API version of the resource
 //   - isClusterScoped: Whether the resource is cluster-scoped
 func (s *RuleStore) GetMatchingRules(
 	obj client.Object,
 	resourcePlural string,
-	operation configv1alpha3.OperationType,
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
@@ -341,7 +334,7 @@ func (s *RuleStore) GetMatchingRules(
 			continue // WatchRule can't match cluster resources
 		}
 
-		if rule.matches(eventNamespace, resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matches(eventNamespace, resourcePlural, apiGroup, apiVersion) {
 			matchingRules = append(matchingRules, rule)
 		}
 	}
@@ -352,14 +345,12 @@ func (s *RuleStore) GetMatchingRules(
 // This handles both cluster-scoped and namespaced resources with per-rule scope matching.
 // Parameters:
 //   - resourcePlural: The plural form of the resource (e.g., "nodes", "pods")
-//   - operation: The operation type (CREATE, UPDATE, DELETE)
 //   - apiGroup: The API group of the resource (empty string for core API)
 //   - apiVersion: The API version of the resource
 //   - isClusterScoped: Whether the resource is cluster-scoped
 //   - namespaceLabels: Labels of the namespace (ignored in simplified MVP)
 func (s *RuleStore) GetMatchingClusterRules(
 	resourcePlural string,
-	operation configv1alpha3.OperationType,
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
@@ -373,7 +364,6 @@ func (s *RuleStore) GetMatchingClusterRules(
 		if s.clusterRuleMatches(
 			clusterRule,
 			resourcePlural,
-			operation,
 			apiGroup,
 			apiVersion,
 			isClusterScoped,
@@ -393,7 +383,6 @@ func (s *RuleStore) GetMatchingClusterRules(
 func (s *RuleStore) clusterRuleMatches(
 	clusterRule CompiledClusterRule,
 	resourcePlural string,
-	operation configv1alpha3.OperationType,
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
@@ -402,7 +391,7 @@ func (s *RuleStore) clusterRuleMatches(
 		return false
 	}
 	for _, rule := range clusterRule.Rules {
-		if rule.matchesType(resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matchesType(resourcePlural, apiGroup, apiVersion) {
 			return true
 		}
 	}
@@ -417,13 +406,12 @@ func (s *RuleStore) clusterRuleMatches(
 func (r *CompiledRule) matches(
 	eventNamespace string,
 	resourcePlural string,
-	operation configv1alpha3.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
 	// Check if any resource rule matches (logical OR)
 	for _, rule := range r.ResourceRules {
-		if rule.matches(eventNamespace, resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matches(eventNamespace, resourcePlural, apiGroup, apiVersion) {
 			return true
 		}
 	}
@@ -435,7 +423,6 @@ func (r *CompiledRule) matches(
 func (r *CompiledResourceRule) matches(
 	eventNamespace string,
 	resourcePlural string,
-	operation configv1alpha3.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
@@ -445,14 +432,14 @@ func (r *CompiledResourceRule) matches(
 		return false
 	}
 
-	return r.matchesType(resourcePlural, operation, apiGroup, apiVersion)
+	return r.matchesType(resourcePlural, apiGroup, apiVersion)
 }
 
 // matchesSourceNamespace checks the event's namespace against this item's RESOLVED set. An event
 // with no namespace is left to the caller's cluster-scope check rather than being filtered here.
 //
 // An EMPTY ENTRY in the set is the cluster-wide selection a `sourceNamespace: "*"` item compiles
-// to, and it matches every namespace. The identity is the same one CellKey uses (its Namespace doc
+// to, and it matches every namespace. The identity is the same one CollectionKey uses (its Namespace doc
 // records why), so the router and the stream planner agree about what the item selects. Without
 // this the item would open a cluster-wide stream and then route none of its events, since no real
 // object carries the empty namespace.
@@ -468,17 +455,13 @@ func (r *CompiledResourceRule) matchesSourceNamespace(eventNamespace string) boo
 	return false
 }
 
-// matchesType answers the whole type filter: operations, group, version, resource plural. An empty
+// matchesType answers the whole type filter: group, version, resource plural. An empty
 // list means "match all" on every axis except the resource plural, which is required.
 func (s *compiledSelector) matchesType(
 	resourcePlural string,
-	operation configv1alpha3.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
-	if !s.matchesOperations(operation) {
-		return false
-	}
 	if !matchesAny(s.APIGroups, apiGroup) {
 		return false
 	}
@@ -486,20 +469,6 @@ func (s *compiledSelector) matchesType(
 		return false
 	}
 	return s.resourceMatches(resourcePlural)
-}
-
-// matchesOperations checks if the operation matches any in the rule.
-func (s *compiledSelector) matchesOperations(operation configv1alpha3.OperationType) bool {
-	if len(s.Operations) == 0 {
-		return true // Empty = match all
-	}
-
-	for _, op := range s.Operations {
-		if op == configv1alpha3.OperationAll || op == operation {
-			return true
-		}
-	}
-	return false
 }
 
 // matchesAny is the group and version test, which are the same test: an empty list matches all, and

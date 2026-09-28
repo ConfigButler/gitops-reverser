@@ -167,7 +167,7 @@ func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	scope git.ResyncScope,
-	sourceCell types.CellKey,
+	sourceCollection types.CollectionKey,
 	desired []manifestanalyzer.DesiredResource,
 	resourceVersion string,
 	heal bool,
@@ -184,7 +184,7 @@ func (r *EventRouter) enqueueScopedResync(
 		GitTargetName:      gitDest.Name,
 		GitTargetNamespace: gitDest.Namespace,
 		Scope:              &scope,
-		SourceCell:         sourceCell,
+		SourceCollection:   sourceCollection,
 		Heal:               heal,
 		RefreshRemote:      refreshRemote,
 		Result:             resultCh,
@@ -206,7 +206,7 @@ func resyncScopeForWatchKey(key targetWatchKey) git.ResyncScope {
 // never re-fires the gather.
 func (r *EventRouter) drainScopedResync(
 	gitDest types.ResourceReference,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	kind string,
 	renderFidelityEpoch uint64,
 	resultCh chan git.ResyncResult,
@@ -214,29 +214,34 @@ func (r *EventRouter) drainScopedResync(
 	select {
 	case result := <-resultCh:
 		if result.Err != nil {
-			r.handleScopedResyncError(gitDest, cell, kind, renderFidelityEpoch, result.Err)
+			r.handleScopedResyncError(gitDest, collection, kind, renderFidelityEpoch, result.Err)
 			return
 		}
 		r.Log.V(1).Info("per-type "+kind+" applied",
-			"gitDest", gitDest.String(), "cell", cell.String(),
+			"gitDest", gitDest.String(), "collection", collection.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		if r.WatchManager != nil {
-			r.WatchManager.MarkTargetGitPathScopeAccepted(gitDest, cell)
-			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, cell)
+			r.WatchManager.MarkTargetGitPathScopeAccepted(gitDest, collection)
+			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, collection)
 			// Recorded for every applied resync, including the ones that retained nothing: zero
 			// is the converged signal and is only meaningful if it is published as actively as a
 			// non-zero count.
 			r.WatchManager.MarkTargetRetention(
-				gitDest, cell, renderFidelityEpoch, result.Stats.PruneMode, result.Stats.Retained)
+				gitDest, collection, renderFidelityEpoch, result.Stats.PruneMode, result.Stats.Retained)
 		}
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
 		// e2e gate reads (a sweep is excluded; it is a removal, not a steady-state reconcile).
 		if kind == "reconcile" && r.WatchManager != nil {
-			r.WatchManager.recordWatchRecovery(gitDest, cell.Group, cell.Resource, recoveryModeTypeReconcile)
+			r.WatchManager.recordWatchRecovery(
+				gitDest,
+				collection.Group,
+				collection.Resource,
+				recoveryModeTypeReconcile,
+			)
 		}
 	case <-time.After(resyncSignalTimeout):
-		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "cell", cell.String())
+		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "collection", collection.String())
 		r.recordBackgroundResyncFailure(gitDest)
 	}
 }
@@ -248,7 +253,7 @@ func (r *EventRouter) drainScopedResync(
 // remains observable.
 func (r *EventRouter) handleScopedResyncError(
 	gitDest types.ResourceReference,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	kind string,
 	renderFidelityEpoch uint64,
 	err error,
@@ -257,18 +262,18 @@ func (r *EventRouter) handleScopedResyncError(
 	if errors.As(err, &refused) {
 		if refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive) {
 			r.Log.Info("per-type "+kind+" found a render-vs-live divergence",
-				"gitDest", gitDest.String(), "cell", cell.String(), "detail", refused.Error())
+				"gitDest", gitDest.String(), "collection", collection.String(), "detail", refused.Error())
 			if r.WatchManager != nil {
 				r.WatchManager.MarkTargetRenderFidelityScopeDiverged(
-					gitDest, renderFidelityEpoch, cell, renderFidelityDivergence(refused))
+					gitDest, renderFidelityEpoch, collection, renderFidelityDivergence(refused))
 			}
 			return
 		}
 		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget path content",
-			"gitDest", gitDest.String(), "cell", cell.String(), "detail", refused.Error())
+			"gitDest", gitDest.String(), "collection", collection.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
 			r.WatchManager.MarkTargetGitPathScopeRefused(
-				gitDest, cell, gitPathRefusalReason(refused), refused.BlockMessage())
+				gitDest, collection, gitPathRefusalReason(refused), refused.BlockMessage())
 		}
 		return
 	}
@@ -285,10 +290,10 @@ func (r *EventRouter) handleScopedResyncError(
 		// skips the RETENTION report too, and lowering it re-blinded that path in the very local
 		// reproduction of Failure B that followed. Lower it again only when B is closed.
 		r.Log.Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
-			"gitDest", gitDest.String(), "cell", cell.String())
+			"gitDest", gitDest.String(), "collection", collection.String())
 		return
 	}
-	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "cell", cell.String())
+	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "collection", collection.String())
 	r.recordBackgroundResyncFailure(gitDest)
 }
 

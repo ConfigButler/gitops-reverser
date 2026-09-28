@@ -131,23 +131,6 @@ spec:
                       items:
                         type: string
                       type: array
-                    operations:
-                      description: |-
-                        Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
-                        Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
-                        Examples:
-                          - ["CREATE", "UPDATE"] watches only creation and updates
-                          - ["*"] or [] watches all operations
-                      items:
-                        description: OperationType specifies the type of operation
-                          that triggers a watch event.
-                        enum:
-                        - CREATE
-                        - UPDATE
-                        - DELETE
-                        - '*'
-                        type: string
-                      type: array
                     resources:
                       description: |-
                         Resources to match (plural names like "nodes", "clusterroles").

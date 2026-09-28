@@ -165,9 +165,8 @@ func TestResourceReferenceFromKey_RoundTrips(t *testing.T) {
 func installFakeWatch(m *Manager, ref types.ResourceReference) *bool {
 	cancelled := new(bool)
 	key := targetWatchKey{GVR: configmapsGVR}
-	m.targetWatchSet(ref).streams[key.Cell()] = &runningTargetWatch{
+	m.targetWatchSet(ref).streams[key.Collection()] = &runningTargetWatch{
 		key:    key,
-		spec:   "[*]",
 		cancel: func() { *cancelled = true },
 	}
 	return cancelled

@@ -30,7 +30,6 @@ spec:
   gitTargetRef:
     name: demo-coffeeconfig
   rules:
-    - operations: [CREATE, UPDATE, DELETE]
-      apiGroups: ["examples.configbutler.ai"]
+    - apiGroups: ["examples.configbutler.ai"]
       apiVersions: ["v1alpha1"]
       resources: ["coffeeconfigs"]

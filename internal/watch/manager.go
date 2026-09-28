@@ -190,7 +190,7 @@ type Manager struct {
 	// deadline and its context is cancelled the moment it returns, so parenting a stream to it
 	// would kill that stream the instant the plan finished being applied — the plan would read as
 	// applied while nothing was watching. A stream's lifetime is the manager's; the pass's
-	// deadline bounds the pass. Cancelling one stream is the owner's decision, made per cell
+	// deadline bounds the pass. Cancelling one stream is the owner's decision, made per collection
 	// through the plan diff, never a side effect of a context going out of scope.
 	//
 	// nil on a Manager that was never started, which is the shape tests drive; streamParent then
@@ -225,12 +225,12 @@ type Manager struct {
 
 // GitPathAcceptanceStatus is the whole-target write-safety status for a GitTarget path.
 type GitPathAcceptanceStatus struct {
-	Accepted       bool
-	Reason         string
-	Message        string
-	At             metav1.Time
-	RefusedCell    types.CellKey
-	RefusedCellSet bool
+	Accepted             bool
+	Reason               string
+	Message              string
+	At                   metav1.Time
+	RefusedCollection    types.CollectionKey
+	RefusedCollectionSet bool
 }
 
 const (

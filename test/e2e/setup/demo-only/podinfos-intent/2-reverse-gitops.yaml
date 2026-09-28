@@ -30,7 +30,6 @@ spec:
   gitTargetRef:
     name: demo-podinfos
   rules:
-    - operations: [CREATE, UPDATE, DELETE]
-      apiGroups: ["kro.run"]
+    - apiGroups: ["kro.run"]
       apiVersions: ["v1alpha1"]
       resources: ["podinfoapps"]

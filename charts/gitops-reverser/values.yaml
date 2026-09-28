@@ -455,11 +455,7 @@ quickstart:
   watchRule:
     name: example-watchrule
     rules:
-      - operations:
-          - CREATE
-          - UPDATE
-          - DELETE
-        apiGroups:
+      - apiGroups:
           - ""
         apiVersions:
           - v1

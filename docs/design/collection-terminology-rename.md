@@ -1,7 +1,8 @@
 # Replace cells with collections and remove event filters
 
-> **Implementation plan; not built. Step 1 of 2.** Complete this simplification before
-> [label selection and pruning](watches-labels-simplification.md), which is step 2.
+> **Implemented; step 1 of 2.** This is now a historical record of the migration; the code and
+> the current documents are the reference. [Label selection and pruning](watches-labels-simplification.md)
+> is step 2.
 > Index: [`../INDEX.md`](../INDEX.md). Audited: 2026-09-28, source at `69836e70`.
 > Rename counts describe tracked working-tree files before adding this plan and its cross-references;
 > the existing documentation edits are included. The operation-filter audit is separate, against
@@ -237,10 +238,10 @@ Rename their actual declarations and callers together; avoid substring replaceme
 
 | Existing file | New path |
 |---|---|
-| [`internal/types/cell.go`](../../internal/types/cell.go) | `internal/types/collection.go` |
-| [`internal/types/cell_test.go`](../../internal/types/cell_test.go) | `internal/types/collection_test.go` |
-| [`internal/git/source_cell.go`](../../internal/git/source_cell.go) | `internal/git/source_collection.go` |
-| [`internal/git/source_cell_test.go`](../../internal/git/source_cell_test.go) | `internal/git/source_collection_test.go` |
+| `internal/types/cell.go` | [`internal/types/collection.go`](../../internal/types/collection.go) |
+| `internal/types/cell_test.go` | [`internal/types/collection_test.go`](../../internal/types/collection_test.go) |
+| `internal/git/source_cell.go` | [`internal/git/source_collection.go`](../../internal/git/source_collection.go) |
+| `internal/git/source_cell_test.go` | [`internal/git/source_collection_test.go`](../../internal/git/source_collection_test.go) |
 
 Keep the source-provenance rationale with its renamed helper. Update Markdown links and plain
 path references in Go comments, including `watchrule_types.go`, `watched_type_resolver.go`, and
@@ -503,14 +504,14 @@ identifier occurrences; `comments` and `strings` count matched words/components 
 | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) | 2 | 3 | 0 | 5 |
 | [`internal/git/resync_push_test.go`](../../internal/git/resync_push_test.go) | 8 | 0 | 1 | 9 |
 | [`internal/git/resync_scope_test.go`](../../internal/git/resync_scope_test.go) | 2 | 1 | 1 | 4 |
-| [`internal/git/source_cell.go`](../../internal/git/source_cell.go) | 13 | 17 | 0 | 30 |
-| [`internal/git/source_cell_test.go`](../../internal/git/source_cell_test.go) | 19 | 0 | 4 | 23 |
+| `internal/git/source_cell.go` | 13 | 17 | 0 | 30 |
+| `internal/git/source_cell_test.go` | 19 | 0 | 4 | 23 |
 | [`internal/git/types.go`](../../internal/git/types.go) | 17 | 19 | 0 | 36 |
 | [`internal/git/write_boundary_precondition_test.go`](../../internal/git/write_boundary_precondition_test.go) | 1 | 0 | 0 | 1 |
 | [`internal/rulestore/store.go`](../../internal/rulestore/store.go) | 0 | 1 | 0 | 1 |
 | [`internal/telemetry/exporter.go`](../../internal/telemetry/exporter.go) | 0 | 1 | 0 | 1 |
-| [`internal/types/cell.go`](../../internal/types/cell.go) | 6 | 11 | 0 | 17 |
-| [`internal/types/cell_test.go`](../../internal/types/cell_test.go) | 10 | 3 | 2 | 15 |
+| `internal/types/cell.go` | 6 | 11 | 0 | 17 |
+| `internal/types/cell_test.go` | 10 | 3 | 2 | 15 |
 | [`internal/typeset/lifecycle.go`](../../internal/typeset/lifecycle.go) | 0 | 2 | 0 | 2 |
 | [`internal/watch/config_plane_split_review_fixes_test.go`](../../internal/watch/config_plane_split_review_fixes_test.go) | 1 | 0 | 0 | 1 |
 | [`internal/watch/event_router.go`](../../internal/watch/event_router.go) | 22 | 0 | 6 | 28 |

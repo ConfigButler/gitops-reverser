@@ -26,8 +26,8 @@ func itemScope(namespaces ...string) [][]string {
 }
 
 // testStream is a running stream, for the tests that drive one stream directly.
-func testStream(key targetWatchKey, ops OperationSet) targetWatchStream {
-	return targetWatchStream{key: key, ops: ops}
+func testStream(key targetWatchKey) targetWatchStream {
+	return targetWatchStream{key: key}
 }
 
 func TestNormalizeResource(t *testing.T) {

@@ -23,10 +23,10 @@ same-object or same-resource-type ordering guarantee.
 ## The execution model
 
 For each `GitTarget`, [`targetWatchStreams`](../../internal/watch/target_watch.go) chooses one
-served version per resource collection. Its [`CellKey`](../../internal/types/cell.go) contains
-group, resource, and namespace selection; the containing target supplies target and source-cluster
-context. An all-namespace collection and a named-namespace collection remain separate, so their
-object sets can overlap.
+served version per resource collection. Its
+[`CollectionKey`](../../internal/types/collection.go) contains group, resource, and namespace
+selection; the containing target supplies target and source-cluster context. An all-namespace
+collection and a named-namespace collection remain separate, so their object sets can overlap.
 
 Each running watch has its own goroutine. Its event pump handles an event synchronously before
 reading another. On the live path, the call chain is:
@@ -40,11 +40,9 @@ watch event
   -> BranchWorker.Enqueue
 ```
 
-Operation filtering and unchanged-content checks can discard events before attribution in the
-current implementation. [Step 1](../design/collection-terminology-rename.md#remove-the-rule-operation-filter)
-removes the rule operation filter; unchanged-content suppression and ordered attribution remain.
-For events that need attribution,
-[`ResolveAuthor`](../../internal/watch/author_resolver.go) calls the attribution index's
+Every object event in a selected collection reaches this path; there is no rule operation filter.
+Unchanged-content suppression can discard an event before attribution. For events that need
+attribution, [`ResolveAuthor`](../../internal/watch/author_resolver.go) calls the attribution index's
 `Await` method inline. It waits for a resolution or the grace deadline, subject to cancellation.
 Configured-author mode has no resolver and does not wait.
 

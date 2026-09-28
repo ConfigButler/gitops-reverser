@@ -149,10 +149,10 @@ func TestBootstrap_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T
 		"Source still names the WatchRule object in the control plane")
 }
 
-// "*" compiles to the EMPTY namespace, which is the cluster-wide cell — not to an enumerated set,
+// "*" compiles to the EMPTY namespace, which is the cluster-wide collection — not to an enumerated set,
 // and not to the rule's own namespace. This is the redefinition, asserted at the compile path that
 // produces the store entry every stream and every resync scope is projected from.
-func TestCompileWatchRule_WildcardCompilesToTheClusterWideCell(t *testing.T) {
+func TestCompileWatchRule_WildcardCompilesToTheClusterWideCollection(t *testing.T) {
 	ctx := context.Background()
 	m := snbManager(t,
 		snbGitTarget(), snbGitProvider(), snbClusterProvider(true),

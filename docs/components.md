@@ -39,7 +39,7 @@ flowchart TB
 
     subgraph DP["Data plane"]
         WM["watch.Manager<br/>runnable, leader-elected"]
-        TW["target watches<br/>one per (GitTarget, cell)"]
+        TW["target watches<br/>one per (GitTarget, collection)"]
         ER["EventRouter"]
         GTES["reconcile.GitTargetEventStream"]
         SAN["internal/sanitize"]
@@ -93,14 +93,14 @@ this GitTarget claim". Every source cluster gets its own instance of the whole s
 | `APIResourceCatalog` | [`internal/watch/api_resource_catalog.go`](../internal/watch/api_resource_catalog.go) | turns one discovery result into a policy-annotated `typeset.Scan`. Holds no judgment |
 | Followability registry | [`internal/typeset/registry.go`](../internal/typeset/registry.go) | applies "additions fast, removals slow": retain-on-error, and a removal grace before a type is called withdrawn |
 | Relevance funnel | [`internal/typeset/funnel.go`](../internal/typeset/funnel.go) | the pure function that judges one type followable, and names the single reason when it is not |
-| `WatchedTypeTable` | [`internal/watch/watched_type_table.go`](../internal/watch/watched_type_table.go) | the per-GitTarget resident set of claimed and followable `(GVR, scope)` with its operation filter, which `targetWatchStreams` collapses to one stream per cell |
+| `WatchedTypeTable` | [`internal/watch/watched_type_table.go`](../internal/watch/watched_type_table.go) | the per-GitTarget resident set of claimed and followable `(GVR, scope)` with its namespace scopes, which `targetWatchStreams` collapses to one stream per resource collection |
 | `clusterContext` | [`internal/watch/cluster_context.go`](../internal/watch/cluster_context.go) | one per distinct cluster: catalog, registry, dynamic client, discovery client, reachability |
 | Type lifecycle | [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) | names each verdict transition (`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`) so a consumer reacts to an edge instead of diffing tables. `Registry.Subscribe` has no observer yet; it is a future input to the watch plan |
 
 ### Data plane
 
-State ingestion. One raw watch per `(GitTarget, cell)`, where a cell is group, resource and
-namespace and the served version is carried as data rather than identity. Each is sanitized and
+State ingestion. One raw watch per `(GitTarget, resource collection)`, where a collection is group,
+resource and namespace and the served version is carried as data rather than identity. Each is sanitized and
 routed to a branch worker.
 
 | Component | Path | Role |
@@ -214,9 +214,9 @@ watched-type table:
 
 They agree today only because each re-derives the same answer from the same inputs, and the runner
 then cancels and rebuilds every stream whenever any part of the set changes. That is the problem
-[`design/target-watch-plan.md`](design/target-watch-plan.md) sets out to fix: diff the plan by cell,
-and start, restart or cancel only the cells that changed. The branch worker's queue is untouched by
-that plan, so a canceled cell's already-queued work still runs.
+[`design/target-watch-plan.md`](design/target-watch-plan.md) sets out to fix: diff the plan by
+collection, and start, restart or cancel only the collections that changed. The branch worker's queue
+is untouched by that plan, so a canceled collection's already-queued work still runs.
 
 ## From a served type to an open stream
 
@@ -241,7 +241,7 @@ sequenceDiagram
     R->>R: additions fast, removals slow
     R->>W: followable set
     Note over W: intersect with compiled rules<br/>and the admitted namespaces
-    W->>S: claimed ∩ followable, one stream per cell
+    W->>S: claimed ∩ followable, one stream per collection
     S->>K: WATCH sendInitialEvents=true
     K-->>S: ADDED replay, then initial-events-end
     S->>G: desired set + mark-and-sweep
@@ -266,7 +266,7 @@ Three gates can stop a type before it reaches a stream:
 - [`architecture.md`](architecture.md) for how the pieces work together, starting at Ground Rules
   and Mental Model.
 - [`design/watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) for the
-  target three-layer watch model: cells, the confidence model, and the managed projection.
+  target three-layer watch model: collections, the confidence model, and the managed projection.
 - [`design/target-watch-plan.md`](design/target-watch-plan.md) for the implementable plan that
   replaces wholesale stream replacement with an incremental diff.
 - [`design/data-plane-triggering.md`](design/data-plane-triggering.md) for why that refactor is

@@ -68,19 +68,17 @@ A sentence about namespace policy names one of those two. Never "namespace acces
 ## Read side
 
 Use Kubernetes' collection, watch, and initial-events vocabulary in explanatory prose; see
-[Kubernetes watch options](facts/kubernetes-watch-options.md). Existing identifiers such as
-`CellKey`, `SourceCell`, `Replaying`, and `status.streams` keep their current spelling until an
-explicit code or API migration. This is an intentional transition, not a runtime behavior change.
-The [first implementation step](design/collection-terminology-rename.md) removes the cell vocabulary
-and per-rule operation filters; [label selection](design/watches-labels-simplification.md) follows
-as a separate behavior change.
+[Kubernetes watch options](facts/kubernetes-watch-options.md). Status identifiers such as
+`Replaying` and `status.streams` keep their spelling; their public contract is unchanged.
 
-**Resource collection.** Objects of one group/resource within a namespace selection. In the
-current planner, [`CellKey`](../internal/types/cell.go) contains `(group, resource, namespace)`;
-its containing `GitTarget` supplies target and source-cluster context. The served API version is
-separate data. An all-namespace collection can overlap a named-namespace collection. `Cell` is
-the legacy project name for this boundary. A collection is distinct from both its resource type
-and that type's namespaced or cluster-scoped classification.
+**Resource collection.** Objects of one group/resource within a namespace selection.
+[`CollectionKey`](../internal/types/collection.go) contains `(group, resource, namespace)`; its
+containing `GitTarget` supplies target and source-cluster context. The served API version is
+separate data. An all-namespace collection can overlap a named-namespace collection. A collection
+is distinct from both its resource type and that type's namespaced or cluster-scoped
+classification. A rule selects whole collections: every selected collection is observed through
+creates, updates, and deletions, and `GitTarget.spec.prune.mode` decides what a removal does to
+Git.
 
 **Watch.** The managed observation of a resource collection through Kubernetes watch requests.
 It can initialize, stream events, lose a connection, and reconnect. The implementation currently

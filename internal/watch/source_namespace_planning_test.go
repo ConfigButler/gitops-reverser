@@ -126,10 +126,10 @@ func TestCollectWatchRuleSelections_WildcardIsOneClusterWideScope(t *testing.T) 
 		"a wildcard compiles to the all-namespaces collection, read once")
 }
 
-// A cluster-wide cell is a PEER of a named-namespace cell on the same type, never a replacement.
-// Each rule carries its own operations filter, and collapsing the two once widened the named rule's
-// stream to every namespace its credential could read while discarding that filter (CellKey's own
-// doc comment records the bug). Two streams over overlapping objects is the correct outcome here.
+// A cluster-wide collection is a PEER of a named-namespace collection on the same type, never a
+// replacement. Collapsing the two once widened the named rule's stream to every namespace its
+// credential could read (CollectionKey's own doc comment records the bug). Two streams over
+// overlapping objects is the correct outcome here.
 func TestCollectWatchRuleSelections_WildcardIsAPeerOfANamedNamespace(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	addRule(store,

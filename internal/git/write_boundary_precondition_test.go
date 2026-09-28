@@ -232,7 +232,7 @@ func TestEventLoop_LiveFanInRefusal_FailsGitTargetAndCommitsNothing(t *testing.T
 	var refusedTargets []types.ResourceReference
 	worker.pathRefusal = func(
 		target types.ResourceReference,
-		_ types.CellKey,
+		_ types.CollectionKey,
 		refused *manifestanalyzer.AcceptanceRefusedError,
 	) {
 		refusedTargets = append(refusedTargets, target)

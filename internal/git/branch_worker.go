@@ -180,10 +180,10 @@ type BranchWorker struct {
 	// borrowing the repository lock for it would order the two for no reason.
 	refusalTouchMu   sync.Mutex
 	lastRefusalTouch map[string]time.Time
-	// coveredRefusal records, per GitTarget AND WATCHED CELL, the refusal observation the last
+	// coveredRefusal records, per GitTarget AND WATCHED COLLECTION, the refusal observation the last
 	// empty commit was made for: a digest of the objects that were refused together with the
 	// issues raised about them. A recheck that observes exactly the same thing is already covered
-	// by that commit, so it is not another trigger. It is dropped when a resync for that cell is
+	// by that commit, so it is not another trigger. It is dropped when a resync for that collection is
 	// ACCEPTED — see refusalRecovered, which is what makes a live edit re-made after a revert
 	// count as new, and what keeps one watched type's success from speaking for another's.
 	// Guarded by refusalTouchMu with the rate limit, because the two are read together.
@@ -593,7 +593,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.Log.V(1).Info("Resync request coalesced into the one already queued",
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
-			"sourceCell", sourceCellForLog(request.SourceCell))
+			"sourceCollection", sourceCollectionForLog(request.SourceCollection))
 		return true
 	} else if queued {
 		// A write inside this scope was queued behind the marker. Coalescing here
@@ -621,7 +621,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
-			"sourceCell", sourceCellForLog(request.SourceCell))
+			"sourceCollection", sourceCollectionForLog(request.SourceCollection))
 		return true
 	default:
 		w.inflightItems.Add(-1)
@@ -630,7 +630,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.recordQueueDrop(queueDropResync)
 		w.Log.Error(nil, "Event queue full, resync request dropped",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
-			"sourceCell", sourceCellForLog(request.SourceCell))
+			"sourceCollection", sourceCollectionForLog(request.SourceCollection))
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
@@ -645,7 +645,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 // fields empty, so reading the request alone would silently never match the only path this fence
 // exists for.
 //
-// The scope match is by object identity, not producing stream, because the cell that produced an
+// The scope match is by object identity, not producing stream, because the collection that produced an
 // event cannot be recovered from it. Over-matching is deliberate: it can forgo a coalesce, never
 // wrongly permit one.
 func (w *BranchWorker) markResyncTailForWriteLocked(request *WriteRequest) {
@@ -745,7 +745,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName,
-			"sourceCell", sourceCellForLog(request.sourceCell()))
+			"sourceCollection", sourceCollectionForLog(request.sourceCollection()))
 		// Nothing publishes depth here: the gauge reads inflightItems at scrape
 		// time, so an enqueue is visible to the next scrape whether or not the
 		// loop has woken to notice it.
@@ -754,14 +754,14 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropWrite)
-		// Name the producing cell on a drop. A saturated queue is diagnosed from what was
+		// Name the producing collection on a drop. A saturated queue is diagnosed from what was
 		// dropped and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
-		// one may be one CELL of one GitTarget.
+		// one may be one COLLECTION of one GitTarget.
 		w.Log.Error(nil, "Event queue full, request dropped",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName,
-			"sourceCell", sourceCellForLog(request.sourceCell()))
+			"sourceCollection", sourceCollectionForLog(request.sourceCollection()))
 		return false
 	}
 }
@@ -985,7 +985,7 @@ type branchWorkerEventLoop struct {
 	// overwrite another's pending work: A queues, B replaces it, B is then suspended, and A's
 	// authorized commit is gone with nothing to report it. Execution still coalesces — one commit
 	// on the branch satisfies every entry due at that moment — but the INTENT is kept per target
-	// and per watched cell, so one cell recovering cancels only its own obligation.
+	// and per watched collection, so one collection recovering cancels only its own obligation.
 	refusalPending map[refusalKey]pendingRefusalTouch
 
 	// attachTimer fires at the earliest pending finalize deadline, so an attached
@@ -1229,10 +1229,10 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		// dropped in both cases.
 		name, namespace := atomicRefusalTarget(request)
 		if isRefusal, refused := l.w.reportPathRefusal(
-			err, name, namespace, request.sourceCell()); isRefusal {
+			err, name, namespace, request.sourceCollection()); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureRefused)
 			l.touchBranchForRefusal(name, namespace, err.Error(), refused,
-				refusalObservationForEvents(request.Events, refused), request.sourceCell())
+				refusalObservationForEvents(request.Events, refused), request.sourceCollection())
 		} else {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
@@ -1456,10 +1456,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		// window is dropped either way — the events are already lost to the failed flush,
 		// and the next resync re-derives them.
 		if isRefusal, refused := l.w.reportPathRefusal(
-			err, targetName, targetNamespace, sourceCellForEvents(events)); isRefusal {
+			err, targetName, targetNamespace, sourceCollectionForEvents(events)); isRefusal {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
 			l.touchBranchForRefusal(targetName, targetNamespace, err.Error(), refused,
-				refusalObservationForEvents(events, refused), sourceCellForEvents(events))
+				refusalObservationForEvents(events, refused), sourceCollectionForEvents(events))
 		} else {
 			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 			l.w.Log.Error(err, "Commit failed; dropping open window",

@@ -92,7 +92,7 @@ const (
 	// DefaultCommitterEmail matches the default operator email in Git history.
 	DefaultCommitterEmail = "noreply@configbutler.ai"
 	// DefaultReconcileCommitMessageTemplate names the synced type AND, when the run covered one,
-	// the namespace, so the otherwise indistinguishable per-cell reconciles one GitTarget
+	// the namespace, so the otherwise indistinguishable per-collection reconciles one GitTarget
 	// produces are self-describing: a target watching configmaps in team-a and in team-b would
 	// otherwise write two byte-identical subjects. Plural resource alone for readability; add
 	// {{.APIVersion}} when plural collisions matter.
@@ -389,20 +389,20 @@ type WorkItem struct {
 }
 
 // ResyncScope restricts a resync's mark-and-sweep to the slice of the mirror the desired
-// snapshot was actually gathered over: one cell, and the served version that cell was
+// snapshot was actually gathered over: one collection, and the served version that collection was
 // gathered at.
 //
 // The invariant: THE SWEEP SCOPE MUST BE EXACTLY THE SCOPE THE DESIRED SET WAS GATHERED OVER.
 // Narrower deletes documents that were never in scope; wider silently leaves documents unmanaged.
-// The namespace lives inside the cell so a per-namespace replay cannot reach the sweep carrying
+// The namespace lives inside the collection so a per-namespace replay cannot reach the sweep carrying
 // only its type — a replay of one namespace once swept every other namespace's documents.
 type ResyncScope struct {
-	// Cell is the sweep boundary and the scope's identity: group, resource, namespace.
-	Cell types.CellKey
+	// Collection is the sweep boundary and the scope's identity: group, resource, namespace.
+	Collection types.CollectionKey
 	// Version is the served version the desired set was gathered at. It is DATA, not
 	// identity: it renders the reconcile commit message's {{.APIVersion}} and names the
-	// version a snapshot came from in logs, and it is deliberately absent from the cell
-	// key, so a scope always round-trips to the boundary it sweeps (types.CellKey).
+	// version a snapshot came from in logs, and it is deliberately absent from the collection
+	// key, so a scope always round-trips to the boundary it sweeps (types.CollectionKey).
 	Version string
 }
 
@@ -410,7 +410,7 @@ type ResyncScope struct {
 // namespace it was gathered in. It is the only constructor: going through it is what keeps
 // the version on the data side of the type and out of the identity.
 func ResyncScopeFor(gvr schema.GroupVersionResource, namespace string) ResyncScope {
-	return ResyncScope{Cell: types.CellKeyFor(gvr, namespace), Version: gvr.Version}
+	return ResyncScope{Collection: types.CollectionKeyFor(gvr, namespace), Version: gvr.Version}
 }
 
 // GVR reconstructs the served GroupVersionResource this scope was gathered with, for the
@@ -419,7 +419,7 @@ func (s *ResyncScope) GVR() schema.GroupVersionResource {
 	if s == nil {
 		return schema.GroupVersionResource{}
 	}
-	return schema.GroupVersionResource{Group: s.Cell.Group, Version: s.Version, Resource: s.Cell.Resource}
+	return schema.GroupVersionResource{Group: s.Collection.Group, Version: s.Version, Resource: s.Collection.Resource}
 }
 
 // String renders the scope for logs and for the deferred-heal key. It is nil-safe: a nil
@@ -428,7 +428,7 @@ func (s *ResyncScope) String() string {
 	if s == nil {
 		return ""
 	}
-	return s.Cell.String()
+	return s.Collection.String()
 }
 
 // Matches reports whether a resolved resource identity falls inside this scope. A nil scope
@@ -438,7 +438,7 @@ func (s *ResyncScope) Matches(ri types.ResourceIdentifier) bool {
 	if s == nil {
 		return true
 	}
-	return s.Cell.Matches(ri)
+	return s.Collection.Matches(ri)
 }
 
 // ResyncRequest is a synchronous resync of one GitTarget against a complete,
@@ -468,24 +468,24 @@ type ResyncRequest struct {
 	// acceptance gate. Forced GitTarget rechecks use it because their trigger is often "I changed
 	// Git; look again", and the local checkout may still hold the refused revision.
 	RefreshRemote bool
-	// SourceCell names the target-watch cell that gathered this snapshot. Zero for a
-	// whole-GitTarget resync, which speaks for no single cell. Diagnostic only: nothing
-	// filters the queue on it. See source_cell.go.
-	SourceCell types.CellKey
+	// SourceCollection names the target-watch collection that gathered this snapshot. Zero for a
+	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing
+	// filters the queue on it. See source_collection.go.
+	SourceCollection types.CollectionKey
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult
 }
 
-// refusalCell is the watched cell this request speaks for: its scope's cell for a per-type
-// reconcile, and the ZERO cell for a whole-GitTarget resync, which speaks for every cell the
+// refusalCollection is the watched collection this request speaks for: its scope's collection for a per-type
+// reconcile, and the ZERO collection for a whole-GitTarget resync, which speaks for every collection the
 // target holds rather than for one of them. It is what keys a refusal's dedupe memory and its
 // queued commit, so that one watched type's success neither clears nor re-arms another's.
-func (r *ResyncRequest) refusalCell() types.CellKey {
+func (r *ResyncRequest) refusalCollection() types.CollectionKey {
 	if r == nil || r.Scope == nil {
-		return types.CellKey{}
+		return types.CollectionKey{}
 	}
-	return r.Scope.Cell
+	return r.Scope.Collection
 }
 
 // resyncKey identifies the slice of a mirror a resync reconciles: one GitTarget,
@@ -517,7 +517,7 @@ type pendingResync struct {
 func resyncKeyFor(request *ResyncRequest) resyncKey {
 	key := resyncKey{namespace: request.GitTargetNamespace, name: request.GitTargetName}
 	if request.Scope != nil {
-		key.scope = request.Scope.Cell.String()
+		key.scope = request.Scope.Collection.String()
 	}
 	return key
 }
@@ -636,10 +636,10 @@ type Event struct {
 	// BootstrapOptions controls path-scoped bootstrap file staging for this event.
 	BootstrapOptions pathBootstrapOptions
 
-	// SourceCell names the target-watch cell that produced this event. Zero for every
+	// SourceCollection names the target-watch collection that produced this event. Zero for every
 	// non-stream producer (reconcile, bootstrap, the admission path). Diagnostic only:
-	// nothing filters the queue on it. See source_cell.go.
-	SourceCell types.CellKey
+	// nothing filters the queue on it. See source_collection.go.
+	SourceCollection types.CollectionKey
 }
 
 // IsFieldPatch reports whether the event carries a bounded field patch instead of

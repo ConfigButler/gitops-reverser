@@ -31,9 +31,9 @@ import (
 func TestReportGitPathRefusal_SurfacesWriteBoundaryRefusal(t *testing.T) {
 	mgr := &Manager{Log: logr.Discard()}
 	gitDest := types.NewResourceReference("podinfo-test", "team-a")
-	cell := types.CellKeyFor(configmapsGVR, "apps")
+	collection := types.CollectionKeyFor(configmapsGVR, "apps")
 
-	mgr.ReportGitPathRefusal(gitDest, cell, &manifestanalyzer.AcceptanceRefusedError{
+	mgr.ReportGitPathRefusal(gitDest, collection, &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind:    manifestanalyzer.IssueWriteFanIn,
 			Path:    "base/deployment.yaml",
@@ -46,8 +46,8 @@ func TestReportGitPathRefusal_SurfacesWriteBoundaryRefusal(t *testing.T) {
 	assert.Equal(t, "WriteBoundaryRefused", gitPath.Reason,
 		"a pure write-boundary refusal must not hide behind the umbrella UnsupportedContent reason")
 	assert.Contains(t, gitPath.Message, "base/deployment.yaml", "the refusal must name the offending file")
-	assert.Equal(t, cell, gitPath.RefusedCell)
-	assert.True(t, gitPath.RefusedCellSet)
+	assert.Equal(t, collection, gitPath.RefusedCollection)
+	assert.True(t, gitPath.RefusedCollectionSet)
 	assert.Empty(t, mgr.watchPlane().streams, "a Git path refusal must not mutate stream readiness")
 }
 
@@ -57,7 +57,7 @@ func TestReportGitPathRefusal_ContentRefusalKeepsUmbrellaReason(t *testing.T) {
 	mgr := &Manager{Log: logr.Discard()}
 	gitDest := types.NewResourceReference("podinfo-test", "team-a")
 
-	mgr.ReportGitPathRefusal(gitDest, types.CellKey{}, &manifestanalyzer.AcceptanceRefusedError{
+	mgr.ReportGitPathRefusal(gitDest, types.CollectionKey{}, &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind:    manifestanalyzer.IssueForeignFile,
 			Path:    "notes.txt",
@@ -88,15 +88,15 @@ func TestGitPathAcceptance_MessageChangePublishesStatus(t *testing.T) {
 func TestGitPathAcceptance_SiblingScopeSuccessDoesNotClearRefusal(t *testing.T) {
 	mgr := &Manager{Log: logr.Discard()}
 	gitDest := types.NewResourceReference("podinfo-test", "team-a")
-	configMaps := types.CellKeyFor(configmapsGVR, "apps")
-	secrets := types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "apps")
+	configMaps := types.CollectionKeyFor(configmapsGVR, "apps")
+	secrets := types.CollectionKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "apps")
 
 	mgr.MarkTargetGitPathScopeRefused(gitDest, configMaps, "UnsupportedContent", "configmaps refused")
 	mgr.MarkTargetGitPathScopeAccepted(gitDest, secrets)
 
 	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
 	assert.False(t, gitPath.Accepted, "an unrelated successful scope must not clear the target refusal")
-	assert.Equal(t, configMaps, gitPath.RefusedCell)
+	assert.Equal(t, configMaps, gitPath.RefusedCollection)
 
 	mgr.MarkTargetGitPathScopeAccepted(gitDest, configMaps)
 	assert.True(t, mgr.GitPathAcceptanceForGitTarget(gitDest).Accepted)
@@ -105,15 +105,15 @@ func TestGitPathAcceptance_SiblingScopeSuccessDoesNotClearRefusal(t *testing.T) 
 func TestGitPathAcceptance_ScopedSuccessDoesNotClearUnscopedRefusal(t *testing.T) {
 	mgr := &Manager{Log: logr.Discard()}
 	gitDest := types.NewResourceReference("podinfo-test", "team-a")
-	configMaps := types.CellKeyFor(configmapsGVR, "apps")
+	configMaps := types.CollectionKeyFor(configmapsGVR, "apps")
 
 	mgr.MarkTargetGitPathRefused(gitDest, "UnsupportedContent", "whole target refused")
 	mgr.MarkTargetGitPathScopeAccepted(gitDest, configMaps)
 
 	assert.False(t, mgr.GitPathAcceptanceForGitTarget(gitDest).Accepted,
-		"a cell success must not clear a target-wide refusal")
+		"a collection success must not clear a target-wide refusal")
 
-	mgr.MarkTargetGitPathScopeAccepted(gitDest, types.CellKey{})
+	mgr.MarkTargetGitPathScopeAccepted(gitDest, types.CollectionKey{})
 	assert.True(t, mgr.GitPathAcceptanceForGitTarget(gitDest).Accepted,
 		"a whole-target proof may clear an unscoped refusal")
 }
@@ -141,22 +141,22 @@ func TestRenderFidelityStatus_ReducesTheCurrentPlansScopes(t *testing.T) {
 
 	revisions := manager.restartAllFidelityScopes(target, deployment, other)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, revisions[deployment.Cell()], deployment.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[deployment.Collection()], deployment.Collection())
 	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State)
-	manager.MarkTargetRenderFidelityScopeDiverged(target, revisions[other.Cell()], other.Cell(),
+	manager.MarkTargetRenderFidelityScopeDiverged(target, revisions[other.Collection()], other.Collection(),
 		manifestanalyzer.RenderDivergence{Field: "data.region", Token: "${REGION}"})
 	assert.Equal(t, git.RenderFidelityFalse, manager.RenderFidelityForGitTarget(target).State)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, revisions[other.Cell()], other.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[other.Collection()], other.Collection())
 	assert.Equal(t, git.RenderFidelityFalse, manager.RenderFidelityForGitTarget(target).State,
 		"a later clean result cannot overwrite the failed scope under the same revision")
 
 	fresh := manager.restartAllFidelityScopes(target, deployment, other)
-	manager.MarkTargetRenderFidelityScopeClean(target, revisions[deployment.Cell()], deployment.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[deployment.Collection()], deployment.Collection())
 	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State,
 		"a stale result from the previous revision must be ignored")
-	manager.MarkTargetRenderFidelityScopeClean(target, fresh[deployment.Cell()], deployment.Cell())
-	manager.MarkTargetRenderFidelityScopeClean(target, fresh[other.Cell()], other.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, fresh[deployment.Collection()], deployment.Collection())
+	manager.MarkTargetRenderFidelityScopeClean(target, fresh[other.Collection()], other.Collection())
 	assert.Equal(t, git.RenderFidelityTrue, manager.RenderFidelityForGitTarget(target).State)
 }
 
@@ -165,16 +165,16 @@ func TestRenderFidelityStatus_ReducesTheCurrentPlansScopes(t *testing.T) {
 func (m *Manager) restartAllFidelityScopes(
 	target types.ResourceReference,
 	keys ...targetWatchKey,
-) map[types.CellKey]uint64 {
-	cells := cellsForWatchKeys(keys)
-	revisions, _ := m.reconcileTargetRenderFidelity(target, cells, cells)
+) map[types.CollectionKey]uint64 {
+	collections := collectionsForWatchKeys(keys)
+	revisions, _ := m.reconcileTargetRenderFidelity(target, collections, collections)
 	return revisions
 }
 
 // A stream carries the revision it was STARTED with, so a cancelled stream still in flight with
 // a replay result cannot report a scope clean under a revision it never replayed for. Reading
-// the cell's current revision when the result was ready is what made that possible, and a scope is
-// now a cell — so a stream retired by a served-version change lands squarely on the live cell's
+// the collection's current revision when the result was ready is what made that possible, and a scope is
+// now a collection — so a stream retired by a served-version change lands squarely on the live collection's
 // scope instead of missing it.
 func TestTargetWatchStream_CarriesTheRevisionItWasStartedWith(t *testing.T) {
 	workerManager := git.NewWorkerManager(
@@ -191,18 +191,18 @@ func TestTargetWatchStream_CarriesTheRevisionItWasStartedWith(t *testing.T) {
 	v2 := targetWatchKey{
 		GVR: schema.GroupVersionResource{Group: "apps", Version: "v2", Resource: "deployments"}, Namespace: "apps"}
 
-	retired := manager.restartAllFidelityScopes(target, v1)[v1.Cell()]
+	retired := manager.restartAllFidelityScopes(target, v1)[v1.Collection()]
 	require.NotZero(t, retired, "the revision a started stream captures")
 
-	live := manager.restartAllFidelityScopes(target, v2)[v2.Cell()]
+	live := manager.restartAllFidelityScopes(target, v2)[v2.Collection()]
 	require.NotEqual(t, retired, live)
 
-	// The retired v1 stream reports its replay clean. Same cell as the live v2 stream, older
+	// The retired v1 stream reports its replay clean. Same collection as the live v2 stream, older
 	// revision: it must not reopen writes for a snapshot the new plan never gathered.
-	manager.MarkTargetRenderFidelityScopeClean(target, retired, v1.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, retired, v1.Collection())
 	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, live, v2.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, live, v2.Collection())
 	assert.Equal(t, git.RenderFidelityTrue, manager.RenderFidelityForGitTarget(target).State,
 		"the live stream's own result is what reopens writes")
 }
@@ -218,7 +218,7 @@ func TestReportGitPathRefusal_RenderFidelityKeepsGitPathAccepted(t *testing.T) {
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")
 
-	manager.ReportGitPathRefusal(target, types.CellKey{}, &manifestanalyzer.AcceptanceRefusedError{
+	manager.ReportGitPathRefusal(target, types.CollectionKey{}, &manifestanalyzer.AcceptanceRefusedError{
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind: manifestanalyzer.IssueRenderDoesNotMatchLive, Field: "data.region", Token: "${REGION}",
 		}},
@@ -254,17 +254,17 @@ func TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake(t *testing
 	manager := &Manager{Log: log}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")
-	cell := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+	collection := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 
-	first := manager.restartAllFidelityScopes(target, cell)
+	first := manager.restartAllFidelityScopes(target, collection)
 	// Restart it so the earlier revision is genuinely superseded rather than merely absent.
-	manager.restartAllFidelityScopes(target, cell)
+	manager.restartAllFidelityScopes(target, collection)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, first[cell.Cell()], cell.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, first[collection.Collection()], collection.Collection())
 
 	joined := strings.Join(*lines, "\n")
 	assert.Contains(t, joined, "a render scope result was not applied")
-	assert.Contains(t, joined, cell.Cell().String())
+	assert.Contains(t, joined, collection.Collection().String())
 	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State,
 		"a refused report must not converge the target")
 }
@@ -283,10 +283,10 @@ func TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision(t *testing.T) {
 	manager := &Manager{Log: log}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
 	target := types.NewResourceReference("podinfo-test", "team-a")
-	cell := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-	manager.restartAllFidelityScopes(target, cell)
+	collection := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+	manager.restartAllFidelityScopes(target, collection)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, 0, cell.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, 0, collection.Collection())
 
 	assert.Contains(t, strings.Join(*lines, "\n"), "stream carries no revision")
 }
@@ -313,14 +313,14 @@ func TestRenderFidelityStatus_PublishesTheCurrentStatusNotTheObservedOne(t *test
 	revisions := manager.restartAllFidelityScopes(target, first, second)
 
 	// Complete the set, so the gate is True...
-	manager.MarkTargetRenderFidelityScopeClean(target, revisions[first.Cell()], first.Cell())
-	manager.MarkTargetRenderFidelityScopeClean(target, revisions[second.Cell()], second.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[first.Collection()], first.Collection())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[second.Collection()], second.Collection())
 	require.Equal(t, git.RenderFidelityTrue, manager.RenderFidelityForGitTarget(target).State)
 
 	// ...then let a straggler re-report the scope it already reported. Under the old behaviour it
 	// published the status IT computed; the published projection must still describe a converged
 	// target, because that is what the gate says.
-	manager.MarkTargetRenderFidelityScopeClean(target, revisions[first.Cell()], first.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[first.Collection()], first.Collection())
 
 	published := manager.watchPlane().fidelity[target.Key()]
 	assert.Equal(t, git.RenderFidelityTrue, published.State,

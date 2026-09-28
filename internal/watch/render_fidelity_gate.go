@@ -23,7 +23,7 @@ func (m *Manager) fidelityGate() *git.RenderFidelityGate {
 // reconcileTargetRenderFidelity installs the target's current scope set and returns the revision
 // each scope's stream must report under, plus whether the caller should enqueue a status refresh.
 //
-// Only the cells in restarted go back to pending; a cell whose stream was left running keeps its
+// Only the collections in restarted go back to pending; a collection whose stream was left running keeps its
 // revision and its result, so an unrelated plan change neither closes writes on it nor clears a
 // divergence nothing re-measured. A nil map means no shared gate is wired, which the mark path
 // treats as the legacy data path.
@@ -33,14 +33,14 @@ func (m *Manager) fidelityGate() *git.RenderFidelityGate {
 // wrong — is one of the four hazards the ownership design names.
 func (m *Manager) reconcileTargetRenderFidelity(
 	target types.ResourceReference,
-	cells []types.CellKey,
-	restarted []types.CellKey,
-) (map[types.CellKey]uint64, bool) {
+	collections []types.CollectionKey,
+	restarted []types.CollectionKey,
+) (map[types.CollectionKey]uint64, bool) {
 	gate := m.fidelityGate()
 	if gate == nil {
 		return nil, false
 	}
-	status, revisions := gate.Reconcile(target, cells, restarted)
+	status, revisions := gate.Reconcile(target, collections, restarted)
 	return revisions, m.publishRenderFidelityStatus(target, status)
 }
 
@@ -55,13 +55,13 @@ func (m *Manager) RenderFidelityForGitTarget(target types.ResourceReference) Ren
 	return gate.Status(target)
 }
 
-// MarkTargetRenderFidelityScopeClean records one complete clean replay result from the cell's
+// MarkTargetRenderFidelityScopeClean records one complete clean replay result from the collection's
 // current stream. A stale cancellation tail carries the retired stream's revision, so the gate
 // ignores it and it cannot reopen a failed target.
 func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	target types.ResourceReference,
 	revision uint64,
-	cell types.CellKey,
+	collection types.CollectionKey,
 ) {
 	gate := m.fidelityGate()
 	if gate == nil {
@@ -70,12 +70,12 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	if revision == 0 {
 		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
 		// started without one. Its result is unusable and its scope keeps owing a report.
-		m.logUnappliedFidelityReport(target, cell, revision, "clean (stream carries no revision)")
+		m.logUnappliedFidelityReport(target, collection, revision, "clean (stream carries no revision)")
 		return
 	}
-	status, applied := gate.RecordScopeClean(target, revision, cell)
+	status, applied := gate.RecordScopeClean(target, revision, collection)
 	if !applied {
-		m.logUnappliedFidelityReport(target, cell, revision, "clean")
+		m.logUnappliedFidelityReport(target, collection, revision, "clean")
 		return
 	}
 	// TEMPORARY at Info, while Failure A is open. The refusal paths above are logged and the
@@ -84,9 +84,9 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	// produced exactly that silence, which decided nothing.
 	//
 	// It is bounded: a scope accepts one report per revision, and a revision only moves when the
-	// plan restarts the cell. Lower it to V(1) once A is named.
+	// plan restarts the collection. Lower it to V(1) once A is named.
 	m.Log.WithName("render-fidelity").Info("render scope result accepted",
-		"gitDest", target.String(), "cell", cell.String(), "revision", revision,
+		"gitDest", target.String(), "collection", collection.String(), "revision", revision,
 		"state", string(status.State), "status", status.Message)
 	// Publish the gate's CURRENT status, not the one this drain observed. Sibling drains record
 	// concurrently and their publishes can reorder, so a drain that saw "1 of 4 pending" could
@@ -108,13 +108,13 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 // converge on its own.
 func (m *Manager) logUnappliedFidelityReport(
 	target types.ResourceReference,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	revision uint64,
 	kind string,
 ) {
 	m.Log.WithName("render-fidelity").Info(
 		"a render scope result was not applied; this scope still owes a report and cannot converge alone",
-		"gitDest", target.String(), "cell", cell.String(), "reportedRevision", revision, "result", kind,
+		"gitDest", target.String(), "collection", collection.String(), "reportedRevision", revision, "result", kind,
 		"status", m.RenderFidelityForGitTarget(target).Message)
 }
 
@@ -122,7 +122,7 @@ func (m *Manager) logUnappliedFidelityReport(
 func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 	target types.ResourceReference,
 	revision uint64,
-	cell types.CellKey,
+	collection types.CollectionKey,
 	divergence manifestanalyzer.RenderDivergence,
 ) {
 	gate := m.fidelityGate()
@@ -132,12 +132,12 @@ func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 	if revision == 0 {
 		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
 		// started without one. Its result is unusable and its scope keeps owing a report.
-		m.logUnappliedFidelityReport(target, cell, revision, "diverged (stream carries no revision)")
+		m.logUnappliedFidelityReport(target, collection, revision, "diverged (stream carries no revision)")
 		return
 	}
-	_, applied := gate.RecordScopeDivergence(target, revision, cell, divergence)
+	_, applied := gate.RecordScopeDivergence(target, revision, collection, divergence)
 	if !applied {
-		m.logUnappliedFidelityReport(target, cell, revision, "diverged")
+		m.logUnappliedFidelityReport(target, collection, revision, "diverged")
 		return
 	}
 	// Current status, for the same reason as the clean path above.

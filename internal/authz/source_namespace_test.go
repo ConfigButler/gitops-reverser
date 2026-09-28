@@ -138,7 +138,7 @@ func TestResolveWatchRuleSourceScope(t *testing.T) {
 			reason:   authz.ReasonSourceNamespaceNotAllowed,
 		},
 		{
-			name:       "the wildcard resolves to the cluster-wide cell",
+			name:       "the wildcard resolves to the cluster-wide collection",
 			items:      []string{snWildcard},
 			delegate:   true,
 			admitted:   true,
@@ -310,7 +310,7 @@ func TestResolvedSourceScope_Fingerprint(t *testing.T) {
 	assert.Equal(t, named.Fingerprint(), same.Fingerprint(),
 		"an unchanged resolution must fingerprint identically, or the table rebuilds forever")
 	assert.NotEqual(t, named.Fingerprint(), wildcard.Fingerprint(),
-		"a named namespace and the cluster-wide cell are different watches")
+		"a named namespace and the cluster-wide collection are different watches")
 }
 
 // An empty rule is vacuously authorized. It is reachable through the API only transiently, and a
@@ -342,7 +342,7 @@ func TestResolvedSourceScope_NamespacesForIsBoundsChecked(t *testing.T) {
 }
 
 // The aggregate message deduplicates and sorts, so a rule whose items overlap does not report the
-// same namespace twice, and the cluster-wide cell is spelled out rather than shown as the empty
+// same namespace twice, and the cluster-wide collection is spelled out rather than shown as the empty
 // string an operator would read as a missing value.
 func TestResolveWatchRuleSourceScope_AggregateMessageIsDeduplicatedAndLegible(t *testing.T) {
 	reader := snReader(t, snTarget(), snClusterProvider(true))
@@ -355,5 +355,5 @@ func TestResolveWatchRuleSourceScope_AggregateMessageIsDeduplicatedAndLegible(t 
 	assert.Equal(t, 1, strings.Count(resolved.Message, snSourceNS),
 		"a namespace two items both name is reported once")
 	assert.Contains(t, resolved.Message, "every namespace (cluster-wide)",
-		`the cluster-wide cell must be named, not rendered as an empty string`)
+		`the cluster-wide collection must be named, not rendered as an empty string`)
 }

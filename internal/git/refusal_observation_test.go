@@ -92,7 +92,7 @@ func refuseResync(t *testing.T, f *ledgerFixture, l *branchWorkerEventLoop, imag
 }
 
 // deploymentResyncScope is the per-type reconcile a refused Deployment arrives on. Every refusal
-// in these tests is filed under a cell, because that is what the real path carries and what the
+// in these tests is filed under a collection, because that is what the real path carries and what the
 // dedupe is keyed by.
 func deploymentResyncScope() ResyncScope {
 	return ResyncScopeFor(
@@ -205,7 +205,7 @@ func TestRefusalObservation_NothingIsCoveredUntilACommitIsMade(t *testing.T) {
 		"and it must not overwrite what is covered")
 }
 
-// TestRefusalObservation_RecoveryIsScopedToTheCellThatRecovered is the recovery half, and the
+// TestRefusalObservation_RecoveryIsScopedToTheCollectionThatRecovered is the recovery half, and the
 // regression a review found in it.
 //
 // Without any recovery the fence would be a permanent mute: a user re-making the same live edit
@@ -214,7 +214,7 @@ func TestRefusalObservation_NothingIsCoveredUntilACommitIsMade(t *testing.T) {
 // the loop coming back by another door: a GitTarget watches several types, a no-op ConfigMap
 // resync succeeds every time it runs, and the still-refused Deployment would be re-armed by every
 // one of them. A successful evaluation may only speak for what it evaluated.
-func TestRefusalObservation_RecoveryIsScopedToTheCellThatRecovered(t *testing.T) {
+func TestRefusalObservation_RecoveryIsScopedToTheCollectionThatRecovered(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
 		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
 	})
@@ -226,32 +226,32 @@ func TestRefusalObservation_RecoveryIsScopedToTheCellThatRecovered(t *testing.T)
 	w.recordRefusalObservation(deployments, "observation-1")
 	w.recordRefusalObservation(configMaps, "observation-2")
 
-	loop.refusalRecovered(editingRef(), configMaps.cell)
+	loop.refusalRecovered(editingRef(), configMaps.collection)
 
 	assert.True(t, w.refusalAlreadyCovered(deployments, "observation-1"),
 		"one watched type succeeding is no evidence about another that is still refused")
 	assert.False(t, w.refusalAlreadyCovered(configMaps, "observation-2"),
-		"the cell that was accepted has nothing outstanding")
+		"the collection that was accepted has nothing outstanding")
 
-	loop.refusalRecovered(editingRef(), deployments.cell)
+	loop.refusalRecovered(editingRef(), deployments.collection)
 	assert.False(t, w.refusalAlreadyCovered(deployments, "observation-1"),
-		"and once its own cell is accepted, the next refusal there is new again")
+		"and once its own collection is accepted, the next refusal there is new again")
 
-	// The ZERO cell is a whole-GitTarget evaluation, which does speak for every cell it holds.
+	// The ZERO collection is a whole-GitTarget evaluation, which does speak for every collection it holds.
 	w.recordRefusalObservation(deployments, "observation-1")
 	w.recordRefusalObservation(configMaps, "observation-2")
-	loop.refusalRecovered(editingRef(), itypes.CellKey{})
+	loop.refusalRecovered(editingRef(), itypes.CollectionKey{})
 	assert.False(t, w.refusalAlreadyCovered(deployments, "observation-1"))
 	assert.False(t, w.refusalAlreadyCovered(configMaps, "observation-2"))
 }
 
-// TestRefusalObservation_RecoveryCancelsTheQueuedCommitForThatCell is the other half of the same
+// TestRefusalObservation_RecoveryCancelsTheQueuedCommitForThatCollection is the other half of the same
 // regression.
 //
-// Dropping the digest is not enough: a commit already queued for that cell finds nothing covering
+// Dropping the digest is not enough: a commit already queued for that collection finds nothing covering
 // it when its timer fires and moves the branch anyway, for a refusal that has since been accepted.
-// The obligation has to go with the memory — and only that cell's obligation.
-func TestRefusalObservation_RecoveryCancelsTheQueuedCommitForThatCell(t *testing.T) {
+// The obligation has to go with the memory — and only that collection's obligation.
+func TestRefusalObservation_RecoveryCancelsTheQueuedCommitForThatCollection(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
 		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
 	})
@@ -264,12 +264,12 @@ func TestRefusalObservation_RecoveryCancelsTheQueuedCommitForThatCell(t *testing
 	loop.armTrailingRefusalTouch(configMaps, "the configmap was refused", "observation-2", 0)
 	require.Len(t, loop.refusalPending, 2)
 
-	loop.refusalRecovered(editingRef(), deployments.cell)
+	loop.refusalRecovered(editingRef(), deployments.collection)
 
 	assert.NotContains(t, loop.refusalPending, deployments,
 		"a queued commit must not survive the acceptance of the object it was queued for")
 	assert.Contains(t, loop.refusalPending, configMaps,
-		"and the cell that is still refused keeps its obligation")
+		"and the collection that is still refused keeps its obligation")
 
 	// Nothing was committed for the cancelled entry, so it must not have spent the window either.
 	limited, _ := w.refusalRateLimited(editingRef())
@@ -374,7 +374,7 @@ func TestRefusalTouch_AnAcceptedSiblingTypeDoesNotRearmAStandingRefusal(t *testi
 	refuseResync(t, f, l, "ghcr.io/example/podinfo:9.9.9")
 	require.Equal(t, before+1, remoteCommits(t, f), "the first refusal earns its commit")
 
-	// A different watched cell, with nothing to write and nothing to refuse.
+	// A different watched collection, with nothing to write and nothing to refuse.
 	configMaps := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "default")
 	result := make(chan ResyncResult, 1)
 	l.applyResync(&ResyncRequest{
@@ -495,7 +495,7 @@ func overlayRefusalFixture(t *testing.T, slug string) *ledgerFixture {
 	return f
 }
 
-// TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCell is the handler-level regression for
+// TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCollection is the handler-level regression for
 // recovery: the same transition as the focused state test, but driven through the real applyResync
 // hook against a real Git remote, so it holds the hook's PLACEMENT and not only the state it
 // writes. It is the case a review reproduced.
@@ -504,7 +504,7 @@ func overlayRefusalFixture(t *testing.T, slug string) *ledgerFixture {
 // second edit inside the rate-limit window queues a trailing commit, and then the object is put
 // back to what the folder renders and is accepted. The queued commit is now asking the reconciler
 // to re-apply on account of a refusal that no longer exists, so it must not fire.
-func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCell(t *testing.T) {
+func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCollection(t *testing.T) {
 	f := overlayRefusalFixture(t, "recovery-cancels-queued")
 	l := newBranchWorkerEventLoop(f.worker, time.Hour)
 	t.Cleanup(l.stopTimers)
@@ -513,8 +513,8 @@ func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCell(t *testing.T) {
 	scope := ResyncScopeFor(
 		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "production")
 	key := refusalKey{
-		target: itypes.NewResourceReference(ledgerTargetName, "default"),
-		cell:   scope.Cell,
+		target:     itypes.NewResourceReference(ledgerTargetName, "default"),
+		collection: scope.Collection,
 	}
 	// observe mirrors one per-type reconcile. An empty logLevel is the object exactly as the
 	// folder renders it; anything else is a base-owned field edit with nowhere to land.

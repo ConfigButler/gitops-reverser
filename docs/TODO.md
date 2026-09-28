@@ -94,7 +94,7 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
 - [ ] Revisit `StreamsStatus.PendingSample`, whose five-entry cap stops being
-  representative now that `sourceNamespace: "*"` produces one cluster-wide cell instead of N named
+  representative now that `sourceNamespace: "*"` produces one cluster-wide collection instead of N named
   ones. This is all that survives of a "collapse the wildcard fan-out" item: the redefinition that
   shipped in [#330](https://github.com/ConfigButler/gitops-reverser/pull/330) deleted the fan-out
   rather than optimizing it, so the optimization it described is no longer a thing to build.
@@ -107,8 +107,8 @@ This file is meant to track the smaller current backlog, not historical notes.
   of the only signal that can separate a type genuinely withdrawn (a settled `TypeRemoved`, past
   `RemovalGrace`) from a discovery wobble, and mistaking the second for the first deletes a user's
   manifests. Its intended consumer is the `stop` classification in
-  [target-watch-plan.md](design/target-watch-plan.md), "What a cell leaving means": a settled
-  removal drops its cell from the plan and the Git-side sweep converges the mirror under the
+  [target-watch-plan.md](design/target-watch-plan.md), "What a collection leaving means": a
+  settled removal drops its collection from the plan and the Git-side sweep converges the mirror under the
   target's existing `spec.prune.mode`. Nothing has to be decided first — only removal on *intent*
   waits on an open question. Tracked here so an unconsumed producer with a good comment on it does
   not quietly rot into dead code.
@@ -139,7 +139,7 @@ This file is meant to track the smaller current backlog, not historical notes.
   [watch-plane-status-convergence-failures.md](design/watch-plane-status-convergence-failures.md)
   §3.
 
-  **The question to answer:** widening `prune.mode` sets `force`, which classifies every cell as
+  **The question to answer:** widening `prune.mode` sets `force`, which classifies every collection as
   `restart` and issues fresh revisions, while the 30s periodic sweep also re-runs
   `retainTargetRetentionScopes` for every declared target. Can a pass landing *while a replay is
   in flight* install a revision that differs from the one the in-flight replay captured at start?

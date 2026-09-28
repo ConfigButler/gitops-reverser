@@ -10,7 +10,7 @@
 
 **The short version.** Adding a single WatchRule tears down and replays every
 watch stream a GitTarget has. Under load that floods a queue which is shared with
-other tenants. The fix is to reconcile only the cells that changed, and it lives
+other tenants. The fix is to reconcile only the collections that changed, and it lives
 in [TargetWatchPlan](target-watch-plan.md). This page is the background: what
 went wrong, how the pipeline works, and the one ordering rule any fix has to
 respect.
@@ -83,7 +83,7 @@ flowchart TB
     API -->|"audit webhook"| AUD["audit ingest"]
     AUD --> FS["per-type audit fact stream<br/>(Redis)"]
 
-    API -->|"watch"| TW["target watch<br/>one goroutine per<br/>(GitTarget, cell)"]
+    API -->|"watch"| TW["target watch<br/>one goroutine per<br/>(GitTarget, collection)"]
 
     TW --> SAN["sanitize + followability<br/>+ no-op suppression"]
     SAN --> GR["attribution grace window<br/>(head-of-line, per event)"]
@@ -120,10 +120,10 @@ resync".
 
 This is the finding that reframed everything else, and it is now built:
 [target-watch-plan.md](target-watch-plan.md) carries the design and the state.
-`targetWatchSpecs(table)` already computed the desired stream set as a map from
-one cell to that stream's operation filter, and what was missing was a
-**per-cell** diff. The comparison was whole-set equality, so a declaration was
-either untouched or replaced wholesale:
+`targetWatchSpecs(table)` already computed the desired stream set as a map keyed
+by collection, and what was missing was a **per-collection** diff. The comparison
+was whole-set equality, so a declaration was either untouched or replaced
+wholesale:
 
 ```mermaid
 flowchart TB
@@ -150,14 +150,14 @@ change instead of by deletion.
 
 The cause is structural: the render-fidelity **epoch is per-target**. One epoch
 covers every scope, so a scope that resumed from its cursor instead of replaying
-would stay pending in the new epoch forever. Making readiness per cell is what
-unlocks the diff.
+would stay pending in the new epoch forever. Making readiness per collection is
+what unlocks the diff.
 
 One subtlety worth carrying forward: when a rule **moves**, both scopes are
 invalidated. Editing a rule's `sourceNamespace` from `team-b` to `team-c`
-produces a `stop` for the old cell and a `start` for the new one. What happens to
-the departing cell's documents is decided by the cause table in
-[TargetWatchPlan](target-watch-plan.md), "What a cell leaving means".
+produces a `stop` for the old collection and a `start` for the new one. What
+happens to the departing collection's documents is decided by the cause table in
+[TargetWatchPlan](target-watch-plan.md), "What a collection leaving means".
 
 ## 3. The queue is doing two unrelated jobs
 
@@ -233,22 +233,22 @@ proposal to replace the resync payload with a bare dirty set was dropped.
 ## 5. Where we are
 
 The plan lives in [TargetWatchPlan](target-watch-plan.md), which is the single
-place to read it from. In outline: diff the plan by cell and log it, then apply
-the diff so unrelated replays stop. The semantics of removal come after,
+place to read it from. In outline: diff the plan by collection and log it, then
+apply the diff so unrelated replays stop. The semantics of removal come after,
 deliberately.
 
 That plan applies its decisions by starting and canceling streams, and nothing
 filters the queue. A branch worker serves one GitProvider and branch rather than
 one GitTarget, so its queue is shared across tenants and must not hold per-tenant
-configuration. A short tail of writes from a cell that has been deselected is
-therefore accepted: it is bounded by the queue, and the files it touches are
+configuration. A short tail of writes from a collection that has been deselected
+is therefore accepted: it is bounded by the queue, and the files it touches are
 retained anyway.
 
 Shipped so far: the storm source is fixed and resyncs coalesce
 ([#312](https://github.com/ConfigButler/gitops-reverser/pull/312)); the ordering
-hazard that coalescing introduced is fenced; and cell identity is settled, with
-one stream per cell and the producing cell stamped on queued work. The diff
-itself is unbuilt.
+hazard that coalescing introduced is fenced; and collection identity is settled,
+with one stream per collection and the producing collection stamped on queued
+work. The diff itself is unbuilt.
 
 The writes stay a log throughout. Only the resync half of the queue is in
 question, and the answer is to make the stream set incremental rather than to
@@ -270,7 +270,7 @@ has the worked examples.
 **Scopes and streams.** A sweep is bounded by the exact slice its snapshot was
 gathered over, and a cluster-wide scope is a **peer** of a named namespace rather
 than a replacement for it: collapsing the two widened the named rule's stream to
-every namespace its credential could read and discarded its operation filter.
+every namespace its credential could read.
 
 **Deletion and retention.** `spec.prune.mode`
 ([`../configuration.md`](../configuration.md), deletion policy) already draws the
@@ -284,6 +284,6 @@ gives `RemovalGrace`, which the plan consumes rather than re-decides.
 that grace lives, [Type followability](../spec/type-followability.md) defines
 what may be mirrored at all, and
 [the GVK/GVR mapping layer](../spec/gvk-gvr-mapping-layer.md) is the identity
-resolution the plan's cell turns on.
+resolution the plan's collection turns on.
 [Unsupported folder refusal](../spec/unsupported-folder-refusal-plan.md) decides
 what a folder may contain before any of this runs.

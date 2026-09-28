@@ -1,4 +1,4 @@
-# Target watch plan: reconcile the changed cells
+# Target watch plan: reconcile the changed collections
 
 > **partly built**: the diff is built and applied. Removal semantics are not,
 > and the deletion the diff unlocks has not been made.
@@ -10,7 +10,7 @@
 
 **The short version.** A GitTarget's watch set is replaced wholesale today, so
 changing one rule replays all of them. This plan diffs the set instead and acts
-only on the cells that changed. It applies that decision by starting and
+only on the collections that changed. It applies that decision by starting and
 canceling streams, and deliberately leaves the branch worker's queue alone.
 
 New to this area? Read
@@ -20,19 +20,20 @@ prompted this, then come back here.
 
 ## The problem
 
-A **cell** is one `(group, resource, namespace)` slice of one `GitTarget`. The
-served API version is data carried by the stream rather than part of the cell's
-identity, because Git paths are versionless and a storage-version bump must not
-move a file.
+A **resource collection**, or **collection**, is one `(group, resource,
+namespace)` slice of one `GitTarget`. The served API version is data carried by
+the stream rather than part of the collection's identity, because Git paths are
+versionless and a storage-version bump must not move a file.
 
-The desired watch set was already a map from a cell to an operation filter, but
-any difference in that map canceled every stream for the target and replayed
-every cell, so adding one rule replayed unrelated resources and could fill the
-branch worker's shared queue.
+The desired watch set was already a map keyed by collection, but any difference
+in that map canceled every stream for the target and replayed every collection,
+so adding one rule replayed unrelated resources and could fill the branch
+worker's shared queue.
 
 The refactor changes the unit of work from the whole target to the changed
-cells. That part is built; what remains is what a cell LEAVING means, and the
-mechanism the old behavior forced into existence and no longer justifies.
+collections. That part is built; what remains is what a collection LEAVING
+means, and the mechanism the old behavior forced into existence and no longer
+justifies.
 
 ## The queue is shared, so it stays dumb
 
@@ -52,17 +53,17 @@ little.
 **The plan is applied by starting and canceling streams. Nothing filters the
 queue.**
 
-Once an item is on the FIFO it will be applied. A canceled stream's goroutine may
-still be in flight, so a configuration change can be followed by a short tail of
-writes from a cell that is no longer selected. That is accepted behavior, for
-three reasons:
+Once an item is on the FIFO it will be applied. A canceled stream's goroutine
+may still be in flight, so a configuration change can be followed by a short
+tail of writes from a collection that is no longer selected. That is accepted
+behavior, for three reasons:
 
 - the tail is bounded by the queue, at most 100 items ahead plus one commit
   window flush, and it drains on its own;
-- the content it writes is real observed state, gathered while the cell was still
-  selected;
-- what happens to a deselected cell's **files** is a separate and deliberate
-  decision, made in "What a cell leaving means" below. Today the answer is
+- the content it writes is real observed state, gathered while the collection
+  was still selected;
+- what happens to a deselected collection's **files** is a separate and deliberate
+  decision, made in "What a collection leaving means" below. Today the answer is
   retention, so a late write updates a file that is being kept anyway.
 
 The only requirement this places on the design is on the producer side:
@@ -76,22 +77,24 @@ All three are dropped, and this table exists so none of them grows back:
 
 | Dropped | Why it existed | Why it goes |
 | --- | --- | --- |
-| Per-cell **lease** on every queued item | Tell a canceled stream's in-flight item from its replacement's | A late item is allowed, so there is nothing to reject. **Removed** |
-| **Tombstones** for stopped cells | Reject queued work after a `stop` | Retiring one meant knowing no work carrying it could remain in flight, which the queue cannot answer |
-| Target-wide **plan generation** and `BeginDelta` | Order plan transitions and reset readiness per epoch | Readiness is per cell and keeps its own revision internally |
+| Per-collection **lease** on every queued item | Tell a canceled stream's in-flight item from its replacement's | A late item is allowed, so there is nothing to reject. **Removed** |
+| **Tombstones** for stopped collections | Reject queued work after a `stop` | Retiring one meant knowing no work carrying it could remain in flight, which the queue cannot answer |
+| Target-wide **plan generation** and `BeginDelta` | Order plan transitions and reset readiness per epoch | Readiness is per collection and keeps its own revision internally |
 
-The **cell** stays on queued work, so a write or a drop record can name the slice
-of the mirror it speaks for. That is what a saturated queue has to be diagnosed
-from. Nothing is rejected on it, and nothing should be: the moment the worker
-judges an item, the shared queue has learned about tenant configuration again.
+The **collection** stays on queued work, so a write or a drop record can name
+the slice of the mirror it speaks for. That is what a saturated queue has to be
+diagnosed from. Nothing is rejected on it, and nothing should be: the moment the
+worker judges an item, the shared queue has learned about tenant configuration
+again.
 
-The **lease** went with the fence it was built for. It was the stream incarnation
-stamped beside the cell, and its only purpose was to let a consumer tell a
-canceled stream's item from its replacement's. Keeping a field against a fence
-that will never be built is how a retired design grows back, so it was deleted
-rather than deprecated. That left `git.Provenance` holding one field, so the type
-collapsed with it: queued work now carries a `types.CellKey` named `SourceCell`,
-and `sourceCellForLog` renders the zero cell as "unclaimed".
+The **lease** went with the fence it was built for. It was the stream
+incarnation stamped beside the collection, and its only purpose was to let a
+consumer tell a canceled stream's item from its replacement's. Keeping a field
+against a fence that will never be built is how a retired design grows back, so
+it was deleted rather than deprecated. That left `git.Provenance` holding one
+field, so the type collapsed with it: queued work now carries a
+`types.CollectionKey` named `SourceCollection`, and `sourceCollectionForLog`
+renders the zero collection as "unclaimed".
 
 ### Where the bound is thin
 
@@ -105,39 +108,40 @@ this is a difference of degree, and the queue bound applies. If that window ever
 needs to be tighter, the fix belongs on the producer: refuse to enqueue once the
 stream's context is canceled, inside the same critical section as the send.
 
-**Ordering between overlapping cells.** A cluster-wide cell and a namespaced cell
-can both deliver one object, and nothing orders them against each other. That is
-unchanged by this plan. Closing it needs a single ordering domain per type, which
-is a larger change.
+**Ordering between overlapping collections.** A cluster-wide collection and a
+namespaced collection can both deliver one object, and nothing orders them
+against each other. That is unchanged by this plan. Closing it needs a single
+ordering domain per type, which is a larger change.
 
 ## Diff the plan
 
 **Built**, in `internal/watch/target_watch_plan.go`. The manager computes a
-desired plan from the authoritative watched-type table: a map from cell to
-specification, where the specification is the canonical operation filter and the
-served version the stream opens at.
+desired plan from the authoritative watched-type table: a map from collection to
+specification, where the specification is the served version the stream opens
+at. Every selected collection observes ADDED, MODIFIED, and DELETED alike, so
+there is no per-rule event filter to carry.
 
 Comparing the previous and desired plans gives four outcomes:
 
 | Outcome | Condition | Action |
 | --- | --- | --- |
 | `keep` | key and specification unchanged | Leave the stream and its readiness result alone |
-| `start` | key only in the desired plan | Open the stream, replay that cell, then follow live events |
-| `restart` | key in both, specification changed | Cancel, replace, and replay that cell |
+| `start` | key only in the desired plan | Open the stream, replay that collection, then follow live events |
+| `restart` | key in both, specification changed | Cancel, replace, and replay that collection |
 | `stop` | key only in the previous plan | Cancel and drop the key |
 
-An operation-filter change is a `restart` rather than a `keep`. The whole-set
-replacement handled that correctly by accident, and a diff comparing keys alone
-would have regressed it. A served-version change is also a `restart`, because a
-watch is opened at a concrete version. A forced recovery classifies every cell as
-`restart` and needs no state machine of its own.
+A served-version change is a `restart` rather than a `keep`, because a watch is
+opened at a concrete version. The whole-set replacement handled that correctly
+by accident, and a diff comparing keys alone would have regressed it. A forced
+recovery classifies every collection as `restart` and needs no state machine of
+its own.
 
 One subtlety is invisible in that table and worth stating, because getting it
 wrong looks like working code. A running stream is keyed by a watch key that
 embeds the full GVR, so diffing THOSE keys would read a storage-version bump as a
-`stop` of one key plus a `start` of another: the cell would be canceled,
+`stop` of one key plus a `start` of another: the collection would be canceled,
 replayed, and stripped of its readiness result, for a change that moves no file.
-The plan is keyed by the cell and carries the version as specification data,
+The plan is keyed by the collection and carries the version as specification data,
 which makes the same event a single `restart`.
 
 Because nothing filters the queue, `stop` is cheap: cancel the stream, drop the
@@ -145,23 +149,23 @@ key, and let whatever is already queued drain. `stop` never touches files. The
 mirror is converged afterwards by a sweep, described in "Removal is a Git-side
 sweep".
 
-## What a cell leaving means
+## What a collection leaving means
 
-A cell can leave the plan for two very different kinds of reason, and only one of
-them is a statement about the world:
+A collection can leave the plan for two very different kinds of reason, and only
+one of them is a statement about the world:
 
 | Kind | Examples | Effect |
 | --- | --- | --- |
-| **Authoritative** | A rule deleted or narrowed, a namespace deselected, a label revoked, a settled `TypeRemoved` past `RemovalGrace` | The cell stops contributing to the desired set. The sweep may then remove its documents, gated by `prune.mode` |
-| **Uncertain** | Discovery wobble, list failure, RBAC denial, unreachable source cluster | **Abort the sweep.** An ungatherable cell must never present as an empty one |
+| **Authoritative** | A rule deleted or narrowed, a namespace deselected, a label revoked, a settled `TypeRemoved` past `RemovalGrace` | The collection stops contributing to the desired set. The sweep may then remove its documents, gated by `prune.mode` |
+| **Uncertain** | Discovery wobble, list failure, RBAC denial, unreachable source cluster | **Abort the sweep.** An ungatherable collection must never present as an empty one |
 
 That second row is the one that must never be got wrong, and it is why "walk the
 folder and delete anything uncovered" cannot stand on its own: an incomplete plan
 is indistinguishable from a narrowed one at the moment of the walk. Coverage is
 an invariant worth asserting, and an unsafe action to take.
 
-Everything else follows from putting a cell in the right row. There is no third
-action, no per-cause policy, and no held-out set.
+Everything else follows from putting a collection in the right row. There is no
+third action, no per-cause policy, and no held-out set.
 
 ### Why a withdrawn type is removed rather than kept
 
@@ -197,12 +201,12 @@ through a policy of its own.
 
 ### The withdrawal signal, and the mechanism to avoid
 
-[Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
-produces this distinction already. `internal/typeset` emits the per-type
-lifecycle, and `RemovalGrace` separates a wobble from a removal, so the waiting is
-part of the abstraction rather than something this plan adds.
-`Registry.Subscribe` has no production consumer yet; the plan's `stop`
-classification is the natural one.
+[Type lifecycle events and wobble
+settling](../spec/type-lifecycle-events-and-wobble-settling.md) produces this
+distinction already. `internal/typeset` emits the per-type lifecycle, and
+`RemovalGrace` separates a wobble from a removal, so the waiting is part of the
+abstraction rather than something this plan adds. `Registry.Subscribe` has no
+production consumer yet; the plan's `stop` classification is the natural one.
 
 The signal to consume is a **settled `TypeRemoved`**. Do not substitute direct
 observation of a CRD delete. Local CRD and APIService informers run in the
@@ -239,15 +243,16 @@ Whichever is chosen, it has to be written where users read it, not only here.
 
 ## Removal is a Git-side sweep
 
-The question "which files does this cell own?" is the wrong one to answer.
-Answering it means a **managed projection**, a per-cell file index maintained in
-the watch layer, and that layer has no business knowing about files.
+The question "which files does this collection own?" is the wrong one to answer.
+Answering it means a **managed projection**, a per-collection file index
+maintained in the watch layer, and that layer has no business knowing about
+files.
 
 Turn it around. Walk the managed documents in the GitTarget subtree and ask of
 each one: **is this still wanted?** A document is wanted when it appears in the
-gathered state of some currently selected cell. Anything else is a candidate for
-removal. No projection is needed, because the question is asked of files rather
-than of cells.
+gathered state of some currently selected collection. Anything else is a
+candidate for removal. No projection is needed, because the question is asked of
+files rather than of collections.
 
 This is the right layer for it. Deciding what may be removed from Git already
 lives on the Git side, along with the acceptance gate, `.gittargetignore`, and
@@ -276,25 +281,25 @@ cluster, not the file walk.
 ### The guard everything rests on
 
 **The union gather is all-or-nothing.** A scoped gather already aborts and
-produces nothing on a partial stream. Across a union of cells the rule has to be
-stronger: if any selected cell fails to gather, for any reason, abandon the whole
-sweep and remove nothing. Otherwise an outage presents as "these objects are
-gone" and the sweep deletes a tenant's manifests.
+produces nothing on a partial stream. Across a union of collections the rule has
+to be stronger: if any selected collection fails to gather, for any reason,
+abandon the whole sweep and remove nothing. Otherwise an outage presents as
+"these objects are gone" and the sweep deletes a tenant's manifests.
 
 `prune.mode` does not cover this on its own, because `Always` is a standing
 setting rather than consent for one particular sweep.
 
 A settled withdrawal is not a gather failure. The type is gone, so it is no
-longer a selected cell, and it contributes nothing to the desired set without
-holding anything up. The distinction between "a cell I should be able to gather
-and cannot" and "a cell that is legitimately gone" is the wobble-versus-withdrawal
-call, which `typeset` already owns.
+longer a selected collection, and it contributes nothing to the desired set
+without holding anything up. The distinction between "a collection I should be
+able to gather and cannot" and "a collection that is legitimately gone" is the
+wobble-versus-withdrawal call, which `typeset` already owns.
 
 That leaves a clean division of labor:
 
 ```text
 typeset  decides   present / wobbling / settled-gone
-watch    gathers   every selected cell, all-or-nothing
+watch    gathers   every selected collection, all-or-nothing
 git      sweeps    anything absent from desired, gated by prune.mode
 ```
 
@@ -305,12 +310,12 @@ being upgraded, and assume `prune.mode: Always` unless stated otherwise.
 
 | Situation | What `typeset` says | What happens to Git |
 | --- | --- | --- |
-| CRD disappears for 20s during a rolling operator upgrade | `TypeWobbling`; `RemovalGrace` (60s) has not elapsed | Nothing. The cell holds, and a sweep in flight aborts. Documents untouched |
-| Operator uninstalled for good; Kubernetes cascade-deletes the widgets | Settled `TypeRemoved` after the grace | The cell leaves the plan, so its documents are absent from desired and swept. The folder applies cleanly again |
+| CRD disappears for 20s during a rolling operator upgrade | `TypeWobbling`; `RemovalGrace` (60s) has not elapsed | Nothing. The collection holds, and a sweep in flight aborts. Documents untouched |
+| Operator uninstalled for good; Kubernetes cascade-deletes the widgets | Settled `TypeRemoved` after the grace | The collection leaves the plan, so its documents are absent from desired and swept. The folder applies cleanly again |
 | Same, but the target is `prune.mode: Never` | Settled `TypeRemoved` | Nothing is removed. This is the archive mirror the mode exists for |
-| Source cluster unreachable while a sweep is triggered | The cell is selected but cannot be gathered | The union gather aborts. Nothing is removed anywhere in the target, even under `Always` |
-| RBAC for `widgets` revoked | List returns `Forbidden`, so the cell cannot be gathered | Same as above. A permission loss is not a deselection |
-| The `team-a` label is revoked, so the namespace leaves the watch set | Nothing. The type is healthy; the cell was deselected by **intent** | Governed by the open decision above. Today, nothing is removed |
+| Source cluster unreachable while a sweep is triggered | The collection is selected but cannot be gathered | The union gather aborts. Nothing is removed anywhere in the target, even under `Always` |
+| RBAC for `widgets` revoked | List returns `Forbidden`, so the collection cannot be gathered | Same as above. A permission loss is not a deselection |
+| The `team-a` label is revoked, so the namespace leaves the watch set | Nothing. The type is healthy; the collection was deselected by **intent** | Governed by the open decision above. Today, nothing is removed |
 
 The fourth and fifth rows are the ones worth internalizing. Both look like "the
 objects are gone" from inside a naive walk, and in both cases removing anything
@@ -326,8 +331,8 @@ would be destroying a tenant's manifests during an outage.
 - A per-cause action table. There is one gate, `prune.mode`, and one guard.
 - `stop` touching files at all. It cancels the stream and drops the key; the
   sweep converges the mirror afterwards.
-- The need to prevent the accepted tail. A late write from a deselected cell is
-  removed by the next sweep rather than fenced at the queue.
+- The need to prevent the accepted tail. A late write from a deselected
+  collection is removed by the next sweep rather than fenced at the queue.
 
 Deletion becomes level-triggered convergence instead of an edge-triggered side
 effect of a configuration change, which is the same split this system already
@@ -360,9 +365,10 @@ Two implementation traps, both already paid for once:
   later request can reuse that key after the older marker is already queued.
 
 The match deciding whether a write falls inside a resync scope is by object
-identity. Two overlapping cells can both deliver one object, so the producing
-cell cannot be recovered from the object. Over-matching may forgo a coalesce, and
-it can never move a snapshot ahead of a write it might overwrite.
+identity. Two overlapping collections can both deliver one object, so the
+producing collection cannot be recovered from the object. Over-matching may
+forgo a coalesce, and it can never move a snapshot ahead of a write it might
+overwrite.
 
 This fence is built and shipped. It is recorded here because it holds only while
 the reason for it stays legible.
@@ -403,43 +409,43 @@ channel each request carries is a second obstacle.
 
 ## Readiness
 
-Readiness is per cell. A new or restarted cell is pending until its replay
-finishes, an unchanged cell keeps its prior clean or divergent result, and a
-removed cell leaves the target's readiness reduction.
+Readiness is per collection. A new or restarted collection is pending until its
+replay finishes, an unchanged collection keeps its prior clean or divergent
+result, and a removed collection leaves the target's readiness reduction.
 
 The readiness store may use an internal revision to ignore a late report, but
 that revision stays an implementation detail of the store. It is not a second
 watch protocol and it does not travel through queued work. That is what
-`RenderFidelityGate` keeps: one revision per scope, issued when the cell's stream
-starts and carried by that stream alone, so a retired stream's tail is stale by
-construction.
+`RenderFidelityGate` keeps: one revision per scope, issued when the collection's
+stream starts and carried by that stream alone, so a retired stream's tail is
+stale by construction.
 
 An unrelated plan change must not clear a divergence. A target held open by a
 render-fidelity divergence stays held, because adding a WatchRule is no evidence
-that the divergence was resolved. Only a successful replay of the divergent cell
-clears it.
+that the divergence was resolved. Only a successful replay of the divergent
+collection clears it.
 
 The gate used to key this on a single per-target epoch that every declaration
 bumped, which was coherent only while every declaration restarted every stream.
-Applying the plan per cell breaks it in both directions at once: a kept cell
-would sit pending under an epoch it never replayed for, holding the target
-Unknown and closing its writes forever, and an unrelated edit would clear a
-divergence nothing had re-measured. The revision had to become per scope before
-the diff could be applied at all.
+Applying the plan per collection breaks it in both directions at once: a kept
+collection would sit pending under an epoch it never replayed for, holding the
+target Unknown and closing its writes forever, and an unrelated edit would clear
+a divergence nothing had re-measured. The revision had to become per scope
+before the diff could be applied at all.
 
 Retention rides the same revisions, because it used that epoch for scope
-eviction. The roll-up is keyed by cell, so the plan installs its selected cells
-and their revisions, and a count is accepted only for a cell the plan holds, at
-the revision it holds. A cell that leaves takes its count with it; a cell that is
-kept keeps the count nothing re-measured.
+eviction. The roll-up is keyed by collection, so the plan installs its selected
+collections and their revisions, and a count is accepted only for a collection
+the plan holds, at the revision it holds. A collection that leaves takes its
+count with it; a collection that is kept keeps the count nothing re-measured.
 
-### The one divergence that belongs to no cell
+### The one divergence that belongs to no collection
 
 A divergence a live WRITE discovers is target-level, and it cannot be filed under
-a cell. Two facts settle that, and both were checked rather than assumed:
+a collection. Two facts settle that, and both were checked rather than assumed:
 
-- a commit window batches events from several cells of one GitTarget, so the
-  refused flush is not one cell's work;
+- a commit window batches events from several collections of one GitTarget, so the
+  refused flush is not one collection's work;
 - the refusal names Git **paths**, and resolving a path back to a type needs the
   GVK-to-GVR mapping this plan deliberately stopped depending on (see "What this
   deletes from the plan").
@@ -448,8 +454,8 @@ So the gate holds it beside the scopes rather than inside one, and only a plan
 that restarts every scope clears it: a forced recheck, or a target starting from
 nothing. That is stricter than `GitPathAccepted`, which any one successful resync
 clears, and the asymmetry is deliberate. Acceptance is a property of the subtree
-that any successful flush re-proves. Fidelity is per-cell evidence, and one
-cell's clean replay says nothing about a token another cell writes.
+that any successful flush re-proves. Fidelity is per-collection evidence, and one
+collection's clean replay says nothing about a token another collection writes.
 
 ## Where this stands, and what to merge
 
@@ -457,28 +463,29 @@ Three changes, each independently shippable. **The first two are built.**
 
 ### Built
 
-Cell identity (`types.CellKey`, versionless, one stream per cell); the source
-cell stamped on queued items, with no lease beside it; the coalescing tail fence;
-the whole-target mark-and-sweep itself, which needs a caller rather than an
-implementation; and:
+Collection identity (`types.CollectionKey`, versionless, one stream per
+collection); the source collection stamped on queued items, with no lease beside
+it; the coalescing tail fence; the whole-target mark-and-sweep itself, which
+needs a caller rather than an implementation; and:
 
 **1. The diff.** `target_watch_plan.go` computes the desired plan and classifies
 it against the running streams into `keep` / `start` / `restart` / `stop`. Every
-reconcile logs the four outcomes with each cell named, an all-`keep` one
+reconcile logs the four outcomes with each collection named, an all-`keep` one
 included.
 
-**2. Applying it.** A `targetWatchSet` is a map of running streams keyed by cell,
-each with its own cancel, so `stop` and `restart` cancel one cell and `keep`
-touches nothing. Readiness follows: a kept cell holds the result its own replay
-produced. Cancellation is prompt at the producer: a canceled stream stops
-enqueuing before routing a live event and before enqueueing a replay snapshot it
-can no longer report on. The render-fidelity revision and the retention roll-up
-moved with it, for the reasons under "Readiness".
+**2. Applying it.** A `targetWatchSet` is a map of running streams keyed by
+collection, each with its own cancel, so `stop` and `restart` cancel one
+collection and `keep` touches nothing. Readiness follows: a kept collection
+holds the result its own replay produced. Cancellation is prompt at the
+producer: a canceled stream stops enqueuing before routing a live event and
+before enqueueing a replay snapshot it can no longer report on. The
+render-fidelity revision and the retention roll-up moved with it, for the
+reasons under "Readiness".
 
 Two mechanisms went with the wholesale replacement they existed for: the
 set-wide cancel, and the whole-map specification comparison that answered "did
-anything change". The diff answers that per cell, so an unchanged reconcile is
-"nothing to start, nothing to stop" rather than an early return.
+anything change". The diff answers that per collection, so an unchanged
+reconcile is "nothing to start, nothing to stop" rather than an early return.
 
 ### The merge boundary is here
 
@@ -498,17 +505,18 @@ performance fix hostage to it. Merge here.
 ### Then, in this order
 
 1. **Measure, then delete coalescing.** This is the largest deletion available,
-   and change 2 is what makes it safe (see "Whether coalescing should survive the
-   diff"). It needs a number from a running workload, which is a second reason to
-   merge first: the measurement is the real resync rate once one rule edit
-   produces one restart. If it sits comfortably inside the queue, `pendingResyncs`,
-   `tailPassed`, `ErrResyncSuperseded` and the tail fence go together.
+   and change 2 is what makes it safe (see "Whether coalescing should survive
+   the diff"). It needs a number from a running workload, which is a second
+   reason to merge first: the measurement is the real resync rate once one rule
+   edit produces one restart. If it sits comfortably inside the queue,
+   `pendingResyncs`, `tailPassed`, `ErrResyncSuperseded` and the tail fence go
+   together.
 2. **Change 3, removal semantics.** Subscribe to the registry so a settled
-   `TypeRemoved` drops its cell as an authoritative cause, and give the
+   `TypeRemoved` drops its collection as an authoritative cause, and give the
    whole-target sweep a producer: an all-or-nothing union gather across the
-   selected cells, enqueued as a nil-scope resync under the existing `prune.mode`
-   gate. Withdrawal converges on that alone. Sweeping on **intent** waits for the
-   open decision.
+   selected collections, enqueued as a nil-scope resync under the existing
+   `prune.mode` gate. Withdrawal converges on that alone. Sweeping on **intent**
+   waits for the open decision.
 
 The order is deliberate. Change 3 carries a product question and adds a new
 resync producer; the coalescing deletion carries neither and is pure subtraction.
@@ -523,9 +531,9 @@ Two small debts, recorded so they are paid rather than discovered:
 - `streamRevisions` fills in zero revisions when no shared fidelity gate is
   wired. That path exists only because the gate can be absent in test wiring, and
   it is a fork in the code that a required gate would delete.
-- The retention roll-up now drops a count for a cell its plan has not installed
-  yet. That is the correct fence, but it is an ordering requirement a caller can
-  trip, where eviction by epoch could not be got wrong.
+- The retention roll-up now drops a count for a collection its plan has not
+  installed yet. That is the correct fence, but it is an ordering requirement a
+  caller can trip, where eviction by epoch could not be got wrong.
 
 If a concurrency problem later resists prompt cancellation and FIFO ordering,
 document that specific failure before adding any fence, then add the smallest one
@@ -537,37 +545,39 @@ A scenario list rather than a test plan. Each needs a failing-first test. The
 ones changes 1 and 2 cover are marked; the rest belong to the work still ahead.
 
 **Classification**, covered in `internal/watch/target_watch_test.go`. Adding a
-rule starts one cell and leaves every existing cell running. Removing one of
-several rules stops one cell and leaves the others untouched. An operation-filter
-edit restarts that cell alone. A no-op edit, such as a status write, classifies
-everything as `keep` and preserves readiness results.
+rule starts one collection and leaves every existing collection running.
+Removing one of several rules stops one collection and leaves the others
+untouched. A served-version edit restarts that collection alone. A no-op edit,
+such as a status write, classifies everything as `keep` and preserves readiness
+results.
 
-**The accepted tail**, partly covered. Work queued before a cell was deselected
-is still applied, and its commit is well-formed. A canceled stream stops
-enqueuing promptly, so the tail is bounded by the queue rather than by how long
-the goroutine lives. A write and a drop record both name the producing cell, with
-no lease. What is asserted today is the producer half: a canceled stream
-enqueues nothing. That the tail's own commit is well-formed is an end-to-end
-claim no unit test makes.
+**The accepted tail**, partly covered. Work queued before a collection was
+deselected is still applied, and its commit is well-formed. A canceled stream
+stops enqueuing promptly, so the tail is bounded by the queue rather than by how
+long the goroutine lives. A write and a drop record both name the producing
+collection, with no lease. What is asserted today is the producer half: a
+canceled stream enqueues nothing. That the tail's own commit is well-formed is
+an end-to-end claim no unit test makes.
 
 **Ordering.** A restart while events for that scope are queued does not apply an
 older event after a newer snapshot. A resync never coalesces past a queued write
 for the same scope. Queue saturation drops or coalesces without any accepted
 request failing to run.
 
-**Cause and policy.** A discovery wobble holds every cell, stopping nothing and
-deleting nothing. An unreachable source cluster, and an RBAC denial, both hold
-and never present as deselection.
+**Cause and policy.** A discovery wobble holds every collection, stopping
+nothing and deleting nothing. An unreachable source cluster, and an RBAC denial,
+both hold and never present as deselection.
 
-**The sweep.** A union gather in which one cell fails removes nothing at all,
-even under `prune.mode: Always`. A settled `TypeRemoved` past `RemovalGrace`
-sweeps that type's documents under `Always` and keeps them under `Never`. A
-wobble inside the grace sweeps nothing. A cell deselected by intent is removed
-only under the mode the open decision names. Auxiliary and retained files inside
-an accepted folder are never touched. A sweep run twice with no cluster change is
-a no-op the second time.
+**The sweep.** A union gather in which one collection fails removes nothing at
+all, even under `prune.mode: Always`. A settled `TypeRemoved` past
+`RemovalGrace` sweeps that type's documents under `Always` and keeps them under
+`Never`. A wobble inside the grace sweeps nothing. A collection deselected by
+intent is removed only under the mode the open decision names. Auxiliary and
+retained files inside an accepted folder are never touched. A sweep run twice
+with no cluster change is a no-op the second time.
 
 **Render fidelity**, covered in `internal/git/render_fidelity_gate_test.go`. A
-diverged cell stays diverged across an unrelated plan change, and writes do not
-reopen. The diverged cell reporting clean reopens writes, once. A divergence a
-live write found is cleared only by a plan that restarts every scope.
+diverged collection stays diverged across an unrelated plan change, and writes
+do not reopen. The diverged collection reporting clean reopens writes, once. A
+divergence a live write found is cleared only by a plan that restarts every
+scope.
