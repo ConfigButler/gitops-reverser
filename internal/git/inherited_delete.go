@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"slices"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -22,7 +21,7 @@ import (
 // environments. The operator OWNS that patch. Ownership is the file's exact bytes at its
 // deterministic path, so it lives in Git and survives a restart, and an edit to the file ends it:
 //
-//   - removing an object whose owned patch is already in place is a no-op;
+//   - removing an object the folder already does not render is a no-op (removeDocument);
 //   - when the object comes back, the owned patch and its patches: entry are retired, and the
 //     render is verified to hold the object again;
 //   - a path holding anything else (a human-edited patch, or an unrelated file of the same name)
@@ -30,7 +29,9 @@ import (
 //     the operator never made.
 
 // inheritedDeletePatchMarker is the first line of every delete patch the operator writes. It tells
-// a reader who owns the file, and it is part of the bytes ownership is judged by.
+// a reader who owns the file, and it is part of the bytes ownership is judged by. It is the only
+// ownership signal: a patch without it may be a human's that happens to match the template, and
+// generic matching bytes cannot prove who wrote them.
 const inheritedDeletePatchMarker = "# Written by gitops-reverser: removes an object this overlay inherits. " +
 	"Editing this file hands it back to you.\n"
 
@@ -47,25 +48,19 @@ func inheritedDeletePatchName(id manifestedit.Identity) string {
 // (a base that declares the namespace, or the live object's namespace). If the proposed patch
 // does not match the render, the oracle refuses the flush; nothing is committed on a bad match.
 func inheritedDeletePatchDocument(id manifestedit.Identity) []byte {
-	return append([]byte(inheritedDeletePatchMarker), unmarkedInheritedDeletePatch(id)...)
-}
-
-// unmarkedInheritedDeletePatch is the patch body, and the whole file as releases before the
-// ownership marker wrote it. Those files were written by the operator too, so they stay owned.
-func unmarkedInheritedDeletePatch(id manifestedit.Identity) []byte {
 	meta := "  name: " + id.Name + "\n"
 	if id.Namespace != "" {
 		meta = "  namespace: " + id.Namespace + "\n" + meta
 	}
 	return []byte(fmt.Sprintf(
-		"apiVersion: %s\nkind: %s\nmetadata:\n%s$patch: delete\n",
-		id.APIVersion, id.Kind, meta))
+		"%sapiVersion: %s\nkind: %s\nmetadata:\n%s$patch: delete\n",
+		inheritedDeletePatchMarker, id.APIVersion, id.Kind, meta))
 }
 
-// ownsInheritedDeletePatch reports whether content is a delete patch the operator wrote for id.
+// ownsInheritedDeletePatch reports whether content is exactly the delete patch the operator writes
+// for id, marker included.
 func ownsInheritedDeletePatch(content []byte, id manifestedit.Identity) bool {
-	return bytes.Equal(content, inheritedDeletePatchDocument(id)) ||
-		bytes.Equal(content, unmarkedInheritedDeletePatch(id))
+	return bytes.Equal(content, inheritedDeletePatchDocument(id))
 }
 
 // inheritedDelete is where one inherited object's delete patch lives: the overlay kustomization
@@ -92,33 +87,22 @@ func (wb *writeBatch) inheritedDeleteFor(filePath string, id manifestedit.Identi
 	}, true
 }
 
-// suppressed reports whether the owned delete patch is in force: the operator's file is at the
-// path and the overlay lists it, as the batch's store read the folder.
-func (wb *writeBatch) suppressed(d inheritedDelete, id manifestedit.Identity) bool {
-	info := wb.store.Kustomizations[wb.writeSubdir]
-	if info == nil || !slices.Contains(info.Patches, d.patchPath) {
-		return false
-	}
-	buf := wb.buffer(d.patchPath)
-	return buf.current != nil && ownsInheritedDeletePatch(buf.current, id)
-}
-
-// suppressedResources is every managed document the overlay's owned delete patches already take out
-// of the render. They are not part of what the target's render holds, so a snapshot sweep neither
-// removes them again nor counts them as retained.
-func (wb *writeBatch) suppressedResources() map[types.ResourceIdentifier]bool {
+// unrenderedResources is every managed document the folder holds but does not render: a
+// `$patch: delete` takes it out, whether the operator wrote that patch or someone else did. The
+// target's render is what the mirror is compared against, so a snapshot sweep neither removes such a
+// document again nor counts it as retained. Rendered membership is the question here; whether the
+// operator may edit the patch doing the hiding is a separate one, answered at re-entry.
+func (wb *writeBatch) unrenderedResources() map[types.ResourceIdentifier]bool {
 	var out map[types.ResourceIdentifier]bool
 	for dm, ref := range wb.docLoc {
-		if dm.ResourceIdentity == nil {
+		if dm.ResourceIdentity == nil ||
+			wb.store.Renders(ref.FilePath, dm.ManifestIdentity.Kind, dm.ManifestIdentity.Name) {
 			continue
 		}
-		id := rawManifestIDForCurrentBytes(dm.ManifestIdentity, dm)
-		if d, inherited := wb.inheritedDeleteFor(ref.FilePath, id); inherited && wb.suppressed(d, id) {
-			if out == nil {
-				out = map[types.ResourceIdentifier]bool{}
-			}
-			out[*dm.ResourceIdentity] = true
+		if out == nil {
+			out = map[types.ResourceIdentifier]bool{}
 		}
+		out[*dm.ResourceIdentity] = true
 	}
 	return out
 }
@@ -138,17 +122,13 @@ func unownedDeletePatchRefusal(d inheritedDelete, id manifestedit.Identity) erro
 // authorInheritedDelete removes an inherited object by writing its owned `$patch: delete` inside
 // spec.path and naming it in the overlay's patches:, and declares the Removed intent so the
 // re-render oracle proves the object leaves the render — a patch that fails to match is refused
-// there, and the base is never touched. It reports whether it removed anything: an object its owned
-// patch already removes is a no-op.
+// there, and the base is never touched.
 func (wb *writeBatch) authorInheritedDelete(
 	ctx context.Context,
 	identifier types.ResourceIdentifier,
 	target deleteTarget,
 	d inheritedDelete,
 ) (bool, error) {
-	if wb.suppressed(d, target.id) {
-		return false, nil
-	}
 	patchBuf := wb.buffer(d.patchPath)
 	if patchBuf.current != nil && !ownsInheritedDeletePatch(patchBuf.current, target.id) {
 		return false, unownedDeletePatchRefusal(d, target.id)

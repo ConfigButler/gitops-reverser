@@ -223,6 +223,13 @@ There is also an avoidable delay. When an exact PATCH/UPDATE wins lookup, `await
 still treats it as a write fallback and waits the remaining grace for delete evidence (default
 `3s`). This is not true of every exit: eligible delete evidence can finish the wait earlier.
 
+> **As built:** the mutationlab `selector-membership` capture showed that a deletion never carries
+> the `DELETED` frame's resourceVersion (an immediate delete answers with a `Status` holding only
+> the uid; a finalizer-held one is stamped one step earlier). Exact-rv-only would leave every real
+> deletion in a selected collection unattributed, so a uid-keyed deletion fact that cannot
+> postdate the removal also qualifies. See the
+> [attribution contract](../spec/attribution.md#four-rules-that-are-easy-to-miss).
+
 Filtered `DELETED` needs an explicit lookup policy, retaining raw event type, selector presence,
 UID/RV, and deletion timestamp. Require matching audit route, group/resource, UID, and RV;
 eligible evidence returns immediately, including a late arrival during grace. A nonterminating

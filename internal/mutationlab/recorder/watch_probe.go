@@ -34,6 +34,12 @@ const (
 	// the replay window (before the bookmark) where the product files it as an
 	// unattributed baseline rather than an attributable per-event commit.
 	WatchProbeReplay WatchProbeMode = "replay"
+	// WatchProbeCollection records a label-selected collection exactly as the product watches
+	// one: every event from ResourceVersion onward, filtered by the API server, until an event
+	// names the object UntilName. The background recorder is unfiltered, so this is the only way
+	// to capture what a selected collection sees side by side with the unfiltered stream: a label
+	// change that stops matching arrives here as DELETED and there as MODIFIED.
+	WatchProbeCollection WatchProbeMode = "collection"
 )
 
 // WatchProbeRequest describes one targeted watch transport capture.
@@ -43,6 +49,11 @@ type WatchProbeRequest struct {
 	GVR           schema.GroupVersionResource
 	Namespace     string
 	LabelSelector string
+	// ResourceVersion is where a collection probe starts. The watch replays everything after it,
+	// so events that happened before the probe connected are still recorded, in order.
+	ResourceVersion string
+	// UntilName ends a collection probe at the first event about the object of that name.
+	UntilName string
 }
 
 // WatchProbe opens short-lived, scenario-scoped watches for transport rows the
@@ -76,6 +87,8 @@ func (p *WatchProbe) Probe(ctx context.Context, req WatchProbeRequest) ([]mutati
 		return p.probeExpired(ctx, req)
 	case WatchProbeReplay:
 		return p.probeReplay(ctx, req)
+	case WatchProbeCollection:
+		return p.probeCollection(ctx, req)
 	default:
 		return nil, fmt.Errorf("unsupported watch probe mode %q", req.Mode)
 	}
@@ -107,6 +120,19 @@ func (p *WatchProbe) probeReplay(ctx context.Context, req WatchProbeRequest) ([]
 	// initial-events-end marker that closes the replay window.
 	return p.captureUntil(ctx, req, opts, func(r mutationlab.Record) bool {
 		return r.Summary.WatchType == string(watch.Bookmark)
+	}, false)
+}
+
+func (p *WatchProbe) probeCollection(ctx context.Context, req WatchProbeRequest) ([]mutationlab.Record, error) {
+	if req.ResourceVersion == "" || req.UntilName == "" {
+		return nil, errors.New("a collection probe needs resourceVersion and untilName")
+	}
+	opts := metav1.ListOptions{
+		LabelSelector:   req.LabelSelector,
+		ResourceVersion: req.ResourceVersion,
+	}
+	return p.captureUntil(ctx, req, opts, func(r mutationlab.Record) bool {
+		return r.Key.Name == req.UntilName
 	}, false)
 }
 

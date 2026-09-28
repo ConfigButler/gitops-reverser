@@ -191,6 +191,9 @@ type writeBatch struct {
 	// batch joins the root the first one created: the store was built before the batch, so nothing
 	// in it knows the file exists.
 	createdRoot *manifestanalyzer.KustomizationInfo
+	// scan is the folder scan the store was built from, kept so a re-entry can rebuild the store
+	// over the batch's staged files (see stagedRender).
+	scan manifestanalyzer.FolderScan
 	// layout is what the scan resolved about this folder's shape. It is published as
 	// status.placement, and createNew reads it: a folder covering several render roots has no
 	// single one to place a new document into, so placing one is refused rather than guessed.
@@ -255,6 +258,7 @@ func newWriteBatch(
 		policy:        policy,
 		namespaces:    namespaces,
 		writeSubdir:   writeSubdir,
+		scan:          scan,
 	}
 	// Resolved with the store rather than by each caller, so no write path can reach createNew
 	// with an unresolved layout and place a new document into a folder that has no single root
@@ -405,6 +409,12 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 	if err != nil {
 		return upsertNoChange, err
 	}
+	if basePath != "" {
+		// The store was built while the patch still hid the object, so it knows nothing of how the
+		// overlay renders it (its labels, its namespace, what the build supplies). Planning the
+		// edit against that store would write the overlay's values into the read-only base.
+		defer wb.stagedRender(ctx)()
+	}
 	intentsBefore := len(wb.intents)
 	outcome, err := wb.upsert(ctx, event)
 	if err == nil && basePath != "" {
@@ -425,6 +435,23 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 		wb.tallyDocument(event.Identifier, documentOutcomeForUpsert(outcome))
 	}
 	return outcome, err
+}
+
+// stagedRender rebuilds the store over the batch's own staged files, the tree this batch is about
+// to commit, and puts it in place until the returned restore is called.
+//
+// It is scoped to one upsert on purpose. Placement reasons about the PRE-batch tree (a path that
+// held nothing before the batch is a new bundle, not an existing file), so the rest of the batch
+// keeps the store it started with; only the re-entering object is planned against the render it
+// is coming back into.
+func (wb *writeBatch) stagedRender(ctx context.Context) func() {
+	scan := wb.scan
+	scan.YAMLFiles = wb.files()
+	staged := manifestanalyzer.BuildStoreFromScan(ctx, scan, wb.mapper, manifestanalyzer.WriterAllowlist(),
+		manifestanalyzer.WithDeclaredNamespace(wb.namespaces.declaredNamespace()))
+	store, docLoc := wb.store, wb.docLoc
+	wb.store, wb.docLoc = staged, staged.DocumentLocations()
+	return func() { wb.store, wb.docLoc = store, docLoc }
 }
 
 // intendsObject reports whether one of intents is about obj.
@@ -1393,13 +1420,18 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) error {
 //
 // Every removal inside a render root declares a Removed intent and goes to the re-render oracle,
 // which proves the object left the render and that no unrelated rendered object changed. It
-// reports whether a document was removed; one already absent is a no-op.
+// reports whether a document was removed; one already absent from the file or from the render is
+// a no-op.
 func (wb *writeBatch) removeDocument(
 	ctx context.Context,
 	identifier types.ResourceIdentifier,
 	target deleteTarget,
 	outcome string,
 ) (bool, error) {
+	if !wb.store.Renders(target.filePath, target.id.Kind, target.id.Name) {
+		// Already out of the render, whoever's $patch: delete did it. There is nothing to remove.
+		return false, nil
+	}
 	if d, inherited := wb.inheritedDeleteFor(target.filePath, target.id); inherited {
 		removed, err := wb.authorInheritedDelete(ctx, identifier, target, d)
 		if removed {

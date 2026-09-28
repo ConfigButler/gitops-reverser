@@ -217,6 +217,52 @@ func TestEnqueueResync_DistinctScopesDoNotCoalesce(t *testing.T) {
 	assert.Len(t, w.eventQueue, 3, "each distinct scope holds its own FIFO slot")
 }
 
+// A selector changed A -> B -> A queues three snapshots over one boundary. The latest A must not
+// coalesce into the first A's position: that ran it BEFORE the retired B snapshot, which then
+// undid the current selection. A later snapshot over an overlapping boundary is a barrier.
+func TestEnqueueResync_ASelectorChangedBackDoesNotJumpTheOtherSelection(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	selectA := resyncScopePtr(gvr, "app")
+	selectA.Collection.LabelSelector = "team in (a)"
+	selectB := resyncScopePtr(gvr, "app")
+	selectB.Collection.LabelSelector = "team in (b)"
+
+	for _, step := range []struct {
+		rv    string
+		scope *ResyncScope
+	}{{"100", selectA}, {"101", selectB}, {"102", selectA}} {
+		require.True(t, w.EnqueueResync(&ResyncRequest{
+			GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: step.rv,
+			Scope: step.scope, Result: make(chan ResyncResult, 1),
+		}))
+	}
+
+	require.Len(t, w.eventQueue, 3, "the returning selection takes the tail instead of coalescing")
+	var order []string
+	for range 3 {
+		item := <-w.eventQueue
+		order = append(order, w.takePendingResync(item.Resync).ResourceVersion)
+	}
+	assert.Equal(t, []string{"100", "101", "102"}, order)
+}
+
+// An unrelated boundary is no barrier: coalescing still bounds the queue.
+func TestEnqueueResync_ASnapshotOfAnotherNamespaceIsNoBarrier(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	for _, step := range []struct {
+		rv    string
+		scope *ResyncScope
+	}{{"100", resyncScopePtr(gvr, "app")}, {"101", resyncScopePtr(gvr, "other")}, {"102", resyncScopePtr(gvr, "app")}} {
+		require.True(t, w.EnqueueResync(&ResyncRequest{
+			GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: step.rv,
+			Scope: step.scope, Result: make(chan ResyncResult, 1),
+		}))
+	}
+	assert.Len(t, w.eventQueue, 2, "the second app snapshot coalesces past a disjoint namespace")
+}
+
 // Two selections of one boundary are two collections: a snapshot under one selector never
 // replaces a queued snapshot under another, whose desired set it does not supersede.
 func TestEnqueueResync_SelectionsOfOneBoundaryDoNotCoalesce(t *testing.T) {

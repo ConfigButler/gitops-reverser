@@ -1,0 +1,65 @@
+annotations:
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "scenario-ali/<ns-1>"
+    of Role "scenario-ali" to User "alice@example.com"'
+  validate-all.configbutler.ai/scenario: selector-membership
+auditID: <auditID-9>
+impersonatedUser:
+  groups:
+  - system:authenticated
+  username: alice@example.com
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-member
+  namespace: <ns-1>
+  resource: configmaps
+  resourceVersion: <rv-1>
+  uid: <uid-9>
+requestObject:
+  apiVersion: v1
+  data:
+    key: v2
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts>
+    labels:
+      mutationlab.configbutler.ai/scenario: selector-membership
+      team: a
+    name: cm-member
+    namespace: <ns-1>
+    resourceVersion: <rv-1>
+    uid: <uid-9>
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-member
+responseObject:
+  apiVersion: v1
+  data:
+    key: v2
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts>
+    labels:
+      mutationlab.configbutler.ai/scenario: selector-membership
+      team: a
+    name: cm-member
+    namespace: <ns-1>
+    resourceVersion: <rv-3>
+    uid: <uid-9>
+responseStatus:
+  code: 200
+  metadata: {}
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-2>
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: update

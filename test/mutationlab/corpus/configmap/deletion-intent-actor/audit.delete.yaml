@@ -1,6 +1,6 @@
 annotations:
   authorization.k8s.io/decision: allow
-  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "scenario-human/lab-deletion-intent-actor-9mkc"
+  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "scenario-human/<ns-1>"
     of Role "scenario-human" to User "alice@example.com"'
   validate-all.configbutler.ai/scenario: deletion-intent-actor
 auditID: <auditID-1>

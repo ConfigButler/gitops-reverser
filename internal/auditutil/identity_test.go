@@ -173,3 +173,21 @@ func TestIdentityFromAuditEvent_IgnoresMalformedBody(t *testing.T) {
 	assert.Equal(t, "team-a", got.Namespace)
 	assert.Empty(t, got.Name)
 }
+
+// An immediate delete is answered with a Status, not the object. Its details are the only place the
+// deleted object's uid appears, and without it the deletion could be joined by name alone.
+func TestIdentityFromAuditEvent_DeleteAnsweredWithAStatusYieldsTheUID(t *testing.T) {
+	ev := auditv1.Event{
+		Verb:          "delete",
+		ObjectRef:     &auditv1.ObjectReference{Resource: "configmaps", Namespace: "team-a", Name: "cm-gone"},
+		RequestObject: &runtime.Unknown{Raw: []byte(`{"kind":"DeleteOptions","apiVersion":"meta.k8s.io/__internal"}`)},
+		ResponseObject: &runtime.Unknown{Raw: []byte(
+			`{"kind":"Status","apiVersion":"v1","status":"Success",` +
+				`"details":{"name":"cm-gone","kind":"configmaps","uid":"uid-gone"}}`)},
+	}
+
+	got := IdentityFromAuditEvent(ev, itypes.OperationDelete)
+
+	assert.Equal(t, types.UID("uid-gone"), got.UID)
+	assert.Equal(t, "cm-gone", got.Name)
+}

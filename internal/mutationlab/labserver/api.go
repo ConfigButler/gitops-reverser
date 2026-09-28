@@ -70,11 +70,13 @@ func (a *API) handleRecords(w http.ResponseWriter, r *http.Request) {
 }
 
 type watchProbeRequest struct {
-	Scenario      string                  `json:"scenario"`
-	Mode          recorder.WatchProbeMode `json:"mode"`
-	Resource      string                  `json:"resource"`
-	Namespace     string                  `json:"namespace,omitempty"`
-	LabelSelector string                  `json:"labelSelector,omitempty"`
+	Scenario        string                  `json:"scenario"`
+	Mode            recorder.WatchProbeMode `json:"mode"`
+	Resource        string                  `json:"resource"`
+	Namespace       string                  `json:"namespace,omitempty"`
+	LabelSelector   string                  `json:"labelSelector,omitempty"`
+	ResourceVersion string                  `json:"resourceVersion,omitempty"`
+	UntilName       string                  `json:"untilName,omitempty"`
 }
 
 // handleWatchProbe serves POST /watch-probe. It runs a short-lived targeted
@@ -101,11 +103,13 @@ func (a *API) handleWatchProbe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), watchProbeTimeout)
 	defer cancel()
 	records, err := a.prober.Probe(ctx, recorder.WatchProbeRequest{
-		Scenario:      req.Scenario,
-		Mode:          req.Mode,
-		GVR:           gvr,
-		Namespace:     req.Namespace,
-		LabelSelector: req.LabelSelector,
+		Scenario:        req.Scenario,
+		Mode:            req.Mode,
+		GVR:             gvr,
+		Namespace:       req.Namespace,
+		LabelSelector:   req.LabelSelector,
+		ResourceVersion: req.ResourceVersion,
+		UntilName:       req.UntilName,
 	})
 	if err != nil {
 		http.Error(w, "watch probe: "+err.Error(), http.StatusGatewayTimeout)

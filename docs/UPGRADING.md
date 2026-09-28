@@ -17,11 +17,18 @@ behaviors changed for every target writing a supported Kustomize folder:
   last document goes loses its `resources:` entry. A snapshot used to remove only the YAML
   document, which left an inherited object rendered and could leave the root unbuildable.
 - The `$patch: delete` files the operator writes start with a comment naming it as their owner.
-  When the object is back, the operator removes the file and its `patches:` entry. A file written
-  before this release, without the comment, is still recognized as the operator's.
+  When the object is back, the operator removes the file and its `patches:` entry. The comment is
+  the only proof of ownership: a delete patch written before this release has no comment, so it
+  is treated as yours. If the object it removes comes back, the write is refused until you
+  remove the patch and its `patches:` entry, or add the comment.
 - A file at that path that the operator did not write, or an owned patch someone edited, now
   refuses the write with `GitPathAccepted=False`, reason `WriteBoundaryRefused`. It used to skip
   the removal silently. Rename or remove the file.
+
+A delete the API server answers with a `Status` rather than the object (an immediate deletion, or a
+garbage-collector cascade) is now attributed by the uid the `Status` names. Such a removal that was
+counted under `attribution_resolutions_total{tier="name"}` is now counted under
+`tier="delete_sticky"`. Who is named does not change.
 
 ## Rules select whole resource collections: `rules[].operations` is gone
 

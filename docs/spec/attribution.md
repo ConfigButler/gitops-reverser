@@ -376,22 +376,31 @@ one-directional, and only one of the two tiers is gated: the exact tier is tried
 carrying a uid and a resourceVersion, a removal included. What an exact-capable event may not do is
 the reverse, reaching the tiers below.
 
-**A removal from a label-selected collection resolves on exact evidence only.** When a rule
-carries `objectSelector`, a `DELETED` frame can mean the object stopped matching the selector rather
-than that it was deleted, and the watch cannot tell the two apart. Every fallback above answers "who
-deleted or last touched this object", which cannot establish who changed a label. Such a removal
-therefore reads only the fact at the object's exact `(uid, resourceVersion)`:
+**A removal from a label-selected collection resolves only on evidence about that object.** When a
+rule carries `objectSelector`, a `DELETED` frame can mean the object stopped matching the selector
+rather than that it was deleted, and the watch cannot tell the two apart. A last-writer,
+collection, rv-only, or name fact answers "who last touched something like this", which cannot
+establish who changed a label. Two kinds of evidence qualify, both measured against a real API
+server in the mutationlab `selector-membership` scenario
+([`selector_membership_test.go`](../../test/mutationlab/e2e/selector_membership_test.go)):
 
-- for an object without a `deletionTimestamp`, a `patch`, `update`, or `delete` at that version
-  names the actor, and ends the wait the moment it arrives;
-- for a terminating object, only a deletion at that version does. The exact slot can hold the
-  finalizer patch that shares the final version, which names whoever cleared a finalizer rather
-  than who asked for the deletion.
+- **The write at the object's exact `(uid, resourceVersion)`.** A label exit's `DELETED` carries
+  the object as it was before the write, at the resourceVersion the relabeling `patch` or `update`
+  produced, and that write's audit response carries the same resourceVersion. A `patch`, `update`,
+  or `delete` there names the actor, and ends the wait the moment it arrives. For a terminating
+  object only a deletion counts there: that slot can hold the finalizer patch, which names whoever
+  cleared a finalizer rather than who asked for the deletion.
+- **A deletion of the same uid that cannot postdate the removal.** An immediate delete is answered
+  with a `Status` that names the uid in its `details` and carries no resourceVersion, so its fact
+  has none. A finalizer-held deletion's `delete` and the finalizer `patch` both carry the
+  resourceVersion the deletion stamped, and the final `DELETED` comes one step later. So a live
+  object accepts a deletion fact without a resourceVersion, and a terminating one a deletion fact
+  at or before its own. A label exit produces no deletion fact for its uid; the bound refuses an
+  object relabeled out and then deleted within the grace.
 
-Nothing else is consulted: not the sticky pointer, a collection fact, the last writer, the rv
-hatch, or the name tier. Without eligible evidence the removal is unresolved when the grace
-expires. An unselected removal, and a `MODIFIED` frame carrying a `deletionTimestamp` (deletion as
-intent, §1), keep the rules above.
+Without eligible evidence the removal is unresolved when the grace expires. An unselected removal,
+and a `MODIFIED` frame carrying a `deletionTimestamp` (deletion as intent, §1), keep the rules
+above.
 
 ### The wait
 

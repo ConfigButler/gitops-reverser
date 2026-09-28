@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -128,17 +129,24 @@ func TestResync_ReEntryRetiresTheOwnedPatch(t *testing.T) {
 	assert.False(t, changed, "re-entry is idempotent")
 }
 
-// A patch that was the operator's before the ownership marker existed is still the operator's.
-func TestResync_ReEntryRetiresAPatchWrittenBeforeTheMarker(t *testing.T) {
+// A patch without the ownership marker proves nothing about who wrote it: a human's patch that
+// happens to match the template byte for byte is refused, never retired, and is left untouched.
+func TestResync_ReEntryRefusesAnUnmarkedPatchThatMatchesTheTemplate(t *testing.T) {
 	worktree := seedInheritedOverlay(t)
-	seedPlacedManifest(t, worktree, inheritedPatch, string(unmarkedInheritedDeletePatch(sharedID())))
-	seedPlacedManifest(t, worktree, inheritedOverlay+"/kustomization.yaml",
-		"namespace: podinfo-test\nresources:\n  - ../../base\npatches:\n  - path: configmap-shared-delete.yaml\n")
+	unmarked := strings.TrimPrefix(string(inheritedDeletePatchDocument(sharedID())), inheritedDeletePatchMarker)
+	seedPlacedManifest(t, worktree, inheritedPatch, unmarked)
+	overlay := "namespace: podinfo-test\nresources:\n  - ../../base\npatches:\n  - path: configmap-shared-delete.yaml\n"
+	seedPlacedManifest(t, worktree, inheritedOverlay+"/kustomization.yaml", overlay)
 
-	_, _, err := resyncOverlay(t, worktree, v1alpha3.PruneAlways, sharedConfigMap())
-	require.NoError(t, err)
-	_, patchPresent := readRepoFile(t, worktree, inheritedPatch)
-	assert.False(t, patchPresent)
+	_, changed, err := resyncOverlay(t, worktree, v1alpha3.PruneAlways, sharedConfigMap())
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused)
+	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueUnownedDeletePatch))
+	assert.False(t, changed)
+	patch, _ := readRepoFile(t, worktree, inheritedPatch)
+	assert.Equal(t, unmarked, patch)
+	kust, _ := readRepoFile(t, worktree, inheritedOverlay+"/kustomization.yaml")
+	assert.Equal(t, overlay, kust)
 }
 
 // An edited patch or an unrelated file at the patch path is not the operator's: removal and
@@ -243,4 +251,51 @@ func TestResync_AlwaysRemovesNamespacelessDocumentsAndCleansResources(t *testing
 	assert.Contains(t, kust, "keep.yaml")
 
 	assert.Equal(t, 1, resync().Deleted, "a complete empty snapshot removes the rest")
+}
+
+// Re-entry into an overlay that supplies labels: the object comes back carrying the overlay's
+// label, which the base does not hold. Planned against the store built while the patch hid the
+// object, the upsert tried to write that label into the read-only base and was refused. Planned
+// against the staged render it sees the label is the build's, and the base stays untouched.
+func TestResync_ReEntryIsPlannedAgainstTheRestoredRender(t *testing.T) {
+	worktree := seedInheritedOverlay(t)
+	seedPlacedManifest(t, worktree, inheritedPatch, string(inheritedDeletePatchDocument(sharedID())))
+	seedPlacedManifest(t, worktree, inheritedOverlay+"/kustomization.yaml",
+		"namespace: podinfo-test\ncommonLabels:\n  env: test\nresources:\n  - ../../base\n"+
+			"patches:\n  - path: configmap-shared-delete.yaml\n")
+	back := sharedConfigMap()
+	back.Object.SetLabels(map[string]string{"env": "test"})
+
+	stats, changed, err := resyncOverlay(t, worktree, v1alpha3.PruneAlways, back)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, 1, stats.Created)
+	_, patchPresent := readRepoFile(t, worktree, inheritedPatch)
+	assert.False(t, patchPresent)
+	base, _ := readRepoFile(t, worktree, "base/cm.yaml")
+	assert.Equal(t, inheritedBaseCM, base, "the overlay's label is the build's, never written into the base")
+}
+
+// An object a HUMAN's $patch: delete already hides is outside the render too. It is not the
+// operator's to remove again (under Always that authored a second patch and failed the render),
+// and it is not a retained document (under OnEvent it was counted as one).
+func TestResync_AnObjectAHumanPatchHidesIsOutsideTheSweep(t *testing.T) {
+	for _, mode := range []v1alpha3.PruneMode{v1alpha3.PruneAlways, v1alpha3.PruneOnEvent} {
+		t.Run(string(mode), func(t *testing.T) {
+			worktree := seedInheritedOverlay(t)
+			humanPatch := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: podinfo-test\n" +
+				"$patch: delete\n"
+			seedPlacedManifest(t, worktree, inheritedOverlay+"/remove-shared.yaml", humanPatch)
+			seedPlacedManifest(t, worktree, inheritedOverlay+"/kustomization.yaml",
+				"namespace: podinfo-test\nresources:\n  - ../../base\npatches:\n  - path: remove-shared.yaml\n")
+
+			stats, changed, err := resyncOverlay(t, worktree, mode)
+			require.NoError(t, err)
+			assert.False(t, changed)
+			assert.Zero(t, stats.Deleted)
+			assert.Zero(t, stats.Retained)
+			patch, _ := readRepoFile(t, worktree, inheritedOverlay+"/remove-shared.yaml")
+			assert.Equal(t, humanPatch, patch)
+		})
+	}
 }

@@ -1,6 +1,6 @@
 annotations:
   authorization.k8s.io/decision: allow
-  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "finalizer-controller/lab-deletion-intent-actor-9mkc"
+  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "finalizer-controller/<ns-1>"
     of Role "finalizer-controller" to ServiceAccount "finalizer-controller/lab-actors"'
   validate-all.configbutler.ai/scenario: deletion-intent-actor
 auditID: <auditID-2>

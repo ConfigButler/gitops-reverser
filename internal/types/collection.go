@@ -83,3 +83,13 @@ func (c CollectionKey) Matches(ri ResourceIdentifier) bool {
 	}
 	return c.Namespace == "" || ri.Namespace == c.Namespace
 }
+
+// Overlaps reports whether two collections' sweep boundaries can hold the same object: the same
+// type, and the same namespace or one of them all namespaces. The selector is not compared, since
+// the boundary is structural.
+func (c CollectionKey) Overlaps(other CollectionKey) bool {
+	if c.Group != other.Group || c.Resource != other.Resource {
+		return false
+	}
+	return c.Namespace == other.Namespace || c.Namespace == "" || other.Namespace == ""
+}

@@ -8,6 +8,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // ReasonObjectSelectorConflict is the ResourcesResolved reason for a rule refused because one of
@@ -54,34 +56,18 @@ func (r selectingRule) olderThan(other selectingRule) bool {
 	return r.kind < other.kind
 }
 
-// selectedCollection is one collection a selection asks for, as the overlap check compares it:
-// the served version is not part of it, for the reason it is not part of types.CollectionKey.
-type selectedCollection struct {
-	groupResource schema.GroupResource
-	namespace     string
-	labelSelector string
-}
-
-// overlaps reports whether two collections can hold the same object with different selections:
-// the same type, and the same namespace or one of them all namespaces.
-func (c selectedCollection) overlaps(other selectedCollection) bool {
-	if c.groupResource != other.groupResource {
-		return false
-	}
-	return c.namespace == other.namespace || c.namespace == "" || other.namespace == ""
-}
-
-func (c selectedCollection) String() string {
-	name := c.groupResource.String()
-	if c.namespace == "" {
+// describeSelection renders one collection for a refusal message.
+func describeSelection(c types.CollectionKey) string {
+	name := schema.GroupResource{Group: c.Group, Resource: c.Resource}.String()
+	if c.Namespace == "" {
 		name += " in all namespaces"
 	} else {
-		name += " in " + c.namespace
+		name += " in " + c.Namespace
 	}
-	if c.labelSelector == "" {
+	if c.LabelSelector == "" {
 		return name + " with no objectSelector"
 	}
-	return fmt.Sprintf("%s with objectSelector %q", name, c.labelSelector)
+	return fmt.Sprintf("%s with objectSelector %q", name, c.LabelSelector)
 }
 
 // refuseSelectorConflicts drops the selections of every rule whose collections overlap a
@@ -130,24 +116,25 @@ func refuseSelectorConflicts(selections []watchSelection) ([]watchSelection, map
 
 // heldCollection is a collection an admitted rule keeps, with that rule for a refusal to name.
 type heldCollection struct {
-	collection selectedCollection
+	collection types.CollectionKey
 	rule       selectingRule
 }
 
 // selectorConflict returns why a rule's collections cannot be admitted beside the ones already
 // held, or "" when they can.
-func selectorConflict(own []selectedCollection, held []heldCollection) string {
+func selectorConflict(own []types.CollectionKey, held []heldCollection) string {
 	for i, c := range own {
 		for _, other := range own[i+1:] {
-			if c.overlaps(other) && c.labelSelector != other.labelSelector {
+			if c.Overlaps(other) && c.LabelSelector != other.LabelSelector {
 				return fmt.Sprintf("its items select overlapping collections differently: %s, and %s; "+
-					"overlapping collections must use one objectSelector", c, other)
+					"overlapping collections must use one objectSelector", describeSelection(c), describeSelection(other))
 			}
 		}
 		for _, h := range held {
-			if c.overlaps(h.collection) && c.labelSelector != h.collection.labelSelector {
+			if c.Overlaps(h.collection) && c.LabelSelector != h.collection.LabelSelector {
 				return fmt.Sprintf("it selects %s, which overlaps %s already selected by the older %s; "+
-					"overlapping collections on one GitTarget must use one objectSelector", c, h.collection, h.rule)
+					"overlapping collections on one GitTarget must use one objectSelector",
+					describeSelection(c), describeSelection(h.collection), h.rule)
 			}
 		}
 	}
@@ -156,30 +143,18 @@ func selectorConflict(own []selectedCollection, held []heldCollection) string {
 
 // collectionsOf returns the distinct collections a rule's selections ask for, in a stable order so
 // a refusal message names the same pair on every resolution.
-func collectionsOf(selections []watchSelection) []selectedCollection {
-	seen := map[selectedCollection]struct{}{}
-	var out []selectedCollection
+func collectionsOf(selections []watchSelection) []types.CollectionKey {
+	seen := map[types.CollectionKey]struct{}{}
+	var out []types.CollectionKey
 	for _, sel := range selections {
-		c := selectedCollection{
-			groupResource: sel.record.Identity.GVR.GroupResource(),
-			namespace:     sel.namespace,
-			labelSelector: sel.labelSelector,
-		}
+		c := types.CollectionKeyFor(sel.record.Identity.GVR, sel.namespace)
+		c.LabelSelector = sel.labelSelector
 		if _, dup := seen[c]; dup {
 			continue
 		}
 		seen[c] = struct{}{}
 		out = append(out, c)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.groupResource != b.groupResource {
-			return a.groupResource.String() < b.groupResource.String()
-		}
-		if a.namespace != b.namespace {
-			return a.namespace < b.namespace
-		}
-		return a.labelSelector < b.labelSelector
-	})
+	sortCollections(out)
 	return out
 }

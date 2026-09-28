@@ -104,6 +104,29 @@ type ManifestStore struct {
 	// signal, exposed via ReachedByMultipleRenderRoots. Computed once at build time from
 	// the kustomization graph; empty for a subtree with zero or one render root.
 	reachedByMultipleRoots map[string]struct{}
+
+	// renderInputs is every file some kustomization lists under resources:, and renderedDocuments
+	// is every source document a render root turned into a rendered object, keyed by its origin
+	// path, kind and name. Together they answer Renders.
+	renderInputs      map[string]struct{}
+	renderedDocuments map[chainKey]struct{}
+}
+
+// Renders reports whether the source document at path, with the given kind and name, is part of
+// what the folder renders. A file no kustomization lists is plain YAML, applied as written, so its
+// documents always are. A document a kustomization lists is rendered only when a render root
+// actually produced an object from it: one a `$patch: delete` removes, whoever wrote the patch,
+// is in Git but not in the render.
+//
+// It is only meaningful for a store whose render roots all built; a root that failed refuses the
+// folder at acceptance, before anything reads this.
+func (s *ManifestStore) Renders(path, kind, name string) bool {
+	p := filepathToSlash(path)
+	if _, input := s.renderInputs[p]; !input {
+		return true
+	}
+	_, rendered := s.renderedDocuments[chainKey{originPath: p, kind: kind, name: name}]
+	return rendered
 }
 
 // RetainedDocument records an allowlisted build-directive that is excluded from the
@@ -427,6 +450,8 @@ func buildStore(
 		// shared by two overlays is flagged whether or not an override entry is at stake.
 		RenderedInventory:      renderedInventory,
 		reachedByMultipleRoots: renderRootFanIn(kusts),
+		renderInputs:           reachedResourceFiles(kusts),
+		renderedDocuments:      renderedDocumentsOf(ovAssignments),
 	}
 
 	hasNamedRecord := store.materializeRecords(ctx, inv.Records, materializeInputs{
@@ -1112,4 +1137,15 @@ func causeFor(r manifestedit.DocumentRecord) DocumentCause {
 func gvkOf(id manifestedit.Identity) schema.GroupVersionKind {
 	gvk := ParseGVK(id.APIVersion, id.Kind)
 	return schema.GroupVersionKind{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind}
+}
+
+// renderedDocumentsOf is the set of source documents the render roots produced an object from.
+// renderChains records an assignment for every rendered object that has a source document, so the
+// assignments' keys are exactly that set.
+func renderedDocumentsOf(assignments map[chainKey]*overrideAssignment) map[chainKey]struct{} {
+	out := make(map[chainKey]struct{}, len(assignments))
+	for key := range assignments {
+		out[key] = struct{}{}
+	}
+	return out
 }

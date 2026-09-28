@@ -441,6 +441,15 @@ func (s *ResyncScope) Matches(ri types.ResourceIdentifier) bool {
 	return s.Collection.Matches(ri)
 }
 
+// Overlaps reports whether two scopes' sweep boundaries can hold the same document. A nil scope is
+// the whole GitTarget and overlaps every scope.
+func (s *ResyncScope) Overlaps(other *ResyncScope) bool {
+	if s == nil || other == nil {
+		return true
+	}
+	return s.Collection.Overlaps(other.Collection)
+}
+
 // ResyncRequest is a synchronous resync of one GitTarget against a complete,
 // version-pinned desired snapshot (M8). It rides the worker queue so the single
 // git-mutating goroutine applies it in order with live events, and replies on

@@ -493,7 +493,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
 	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
 	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope, target.PruneMode,
-		batch.suppressedResources())
+		batch.unrenderedResources())
 	w.reportRetainedOrphans(ctx, plan, target, base, scope)
 
 	stats, err := batch.applyResyncPlan(ctx, desired, plan)
@@ -683,18 +683,18 @@ func eventForDesired(dr manifestanalyzer.DesiredResource) Event {
 // namespace: the replay that produced desired covered a single namespace, so sweeping the whole
 // type would delete every other namespace's documents of that type. See ResyncScope.
 //
-// suppressed are the documents an owned delete patch already takes out of the render
-// (writeBatch.suppressedResources). They are outside what the target renders, so the sweep neither
-// removes them a second time nor counts them as retained.
+// unrendered are the documents the folder holds but does not render (writeBatch.unrenderedResources).
+// They are outside what the target renders, so the sweep neither removes them again nor counts them
+// as retained.
 func resyncPlan(
 	store *manifestanalyzer.ManifestStore,
 	files []manifestedit.FileContent,
 	desired []manifestanalyzer.DesiredResource,
 	scope *ResyncScope,
 	pruneMode v1alpha3.PruneMode,
-	suppressed map[itypes.ResourceIdentifier]bool,
+	unrendered map[itypes.ResourceIdentifier]bool,
 ) manifestanalyzer.Plan {
-	inScope := func(ri itypes.ResourceIdentifier) bool { return scope.Matches(ri) && !suppressed[ri] }
+	inScope := func(ri itypes.ResourceIdentifier) bool { return scope.Matches(ri) && !unrendered[ri] }
 	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(pruneMode), inScope)
 }
 
