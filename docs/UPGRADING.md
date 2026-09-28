@@ -11,21 +11,25 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 > [!WARNING]
 > **Breaking, in place, in `v1alpha3`.** There is no conversion and no alias for any old spelling.
-> One item fails **open**: a `ClusterProvider` that still sets `spec.qps` or `spec.burst` loses its
-> throttle and talks to its source cluster **faster**. Run the check under
+> One item changes behavior: a `ClusterProvider` that still stores `spec.qps` or `spec.burst` loses
+> its throttle and talks to its source cluster at the built-in default. Run the check under
 > [Before you upgrade](#before-you-upgrade) first.
 
-Every change here is a name, and the controllers decide nothing differently; the one exception is
-the pruned throttle above. The rules the names now follow are in
+Every change here is a name, and the controllers decide nothing differently; the exceptions are the
+moved throttle above and the two removed flags at the end. The rules the names now follow are in
 [`definitions.md`](definitions.md), and the plan is
 [`design/vocabulary-cleanup.md`](design/vocabulary-cleanup.md).
 
 ### Before you upgrade
 
 `ClusterProvider.spec.qps` and `spec.burst` are `spec.client.qps` and `spec.client.burst`. The old
-fields are not refused, they are **pruned**: a manifest that still sets them applies cleanly, and
-the provider falls back to the operator-wide `--source-cluster-qps` and `--source-cluster-burst`.
-On a provider you throttled on purpose, that is more traffic. Find them before upgrading:
+spellings are **refused at admission**, naming the new ones, so a manifest that still sets them
+fails to apply rather than dropping the throttle without a word.
+
+A provider **already stored** with them is not refused until its spec is next edited, but the
+operator no longer reads them, so from the upgrade on it runs at the built-in default of 20 QPS,
+burst 30. On a provider you throttled below that on purpose, that is more traffic. Find them
+before upgrading:
 
 ```bash
 kubectl get clusterproviders -o json \
@@ -120,10 +124,13 @@ cause. `Message` is second to last on every kind, immediately before `Age`.
 | `--allow-insecure-git-http` | `--insecure-allow-git-http` |
 | `controllerManager.allowInsecureGitHTTP` | `controllerManager.insecureAllowGitHTTP` |
 | `controllerManager.gitRefreshInterval` | `git.refreshInterval` |
+| `--source-cluster-qps`, `--source-cluster-burst` | removed; set `ClusterProvider.spec.client` |
 
 The chart's values schema refuses the old keys, so `helm upgrade` fails naming them rather than
-ignoring them. A hand-written Deployment still passing `--allow-insecure-git-http` fails to start
-with `flag provided but not defined`.
+ignoring them. A hand-written Deployment still passing `--allow-insecure-git-http` or either
+`--source-cluster-*` flag fails to start with `flag provided but not defined`. The chart never set
+the `--source-cluster-*` flags; their defaults, 20 QPS and burst 30, are now built in, and
+`spec.client` on a remote `ClusterProvider` is the one way to change them.
 
 ## `GitTarget.status.remote` is sampled, and a `GitProvider` lists its branches
 
@@ -158,7 +165,7 @@ write, and how many reference each:
 status:
   branches:
     - name: main
-      gitTargets: 2
+      gitTargetCount: 2
 ```
 
 `Ready=True` beside `branches: []` now reads as **configured and unused** rather than looking the

@@ -165,6 +165,16 @@ func (in *ClusterProviderSpec) DeepCopyInto(out *ClusterProviderSpec) {
 		*out = new(ClusterProviderClient)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.RemovedQPS != nil {
+		in, out := &in.RemovedQPS, &out.RemovedQPS
+		*out = new(int32)
+		**out = **in
+	}
+	if in.RemovedBurst != nil {
+		in, out := &in.RemovedBurst, &out.RemovedBurst
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Attribution != nil {
 		in, out := &in.Attribution, &out.Attribution
 		*out = new(ClusterProviderAttribution)

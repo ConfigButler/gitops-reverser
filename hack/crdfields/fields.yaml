@@ -70,11 +70,15 @@ kinds:
           Audit route this provider joins. See
           [audit route](#audit-route-and-auditfactsreceived)
       - path: client.qps
-        default: the operator-wide flag
+        default: "`20`"
         doc: Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted
       - path: client.burst
-        default: the operator-wide flag
+        default: "`30`"
         doc: Client burst for this source cluster. Ignored when `kubeConfig` is omitted
+      - path: qps
+        skip: the old spelling of `client.qps`, kept in the schema only so admission refuses it
+      - path: burst
+        skip: the old spelling of `client.burst`, kept in the schema only so admission refuses it
 
   - kind: GitTarget
     title: "`GitTarget` (namespaced): which branch and folder"

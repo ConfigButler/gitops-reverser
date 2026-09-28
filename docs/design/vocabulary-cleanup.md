@@ -15,9 +15,11 @@ first, and named inconsistently everywhere the rules arrived late. This change w
 rules down ([`../definitions.md`](../definitions.md)) and then makes the surface obey them, in one
 breaking release, because every remaining problem is a user-visible string.
 
-Every item is a name, and the controllers decide nothing differently. The one way a rename changes
-what a cluster sees is `spec.client`: a manifest still setting the old `spec.qps` has it pruned, and
-the provider falls back to the operator-wide throttle.
+Almost every item is a name, and the controllers decide nothing differently. Two change what a
+cluster does. The move to `spec.client`: a manifest still setting the old `spec.qps` is refused, and
+a provider already storing it falls back to the built-in throttle. And the removal of
+`--source-cluster-qps` and `--source-cluster-burst`, whose defaults are now built in. Removed
+printer columns change what `kubectl get` shows, never what is decided.
 
 ## Why one breaking release rather than a deprecation cycle
 
@@ -31,7 +33,7 @@ largest group while leaving two spellings of several concepts live in between, w
 The schema changes are small enough to ride along. Per
 [`../facts/crd-upgrade-strategies.md`](../facts/crd-upgrade-strategies.md), each is checked against
 the question that matters: **when this value is pruned, does the object do more or less?** Only one
-item in this whole change prunes fail-open, and it is the one held back for a decision.
+item in this whole change prunes fail-open, and it is retained so admission can refuse it.
 
 ## What the audit found, and what it got wrong
 
@@ -231,12 +233,13 @@ first-column ordering finding, which rule 8's "defining fact, else Ready" covers
 
 | Surface | Now | Becomes | Prune fails | Strategy |
 |---|---|---|---|---|
-| `ClusterProvider` | `spec.qps`, `spec.burst` | `spec.client.qps`, `spec.client.burst` | **open** | see below |
+| `ClusterProvider` | `spec.qps`, `spec.burst` | `spec.client.qps`, `spec.client.burst` | **open** | retain-and-refuse, see below |
 | flag | `--allow-insecure-git-http` | `--insecure-allow-git-http` | n/a | rename, chart value follows |
 | chart | `controllerManager.gitRefreshInterval` | `git.refreshInterval` | n/a | rename, documented in `UPGRADING.md` |
+| flag | `--source-cluster-qps`, `--source-cluster-burst` | removed; 20 and 30 are built in | n/a | delete: the chart never set them, and `spec.client` is the per-cluster knob |
 
 `spec.qps`/`spec.burst` is the only fail-open row in the change: pruning a per-cluster override
-falls back to the operator-wide `--source-cluster-qps`, which on a deliberately throttled provider
+falls back to the built-in default of 20 QPS, which on a deliberately throttled provider
 means the operator starts talking to that source cluster faster than the user asked. That is a
 widening, and the matrix's rule for a widening is retain-and-refuse or a loud pre-upgrade inventory
 rather than a quiet delete.
@@ -266,7 +269,7 @@ The four calls that were open, now settled:
 
 | Was open | Decided |
 |---|---|
-| how to land `spec.client.{qps,burst}` (the one fail-open row) | **one-shot delete.** No retain-and-refuse. `UPGRADING.md` says to check for the field before upgrading, because a pruned throttle falls back to the operator-wide default and speeds the client up |
+| how to land `spec.client.{qps,burst}` (the one fail-open row) | **retain-and-refuse.** First decided as a one-shot delete, reversed in review: the old spellings stay in the schema, never read, and a spec-level CEL rule refuses them by name. A provider already storing them passes by ratcheting until its spec is next edited, so `UPGRADING.md` still says to check before upgrading |
 | `Message` on all six kinds, or none | **all six**, `priority=1`, second to last |
 | whether the True-state reasons collapse to `Succeeded` | **yes.** An alerting rule keying on `reason=GitPathAccepted` has to key on the condition type instead, where it belonged |
 | the `GitTargetReady` column on the two rule kinds | **dropped**, consistent with rule 8 excluding dependency-readiness projections |

@@ -181,23 +181,28 @@ spec:
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string
                 type: object
+              burst:
+                description: RemovedBurst is the old spelling of client.burst. It
+                  is never read; setting it is refused.
+                format: int32
+                type: integer
               client:
                 description: |-
                   Client overrides the operator's outgoing kube-client throttles for this cluster. Omitted,
-                  the operator-wide --source-cluster-qps and --source-cluster-burst apply. Ignored when
-                  kubeConfig is omitted (the in-cluster client is not per-provider).
+                  the built-in defaults apply (20 QPS, burst 30). Ignored when kubeConfig is omitted (the
+                  in-cluster client is not per-provider).
                 properties:
                   burst:
                     description: |-
                       Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
-                      operator-wide --source-cluster-burst applies.
+                      built-in default of 30 applies.
                     format: int32
                     minimum: 1
                     type: integer
                   qps:
                     description: |-
                       QPS overrides the operator's outgoing kube-client query-per-second throttle for this
-                      cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
+                      cluster's watches and discovery. Omitted, the built-in default of 20 applies.
                     format: int32
                     minimum: 1
                     type: integer
@@ -281,6 +286,11 @@ spec:
                 - message: exactly one of spec.kubeConfig.configMapRef or spec.kubeConfig.secretRef
                     must be specified
                   rule: '!has(self.configMapRef) || !has(self.secretRef)'
+              qps:
+                description: RemovedQPS is the old spelling of client.qps. It is never
+                  read; setting it is refused.
+                format: int32
+                type: integer
             type: object
             x-kubernetes-validations:
             - message: spec.kubeConfig is immutable; delete and recreate the ClusterProvider
@@ -293,6 +303,8 @@ spec:
             - message: spec.kubeConfig.secretRef.name must not be empty
               rule: '!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name)
                 > 0'
+            - message: spec.qps and spec.burst moved to spec.client.qps and spec.client.burst
+              rule: '!has(self.qps) && !has(self.burst)'
           status:
             description: status defines the observed state of ClusterProvider.
             properties:

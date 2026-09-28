@@ -30,7 +30,7 @@ import (
 //
 // There is no watermark barrier: the interactive case is covered by the human gap between the
 // edit and the save, UC2 by the collect-grace. The grace is anchored at attribution
-// — the worker stamps finalizeAt = receipt + closeDelaySeconds — so the
+// — the worker stamps finalizeAt = receipt + closeDelay — so the
 // controller no longer holds the finalize itself.
 type CommitRequestFinalizer interface {
 	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
@@ -62,7 +62,7 @@ const (
 	commitRequestPollInterval = 2 * time.Second
 
 	// commitRequestResolveTimeout bounds the attach-then-poll wait, measured from
-	// object creation: it must cover the maximum collect-grace (closeDelaySeconds ≤ 300s,
+	// object creation: it must cover the maximum collect-grace (closeDelay ≤ 5m,
 	// anchored at attribution) and the push cooldown plus retries. Authorship is now
 	// settled synchronously at first sight (no attribution wait), so the former
 	// +60s attribution component is gone. Past it, a request the worker never resolved
@@ -116,7 +116,7 @@ func closeDelay(spec configbutleraiv1alpha3.CommitRequestSpec) time.Duration {
 //  2. ATTACH + POLL — the instant the author is settled, send the attach to the
 //     GitTarget's worker (bind the message to the author's open window, finalize
 //     after the grace) and poll the outcome. The grace is anchored at attribution
-//     by the worker (finalizeAt = receipt + closeDelaySeconds), so there is no
+//     by the worker (finalizeAt = receipt + closeDelay), so there is no
 //     controller-side delay. A window belonging to someone else (or no window)
 //     resolves NoOpenWindow; the foreign window stays open.
 type CommitRequestReconciler struct {
@@ -334,7 +334,7 @@ func (r *CommitRequestReconciler) attributeAuthor(
 	return queue.CommandAuthor{}, attributionCommitter
 }
 
-// recordCloseDelayWait makes the post-attribution wait — the closeDelaySeconds
+// recordCloseDelayWait makes the post-attribution wait — the closeDelay
 // collect window followed by the commit and push. First sight already stamps this
 // state, so this is the post-restart re-stamp path: it writes once, at the transition,
 // and is a no-op once the request is already showing the WaitingForCloseDelay reason

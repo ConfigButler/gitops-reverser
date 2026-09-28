@@ -219,3 +219,40 @@ var _ = Describe("Reference names must not be empty", func() {
 			"an empty gitTargetRef.name names nothing and must be refused at admission")
 	})
 })
+
+// The one exception to deletion above. ClusterProvider.spec.qps and spec.burst moved to spec.client,
+// and pruning them would drop a deliberate throttle without a word, so the old spellings stay in the
+// schema, are never read, and a CEL rule refuses them by name.
+var _ = Describe("Retained and refused throttle fields", func() {
+	legacyProvider := func(name string, spec map[string]any) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "ClusterProvider",
+			"metadata":   map[string]any{"name": name},
+			"spec":       spec,
+		}}
+	}
+
+	It("refuses spec.qps and spec.burst, naming spec.client", func() {
+		ctx := context.Background()
+
+		for name, spec := range map[string]map[string]any{
+			"legacy-qps":   {"qps": int64(5)},
+			"legacy-burst": {"burst": int64(7)},
+		} {
+			err := k8sClient.Create(ctx, legacyProvider(name, spec))
+			Expect(err).To(HaveOccurred(), "%s: the old spelling must not apply cleanly", name)
+			Expect(err.Error()).To(ContainSubstring("spec.client.qps and spec.client.burst"), name)
+		}
+	})
+
+	It("accepts spec.client", func() {
+		ctx := context.Background()
+
+		provider := legacyProvider("client-throttle", map[string]any{
+			"client": map[string]any{"qps": int64(5), "burst": int64(7)},
+		})
+		Expect(k8sClient.Create(ctx, provider)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, provider) })
+	})
+})

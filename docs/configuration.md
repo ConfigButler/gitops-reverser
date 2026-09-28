@@ -68,8 +68,8 @@ fields that need more than a line.
 | `accessFrom` | **no namespace** | Deny-by-default list of control-cluster namespaces that may reference this provider. Omitted, none may; an empty `selector: {}` admits every namespace |
 | `allowAnySourceNamespace` | `false` | Whether rules may watch namespaces other than their own, `*` included |
 | `attribution.auditRoute` | the provider's own name | Audit route this provider joins. See [audit route](#audit-route-and-auditfactsreceived) |
-| `client.qps` | the operator-wide flag | Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted |
-| `client.burst` | the operator-wide flag | Client burst for this source cluster. Ignored when `kubeConfig` is omitted |
+| `client.qps` | `20` | Client rate limit for this source cluster. Ignored when `kubeConfig` is omitted |
+| `client.burst` | `30` | Client burst for this source cluster. Ignored when `kubeConfig` is omitted |
 
 ### `GitTarget` (namespaced): which branch and folder
 
@@ -199,8 +199,8 @@ so a `GitTarget` edit reaches it within one steady interval.
 unused**, which looks nothing like broken, and which otherwise takes a `GitTarget` listing to tell
 apart.
 
-More than one `gitTargets` on a branch means those folders share one branch worker, one clone and
-one queue. They still report their own health on their own conditions: one folder being refused
+A `gitTargetCount` above one means that many folders share one branch worker, one clone and one
+queue. They still report their own health on their own conditions: one folder being refused
 says nothing about its siblings.
 
 ### `GitProvider.spec.secretRef`: the credentials Secret
@@ -1832,10 +1832,11 @@ window when custom save messages matter: `0s` leaves little opportunity to attac
 delay does not reserve a transaction or extend every normal flush timer. See the [request contract](spec/commitrequest-design.md).
 
 Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
-`kubectl get commitrequest` surfaces `Ready`, `AuthorAttributed`, and `Pushed`. Automation must stop
-on either `Ready=True` or `Stalled=True`; `kubectl wait --for=condition=Ready` alone keeps waiting on
-terminal failures. `Ready=True` includes successful no-commit outcomes. Require `Pushed=True` and
-`status.commit` for evidence that the request produced a pushed commit:
+`kubectl get commitrequest` shows `Ready`, its `Reason` and the `Commit`; `-o wide` adds
+`AuthorAttributed` and `Pushed`. Automation must stop on either `Ready=True` or `Stalled=True`;
+`kubectl wait --for=condition=Ready` alone keeps waiting on terminal failures. `Ready=True` includes
+successful no-commit outcomes. Require `Pushed=True` and `status.commit` for evidence that the
+request produced a pushed commit:
 
 - **Ready** (summary): `True` once the request reached a non-error terminal outcome. The `Ready`
   condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.commit` set),
