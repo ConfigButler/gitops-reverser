@@ -2,6 +2,7 @@
 
 > **Design requirements; implementation pending.** All three prune modes, including `Always`
 > with supported Kustomize layouts, are required from the first release.
+> **Step 2 of 2:** implement after the [collection rename and event-filter removal](collection-terminology-rename.md).
 > [Issue #146](https://github.com/ConfigButler/gitops-reverser/issues/146).
 > Index: [`../INDEX.md`](../INDEX.md). Checked: 2026-09-28, source at `69836e70`.
 > Related: [Kubernetes watch facts](../facts/kubernetes-watch-options.md),
@@ -45,16 +46,16 @@ comparison. Preserve unsanitized watch provenance for attribution.
 
 ## One collection is one list/watch request
 
-Extend the current [`CellKey`](../../internal/types/cell.go) within a GitTarget:
+Extend `CollectionKey` from step 1 (currently [`CellKey`](../../internal/types/cell.go)) within a GitTarget:
 
 ```text
 collection: group, resource, namespace ("" = all namespaces), canonical label selector
-watch spec: served version + operation filter
+watch spec: served version
 ```
 
-[`targetWatchStreams`](../../internal/watch/target_watch.go) unions operations only for identical
-collections. Unioning selectors and operations separately would let one rule's operations apply
-to another rule's objects. Served version remains data, so changing it does not move Git files.
+Step 1 removes rule operation filters. Deduplicate identical collections and choose their served
+version deterministically; every collection observes all object event types. Served version remains
+data, so changing it does not move Git files. Keep each selector attached to its own collection.
 
 ### Canonical selector identity
 
@@ -102,9 +103,9 @@ label check distinguishes them. Prune policy decides whether the document is rem
 | `OnEvent` (default) | Remove | Retain |
 | `Always` | Remove | Remove |
 
-Operation filters apply to live events. Excluding `DELETE` suppresses observed removals, but
-initial snapshots remain complete and `Always` can still prune absent identities. `Never`
-disables both deletion paths. All modes cover plain YAML and supported Kustomize layouts.
+Every observed removal reaches the normal processing path; there is no rule operation filter.
+`Never` disables both Git deletion paths while continuing to mirror creates and updates. All
+modes cover plain YAML and supported Kustomize layouts.
 
 ## Snapshot and prune boundary
 
@@ -234,7 +235,7 @@ inline and ordered; uncertainty affects authorship only. Resyncs retain configur
 ### Scope integration and queue ordering
 
 Keep [`ResyncScope.Matches`](../../internal/git/types.go) structural: target, group/resource, and
-namespace. The collection identity additionally carries the selector. Update the `CellKey`/scope
+namespace. The collection identity additionally carries the selector. Update the `CollectionKey`/scope
 comments to distinguish the selected collection from the Git objects it owns.
 [`markResyncTailForWriteLocked`](../../internal/git/branch_worker.go) must keep matching identifiers:
 a `DELETE` may have no object payload, and different selector generations can affect the same file.
@@ -269,14 +270,14 @@ retention counts, and unresolved attribution. These are consequences of the chos
 
 Filtered requests reduce transferred objects but add watches; measure the cost. Keep requests
 filtered because [authorization can depend on selectors](../facts/kubernetes-watch-options.md#selectors-and-authorization).
-A denial cannot become an empty snapshot. Field selectors and identifier renames remain separate
-work. Different selectors over overlapping scopes need union membership and stale-observation
-handling; independent sweeps are insufficient. The existing same-selector overlap ordering gap
-also remains outside this change.
+A denial cannot become an empty snapshot. Field selectors remain separate work; the collection
+rename and operation-filter removal are prerequisites in step 1. Different selectors over
+overlapping scopes need union membership and stale-observation handling; independent sweeps are
+insufficient. The existing same-selector overlap ordering gap also remains outside this change.
 
 ## Tests
 
-Preserve existing version, operation-union, unchanged-watch, and replacement checks in
+Preserve step 1's version, duplicate-collection, unchanged-watch, and replacement checks in
 [`target_watch_test.go`](../../internal/watch/target_watch_test.go) and
 [`target_watch_plan_test.go`](../../internal/watch/target_watch_plan_test.go), plus sibling-namespace
 protection in [`resync_scope_test.go`](../../internal/git/resync_scope_test.go). Add:
@@ -289,8 +290,9 @@ protection in [`resync_scope_test.go`](../../internal/git/resync_scope_test.go).
   afresh. Disjoint namespaces permit distinct selectors; overlaps refuse the newer rule.
 - Equal names across resource types/namespaces remain distinct. Version changes and new UIDs do
   not orphan Git representations. Missing Git objects use placement; mapping failures refuse.
-- Observe entry/exit under all modes. Exclude live `DELETE`, then show `Always` still prunes on a
-  fresh snapshot. Keep terminating-object behavior and test missed events and excluded UPDATEs.
+- Observe entry, label exit, and physical deletion under all modes, with no operation filter.
+  Simulate missed deletes and updates during disconnection: a fresh snapshot restores present
+  object state and prunes absent identities only under `Always`. Keep terminating-object behavior.
 - With `C={A,B}` and `D={A}`, including never-selected B, `OnEvent`/`Never` retain B and report one
   retained document; `Always` removes B and reports zero retained. Check status and per-type
   metrics. Other namespaces/types stay untouched. An empty `D` removes all `C` only under `Always`.

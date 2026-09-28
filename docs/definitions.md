@@ -71,6 +71,9 @@ Use Kubernetes' collection, watch, and initial-events vocabulary in explanatory 
 [Kubernetes watch options](facts/kubernetes-watch-options.md). Existing identifiers such as
 `CellKey`, `SourceCell`, `Replaying`, and `status.streams` keep their current spelling until an
 explicit code or API migration. This is an intentional transition, not a runtime behavior change.
+The [first implementation step](design/collection-terminology-rename.md) removes the cell vocabulary
+and per-rule operation filters; [label selection](design/watches-labels-simplification.md) follows
+as a separate behavior change.
 
 **Resource collection.** Objects of one group/resource within a namespace selection. In the
 current planner, [`CellKey`](../internal/types/cell.go) contains `(group, resource, namespace)`;

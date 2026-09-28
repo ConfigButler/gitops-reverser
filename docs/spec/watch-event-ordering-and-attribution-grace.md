@@ -40,7 +40,9 @@ watch event
   -> BranchWorker.Enqueue
 ```
 
-Operation filtering and unchanged-content checks can discard events before attribution.
+Operation filtering and unchanged-content checks can discard events before attribution in the
+current implementation. [Step 1](../design/collection-terminology-rename.md#remove-the-rule-operation-filter)
+removes the rule operation filter; unchanged-content suppression and ordered attribution remain.
 For events that need attribution,
 [`ResolveAuthor`](../../internal/watch/author_resolver.go) calls the attribution index's
 `Await` method inline. It waits for a resolution or the grace deadline, subject to cancellation.
