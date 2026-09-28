@@ -47,7 +47,7 @@ cluster ─ scan ─▶  Observation          raw per-type facts: discovery + CR
        ▼               ▼                 ▼
    mapper            live set         TargetView (per GitTarget)
    ByGVK/ByGVR       Followable()      folds followable records into
-   (no separate                       namespace/operation scope; never
+   (no separate                       namespace scopes; never
     mapper object)                    recomputes followability
 ```
 
@@ -58,7 +58,7 @@ cluster ─ scan ─▶  Observation          raw per-type facts: discovery + CR
   followability verdict. It owns identity rules, the deny/sensitive policy, the live
   set, and the 60-second removal grace. Every consumer reads from it.
 - **`TargetView`** is a GitTarget's projection of *already-followable* records into
-  namespaces and operations. It never recomputes followability.
+  namespace scopes. It never recomputes followability.
 
 The mapper is not a layer — it is `TypeRegistry.ByGVK`. WatchRule expansion is not a
 layer — it is a function that builds a `TargetView` by asking the registry.
@@ -259,8 +259,8 @@ type TargetView struct {
 }
 
 type FollowedType struct {
-    Record       TypeRecord // copied from the registry, never recomputed
-    NamespaceOps map[string]OperationSet
+    Record          TypeRecord // copied from the registry, never recomputed
+    NamespaceScopes map[string]struct{}
 }
 
 func BuildTargetView(
