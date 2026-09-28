@@ -3,6 +3,7 @@
 package types
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -170,6 +171,18 @@ func TestCanonicalLabelSelector_InvalidIsRefused(t *testing.T) {
 		}},
 		"invalid key":   {MatchLabels: map[string]string{"bad key": "a"}},
 		"invalid value": {MatchLabels: map[string]string{"team": "not valid!"}},
+		"empty expression key": {MatchExpressions: []metav1.LabelSelectorRequirement{
+			expr("", metav1.LabelSelectorOpExists),
+		}},
+		"invalid expression key": {MatchExpressions: []metav1.LabelSelectorRequirement{
+			expr("bad key", metav1.LabelSelectorOpExists),
+		}},
+		"invalid expression value": {MatchExpressions: []metav1.LabelSelectorRequirement{
+			expr("team", metav1.LabelSelectorOpIn, "not valid!"),
+		}},
+		"expression value longer than 63": {MatchExpressions: []metav1.LabelSelectorRequirement{
+			expr("team", metav1.LabelSelectorOpIn, strings.Repeat("a", 64)),
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, err := CanonicalLabelSelector(selector); err == nil {

@@ -201,7 +201,7 @@ func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWa
 	for _, rr := range rule.Spec.Rules {
 		// An invalid selector cannot get here as a running rule: the compile path refused it. Its
 		// summary then expects the unselected key, which no stream holds, and reads as not ready.
-		selector, _ := types.CanonicalLabelSelector(rr.ObjectSelector.LabelSelector())
+		selector, _ := types.CanonicalLabelSelector(rr.ObjectSelector)
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 		for _, rec := range matched {

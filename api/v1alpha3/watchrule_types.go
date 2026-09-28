@@ -84,6 +84,7 @@ type ResourceRule struct {
 	// server applies it to every LIST and WATCH this item opens, with list/watch semantics: an
 	// object that stops matching leaves the collection exactly as a deleted one does, and the
 	// GitTarget's spec.prune.mode decides what that does to its Git document.
+	// It is a standard Kubernetes label selector: matchLabels and matchExpressions, ANDed.
 	// Omitted or {} selects every object. A selector that does not parse refuses the whole rule
 	// (ResourcesResolved=False, reason InvalidObjectSelector).
 	//
@@ -92,7 +93,7 @@ type ResourceRule struct {
 	// Two rules feeding one GitTarget whose collections overlap (same type, and the same namespace or
 	// one of them all namespaces) must use the same selector; the newer rule is refused.
 	// +optional
-	ObjectSelector *ObjectSelector `json:"objectSelector,omitempty"`
+	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
 
 	// A denied explicit name refuses the WHOLE WatchRule rather than trimming that item: mirroring
 	// two of the three namespaces a rule asked for is worse than a loud failure.

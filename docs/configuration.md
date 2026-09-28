@@ -1789,11 +1789,10 @@ as a whole with `ResourcesResolved=False`, reason `ObjectSelectorConflict`. Diff
 different namespaces are fine. To select several values, use one set-based selector such as
 `team in (a,b)`.
 
-The API server rejects a malformed `matchExpressions` requirement: the CRD schema checks its
-operator, values, and label syntax. `matchLabels` syntax is checked by the rule compiler, which
-refuses the whole rule before it opens any watch, with `ResourcesResolved=False`, reason
-`InvalidObjectSelector`. A valid selector that matches nothing
-is a valid, empty collection.
+The field is the Kubernetes `LabelSelector` type, so the CRD schema checks only its shape. The rule
+compiler checks the rest (operators, values, and label syntax, exactly as Kubernetes parses a
+selector) and refuses the whole rule before it opens any watch, with `ResourcesResolved=False`,
+reason `InvalidObjectSelector`. A valid selector that matches nothing is a valid, empty collection.
 
 **Kustomize layouts.** A removal from a supported Kustomize folder is the same edit whether a
 watch event or a snapshot caused it. A document is removed from its own file, keeping the other

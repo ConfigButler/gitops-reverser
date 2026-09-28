@@ -24,7 +24,7 @@ performs no local label matching for mirror membership or pruning. This contract
 
 ## The API
 
-Add optional `objectSelector`, with the wire shape of `metav1.LabelSelector`, to
+Add optional `objectSelector`, typed as the upstream `metav1.LabelSelector`, to
 [`ResourceRule`](../../api/v1alpha3/watchrule_types.go) and
 [`ClusterResourceRule`](../../api/v1alpha3/clusterwatchrule_types.go):
 
@@ -38,8 +38,8 @@ rules:
 ```
 
 The field follows the existing admission-style rule vocabulary, but uses LIST/WATCH matching
-semantics; admission's old-or-new matching does not apply. Validate in the CRD schema and CEL
-where the cost budget allows, and at compilation with `metav1.LabelSelectorAsSelector`, per
+semantics; admission's old-or-new matching does not apply. The native type's schema checks only
+shape, so validate at compilation with `metav1.LabelSelectorAsSelector`, per
 [where validation lives](../spec/where-validation-lives.md); no admission webhook. Omitted and
 `{}` both select everything: normalize nil explicitly because the helper otherwise means
 “nothing.” Invalid selectors refuse the rule;

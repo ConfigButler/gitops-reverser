@@ -84,6 +84,7 @@ type ClusterResourceRule struct {
 	// server applies it to every LIST and WATCH this item opens, with list/watch semantics: an
 	// object that stops matching leaves the collection exactly as a deleted one does, and the
 	// GitTarget's spec.prune.mode decides what that does to its Git document.
+	// It is a standard Kubernetes label selector: matchLabels and matchExpressions, ANDed.
 	// Omitted or {} selects every object. A selector that does not parse refuses the whole rule
 	// (ResourcesResolved=False, reason InvalidObjectSelector).
 	//
@@ -92,7 +93,7 @@ type ClusterResourceRule struct {
 	// Two rules feeding one GitTarget that match the same type must use the same selector; the
 	// newer rule is refused.
 	// +optional
-	ObjectSelector *ObjectSelector `json:"objectSelector,omitempty"`
+	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
 }
 
 // ClusterWatchRuleStatus defines the observed state of ClusterWatchRule.
