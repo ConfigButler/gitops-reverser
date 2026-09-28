@@ -30,6 +30,17 @@ task test      # Must pass all unit tests + the coverage ratchet (see TESTING RE
 task test-e2e  # Must pass end-to-end tests
 ```
 
+### When to push
+
+Push once `task lint` and `task test` pass. Do not hold a push for `task test-e2e`: CI runs the
+e2e legs on the pushed branch, so waiting locally first only adds the wait. Keep the local e2e run
+going (or read the CI legs) and fix forward if it fails. The PR is not ready until e2e is green
+somewhere.
+
+Wait for a local e2e pass **before** pushing only for a high-risk, large change: the Git write
+path (`internal/git/`), watch/stream plumbing, the release or CI workflows, or a change big
+enough that a red branch would cost reviewers real time.
+
 `task lint` also runs `actionlint` on every workflow under `.github/workflows/` (via the
 `lint-actions` task) and `hadolint` on the Dockerfiles (via `lint-dockerfiles`), so a
 workflow or Dockerfile change is covered by the normal lint gate; you can also run
@@ -166,7 +177,8 @@ describes behavior you also changed in code/config during the same task.
 4. `task vet` - Run go vet
 5. `task lint` - Run golangci-lint (**MANDATORY**)
 6. `task test` - Run unit tests (**MANDATORY**)
-7. `task test-e2e` - Run e2e tests (**MANDATORY**)
+7. `task test-e2e` - Run e2e tests (**MANDATORY**, but see [When to push](#when-to-push): it
+   gates the PR being ready, not the push)
 
 ## FAILURE HANDLING
 

@@ -11,6 +11,8 @@ Key points it enforces:
 - **Mandatory validation before a change is complete:** `task lint`, `task test`,
   and `task test-e2e` must all pass. Run the e2e commands **sequentially, not in
   parallel**.
+- **Push once lint + unit pass;** don't hold the push for local e2e. Only a high-risk, large
+  change waits for a local e2e pass first — see "When to push" in AGENTS.md.
 - **e2e tests need Docker** — verify with `docker info` before running
   `task test-e2e`; ask the user to start the Docker daemon if it is not running.
 - **Docs-only exception:** a pure markdown/docs change that touches no Go code,
