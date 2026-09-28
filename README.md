@@ -73,6 +73,9 @@ several source clusters, repositories, branches, and folders.
 - **Capture existing resources and future changes.** A new target captures the selected resources
   already in the cluster, then follows changes, including deletions under a
   [deletion policy](docs/configuration.md#deletion-policy-specprunemode).
+- **Mirror only the objects you label.** A rule's `objectSelector` lets the API server choose which
+  objects of a type are mirrored; an object that loses its label leaves the mirror like a deleted
+  one. See [selecting objects by label](docs/configuration.md#selecting-objects-by-label-rulesobjectselector).
 - **In-place edits keep the shape of your file.** Updates preserve key order, comments, and
   untouched documents in multi-document files.
 - **Inspect a repository before you point at it.** `manifest-analyzer --mode scan-repo` classifies

@@ -21,16 +21,16 @@ func TestAddOrUpdateWatchRule_CompilesTheCanonicalObjectSelector(t *testing.T) {
 		Spec: configv1alpha3.WatchRuleSpec{
 			GitTargetRef: meta.LocalObjectReference{Name: "target"},
 			Rules: []configv1alpha3.ResourceRule{
-				{Resources: []string{"secrets"}, ObjectSelector: &metav1.LabelSelector{
-					MatchExpressions: []metav1.LabelSelectorRequirement{
+				{Resources: []string{"secrets"}, ObjectSelector: &configv1alpha3.ObjectSelector{
+					MatchExpressions: []configv1alpha3.ObjectSelectorRequirement{
 						{Key: "team", Operator: metav1.LabelSelectorOpIn, Values: []string{"b", "a"}},
 					},
 				}},
 				{Resources: []string{"configmaps"}},
 				// Unreachable through the compile path, which refuses the whole rule first; the
 				// store's own fail-safe leaves the item out rather than selecting everything.
-				{Resources: []string{"services"}, ObjectSelector: &metav1.LabelSelector{
-					MatchExpressions: []metav1.LabelSelectorRequirement{
+				{Resources: []string{"services"}, ObjectSelector: &configv1alpha3.ObjectSelector{
+					MatchExpressions: []configv1alpha3.ObjectSelectorRequirement{
 						{Key: "team", Operator: metav1.LabelSelectorOpIn},
 					},
 				}},
@@ -64,7 +64,7 @@ func TestAddOrUpdateClusterWatchRule_CompilesTheCanonicalObjectSelector(t *testi
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			Rules: []configv1alpha3.ClusterResourceRule{{
 				Resources:      []string{"namespaces"},
-				ObjectSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tenant": "x"}},
+				ObjectSelector: &configv1alpha3.ObjectSelector{MatchLabels: map[string]string{"tenant": "x"}},
 			}},
 		},
 	}

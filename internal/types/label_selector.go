@@ -103,3 +103,15 @@ func selectorOperator(op metav1.LabelSelectorOperator) (selection.Operator, bool
 		return "", false
 	}
 }
+
+// ValidateObjectSelectors checks a rule's spec.rules[].objectSelector values, in order, and returns
+// an error naming the first that does not parse. It is the one check both the rule compiler and the
+// admission webhook apply, so the two can never disagree about what is valid.
+func ValidateObjectSelectors(selectors []*metav1.LabelSelector) error {
+	for i, selector := range selectors {
+		if _, err := CanonicalLabelSelector(selector); err != nil {
+			return fmt.Errorf("spec.rules[%d].objectSelector: %w", i, err)
+		}
+	}
+	return nil
+}

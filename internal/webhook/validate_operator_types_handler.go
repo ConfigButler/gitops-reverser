@@ -64,9 +64,10 @@ type CommandAuthorRecorder interface {
 //     upsert), never a rejection, so a user's command never depends on it succeeding (a missed
 //     capture leaves the request without a claimed actor; see
 //     docs/spec/commitrequest-admission-authorship.md).
-//   - For a WatchRule it validates the one cross-object rule admission can usefully give feedback
-//     on: a second source namespace against a GitTarget that declared its folder namespace-free.
-//     That one CAN reject, and it is the only thing here that does.
+//   - For a WatchRule or ClusterWatchRule it validates spec.rules[].objectSelector, and for a
+//     WatchRule the one cross-object rule admission can usefully give feedback on: a second source
+//     namespace against a GitTarget that declared its folder namespace-free. These CAN reject, and
+//     they are the only things here that do.
 //
 // The two branches share an endpoint and nothing else. Validation runs on dry-run (it has no side
 // effects, and a server-side dry-run must report the rejection it would get), while the capture
@@ -88,8 +89,8 @@ func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission
 	log := logf.FromContext(ctx).WithName("validate-operator-types")
 
 	gr := metav1.GroupResource{Group: req.Resource.Group, Resource: req.Resource.Resource}
-	if isWatchRuleKind(gr) {
-		return h.validateWatchRuleSourceNamespaces(ctx, req)
+	if isWatchRuleKind(gr) || isClusterWatchRuleKind(gr) {
+		return h.validateRule(ctx, gr, req)
 	}
 	if !isCommandKind(gr) {
 		// Belt-and-suspenders; the webhook rules already scope us to the kinds above.

@@ -223,13 +223,13 @@ func TestReplaceGitTargetWatches_LogsAnAllKeepReconcileAndTouchesNothing(t *test
 		GitDest: gitDest,
 		Types: []WatchedType{{
 			GVR:             configmapsGVR,
-			NamespaceScopes: map[string]struct{}{"apps": {}},
+			NamespaceScopes: map[string]string{"apps": ""},
 		}},
 	}
 	manager := &Manager{Log: log}
 	cancelled := false
 	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-	manager.targetWatchSet(gitDest).streams[key.Collection()] = &runningTargetWatch{
+	manager.targetWatchSet(gitDest).streams[key.Collection()] = &runningTargetWatch{gate: &producerGate{},
 		key: key, cancel: func() { cancelled = true },
 	}
 
@@ -264,7 +264,7 @@ func TestDiffTargetWatchPlans_SortsWithinAGroupByResource(t *testing.T) {
 func TestTargetWatchSet_PlanDescribesTheRunningStreams(t *testing.T) {
 	set := &targetWatchSet{streams: map[types.CollectionKey]*runningTargetWatch{}}
 	key := targetWatchKey{GVR: planV1beta, Namespace: "team-a"}
-	set.streams[key.Collection()] = &runningTargetWatch{key: key, cancel: func() {}}
+	set.streams[key.Collection()] = &runningTargetWatch{key: key, cancel: func() {}, gate: &producerGate{}}
 
 	plan := set.plan()
 
@@ -279,7 +279,7 @@ func TestTargetWatchSet_StopCancelsOneCollectionAndStopAllTheRest(t *testing.T) 
 	stopped := map[string]bool{}
 	for _, ns := range []string{"team-a", "team-b"} {
 		key := targetWatchKey{GVR: planV1, Namespace: ns}
-		set.streams[key.Collection()] = &runningTargetWatch{
+		set.streams[key.Collection()] = &runningTargetWatch{gate: &producerGate{},
 			key: key, cancel: func() { stopped[ns] = true },
 		}
 	}

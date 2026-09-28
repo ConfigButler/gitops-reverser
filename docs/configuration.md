@@ -1789,8 +1789,30 @@ as a whole with `ResourcesResolved=False`, reason `ObjectSelectorConflict`. Diff
 different namespaces are fine. To select several values, use one set-based selector such as
 `team in (a,b)`.
 
-A selector that does not parse refuses the whole rule with `ResourcesResolved=False`, reason
-`InvalidObjectSelector`. A valid selector that matches nothing is a valid, empty collection.
+Admission rejects a malformed selector: the CRD schema checks each requirement's operator,
+values, and label syntax, and the operator's admission webhook checks `matchLabels`. The rule
+compiler applies the same check whether or not admission ran, and refuses the whole rule with
+`ResourcesResolved=False`, reason `InvalidObjectSelector`. A valid selector that matches nothing
+is a valid, empty collection.
+
+**Kustomize layouts.** A removal from a supported Kustomize folder is the same edit whether a
+watch event or a snapshot caused it. A document is removed from its own file, keeping the other
+documents in that file, and a file that empties loses its `resources:` entry, so the root still
+builds. An object the overlay inherits from a read-only base is removed with a `$patch: delete`
+the operator writes in the overlay and lists under `patches:`. The operator owns that file: its
+first line says so, and when the object is back in the selection the operator removes the file
+and its entry. The file's exact contents are the ownership, so an edited patch, or an unrelated
+file at the same path, refuses the write (`GitPathAccepted=False`, reason `WriteBoundaryRefused`)
+rather than being overwritten or kept. Every such write is re-rendered before commit to prove the
+object left, or came back, and that nothing else in the render changed. The
+[Kustomize support boundary](#kustomize-support-in-the-target-path) still decides which folders are
+writable at all.
+
+**Attribution of a removal.** With [audit attribution](attribution-setup-guide.md) on, an object
+leaving a selected collection is attributed only to the audit event that produced its final
+version: the label change, or the deletion itself. When that event is missing, the commit author
+is unresolved rather than whoever last wrote the object. See the
+[attribution contract](spec/attribution.md#four-rules-that-are-easy-to-miss).
 
 ## `ClusterWatchRule`
 

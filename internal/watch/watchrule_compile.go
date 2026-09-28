@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -56,11 +55,9 @@ func CompileWatchRule(
 ) (authz.ResolvedSourceScope, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace}
 
-	if err := validateObjectSelectors(len(rule.Spec.Rules), func(i int) *metav1.LabelSelector {
-		return rule.Spec.Rules[i].ObjectSelector
-	}); err != nil {
+	if err := types.ValidateObjectSelectors(rule.Spec.ObjectSelectors()); err != nil {
 		store.Delete(key)
-		return authz.ResolvedSourceScope{}, err
+		return authz.ResolvedSourceScope{}, &ObjectSelectorError{Message: err.Error()}
 	}
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(ctx, reader, &rule, &target)
@@ -120,11 +117,9 @@ func CompileClusterWatchRule(
 ) (ClusterWatchRuleDecision, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name}
 
-	if err := validateObjectSelectors(len(rule.Spec.Rules), func(i int) *metav1.LabelSelector {
-		return rule.Spec.Rules[i].ObjectSelector
-	}); err != nil {
+	if err := types.ValidateObjectSelectors(rule.Spec.ObjectSelectors()); err != nil {
 		store.DeleteClusterWatchRule(key)
-		return ClusterWatchRuleDecision{}, err
+		return ClusterWatchRuleDecision{}, &ObjectSelectorError{Message: err.Error()}
 	}
 
 	admitted, err := authz.GitTargetAdmitted(ctx, reader, &target)
@@ -191,14 +186,3 @@ type ObjectSelectorError struct {
 }
 
 func (e *ObjectSelectorError) Error() string { return e.Message }
-
-// validateObjectSelectors checks every item's objectSelector, returning an ObjectSelectorError
-// naming the first invalid one.
-func validateObjectSelectors(n int, selectorAt func(int) *metav1.LabelSelector) error {
-	for i := range n {
-		if _, err := types.CanonicalLabelSelector(selectorAt(i)); err != nil {
-			return &ObjectSelectorError{Message: fmt.Sprintf("spec.rules[%d].objectSelector: %v", i, err)}
-		}
-	}
-	return nil
-}

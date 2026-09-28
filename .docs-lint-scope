@@ -33,4 +33,3 @@ docs/facts/kubernetes-watch-options.md
 docs/spec/watch-event-ordering-and-attribution-grace.md
 # Temporary: the watch-rule step 2 plan. Its completion criteria says to remove
 # its line here once that step ships.
-docs/design/watches-labels-simplification.md

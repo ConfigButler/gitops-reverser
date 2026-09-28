@@ -25,16 +25,13 @@ type WatchedType struct {
 	ServedVersion string
 	Preferred     bool
 
-	// NamespaceScopes is the set of namespaces this type is watched in. The empty-string
-	// key is a cluster-wide collection: a cluster-scoped resource, or a namespaced resource
-	// a WatchRule follows across every namespace.
-	NamespaceScopes map[string]struct{}
-
-	// LabelSelectors is the canonical object selector each namespace scope is selected with,
-	// keyed like NamespaceScopes; an absent entry selects every object. One entry per scope is
-	// enough because two collections on one type and namespace overlap, and the resolver refuses
-	// a second selector over an overlapping collection (see refuseSelectorConflicts).
-	LabelSelectors map[string]string
+	// NamespaceScopes maps each namespace this type is watched in to the canonical object
+	// selector that scope is selected with ("" selects every object). The empty-string key is a
+	// cluster-wide collection: a cluster-scoped resource, or a namespaced resource a WatchRule
+	// follows across every namespace. One selector per scope is enough because two collections on
+	// one type and namespace overlap, and the resolver refuses a second selector over an
+	// overlapping collection (see refuseSelectorConflicts).
+	NamespaceScopes map[string]string
 }
 
 // ClusterWide reports whether this type is gathered under a cluster-wide scope: true for a
@@ -99,8 +96,7 @@ type watchSelection struct {
 // GitTarget's selections.
 type watchedTypeAccum struct {
 	record          typeset.TypeRecord
-	namespaceScopes map[string]struct{}
-	labelSelectors  map[string]string
+	namespaceScopes map[string]string
 }
 
 // buildWatchedTypeTable folds a GitTarget's selected followable records into its
@@ -118,26 +114,15 @@ func buildWatchedTypeTable(
 		gvr := sel.record.Identity.GVR
 		acc := byGVR[gvr]
 		if acc == nil {
-			acc = &watchedTypeAccum{
-				record:          sel.record,
-				namespaceScopes: map[string]struct{}{},
-				labelSelectors:  map[string]string{},
-			}
+			acc = &watchedTypeAccum{record: sel.record, namespaceScopes: map[string]string{}}
 			byGVR[gvr] = acc
 		}
-		acc.namespaceScopes[sel.namespace] = struct{}{}
-		if sel.labelSelector != "" {
-			acc.labelSelectors[sel.namespace] = sel.labelSelector
-		}
+		acc.namespaceScopes[sel.namespace] = sel.labelSelector
 	}
 
 	table := WatchedTypeTable{GitDest: gitDest, ResolvedAt: generation}
 	for _, acc := range byGVR {
-		wt := watchedTypeFromRecord(acc.record, acc.namespaceScopes)
-		if len(acc.labelSelectors) > 0 {
-			wt.LabelSelectors = acc.labelSelectors
-		}
-		table.Types = append(table.Types, wt)
+		table.Types = append(table.Types, watchedTypeFromRecord(acc.record, acc.namespaceScopes))
 	}
 	sortWatchedTypes(table.Types)
 	return table
@@ -145,7 +130,7 @@ func buildWatchedTypeTable(
 
 // watchedTypeFromRecord copies a followable registry record's identity into a
 // WatchedType, attaching the namespace scopes the rules folded.
-func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceScopes map[string]struct{}) WatchedType {
+func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceScopes map[string]string) WatchedType {
 	return WatchedType{
 		GVK:             rec.Identity.GVK,
 		GVR:             rec.Identity.GVR,

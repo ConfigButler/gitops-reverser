@@ -1,9 +1,11 @@
 # Label selection for watch rules
 
-> **Design requirements; implementation pending.** All three prune modes, including `Always`
-> with supported Kustomize layouts, are required from the first release.
+> **Implemented.** `rules[].objectSelector` shipped with all three prune modes, including `Always`
+> with supported Kustomize layouts, filtered-removal attribution, and ordered producer replacement.
 > **Step 2 of 2.** Step 1, the [collection rename and event-filter removal](collection-terminology-rename.md),
-> has shipped.
+> shipped first. This page is now the design record; the
+> [configuration reference](../configuration.md#selecting-objects-by-label-rulesobjectselector)
+> describes the behavior.
 > [Issue #146](https://github.com/ConfigButler/gitops-reverser/issues/146).
 > Index: [`../INDEX.md`](../INDEX.md). Checked: 2026-09-28, source at `69836e70`.
 > Related: [Kubernetes watch facts](../facts/kubernetes-watch-options.md),
@@ -22,7 +24,7 @@ performs no local label matching for mirror membership or pruning. This contract
 
 ## The API
 
-Add optional `objectSelector: metav1.LabelSelector` to
+Add optional `objectSelector`, with the wire shape of `metav1.LabelSelector`, to
 [`ResourceRule`](../../api/v1alpha3/watchrule_types.go) and
 [`ClusterResourceRule`](../../api/v1alpha3/clusterwatchrule_types.go):
 
@@ -227,7 +229,7 @@ requires exact deletion evidence; a finalizer PATCH must not name the deletion i
 Without eligible evidence, expire as unresolved. Do not use last-writer, sticky, collection,
 RV-only, or name-only fallbacks for these filtered removals.
 
-This deliberately extends the [current attribution contract](../spec/attribution.md#three-rules-that-are-easy-to-miss):
+This deliberately extends the [current attribution contract](../spec/attribution.md#four-rules-that-are-easy-to-miss):
 physical-removal fallbacks cannot establish who changed a label. Keep existing unfiltered and
 `MODIFIED` deletion-intent behavior. Merely changing `ExactCapable` is insufficient; weaker
 fallbacks remain. Update the attribution contract with the implementation. Resolution stays

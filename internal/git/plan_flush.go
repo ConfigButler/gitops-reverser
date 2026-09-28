@@ -383,8 +383,7 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 	case event.IsFieldPatch():
 		return wb.applyFieldPatch(ctx, event)
 	case event.Operation == "DELETE":
-		wb.applyDelete(ctx, event)
-		return nil
+		return wb.applyDelete(ctx, event)
 	default:
 		_, err := wb.applyUpsert(ctx, event)
 		return err
@@ -400,7 +399,25 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // existing document is placed by createNew. It returns what it did to the bytes
 // (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
+	// An inherited object back in the cluster first loses the owned delete patch that hid it, so
+	// the upsert below edits a base document the render holds again.
+	basePath, err := wb.retireInheritedDelete(ctx, event)
+	if err != nil {
+		return upsertNoChange, err
+	}
+	intentsBefore := len(wb.intents)
 	outcome, err := wb.upsert(ctx, event)
+	if err == nil && basePath != "" {
+		// The object renders again, and the oracle must prove it renders as the live object: when
+		// the base already matches, the upsert wrote nothing and declared nothing, so the presence
+		// is declared here. For the mirror it is a created document either way.
+		if !intendsObject(wb.intents[intentsBefore:], event.Object) {
+			wb.intend(intentFor(event.Object, basePath, false))
+		}
+		if outcome == upsertNoChange {
+			outcome = upsertCreated
+		}
+	}
 	if err == nil {
 		// Tallied here rather than at either caller: the live path reaches this through applyEvent
 		// and the resync path calls it directly, so this is the one place both are covered exactly
@@ -408,6 +425,16 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 		wb.tallyDocument(event.Identifier, documentOutcomeForUpsert(outcome))
 	}
 	return outcome, err
+}
+
+// intendsObject reports whether one of intents is about obj.
+func intendsObject(intents []manifestanalyzer.WriteIntent, obj *unstructured.Unstructured) bool {
+	for _, in := range intents {
+		if in.Kind == obj.GetKind() && in.Name == obj.GetName() {
+			return true
+		}
+	}
+	return false
 }
 
 // upsert is applyUpsert's body, split out so the census above wraps every return path.
@@ -1334,36 +1361,59 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 	return upsertUpdated, nil
 }
 
-// applyDelete removes the document a DELETE event targets, located by content so a manifest moved
-// off its canonical path is still found. Removing the last document marks the file for deletion.
+// applyDelete mirrors an observed removal: the live DELETE path, located by content so a manifest
+// moved off its canonical path is still found. The removal itself is the shared removeDocument, so a
+// live delete and a snapshot sweep remove a document the same way.
 //
 // spec.prune.mode gates the whole path, and the check is FIRST, before the document is located: a
 // suppressed delete must be indistinguishable from the event never having arrived, so it touches
 // no buffer and cannot turn the kustomize oracle on.
-func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
+func (wb *writeBatch) applyDelete(ctx context.Context, event Event) error {
 	if !wb.pruneMode.OrDefault().AppliesEventDeletes() {
 		log.FromContext(ctx).V(1).Info("source DELETE not mirrored (spec.prune.mode)",
 			"pruneMode", string(wb.pruneMode.OrDefault()), "resource", event.Identifier.Key())
-		return
+		return nil
 	}
 	target, found := wb.resolveDelete(event)
 	if !found {
-		return
+		return nil
+	}
+	_, err := wb.removeDocument(ctx, event.Identifier, target, documentDeletedLive)
+	return err
+}
+
+// removeDocument takes one managed document out of what the target renders. It is the ONE removal
+// both the live DELETE and the snapshot sweep use; each keeps its own prune gate and its own
+// counter (outcome), and nothing else differs.
+//
+//   - An object the overlay INHERITS from its read-only base gets an owned `$patch: delete` in
+//     the overlay; see inherited_delete.go.
+//   - Anything else is removed from its own file, preserving sibling documents. When the file
+//     empties, every resources: entry naming it goes too, so the root still builds.
+//
+// Every removal inside a render root declares a Removed intent and goes to the re-render oracle,
+// which proves the object left the render and that no unrelated rendered object changed. It
+// reports whether a document was removed; one already absent is a no-op.
+func (wb *writeBatch) removeDocument(
+	ctx context.Context,
+	identifier types.ResourceIdentifier,
+	target deleteTarget,
+	outcome string,
+) (bool, error) {
+	if d, inherited := wb.inheritedDeleteFor(target.filePath, target.id); inherited {
+		removed, err := wb.authorInheritedDelete(ctx, identifier, target, d)
+		if removed {
+			wb.tallyDocument(identifier, outcome)
+		}
+		return removed, err
 	}
 	buf := wb.buffer(target.filePath)
 	if buf.current == nil {
-		return
+		return false, nil
 	}
 	idx, ok := currentDocIndex(target.filePath, buf.current, target.id)
 	if !ok {
-		return
-	}
-	// An object the overlay INHERITS from its read-only base cannot be deleted from the base
-	// (that is out of the write jail and shared by other environments). Author a $patch: delete
-	// in the overlay instead; the re-render oracle proves the object leaves the render.
-	if authorInto := wb.overlayAuthorKustomization(target.filePath); authorInto != "" {
-		wb.authorInheritedDelete(ctx, event, target, authorInto)
-		return
+		return false, nil
 	}
 	wb.intend(manifestanalyzer.WriteIntent{
 		SourcePath: target.filePath,
@@ -1378,94 +1428,19 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	if len(wb.kustomizationsListing(target.filePath)) > 0 {
 		wb.putToKustomize = true
 	}
-	wb.tallyDocument(event.Identifier, documentDeletedLive)
+	wb.tallyDocument(identifier, outcome)
 	wb.recordDocumentRemoval(buf)
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if !res.FileEmpty {
 		buf.current = res.Content
-		return
+		return true, nil
 	}
 	// The file is gone. Anything still naming it in a resources: list now names a file that
 	// does not exist, and kustomize refuses to build over that — so deleting the manifest is
 	// only half the delete.
 	buf.current = nil
-	wb.dropKustomizationResource(ctx, event, target.filePath)
-}
-
-// authorInheritedDelete removes an object the overlay INHERITS from its read-only base by
-// authoring a `$patch: delete` in the overlay, rather than deleting the base document (which is
-// out of the write jail and shared by other environments). It writes the patch file inside
-// spec.path, names it in the overlay's own patches:, and declares the Removed intent so the
-// re-render oracle proves the object leaves the render — a patch that fails to match is refused
-// there, and the base is never touched.
-func (wb *writeBatch) authorInheritedDelete(
-	ctx context.Context,
-	event Event,
-	target deleteTarget,
-	authorInto string,
-) {
-	patchName := inheritedDeletePatchName(target.id)
-	patchPath := cleanSlash(path.Join(path.Dir(authorInto), patchName))
-	want := inheritedDeletePatchDocument(target.id)
-
-	// Never clobber unrelated content: if the deterministic patch path is already occupied by
-	// something that is not this exact delete patch, skip authoring rather than overwrite it. The
-	// inherited object then stays until the collision is resolved (a human renames the passenger
-	// file) and the next resync retries. A path already holding our own patch — an idempotent
-	// resync — matches want and proceeds harmlessly.
-	patchBuf := wb.buffer(patchPath)
-	if patchBuf.current != nil && !bytes.Equal(patchBuf.current, want) {
-		log.FromContext(ctx).Info(
-			"Skipping inherited-object delete: patch path already holds different content",
-			"patch", patchPath, "resource", event.Identifier.String())
-		return
-	}
-	patchBuf.current = want
-
-	buf := wb.buffer(authorInto)
-	res, diags := manifestedit.AppendKustomizationPatch(authorInto, buf.current, patchName)
-	switch res.Mode {
-	case manifestedit.EditPatched:
-		buf.current = res.Content
-		log.FromContext(ctx).Info("Authored $patch: delete for an inherited object",
-			"kustomization", authorInto, "patch", patchName, "resource", event.Identifier.String())
-	case manifestedit.EditNoChange:
-	case manifestedit.EditSkipped, manifestedit.EditWholeReplace, manifestedit.EditDeleted:
-		logManifestDiagnostics(ctx, diags)
-	}
-	wb.intend(manifestanalyzer.WriteIntent{
-		SourcePath: target.filePath,
-		Kind:       target.id.Kind,
-		Name:       target.id.Name,
-		Removed:    true,
-	})
-	// A $patch: delete leaves every file in place and still takes the object out of the render,
-	// so it counts as a removal for spec.onRefusal exactly as an outright deletion does: if this
-	// flush is refused, re-applying what Git holds puts the object back.
-	wb.recordDocumentRemoval(patchBuf)
-	wb.putToKustomize = true
-}
-
-// inheritedDeletePatchName is the deterministic file name for an inherited-object delete patch:
-// kind and name are DNS-safe, and the overlay resolves one namespace, so kind+name is unique in
-// its render.
-func inheritedDeletePatchName(id manifestedit.Identity) string {
-	return strings.ToLower(id.Kind) + "-" + id.Name + "-delete.yaml"
-}
-
-// inheritedDeletePatchDocument is the strategic-merge `$patch: delete` document that removes the
-// object from the overlay's render. kustomize matches a strategic-merge patch by full identity —
-// apiVersion/kind/namespace/name — so the patch pins the object's namespace when it has one
-// (a base that declares the namespace, or the live object's namespace). If the proposed patch
-// does not match the render, the oracle refuses the flush; nothing is committed on a bad match.
-func inheritedDeletePatchDocument(id manifestedit.Identity) []byte {
-	meta := "  name: " + id.Name + "\n"
-	if id.Namespace != "" {
-		meta = "  namespace: " + id.Namespace + "\n" + meta
-	}
-	return []byte(fmt.Sprintf(
-		"apiVersion: %s\nkind: %s\nmetadata:\n%s$patch: delete\n",
-		id.APIVersion, id.Kind, meta))
+	wb.dropKustomizationResource(ctx, identifier, target.filePath)
+	return true, nil
 }
 
 // dropKustomizationResource removes the resources: entry naming a file this flush deleted,
@@ -1474,7 +1449,9 @@ func inheritedDeletePatchDocument(id manifestedit.Identity) []byte {
 // It is the counterpart of appendKustomizationResource, and it fails the same way: a
 // kustomization it cannot edit only loses its entry (logged), it does not abort the delete —
 // the render precondition is what decides whether the resulting tree is committable.
-func (wb *writeBatch) dropKustomizationResource(ctx context.Context, event Event, filePath string) {
+func (wb *writeBatch) dropKustomizationResource(
+	ctx context.Context, identifier types.ResourceIdentifier, filePath string,
+) {
 	for _, listing := range wb.kustomizationsListing(filePath) {
 		buf := wb.buffer(listing.kustomization)
 		if buf.current == nil {
@@ -1486,7 +1463,7 @@ func (wb *writeBatch) dropKustomizationResource(ctx context.Context, event Event
 			buf.current = res.Content
 			log.FromContext(ctx).Info("Removed resources: entry for deleted file",
 				"kustomization", listing.kustomization, "entry", listing.entry,
-				"resource", event.Identifier.String())
+				"resource", identifier.String())
 		case manifestedit.EditNoChange:
 		case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
 			// The entry stays, and it now names a file that does not exist. We do not have to
@@ -1494,7 +1471,7 @@ func (wb *writeBatch) dropKustomizationResource(ctx context.Context, event Event
 			// the flush, because kustomize will not build over a missing resource.
 			log.FromContext(ctx).Info("Could not remove resources: entry for deleted file",
 				"kustomization", listing.kustomization, "entry", listing.entry,
-				"resource", event.Identifier.String())
+				"resource", identifier.String())
 			logManifestDiagnostics(ctx, diags)
 		}
 	}

@@ -492,7 +492,8 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
 	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
-	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope, target.PruneMode)
+	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope, target.PruneMode,
+		batch.suppressedResources())
 	w.reportRetainedOrphans(ctx, plan, target, base, scope)
 
 	stats, err := batch.applyResyncPlan(ctx, desired, plan)
@@ -549,11 +550,22 @@ func (wb *writeBatch) applyResyncPlan(
 		}
 	}
 	for _, action := range plan.Actions {
-		if action.Kind == manifestanalyzer.PlanDropOrphan {
-			if wb.dropDocument(action.Ref.FilePath, action.Identity) {
-				stats.Deleted++
-				wb.tallyDocument(action.Resource, documentDeletedSweep)
-			}
+		if action.Kind != manifestanalyzer.PlanDropOrphan {
+			continue
+		}
+		// The planner names the document by its EFFECTIVE identity; its bytes may carry no
+		// namespace (one a kustomization supplies), so it is located by the raw identity, exactly
+		// as the live path's resolveDelete does.
+		target := deleteTarget{
+			filePath: action.Ref.FilePath,
+			id:       rawManifestIDForCurrentBytes(action.Identity, wb.store.ByManifestIdentity[action.Identity]),
+		}
+		removed, err := wb.removeDocument(ctx, action.Resource, target, documentDeletedSweep)
+		if err != nil {
+			return ResyncStats{}, err
+		}
+		if removed {
+			stats.Deleted++
 		}
 	}
 	// Skipped stays a plan view (documents present but not editable in place); it is
@@ -648,30 +660,6 @@ func (wb *writeBatch) tallyPruneRetention(plan manifestanalyzer.Plan) {
 	}
 }
 
-// dropDocument removes the managed document for id from filePath, re-deriving its
-// position from the buffer's CURRENT bytes (an earlier drop in the same resync can
-// renumber a multi-document file). Removing the last document empties the file, which
-// flush turns into a file deletion. It reports whether a document was actually removed;
-// a document already absent is a no-op.
-func (wb *writeBatch) dropDocument(filePath string, id manifestedit.Identity) bool {
-	buf := wb.buffer(filePath)
-	if buf.current == nil {
-		return false
-	}
-	idx, ok := currentDocIndex(filePath, buf.current, id)
-	if !ok {
-		return false
-	}
-	wb.recordDocumentRemoval(buf)
-	res, _ := manifestedit.DeleteDocument(buf.current, idx)
-	if res.FileEmpty {
-		buf.current = nil
-		return true
-	}
-	buf.current = res.Content
-	return true
-}
-
 // eventForDesired adapts a desired snapshot entry into the Event the content-derived
 // upsert path consumes. The operation is informational here (applyUpsert only
 // distinguishes DELETE from everything else); the object and identity carry
@@ -694,18 +682,20 @@ func eventForDesired(dr manifestanalyzer.DesiredResource) Event {
 // The namespace half is load-bearing once one GitTarget watches a type in more than one
 // namespace: the replay that produced desired covered a single namespace, so sweeping the whole
 // type would delete every other namespace's documents of that type. See ResyncScope.
+//
+// suppressed are the documents an owned delete patch already takes out of the render
+// (writeBatch.suppressedResources). They are outside what the target renders, so the sweep neither
+// removes them a second time nor counts them as retained.
 func resyncPlan(
 	store *manifestanalyzer.ManifestStore,
 	files []manifestedit.FileContent,
 	desired []manifestanalyzer.DesiredResource,
 	scope *ResyncScope,
 	pruneMode v1alpha3.PruneMode,
+	suppressed map[itypes.ResourceIdentifier]bool,
 ) manifestanalyzer.Plan {
-	policy := resyncPlanPolicy(pruneMode)
-	if scope == nil {
-		return manifestanalyzer.BuildPlan(store, files, desired, policy)
-	}
-	return manifestanalyzer.BuildScopedPlan(store, files, desired, policy, scope.Matches)
+	inScope := func(ri itypes.ResourceIdentifier) bool { return scope.Matches(ri) && !suppressed[ri] }
+	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(pruneMode), inScope)
 }
 
 // resyncPlanPolicy is the planning policy for a resync: the same sanitized projection

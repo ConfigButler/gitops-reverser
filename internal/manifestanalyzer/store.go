@@ -775,6 +775,10 @@ type KustomizationInfo struct {
 	// directory (resolveKustomizeRoot) omits metadata.namespace when this is
 	// set, exactly as an existing document in this context already does.
 	Namespace string
+
+	// Patches are the files its path-based patches: entries name, resolved to scanned slash
+	// paths, sorted. Only the tolerated shape appears here (see patchPaths).
+	Patches []string
 }
 
 // kustomizationInfos exports the analyzer's internal kustomization index for
@@ -788,6 +792,7 @@ func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*Kustomiz
 			Resources:   append([]string(nil), doc.resources...),
 			Unsupported: doc.unsupported,
 			Namespace:   doc.namespace,
+			Patches:     append([]string(nil), doc.patches...),
 		}
 	}
 	return out

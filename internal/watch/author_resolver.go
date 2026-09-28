@@ -65,6 +65,10 @@ type AuthorQuery struct {
 	// ExactCapable is true for ADDED and MODIFIED, whose resourceVersion is the one the write
 	// produced. A removal's is not, so it consults the weaker tiers the exact-capable events skip.
 	ExactCapable bool
+	// FilteredRemoval and Terminating select the exact-evidence policy for a DELETED frame from a
+	// selected collection; see queue.FactQuery.FilteredRemoval.
+	FilteredRemoval bool
+	Terminating     bool
 }
 
 // factQuery renders the query the way the index is keyed.
@@ -78,6 +82,8 @@ func (q AuthorQuery) factQuery() queue.FactQuery {
 		Labels:          q.Labels,
 		Name:            q.Name,
 		ExactCapable:    q.ExactCapable,
+		FilteredRemoval: q.FilteredRemoval,
+		Terminating:     q.Terminating,
 	}
 }
 

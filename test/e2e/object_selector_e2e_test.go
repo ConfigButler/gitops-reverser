@@ -190,6 +190,52 @@ metadata:
 		waitForPruneFile(repo, onEventSelected, true)
 	})
 
+	// Offline recovery: while a target is suspended its writes are dropped, never replayed, so a
+	// deletion and a label exit made then reach Git only through the next complete snapshot. That
+	// snapshot removes both under Always and keeps both under OnEvent.
+	It("recovers removals made while the targets were not writing from the next snapshot", func() {
+		applyConfigMap("selector-offline-deleted", "yes")
+		applyConfigMap("selector-offline-exit", "yes")
+		alwaysDeleted, onEventDeleted := both("selector-offline-deleted")
+		alwaysExit, onEventExit := both("selector-offline-exit")
+		for _, p := range []string{alwaysDeleted, onEventDeleted, alwaysExit, onEventExit} {
+			waitForPruneFile(repo, p, true)
+		}
+
+		By("suspending both targets")
+		for _, target := range []string{alwaysTarget, onEventTarget} {
+			_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", target, "--type=merge",
+				"-p", `{"spec":{"suspend":true}}`)
+			Expect(err).NotTo(HaveOccurred())
+			verifyResourceCondition("gittarget", target, testNs, "Ready", "True", "Suspended", "")
+		}
+
+		By("deleting one selected object and relabeling the other out of the selection")
+		_, err := kubectlRunInNamespace(testNs, "delete", "configmap", "selector-offline-deleted")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = kubectlRunInNamespace(testNs, "label", "configmap", "selector-offline-exit", selectedLabel+"-")
+		Expect(err).NotTo(HaveOccurred())
+		stillPresent(alwaysDeleted, "a suspended target must not write the removal")
+
+		By("resuming, and asking for a fresh snapshot")
+		for _, target := range []string{alwaysTarget, onEventTarget} {
+			_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", target, "--type=merge",
+				"-p", `{"spec":{"suspend":false}}`)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = kubectlRunInNamespace(testNs, "annotate", "gittarget", target,
+				"reconcile.configbutler.ai/requestedAt="+time.Now().UTC().Format(time.RFC3339Nano), "--overwrite")
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		By("the Always target removes both from the snapshot")
+		waitForPruneFile(repo, alwaysDeleted, false)
+		waitForPruneFile(repo, alwaysExit, false)
+
+		By("the OnEvent target keeps both: the removals were never observed while it wrote")
+		stillPresent(onEventDeleted, "OnEvent must not infer a removal from a snapshot")
+		stillPresent(onEventExit, "OnEvent must not infer a removal from a snapshot")
+	})
+
 	It("refuses a newer rule that selects an overlapping collection differently", func() {
 		const conflicting = "selector-conflicting-rule"
 		applySelectorRule(conflicting, alwaysTarget, selectedBy("other"))

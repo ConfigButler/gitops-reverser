@@ -230,7 +230,7 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 		if i < len(sourceNamespaces) {
 			namespaces = append([]string(nil), sourceNamespaces[i]...)
 		}
-		selector, ok := compileSelector(r.APIGroups, r.APIVersions, r.Resources, r.ObjectSelector)
+		selector, ok := compileSelector(r.APIGroups, r.APIVersions, r.Resources, r.ObjectSelector.LabelSelector())
 		if !ok {
 			continue
 		}
@@ -299,7 +299,7 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	}
 
 	for _, r := range rule.Spec.Rules {
-		selector, ok := compileSelector(r.APIGroups, r.APIVersions, r.Resources, r.ObjectSelector)
+		selector, ok := compileSelector(r.APIGroups, r.APIVersions, r.Resources, r.ObjectSelector.LabelSelector())
 		if !ok {
 			continue
 		}

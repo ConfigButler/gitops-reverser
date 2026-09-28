@@ -14,11 +14,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
-func invalidObjectSelector() *metav1.LabelSelector {
-	return &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+func invalidObjectSelector() *configbutleraiv1alpha3.ObjectSelector {
+	return &configbutleraiv1alpha3.ObjectSelector{MatchExpressions: []configbutleraiv1alpha3.ObjectSelectorRequirement{
 		{Key: "team", Operator: metav1.LabelSelectorOpIn},
 	}}
 }

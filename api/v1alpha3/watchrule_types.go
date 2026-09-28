@@ -92,7 +92,7 @@ type ResourceRule struct {
 	// Two rules feeding one GitTarget whose collections overlap (same type, and the same namespace or
 	// one of them all namespaces) must use the same selector; the newer rule is refused.
 	// +optional
-	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
+	ObjectSelector *ObjectSelector `json:"objectSelector,omitempty"`
 
 	// A denied explicit name refuses the WHOLE WatchRule rather than trimming that item: mirroring
 	// two of the three namespaces a rule asked for is worse than a loud failure.

@@ -7,6 +7,25 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A removal in a Kustomize folder is one edit, whatever caused it
+
+`rules[].objectSelector` is new and optional; a rule without it selects what it did before. Three
+behaviors changed for every target writing a supported Kustomize folder:
+
+- A snapshot under `prune.mode: Always` removes a document the way an observed deletion does. An
+  object an overlay inherits from its base gets a `$patch: delete` in the overlay, and a file whose
+  last document goes loses its `resources:` entry. A snapshot used to remove only the YAML
+  document, which left an inherited object rendered and could leave the root unbuildable.
+- The `$patch: delete` files the operator writes start with a comment naming it as their owner.
+  When the object is back, the operator removes the file and its `patches:` entry. A file written
+  before this release, without the comment, is still recognized as the operator's.
+- A file at that path that the operator did not write, or an owned patch someone edited, now
+  refuses the write with `GitPathAccepted=False`, reason `WriteBoundaryRefused`. It used to skip
+  the removal silently. Rename or remove the file.
+
+The admission webhook now also receives `ClusterWatchRule` creates and updates, to check
+`objectSelector`. Its failure policy stays `Ignore`.
+
 ## Rules select whole resource collections: `rules[].operations` is gone
 
 > [!WARNING]

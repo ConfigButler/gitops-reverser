@@ -92,6 +92,17 @@ type FactQuery struct {
 	// ExactCapable is true for ADDED and MODIFIED, whose resourceVersion is the one the write
 	// produced. A removal's is not, so it consults the weaker tiers the exact-capable events skip.
 	ExactCapable bool
+	// FilteredRemoval marks a DELETED frame from a label-selected collection. The object may have
+	// left the selection rather than been deleted, and nothing but the write that changed its
+	// labels can say who did that: the sticky, collection, last-writer, rv-only and name tiers all
+	// answer "who deleted or last touched this object", which would name the wrong actor. It
+	// resolves on exact (uid, resourceVersion) evidence only, returns as soon as that arrives, and
+	// is otherwise unresolved. ExactCapable is ignored for it.
+	FilteredRemoval bool
+	// Terminating reports that the removed object carried a deletionTimestamp. For a filtered
+	// removal it narrows the eligible evidence to a deletion: a finalizer PATCH at the final
+	// resourceVersion says who cleared a finalizer, not who asked for the deletion.
+	Terminating bool
 }
 
 // FactIndexConfig configures the index. Every zero field falls back to its Default… constant, so
@@ -269,7 +280,7 @@ func (i *FactIndex) settle(ctx context.Context, fallback AuthorResolution) Autho
 // are last-writer-wins, so for a collection member they hold whoever edited it last. Both
 // collection tiers, and a per-object fact whose own verb is a delete, end the wait.
 func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
-	if q.ExactCapable || resolution.Result == AttributionAbsent {
+	if q.ExactCapable || q.FilteredRemoval || resolution.Result == AttributionAbsent {
 		return false
 	}
 	switch resolution.Result {
@@ -318,7 +329,14 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	if !ok {
 		return AuthorResolution{Result: AttributionAbsent}
 	}
+	if query.FilteredRemoval {
+		return lookupFilteredRemoval(facts, query, cutoff)
+	}
+	return i.lookupTiers(facts, query, now, cutoff)
+}
 
+// lookupTiers is Lookup's ladder for every query but a filtered removal. The caller holds i.mu.
+func (i *FactIndex) lookupTiers(facts *scopeFacts, query FactQuery, now, cutoff time.Time) AuthorResolution {
 	// The removal pointer is consulted BEFORE the exact tier, and only for an event that is not
 	// exact-capable. That ordering is half of the fix and useless without the other half: the slot is
 	// what preserves the deleter's fact, and being asked first is what makes it reachable. A removal's
@@ -352,6 +370,41 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 		}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
+}
+
+// lookupFilteredRemoval is the whole lookup for a filtered removal: evidence at the removed
+// object's exact (uid, resourceVersion), and nothing weaker. See FactQuery.FilteredRemoval.
+//
+// A non-terminating object leaves a selection through the PATCH or UPDATE that changed its labels,
+// or is deleted outright, so any of the three at that version names the actor. A terminating one
+// needs the deletion itself: the exact slot can hold the finalizer PATCH that shares the final
+// version, so the removal pointer is read too, but only when its fact carries that same version.
+func lookupFilteredRemoval(facts *scopeFacts, query FactQuery, cutoff time.Time) AuthorResolution {
+	if query.UID == "" || query.ResourceVersion == "" {
+		return AuthorResolution{Result: AttributionAbsent}
+	}
+	if fact, found := facts.lookupExact(query.UID, query.ResourceVersion, cutoff); found &&
+		filteredRemovalEvidence(fact.Verb, query.Terminating) {
+		return AuthorResolution{Fact: fact, Result: AttributionExact}
+	}
+	if query.Terminating {
+		if fact, found := facts.lookupRemovalPointer(
+			query.UID,
+		); found &&
+			fact.ResourceVersion == query.ResourceVersion {
+			return AuthorResolution{Fact: fact, Result: AttributionExact}
+		}
+	}
+	return AuthorResolution{Result: AttributionAbsent}
+}
+
+// filteredRemovalEvidence reports whether a fact at the removed object's exact version may name
+// the actor of a filtered removal.
+func filteredRemovalEvidence(verb string, terminating bool) bool {
+	if isRemovalVerb(verb) {
+		return true
+	}
+	return !terminating && (strings.EqualFold(verb, "patch") || strings.EqualFold(verb, "update"))
 }
 
 // stickyRemoval reads the head of the removal ladder: the uid-keyed slot holding the fact that this
@@ -649,6 +702,17 @@ func (q FactQuery) scope() factScope {
 func (q FactQuery) waiterKeys() []factWaiterKey {
 	scope := q.scope()
 	var keys []factWaiterKey
+	if q.FilteredRemoval {
+		// Only the exact tier can answer, and a deletion fact that fills the removal pointer also
+		// files under the latest key, so those two keys are every fact that could.
+		if q.UID == "" || q.ResourceVersion == "" {
+			return nil
+		}
+		return []factWaiterKey{
+			{scope: scope, kind: factKindExact, value: exactWaiterValue(q.UID, q.ResourceVersion)},
+			{scope: scope, kind: factKindLatest, value: q.UID},
+		}
+	}
 	if q.UID != "" && q.ResourceVersion != "" {
 		keys = append(keys, factWaiterKey{scope: scope, kind: factKindExact,
 			value: exactWaiterValue(q.UID, q.ResourceVersion)})

@@ -350,7 +350,7 @@ every row above can be asked about either kind of actor. `tier` names the eviden
 matches how `commits_total` already models the same distinction; an earlier `result` label conflated
 the two and is gone (migration in [`../UPGRADING.md`](../UPGRADING.md)).
 
-### Three rules that are easy to miss
+### Four rules that are easy to miss
 
 **A fact about a DELETION may not be replaced by a fact about a WRITE.** Every ordinary structure
 here is last-writer-wins, and a finalizer patch's fact carries the resourceVersion the **deletion**
@@ -375,6 +375,23 @@ older, different author, so the lookup skips straight to the rv hatch and the na
 one-directional, and only one of the two tiers is gated: the exact tier is tried for *any* query
 carrying a uid and a resourceVersion, a removal included. What an exact-capable event may not do is
 the reverse, reaching the tiers below.
+
+**A removal from a label-selected collection resolves on exact evidence only.** When a rule
+carries `objectSelector`, a `DELETED` frame can mean the object stopped matching the selector rather
+than that it was deleted, and the watch cannot tell the two apart. Every fallback above answers "who
+deleted or last touched this object", which cannot establish who changed a label. Such a removal
+therefore reads only the fact at the object's exact `(uid, resourceVersion)`:
+
+- for an object without a `deletionTimestamp`, a `patch`, `update`, or `delete` at that version
+  names the actor, and ends the wait the moment it arrives;
+- for a terminating object, only a deletion at that version does. The exact slot can hold the
+  finalizer patch that shares the final version, which names whoever cleared a finalizer rather
+  than who asked for the deletion.
+
+Nothing else is consulted: not the sticky pointer, a collection fact, the last writer, the rv
+hatch, or the name tier. Without eligible evidence the removal is unresolved when the grace
+expires. An unselected removal, and a `MODIFIED` frame carrying a `deletionTimestamp` (deletion as
+intent, §1), keep the rules above.
 
 ### The wait
 

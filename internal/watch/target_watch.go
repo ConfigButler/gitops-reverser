@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -63,6 +64,42 @@ type targetWatchSet struct {
 type runningTargetWatch struct {
 	key    targetWatchKey
 	cancel context.CancelFunc
+	gate   *producerGate
+}
+
+// producerGate orders one stream's enqueues against its retirement. Every enqueue the stream makes
+// (a live event, a snapshot resync) runs under the gate, and retiring the stream takes the same
+// lock, so retire returns only once an enqueue in flight has reached the branch worker's FIFO, and
+// no enqueue runs afterward.
+//
+// That is what makes a replacement safe. The owner loop retires the old stream before it starts
+// the new one, so everything the old stream queued sits ahead of the new stream's snapshot, and
+// nothing it produces later can land behind that snapshot and restore an object the new selection
+// excluded. Cancellation alone could not promise that: a stream woken by cancel may already be past
+// its last context check. Both enqueues are non-blocking, so the lock is never held for long, and
+// the wait is per stream: an unrelated collection never contends for it.
+type producerGate struct {
+	mu      sync.Mutex
+	retired bool
+}
+
+// enqueue runs one enqueue unless the stream has been retired or its context has ended, and
+// reports whether it ran.
+func (g *producerGate) enqueue(ctx context.Context, enqueue func()) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.retired || ctx.Err() != nil {
+		return false
+	}
+	enqueue()
+	return true
+}
+
+// retire waits out an enqueue in flight and admits no other.
+func (g *producerGate) retire() {
+	g.mu.Lock()
+	g.retired = true
+	g.mu.Unlock()
 }
 
 // plan is the set's side of the diff: what is running right now.
@@ -74,13 +111,15 @@ func (s *targetWatchSet) plan() targetWatchPlan {
 	return plan
 }
 
-// stop cancels one collection's stream and drops it. It never touches files: a deselected collection's
-// documents are converged by a Git-side sweep, not by the watch layer.
+// stop retires one collection's stream, cancels it, and drops it. When it returns, the stream has
+// enqueued everything it ever will (see producerGate). It never touches files: a deselected
+// collection's documents are converged by a Git-side sweep, not by the watch layer.
 func (s *targetWatchSet) stop(collection types.CollectionKey) {
 	running, ok := s.streams[collection]
 	if !ok {
 		return
 	}
+	running.gate.retire()
 	running.cancel()
 	delete(s.streams, collection)
 }
@@ -112,12 +151,12 @@ func (k targetWatchKey) listOptions(opts metav1.ListOptions) metav1.ListOptions 
 // object event in that collection; the GitTarget's prune mode, not the stream, decides what a
 // removal does to Git.
 //
-// Nothing about a stream fences the work it queues. Once an item is on the branch worker's
-// FIFO it will be applied, and a canceled stream's goroutine can still be in flight, so a
-// short tail of writes from a deselected collection is accepted rather than rejected on arrival. The
-// plan is applied by canceling streams, at the producer.
+// Nothing downstream fences the work it queues: once an item is on the branch worker's FIFO it
+// will be applied. The fence is at the producer, in the gate every enqueue passes through.
 type targetWatchStream struct {
 	key targetWatchKey
+	// gate is shared with the runningTargetWatch that stops this stream; see producerGate.
+	gate *producerGate
 	// refreshRemote asks the worker to inspect the remote tip before applying this stream's
 	// replay. It is set on forced GitTarget rechecks, where a human may have fixed or broken the
 	// folder directly in Git and the local checkout is the stale thing being tested.
@@ -298,11 +337,13 @@ func (m *Manager) startTargetWatchStreams(
 			continue
 		}
 		streamCtx, cancel := context.WithCancel(m.streamParent(ctx))
-		set.streams[collection] = &runningTargetWatch{key: watchKey, cancel: cancel}
+		gate := &producerGate{}
+		set.streams[collection] = &runningTargetWatch{key: watchKey, cancel: cancel, gate: gate}
 		out = append(out, startingTargetWatch{
 			ctx: streamCtx,
 			stream: targetWatchStream{
 				key:           watchKey,
+				gate:          gate,
 				refreshRemote: refreshRemote,
 				revision:      revisions[collection],
 			},
@@ -426,7 +467,7 @@ func targetWatchStreams(table WatchedTypeTable) map[targetWatchKey]struct{} {
 	chosenPreferred := map[types.CollectionKey]bool{}
 	for _, wt := range table.Types {
 		for _, ns := range wt.WatchScopes() {
-			candidate := targetWatchKey{GVR: wt.GVR, Namespace: ns, LabelSelector: wt.LabelSelectors[ns]}
+			candidate := targetWatchKey{GVR: wt.GVR, Namespace: ns, LabelSelector: wt.NamespaceScopes[ns]}
 			collection := candidate.Collection()
 			if prior, seen := chosen[collection]; !seen ||
 				preferServedVersion(prior, chosenPreferred[collection], candidate, wt.Preferred) {
@@ -906,24 +947,25 @@ func (m *Manager) enqueueReplayResync(
 	if m.EventRouter == nil {
 		return nil
 	}
-	// Cancellation has to be prompt on the PRODUCER side: nothing filters the branch worker's
-	// queue, so what bounds a retired stream's tail is how quickly it stops enqueuing. A snapshot
-	// gathered for a collection that has since been stopped or restarted has nothing left to report
-	// into either.
-	select {
-	case <-ctx.Done():
-		return nil
-	default:
-	}
 	// The stream's PLAN revision (stream.revision, a render-fidelity generation counter — not the
 	// resourceVersion this snapshot is pinned to) is the one this stream was STARTED with, never
 	// the collection's current one. A cancelled stream can still be in flight with a replay result, and
 	// reading that revision here would let it report a scope clean under a revision it never
 	// replayed for — reopening writes on the strength of a snapshot the new plan never gathered.
 	// The gate already ignores a superseded revision; capturing it at start is what makes it stale.
-	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), desired, resourceVersion, false,
-		stream.refreshRemote)
+	var (
+		resultCh chan git.ResyncResult
+		enqueued bool
+		err      error
+	)
+	// A retired stream's snapshot is dropped here, at the producer: see producerGate.
+	if !stream.gate.enqueue(ctx, func() {
+		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
+			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), desired, resourceVersion,
+			false, stream.refreshRemote)
+	}) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -1079,19 +1121,21 @@ func (m *Manager) routeLiveTargetWatchEvent(
 				"resource", event.Identifier.String())
 			return rv, nil
 		}
-		m.attachAuthor(ctx, &event, stream.key.GVR, u)
-		// Re-check after attribution, which waits on the audit grace: a stream cancelled while
-		// an event was waiting for its author must not enqueue on the way out.
-		select {
-		case <-ctx.Done():
-			// The stream was cancelled while this event waited for its author. Counted, because a
-			// census with an unrecorded exit is not a census: the totals would quietly stop adding
-			// up. It is not loss — a restart replays and resyncs this object.
+		// A DELETED frame on a selected collection may be the object leaving the selection rather
+		// than being deleted, so it is attributed under the filtered-removal policy.
+		m.attachAuthor(ctx, &event, stream.key.GVR, u, ev.Type == watch.Deleted && stream.key.LabelSelector != "")
+		// The gate re-checks after attribution, which waits on the audit grace: a stream retired or
+		// cancelled while an event was waiting for its author must not enqueue on the way out.
+		var routeErr error
+		if !stream.gate.enqueue(ctx, func() {
+			routeErr = m.EventRouter.RouteToGitTargetEventStream(event, gitDest)
+		}) {
+			// Counted, because a census with an unrecorded exit is not a census: the totals would
+			// quietly stop adding up. It is not loss — a restart replays and resyncs this object.
 			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeShutdown)
 			return rv, nil
-		default:
 		}
-		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
+		if err := routeErr; err != nil {
 			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeRouteFailed)
 			log.V(1).Info("target watch route failed",
 				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "err", err.Error())
@@ -1122,11 +1166,16 @@ func (m *Manager) routeLiveTargetWatchEvent(
 // here (sanitize strips them inside targetWatchGitEvent), so the resolver joins on
 // the strongest available key. Configured-author mode (nil resolver) leaves UserInfo
 // zero, so the writer authors that commit as the configured committer.
+//
+// filteredRemoval marks a DELETED frame from a selected collection. It may be the object leaving
+// the selection, which no deletion fallback can attribute, so it resolves on exact evidence only
+// (see queue.FactQuery.FilteredRemoval).
 func (m *Manager) attachAuthor(
 	ctx context.Context,
 	event *git.Event,
 	gvr schema.GroupVersionResource,
 	u *unstructured.Unstructured,
+	filteredRemoval bool,
 ) {
 	// A nil resolver is configured-author mode: nothing is attempted, and the event's zero
 	// Attribution is already AttributionNotAttempted — the constant is the empty string so that
@@ -1162,6 +1211,8 @@ func (m *Manager) attachAuthor(
 		Labels:          u.GetLabels(),
 		Name:            u.GetName(),
 		ExactCapable:    exactCapable,
+		FilteredRemoval: filteredRemoval,
+		Terminating:     u.GetDeletionTimestamp() != nil,
 	})
 	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
 	// writer, the author_kind metric, and CommitRequest matching all need. Leaving it at the

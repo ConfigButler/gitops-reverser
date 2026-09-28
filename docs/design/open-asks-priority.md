@@ -313,7 +313,7 @@ to absorb. A third, on the shape of `GitTarget` itself, is a separate conversati
   about a write, keyed strictly by uid, consulted ahead of the exact tier for a removal, bounded by
   the index's caps rather than the join TTL. Ships `delete_sticky` on
   `attribution_resolutions_total{tier}`. Record:
-  [`../spec/attribution.md`](../spec/attribution.md#three-rules-that-are-easy-to-miss).
+  [`../spec/attribution.md`](../spec/attribution.md#four-rules-that-are-easy-to-miss).
 - **A name tier**, which was not asked for by anyone. An aggregated-API write or single delete is
   audited with a name but no uid and no resourceVersion, so every stronger tier misses it and it used
   to ship committer-authored. Facts carrying neither identifier are now filed under

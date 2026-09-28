@@ -92,7 +92,7 @@ type ClusterResourceRule struct {
 	// Two rules feeding one GitTarget that match the same type must use the same selector; the
 	// newer rule is refused.
 	// +optional
-	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
+	ObjectSelector *ObjectSelector `json:"objectSelector,omitempty"`
 }
 
 // ClusterWatchRuleStatus defines the observed state of ClusterWatchRule.

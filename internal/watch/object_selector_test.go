@@ -26,13 +26,9 @@ import (
 const teamA = "team in (a)"
 
 func selectorTable(gitDest types.ResourceReference, selectors map[string]string) WatchedTypeTable {
-	scopes := map[string]struct{}{}
-	for ns := range selectors {
-		scopes[ns] = struct{}{}
-	}
 	return WatchedTypeTable{
 		GitDest: gitDest,
-		Types:   []WatchedType{{GVR: configmapsGVR, NamespaceScopes: scopes, LabelSelectors: selectors}},
+		Types:   []WatchedType{{GVR: configmapsGVR, NamespaceScopes: selectors}},
 	}
 }
 
@@ -168,7 +164,7 @@ func TestResyncScopeForWatchKey_CarriesTheSelectorButSweepsStructurally(t *testi
 	assert.False(t, selected.Matches(types.NewResourceIdentifier("", "v1", "configmaps", "ops", "x")))
 }
 
-func selectorRule(name, namespace string, created time.Time, selector *metav1.LabelSelector,
+func selectorRule(name, namespace string, created time.Time, selector *configv1alpha3.ObjectSelector,
 	sourceNamespace string,
 ) configv1alpha3.WatchRule {
 	rule := watchRuleForTarget(name, "sel-target", namespace)
@@ -183,8 +179,8 @@ func addSelectorRule(store *rulestore.RuleStore, rule configv1alpha3.WatchRule, 
 		"sel-target", "test-ns", "test-provider", "test-ns", "main", "test-path")
 }
 
-func labels(kv ...string) *metav1.LabelSelector {
-	selector := &metav1.LabelSelector{MatchLabels: map[string]string{}}
+func labels(kv ...string) *configv1alpha3.ObjectSelector {
+	selector := &configv1alpha3.ObjectSelector{MatchLabels: map[string]string{}}
 	for i := 0; i+1 < len(kv); i += 2 {
 		selector.MatchLabels[kv[i]] = kv[i+1]
 	}
@@ -204,7 +200,7 @@ func TestResolveWatchedTypeTables_RefusesTheNewerOfTwoOverlappingSelectors(t *te
 	require.True(t, ok)
 	require.Len(t, table.Types, 1)
 	assert.Equal(t, []string{""}, table.Types[0].WatchScopes())
-	assert.Equal(t, map[string]string{"": teamA}, table.Types[0].LabelSelectors)
+	assert.Equal(t, map[string]string{"": teamA}, table.Types[0].NamespaceScopes)
 
 	refused, message := manager.ObjectSelectorConflictForWatchRule(
 		selectorRule("named", "team-b", older.Add(time.Minute), labels("team", "b"), ""))
@@ -226,7 +222,7 @@ func TestResolveWatchedTypeTables_DisjointNamespacesMayUseDifferentSelectors(t *
 	manager.refreshWatchedTypeTables()
 	table, _ := manager.watchedTypeTableForGitDest(gitDestRef("sel-target"))
 	require.Len(t, table.Types, 1)
-	assert.Equal(t, map[string]string{"team-a": teamA, "team-b": "team in (b)"}, table.Types[0].LabelSelectors)
+	assert.Equal(t, map[string]string{"team-a": teamA, "team-b": "team in (b)"}, table.Types[0].NamespaceScopes)
 	for _, name := range []string{"a", "b"} {
 		refused, message := manager.ObjectSelectorConflictForWatchRule(
 			selectorRule(name, "team-"+name, now, nil, ""))
@@ -239,8 +235,8 @@ func TestResolveWatchedTypeTables_EquivalentSelectorsDoNotConflict(t *testing.T)
 	manager, store := makeWatchedTypeManager(t)
 	now := time.Unix(1000, 0)
 	addSelectorRule(store, selectorRule("labels", "test-ns", now, labels("team", "a"), "*"), "")
-	addSelectorRule(store, selectorRule("expression", "team-a", now.Add(time.Minute), &metav1.LabelSelector{
-		MatchExpressions: []metav1.LabelSelectorRequirement{
+	addSelectorRule(store, selectorRule("expression", "team-a", now.Add(time.Minute), &configv1alpha3.ObjectSelector{
+		MatchExpressions: []configv1alpha3.ObjectSelectorRequirement{
 			{Key: "team", Operator: metav1.LabelSelectorOpIn, Values: []string{"a", "a"}},
 		},
 	}, ""), "team-a")
@@ -317,8 +313,8 @@ func TestCompileWatchRule_RefusesAnInvalidObjectSelector(t *testing.T) {
 	store := rulestore.NewStore()
 	rule := watchRuleForTarget("bad", "sel-target", "team-a")
 	addSelectorRule(store, rule, "team-a")
-	rule.Spec.Rules[0].ObjectSelector = &metav1.LabelSelector{
-		MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "team", Operator: metav1.LabelSelectorOpIn}},
+	rule.Spec.Rules[0].ObjectSelector = &configv1alpha3.ObjectSelector{
+		MatchExpressions: []configv1alpha3.ObjectSelectorRequirement{{Key: "team", Operator: metav1.LabelSelectorOpIn}},
 	}
 
 	_, err := CompileWatchRule(context.Background(), nil, store, rule,
