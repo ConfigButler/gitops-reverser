@@ -29,6 +29,12 @@ type WatchedType struct {
 	// key is a cluster-wide collection: a cluster-scoped resource, or a namespaced resource
 	// a WatchRule follows across every namespace.
 	NamespaceScopes map[string]struct{}
+
+	// LabelSelectors is the canonical object selector each namespace scope is selected with,
+	// keyed like NamespaceScopes; an absent entry selects every object. One entry per scope is
+	// enough because two collections on one type and namespace overlap, and the resolver refuses
+	// a second selector over an overlapping collection (see refuseSelectorConflicts).
+	LabelSelectors map[string]string
 }
 
 // ClusterWide reports whether this type is gathered under a cluster-wide scope: true for a
@@ -80,10 +86,13 @@ type WatchedTypeTable struct {
 }
 
 // watchSelection is one followable registry record a rule selected for a GitTarget,
-// with the namespace it was selected under ("" = cluster-wide collection).
+// with the namespace it was selected under ("" = cluster-wide collection), the canonical object
+// selector the item carries, and the rule that selected it.
 type watchSelection struct {
-	record    typeset.TypeRecord
-	namespace string
+	record        typeset.TypeRecord
+	namespace     string
+	labelSelector string
+	rule          selectingRule
 }
 
 // watchedTypeAccum accumulates one followable record's namespace scopes while folding a
@@ -91,12 +100,14 @@ type watchSelection struct {
 type watchedTypeAccum struct {
 	record          typeset.TypeRecord
 	namespaceScopes map[string]struct{}
+	labelSelectors  map[string]string
 }
 
 // buildWatchedTypeTable folds a GitTarget's selected followable records into its
 // watched-type table, deduplicating each record's namespace scopes. Identity
-// and followability are already settled by the registry, so this is a pure fold with no
-// catalog lookup and no conflict decision.
+// and followability are already settled by the registry, and selector conflicts by
+// refuseSelectorConflicts before this runs, so this is a pure fold with no catalog lookup and no
+// conflict decision.
 func buildWatchedTypeTable(
 	gitDest types.ResourceReference,
 	generation uint64,
@@ -107,15 +118,26 @@ func buildWatchedTypeTable(
 		gvr := sel.record.Identity.GVR
 		acc := byGVR[gvr]
 		if acc == nil {
-			acc = &watchedTypeAccum{record: sel.record, namespaceScopes: map[string]struct{}{}}
+			acc = &watchedTypeAccum{
+				record:          sel.record,
+				namespaceScopes: map[string]struct{}{},
+				labelSelectors:  map[string]string{},
+			}
 			byGVR[gvr] = acc
 		}
 		acc.namespaceScopes[sel.namespace] = struct{}{}
+		if sel.labelSelector != "" {
+			acc.labelSelectors[sel.namespace] = sel.labelSelector
+		}
 	}
 
 	table := WatchedTypeTable{GitDest: gitDest, ResolvedAt: generation}
 	for _, acc := range byGVR {
-		table.Types = append(table.Types, watchedTypeFromRecord(acc.record, acc.namespaceScopes))
+		wt := watchedTypeFromRecord(acc.record, acc.namespaceScopes)
+		if len(acc.labelSelectors) > 0 {
+			wt.LabelSelectors = acc.labelSelectors
+		}
+		table.Types = append(table.Types, wt)
 	}
 	sortWatchedTypes(table.Types)
 	return table

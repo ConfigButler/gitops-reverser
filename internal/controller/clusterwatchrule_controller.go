@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -259,6 +260,22 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 ) (bool, ctrl.Result, error) {
 	decision, err := watch.CompileClusterWatchRule(
 		ctx, r.Client, r.RuleStore, *clusterRule, target, provider)
+	var selectorErr *watch.ObjectSelectorError
+	if errors.As(err, &selectorErr) {
+		// A refusal of the rule's own resources, not of its GitTarget, so it lands on
+		// ResourcesResolved rather than on the condition refuseClusterWatchRule writes.
+		log.Info("Refusing ClusterWatchRule", "name", clusterRule.Name,
+			"reason", watch.ReasonInvalidObjectSelector, "message", selectorErr.Message)
+		if r.WatchManager != nil {
+			r.WatchManager.TriggerRuleChange(clusterWatchRuleGitTarget(clusterRule))
+		}
+		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse,
+			watch.ReasonInvalidObjectSelector, selectorErr.Message)
+		st.set(ConditionTypeStreamsRunning, metav1.ConditionFalse,
+			watch.ReasonInvalidObjectSelector, "No streams: the ClusterWatchRule was refused")
+		result, stallErr := r.stallRule(ctx, st, watch.ReasonInvalidObjectSelector, selectorErr.Message)
+		return true, result, stallErr
+	}
 	if err != nil {
 		// A transient apiserver failure must NOT tear down a running stream: leave the compiled
 		// rule in place and requeue with the error so the gate re-runs on real data.
@@ -344,6 +361,10 @@ func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) {
+	if refused, message := r.WatchManager.ObjectSelectorConflictForClusterWatchRule(*clusterRule); refused {
+		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonObjectSelectorConflict, message)
+		return
+	}
 	resolved, message := r.WatchManager.ResolveClusterWatchRuleResources(ctx, *clusterRule)
 	status := metav1.ConditionFalse
 	reason := ClusterWatchRuleReasonCatalogNotReady

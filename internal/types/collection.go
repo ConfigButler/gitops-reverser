@@ -6,10 +6,20 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// CollectionKey identifies one resource collection of one cluster: a type, and optionally one
-// namespace.
-// It is the shared identity of a target-watch stream, the render-fidelity scope that stream
-// reports into, and the mark-and-sweep boundary its resync runs under. One key, one boundary.
+// CollectionKey identifies one resource collection of one cluster: a type, optionally one
+// namespace, and the label selector the API server applies to it. One key is one LIST/WATCH
+// request.
+// It is the shared identity of a target-watch stream, its resume cursor, the render-fidelity
+// scope that stream reports into, and the resync its snapshot queues.
+//
+// # The selector names the collection, not the Git objects it owns
+//
+// The sweep boundary is STRUCTURAL: group, resource, namespace (see Matches). A selected
+// snapshot owns every managed document of its type in its namespace scope, including documents
+// the selector never matched, so a selector narrows what the mirror holds rather than which
+// documents a sweep may reach. Two selectors over one boundary are two collections, and the rule
+// compiler refuses a second selector over an overlapping scope so that two snapshots never sweep
+// each other's documents.
 //
 // # The version is deliberately absent
 //
@@ -36,6 +46,9 @@ type CollectionKey struct {
 	// a replacement for it: collapsing the two widened the named rule's stream to every namespace
 	// its credential could read.
 	Namespace string
+	// LabelSelector is the canonical label selector (see CanonicalLabelSelector) the API server
+	// selects the collection with. Empty selects every object.
+	LabelSelector string
 }
 
 // CollectionKeyFor builds a collection key from a served GVR and a namespace, dropping the version.
@@ -46,21 +59,24 @@ func CollectionKeyFor(gvr schema.GroupVersionResource, namespace string) Collect
 }
 
 // String renders the collection for logs, map keys and status messages:
-// "configmaps in team-a", "deployments.apps" (cluster-wide).
+// "configmaps in team-a", "deployments.apps" (cluster-wide), "secrets in team-a selecting tier=x".
 func (c CollectionKey) String() string {
 	name := c.Resource
 	if c.Group != "" {
 		name += "." + c.Group
 	}
-	if c.Namespace == "" {
-		return name
+	if c.Namespace != "" {
+		name += " in " + c.Namespace
 	}
-	return name + " in " + c.Namespace
+	if c.LabelSelector != "" {
+		name += " selecting " + c.LabelSelector
+	}
+	return name
 }
 
-// Matches reports whether a resolved resource identity falls inside this collection. An empty
-// Namespace matches every namespace for the type; the version is not compared, for the
-// reason given on the type.
+// Matches reports whether a resolved resource identity falls inside this collection's sweep
+// boundary. An empty Namespace matches every namespace for the type; neither the version nor
+// the label selector is compared, for the reasons given on the type.
 func (c CollectionKey) Matches(ri ResourceIdentifier) bool {
 	if ri.Group != c.Group || ri.Resource != c.Resource {
 		return false

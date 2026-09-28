@@ -19,6 +19,8 @@ import (
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	"github.com/go-logr/logr"
+
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -232,11 +234,35 @@ func (r *WatchRuleReconciler) stallRule(
 	return commitRule(ctx, st, rd)
 }
 
+// refuseRuleResources publishes a terminal refusal of the rule's resources: an objectSelector that
+// does not parse. As with the source-namespace gate, the compiled rule is already out of the store,
+// this replans the watch manager, and only then is the status published.
+func (r *WatchRuleReconciler) refuseRuleResources(
+	ctx context.Context,
+	st *reconcileStatus,
+	watchRule *configbutleraiv1alpha3.WatchRule,
+	reason, message string,
+	log logr.Logger,
+) (ctrl.Result, error) {
+	log.Info("Refusing WatchRule", "name", watchRule.Name, "namespace", watchRule.Namespace,
+		"reason", reason, "message", message)
+	if r.WatchManager != nil {
+		r.WatchManager.TriggerRuleChange(watchRuleGitTarget(watchRule))
+	}
+	st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, reason, message)
+	st.set(ConditionTypeStreamsRunning, metav1.ConditionFalse, reason, "No streams: the WatchRule was refused")
+	return r.stallRule(ctx, st, reason, message)
+}
+
 func (r *WatchRuleReconciler) setResourceResolutionCondition(
 	ctx context.Context,
 	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 ) {
+	if refused, message := r.WatchManager.ObjectSelectorConflictForWatchRule(*watchRule); refused {
+		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonObjectSelectorConflict, message)
+		return
+	}
 	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)
 	status := metav1.ConditionFalse
 	reason := WatchRuleReasonCatalogNotReady

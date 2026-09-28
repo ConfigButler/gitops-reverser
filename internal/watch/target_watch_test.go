@@ -582,8 +582,7 @@ func TestOpenTargetWatch_UsesConfiguredHook(t *testing.T) {
 	w, err := manager.openTargetWatch(
 		context.Background(),
 		configPlaneClusterID,
-		configmapsGVR,
-		"apps",
+		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
 		metav1.ListOptions{ResourceVersion: "42"},
 	)
 	require.NoError(t, err)
@@ -824,35 +823,38 @@ func terminatingConfigMapObject(rv string) *unstructured.Unstructured {
 }
 
 type fakeWatchCursorStore struct {
-	mu          sync.Mutex
-	rv          string
-	ok          bool
-	recordedRV  string
-	recordedUID string
-	lookedUpUID string
+	mu                 sync.Mutex
+	rv                 string
+	ok                 bool
+	recordedRV         string
+	recordedUID        string
+	recordedCollection types.CollectionKey
+	lookedUpUID        string
+	lookedUpCollection types.CollectionKey
 }
 
 func (f *fakeWatchCursorStore) LookupWatchCursor(
 	_ context.Context,
 	gitTargetUID string,
-	_ schema.GroupVersionResource,
-	_ string,
+	collection types.CollectionKey,
 ) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lookedUpUID = gitTargetUID
+	f.lookedUpCollection = collection
 	return f.rv, f.ok
 }
 
 func (f *fakeWatchCursorStore) RecordWatchCursor(
 	_ context.Context,
 	gitTargetUID string,
-	_ schema.GroupVersionResource,
-	_, rv string,
+	collection types.CollectionKey,
+	rv string,
 ) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recordedUID = gitTargetUID
+	f.recordedCollection = collection
 	f.recordedRV = rv
 	return nil
 }

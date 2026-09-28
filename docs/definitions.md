@@ -71,10 +71,14 @@ Use Kubernetes' collection, watch, and initial-events vocabulary in explanatory 
 [Kubernetes watch options](facts/kubernetes-watch-options.md). Status identifiers such as
 `Replaying` and `status.streams` keep their spelling; their public contract is unchanged.
 
-**Resource collection.** Objects of one group/resource within a namespace selection.
-[`CollectionKey`](../internal/types/collection.go) contains `(group, resource, namespace)`; its
-containing `GitTarget` supplies target and source-cluster context. The served API version is
-separate data. An all-namespace collection can overlap a named-namespace collection. A collection
+**Resource collection.** Objects of one group/resource within a namespace selection, as the
+API server selects them with an optional label selector. One collection is one list/watch request.
+[`CollectionKey`](../internal/types/collection.go) contains `(group, resource, namespace, label
+selector)`; its containing `GitTarget` supplies target and source-cluster context. The served API
+version is separate data. The Git documents a collection's snapshot owns are structural: every
+managed document of the type in the namespace scope, whatever the selector. An all-namespace
+collection can overlap a named-namespace collection, and overlapping collections share one
+selector. A collection
 is distinct from both its resource type and that type's namespaced or cluster-scoped
 classification. A rule selects whole collections: every selected collection is observed through
 creates, updates, and deletions, and `GitTarget.spec.prune.mode` decides what a removal does to
@@ -108,8 +112,8 @@ mirroring policy permit the type. Kubernetes watch support alone is insufficient
 by a rule** is the demand called `claimed` in code. The current planner opens watches where
 selection and eligibility meet.
 
-**Snapshot reconciliation.** Applying an observed collection to managed Git documents within
-that collection. Its sweep can remove documents inferred absent only when pruning policy permits
+**Snapshot reconciliation.** Applying an observed collection to the managed Git documents of its
+type and namespace scope. Its sweep can remove documents inferred absent only when pruning policy permits
 it; `Always` enables this cleanup, while `Never` and `OnEvent` retain snapshot orphans.
 Observation failure supplies no evidence of absence. The code calls this write-side operation
 `resync`; client-go informer resync instead notifies handlers about cached objects.

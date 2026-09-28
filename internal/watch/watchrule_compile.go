@@ -6,12 +6,14 @@ import (
 	"context"
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // CompileWatchRule is THE ONLY PATH from a WatchRule to a compiled rule. It resolves the whole
@@ -53,6 +55,13 @@ func CompileWatchRule(
 	provider configv1alpha3.GitProvider,
 ) (authz.ResolvedSourceScope, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace}
+
+	if err := validateObjectSelectors(len(rule.Spec.Rules), func(i int) *metav1.LabelSelector {
+		return rule.Spec.Rules[i].ObjectSelector
+	}); err != nil {
+		store.Delete(key)
+		return authz.ResolvedSourceScope{}, err
+	}
 
 	resolved, err := authz.ResolveWatchRuleSourceScope(ctx, reader, &rule, &target)
 	if err != nil {
@@ -111,6 +120,13 @@ func CompileClusterWatchRule(
 ) (ClusterWatchRuleDecision, error) {
 	key := k8stypes.NamespacedName{Name: rule.Name}
 
+	if err := validateObjectSelectors(len(rule.Spec.Rules), func(i int) *metav1.LabelSelector {
+		return rule.Spec.Rules[i].ObjectSelector
+	}); err != nil {
+		store.DeleteClusterWatchRule(key)
+		return ClusterWatchRuleDecision{}, err
+	}
+
 	admitted, err := authz.GitTargetAdmitted(ctx, reader, &target)
 	if err != nil {
 		// Transient: leave whatever is compiled alone and let the caller requeue.
@@ -157,4 +173,32 @@ type ClusterWatchRuleDecision struct {
 	Reason string
 	// Message explains the refusal to an operator.
 	Message string
+}
+
+// ReasonInvalidObjectSelector is the terminal ResourcesResolved reason for a rule whose
+// spec.rules[].objectSelector does not parse. The rule is refused as a whole, for the reason a
+// denied source namespace refuses one: mirroring the items that did parse is worse than a loud
+// failure.
+const ReasonInvalidObjectSelector = "InvalidObjectSelector"
+
+// ObjectSelectorError is the compile refusal for an invalid spec.rules[].objectSelector. It is an
+// error rather than a decision because the compile functions already return one for a transient
+// failure, and the callers must tell the two apart: this one is terminal, and the compiled rule is
+// already out of the store when it is returned.
+type ObjectSelectorError struct {
+	// Message names the offending item and why its selector is invalid.
+	Message string
+}
+
+func (e *ObjectSelectorError) Error() string { return e.Message }
+
+// validateObjectSelectors checks every item's objectSelector, returning an ObjectSelectorError
+// naming the first invalid one.
+func validateObjectSelectors(n int, selectorAt func(int) *metav1.LabelSelector) error {
+	for i := range n {
+		if _, err := types.CanonicalLabelSelector(selectorAt(i)); err != nil {
+			return &ObjectSelectorError{Message: fmt.Sprintf("spec.rules[%d].objectSelector: %v", i, err)}
+		}
+	}
+	return nil
 }

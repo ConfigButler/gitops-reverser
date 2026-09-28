@@ -16,6 +16,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // DefaultAttributionGraceWindow is the bounded wait a watch event spends for a
@@ -81,23 +82,14 @@ func (q AuthorQuery) factQuery() queue.FactQuery {
 }
 
 // CursorStore persists the last processed resourceVersion for each (GitTarget UID,
-// GVR, scope) watch shard, bounded by a TTL. The GitTarget is identified by its UID
-// alone — globally unique, so namespace/name would be redundant. Cursors are refreshed
-// on write and never deleted: a live watch keeps its cursor fresh, a dead one's cursor
+// collection) watch shard, bounded by a TTL. The GitTarget is identified by its UID
+// alone — globally unique, so namespace/name would be redundant. The collection carries the
+// label selector, so a stream never resumes under a cursor another selection recorded. Cursors are
+// refreshed on write and never deleted: a live watch keeps its cursor fresh, a dead one's cursor
 // expires. Nil means every new watch session rebuilds from a fresh replay.
 type CursorStore interface {
-	LookupWatchCursor(
-		ctx context.Context,
-		gitTargetUID string,
-		gvr schema.GroupVersionResource,
-		namespace string,
-	) (string, bool)
-	RecordWatchCursor(
-		ctx context.Context,
-		gitTargetUID string,
-		gvr schema.GroupVersionResource,
-		namespace, rv string,
-	) error
+	LookupWatchCursor(ctx context.Context, gitTargetUID string, collection types.CollectionKey) (string, bool)
+	RecordWatchCursor(ctx context.Context, gitTargetUID string, collection types.CollectionKey, rv string) error
 }
 
 // AuthorResolver names the commit author for a live watch event from audit facts.

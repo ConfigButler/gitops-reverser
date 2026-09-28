@@ -46,6 +46,10 @@ type watchedTypeStore struct {
 	// the previous cluster's GVR table.
 	clusterFP uint64
 	resolved  bool
+	// refusals is the last resolution's selector-conflict refusals, keyed by rule; see
+	// refuseSelectorConflicts. It is published with the tables it was decided for, so a rule's
+	// status never reports a refusal the running plan does not reflect.
+	refusals map[selectingRule]string
 }
 
 // refreshWatchedTypeTables re-projects the resident watched-type tables from the type
@@ -92,10 +96,11 @@ func (m *Manager) refreshWatchedTypeTables() {
 		return
 	}
 
-	tables := m.resolveWatchedTypeTables()
+	tables, refusals := m.resolveWatchedTypeTables()
 
 	m.watchedTypes.mu.Lock()
 	m.watchedTypes.tables = tables
+	m.watchedTypes.refusals = refusals
 	m.watchedTypes.registriesFP = registriesFP
 	m.watchedTypes.rulesFP = fingerprint
 	m.watchedTypes.clusterFP = clusterFP
@@ -261,9 +266,12 @@ func (m *Manager) clusterMappingFingerprint() uint64 {
 // against that remote's registry. A GitTarget whose rules select nothing followable is kept as
 // an empty table so a transient discovery gap does not look like rule removal. The per-target
 // table is stamped with its own cluster's registry generation.
-func (m *Manager) resolveWatchedTypeTables() map[string]WatchedTypeTable {
+//
+// A rule whose collections overlap another rule's with a different object selector contributes
+// nothing to its target's table, and is returned among the refusals instead.
+func (m *Manager) resolveWatchedTypeTables() (map[string]WatchedTypeTable, map[selectingRule]string) {
 	if m.RuleStore == nil {
-		return map[string]WatchedTypeTable{}
+		return map[string]WatchedTypeTable{}, nil
 	}
 
 	// Followable records are resolved per source cluster and cached, so several GitTargets
@@ -294,13 +302,21 @@ func (m *Manager) resolveWatchedTypeTables() map[string]WatchedTypeTable {
 	m.collectClusterWatchRuleSelections(recordsFor, get)
 
 	tables := make(map[string]WatchedTypeTable, len(byTarget))
+	var refusals map[selectingRule]string
 	for key, ts := range byTarget {
+		admitted, refused := refuseSelectorConflicts(ts.selections)
+		for rule, reason := range refused {
+			if refusals == nil {
+				refusals = map[selectingRule]string{}
+			}
+			refusals[rule] = reason
+		}
 		generation := m.cluster(m.clusterIDForGitTarget(ts.gitDest)).registry.Generation()
-		table := buildWatchedTypeTable(ts.gitDest, generation, ts.selections)
+		table := buildWatchedTypeTable(ts.gitDest, generation, admitted)
 		table.Dest = ts.dest
 		tables[key] = table
 	}
-	return tables
+	return tables, refusals
 }
 
 // collectWatchRuleSelections folds every namespaced WatchRule into its GitTarget's selected
@@ -320,6 +336,12 @@ func (m *Manager) collectWatchRuleSelections(
 		gitTargetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
 		records := recordsFor(m.clusterIDForGitTarget(gitTargetRef))
 		ts := get(gitTargetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
+		selecting := selectingRule{
+			kind:      ruleKindWatchRule,
+			namespace: rule.Source.Namespace,
+			name:      rule.Source.Name,
+			createdAt: rule.CreatedAt,
+		}
 		for _, rr := range rule.ResourceRules {
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
@@ -337,7 +359,9 @@ func (m *Manager) collectWatchRuleSelections(
 				// replacement — collapsing the two once widened a named rule's stream (CollectionKey
 				// in internal/types/collection.go). An omitted item still resolves to a concrete name.
 				for _, namespace := range rr.SourceNamespaces {
-					ts.selections = append(ts.selections, watchSelection{record: rec, namespace: namespace})
+					ts.selections = append(ts.selections, watchSelection{
+						record: rec, namespace: namespace, labelSelector: rr.LabelSelector, rule: selecting,
+					})
 				}
 			}
 		}
@@ -359,11 +383,14 @@ func (m *Manager) collectClusterWatchRuleSelections(
 		gitTargetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
 		records := recordsFor(m.clusterIDForGitTarget(gitTargetRef))
 		ts := get(gitTargetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
+		selecting := selectingRule{kind: ruleKindClusterWatchRule, name: rule.Source.Name, createdAt: rule.CreatedAt}
 		for _, rr := range rule.Rules {
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 			for _, rec := range matched {
-				ts.selections = append(ts.selections, watchSelection{record: rec, namespace: ""})
+				ts.selections = append(ts.selections, watchSelection{
+					record: rec, namespace: "", labelSelector: rr.LabelSelector, rule: selecting,
+				})
 			}
 		}
 	}
@@ -523,7 +550,8 @@ func (m *Manager) rulesFingerprint() uint64 {
 }
 
 // watchRuleFingerprint hashes everything about a compiled WatchRule that can change what it
-// watches. Each item's src= component MUST be that item's RESOLVED source-namespace SET, not the
+// watches, including the rule's identity and age: they decide which of two conflicting rules keeps
+// its collections (refuseSelectorConflicts). Each item's src= component MUST be that item's RESOLVED source-namespace SET, not the
 // WatchRule object's own namespace and not the requested value.
 //
 // It is now derivable from the rule spec alone: a wildcard resolves to the one cluster-wide collection
@@ -534,13 +562,14 @@ func (m *Manager) rulesFingerprint() uint64 {
 // compilation always precedes the rebuild.
 func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "wr|gt=%s/%s|dest=%s",
+	fmt.Fprintf(&b, "wr|%s/%s|created=%d|gt=%s/%s|dest=%s",
+		rule.Source.Namespace, rule.Source.Name, rule.CreatedAt.UnixNano(),
 		rule.GitTargetNamespace, rule.GitTargetRef,
 		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
 	for _, rr := range rule.ResourceRules {
-		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;src=%s]",
+		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;src=%s;sel=%q]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
-			strings.Join(rr.Resources, ","), strings.Join(rr.SourceNamespaces, ","))
+			strings.Join(rr.Resources, ","), strings.Join(rr.SourceNamespaces, ","), rr.LabelSelector)
 	}
 	return b.String()
 }
@@ -550,13 +579,45 @@ func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 // what it watches.
 func clusterWatchRuleFingerprint(rule rulestore.CompiledClusterRule) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "cwr|gt=%s/%s|dest=%s",
+	fmt.Fprintf(&b, "cwr|%s|created=%d|gt=%s/%s|dest=%s",
+		rule.Source.Name, rule.CreatedAt.UnixNano(),
 		rule.GitTargetNamespace, rule.GitTargetRef,
 		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
 	for _, rr := range rule.Rules {
-		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s]",
+		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;sel=%q]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
-			strings.Join(rr.Resources, ","))
+			strings.Join(rr.Resources, ","), rr.LabelSelector)
 	}
 	return b.String()
+}
+
+// ObjectSelectorConflictForWatchRule reports whether the rule is refused because one of its
+// collections overlaps another rule's on the same GitTarget with a different object selector, and
+// why. It reads the resolution the running plan was built from, refreshing it first.
+func (m *Manager) ObjectSelectorConflictForWatchRule(rule configv1alpha3.WatchRule) (bool, string) {
+	return m.objectSelectorConflict(selectingRule{
+		kind: ruleKindWatchRule, namespace: rule.Namespace, name: rule.Name, createdAt: rule.CreationTimestamp,
+	})
+}
+
+// ObjectSelectorConflictForClusterWatchRule is ObjectSelectorConflictForWatchRule for a
+// ClusterWatchRule.
+func (m *Manager) ObjectSelectorConflictForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) (bool, string) {
+	return m.objectSelectorConflict(selectingRule{
+		kind: ruleKindClusterWatchRule, name: rule.Name, createdAt: rule.CreationTimestamp,
+	})
+}
+
+func (m *Manager) objectSelectorConflict(rule selectingRule) (bool, string) {
+	m.refreshWatchedTypeTables()
+	m.watchedTypes.mu.Lock()
+	defer m.watchedTypes.mu.Unlock()
+	for refused, reason := range m.watchedTypes.refusals {
+		// Matched by identity, not age: the compiled rule's timestamp went through the store, and a
+		// round trip must not make a refused rule look admitted.
+		if refused.kind == rule.kind && refused.namespace == rule.namespace && refused.name == rule.name {
+			return true, rule.String() + " is refused: " + reason
+		}
+	}
+	return false, ""
 }

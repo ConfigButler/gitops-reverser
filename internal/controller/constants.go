@@ -34,6 +34,11 @@ type WatchManagerInterface interface {
 
 	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha3.WatchRule) (bool, string)
 	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha3.ClusterWatchRule) (bool, string)
+	// ObjectSelectorConflictForWatchRule and ObjectSelectorConflictForClusterWatchRule report
+	// whether a compiled rule is refused because its collections overlap another rule's on the
+	// same GitTarget with a different objectSelector; the older rule keeps the collection.
+	ObjectSelectorConflictForWatchRule(rule configv1alpha3.WatchRule) (bool, string)
+	ObjectSelectorConflictForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) (bool, string)
 	StreamSummaryForGitTarget(gitDest types.ResourceReference) watch.StreamSummary
 	StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) watch.StreamSummary
 	StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) watch.StreamSummary

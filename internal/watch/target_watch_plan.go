@@ -107,7 +107,10 @@ func sortCollections(collections []types.CollectionKey) {
 		if collections[i].Resource != collections[j].Resource {
 			return collections[i].Resource < collections[j].Resource
 		}
-		return collections[i].Namespace < collections[j].Namespace
+		if collections[i].Namespace != collections[j].Namespace {
+			return collections[i].Namespace < collections[j].Namespace
+		}
+		return collections[i].LabelSelector < collections[j].LabelSelector
 	})
 }
 

@@ -95,6 +95,17 @@ func (s *targetWatchSet) stopAll() {
 type targetWatchKey struct {
 	GVR       schema.GroupVersionResource
 	Namespace string
+	// LabelSelector is the canonical selector every request of this stream carries: the initial
+	// events, the LIST fallback, and every resume. A request without it would observe a different
+	// collection, and its snapshot would sweep documents this collection does not select.
+	LabelSelector string
+}
+
+// listOptions stamps this stream's selector on one request's options. Every open goes through it,
+// so no path can observe the collection unselected.
+func (k targetWatchKey) listOptions(opts metav1.ListOptions) metav1.ListOptions {
+	opts.LabelSelector = k.LabelSelector
+	return opts
 }
 
 // targetWatchStream is one running target watch: the collection it covers. It observes every
@@ -131,7 +142,9 @@ func (s targetWatchStream) sourceCollection() types.CollectionKey {
 // with a concrete version — but it is not part of the collection, so the key always round-trips to
 // the boundary it sweeps.
 func (k targetWatchKey) Collection() types.CollectionKey {
-	return types.CollectionKeyFor(k.GVR, k.Namespace)
+	collection := types.CollectionKeyFor(k.GVR, k.Namespace)
+	collection.LabelSelector = k.LabelSelector
+	return collection
 }
 
 // ensureGitTargetWatches makes the GitTarget's raw watch set match its current claimed,
@@ -358,7 +371,7 @@ func (m *Manager) resetTargetStreamStates(
 	})
 }
 
-// describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>"
+// describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>[?<selector>]"
 // so a declare log names exactly what is being watched.
 func describeWatchKeys(keys []targetWatchKey) string {
 	parts := make([]string, 0, len(keys))
@@ -366,6 +379,9 @@ func describeWatchKeys(keys []targetWatchKey) string {
 		scope := key.Namespace
 		if scope == "" {
 			scope = "*cluster-wide*"
+		}
+		if key.LabelSelector != "" {
+			scope += "?" + key.LabelSelector
 		}
 		parts = append(parts, fmt.Sprintf("%s@%s", key.GVR.String(), scope))
 	}
@@ -410,8 +426,8 @@ func targetWatchStreams(table WatchedTypeTable) map[targetWatchKey]struct{} {
 	chosenPreferred := map[types.CollectionKey]bool{}
 	for _, wt := range table.Types {
 		for _, ns := range wt.WatchScopes() {
-			collection := types.CollectionKeyFor(wt.GVR, ns)
-			candidate := targetWatchKey{GVR: wt.GVR, Namespace: ns}
+			candidate := targetWatchKey{GVR: wt.GVR, Namespace: ns, LabelSelector: wt.LabelSelectors[ns]}
+			collection := candidate.Collection()
 			if prior, seen := chosen[collection]; !seen ||
 				preferServedVersion(prior, chosenPreferred[collection], candidate, wt.Preferred) {
 				chosen[collection] = candidate
@@ -455,10 +471,13 @@ func sortedTargetWatchKeys(keys map[targetWatchKey]struct{}) []targetWatchKey {
 		out = append(out, key)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].GVR.String() == out[j].GVR.String() {
+		if out[i].GVR.String() != out[j].GVR.String() {
+			return out[i].GVR.String() < out[j].GVR.String()
+		}
+		if out[i].Namespace != out[j].Namespace {
 			return out[i].Namespace < out[j].Namespace
 		}
-		return out[i].GVR.String() < out[j].GVR.String()
+		return out[i].LabelSelector < out[j].LabelSelector
 	})
 	return out
 }
@@ -606,7 +625,7 @@ func (m *Manager) targetWatchReplayAndStream(
 	)
 	replaying := true
 	replayStarted := time.Now()
-	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, stream.key.Namespace, opts)
+	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), stream.key, opts)
 	if err != nil {
 		if watchListUnsupported(err) {
 			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
@@ -684,7 +703,7 @@ func (m *Manager) targetWatchResumeAndStream(
 	cursor string,
 ) error {
 	w, err := m.openTargetWatch(
-		ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, stream.key.Namespace,
+		ctx, m.clusterIDForGitTarget(gitDest), stream.key,
 		metav1.ListOptions{
 			ResourceVersion:     cursor,
 			AllowWatchBookmarks: true,
@@ -734,7 +753,7 @@ func (m *Manager) targetWatchListAndStream(
 	stream targetWatchStream,
 ) error {
 	clusterID := m.clusterIDForGitTarget(gitDest)
-	w, err := m.openTargetWatch(ctx, clusterID, stream.key.GVR, stream.key.Namespace, metav1.ListOptions{
+	w, err := m.openTargetWatch(ctx, clusterID, stream.key, metav1.ListOptions{
 		AllowWatchBookmarks: true,
 	})
 	if err != nil {
@@ -761,7 +780,7 @@ func (m *Manager) targetWatchListAndStream(
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
 	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)
 
-	list, err := m.openTargetList(ctx, clusterID, stream.key.GVR, stream.key.Namespace, metav1.ListOptions{})
+	list, err := m.openTargetList(ctx, clusterID, stream.key, metav1.ListOptions{})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -1275,45 +1294,47 @@ func operationForLiveTargetWatchEvent(eventType watch.EventType, u *unstructured
 // openTargetWatch opens a watch against the cluster the GitTarget mirrors from. clusterID is
 // LocalClusterID for a single-cluster GitTarget, which resolves to the in-cluster dynamic
 // client exactly as before; a remote id resolves to that source cluster's dynamic client,
-// built from its kubeconfig Secret.
+// built from its kubeconfig Secret. The stream's label selector is stamped on the options here,
+// once, for every open.
 func (m *Manager) openTargetWatch(
 	ctx context.Context,
 	clusterID string,
-	gvr schema.GroupVersionResource,
-	namespace string,
+	key targetWatchKey,
 	opts metav1.ListOptions,
 ) (watch.Interface, error) {
+	opts = key.listOptions(opts)
 	if m.targetWatchOpen != nil {
-		return m.targetWatchOpen(ctx, gvr, namespace, opts)
+		return m.targetWatchOpen(ctx, key.GVR, key.Namespace, opts)
 	}
 	dc, err := m.clusterDynamicClient(ctx, clusterID)
 	if err != nil {
 		return nil, err
 	}
-	resource := dc.Resource(gvr)
-	if namespace != "" {
-		return resource.Namespace(namespace).Watch(ctx, opts)
+	resource := dc.Resource(key.GVR)
+	if key.Namespace != "" {
+		return resource.Namespace(key.Namespace).Watch(ctx, opts)
 	}
 	return resource.Watch(ctx, opts)
 }
 
+// openTargetList is the LIST half of the fallback, selected exactly as the watch it pairs with.
 func (m *Manager) openTargetList(
 	ctx context.Context,
 	clusterID string,
-	gvr schema.GroupVersionResource,
-	namespace string,
+	key targetWatchKey,
 	opts metav1.ListOptions,
 ) (*unstructured.UnstructuredList, error) {
+	opts = key.listOptions(opts)
 	if m.targetWatchList != nil {
-		return m.targetWatchList(ctx, gvr, namespace, opts)
+		return m.targetWatchList(ctx, key.GVR, key.Namespace, opts)
 	}
 	dc, err := m.clusterDynamicClient(ctx, clusterID)
 	if err != nil {
 		return nil, err
 	}
-	resource := dc.Resource(gvr)
-	if namespace != "" {
-		return resource.Namespace(namespace).List(ctx, opts)
+	resource := dc.Resource(key.GVR)
+	if key.Namespace != "" {
+		return resource.Namespace(key.Namespace).List(ctx, opts)
 	}
 	return resource.List(ctx, opts)
 }
@@ -1327,7 +1348,7 @@ func (m *Manager) lookupTargetWatchCursor(
 	if m.WatchCursorStore == nil || uid == "" {
 		return "", false
 	}
-	return m.WatchCursorStore.LookupWatchCursor(ctx, uid, key.GVR, key.Namespace)
+	return m.WatchCursorStore.LookupWatchCursor(ctx, uid, key.Collection())
 }
 
 func (m *Manager) recordTargetWatchCursor(
@@ -1340,7 +1361,7 @@ func (m *Manager) recordTargetWatchCursor(
 	if m.WatchCursorStore == nil || rv == "" || uid == "" {
 		return nil
 	}
-	return m.WatchCursorStore.RecordWatchCursor(ctx, uid, key.GVR, key.Namespace, rv)
+	return m.WatchCursorStore.RecordWatchCursor(ctx, uid, key.Collection(), rv)
 }
 
 // rememberGitTargetUID records the UID the controller observed for a GitTarget so the watch data
