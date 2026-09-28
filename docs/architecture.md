@@ -110,8 +110,8 @@ designed but not built.
 request shape it will accept.
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
-`helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
-Redis stores watch resume cursors (warm restarts) and the small coordination records used by
+`helm install` comes up healthy and watches initialize from current state on startup. When an endpoint
+is configured, Redis stores cursors for reconnecting running watches and the coordination records used by
 CommitRequest author capture and HA. Attribution does not require it on its own: its facts travel on a
 selectable transport, Redis Streams by default and an in-process ring with
 `--author-attribution-transport=memory`, which is refused with more than one replica. HA will require
@@ -144,20 +144,19 @@ The easy part is "write YAML to Git." The hard parts shape the whole architectur
 
 The solution, in the vocabulary used throughout this document:
 
-- **Watch is the only object-state source.** Each `GitTarget` opens one Kubernetes watch per claimed
-  `(GVR, scope)` with `sendInitialEvents=true`. The apiserver delivers a watch's events already ordered
-  by `resourceVersion` for that type, so there is nothing to re-order. Every Git write derives from
-  persisted state the watch observed.
-- **Watches are per `GitTarget` and scaled by claims.** A watch opens only for the claimed ∩ followable
-  `(GVR, scope)` set, so cost scales with what `GitTarget`s claim, not with cluster type count.
-- **Recovery prefers watch.** A new watch normally starts with `sendInitialEvents`, establishes a
-  current snapshot boundary, and runs a **mark-and-sweep**: any Git file whose object is no longer
-  present is deleted. When Redis has a fresh per-type cursor, the operator skips the snapshot and
-  resumes a normal watch from that resourceVersion. Cursors are keyed by `GitTarget` UID and carry a
-  TTL refreshed on every watch event and bookmark, so a live watch keeps its cursor warm while a deleted
-  one's cursor expires, and a stale resourceVersion (`410 Gone`) rebuilds from a fresh replay.
-  Older APIs that reject `sendInitialEvents` fall back to LIST plus buffered WATCH. The sweep fires on
-  snapshot establishment, **never on a timer**.
+- **Watch is the only object-state source.** Each `GitTarget` selects eligible resource collections.
+  The planner chooses one served API version per group/resource/namespace collection and opens its
+  watch. Delivery order within one watch does not order arrivals across overlapping watches.
+- **Watch cost follows selected collections.** The planner opens watches for selected, eligible
+  collections rather than every type in the cluster. All-namespace and named-namespace collections
+  remain separate when rules select both.
+- **Initialization and reconnect differ.** The first attempt after startup or watch replacement
+  requests initial state for the new render-fidelity revision. Later attempts in the same watch
+  loop can use a stored resume RV; expired history requires fresh initialization. A completed
+  snapshot permits cleanup only within its observed collection and pruning policy. Cursors use
+  target UID, group/resource, and namespace, with a TTL refreshed by events and bookmarks.
+  Unsupported initial-event requests use LIST with a buffered watch. Snapshot reconciliation
+  is triggered by initialization, never by a timer.
 - **Audit, when enabled, only names the author.** It is an optional attribution lookup; a missing or
   late fact costs author fidelity, never correctness. With attribution disabled the product commits as the
   configured committer. With attribution enabled, an unresolved live change is visibly authored as
@@ -514,11 +513,10 @@ attribution facts and appends them to that route's per-type fact stream. A follo
 reads the streams for the types it watches into a bounded, TTL'd in-process index. That index is read
 only by the resolver in step 3; it never creates or repairs object state.
 
-**And if the watch had been lost?** A delete that happened while no watch was running is reconciled on
-the next watch (re)connect: the `sendInitialEvents` replay plus **mark-and-sweep** removes any Git file
-whose object no longer exists. See
-[State Ingestion and Not Losing Deletes](#state-ingestion-and-not-losing-deletes).
-No path silently drops a delete.
+**And if the watch had been lost?** A reconnect can recover a retained deletion event from its
+resume RV. When a fresh snapshot is needed, reconciliation can infer absence within its observed
+collection; `Always` permits that cleanup, while `Never` and `OnEvent` retain snapshot orphans.
+See [State Ingestion and Not Losing Deletes](#state-ingestion-and-not-losing-deletes).
 
 ### Normal commit flow
 
@@ -615,45 +613,47 @@ declared placement policy, or a folder that kustomize builds from a single root.
 
 ## State ingestion and not losing deletes
 
-This is the heart of the system. Object state is ingested by **watch**, and the guarantee is: every
-persisted mutation observed while watching reaches Git, and no delete is ever silently dropped across a
-gap.
+Object state arrives through Kubernetes watches. Selected, relevant changes feed the writer;
+recovery establishes current state when event history is unavailable. Git commit grouping and
+pruning policy determine which intermediate states and removals appear in the repository.
 
 ### Watch is already ordered by resource version
 
-The apiserver delivers a watch's events already ordered by `resourceVersion` for that type, so there is
-**nothing to re-order**: a `MODIFIED` always lands after the create it modifies. Each event carries GVR,
-scope, event type (`ADDED` / `MODIFIED` / `DELETED`, plus the transport `BOOKMARK` and `ERROR`),
-namespace/name/UID/resourceVersion/deletionTimestamp, and the sanitized object body. The
-`initial-events-end` bookmark marks the end of a replay, and an `ERROR` such as `410 Gone` triggers a
-fresh `sendInitialEvents` reconnect.
+One watch delivers live changes in order. Independent watch handlers can still interleave
+observations of the same object; the [ordering contract](spec/watch-event-ordering-and-attribution-grace.md)
+states that boundary. The manager derives resource identity and operation from the source event,
+including deletion intent, then sanitizes content before routing it.
+
+Initial events establish current state, so their object RVs need not arrive in mutation order.
+The annotated initial-events-end bookmark marks completion. Ordinary bookmarks report progress,
+and an error such as `410 Gone` requires rebuilding from current state.
 
 ### Recovery: resume, replay, or list plus mark-and-sweep
 
-Losing a watch (pod eviction, rollout, crash, `410 Gone`) is normal. When Redis has a cursor for the
-watch shard, the next session first opens a normal watch from that resourceVersion. If the apiserver
-can supply all events since that cursor, the watch continues from there. If the cursor is
-expired, or no cursor exists, the watch opens with `sendInitialEvents=true` and
-`ResourceVersionMatch=NotOlderThan`, so the apiserver streams current state as a replay of `ADDED`
-events terminated by the `initial-events-end` bookmark. The operator runs a **mark-and-sweep** over
-that replay:
+The first attempt after process startup or watch replacement requests initial state, even when
+Redis holds a cursor. `runTargetWatch` starts with `resumeFromCursor=false`: the new render-fidelity
+revision needs fresh observation. Subsequent attempts in the same loop may open a normal watch
+from the stored RV. If history has expired, or no usable cursor exists, initialization establishes
+current state again.
 
-1. every replayed object is **marked** `ADDED`, up to `initial-events-end`;
-2. at the bookmark, any Git file under that GitTarget whose object was **not** marked no longer exists,
-   so a `DELETED` is emitted for it (committer-authored, because the actual delete was never witnessed);
-3. then the watch streams live events.
+Streaming initialization uses `sendInitialEvents=true` and `resourceVersionMatch=NotOlderThan`:
 
-**This mark-and-sweep is load-bearing and fires only on watch re-establishment, never on a timer**:
-there is no periodic **object** LIST or hourly object-drift sweep, and no periodic `Namespace` LIST
-in a source cluster either. The sweep is the only
-thing that reconciles a delete that happened while no watch was running, so it is what makes the watch safe
-to lose and restart. It is applied through the same per-type reconcile/writer machinery as live writes (see
-[Mark and Sweep Resync](#mark-and-sweep-resync)).
+1. The manager collects current objects until the annotated initial-events-end bookmark.
+2. It enqueues a snapshot reconciliation for that observed collection. Managed documents absent
+   from the desired set are removed only when `prune.mode: Always` permits inferred deletion;
+   `Never` and `OnEvent` retain them. Terminating objects are excluded from desired state by the
+   deletion-as-intent rule.
+3. Subsequent live events enter the branch worker after the accepted snapshot request. This queue
+   order does not mean the snapshot's Git write has already completed.
 
-If the apiserver forbids `sendInitialEvents` for a type, the operator logs an explicit warning, starts a
-normal watch, buffers its events, performs a LIST snapshot, runs the same scoped mark-and-sweep from
-that list, and only then lets the buffered watch events through. This is the compatibility path for
-older aggregated API servers that do not implement streaming lists.
+Reconciliation edits managed documents, which can share a YAML file. A snapshot for one namespace
+cannot establish absence in another. A failed observation cannot establish absence anywhere.
+See [Mark and Sweep Resync](#mark-and-sweep-resync).
+
+There is no periodic object LIST or timer-driven object-drift sweep. If the API server rejects
+streaming initialization, `targetWatchListAndStream` first opens and buffers a watch, then takes
+a LIST snapshot. It enqueues the same scoped reconciliation and processes buffered events newer
+than the snapshot's RV. This ordering is the compatibility path for APIs without initial events.
 
 ### Relevance filtering is product code
 
@@ -710,9 +710,9 @@ travel:
 | `memory` | an in-process ring | single replica, no Redis; every fact is lost on restart, by design |
 
 `memory` removes *attribution's* need for Redis. It does not on its own remove the install's:
-`--redis-addr` also holds each `GitTarget`'s watch resume cursors, independently of attribution. So
-dropping the Valkey StatefulSet as well means every watch cold-replays on restart instead of
-resuming, across every target.
+`--redis-addr` also holds watch resume cursors, independently of attribution. Without that cursor
+store, reconnect attempts initialize from current state. The first attempt after a process restart
+requests initial state with either configuration.
 
 | Endpoint | Role |
 |---|---|
@@ -956,25 +956,28 @@ invalid `email` falls back to a derived address under `noreply.cluster.local`.
 
 ## Watch event ordering
 
-The grace window is a per-event wait on a **single-threaded watch goroutine** (one goroutine per
-`(GitTarget, GVR, scope)`), and the downstream `GitTargetEventStream → BranchWorker` path is a synchronous
-FIFO. So:
+The grace window is a per-event wait on a **single-threaded watch goroutine**. Each running
+collection watch uses one chosen GVR and namespace scope. The downstream
+`GitTargetEventStream → BranchWorker` path preserves enqueue order in a FIFO.
 
-- **Same object / same type order is strictly preserved.** An object's events all flow through one watch
-  goroutine in `resourceVersion` order; the grace wait is head-of-line (it delays the next event, never
-  lets it overtake), so an older mutation can never overwrite a newer one.
-- **The cost is throughput, not ordering.** A long wait stalls its own watch up to the grace window.
-- **Unrelated objects on different types** (separate concurrent watches) may interleave or be grouped
-  into commits differently than wall-clock, and `resourceVersion` is not comparable across types anyway.
-  They are usually different files, but they *can* share one, as different documents of a multi-document YAML,
-  e.g. when a human or kustomize placed them together, so "different files" is not guaranteed. It still
-  does not affect the materialized state: every write carries its object's current state, all writes to a
-  branch funnel through one BranchWorker, and the editor patches each document in place without disturbing
-  its siblings. Only *which* commit each lands in and *when* can differ, and only within the commit window.
-  a few seconds at most.
+- **Order within one watch is preserved.** The loop resolves attribution and routes one event
+  before reading the next. Later events on that watch cannot overtake the attribution wait.
+- **Independent watches can overlap.** An all-namespace watch and a named-namespace watch can
+  deliver the same object. Their concurrent handlers establish no common mutation order, and
+  the worker's FIFO does not sort their arrivals by `resourceVersion`. The
+  [target watch plan](design/target-watch-plan.md#where-the-bound-is-thin) records this limitation.
+- **The wait affects throughput and grouping.** Each unresolved event can delay its watch by
+  the grace window. Accumulated queueing can add further delay, and different authors can split
+  commits. Intermediate object states can also collapse into one commit window.
+- **Branch writes remain serialized.** Different objects can share a multi-document YAML file;
+  the branch worker edits their documents sequentially. That serialization prevents concurrent
+  file edits but does not establish source ordering across overlapping watches. RVs also do
+  not provide a common clock across resource types.
 
-The full analysis, worked examples, and the future non-blocking option are in
-[Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md).
+The current processing model and worked examples are in
+[Watch event ordering under the attribution grace window](spec/watch-event-ordering-and-attribution-grace.md).
+For server-side selectors, initial state, bookmarks, and resume options, see
+[Kubernetes watch options](facts/kubernetes-watch-options.md).
 
 ***
 
@@ -1059,24 +1062,25 @@ catalog, registry, dynamic client, and reachability can fail or recover without 
 source. Discovery trigger informers (CRDs / APIServices) run only in the control plane and accelerate its
 catalog refresh; remote source catalogs use the periodic refresh.
 
-On `Start` it bootstraps the RuleStore from existing rules, refreshes the API catalog, updates the
-TypeRegistry, builds watched type tables, and opens one watch per claimed ∩ followable `(GVR, scope)`.
+On `Start` it bootstraps the RuleStore, refreshes the API catalog and TypeRegistry, resolves rule
+selection, and builds the collection watch plan.
 
 ### Opening watches
 
-On each GitTarget reconcile the controller resolves the GitTarget's claimed ∩ followable `(GVR, scope)`
-set. Fully specified GVRs are claimed unconditionally; wildcard rules and rules without a version are
-resolved fail closed against discovery. For each `(GVR, scope)` the manager runs one watch goroutine that
-opens the watch with `sendInitialEvents=true`, folds the replay into a desired set, runs the
-mark-and-sweep at `initial-events-end`, then streams live events through the relevance filter and the
-author resolver into the GitTargetEventStream. On disconnect or `410 Gone` the goroutine reconnects and
-repeats the replay + sweep. See
+On each GitTarget reconcile, rule resolution combines selection with discovery and mirroring
+eligibility. `targetWatchStreams` groups selected served versions by group/resource/namespace,
+chooses one version per collection, and unions the current operation filters. The plan diff
+keeps unaffected watches running and starts or replaces only changed entries.
+
+Each managed watch has one goroutine. Its first attempt requests initial state, enqueues scoped
+snapshot reconciliation, and then routes live events through filtering and author resolution.
+Later attempts may resume a cursor; see
 [Recovery: resume, replay, or list plus mark-and-sweep](#recovery-resume-replay-or-list-plus-mark-and-sweep).
 
-There is **no periodic object LIST, object checkpoint, or timer-driven object-drift sweep**. The sweep
-fires only on watch re-establishment. Selector-based source-namespace authorization is separate: it may
-periodically list Namespace labels in the relevant source cluster, but that list never materializes objects
-or triggers a Git sweep.
+There is no periodic object LIST or timer-driven object-drift sweep. Source-namespace selection
+uses delegated rule configuration and the source credential's permissions; it does not require
+reading source Namespace labels. Control-cluster Namespace labels can govern `accessFrom`, which
+is a separate provider-reference authorization boundary.
 
 ### Rule change reconcile
 
@@ -1387,9 +1391,10 @@ by the validating webhook, not derived from the audit attribution index.
 Controllers watch their dependencies so dependents reconcile quickly after spec changes:
 
 - `GitTargetReconciler` watches `GitProvider`, `ClusterProvider`, `Namespace`, `WatchRule`, and
-  `ClusterWatchRule`. Provider readiness/spec changes and namespace-label changes promptly re-check
-  source authorization; rules re-declare the claimed `(GVR, scope)` set. It deliberately does **not**
-  watch encryption Secrets, so their recovery is picked up by periodic reconciliation without retaining
+  `ClusterWatchRule`. Provider changes re-check connection and authorization inputs; control-cluster
+  Namespace label changes re-check provider-reference access. Rule changes re-resolve selected
+  collections. It deliberately does **not** watch encryption Secrets, so their recovery is picked up
+  by periodic reconciliation without retaining
   every Secret value in the control-plane cache.
 - `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
   RuleStore, and trigger the rule-change reconcile.
@@ -1422,7 +1427,7 @@ flowchart TD
     F --> G[Register WatchRule + ClusterWatchRule controllers]
     G --> H{redis-addr set?}
     H -->|yes| Hi[Create Redis cursor store + wire WatchCursorStore + readiness gate]
-    H -->|no| Hj[Skip Redis: WatchCursorStore nil; watches cold-replay on restart]
+    H -->|no| Hj[Skip cursor store; reconnects initialize again]
     Hi --> Hq{author-attribution?}
     Hj --> Hq
     Hq -->|yes| I[Select fact transport; start fact index + follower;<br/>wire audit fact extractor + audit HTTP server + resolver]
@@ -1435,9 +1440,10 @@ flowchart TD
 ```
 
 Redis is optional in configured-author mode. When `--redis-addr` is set, the cursor store is wired and a
-Redis readiness gate keeps the pod not-ready until Redis is reachable; watches resume from their last
-stored resourceVersion after a restart. When `--redis-addr` is empty, the cursor store is skipped and
-watches cold-replay from scratch on restart instead. The binary's `--author-attribution` flag defaults to
+Redis readiness gate keeps the pod not-ready until Redis is reachable. Later reconnect attempts
+can resume stored RVs. When `--redis-addr` is empty, the cursor store is skipped and reconnects
+initialize again. The first attempt after startup or watch replacement requests initial state in
+both cases. The binary's `--author-attribution` flag defaults to
 on: the fact transport is constructed, the fact index and its follower are started, the audit HTTP
 handler is wired with the fact extractor, the watch manager gets the author resolver, and the audit
 ingress is added to `/readyz`. Which transport it builds is `--author-attribution-transport`: `redis`
@@ -1605,7 +1611,7 @@ Deeper dives live under [docs/design/](design/):
   the two halves, the tier ladder, and the wait.
 - [Attribution facts as a stream, not a keyspace](finished/attribution-fact-stream.md): the shipped
   transport seam, the in-process index, and what running without Redis costs.
-- [Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md)
+- [Watch event ordering under the attribution grace window](spec/watch-event-ordering-and-attribution-grace.md)
 - [Reconcile via watchlist mark and sweep](spec/reconcile-via-watchlist-mark-and-sweep.md)
 - [CommitRequest design](spec/commitrequest-design.md)
 

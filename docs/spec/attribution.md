@@ -15,7 +15,7 @@
 > [`../design/open-asks-priority.md`](../design/open-asks-priority.md), and the one decision with
 > its own record is [`../design/attribution-removal-wait-options.md`](../design/attribution-removal-wait-options.md).
 >
-> Related: [`../facts/watch-event-ordering-and-attribution-grace.md`](../facts/watch-event-ordering-and-attribution-grace.md),
+> Related: [`watch-event-ordering-and-attribution-grace.md`](watch-event-ordering-and-attribution-grace.md),
 > [`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md),
 > [`../attribution-setup-guide.md`](../attribution-setup-guide.md),
 > [`../interpreting-metrics.md`](../interpreting-metrics.md).

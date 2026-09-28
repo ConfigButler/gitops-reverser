@@ -264,7 +264,7 @@ same question for the control plane.
 the model was arrived at, and
 [Reconcile via WatchList and mark-and-sweep](../spec/reconcile-via-watchlist-mark-and-sweep.md)
 is the mechanism §4 depends on.
-[Watch event ordering under the attribution grace window](../facts/watch-event-ordering-and-attribution-grace.md)
+[Watch event ordering under the attribution grace window](../spec/watch-event-ordering-and-attribution-grace.md)
 has the worked examples.
 
 **Scopes and streams.** A sweep is bounded by the exact slice its snapshot was

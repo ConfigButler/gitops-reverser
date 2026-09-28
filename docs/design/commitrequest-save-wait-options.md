@@ -502,7 +502,7 @@ the participant's message on the commit.
   code depends on it, so each phase changes that page in the same commit.
 - [`../spec/commitrequest-admission-authorship.md`](../spec/commitrequest-admission-authorship.md),
   where the submitter comes from and why the lookup is present-or-never.
-- [`../facts/watch-event-ordering-and-attribution-grace.md`](../facts/watch-event-ordering-and-attribution-grace.md),
+- [`../spec/watch-event-ordering-and-attribution-grace.md`](../spec/watch-event-ordering-and-attribution-grace.md),
   the head-of-line wait this page proposes to wait behind rather than shorten.
 - [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md), the same shape of
   question on the attribution side: what evidence is worth waiting for, and for how long.

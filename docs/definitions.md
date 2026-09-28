@@ -67,31 +67,51 @@ A sentence about namespace policy names one of those two. Never "namespace acces
 
 ## Read side
 
-**Cell.** The unit of watching: a `(GitTarget, group, resource, namespace)` tuple. The served
-version is carried as data, not as part of the identity, so a type served at two versions is one
-cell and not two. One cell is one raw watch. "Cell" is the only word for this; it is not a "watch
-target", a "type" or a "scope".
+Use Kubernetes' collection, watch, and initial-events vocabulary in explanatory prose; see
+[Kubernetes watch options](facts/kubernetes-watch-options.md). Existing identifiers such as
+`CellKey`, `SourceCell`, `Replaying`, and `status.streams` keep their current spelling until an
+explicit code or API migration. This is an intentional transition, not a runtime behavior change.
 
-**Stream.** The open watch behind one cell, and its readiness state: `Replaying`, `Streaming` or
-`Blocked`. A stream is a thing that runs; a cell is a thing that is selected. `status.streams` on a
-`GitTarget` or a rule counts by **type**, not by cell: one resource watched in three namespaces is
-three cells and one entry in the count, in the weakest of their three states.
+**Resource collection.** Objects of one group/resource within a namespace selection. In the
+current planner, [`CellKey`](../internal/types/cell.go) contains `(group, resource, namespace)`;
+its containing `GitTarget` supplies target and source-cluster context. The served API version is
+separate data. An all-namespace collection can overlap a named-namespace collection. `Cell` is
+the legacy project name for this boundary. A collection is distinct from both its resource type
+and that type's namespaced or cluster-scoped classification.
 
-**Replay.** The initial burst of events a watch opened with `sendInitialEvents=true` delivers before
-`initial-events-end`. It is the API server's own term for it.
+**Watch.** The managed observation of a resource collection through Kubernetes watch requests.
+It can initialize, stream events, lose a connection, and reconnect. The implementation currently
+tracks `Replaying`, `Streaming`, and `Blocked` states. Write `WatchRule` or `ClusterWatchRule`
+when naming configuration kinds; a rule selects objects, while a watch observes them.
 
-**Cursor.** A stored `resourceVersion` a stream resumes from after a restart, so the restart does
-not cold-replay.
+**Watch stream.** Events delivered by an open watch connection. `Stream` is also used in legacy
+implementation names for the managed watch. `status.streams` counts **resource types**: watching
+one type in three namespaces produces three collection watches but one status entry, using the
+weakest collection state. Changing the vocabulary does not change that public field's unit.
+
+**Initial events.** Synthetic events representing the current selected objects, requested with
+`sendInitialEvents=true` and completed by the `k8s.io/initial-events-end` bookmark. Kubernetes
+calls this streaming lists. The implementation's `replay` names refer to this initialization;
+they do not imply a history of every mutation.
+
+**Resume resourceVersion.** An observed position used to reconnect a running watch. The code
+and storage call it a cursor. The first attempt after startup or watch replacement initializes
+current state even if a stored cursor exists; later attempts in that watch's loop may resume.
+A cursor records observation progress, not successful Git publication.
 
 **Catalog.** One source cluster's normalized discovery result. It holds no judgment about whether a
 type should be watched.
 
-**Followable.** A verdict about a type, from the relevance funnel: can this type be watched at all.
-Separate from **claimed**, which is a verdict about a rule: does any rule select this type. A cell
-exists where claimed and followable meet.
+**Eligible for mirroring.** The product verdict called `followable` in code: discovery and
+mirroring policy permit the type. Kubernetes watch support alone is insufficient. **Selected
+by a rule** is the demand called `claimed` in code. The current planner opens watches where
+selection and eligibility meet.
 
-**Sweep.** The mark-and-sweep at the end of a replay that deletes managed documents the source no
-longer has. A sweep acts on intent, never on an inability to observe.
+**Snapshot reconciliation.** Applying an observed collection to managed Git documents within
+that collection. Its sweep can remove documents inferred absent only when pruning policy permits
+it; `Always` enables this cleanup, while `Never` and `OnEvent` retain snapshot orphans.
+Observation failure supplies no evidence of absence. The code calls this write-side operation
+`resync`; client-go informer resync instead notifies handlers about cached objects.
 
 ## Write side
 
@@ -325,8 +345,9 @@ outage.
 |---|---|---|
 | sync, export, back up | mirror | "sync" implies two-way convergence, which this is not |
 | repo path, directory | folder | one word for the thing a `GitTarget` owns |
-| watch target, type, scope (for a watched unit) | cell | "type" and "scope" are both already taken |
-| initial sync, backfill | replay | it is the API server's own term |
+| cell, watch target, type, scope (for the object set) | resource collection | identifies the object set without overloading resource type or resource scope |
+| stream (for the managed lifecycle) | watch | reserve watch stream for delivered events; configuration kinds keep their full names |
+| initial sync, backfill, replay (for current state) | initial events or initialization | follows Kubernetes streaming-list terminology |
 | git worker, commit worker | branch worker | the tuple it owns is keyed by branch |
 | attribution (bare) | author attribution, render attribution | two unrelated concepts share the word |
 | `GitRepoConfig` | `GitProvider` | the kind was renamed; the string survived in two reasons |

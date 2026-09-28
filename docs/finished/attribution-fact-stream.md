@@ -592,7 +592,7 @@ shipped commit, and it is why the wait exists at all.
 `(GitTarget, GVR, scope)` that finishes one event before reading the next, feeding one FIFO into the
 branch worker. Attribution decides what author is stamped, never when an event is routed relative to
 its siblings. See
-[`watch-event-ordering-and-attribution-grace.md`](../facts/watch-event-ordering-and-attribution-grace.md),
+[`watch-event-ordering-and-attribution-grace.md`](../spec/watch-event-ordering-and-attribution-grace.md),
 including its warning that resolving events concurrently without a sequence-numbered reassembly
 buffer would let a later event overtake an earlier one on the same object. Faster resolution makes
 that refactor tempting. It is still out of scope, and still wrong without the buffer.

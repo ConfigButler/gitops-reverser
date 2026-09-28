@@ -53,12 +53,17 @@ Provider-specific setup that needed writing down:
 credential Secret is shaped differently from every other provider's, and the three test layers that
 cover a provider CI cannot reach.
 
-**Before you name anything:** [`definitions.md`](definitions.md) — one name per concept (cell, branch
-worker, author attribution, refusal, folder), the two clusters and the two namespace directions, and
+**Before you name anything:** [`definitions.md`](definitions.md) — one name per concept (resource collection,
+watch, branch worker, author attribution, refusal, folder), the two clusters and the two namespace directions, and
 the nine rules that decide a CRD field, condition type, reason, enum value or printer column. It is
 the third of three rulebooks, beside [`style-guide.md`](style-guide.md) for prose and
 [`config-flag-conventions.md`](config-flag-conventions.md) for flags. A name that contradicts it is a
 defect rather than a variation.
+
+**Before changing source watches:**
+[`facts/kubernetes-watch-options.md`](facts/kubernetes-watch-options.md) covers server-side
+label and field selection, membership events, initial state, bookmarks, and recovery, with
+Kubernetes documentation and upstream source references.
 
 **Before you change any CRD field:**
 [`facts/crd-upgrade-strategies.md`](facts/crd-upgrade-strategies.md) — the two honest strategies for
@@ -78,6 +83,7 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 |---|---|
 | [`manifest-system.md`](spec/manifest-system.md) | the whole live → Git pipeline, and every invariant below in summary |
 | [`attribution.md`](spec/attribution.md) | **how a commit gets its author.** Deletion is attributed at intent time; the publish half files a fact under the strongest key it has, the join half walks the tiers strongest-first, and neither branches on the type. The single reference, folded from six design records |
+| [`watch-event-ordering-and-attribution-grace.md`](spec/watch-event-ordering-and-attribution-grace.md) | How attribution waits and branch queues preserve per-watch order, and the limits across overlapping watches. |
 | [`current-manifest-support-review.md`](spec/current-manifest-support-review.md) | all-or-nothing folder claim; never half-write a multi-doc file; **refuse rather than prune** |
 | [`manifestedit-field-ownership-spike.md`](spec/manifestedit-field-ownership-spike.md) | the API wins — full-object ownership, never field-subset |
 | [`reconcile-via-watchlist-mark-and-sweep.md`](spec/reconcile-via-watchlist-mark-and-sweep.md) | **no bookmark, no sweep** |

@@ -26,7 +26,7 @@
 > [`internal/watch/author_resolver.go`](../../internal/watch/author_resolver.go),
 > [CommitRequest authorship from admission](../spec/commitrequest-admission-authorship.md),
 > [attribution](../spec/attribution.md),
-> [watch event ordering & attribution grace](../facts/watch-event-ordering-and-attribution-grace.md),
+> [watch event ordering & attribution grace](../spec/watch-event-ordering-and-attribution-grace.md),
 > [watch-first ingestion architecture](watch-first-ingestion-architecture.md).
 
 ## 1. Today (`v2`) and the companion plan
