@@ -21,13 +21,15 @@ behaviors changed for every target writing a supported Kustomize folder:
   the only proof of ownership: a delete patch written before this release has no comment, so it
   is treated as yours. If the object it removes comes back, the write is refused until you
   remove the patch and its `patches:` entry, or add the comment.
-- A file at that path that the operator did not write, or an owned patch someone edited, now
-  refuses the write with `GitPathAccepted=False`, reason `WriteBoundaryRefused`. It used to skip
-  the removal silently. Rename or remove the file.
+- A file at that path that the operator did not write, or an owned patch someone edited, refuses
+  the write with `GitPathAccepted=False`, reason `WriteBoundaryRefused`. It used to skip the
+  removal silently. Rename or remove the file. The same refusal applies when an object is back in
+  the cluster but a `$patch: delete` the operator does not own, under any name, keeps it out of the
+  render: remove that patch.
 
 A delete the API server answers with a `Status` rather than the object (an immediate deletion, or a
-garbage-collector cascade) is now attributed by the uid the `Status` names. Such a removal that was
-counted under `attribution_resolutions_total{tier="name"}` is now counted under
+garbage-collector cascade) is attributed by the uid the `Status` names. Such a removal, previously
+counted under `attribution_resolutions_total{tier="name"}`, is counted under
 `tier="delete_sticky"`. Who is named does not change.
 
 ## Rules select whole resource collections: `rules[].operations` is gone
