@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -125,4 +126,28 @@ func TestCommitRule_LostWriteBeatsTheConvergingLoop(t *testing.T) {
 				"a converging rule whose status never landed must come back promptly, not on the settle loop")
 		})
 	}
+}
+
+// A rule refused for an objectSelector conflict is stalled, but what clears it is a sibling rule
+// going away or re-selecting, which no watch edge reports reliably: it retries on its own bounded
+// cadence, and keeps its stalled status.
+func TestCommitRule_SelectorConflictRetriesOnABoundedCadence(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+	rule := &configbutleraiv1alpha3.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "rule", Namespace: "tenant-acme", ResourceVersion: "1"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rule).WithStatusSubresource(rule).Build()
+
+	st := beginStatus(c, nil, rule)
+	st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonObjectSelectorConflict, "conflict")
+	rd := newRuleReadiness("rule", "")
+	rd.stalled(watch.ReasonObjectSelectorConflict, "conflict")
+
+	result, err := commitRule(context.Background(), st, rd)
+	require.NoError(t, err)
+	assert.Equal(t, RequeueSelectorConflictInterval, result.RequeueAfter)
+	stalled := apimeta.FindStatusCondition(rule.Status.Conditions, ConditionTypeStalled)
+	require.NotNil(t, stalled)
+	assert.Equal(t, metav1.ConditionTrue, stalled.Status)
 }

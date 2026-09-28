@@ -181,6 +181,10 @@ const (
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.
 	RequeueStreamSettleInterval = 10 * time.Second
+	// RequeueSelectorConflictInterval is how often a rule refused for an ObjectSelectorConflict
+	// re-checks the conflict. It is a fallback: the stream-state event of the sibling rule that
+	// cleared it usually arrives first, but that event is best-effort.
+	RequeueSelectorConflictInterval = 30 * time.Second
 	// RequeueWriteLostInterval is how soon a reconcile whose status write lost the optimistic-lock
 	// race comes back. It is short because there is nothing to wait FOR: the write was rejected
 	// against a resourceVersion this reconcile had already read, so the only thing that has to
