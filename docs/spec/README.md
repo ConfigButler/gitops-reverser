@@ -32,7 +32,7 @@ three lifecycle classes and was unreadable spread across them. The rows below st
 | Spec | What it pins |
 |---|---|
 | [`attribution.md`](attribution.md) | **how a commit gets its author**: deletion-at-intent, the publish and join halves, the tier ladder, the audit-route partition, and what the metrics can and cannot answer |
-| [`watch-event-ordering-and-attribution-grace.md`](watch-event-ordering-and-attribution-grace.md) | Per-watch ordering through attribution and enqueue, including the overlapping-watch limitation. |
+| [`watch-event-ordering-and-attribution-grace.md`](watch-event-ordering-and-attribution-grace.md) | **per-watch** ordering through attribution and enqueue, and the overlapping-watch limitation |
 | [`current-manifest-support-review.md`](current-manifest-support-review.md) | the manifest store, plan/apply/flush, and the all-or-nothing folder claim |
 | [`../layout/contextual-namespace.md`](../layout/contextual-namespace.md) | kustomize graph-aware namespace inference; the supported subset |
 | [`reconcile-via-watchlist-mark-and-sweep.md`](reconcile-via-watchlist-mark-and-sweep.md) | initial reconcile; **no bookmark, no sweep** |

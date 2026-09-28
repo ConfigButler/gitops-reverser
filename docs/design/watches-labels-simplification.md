@@ -275,6 +275,9 @@ rename and operation-filter removal are prerequisites in step 1. Different selec
 overlapping scopes need union membership and stale-observation handling; independent sweeps are
 insufficient. The existing same-selector overlap ordering gap also remains outside this change.
 
+When this step ships, remove this design's line from [`.docs-lint-scope`](../../.docs-lint-scope).
+It is gated only while the design is active; afterwards it is a historical record.
+
 ## Tests
 
 Preserve step 1's version, duplicate-collection, unchanged-watch, and replacement checks in

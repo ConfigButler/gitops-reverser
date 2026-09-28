@@ -408,7 +408,6 @@ Run `task fmt`, `task generate`, `task manifests`, `task helm-sync`, `task setti
 installation with the changed rule shapes. Preserve any coverage-baseline increase. Verify Docker
 with `docker info` before running `task test-e2e`; run e2e sequentially as the repository requires.
 Because the change spans watch plumbing, follow the repository's local-e2e-before-push rule if publishing.
-The current documentation-only task requires `task lint-docs` and direct Vale on edited documents.
 
 Reuse existing tests for the rename; add focused regressions for operation-filter removal.
 Inspect coverage of these preserved behaviors:
@@ -459,6 +458,8 @@ Required operation-removal cases:
   ordering, revision behavior, and status units remain intact. All object events are processed;
   formerly filtered live events can now change Git. Diagnostics match the documented table.
 - Required checks pass and step 2 references the renamed interfaces. Label support is still unbuilt.
+- Remove this plan's line from [`.docs-lint-scope`](../../.docs-lint-scope). It is gated only while
+  the plan is active; once this step ships, the plan is a historical record and leaves the prose gate.
 
 ## Handoff to step 2
 

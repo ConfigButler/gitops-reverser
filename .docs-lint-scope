@@ -29,3 +29,9 @@ docs/spec/attribution.md
 docs/components.md
 docs/quickstart.md
 docs/demo/commit-window.md
+docs/facts/kubernetes-watch-options.md
+docs/spec/watch-event-ordering-and-attribution-grace.md
+# Temporary: the watch-rule step 1 and step 2 plans. Each plan's completion
+# criteria says to remove its line here once that step ships.
+docs/design/collection-terminology-rename.md
+docs/design/watches-labels-simplification.md

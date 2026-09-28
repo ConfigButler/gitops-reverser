@@ -617,7 +617,7 @@ Object state arrives through Kubernetes watches. Selected, relevant changes feed
 recovery establishes current state when event history is unavailable. Git commit grouping and
 pruning policy determine which intermediate states and removals appear in the repository.
 
-### Watch is already ordered by resource version
+### Ordering within one watch
 
 One watch delivers live changes in order. Independent watch handlers can still interleave
 observations of the same object; the [ordering contract](spec/watch-event-ordering-and-attribution-grace.md)

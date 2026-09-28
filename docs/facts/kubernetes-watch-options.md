@@ -46,7 +46,7 @@ implementation, which combines label and field predicates.
 ## Selectors and authorization
 
 Kubernetes RBAC does not match requested objects by label. Its
-[`RuleAllows` implementation](https://github.com/kubernetes/kubernetes/blob/v1.36.1/plugin/pkg/auth/authorizer/rbac/rbac.go#L178)
+[`RuleAllows` implementation](https://github.com/kubernetes/kubernetes/blob/v1.37.0/plugin/pkg/auth/authorizer/rbac/rbac.go#L191)
 matches resource requests by verb, API group, resource, and name. A label selector therefore
 does not create a label-based RBAC permission boundary. RBAC restrictions using `resourceNames`
 do require a matching `metadata.name` field selector for LIST and WATCH; see
