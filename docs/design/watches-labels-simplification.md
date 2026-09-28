@@ -20,6 +20,10 @@ Kubernetes list/watch request: group, resource, namespace, and label selector. T
 evaluates no label logic on the event path, and it adopts the Kubernetes membership semantics
 as they are rather than modeling membership itself.
 
+Snapshot pruning under `Always` introduces a separate Git-side selection decision. Server-side
+filtering does not establish which Git documents a snapshot may remove; the
+[Kustomize support boundary](#kustomize-support-boundary) explains that distinction and its limits.
+
 The cost is more watches: one per distinct selector. That cost is accepted.
 
 ## The API
@@ -158,6 +162,10 @@ document leaves Git is decided by `spec.prune.mode`, exactly as for a deleted ob
 | `OnEvent` (default) | Document removed | Document kept |
 | `Always` | Document removed | Document removed at the next snapshot sweep |
 
+The `Always` row requires support for pruning the target's Git layout with a selector. The
+proposed first implementation below defers that combination for Kustomize. It must report an
+unsupported combination explicitly.
+
 A rule without `DELETE` in its operations ignores the event for both causes alike. There is no
 separate retention option for deselected objects; `Never` is the way to keep them. Telling a
 deselection apart from a deletion would need a follow-up GET after each `DELETED`, and a failed
@@ -212,17 +220,22 @@ The configuration reference for `objectSelector` must say, before any example:
   deletes the object there.
 - A rule whose collection would overlap another rule's with a different selector is refused,
   with the reason on the rule's status.
-- The selected Kustomize support boundary, including how render failures are reported, and the
-  rule-edit retention behavior below. A filtered snapshot is compared with effective Git
-  labels, which can differ from the live labels after missed updates.
+- The selected Kustomize support boundary, including unsupported prune combinations and render
+  failures. Under `Always`, a filtered snapshot is compared with effective Git labels; admission,
+  later updates, or independent Git edits can make those differ from live labels.
+- The rule-edit retention behavior below, and that `OnEvent` retains documents when removal
+  events are missed and recovery starts from a fresh snapshot.
 - A filtered removal with insufficient audit evidence uses the unresolved author. It is still
   processed according to the prune policy.
 
 ## Snapshot and prune boundary
 
 Initial events, and the LIST fallback, carry the same selector, so a snapshot is exactly the
-collection. The writer's sweep must then be bounded by the same collection, or objects that
-were never selected would look absent and `Always` would remove their documents.
+selected collection. Under `Always`, the writer also needs a Git-side scope: without one, an
+empty filtered snapshot could make every document of that resource type appear removable.
+
+The rendered-label approach below specifies that scope if filtered `Always` pruning is enabled
+for Kustomize. Supporting filtered watches with `OnEvent` or `Never` does not require this sweep.
 
 [`ResyncScope`](../../internal/git/types.go) gains the normalized selector. A sweep candidate
 must have both a matching effective group/resource/namespace and matching **effective Git
@@ -246,32 +259,108 @@ independent Git edits can change the comparison. The retention boundary is speci
 
 ### Kustomize support boundary
 
-**Proposed choice: allow verified Kustomize support.** Existing support already includes
-[`DocumentModel.Rendered`](../../internal/manifestanalyzer/store.go) and the complete
+Kustomize support and filtered snapshot pruning are separate decisions. Kustomize builds
+manifests before they reach the API server; the server selects the stored objects resulting
+from those manifests. See the upstream
+[Kustomize documentation](https://kubernetes.io/docs/tasks/manage-kubernetes-objects/kustomization/).
+The operator already runs the Kustomize library in
+[`renderRoot`](../../internal/manifestanalyzer/kustomize_render.go), and exposes its output through
+[`DocumentModel.Rendered`](../../internal/manifestanalyzer/store.go) and
 [`RenderedOverrides.Object`](../../internal/manifestanalyzer/overrides_attribution.go).
-Use that render and its source mapping for membership, within the existing supported layouts.
-The alternative is to refuse filtered targets that use Kustomize for the first implementation;
-that reduces the initial integration work but excludes currently supported repositories.
 
-Under the proposed choice:
+A server-selected live event can use the existing source-editing machinery. An `Always` sweep
+also needs to select Git documents locally, using the compiled Kubernetes selector against
+their effective labels. This uses Kubernetes' selector library and the existing renderer;
+it requires no simulation of API-server admission or controller behavior.
 
-- Before applying a filtered snapshot, classify each candidate in its effective type and
-  namespace scope as plain YAML with readable labels, Kustomize with verified rendered labels
-  and source mapping, or unknown. An unknown candidate refuses the snapshot before any writes;
-  it cannot be interpreted as an empty label set or silently left outside the scope.
-- A nil `Rendered` value does not prove the document is plain YAML. It can also mean conflicting
-  render roots or unavailable attribution. Require explicit evidence of the document's render
-  context before selecting the plain-YAML path. Report the candidate and refusal on the target.
-- The labels and source mapping must come from the same Git revision as the plan. Preserve the
-  existing write-fan-in and
+```mermaid
+flowchart LR
+    A[Live API objects] --> B[API-server label selection]
+    B --> C[Selected snapshot]
+    D[Git files] --> E[Existing Kustomize renderer]
+    E --> F[Local label selection]
+    C --> G[Compare for Always pruning]
+    F --> G
+```
+
+With `OnEvent` or `Never`, a fresh snapshot upserts the selected objects and retains documents
+that are absent. There is no absence-based deletion to scope by Git labels. The existing
+[`resyncPlanPolicy`](../../internal/git/resync_flush.go) already makes this prune-mode distinction.
+Source mapping and render verification still apply to the writes that the snapshot or live
+events request.
+
+### Options for the first implementation
+
+**Proposed recommendation: support filtered Kustomize watches with `OnEvent` and `Never`, and
+defer filtered `Always` pruning for Kustomize.** This is a proposal awaiting a choice. It keeps
+the default prune mode useful while leaving the Git-side selection contract explicit.
+
+| Option | Added work | Main consequence |
+|---|---|---|
+| `OnEvent` and `Never` first | Reuse supported Kustomize editing; reject filtered `Always` | Missing removal events can leave retained documents |
+| Add `Always` using rendered Git labels | Scope sweeps by rendered labels and source mapping | Git-side scope can differ from live membership |
+| Add a durable membership inventory | Persist observed membership and its Git ownership | Adds recovery, adoption, and rule-transition state |
+| Block all filtered Kustomize targets initially | Detect and refuse the combination | Also excludes layouts usable with `OnEvent` and `Never` |
+
+Under the first option, reject a nonempty selector with `Always` when its resource collection
+requires Kustomize context in the target. Do this before applying the affected snapshot or live
+writes. Recheck when rules, prune mode, or Git layout change, and report the reason on the
+target and referencing rules. An unsupported combination must not silently weaken the prune
+mode. Omitted and empty selectors keep the existing unfiltered behavior.
+
+A durable inventory could record the observed membership of previously mirrored objects.
+It still needs a source mapping, ownership records tied to successful Git writes, and explicit
+handling of restarts and rule changes. Pre-existing Git documents have no such history, so
+adoption must be defined. This is a larger design than reusing the renderer.
+
+Blocking Kustomize alone does not remove local selector evaluation from `Always`: plain YAML
+also needs a Git-side scope. Requiring no local label matching anywhere would defer this
+rendered-label pruning approach for all filtered targets.
+
+### Limits and refusal behavior
+
+**A successful render establishes only the Git representation. Cluster membership can differ.**
+[Mutating admission](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/)
+can change an object before storage, and controllers can change its labels later. Deployment-time
+substitutions or other transformations outside the supplied Git build inputs are also outside
+the local renderer's knowledge. The operator must not attempt to reproduce those processes.
+
+For example, Git renders `env=prod`, but admission changes the stored label to `env=qa`. An
+`env=prod` snapshot excludes the object. Under the proposed Git-side `Always` rule, its document
+is eligible for removal even though the object still exists. A GitOps tool that applies that
+Git deletion with pruning can then delete the live object. The same mismatch can occur with
+plain YAML. This consequence must be accepted and documented before enabling that pruning rule.
+
+Git edits, missed events, and operation filters also mean rendered labels cannot prove whether
+an object previously belonged to a watch. In particular, the renderer does not resolve the
+[rule-narrowing retention case](#rule-edits). `OnEvent` avoids inferring deletion from a fresh
+snapshot, at the cost of retaining documents for missed removals. An observed label exit still
+removes its document under `OnEvent`, subject to the operation filter and existing write checks.
+
+If rendered-label `Always` support is chosen, the writer needs these boundaries:
+
+- Before a sweep, classify candidates in its effective type and namespace scope as plain YAML
+  with readable labels, Kustomize with verified rendered labels and source mapping, or unknown.
+  Unknown membership refuses the affected snapshot before any writes. It cannot be interpreted
+  as an empty label set or silently left outside the scope.
+- A nil `Rendered` value can mean conflicting render roots or unavailable attribution. Require
+  explicit evidence of plain-YAML context before reading raw source labels as effective labels.
+- A source shared by incompatible overlays can affect another environment when edited or
+  deleted. Preserve the existing write-fan-in and
   [`VerifyBatchRenders`](../../internal/manifestanalyzer/render_verify.go) checks for live writes
-  and sweeps. Filtering cannot authorize an edit that changes an unrelated rendered object.
-- A failed render, conflicting roots, or unreadable label metadata refuses the affected write
-  or snapshot. Surface the failure through the existing acceptance/render-fidelity reporting;
-  it must not report successful convergence. Re-evaluate after Git changes.
+  and sweeps; selector membership alone cannot authorize that source change.
+- A failed render, conflicting roots, or unreadable required label metadata refuses the affected
+  operation. Name the candidate and reason through the existing acceptance/render-fidelity
+  reporting. Do not report successful convergence or fall back to a broader sweep. Retry after
+  the relevant inputs change. These new sweep checks are additional to existing write checks.
+- Evaluate labels, source mapping, and the write plan against the same Git revision. Reuse its
+  rendered objects when possible and invalidate them when the inputs change. Rendering consumes
+  CPU and memory; this feature should not introduce a separate build for every watch event.
 
-This requires integration work in the writer. Availability of the rendered object alone does
-not establish the new selector checks. Unsupported Kustomize features stay outside the existing
+The proposed LIST/WATCH requests stay filtered. Once watch history has expired, a fresh LIST or
+GET cannot recover a deleted object's historical labels for the writer. Availability of a
+rendered object is useful evidence, but integration and tests must establish the new scope
+checks. Unsupported Kustomize features stay outside the existing
 [support boundary](support-boundary/support-contract.md).
 
 ### Scope integration and queue ordering
@@ -306,10 +395,10 @@ This does not guarantee retention of every live object a narrowed rule now exclu
 3. The rule narrows to `team=a` before observation resumes.
 4. The new snapshot excludes the object, but its effective Git labels still match `team=a`.
 
-Under `Always`, the new snapshot removes the document. Under `Never` and `OnEvent`, that snapshot
-retains it. A Git document already representing `team=b` stays outside the new sweep under all
-three modes. An operation filter that missed an earlier UPDATE can leave the same stale-label
-case even without a disconnected watch.
+Where filtered `Always` is supported, the new snapshot removes the document. Under `Never` and
+`OnEvent`, that snapshot retains it. A Git document already representing `team=b` stays outside
+the new sweep under all three modes. An operation filter that missed an earlier UPDATE can
+leave the same stale-label case even without a disconnected watch.
 
 Strict retention across rule narrowing is the alternative. It requires a separate record or
 transition protocol to distinguish retired coverage from absence inside the new collection;
@@ -388,16 +477,8 @@ Add:
   cancellation during the wait prevents enqueue. See the ordering spec's
   [regression cases](../spec/watch-event-ordering-and-attribution-grace.md#regression-cases).
 - A label removed while nothing watched: the document stays under `Never` and `OnEvent`, and the
-  next `Always` sweep removes it. The same sweep leaves a never-selected document in the same
-  namespace alone.
-- Kustomize adds `env=prod`, while the source manifest has no `env` label. With an `env=prod`
-  selector, an empty snapshot removes its document under `Always`; `Never` and `OnEvent` retain
-  it. With `env!=prod`, the same snapshot leaves it untouched under every prune mode. Repeat
-  with a source label overridden by the overlay, and with a `DoesNotExist` selector.
-- Kustomize roots disagree about a candidate's effective labels, rendering fails, or label
-  metadata cannot be read. Under the proposed verified-support choice, refuse the snapshot
-  before writing, report the failure, and succeed after the ambiguity is corrected. Prove that
-  nil `Rendered` cannot silently enter the plain-YAML path. Keep the plain-YAML control case.
+  next supported `Always` sweep removes it. The same sweep leaves a document whose effective
+  Git labels do not match the selector untouched, even in the same namespace.
 - A selected Kustomize live update or deletion would change another root's unselected object.
   The existing render/write-fan-in checks refuse the write. Rechecking a changed Git revision
   uses that revision's labels and source mapping.
@@ -411,3 +492,40 @@ Add:
 - A cursor recorded under one selector is not resumed under another.
 - An e2e run against a real kube-apiserver, since label-filtered initial events are server
   behavior that unit fakes do not reproduce.
+
+### Kustomize support and pruning limits
+
+For the proposed `OnEvent`/`Never` first implementation:
+
+- An overlay supplies `env=prod`; its source manifest omits the label. Filtered initial and
+  live events update that source through the existing writer. No additional Git-side label
+  selection is needed for pruning. The render and source mapping still have to pass the existing
+  write checks.
+- A live label exit removes the document with `OnEvent` and retains it with `Never`. When the
+  event is missed and recovery instead delivers an empty fresh snapshot, both modes retain the
+  document, even if its rendered labels still match.
+- A nonempty selector combined with `Always` and Kustomize context refuses the affected work
+  before any writes and reports the unsupported combination. Repeat after changing an existing
+  target from `OnEvent` to `Always`, and after Git introduces Kustomize context. Omitted and empty
+  selectors keep existing behavior.
+
+If rendered-label `Always` support is chosen, also require:
+
+- Kustomize adds `env=prod`, while the source manifest has no `env` label. With an `env=prod`
+  selector, an empty snapshot removes its document under `Always`. With `env!=prod`, it leaves
+  the document untouched. Repeat with a source label overridden by the overlay and a
+  `DoesNotExist` selector; source labels must not determine rendered membership.
+- Git renders `env=prod`, while admission or a later controller stores `env=qa`. The `env=prod`
+  snapshot excludes the object. Assert the documented Git-side rule: `Always` may remove its
+  document despite the object's existence; `OnEvent` and `Never` retain it on that snapshot.
+  Include plain-YAML and Kustomize cases so the test does not imply rendering solves this gap.
+- Kustomize roots disagree about a candidate's labels, rendering fails, or required label
+  metadata cannot be read. Refuse the affected snapshot before writing, report the failure, and
+  recover after the inputs are corrected. Prove that nil `Rendered` cannot silently enter the
+  plain-YAML path and unknown labels cannot be treated as an empty set. Keep a valid plain-YAML
+  control case.
+- Git changes between plan construction and application. Rebuild or revalidate against the new
+  revision before pruning; cached labels from the previous revision cannot authorize deletion.
+
+These `Always` cases describe the deferred option's contract. They do not make it part of the
+first implementation while the support choice remains open.
