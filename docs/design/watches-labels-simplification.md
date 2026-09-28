@@ -1,6 +1,6 @@
 # Label selection for watch rules
 
-> **proposed**: nothing here is built. Design for
+> **accepted, not built**: the decisions below are settled. Design for
 > [issue #146](https://github.com/ConfigButler/gitops-reverser/issues/146).
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-28, checked against `main` at `b43ecf61`.
@@ -98,7 +98,8 @@ other; see [Overlapping watches](../spec/watch-event-ordering-and-attribution-gr
 With different selectors, one object can leave one collection (`DELETED`) while it stays in the
 other (`MODIFIED`), and the Git outcome would depend on which event arrives first.
 
-When a rule would violate this, the oldest rule (by creation timestamp, then name) keeps the
+**Decided:** a rule that would create an overlapping collection with a different selector is
+refused. The oldest rule (by creation timestamp, then name) keeps the
 collection, and the newer rule reports the refusal on its own status. Keys that need several
 values stay expressible in one selector with a set-based requirement, such as
 `team in (a,b)`.
@@ -119,14 +120,35 @@ The operator maps them through the existing operation mapping without reinterpre
 | A matching object gets a `deletionTimestamp` | `MODIFIED` | `DELETE` (deletion intent, as today) |
 | A matching object is deleted, or loses the label | `DELETED` | `DELETE` |
 
-The last row is the consequence to accept: **removing the label removes the document**, under
-the GitTarget's prune policy. With the default `OnEvent`, the file is deleted; with `Never`, it
-is retained; a rule without `DELETE` in its operations ignores both causes alike. The Git folder
-then shows what `kubectl get -l <selector>` shows, which is the point of offloading selection.
+**Decided: removing the label is a deletion.** From the watch's point of view the two are the
+same event, and the operator does not try to tell them apart. The Git folder shows what
+`kubectl get -l <selector>` shows, which is the point of offloading selection. Whether the
+document leaves Git is decided by `spec.prune.mode`, exactly as for a deleted object:
 
-Telling a deselection apart from a deletion would need a follow-up GET after each `DELETED`,
-and a failed GET would leave the answer unknown. That is out of scope; it can be added later if
-users need deselection to retain.
+| `spec.prune.mode` | Label removed while the watch runs | Label removed while nothing watched |
+|---|---|---|
+| `Never` | Document kept | Document kept |
+| `OnEvent` (default) | Document removed | Document kept |
+| `Always` | Document removed | Document removed at the next snapshot sweep |
+
+A rule without `DELETE` in its operations ignores the event for both causes alike. There is no
+separate retention option for deselected objects; `Never` is the way to keep them. Telling a
+deselection apart from a deletion would need a follow-up GET after each `DELETED`, and a failed
+GET would leave the answer unknown, so this is not planned.
+
+### User-facing documentation
+
+The configuration reference for `objectSelector` must say, before any example:
+
+- A selector defines which objects are mirrored. An object that stops matching leaves the
+  mirror the same way a deleted object does, because Kubernetes reports both as one `DELETED`
+  event.
+- The table above, including the default: with `OnEvent`, removing the label removes the
+  document from Git.
+- If the folder is applied elsewhere by a GitOps tool that prunes, removing the label there
+  deletes the object there.
+- A rule whose collection would overlap another rule's with a different selector is refused,
+  with the reason on the rule's status.
 
 ## Snapshot and prune boundary
 
@@ -184,7 +206,6 @@ failure, never an empty snapshot.
   collections and a per-object `resourceVersion` guard. `resourceVersion` is comparable within
   one group/resource on kube-apiserver; see [resource versions](../facts/resource-versions.md).
   The same mechanism would also close the existing all-namespaces-plus-named overlap.
-- **Retaining deselected documents** through a follow-up GET.
 - **Field selectors.** They use the same request machinery, but supported fields vary by type.
 - **Identifier renames.** [Definitions](../definitions.md) already uses the Kubernetes terms in
   prose. The code follows in its own change: `CellKey` → `CollectionKey`, `SourceCell` →
@@ -216,8 +237,9 @@ Add:
   unchanged objects that now match.
 - Label entry and exit produce `CREATE` and `DELETE` under each prune mode, and the author of a
   label-removing PATCH is attributed or explicitly unresolved.
-- An `Always` sweep removes a document whose label matches but whose object is gone, and leaves a
-  never-selected document in the same namespace.
+- A label removed while nothing watched: the document stays under `Never` and `OnEvent`, and the
+  next `Always` sweep removes it. The same sweep leaves a never-selected document in the same
+  namespace alone.
 - A cursor recorded under one selector is not resumed under another.
 - An e2e run against a real kube-apiserver, since label-filtered initial events are server
   behavior that unit fakes do not reproduce.
