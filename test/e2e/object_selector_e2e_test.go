@@ -167,6 +167,10 @@ metadata:
 		})
 		waitForPruneFile(repo, alwaysOutsider, true)
 
+		By("keeping an unchanged ConfigMap in the cluster that only the widened selector returns")
+		applyConfigMap("selector-widened", "also")
+		alwaysWidened, onEventWidened := both("selector-widened")
+
 		// Widening the selector is a new collection, so both targets take a complete snapshot of it.
 		// The outsider still does not match: it is in the cluster but absent from the selection.
 		By("widening both selectors, which starts a new collection and a complete snapshot")
@@ -187,6 +191,26 @@ metadata:
 		By("selected objects survive the new snapshot in both mirrors")
 		alwaysSelected, onEventSelected := both("selector-unlabelled")
 		stillPresent(alwaysSelected, "a selected object must survive its own snapshot")
+		waitForPruneFile(repo, onEventSelected, true)
+
+		By("the object only the widened selector returns reaches both mirrors, though it never changed")
+		waitForPruneFile(repo, alwaysWidened, true)
+		waitForPruneFile(repo, onEventWidened, true)
+
+		// Narrowing is a new collection too. The widened-only object leaves the selection without any
+		// change of its own, so only the snapshot can take it out, and only under Always.
+		By("narrowing both selectors back")
+		applySelectorRule(alwaysRule, alwaysTarget, selectedBy("yes"))
+		applySelectorRule(onEventRule, onEventTarget, selectedBy("yes"))
+		waitForWatchRuleStreamsRunning(alwaysRule, testNs)
+		waitForWatchRuleStreamsRunning(onEventRule, testNs)
+
+		By("the Always target removes the object the narrowed selection no longer returns")
+		waitForPruneFile(repo, alwaysWidened, false)
+
+		By("the OnEvent target keeps it, and both keep the object still selected")
+		stillPresent(onEventWidened, "OnEvent must not infer a removal from a snapshot")
+		stillPresent(alwaysSelected, "a selected object must survive a narrowing snapshot")
 		waitForPruneFile(repo, onEventSelected, true)
 	})
 
