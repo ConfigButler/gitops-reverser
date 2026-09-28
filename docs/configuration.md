@@ -1789,10 +1789,10 @@ as a whole with `ResourcesResolved=False`, reason `ObjectSelectorConflict`. Diff
 different namespaces are fine. To select several values, use one set-based selector such as
 `team in (a,b)`.
 
-Admission rejects a malformed selector: the CRD schema checks each requirement's operator,
-values, and label syntax, and the operator's admission webhook checks `matchLabels`. The rule
-compiler applies the same check whether or not admission ran, and refuses the whole rule with
-`ResourcesResolved=False`, reason `InvalidObjectSelector`. A valid selector that matches nothing
+The API server rejects a malformed `matchExpressions` requirement: the CRD schema checks its
+operator, values, and label syntax. `matchLabels` syntax is checked by the rule compiler, which
+refuses the whole rule before it opens any watch, with `ResourcesResolved=False`, reason
+`InvalidObjectSelector`. A valid selector that matches nothing
 is a valid, empty collection.
 
 **Kustomize layouts.** A removal from a supported Kustomize folder is the same edit whether a

@@ -115,17 +115,6 @@ webhooks:
     resources:
     - watchrules
     scope: Namespaced
-  # A ClusterWatchRule reaches this endpoint for its objectSelector check only.
-  - apiGroups:
-    - configbutler.ai
-    apiVersions:
-    - v1alpha3
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - clusterwatchrules
-    scope: Cluster
   # Redis write on real requests; nothing on dry-run (the handler honors NoneOnDryRun).
   sideEffects: NoneOnDryRun
   timeoutSeconds: 2

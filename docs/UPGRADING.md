@@ -23,9 +23,6 @@ behaviors changed for every target writing a supported Kustomize folder:
   refuses the write with `GitPathAccepted=False`, reason `WriteBoundaryRefused`. It used to skip
   the removal silently. Rename or remove the file.
 
-The admission webhook now also receives `ClusterWatchRule` creates and updates, to check
-`objectSelector`. Its failure policy stays `Ignore`.
-
 ## Rules select whole resource collections: `rules[].operations` is gone
 
 > [!WARNING]

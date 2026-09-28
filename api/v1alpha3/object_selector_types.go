@@ -8,7 +8,7 @@ import (
 
 // ObjectSelector has the wire shape of a Kubernetes label selector (metav1.LabelSelector). It is its
 // own type so the schema can bound it and enumerate its operators, which the upstream type's schema
-// does not; the rule compiler and the admission webhook check what a schema cannot express.
+// does not; the rule compiler checks what the schema cannot afford to (docs/spec/where-validation-lives.md).
 
 // ObjectSelector selects objects by label, with the semantics of a Kubernetes label selector. The
 // requirements are ANDed. An empty selector selects every object.

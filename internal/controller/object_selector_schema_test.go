@@ -15,9 +15,9 @@ import (
 
 // TestObjectSelectorSchema_RejectsMalformedSelectorsAtTheAPIServer checks the admission half the
 // CRD schema carries for both rule kinds: the operator enum, the values/operator pairing, and the
-// requirement key and value syntax. matchLabels is left to the admission webhook: a CEL check over
-// a map of unbounded strings under the unbounded rules[] list exceeds the CRD cost budget. The rule
-// compiler re-checks all of it. Asserted against a real API server, the only thing that can
+// requirement key and value syntax. matchLabels syntax is left to the rule compiler: a CEL check over
+// a map of unbounded strings under the unbounded rules[] list exceeds the CRD cost budget. The
+// compiler re-checks all of it and refuses the rule with InvalidObjectSelector. Asserted against a real API server, the only thing that can
 // evaluate the schema and its CEL.
 func TestObjectSelectorSchema_RejectsMalformedSelectorsAtTheAPIServer(t *testing.T) {
 	env := &envtest.Environment{

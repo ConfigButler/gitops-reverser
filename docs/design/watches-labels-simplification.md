@@ -38,8 +38,9 @@ rules:
 ```
 
 The field follows the existing admission-style rule vocabulary, but uses LIST/WATCH matching
-semantics; admission's old-or-new matching does not apply. Validate at admission and compilation
-with `metav1.LabelSelectorAsSelector`. Omitted and `{}` both select everything: normalize nil
+semantics; admission's old-or-new matching does not apply. Validate in the CRD schema and CEL
+where the cost budget allows, and at compilation with `metav1.LabelSelectorAsSelector`, per
+[where validation lives](../spec/where-validation-lives.md); no admission webhook. Omitted and `{}` both select everything: normalize nil
 explicitly because the helper otherwise means “nothing.” Invalid selectors refuse the rule;
 a valid zero-match selector initializes an empty collection.
 

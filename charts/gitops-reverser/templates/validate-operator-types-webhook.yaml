@@ -7,8 +7,7 @@
 # leaves the request without a claimed actor (AuthorAttributed=False). See
 # docs/spec/commitrequest-admission-authorship.md.
 #
-# It also rejects a WatchRule or ClusterWatchRule whose spec.rules[].objectSelector does not
-# parse, and a WatchRule that would bring a second source namespace to a GitTarget
+# It also rejects a WatchRule that would bring a second source namespace to a GitTarget
 # declaring spec.serializeNamespace: false. That rejection is FEEDBACK, not enforcement:
 # the writer refuses the same configuration at the write whether or not this webhook ran,
 # which is why failurePolicy stays Ignore. See docs/layout/model.md.
@@ -59,17 +58,6 @@ webhooks:
         resources:
           - watchrules
         scope: Namespaced
-      # A ClusterWatchRule reaches this endpoint for its objectSelector check only.
-      - apiGroups:
-          - configbutler.ai
-        apiVersions:
-          - v1alpha3
-        operations:
-          - CREATE
-          - UPDATE
-        resources:
-          - clusterwatchrules
-        scope: Cluster
     # Redis write on real requests; nothing on dry-run (the handler honors this).
     sideEffects: NoneOnDryRun
     timeoutSeconds: {{ .Values.servers.admission.timeoutSeconds }}
