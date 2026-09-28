@@ -6,7 +6,8 @@
 > Checked: 2026-09-28
 > Related: [Kubernetes watch options](../facts/kubernetes-watch-options.md),
 > [Watch-first ingestion architecture](../finished/watch-first-ingestion-architecture.md),
-> [Attribution contract](attribution.md)
+> [Attribution contract](attribution.md),
+> [Label-selection design](../design/watches-labels-simplification.md)
 
 ## The question
 
@@ -72,6 +73,13 @@ With attribution enabled, an unresolved event uses the explicit
 `unknown (attribution unresolved)` author. With attribution disabled, the configured committer
 also authors the change. A fact arriving after a commit is written does not rewrite it.
 
+The index determines what counts as a resolution. Its current removal lookup can hold an
+earlier writer's fact as a fallback and return it at grace expiry; see
+[`FactIndex.Await`](../../internal/queue/fact_index.go). Ordered delivery does not establish
+that this author caused a label-exit mutation. The proposed
+[filtered-removal attribution policy](../design/watches-labels-simplification.md#attribution-for-filtered-removals)
+requires stricter evidence while preserving the same inline ordering. That policy is not built.
+
 ### Preserve ordered release if attribution becomes concurrent
 
 Do not parallelize per-event attribution without an in-order release buffer. A later event
@@ -133,3 +141,29 @@ The accepted resync enters the worker queue before subsequent live events from t
 The watch does not wait for the Git write to finish before reading those live events. Queue
 order and successful Git completion are distinct facts. Other watches can enqueue work during
 this process, so this transition does not resolve overlapping-source ordering.
+
+## Regression cases
+
+The following cases specify the ordering checks to preserve when adding label selection or
+changing attribution. They are test requirements; this list does not claim each has a dedicated
+test today.
+
+- Deliver U1 and U2 for the same object on one watch. Hold U1's attribution while U2's fact is
+  already available. U2 must not route before U1 resolves or expires. Repeat with U1 unresolved
+  and U2 resolved, and verify that the later accepted update supplies the final content.
+- Cancel a watch while attribution waits. It must not enqueue the waiting event on exit; the
+  replacement initializes current state. The existing cancellation case lives in
+  [`target_watch_test.go`](../../internal/watch/target_watch_test.go).
+- Enqueue an initial snapshot followed by a live update, then enqueue another snapshot for the
+  same scope. Resync coalescing must preserve the intervening live write's position. The existing
+  queue checks live in [`resync_push_test.go`](../../internal/git/resync_push_test.go).
+- Refuse an event because the worker queue is full. The routing error must leave its watch
+  cursor unadvanced; queue admission is the boundary asserted by this check.
+- Exercise overlapping watches with delayed attribution on one. Assert each watch's own order;
+  do not infer a global mutation order from their combined arrivals. The label-selection design
+  refuses conflicting selectors but retains the existing same-selector namespace overlap.
+
+The label-selection design owns the additional
+[selector, attribution, and prune cases](../design/watches-labels-simplification.md#tests), including
+missing label-removal audit facts. Those cases concern which content and author reach Git in
+addition to the ordering checks here.

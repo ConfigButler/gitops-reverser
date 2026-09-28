@@ -1,6 +1,8 @@
 # Label selection for watch rules
 
-> **accepted, not built**: the decisions below are settled. Design for
+> **accepted direction, not built**: server-side selection and membership semantics are settled.
+> Kustomize support and rule-edit retention below are proposed refinements awaiting a choice.
+> Design for
 > [issue #146](https://github.com/ConfigButler/gitops-reverser/issues/146).
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-28, checked against `main` at `b43ecf61`.
@@ -48,11 +50,9 @@ The name and type follow the admission webhook `objectSelector`, which sits besi
 matching semantics are those of list and watch, described below; admission's old-or-new match
 does not apply to a watch.
 
-The structured type is the Kubernetes convention for a selector in an API object, so it gets
-schema validation and reads the same as every other selector in a cluster. It converts
-losslessly to the query string with `metav1.LabelSelectorAsSelector(sel).String()`, and that
-string is what the operator sends. A raw string field would save one conversion and lose the
-schema.
+The structured type follows the Kubernetes convention for a selector in an API object.
+`metav1.LabelSelectorAsSelector` validates and compiles it. The compiler then normalizes the
+requirements as described below and sends the resulting query string to the API server.
 
 Validation, at admission and again at compile time:
 
@@ -83,8 +83,35 @@ land on different collections, each with its own operation filter. Separate unio
 selectors and operations would have let `team=a` rules' operations apply to `team=b` objects;
 keying on the selector makes that impossible without any clause machinery.
 
-The canonical string comes from the parsed `labels.Selector`, which sorts requirements by key,
-so reordering `matchLabels` or `matchExpressions` in a rule does not restart a watch.
+### Canonical selector identity
+
+The compiler produces one stable string for the watch request and every collection key.
+`labels.Selector.String()` alone does not provide that identity:
+[`ByKey.Less`](https://github.com/kubernetes/apimachinery/blob/v0.37.0/pkg/labels/selector.go#L152)
+sorts requirements only by key. Two requirements on the same key can retain their input order:
+
+```text
+team in (a,b),team notin (b)
+team notin (b),team in (a,b)
+```
+
+Both select the same objects. Treating their strings as distinct would restart a watch, change
+its cursor key, and potentially refuse a compatible rule as an overlap conflict.
+
+Normalize after validation:
+
+1. Omitted and empty selectors both become the empty query string.
+2. Represent `matchLabels` equality as a singleton `In` requirement, so it has the same identity
+   as the corresponding `matchExpressions` entry.
+3. Sort and deduplicate each requirement's values, then deduplicate identical requirements.
+4. Sort complete requirements by key, operator, and values. Serialize them in that order;
+   sorting only by key again would lose the tie-break.
+
+This normalization preserves matching semantics and makes presentation changes inert. It does
+not attempt general Boolean simplification: `team in (a,b),team notin (b)` and `team in (a)` may
+still have different identities. Overlap compatibility compares the normalized identities.
+Watch planning, operation union, cursor storage, resync coalescing, and render-fidelity scopes
+must all use the same identity.
 
 ### One selector per overlapping collection
 
@@ -136,6 +163,42 @@ separate retention option for deselected objects; `Never` is the way to keep the
 deselection apart from a deletion would need a follow-up GET after each `DELETED`, and a failed
 GET would leave the answer unknown, so this is not planned.
 
+### Attribution for filtered removals
+
+A Git `DELETE` describes what the writer does. Its attribution must also retain the source watch
+event type, the presence of a nonempty selector, and the unsanitized UID, `resourceVersion`, and
+deletion timestamp. Those observations distinguish the attribution policies without a follow-up
+GET or local label matching.
+
+The current [`attachAuthor`](../../internal/watch/target_watch.go) sets `ExactCapable=false`
+for every Git deletion. [`FactIndex.Await`](../../internal/queue/fact_index.go) can then return
+an earlier writer's fact when the grace expires. For example, Alice edits at RV 10, Bob removes
+the selector label at RV 11, and Bob's audit fact is missing. Reusing that lookup attributes
+Bob's change to Alice instead of reporting unresolved attribution.
+
+Filtered `DELETED` events therefore need a strict lookup policy:
+
+- Join a fact to the observed mutation using the same audit route, group/resource, UID, and RV.
+  Wait up to the existing grace for eligible evidence; otherwise use the unresolved author.
+- Do not fall through to the latest writer, a sticky deletion pointer, collection membership or
+  scope, or a name-only match. Those facts do not establish which mutation ended this membership.
+- An exact PATCH or UPDATE fact can name a label-exit mutation when the event's previous object
+  has no deletion timestamp. The payload contains the old labels, so its labels cannot prove
+  the new selection state; the server's event provides that observation.
+- If the previous object is already terminating, an exact finalizer PATCH must not name the
+  actor who requested deletion. Require an exact deletion fact or leave this completion event
+  unresolved. Physical deletions whose facts lack the matching UID/RV also remain unresolved.
+
+This intentionally gives filtered removals a narrower attribution guarantee. A live
+`MODIFIED` carrying a deletion timestamp still uses the existing deletion-intent policy, and
+unfiltered watches keep their current policy. Merely setting `ExactCapable=true` is insufficient:
+the current lookup still has broader fallback tiers, and a finalizer PATCH needs the distinction
+above. The implementation needs an explicit policy at the resolver/index boundary.
+
+Resolution remains inline, so both a matched fact and a grace expiry preserve the
+[per-watch release order](../spec/watch-event-ordering-and-attribution-grace.md#two-updates-on-one-watch).
+Attribution uncertainty changes the author, not the membership transition or prune decision.
+
 ### User-facing documentation
 
 The configuration reference for `objectSelector` must say, before any example:
@@ -149,6 +212,11 @@ The configuration reference for `objectSelector` must say, before any example:
   deletes the object there.
 - A rule whose collection would overlap another rule's with a different selector is refused,
   with the reason on the rule's status.
+- The selected Kustomize support boundary, including how render failures are reported, and the
+  rule-edit retention behavior below. A filtered snapshot is compared with effective Git
+  labels, which can differ from the live labels after missed updates.
+- A filtered removal with insufficient audit evidence uses the unresolved author. It is still
+  processed according to the prune policy.
 
 ## Snapshot and prune boundary
 
@@ -156,16 +224,69 @@ Initial events, and the LIST fallback, carry the same selector, so a snapshot is
 collection. The writer's sweep must then be bounded by the same collection, or objects that
 were never selected would look absent and `Always` would remove their documents.
 
-[`ResyncScope`](../../internal/git/types.go) gains the selector, and its match reads the
-**labels on the Git document**: a document is inside the collection when its group, resource,
-and namespace match and its labels match the selector. Git labels are the last mirrored
-membership. A document whose object lost the label while no watch was running still carries the
-label, is absent from the snapshot, and is swept under `Always`. That is the same result the live
-`DELETED` would have produced. A document that never matched is never swept.
+[`ResyncScope`](../../internal/git/types.go) gains the normalized selector. A sweep candidate
+must have both a matching effective group/resource/namespace and matching **effective Git
+labels**, determined at the Git revision the writer evaluates. A candidate absent from the
+selected snapshot can then be removed under `Always`.
 
-Today `ResyncScope.Matches` receives only a `ResourceIdentifier`, and `resyncPlan` passes it to
-`BuildScopedPlan`. The scope predicate has to see the document's labels, so that signature
-changes.
+For plain YAML, those labels are the document's `metadata.labels`. For Kustomize, they are the
+rendered object's labels. The source file may omit or override them: the writer deliberately
+preserves that source form, as
+[`TestSourceForm_InjectedMetadataStaysOutOfTheSource`](../../internal/manifestanalyzer/source_form_test.go)
+demonstrates. Raw source labels cannot define a Kustomize sweep boundary.
+
+For example, an overlay adds `env=prod` to an unlabeled source document. An `env=prod` watch
+selects the live object, and its document must be eligible for an `Always` sweep if the object
+disappears. Conversely, an `env!=prod` watch excludes it. Testing the unlabeled source file in
+that second case would select and delete a document outside the watched collection.
+
+Effective Git labels are the state represented by the evaluated Git revision. They are not a
+durable record of every previously observed membership: rule edits, missed watch events, and
+independent Git edits can change the comparison. The retention boundary is specified below.
+
+### Kustomize support boundary
+
+**Proposed choice: allow verified Kustomize support.** Existing support already includes
+[`DocumentModel.Rendered`](../../internal/manifestanalyzer/store.go) and the complete
+[`RenderedOverrides.Object`](../../internal/manifestanalyzer/overrides_attribution.go).
+Use that render and its source mapping for membership, within the existing supported layouts.
+The alternative is to refuse filtered targets that use Kustomize for the first implementation;
+that reduces the initial integration work but excludes currently supported repositories.
+
+Under the proposed choice:
+
+- Before applying a filtered snapshot, classify each candidate in its effective type and
+  namespace scope as plain YAML with readable labels, Kustomize with verified rendered labels
+  and source mapping, or unknown. An unknown candidate refuses the snapshot before any writes;
+  it cannot be interpreted as an empty label set or silently left outside the scope.
+- A nil `Rendered` value does not prove the document is plain YAML. It can also mean conflicting
+  render roots or unavailable attribution. Require explicit evidence of the document's render
+  context before selecting the plain-YAML path. Report the candidate and refusal on the target.
+- The labels and source mapping must come from the same Git revision as the plan. Preserve the
+  existing write-fan-in and
+  [`VerifyBatchRenders`](../../internal/manifestanalyzer/render_verify.go) checks for live writes
+  and sweeps. Filtering cannot authorize an edit that changes an unrelated rendered object.
+- A failed render, conflicting roots, or unreadable label metadata refuses the affected write
+  or snapshot. Surface the failure through the existing acceptance/render-fidelity reporting;
+  it must not report successful convergence. Re-evaluate after Git changes.
+
+This requires integration work in the writer. Availability of the rendered object alone does
+not establish the new selector checks. Unsupported Kustomize features stay outside the existing
+[support boundary](support-boundary/support-contract.md).
+
+### Scope integration and queue ordering
+
+Today `ResyncScope.Matches` receives only a `ResourceIdentifier`, and
+[`resyncPlan`](../../internal/git/resync_flush.go) passes it to `BuildScopedPlan`. The sweep
+predicate needs effective labels and a way to report unknown membership as a refusal. A Boolean
+predicate over an identifier cannot express that boundary.
+
+Keep queue-ordering checks separate from the sweep predicate.
+[`markResyncTailForWriteLocked`](../../internal/git/branch_worker.go) currently uses scope
+matching to prevent a new snapshot from moving ahead of an already queued live write. A Git
+`DELETE` carries no object payload. That check must conservatively match target, group/resource,
+and namespace even when labels are unavailable. Overmatching can prevent coalescing; dropping
+the ordering check can let an older deletion erase an object restored by a newer snapshot.
 
 ## Rule edits
 
@@ -173,8 +294,27 @@ A selector edit changes the collection key. The planner stops the old watch and 
 one, which initializes from initial events, so objects that match the new selector without
 having changed since are still mirrored.
 
-Documents that only the old selector covered are retained, as documents are today when a rule
-stops covering a namespace. Removing or narrowing a rule never deletes content.
+**Proposed choice: keep the existing prune policy and qualify retention.** Stopping a collection
+does not enqueue a cleanup of its former scope. The new collection's snapshot applies the
+configured prune mode to its effective Git-side selection. Documents outside that selection
+are retained by that sweep. Other active collections can still cover and update them.
+
+This does not guarantee retention of every live object a narrowed rule now excludes. Consider:
+
+1. The old selector is `team in (a,b)`, and Git represents an object with `team=a`.
+2. While observation is interrupted, its live label changes to `team=b`.
+3. The rule narrows to `team=a` before observation resumes.
+4. The new snapshot excludes the object, but its effective Git labels still match `team=a`.
+
+Under `Always`, the new snapshot removes the document. Under `Never` and `OnEvent`, that snapshot
+retains it. A Git document already representing `team=b` stays outside the new sweep under all
+three modes. An operation filter that missed an earlier UPDATE can leave the same stale-label
+case even without a disconnected watch.
+
+Strict retention across rule narrowing is the alternative. It requires a separate record or
+transition protocol to distinguish retired coverage from absence inside the new collection;
+the filtered snapshot and current Git labels alone cannot establish that history. The proposed
+choice adds no retention ledger and makes this prune behavior explicit in the configuration docs.
 
 ## Recovery and status
 
@@ -233,13 +373,41 @@ Add:
 - The selector reaches initial events, the LIST fallback, and the live watch alike.
 - Two collections of one type with different selectors in disjoint namespaces both run; an
   overlapping pair refuses the newer rule.
-- Reordered selector requirements keep the watch; a semantic edit restarts it and mirrors
-  unchanged objects that now match.
-- Label entry and exit produce `CREATE` and `DELETE` under each prune mode, and the author of a
-  label-removing PATCH is attributed or explicitly unresolved.
+- Reordered requirements, including two expressions on the same key, reordered values, and
+  duplicate requirements keep the watch and cursor key. `matchLabels: {team: a}` and its singleton
+  `In` expression share an identity and pass overlap compatibility. A selection change starts
+  a new collection and mirrors unchanged objects that now match.
+- Label entry and exit produce `CREATE` and `DELETE` under each prune mode.
+- Alice's earlier RV 10 fact is present; Bob removes the label at RV 11. With Bob's exact fact,
+  resolve Bob, including when it arrives during grace. Without it, expire as unresolved even
+  when Alice's fact, an unrelated deletion pointer, or a collection deletion fact is available.
+- A filtered physical deletion with insufficient exact evidence is unresolved. A terminating
+  object's exact finalizer-PATCH fact does not author its removal; deletion-intent `MODIFIED`
+  events and unfiltered watches retain their existing policy.
+- An event waiting for its author cannot be overtaken by a later event on the same watch, and
+  cancellation during the wait prevents enqueue. See the ordering spec's
+  [regression cases](../spec/watch-event-ordering-and-attribution-grace.md#regression-cases).
 - A label removed while nothing watched: the document stays under `Never` and `OnEvent`, and the
   next `Always` sweep removes it. The same sweep leaves a never-selected document in the same
   namespace alone.
+- Kustomize adds `env=prod`, while the source manifest has no `env` label. With an `env=prod`
+  selector, an empty snapshot removes its document under `Always`; `Never` and `OnEvent` retain
+  it. With `env!=prod`, the same snapshot leaves it untouched under every prune mode. Repeat
+  with a source label overridden by the overlay, and with a `DoesNotExist` selector.
+- Kustomize roots disagree about a candidate's effective labels, rendering fails, or label
+  metadata cannot be read. Under the proposed verified-support choice, refuse the snapshot
+  before writing, report the failure, and succeed after the ambiguity is corrected. Prove that
+  nil `Rendered` cannot silently enter the plain-YAML path. Keep the plain-YAML control case.
+- A selected Kustomize live update or deletion would change another root's unselected object.
+  The existing render/write-fan-in checks refuse the write. Rechecking a changed Git revision
+  uses that revision's labels and source mapping.
+- Narrow `team in (a,b)` to `team=a` after a missed `a` to `b` label change. Git still represents
+  `team=a`. Under the proposed prune-policy choice, `Always` removes the document; `Never` and
+  `OnEvent` retain it. Repeat with the UPDATE excluded by the operation filter. A control case
+  whose Git labels already say `team=b` is retained by the new sweep under every mode.
+- Queue snapshot R100, a label-exit `DELETE` at R101 with no object payload, then a reconnect
+  snapshot R103 where the object matches again. Preserve all three FIFO positions so the final
+  object is present. The delete must prevent R103 from coalescing into R100's earlier position.
 - A cursor recorded under one selector is not resumed under another.
 - An e2e run against a real kube-apiserver, since label-filtered initial events are server
   behavior that unit fakes do not reproduce.
