@@ -140,6 +140,9 @@ const (
 	// something the operator did not write: a human-edited patch, or an unrelated file under the
 	// same name. Overwriting it could lose someone's work, and retiring it could keep a deletion
 	// the operator never made, so the batch commits nothing until the file is renamed or removed.
+	// It also marks the re-entry of an object that some other `$patch: delete` keeps out of the
+	// render: the operator cannot retire a patch it did not write, and upserting the hidden document
+	// would report the object mirrored while the folder still builds without it.
 	IssueUnownedDeletePatch IssueKind = "unowned-delete-patch"
 
 	// A refusal made up purely of the write-boundary kinds above surfaces as the GitTarget

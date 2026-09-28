@@ -299,3 +299,59 @@ func TestResync_AnObjectAHumanPatchHidesIsOutsideTheSweep(t *testing.T) {
 		})
 	}
 }
+
+// Re-entry of an object a patch the operator does not own hides: the operator's own patch, renamed
+// and re-listed, is no longer at the path ownership is judged by. The base document already matches
+// the live object, so an unguarded upsert changed nothing and reported success while the overlay
+// still built without the object. It is refused instead, and both files are left as they are.
+func TestResync_ReEntryRefusesAnObjectAPatchItDoesNotOwnHides(t *testing.T) {
+	worktree := seedInheritedOverlay(t)
+	_, _, err := resyncOverlay(t, worktree, v1alpha3.PruneAlways)
+	require.NoError(t, err)
+
+	owned, _ := readRepoFile(t, worktree, inheritedPatch)
+	require.NoError(t, os.Remove(filepath.Join(worktree.Filesystem().Root(), inheritedPatch)))
+	seedPlacedManifest(t, worktree, inheritedOverlay+"/renamed-delete.yaml", owned)
+	overlay := "namespace: podinfo-test\nresources:\n  - ../../base\npatches:\n  - path: renamed-delete.yaml\n"
+	seedPlacedManifest(t, worktree, inheritedOverlay+"/kustomization.yaml", overlay)
+
+	_, changed, err := resyncOverlay(t, worktree, v1alpha3.PruneAlways, sharedConfigMap())
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused)
+	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueUnownedDeletePatch))
+	assert.Equal(t, "base/cm.yaml", refused.Issues[0].Path)
+	assert.False(t, changed)
+	renamed, _ := readRepoFile(t, worktree, inheritedOverlay+"/renamed-delete.yaml")
+	assert.Equal(t, owned, renamed)
+	kust, _ := readRepoFile(t, worktree, inheritedOverlay+"/kustomization.yaml")
+	assert.Equal(t, overlay, kust)
+}
+
+// The same holds inside the write jail: a document its own kustomization hides with a
+// $patch: delete is not the render, so editing it cannot bring the object back.
+func TestResync_ReEntryRefusesAnInJailDocumentAPatchHides(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	seedPlacedManifest(t, worktree, "app/kustomization.yaml",
+		"namespace: app\nresources:\n  - cm.yaml\npatches:\n  - path: remove.yaml\n")
+	seedPlacedManifest(t, worktree, "app/cm.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  k: v\n")
+	seedPlacedManifest(t, worktree, "app/remove.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n$patch: delete\n")
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	scope := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "app")
+	live := manifestanalyzer.DesiredResource{
+		Resource: types.NewResourceIdentifier("", "v1", "configmaps", "app", "a"),
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]interface{}{"name": "a", "namespace": "app"},
+			"data":     map[string]interface{}{"k": "v"},
+		}},
+	}
+
+	_, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "app",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways}, []manifestanalyzer.DesiredResource{live}, &scope)
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused)
+	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueUnownedDeletePatch))
+	assert.False(t, changed)
+}

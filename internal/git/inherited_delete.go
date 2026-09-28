@@ -119,6 +119,24 @@ func unownedDeletePatchRefusal(d inheritedDelete, id manifestedit.Identity) erro
 	}}}
 }
 
+// hiddenByUnownedPatchRefusal refuses the upsert of an object whose document is in the folder but out
+// of its render, hidden by a `$patch: delete` the operator does not own. The operator cannot tell
+// which patch that is or whether a human meant it, so it neither edits nor retires it.
+func hiddenByUnownedPatchRefusal(docPath string, id manifestedit.Identity, overlay string) error {
+	where := ""
+	if overlay != "" {
+		where = " through " + overlay
+	}
+	return &manifestanalyzer.AcceptanceRefusedError{Issues: []manifestanalyzer.AcceptanceIssue{{
+		Kind:     manifestanalyzer.IssueUnownedDeletePatch,
+		Path:     docPath,
+		Solvable: true,
+		Actor:    manifestanalyzer.ActorRepositoryAuthor,
+		Message: fmt.Sprintf("%s/%s is in the cluster, but a $patch: delete the operator did not write "+
+			"keeps %s out of the render%s", id.Kind, id.Name, docPath, where),
+	}}}
+}
+
 // authorInheritedDelete removes an inherited object by writing its owned `$patch: delete` inside
 // spec.path and naming it in the overlay's patches:, and declares the Removed intent so the
 // re-render oracle proves the object leaves the render — a patch that fails to match is refused
@@ -180,12 +198,22 @@ func (wb *writeBatch) retireInheritedDelete(ctx context.Context, event Event) (s
 	}
 	raw := rawManifestIDForCurrentBytes(id, dm)
 	basePath := wb.docLoc[dm].FilePath
+	rendered := wb.store.Renders(basePath, dm.ManifestIdentity.Kind, dm.ManifestIdentity.Name)
 	d, inherited := wb.inheritedDeleteFor(basePath, raw)
 	if !inherited {
+		if !rendered {
+			return "", hiddenByUnownedPatchRefusal(basePath, raw, "")
+		}
 		return "", nil
 	}
 	patchBuf := wb.buffer(d.patchPath)
 	if patchBuf.current == nil {
+		// No owned patch hides the object, so if it is out of the render, a patch the operator did
+		// not write keeps it out. Upserting the document would edit bytes the render never shows
+		// and report the object mirrored while the folder still builds without it.
+		if !rendered {
+			return "", hiddenByUnownedPatchRefusal(basePath, raw, d.overlay)
+		}
 		return "", nil
 	}
 	if !ownsInheritedDeletePatch(patchBuf.current, raw) {
