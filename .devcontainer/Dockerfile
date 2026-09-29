@@ -285,7 +285,7 @@ RUN chgrp -R godev /go && \
 # `go` build in any container deletes ~90% of it regardless. Cleaning in the
 # same layer keeps those ~400MB out of the image instead of merely hiding them.
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 \
-    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.32.2 \
+    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.33.0 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.1 \
     && go install golang.org/x/tools/cmd/goimports@v0.49.0 \
     && go install github.com/boyter/scc/v4@v4.1.0 \
