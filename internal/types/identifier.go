@@ -77,15 +77,17 @@ func (r ResourceIdentifier) Key() string {
 	return fmt.Sprintf("%s/%s/%s/%s", r.Group, r.Version, r.Resource, r.Name)
 }
 
-// ToGitPath generates the canonical Git file path for a new resource:
+// ToGitPath states the built-in Git file path for a new resource by hand. Writers do not call it:
+// they render manifestanalyzer.BuiltinPlacementTemplate, and a test pins the two byte for byte, so
+// this is the readable reference for the shape rather than a second implementation:
 // {namespace-or-cluster}/{group}/{resource}/{name}.yaml. The scope segment leads
 // (a real namespace, or the literal "_cluster" for a cluster-scoped resource) so a
 // repository reads namespace-first, the way a human browses it; the API group is
 // omitted for core resources, and the API version is deliberately left out — the
 // operator writes one version per object, so a version segment adds noise and would
-// churn the path on a preferred-version bump. This is only the cold-start fallback:
-// once any layout exists in the target, sibling inference follows it, and an
-// existing document is always edited in place at its current location (match-first),
+// churn the path on a preferred-version bump. It is only the last rung for a NEW
+// document: a declared placement or the folder's one kustomize root answers first, and
+// an existing document is always edited in place at its current location (match-first),
 // so changing this shape never moves a file that is already in Git. See
 // docs/layout/new-file-placement-rules.md.
 //
@@ -116,7 +118,7 @@ func (r ResourceIdentifier) IsClusterScoped() bool {
 // is itself a legal namespace name.
 //
 // It is one constant rather than a literal per renderer because every surface that names a
-// resource's scope must name it identically: the canonical Git path (ToGitPath), the {namespace}
+// resource's scope must name it identically: the built-in Git path (ToGitPath), the {namespace}
 // placement variable, and a commit message's .Namespace. There is no second, scope-aware spelling
 // of any of the three — one concept, one word.
 const ClusterScopeSegment = "_cluster"

@@ -252,7 +252,7 @@ func requestReconcile(name, namespace string) {
 	Expect(err).NotTo(HaveOccurred(), "failed to request a reconcile of %q", name)
 }
 
-// suspendConfigMapPath is the canonical mirror path for a ConfigMap under a GitTarget folder.
+// suspendConfigMapPath is the built-in mirror path for a ConfigMap under a GitTarget folder.
 func suspendConfigMapPath(basePath, ns, name string) string {
 	return path.Join(basePath, fmt.Sprintf("%s/configmaps/%s.yaml", ns, name))
 }

@@ -43,7 +43,7 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			true,
 		},
 		{
-			"the versionless canonical default is accepted (#295)",
+			"the versionless built-in default is accepted (#295)",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "{namespace}/{groupPath}/{resource}/{name}.yaml",
 			},

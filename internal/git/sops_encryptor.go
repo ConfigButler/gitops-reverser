@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 )
 
 // SOPSEncryptor encrypts YAML by invoking the external sops binary.
@@ -88,10 +90,5 @@ func sopsFilenameOverride(meta ResourceMeta) string {
 		return "resource.sops.yaml"
 	}
 
-	path := meta.Identifier.ToGitPath()
-	if strings.HasSuffix(path, ".yaml") {
-		return strings.TrimSuffix(path, ".yaml") + ".sops.yaml"
-	}
-
-	return path + ".sops.yaml"
+	return manifestanalyzer.BuiltinGitPath(meta.Identifier, true)
 }

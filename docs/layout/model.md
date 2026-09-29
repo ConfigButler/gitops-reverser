@@ -22,7 +22,7 @@
 Placement today is a ladder of four rungs, three of which are path templates and one of which is not:
 
 ```text
-byType -> default -> the folder's one kustomize root -> canonical
+byType -> default -> the folder's one kustomize root -> the built-in path
 ```
 
 The proposal is to **keep that**, and add the two things a path genuinely cannot express: whether
@@ -331,9 +331,9 @@ change at all.
   Match-first identity keeps finding and updating them in place. The immutability-plus-CEL-widening
   machinery an earlier draft proposed was invented to protect a discriminator that no longer exists.
 - **`placements_total` keeps its `source` label** — `by_type`, `default`, `kustomize_root` and
-  `canonical`. It names the rung that answered rather than a resolved layout kind, so nothing here
+  `builtin`. It names the rung that answered rather than a resolved layout kind, so nothing here
   breaks a label.
-- **`{kindLower}` and the versionless identity fix** are template features and stay queued.
+- **`{kindLower}`** is built; the versionless identity fix is a template feature and stays queued.
 
 ## Previewing a target: point it at a scratch branch
 
@@ -464,7 +464,7 @@ PR 1's four parts are one review because the corpus is what proves the other thr
 `status.placement` and the reconcile-request annotation are each small, and each is only credible
 against a worked example that pins what the folder actually does. The exception is the `Ambiguous`
 rule, which **gates**: a folder covering several render roots stops placing new documents, where
-before it placed them at the canonical path inside whichever folder it covered. Existing documents
+before it placed them at the built-in path inside whichever folder it covered. Existing documents
 are untouched, and the refusal is raised at the
 write rather than on `Validated` so the target keeps scanning and can observe the folder being
 fixed.

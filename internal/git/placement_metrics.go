@@ -16,7 +16,7 @@ import (
 
 // placementTarget is the GitTarget a write batch belongs to, carried purely so the
 // placement metrics can name it. A placement counter that cannot say WHICH target and
-// WHICH type resolved how is not actionable — the fix for a fall-back to canonical is one
+// WHICH type resolved how is not actionable — the fix for a fall-back to the built-in path is one
 // `placement.byType` line on one GitTarget — and it is the objection the design doc raised
 // against shipping a bare `placement_fell_back_total`. See
 // docs/design/open-asks-priority.md and docs/interpreting-metrics.md.
@@ -53,7 +53,7 @@ func placementTargetForEvents(events []Event) placementTarget {
 
 // resourceAttrs labels a placement by the type whose rule may be missing. group/version/
 // resource is exactly the shape of a placement.byType key (PlacementTypeKey), so a
-// `source="canonical"` series reads directly as the line the GitTarget needs. The resource
+// `source="builtin"` series reads directly as the line the GitTarget needs. The resource
 // NAME is deliberately not a label: it is unbounded, and it is in the log line.
 func resourceAttrs(id types.ResourceIdentifier) []attribute.KeyValue {
 	return []attribute.KeyValue{

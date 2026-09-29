@@ -83,8 +83,8 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
 | `commit.window` | `5s` | How long to coalesce changes into one commit. `0s` commits per event. See [the commit window](#the-commit-window-speccommitwindow) |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
-| `placement.byType` | the canonical path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
-| `placement.default` | the canonical path | Catch-all path template for types with no `byType` entry |
+| `placement.byType` | the built-in path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
+| `placement.default` | the built-in path | Catch-all path template for types with no `byType` entry |
 | `placement.useKustomize` | off | Keep the folder a kustomize folder. See [keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize) |
 | `serializeNamespace` | inferred per document | Whether a committed document carries its own `metadata.namespace`. An explicit `false` admits exactly one source namespace. See [whether documents carry their namespace](#whether-documents-carry-their-namespace-specserializenamespace) |
 | `prune.mode` | `OnEvent` | Which deletions reach Git. See [deletion policy](#deletion-policy-specprunemode) |
@@ -551,7 +551,7 @@ The important fields are:
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
 - `spec.placement`: optional policy for where **new** resources are written (see
   [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it and a new
-  resource takes the folder's one kustomization root, or the built-in canonical path
+  resource takes the folder's one kustomization root, or the built-in path
 - `spec.placement.useKustomize`: whether the operator maintains a `kustomization.yaml` for this
   folder, creating one when the folder has none (see
   [Keeping the folder a kustomize folder](#keeping-the-folder-a-kustomize-folder-specplacementusekustomize))
@@ -1142,7 +1142,7 @@ For each new resource the operator walks this order and stops at the first that 
    commit. This is not a guess about your conventions: a file that kustomization cannot reach would
    never be rendered, so it would be in Git and applied by nothing. Two or more supported
    kustomizations is ambiguous, and the operator declines rather than picking one.
-4. **Built-in canonical path:** `{namespace}/{group}/{resource}/{name}.yaml`, namespace first, the group
+4. **Built-in path:** `{namespace}/{group}/{resource}/{name}.yaml`, namespace first, the group
    omitted for core resources, no version segment, `_cluster/` in place of the namespace for
    cluster-scoped resources (an illegal namespace name, so it can never clash with a real one), and a
    `.sops.yaml` suffix for sensitive resources.
@@ -1159,7 +1159,7 @@ need a `byType` line?" is a query rather than a folder inspection:
 ```promql
 # types landing on the built-in path, per target: each is a candidate for a byType entry
 sum by (gittarget_namespace, gittarget_name, group, version, resource) (
-  increase(gitopsreverser_placements_total{source="canonical"}[24h])
+  increase(gitopsreverser_placements_total{source="builtin"}[24h])
 )
 ```
 
@@ -1193,7 +1193,7 @@ mirrored.
 #### Declaring a layout (`byType` / `default`)
 
 Set `spec.placement` when the layout you want is neither of the two things the operator can work out
-for itself (a folder's single kustomization root, or the canonical path). For example, a bundle every
+for itself (a folder's single kustomization root, or the built-in path). For example, a bundle every
 ConfigMap joins, or a per-namespace layout:
 
 ```yaml
@@ -1231,6 +1231,7 @@ named `api` in namespace `team-a`:
 | `{version}` | API version | `v1` |
 | `{apiVersion}` | manifest `apiVersion`: `group/version`, or `version` alone for core | `apps/v1` (a ConfigMap → `v1`) |
 | `{kind}` | manifest kind | `Deployment` |
+| `{kindLower}` | manifest kind, lower-cased | `deployment` |
 | `{scope}` | `namespaced` or `cluster` (a readable label, not a namespace-position value) | `namespaced` |
 | `{sensitiveSuffix}` | `.sops.yaml` for a sensitive resource, `.yaml` otherwise | `.yaml` (a Secret → `.sops.yaml`) |
 | `{label:key}` | the value of that label on the resource, or `_unlabeled` if it has none; the key may be prefixed (`{label:app.kubernetes.io/instance}`) | `voter` |
@@ -1244,6 +1245,25 @@ named `api` in namespace `team-a`:
 > `{namespace|_global}` (see [Naming the bucket yourself](#naming-the-bucket-yourself-fallback)).
 > `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute, so don't use it as the
 > folder for cluster resources.
+
+#### Naming files by kind (`{kindLower}`)
+
+`{kindLower}` gives the `deployment-api.yaml` naming convention, which none of the automatic steps
+produce:
+
+```yaml
+placement:
+  default: "{kindLower}-{name}{sensitiveSuffix}"   # deployment-api.yaml, configmap-cache.yaml
+```
+
+This template is **not identity-complete**: it has no `{namespace}`, so a Deployment named `api` in
+`team-a` and one in `team-b` render the same path and land as two documents in one file. Use it for a
+folder that mirrors one namespace. For a folder that mirrors several, keep the namespace in the path,
+for example `"{namespace}/{kindLower}-{name}{sensitiveSuffix}"`. A Secret still needs an
+identity-complete `byType` route of its own, as it does with any bundling `default`.
+
+It is a variable rather than a `lower` function on purpose: placement templates are not an expression
+language.
 
 #### Placing by label (`{label:key}`)
 
@@ -1350,7 +1370,7 @@ Only these two take a fallback, and a `|` written on any other variable is refus
 explanation rather than accepted as syntax that can never fire. That is not because the others
 always have a value: `{groupPath}` and `{group}` render empty for a core resource. It is because an
 empty group is not a resource missing something, it is a resource whose identity has no group
-segment, so the segment collapses and the canonical path is what it was always meant to be. Only
+segment, so the segment collapses and the built-in path is what it was always meant to be. Only
 `{namespace}` and `{label:key}` have an absence worth naming a bucket for.
 
 ##### A fallback that names a real namespace
@@ -1943,6 +1963,31 @@ request produced a pushed commit:
   watch window, whose Git author remains either the configured committer or the explicit unresolved author
   according to the watch attribution outcome.
 - **Pushed**: `True` once the commit is in the remote repository.
+
+### Finished requests are deleted after 48 hours
+
+Every save leaves one `CommitRequest` behind. When a request finishes (`Ready=True` or
+`Stalled=True`), the controller writes the time it will be deleted onto it:
+
+```yaml
+metadata:
+  annotations:
+    configbutler.ai/delete-after: "2026-10-01T09:30:00Z"
+```
+
+Once that time has passed, the controller deletes the request. The annotation is the whole
+contract, so it is also how you change the outcome for one request:
+
+- Remove the annotation to keep the request.
+- Edit the time, in RFC 3339 format, to delete it earlier or later. A value that does not parse
+  keeps the request.
+- Set it yourself when you create the request to choose the time up front. The controller never
+  replaces a value that is already there.
+
+The period comes from `--commit-request-ttl` (Helm: `controllerManager.commitRequestTTL`, default
+`48h`). Changing it only affects requests that finish afterwards. `0` writes no annotation, so new
+requests are kept. A request that finished before this feature existed has no annotation and is
+never deleted.
 
 ## Audit ingestion settings
 

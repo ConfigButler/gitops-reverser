@@ -74,7 +74,7 @@ func TestPlacement_DeclaredPolicy_NewFile(t *testing.T) {
 // The write path's half of the Option C deletion: an existing document of the same type
 // in the same namespace no longer attracts the new file. The folder here has no
 // kustomization, so there is no structural root either, and the resource lands at the
-// canonical path — where a human can see it, and where one `placement.byType` line moves
+// built-in path — where a human can see it, and where one `placement.byType` line moves
 // it if the repository wants it in the overlay.
 func TestPlacement_ExistingSiblingFile_DoesNotAttractTheNewFile(t *testing.T) {
 	worktree := newWorktreeForTest(t)
@@ -86,7 +86,7 @@ func TestPlacement_ExistingSiblingFile_DoesNotAttractTheNewFile(t *testing.T) {
 	require.True(t, changed)
 
 	got, err := os.ReadFile(filepath.Join(root, "podinfo-test/configmaps/cache.yaml"))
-	require.NoError(t, err, "the new file must land at the canonical path")
+	require.NoError(t, err, "the new file must land at the built-in path")
 	assert.Contains(t, string(got), "name: cache")
 
 	_, statErr := os.Stat(filepath.Join(root, "overlays/test/cache.yaml"))

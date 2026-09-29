@@ -360,7 +360,7 @@ spec:
                   "_" instead when you want a bucket no namespace can reach. Only these two variables take a
                   fallback, and one written on any other is rejected rather than silently ignored — not
                   because the others always have a value ({groupPath} renders empty for a core resource) but
-                  because an empty group segment collapses by design, which is the canonical path's intent.
+                  because an empty group segment collapses by design, which is the built-in path's intent.
 
                   A label is never identity, so it does not contribute to the identity-completeness a
                   sensitive route requires (a {namespace} fallback does not cost it either). Because
@@ -382,7 +382,7 @@ spec:
                     description: |-
                       Default is the path template used for a new resource whose type has no ByType
                       entry. Omitted, it falls through to the folder's one supported kustomization
-                      root, if it has exactly one, and then to the built-in canonical path.
+                      root, if it has exactly one, and then to the built-in path.
                       A bundling default (one that is not identity-complete,
                       such as "all.yaml") is only valid when a sensitive resource can never reach it
                       — give every sensitive type an explicit identity-complete ByType entry.

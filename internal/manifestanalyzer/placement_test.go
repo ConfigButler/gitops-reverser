@@ -76,7 +76,7 @@ func newSecretRequest(name string) PlacementRequest {
 	}
 }
 
-func TestLocateNew_EmptyRepo_Canonical(t *testing.T) {
+func TestLocateNew_EmptyRepo_Builtin(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
 	req := newConfigMapRequest("cache", "app")
 
@@ -85,15 +85,15 @@ func TestLocateNew_EmptyRepo_Canonical(t *testing.T) {
 		t.Fatalf("LocateNew: %v", err)
 	}
 	want := req.Identifier.ToGitPath()
-	if res.Path != want || res.Source != PlacementSourceCanonical || res.Append {
-		t.Fatalf("got %+v, want canonical path %q, no append", res, want)
+	if res.Path != want || res.Source != PlacementSourceBuiltin || res.Append {
+		t.Fatalf("got %+v, want built-in path %q, no append", res, want)
 	}
 }
 
-// With render-root scoping the scan is re-rooted at renderBase, so a canonical path resolves
+// With render-root scoping the scan is re-rooted at renderBase, so a built-in path resolves
 // outside spec.path. WriteScope rebases it back under the write jail rather than letting it
 // escape (and be skipped) — placement stays relative to spec.path as documented.
-func TestLocateNew_WriteScope_RebasesCanonicalIntoJail(t *testing.T) {
+func TestLocateNew_WriteScope_RebasesBuiltinIntoJail(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
 	req := newConfigMapRequest("cache", "app")
 	req.WriteScope = "overlays/production"
@@ -104,7 +104,7 @@ func TestLocateNew_WriteScope_RebasesCanonicalIntoJail(t *testing.T) {
 	}
 	want := "overlays/production/" + newConfigMapRequest("cache", "app").Identifier.ToGitPath()
 	if res.Path != want {
-		t.Fatalf("got %q, want the canonical path rebased under the jail %q", res.Path, want)
+		t.Fatalf("got %q, want the built-in path rebased under the jail %q", res.Path, want)
 	}
 	if !pathWithin(res.Path, "overlays/production") {
 		t.Fatalf("resolved path %q escaped the write jail", res.Path)
@@ -133,7 +133,7 @@ func TestLocateNew_WriteScope_RebasesDeclared(t *testing.T) {
 }
 
 // Every layout sibling inference used to read, in one table, all resolving to the
-// canonical path. This is the deletion's contract, stated as the behaviour rather than
+// built-in path. This is the deletion's contract, stated as the behaviour rather than
 // as an absence: the destination of a new document depends on the GitTarget's
 // declaration and on whether the folder has one kustomize root — never on where the
 // repository happens to keep the OTHER documents of the same type.
@@ -143,7 +143,7 @@ func TestLocateNew_WriteScope_RebasesDeclared(t *testing.T) {
 // plainly"): a bundle or a directory that had already proven itself namespace-agnostic
 // was extended. It is not extended now. A `placement.byType` line is how a repository
 // asks for either, and it is now the only way.
-func TestLocateNew_LayoutsThatUsedToBeInferred_AllResolveCanonical(t *testing.T) {
+func TestLocateNew_LayoutsThatUsedToBeInferred_AllResolveBuiltin(t *testing.T) {
 	cases := []struct {
 		name      string
 		files     map[string]string
@@ -206,8 +206,8 @@ func TestLocateNew_LayoutsThatUsedToBeInferred_AllResolveCanonical(t *testing.T)
 			if err != nil {
 				t.Fatalf("LocateNew: %v", err)
 			}
-			if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-				t.Fatalf("got %+v, want the canonical path %q", res, req.Identifier.ToGitPath())
+			if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceBuiltin {
+				t.Fatalf("got %+v, want the built-in path %q", res, req.Identifier.ToGitPath())
 			}
 			if res.Append {
 				t.Fatalf("got %+v, want a file of its own: no existing document's file is ever joined", res)
@@ -238,8 +238,8 @@ func TestLocateNew_SameNameInANewNamespace_NeverLandsOnTheFirstNamespacesFile(t 
 	if res.Append || res.Path == "ns1/configmaps/kube-root-ca.crt.yaml" {
 		t.Fatalf("ns2's object was filed onto ns1's own file: %+v", res)
 	}
-	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want canonical fallback carrying ns2's own namespace segment", res)
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceBuiltin {
+		t.Fatalf("got %+v, want built-in fallback carrying ns2's own namespace segment", res)
 	}
 }
 
@@ -380,13 +380,13 @@ func TestLocateNew_Sensitive_NeverJoinsPlaintextBundle(t *testing.T) {
 		t.Fatalf("LocateNew: %v", err)
 	}
 	want := "app/secrets/api-token.sops.yaml"
-	if res.Path != want || res.Append || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want the secure canonical SOPS fallback %q", res, want)
+	if res.Path != want || res.Append || res.Source != PlacementSourceBuiltin {
+		t.Fatalf("got %+v, want the secure built-in SOPS fallback %q", res, want)
 	}
 }
 
 // A sensitive resource gets no sibling reuse either: with the ladder gone, the existing
-// .sops.yaml directory does not attract the new Secret, and the canonical SOPS path — which
+// .sops.yaml directory does not attract the new Secret, and the built-in SOPS path — which
 // is identity-complete by construction — is what it gets. A repository that wants its
 // secrets kept together says so with one placement.byType line.
 func TestLocateNew_Sensitive_ExistingSopsDirectoryIsNotReused(t *testing.T) {
@@ -401,8 +401,8 @@ func TestLocateNew_Sensitive_ExistingSopsDirectoryIsNotReused(t *testing.T) {
 		t.Fatalf("LocateNew: %v", err)
 	}
 	want := "app/secrets/api-token.sops.yaml"
-	if res.Path != want || res.Append || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want the canonical SOPS path %q", res, want)
+	if res.Path != want || res.Append || res.Source != PlacementSourceBuiltin {
+		t.Fatalf("got %+v, want the built-in SOPS path %q", res, want)
 	}
 }
 
@@ -616,8 +616,38 @@ func TestPlacementVars_GroupedClusterScoped(t *testing.T) {
 		t.Errorf("got %q, want %q (illegal-namespace sentinel for a cluster-scoped resource)",
 			rendered, want)
 	}
+	if want := "clusterrole"; vars["kindLower"] != want {
+		t.Errorf("kindLower = %q, want %q", vars["kindLower"], want)
+	}
 	if want := "rbac.authorization.k8s.io/v1"; vars["apiVersion"] != want {
 		t.Errorf("apiVersion = %q, want %q for a grouped resource", vars["apiVersion"], want)
+	}
+}
+
+// {kindLower} is the one way to ask for the "configmap-cache.yaml" naming convention, which no
+// built-in rung produces.
+func TestLocateNew_KindLowerNamesTheFileByKind(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	policy := &PlacementPolicy{Default: "{kindLower}-{name}{sensitiveSuffix}"}
+
+	res, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Source != PlacementSourceDefault || res.Path != "configmap-cache.yaml" {
+		t.Fatalf("got %+v, want the declared configmap-cache.yaml", res)
+	}
+}
+
+// The single-namespace recipe is not identity-complete, and the docs say so: two namespaces
+// holding a ConfigMap named "cache" render one path. The check that guards sensitive routes has to
+// agree, or a Secret could be routed through it.
+func TestIdentityCompletePlacementTemplate_KindLowerRecipeIsNot(t *testing.T) {
+	if IdentityCompletePlacementTemplate("{kindLower}-{name}{sensitiveSuffix}", true) {
+		t.Fatal("a template with no {namespace} folds two namespaces onto one path")
+	}
+	if !IdentityCompletePlacementTemplate("{namespace}/{kindLower}-{name}{sensitiveSuffix}", true) {
+		t.Fatal("adding {namespace} makes the same naming identity-complete for one type")
 	}
 }
 
@@ -676,7 +706,7 @@ func TestIdentityCompletePlacementTemplate(t *testing.T) {
 	}{
 		{"full identity", "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml", false, true},
 		{
-			"versionless canonical shape",
+			"versionless built-in shape",
 			"{namespace}/{groupPath}/{resource}/{name}.yaml",
 			false,
 			true,
@@ -717,7 +747,7 @@ func TestValidPlacementTemplateSyntax(t *testing.T) {
 
 // Two supported kustomizations under the scanned root is ambiguous: neither can
 // safely be assumed to be "the one" the GitTarget is about, so a genuinely new
-// type falls through to canonical rather than guessing.
+// type falls through to the built-in path rather than guessing.
 func TestLocateNew_KustomizeRoot_AmbiguousWithTwoSupported(t *testing.T) {
 	fsys := fstest.MapFS{
 		"overlays/a/kustomization.yaml": {Data: []byte("namespace: a\nresources:\n  - deployment.yaml\n")},
@@ -736,8 +766,8 @@ func TestLocateNew_KustomizeRoot_AmbiguousWithTwoSupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want canonical fallback: two supported kustomizations is ambiguous", res)
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceBuiltin {
+		t.Fatalf("got %+v, want built-in fallback: two supported kustomizations is ambiguous", res)
 	}
 }
 
@@ -765,7 +795,7 @@ func TestLocateNew_KustomizeRootSensitive(t *testing.T) {
 }
 
 // A declared template with an unknown variable is a misconfiguration LocateNew
-// must not crash or write on; it falls through to sibling inference / canonical,
+// must not crash or write on; it falls through to sibling inference / the built-in path,
 // exactly as if no declared template had matched.
 func TestLocateNew_DeclaredTemplateUnknownVariable_FallsThrough(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
@@ -778,8 +808,8 @@ func TestLocateNew_DeclaredTemplateUnknownVariable_FallsThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want canonical fallback when the declared template is invalid", res)
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceBuiltin {
+		t.Fatalf("got %+v, want built-in fallback when the declared template is invalid", res)
 	}
 }
 
@@ -936,5 +966,43 @@ func TestValidPlacementTemplateSyntax_NamespaceOrClusterIsRemovedAndSaysSo(t *te
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q is missing %q", err.Error(), want)
 		}
+	}
+}
+
+// The built-in path is now a template, and ToGitPath is the hand-written statement of the same
+// shape. This pins the two byte for byte across every shape an identity takes, so neither can
+// drift: cluster-scoped and namespaced, core and grouped, sensitive and not, plus the name
+// characters Kubernetes allows that a path might trip on.
+func TestBuiltinPlacementTemplate_MatchesToGitPath(t *testing.T) {
+	identities := []types.ResourceIdentifier{
+		types.NewResourceIdentifier("", "v1", "configmaps", "team-a", "cache"),
+		types.NewResourceIdentifier("apps", "v1", "deployments", "team-a", "api"),
+		types.NewResourceIdentifier("", "v1", "namespaces", "", "team-a"),
+		types.NewResourceIdentifier("rbac.authorization.k8s.io", "v1", "clusterroles", "", "system:admin"),
+		types.NewResourceIdentifier("shop.example.com", "v1alpha1", "icecreamorders", "team-a", "vanilla.v2"),
+		types.NewResourceIdentifier("", "v1", "secrets", "team-a", "db"),
+	}
+	for _, id := range identities {
+		for _, sensitive := range []bool{false, true} {
+			want := id.ToGitPath()
+			if sensitive {
+				want = strings.TrimSuffix(want, ".yaml") + ".sops.yaml"
+			}
+			if got := BuiltinGitPath(id, sensitive); got != want {
+				t.Errorf("%s/%s/%s (sensitive=%v): template renders %q, ToGitPath says %q",
+					id.Group, id.Resource, id.Name, sensitive, got, want)
+			}
+		}
+	}
+}
+
+// Where the two deliberately differ: the template escapes a path separator in a value, as every
+// placement template does, so a custom resource named with a backslash (legal for custom resources,
+// whose names only forbid "/" and "%") stays one file name instead of a directory on a Windows
+// checkout.
+func TestBuiltinGitPath_EscapesABackslashInAName(t *testing.T) {
+	id := types.NewResourceIdentifier("shop.example.com", "v1", "icecreamorders", "team-a", `a\b`)
+	if got, want := BuiltinGitPath(id, false), "team-a/shop.example.com/icecreamorders/a%5Cb.yaml"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

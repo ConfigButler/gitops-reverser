@@ -82,15 +82,6 @@ This file is meant to track the smaller current backlog, not historical notes.
   `placement.default` (legibility only, since #319 removed the correctness objection), and a
   namespace-local `GitProvider` so three targets in three namespaces need not copy one credential.
 
-- [ ] Build what is left of the `GitTarget` API wave and the placement-visibility set, tracked as
-  [#339](https://github.com/ConfigButler/gitops-reverser/issues/339): an asserted
-  `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole, the `default` `ClusterProvider`
-  message, the canonical path as a template constant, and `{kindLower}`. All
-  additive. The `scope` field, the reference-shape collapse and the metric split shipped in
-  [#333](https://github.com/ConfigButler/gitops-reverser/pull/333); the `TooManyStreams` cap, a
-  `corev1.Event` on the GitTarget for a canonical fall-back, and a movable destination were
-  **dropped**, with the reasons on that issue.
-
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
 - [ ] Revisit `StreamsStatus.PendingSample`, whose five-entry cap stops being

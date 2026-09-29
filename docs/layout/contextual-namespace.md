@@ -15,7 +15,7 @@
 ## Summary
 
 The current writer can find and edit resources by content identity instead of by
-canonical path, which is the right direction for existing GitOps folders. The
+built-in path, which is the right direction for existing GitOps folders. The
 next hard edge is namespace-less namespaced YAML:
 
 ```yaml
@@ -39,7 +39,7 @@ The spike in the working tree proved the useful behavior:
 - nested YAML files;
 - hand-authored comments;
 - `kubectl apply -k` as the starting cluster state;
-- in-place edits that should preserve comments and avoid canonical duplicates.
+- in-place edits that should preserve comments and avoid duplicates at the built-in path.
 
 It also showed that a narrow "nearest kustomization namespace" heuristic is too
 thin to bless as architecture. It can make the happy-path test pass, but it does
@@ -58,7 +58,7 @@ When `metadata.namespace` is absent, raw identity is not enough for a live
 resource. The missing namespace must come from an explicit, supported context.
 Without that, several unsafe outcomes are possible:
 
-- a live update creates a canonical duplicate instead of editing the existing
+- a live update creates a duplicate at the built-in path instead of editing the existing
   file;
 - a delete cannot find the namespace-less document;
 - two namespace-less documents with the same name in different app folders look
@@ -223,7 +223,7 @@ First safe version:
      invalid rather than creating a duplicate.
 6. Add placement policy later for creating new namespace-less files under a
    known context. Until then, new resources fall back to explicit namespace
-   canonical placement.
+   built-in placement.
 
 This lets existing real folders work without promising that gitops-reverser can
 author every Kustomize layout from scratch.
@@ -491,7 +491,7 @@ implemented:
 - one resource lives under a nested folder;
 - comments are present and must survive edits;
 - the test starts with `kubectl apply -k`;
-- after edits, no canonical duplicate appears;
+- after edits, no duplicates at the built-in path appears;
 - `kustomization.yaml` is unchanged;
 - resource YAML still omits `metadata.namespace`.
 

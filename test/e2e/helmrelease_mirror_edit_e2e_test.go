@@ -39,7 +39,7 @@ var _ = Describe("Manager Higher-Level KRM (HelmRelease)",
 			repoName         = "e2e-f7-helmrelease"
 		)
 
-		// helmReleaseRepoPath is the canonical mirror path for a grouped custom
+		// helmReleaseRepoPath is the built-in mirror path for a grouped custom
 		// resource: <gitPath>/<namespace>/<group>/<plural>/<name>.yaml.
 		helmReleaseRepoPath := func() string {
 			return filepath.Join(gitPath, testNs, "helm.toolkit.fluxcd.io", "helmreleases", hrName+".yaml")
@@ -92,7 +92,7 @@ var _ = Describe("Manager Higher-Level KRM (HelmRelease)",
 			}{Name: hrName, Namespace: testNs, Version: initialVersion}, testNs)
 			Expect(err).NotTo(HaveOccurred(), "failed to apply HelmRelease")
 
-			By("waiting for the operator to mirror the HelmRelease to its canonical path")
+			By("waiting for the operator to mirror the HelmRelease to its built-in path")
 			fullPath := filepath.Join(repo.CheckoutDir, helmReleaseRepoPath())
 			Eventually(func(g Gomega) {
 				pullLatestRepoState(g, repo.CheckoutDir)

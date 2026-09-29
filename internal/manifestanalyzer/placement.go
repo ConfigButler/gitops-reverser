@@ -20,7 +20,7 @@ import (
 //
 // No sensitive/normal split: sensitivity is a write-safety property enforced after resolution, not
 // a second map to configure. A nil policy falls through to the kustomize-root fallback, then
-// canonical. See docs/layout/new-file-placement-rules.md.
+// the built-in path. See docs/layout/new-file-placement-rules.md.
 type PlacementPolicy struct {
 	ByType  map[string]string
 	Default string
@@ -41,7 +41,7 @@ type PlacementRequest struct {
 	// WriteScope is the write jail relative to the scanned (render) root, set only when
 	// render-root scoping re-rooted the scan past spec.path into a base an overlay reads.
 	// Placement is documented as relative to spec.path, so a resolved path that would land
-	// outside the jail (a declared or canonical path resolved against the render anchor) is
+	// outside the jail (a declared or built-in path resolved against the render anchor) is
 	// rebased under WriteScope rather than escaping it. Empty for a self-contained subtree,
 	// where the scan root IS spec.path and every resolved path is already in scope.
 	WriteScope string
@@ -77,7 +77,7 @@ const (
 	PlacementSourceByType PlacementSource = "by_type"
 	// PlacementSourceDefault is the declared catch-all, placement.default: no byType entry named
 	// this type, so the target's own fallback template answered instead. Distinct from
-	// PlacementSourceCanonical, which is the absence of any declaration at all.
+	// PlacementSourceBuiltin, which is the absence of any declaration at all.
 	PlacementSourceDefault PlacementSource = "default"
 	// PlacementSourceKustomizeRoot is the structural fallback: no declared template
 	// matched, and the whole writable subtree is governed by exactly one supported
@@ -85,13 +85,13 @@ const (
 	// (see resolveKustomizeRoot). It is a fact about reachability, not a guess about
 	// convention: a file that root cannot reach would never render at all.
 	PlacementSourceKustomizeRoot PlacementSource = "kustomize_root"
-	// PlacementSourceCanonical is the built-in, versionless
+	// PlacementSourceBuiltin is the built-in, versionless
 	// {namespace}/{group}/{resource}/{name}.yaml fallback: no declared
 	// template, and no single kustomize root to hang the file off. For a repository
 	// with a hand-authored layout this is the signal that a placement.byType or
 	// placement.default line is missing — which is why it is counted per
 	// (GitTarget, type) rather than only logged. See recordPlacement in internal/git.
-	PlacementSourceCanonical PlacementSource = "canonical"
+	PlacementSourceBuiltin PlacementSource = "builtin"
 )
 
 // PlacementResult is where a new resource should be written.
@@ -170,7 +170,7 @@ func (e *PlacementRefusedError) Error() string { return e.detail }
 func (e *PlacementRefusedError) Unwrap() error { return e.cause }
 
 // LocateNew resolves the placement of a resource with no existing document: a declared template
-// wins; otherwise the folder's one supported kustomize root; otherwise the canonical path.
+// wins; otherwise the folder's one supported kustomize root; otherwise the built-in path.
 // Nothing reads the layout of the OTHER documents of this type.
 //
 // store is the pre-plan snapshot and must never be mutated mid-batch: its reads must answer the
@@ -200,10 +200,10 @@ func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementReque
 		return finishPlacement(store, req, path, PlacementSourceKustomizeRoot)
 	}
 
-	return finishPlacement(store, req, canonicalPath(req), PlacementSourceCanonical)
+	return finishPlacement(store, req, builtinPath(req), PlacementSourceBuiltin)
 }
 
-// resolveKustomizeRoot is a structural fact, not a reading of conventions. The canonical path is a
+// resolveKustomizeRoot is a structural fact, not a reading of conventions. The built-in path is a
 // tree no resources: graph can reach, so a new document in a kustomize-managed folder would land
 // outside every render and never be applied. With exactly one supported kustomization the resource
 // belongs beside its other files.
@@ -226,7 +226,7 @@ func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, b
 
 // resolveDeclaredKustomizeFolder stands in for the rung above when the folder has no root YET:
 // useKustomize makes the writer create one in the same commit, so a new document belongs beside it.
-// Without this the first document would land at the canonical path, outside the root just created.
+// Without this the first document would land at the built-in path, outside the root just created.
 //
 // It reports the same PlacementSource because it IS that rung, and the label set is a public
 // contract. It runs only when there is NO writable root: one is the rung above, several is refused
@@ -275,7 +275,7 @@ func finishPlacement(
 	// under it before it is validated, checked for append, or matched to a kustomization.
 	resolvedPath = rebaseIntoWriteScope(req.WriteScope, resolvedPath)
 	// This is the one gate every resolution path — declared, the kustomize-root
-	// fallback, and canonical alike — funnels through before a
+	// fallback, and the built-in path alike — funnels through before a
 	// byte is ever written, so a rendered path can never escape the GitTarget's
 	// spec.path regardless of which mechanism produced it. See "Path validation"
 	// in the design doc: non-empty, a clean relative path, no "..", and a YAML
@@ -430,20 +430,32 @@ func ValidateResolvedPlacementPath(p string) error {
 	return nil
 }
 
-// canonicalPath mirrors internal/git's generateFilePath (ResourceIdentifier.ToGitPath
-// plus the .sops.yaml suffix for a sensitive resource). It is re-implemented here,
-// not imported, because internal/git already imports manifestanalyzer and importing
-// the other way would cycle; the duplicated logic is six lines and covered by tests
-// on both sides.
-func canonicalPath(req PlacementRequest) string {
-	base := req.Identifier.ToGitPath()
-	if !req.Sensitive {
-		return base
+// BuiltinPlacementTemplate is the last rung of the placement ladder: where a new document goes
+// when no byType entry, no default and no single kustomize root answered. It is an ordinary
+// placement template rendered by RenderPlacementTemplate, so the built-in path obeys exactly the
+// rules a declared one does: a core resource's empty {groupPath} collapses, a cluster-scoped
+// resource's {namespace} renders "_cluster", and {sensitiveSuffix} adds .sops.yaml for a Secret.
+//
+// types.ResourceIdentifier.ToGitPath is the hand-written statement of the same shape, kept as the
+// reference a test pins this against, not as a second implementation to call.
+const BuiltinPlacementTemplate = "{namespace}/{groupPath}/{resource}/{name}{sensitiveSuffix}"
+
+// BuiltinGitPath renders BuiltinPlacementTemplate for one resource. Every writer that needs the
+// built-in path calls this, so the placement ladder, the Git writer and the SOPS filename can never
+// disagree about it.
+func BuiltinGitPath(id types.ResourceIdentifier, sensitive bool) string {
+	path, err := RenderPlacementTemplate(BuiltinPlacementTemplate,
+		placementVars(PlacementRequest{Identifier: id, Sensitive: sensitive}))
+	if err != nil {
+		// The template is a constant over variables placementVars always supplies, and a test
+		// renders it; an error here is a broken build, not a runtime condition.
+		panic(fmt.Sprintf("built-in placement template %q does not render: %v", BuiltinPlacementTemplate, err))
 	}
-	if strings.HasSuffix(base, ".yaml") {
-		return strings.TrimSuffix(base, ".yaml") + ".sops.yaml"
-	}
-	return base + ".sops.yaml"
+	return path
+}
+
+func builtinPath(req PlacementRequest) string {
+	return BuiltinGitPath(req.Identifier, req.Sensitive)
 }
 
 // --- Option B: declared type-map placement -------------------------------------
@@ -576,7 +588,7 @@ func (v placementVariable) labelKey() (string, bool) {
 // "No absent state" is not the same as "always has a value". {groupPath} renders empty for a
 // core-group resource, and {group} with it — but an empty group is not a resource MISSING
 // something, it is a resource whose identity has no group segment, and collapseEmptyPathSegments
-// dropping that segment is the canonical path's intent rather than a hole to paper over. A bucket
+// dropping that segment is the built-in path's intent rather than a hole to paper over. A bucket
 // there would invent a folder the layout never asked for. Only {namespace} and {label:key} have
 // an absence a reader would otherwise have to hunt for, so only they get a bucket to land in.
 func (v placementVariable) absentSentinel() (string, bool) {
@@ -597,7 +609,7 @@ func (v placementVariable) renderable() bool {
 	}
 	switch v.name {
 	case "group", "groupPath", "version", "apiVersion", "resource",
-		"kind", "scope", placementNamespaceVariable, "name", "sensitiveSuffix":
+		"kind", "kindLower", "scope", placementNamespaceVariable, "name", "sensitiveSuffix":
 		return true
 	default:
 		return false
@@ -754,7 +766,7 @@ func placementVars(req PlacementRequest) map[string]string {
 	if id.IsClusterScoped() {
 		// {scope} is the readable "cluster"/"namespaced" descriptor. The namespace-position
 		// VALUE is {namespace}, which renders types.ClusterScopeSegment here — the same word
-		// the canonical path and a commit message use, so all three name a scope identically.
+		// the built-in path and a commit message use, so all three name a scope identically.
 		scope = "cluster"
 	}
 	apiVersion := id.Version
@@ -772,7 +784,11 @@ func placementVars(req PlacementRequest) map[string]string {
 		"apiVersion": apiVersion,
 		"resource":   id.Resource,
 		"kind":       req.Kind,
-		"scope":      scope,
+		// A variable rather than a lower function on purpose: a function invites an expression
+		// language into a field that is deliberately not one, and one variable answers the need
+		// ("{kindLower}-{name}.yaml" for configmap-cache.yaml).
+		"kindLower": strings.ToLower(req.Kind),
+		"scope":     scope,
 		// The RAW namespace, empty for a cluster-scoped resource, not NamespaceOrCluster(): the
 		// empty value is what tells the renderer this variable is absent, so {namespace} takes
 		// the same declared-fallback-then-sentinel path {label:key} does instead of having
@@ -827,7 +843,7 @@ func RenderPlacementTemplate(tmpl string, vars map[string]string) (string, error
 		}
 		// A variable with no absent state renders "" here only because the resource genuinely has
 		// no value for it — {groupPath} on a core resource — which collapseEmptyPathSegments then
-		// drops, as the canonical path intends.
+		// drops, as the built-in path intends.
 		sentinel, _ := v.absentSentinel()
 		return sentinel
 	})

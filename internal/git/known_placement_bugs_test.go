@@ -5,9 +5,9 @@ package git
 // These tests guard writer behaviors that the M7 plan-then-flush path must keep:
 //
 //   - File-agnostic placement: the writer matches a resource by content identity and
-//     edits or deletes it where it actually lives, only falling back to the canonical
+//     edits or deletes it where it actually lives, only falling back to the built-in
 //     identity path for a genuinely new resource. A manifest a user placed at
-//     apps/foo.yaml is updated and deleted in place, never duplicated at the canonical
+//     apps/foo.yaml is updated and deleted in place, never duplicated at the built-in
 //     path.
 //
 //   - No empty commits: an update that resolves to no byte change reports no change,
@@ -29,7 +29,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// a ConfigMap manifest a user committed at a hand-chosen, non-canonical path.
+// a ConfigMap manifest a user committed at a hand-chosen, non-built-in path.
 const placedManifestPath = "apps/foo.yaml"
 
 const placedManifestBlue = "apiVersion: v1\nkind: ConfigMap\n" +
@@ -50,8 +50,8 @@ func seedPlacedManifest(t *testing.T, worktree *gogit.Worktree, relPath, content
 }
 
 // Flexible placement, update path: a user placed the ConfigMap at a hand-chosen path
-// (apps/foo.yaml), not the canonical identity path. A cluster update must edit the
-// resource where it already lives and must NOT spawn a duplicate at the canonical path.
+// (apps/foo.yaml), not the built-in identity path. A cluster update must edit the
+// resource where it already lives and must NOT spawn a duplicate at the built-in path.
 func TestPlanFlush_UpdateFollowsExistingPlacement(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
@@ -66,10 +66,10 @@ func TestPlanFlush_UpdateFollowsExistingPlacement(t *testing.T) {
 	assert.Contains(t, string(placedAfter), "color: green",
 		"the update must land in the existing manifest at apps/foo.yaml")
 
-	canonicalFull := filepath.Join(worktree.Filesystem().Root(), writer.filePathForIdentifier(event.Identifier))
-	_, statErr := os.Stat(canonicalFull)
+	builtinFull := filepath.Join(worktree.Filesystem().Root(), writer.filePathForIdentifier(event.Identifier))
+	_, statErr := os.Stat(builtinFull)
 	assert.Truef(t, os.IsNotExist(statErr),
-		"no duplicate copy must be created at the canonical path %s", canonicalFull)
+		"no duplicate copy must be created at the built-in path %s", builtinFull)
 }
 
 // Flexible placement, delete path: deleting the resource from the cluster must remove
@@ -127,12 +127,12 @@ func TestPlanFlush_NoOpInMultiDocReportsNoChange(t *testing.T) {
 		"a no-op in-place edit must report no change, otherwise an empty commit is attempted")
 }
 
-// Data-loss guard: a wholesale write must never drop sibling documents. The canonical
+// Data-loss guard: a wholesale write must never drop sibling documents. The built-in
 // path holds a multi-document file whose target document is non-editable (it uses a
 // YAML merge key), so it does not claim its identity and is not matched for an in-place
 // patch. The writer must refuse to overwrite the multi-document file wholesale (which
 // would drop the unrelated first document) and report no change.
-func TestPlanFlush_MultiDocCanonicalDoesNotDropSiblings(t *testing.T) {
+func TestPlanFlush_MultiDocBuiltinDoesNotDropSiblings(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem().Root()
@@ -147,7 +147,7 @@ func TestPlanFlush_MultiDocCanonicalDoesNotDropSiblings(t *testing.T) {
 		"data:\n  k: v\n"
 	// Document 1: the target (default/app) written with a merge key, which
 	// manifestedit refuses to edit — so it does not claim its identity for the in-place
-	// match, and the canonical-path file is multi-document.
+	// match, and the built-in-path file is multi-document.
 	targetUneditable := "apiVersion: v1\nkind: ConfigMap\n" +
 		"metadata:\n  name: app\n  namespace: default\n" +
 		"data: &d\n  color: blue\nextra:\n  <<: *d\n"

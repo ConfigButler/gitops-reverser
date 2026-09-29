@@ -112,6 +112,10 @@
         "branchBufferMaxSize": {
           "type": "string",
           "description": "Maximum in-memory event buffer per branch worker, as a Kubernetes resource quantity (e.g. 8Mi). Bounds the open commit window plus the writes retained for replay until a push succeeds."
+        },
+        "commitRequestTTL": {
+          "type": "string",
+          "description": "How long a CommitRequest is kept once it finishes, as a duration (e.g. 48h). Written onto the request as the configbutler.ai/delete-after annotation when it finishes; \"0\" writes none, so requests are kept."
         }
       }
     },

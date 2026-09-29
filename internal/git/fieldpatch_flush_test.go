@@ -70,7 +70,7 @@ func applyScalePatch(t *testing.T, writer *contentWriter, worktree *gogit.Worktr
 
 // A field-patch event scales an existing Deployment manifest in place: only
 // spec.replicas changes, and the hand-authored comments, the selector, and the
-// container spec all survive. The manifest is seeded off its canonical path to also
+// container spec all survive. The manifest is seeded off its built-in path to also
 // prove it is located by content identity, not by path.
 func TestPlanFlush_FieldPatchUpdatesExistingManifest(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
@@ -104,7 +104,7 @@ func TestPlanFlush_FieldPatchUpdatesExistingManifest(t *testing.T) {
 // The production path: a translator-emitted field patch carries no parent Kind, so the
 // writer must resolve the parent Deployment from its objectRef GVR through the
 // mapper-built resource index — the same resolution the GVR-only delete uses — and
-// patch only spec.replicas. The manifest is seeded off its canonical path to prove the
+// patch only spec.replicas. The manifest is seeded off its built-in path to prove the
 // resolution is content-derived (resource identity), not path-derived.
 func TestPlanFlush_FieldPatchResolvesParentByGVR(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})

@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -699,14 +700,7 @@ func canonicalizeManifestForComparison(content []byte) ([]byte, error) {
 }
 
 func generateFilePath(id types.ResourceIdentifier, sensitiveResources types.SensitiveResourcePolicy) string {
-	defaultPath := id.ToGitPath()
-	if !sensitiveResources.IsSensitive(id.Group, id.Resource) {
-		return defaultPath
-	}
-	if strings.HasSuffix(defaultPath, ".yaml") {
-		return strings.TrimSuffix(defaultPath, ".yaml") + ".sops.yaml"
-	}
-	return defaultPath + ".sops.yaml"
+	return manifestanalyzer.BuiltinGitPath(id, sensitiveResources.IsSensitive(id.Group, id.Resource))
 }
 
 // initializeCleanRepository removes corrupted repos and initializes a fresh one.

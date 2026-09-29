@@ -232,7 +232,7 @@ func TestExecutor_PendingWrites_PreservesArrivalOrder(t *testing.T) {
 // GitTarget silently dropping its declared placement on the live-write path:
 // groupEventsByBase keys events by sanitizePath(event.Path), which collapses a root
 // target's "." to "", so the lookup must sanitize md.Path the same way or "." would
-// never equal "" and the policy would come back nil (falling back to sibling/canonical
+// never equal "" and the policy would come back nil (falling back to sibling/built-in
 // placement, diverging from resync which resolves target.Placement directly).
 func TestPlacementPolicyForBase_RootTargetMatchesSanitizedBase(t *testing.T) {
 	policy := resolvePlacementPolicy(&configv1alpha3.GitTargetPlacementSpec{Default: "all.yaml"})

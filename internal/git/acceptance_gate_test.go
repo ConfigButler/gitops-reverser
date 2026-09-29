@@ -57,9 +57,9 @@ func TestPlanFlush_RefusesUnsupportedKustomizeFolder(t *testing.T) {
 	require.ErrorAs(t, err, &refused, "flush must refuse with *AcceptanceRefusedError")
 	assert.Contains(t, refused.Error(), "kustomization.yaml", "the refusal must name the offending file")
 
-	// Nothing was written: the canonical ConfigMap path must not exist.
-	canonical := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
-	_, statErr := os.Stat(canonical)
+	// Nothing was written: the built-in ConfigMap path must not exist.
+	builtinFull := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
+	_, statErr := os.Stat(builtinFull)
 	assert.True(t, os.IsNotExist(statErr), "a refused folder must not be written into")
 }
 

@@ -1,6 +1,6 @@
 # 3 — Tree, namespaces serialized
 
-The built-in canonical layout, and the only shape in this set that needs no layout configuration at
+The built-in layout, and the only shape in this set that needs no layout configuration at
 all: no `placement`, no flag. A path carries the object's identity —
 `{namespace}/{groupPath}/{resource}/{name}.yaml` — and the document carries its namespace,
 so a file means the same thing wherever it is read.
@@ -20,7 +20,7 @@ clusters/home/
 ```
 
 Two conventions in those paths come from the
-[canonical grammar](../../../../../docs/layout/new-file-placement-rules.md#template-variables): **the core group collapses
+[built-in grammar](../../../../../docs/layout/new-file-placement-rules.md#template-variables): **the core group collapses
 to nothing**, so `configmaps` sits directly under the namespace segment where
 `rbac.authorization.k8s.io` appears in the ClusterRole path; and **`_cluster` stands in for the
 namespace segment** of a cluster-scoped resource. An underscore is invalid in a namespace name, so
@@ -47,7 +47,7 @@ shape most likely to carry both, which is why it is worth saying here.
 
 ## Empty folder
 
-**Works.** The canonical path is derived from the object, not from the folder, so the first write
+**Works.** The built-in path is derived from the object, not from the folder, so the first write
 into an empty repository is the same write as the thousandth. Nothing to declare.
 
 ## Consumers

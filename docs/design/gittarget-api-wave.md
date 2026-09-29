@@ -34,7 +34,7 @@
 |---|---|---|
 | **B4**: `commitWindow` and `commit.message` move off the connection | `GitProvider` → `GitTarget` | fields change object |
 | The source-scope deletion ([`source-scope-simplification.md`](source-scope-simplification.md)) | `GitTarget`, `ClusterProvider`, `WatchRule` | one removal, two renames, one redefinition |
-| The riders: **#5** asserted `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole, the `default` `ClusterProvider` message; `meta.LocalObjectReference` for our six reference shapes shipped in #333 | various | shape changes |
+| The riders: ~~**#5** asserted `CommitRequest.spec.author`~~ (**declined**, see step 8), the `CommitRequest` lifecycle hole, the `default` `ClusterProvider` message; `meta.LocalObjectReference` for our six reference shapes shipped in #333 | various | shape changes |
 
 Additive, and therefore **not** wave members even though they are discussed here: `spec.suspend`,
 `status.placement` and the post-scan pass, the reconcile-request annotation, and the two placement
@@ -321,8 +321,11 @@ Dependencies first, then the things that only need the object to be breaking.
 7. **The source-scope deletion.** Independent of every step above, so it can be written in parallel;
    placed here because a deletion reviews better once the additions it is not entangled with are
    settled.
-8. **The riders.** Three remain: `CommitRequest.spec.author`, the `CommitRequest` lifecycle hole and
-   the `default` `ClusterProvider` message. The `TooManyStreams` cap was dropped by step 7.
+8. **The riders, closed.** The `CommitRequest` lifecycle hole shipped in #400 and the `default`
+   `ClusterProvider` message in #258. `CommitRequest.spec.author` is **declined**: authorship is
+   established, never asserted
+   ([`attribution.md`](../spec/attribution.md#authorship-is-established-never-asserted)). The
+   `TooManyStreams` cap was dropped by step 7.
 
 Steps 2 to 5 are additive and need no bump. Steps 6 to 8 are one release; step 1 gates the planning;
 step 8 can be trimmed if the wave gets too big to review, since nothing else depends on it. The

@@ -35,7 +35,7 @@ const (
 	// kustomize target".
 	LayoutAmbiguous LayoutReason = "Ambiguous"
 	// LayoutNone is a folder with no supported kustomization at all. New documents land at a
-	// declared template's path, or at the built-in canonical path.
+	// declared template's path, or at the built-in path.
 	LayoutNone LayoutReason = "None"
 )
 

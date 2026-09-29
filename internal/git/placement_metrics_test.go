@@ -87,10 +87,10 @@ func flushWithPolicy(
 }
 
 // The signal the Option C deletion owes its users: a repository whose layout this operator
-// cannot derive gets the canonical path, and `source="canonical"` on placements_total names
+// cannot derive gets the built-in path, and `source="builtin"` on placements_total names
 // the GitTarget and the type that needs one `placement.byType` line. Without the labels the
 // counter would only say a fall-back happened somewhere, which is not a fix anybody can act on.
-func TestPlacementMetrics_CanonicalFallbackNamesTargetAndType(t *testing.T) {
+func TestPlacementMetrics_BuiltinFallbackNamesTargetAndType(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	worktree := newWorktreeForTest(t)
@@ -100,14 +100,14 @@ func TestPlacementMetrics_CanonicalFallbackNamesTargetAndType(t *testing.T) {
 	flushWithPolicy(t, worktree, nil, targetedConfigMapEvent())
 
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
-		"source":      "canonical",
+		"source":      "builtin",
 		"disposition": "new_file",
 	}))
-	require.True(t, ok, "expected a canonical placement sample labelled by target and type")
+	require.True(t, ok, "expected a built-in placement sample labelled by target and type")
 	assert.Equal(t, int64(1), got)
 }
 
-// A declared template is the answer to a canonical fall-back, so the two must be
+// A declared template is the answer to a built-in fall-back, so the two must be
 // distinguishable in the same series: `source="by_type"` is how an operator confirms the
 // byType line they added is actually the one being used, and it is reported separately from
 // `source="default"` so a catch-all swallowing a type does not read as that line working.
@@ -153,7 +153,7 @@ func TestPlacementMetrics_DeclaredBundleRecordsAppendedDisposition(t *testing.T)
 // The structural fallback has its own source value, and it is the one that must NOT be read
 // as a missing rule: a folder with one kustomize root is placing files where they render,
 // which is the correct answer with no declaration at all. A dashboard that lumped it in with
-// canonical would report every well-formed overlay as misconfigured. The successful
+// builtin would report every well-formed overlay as misconfigured. The successful
 // resources: entry is counted too — it is the half that makes the file build.
 func TestPlacementMetrics_KustomizeRootSourceAndEntryAdded(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
@@ -284,7 +284,7 @@ func TestPlacementMetrics_MixedSensitivityNewFileCountsARefusal(t *testing.T) {
 
 // The resync path synthesises its events from the desired snapshot, so they carry no
 // GitTarget identity of their own. Its placements must still land in the labelled series:
-// otherwise a fall-back to canonical would be visible for a live create and invisible for
+// otherwise a fall-back to the built-in path would be visible for a live create and invisible for
 // the reconcile that produced the same file, and which of the two ran is not something the
 // operator chose.
 func TestPlacementMetrics_ResyncPlacementsCarryTheTargetLabels(t *testing.T) {
@@ -307,7 +307,7 @@ func TestPlacementMetrics_ResyncPlacementsCarryTheTargetLabels(t *testing.T) {
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, map[string]string{
 		"gittarget_namespace": metricsTestGitTargetNamespace,
 		"gittarget_name":      metricsTestGitTargetName,
-		"source":              "canonical",
+		"source":              "builtin",
 	})
 	require.True(t, ok, "a resync's create must be counted with the target labels")
 	assert.Equal(t, int64(1), got)

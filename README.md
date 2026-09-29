@@ -65,6 +65,10 @@ several source clusters, repositories, branches, and folders.
   authors can push to the same branch, and that is handled without conflicts. If an API edit and a
   Git commit touch the same resource (which is rare!), then the API wins. See
   [API-first publication](docs/api-first-publication.md) for more depth.
+- **Authors are established, never asserted.** An attributed commit names the identity the API
+  server authenticated for the change; everything else carries the configured Git identity, or an
+  explicit unknown when attribution is on but cannot resolve. No field lets anyone type a name in. See
+  [attribution](docs/spec/attribution.md#authorship-is-established-never-asserted).
 - **Resources classified as sensitive require encryption before commit.** If encryption fails, or no
   encryptor is configured, the write is rejected. See [SOPS and age](docs/sops-age-guide.md).
 

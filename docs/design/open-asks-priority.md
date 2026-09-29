@@ -257,7 +257,7 @@ and is not independently schedulable.
 | ~~n/a~~ | ~~A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path~~ **SHIPPED** in 0.42.1 | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | — | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), [#319](https://github.com/ConfigButler/gitops-reverser/pull/319) |
 | n/a | `useKustomize` and `serializeNamespace`: the two things a path template cannot say (`spec.layout` was reversed) | [`../layout/model.md`](../layout/model.md) | **2** | [#322](https://github.com/ConfigButler/gitops-reverser/issues/322), **not** breaking, so not the wave |
 | F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see [`gittarget-api-wave.md`](gittarget-api-wave.md)) | maintainer review | **2** | wave |
-| 5 | `CommitRequest.spec.author`, SAR-guarded | consumer (#220) | **2** | wave |
+| ~~5~~ | ~~`CommitRequest.spec.author`, SAR-guarded~~ **declined**: authorship is established, never asserted | consumer (#220) | — | [`attribution.md`](../spec/attribution.md#authorship-is-established-never-asserted) |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
 | ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` already stops the writes, and `mode` buys only a declared posture over a pause | config surface | — | [`gittarget-api-wave.md`](gittarget-api-wave.md) |
 | 6 | Movable destination via `status.observedDestination` | consumer (#220) | **refused** | the destination stays immutable; a folder moves by delete-and-recreate |
@@ -515,6 +515,10 @@ loses attribution for the handover window. That belongs with the ownership work,
 to a Git repository and there is no way to make it stop that is not deleting the object.
 `spec.interval` on GitProvider (a real `ls-remote` per pass, hardcoded at 5 min, no jitter) and
 the `requestedAt` annotation ride along.
+
+> **Declined.** The ask below is kept for its reasoning, but it will not be built: a name in a spec is
+> only a claim, and authorship is established, never asserted. See
+> [`attribution.md`](../spec/attribution.md#authorship-is-established-never-asserted).
 
 **#5: `CommitRequest.spec.author`, SAR-guarded — and #23 has retired one of its two
 arguments.** This section used to claim that *audit cannot attribute a finalized delete at all*, because

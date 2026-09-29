@@ -34,9 +34,9 @@ func cmEvent(op, name, color string) Event {
 	}
 }
 
-// A resource with no document in Git is created at its canonical placement path with
+// A resource with no document in Git is created at its built-in placement path with
 // the canonical rendered content.
-func TestPlanFlush_CreatesNewResourceAtCanonicalPath(t *testing.T) {
+func TestPlanFlush_CreatesNewResourceAtBuiltinPath(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem().Root()
@@ -45,8 +45,8 @@ func TestPlanFlush_CreatesNewResourceAtCanonicalPath(t *testing.T) {
 	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
 	require.True(t, changed, "a new resource must be written")
 
-	canonical := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
-	got, err := os.ReadFile(canonical)
+	builtinFull := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
+	got, err := os.ReadFile(builtinFull)
 	require.NoError(t, err)
 	want, err := writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
@@ -93,14 +93,14 @@ func TestPlanFlush_DeleteOfAbsentResourceIsNoOp(t *testing.T) {
 }
 
 // A GVR-only DELETE event (no object body, the reconcile/orphan shape) still finds a
-// manifest moved off its canonical path when a mapper is wired: the resource-identity
+// manifest moved off its built-in path when a mapper is wired: the resource-identity
 // index resolves the GVR to the document's content identity (M6's PlanDelete folded
 // into the writer). This is the path the live-catalog mapper enables in production.
 func TestPlanFlush_DeleteByGVROnlyFollowsMovedManifestViaMapper(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 
-	// A ConfigMap a user moved off its canonical path.
+	// A ConfigMap a user moved off its built-in path.
 	placedFull := seedPlacedManifest(t, worktree, placedManifestPath, placedManifestBlue)
 
 	mapper := typeset.NewSnapshotRegistry(typeset.Snapshot{
@@ -135,12 +135,12 @@ func TestPlanFlush_DeleteByGVROnlyFollowsMovedManifestViaMapper(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "apps/foo.yaml must be deleted, not orphaned")
 }
 
-// A sensitive (SOPS) resource a user moved off its canonical .sops path must be
+// A sensitive (SOPS) resource a user moved off its built-in .sops path must be
 // re-encrypted wholesale AT ITS EXISTING PATH — never patched in place (which would
-// leak the secret in cleartext) and never duplicated at the canonical path (which would
+// leak the secret in cleartext) and never duplicated at the built-in path (which would
 // orphan the moved copy). This pins the regression where sensitive upserts skipped
-// content placement and always wrote the canonical path.
-func TestPlanFlush_SensitiveMovedResourceRewritesInPlaceNotCanonical(t *testing.T) {
+// content placement and always wrote the built-in path.
+func TestPlanFlush_SensitiveMovedResourceRewritesInPlaceNotBuiltin(t *testing.T) {
 	enc := &stubEncryptor{result: []byte(
 		"apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n  namespace: default\n" +
 			"data:\n  k: ENC[AES256,data:NEW,iv:cc,tag:dd]\nsops:\n  version: 3.9.0\n  mac: NEW\n")}
@@ -149,7 +149,7 @@ func TestPlanFlush_SensitiveMovedResourceRewritesInPlaceNotCanonical(t *testing.
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem().Root()
 
-	// A Secret moved off its canonical .sops path. It carries a cleartext identity and a
+	// A Secret moved off its built-in .sops path. It carries a cleartext identity and a
 	// sops key, so the store indexes it as an encrypted managed document. The encrypted
 	// data differs from the new render, so the write is a real change, not a no-op.
 	movedRel := "secrets/app.sops.yaml"
@@ -175,10 +175,10 @@ func TestPlanFlush_SensitiveMovedResourceRewritesInPlaceNotCanonical(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, string(enc.result), string(got), "the moved secret is re-encrypted at its existing path")
 
-	canonicalFull := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
-	_, statErr := os.Stat(canonicalFull)
+	builtinFull := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
+	_, statErr := os.Stat(builtinFull)
 	assert.Truef(t, os.IsNotExist(statErr),
-		"no duplicate secret must be created at the canonical .sops path %s", canonicalFull)
+		"no duplicate secret must be created at the built-in .sops path %s", builtinFull)
 }
 
 // Within one batch, deleting a document from a multi-document file shifts the indices of

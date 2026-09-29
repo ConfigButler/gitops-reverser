@@ -136,9 +136,19 @@ type CommitRequestReconciler struct {
 	// determines the eventual Git author.
 	Finalizer    CommitRequestFinalizer
 	AuthorLookup CommandAuthorLookup
+
+	// TTL is how long a request is kept once it finishes. It is written onto the request as
+	// CommitRequestDeleteAfterAnnotation at that moment; zero writes nothing, so the request stays.
+	TTL time.Duration
 }
 
-// +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch
+// CommitRequestDeleteAfterAnnotation carries the RFC 3339 time after which the controller deletes a
+// finished CommitRequest. The controller writes it once, when the request finishes, and from then
+// on the annotation alone decides: remove it to keep the request, or edit it to move the deletion.
+// A request that finished before this annotation existed carries none and is never deleted.
+const CommitRequestDeleteAfterAnnotation = "configbutler.ai/delete-after"
+
+// +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests/status,verbs=get;update;patch
 
 // Reconcile advances one CommitRequest through attribute → attach + poll →
@@ -149,8 +159,14 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 
 	commitRequest, done, err := r.loadActionableCommitRequest(ctx, req)
-	if done || err != nil {
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if done {
+		if commitRequest != nil {
+			return r.expireFinished(ctx, commitRequest)
+		}
+		return ctrl.Result{}, nil
 	}
 
 	if r.Finalizer == nil {
@@ -297,6 +313,7 @@ func (r *CommitRequestReconciler) refusePrunedGitTargetRef(
 	if err := r.Status().Update(ctx, commitRequest); err != nil {
 		return true, err
 	}
+	r.stampDeleteAfter(ctx, commitRequest)
 	logf.FromContext(ctx).Info(
 		"CommitRequest names no GitTarget: created before the gitTargetRef rename",
 		"name", client.ObjectKeyFromObject(commitRequest))
@@ -356,8 +373,9 @@ func (r *CommitRequestReconciler) recordCloseDelayWait(
 // everything that must not reach the finalize: a deleted object, a terminal
 // outcome, and — via an uncached re-read — a stale cache echo of our own
 // terminal write from a previous invocation (work past this point must happen
-// at most once per CommitRequest). done=true means the reconcile has nothing
-// further to do.
+// at most once per CommitRequest). done=true means the finalize has nothing
+// further to do; the request is returned with it when it is terminal, so its
+// expiry can be decided, and nil when it is gone.
 func (r *CommitRequestReconciler) loadActionableCommitRequest(
 	ctx context.Context,
 	req ctrl.Request,
@@ -367,7 +385,7 @@ func (r *CommitRequestReconciler) loadActionableCommitRequest(
 		return nil, true, client.IgnoreNotFound(err)
 	}
 	if commitRequestIsTerminal(&commitRequest) {
-		return nil, true, nil
+		return &commitRequest, true, nil
 	}
 
 	if r.APIReader != nil {
@@ -375,11 +393,118 @@ func (r *CommitRequestReconciler) loadActionableCommitRequest(
 			return nil, true, client.IgnoreNotFound(err)
 		}
 		if commitRequestIsTerminal(&commitRequest) {
-			return nil, true, nil
+			return &commitRequest, true, nil
 		}
 	}
 
 	return &commitRequest, false, nil
+}
+
+// expireFinished deletes a finished request once the time in its delete-after annotation has
+// passed, and otherwise comes back when it will have. No annotation means keep: the TTL flag only
+// decides what is WRITTEN at finish, so changing it never reaches back to a request already stamped,
+// and a request whose annotation someone removed stays.
+//
+// The delete is preconditioned on the resourceVersion that was judged, so an edit to the annotation
+// that races it fails the delete with a conflict, and the requeue reads the edit. The edit itself
+// needs no extra wiring: this controller has no generation filter, so a metadata change reconciles
+// the request again.
+func (r *CommitRequestReconciler) expireFinished(
+	ctx context.Context,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+) (ctrl.Result, error) {
+	value, ok := commitRequest.Annotations[CommitRequestDeleteAfterAnnotation]
+	if !ok || !commitRequest.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
+	deleteAfter, parsed := parseDeleteAfter(value)
+	if !parsed {
+		// Kept rather than guessed at: an annotation a person mistyped is not consent to delete.
+		log.Info("CommitRequest delete-after annotation is not an RFC 3339 time; keeping the request",
+			"name", client.ObjectKeyFromObject(commitRequest), "value", value)
+		return ctrl.Result{}, nil
+	}
+
+	if remaining := time.Until(deleteAfter); remaining > 0 {
+		return ctrl.Result{RequeueAfter: remaining}, nil
+	}
+
+	uid, resourceVersion := commitRequest.UID, commitRequest.ResourceVersion
+	err := r.Delete(ctx, commitRequest, client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion})
+	if err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	log.Info("Deleted finished CommitRequest past its delete-after time",
+		"name", client.ObjectKeyFromObject(commitRequest), "deleteAfter", value)
+	return ctrl.Result{}, nil
+}
+
+// parseDeleteAfter reads the annotation's RFC 3339 time, reporting false for anything else.
+func parseDeleteAfter(value string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, value)
+	return t, err == nil
+}
+
+// stampDeleteAfter writes the delete-after annotation onto a request that has just finished. It
+// runs only on the transition to terminal, never on a later reconcile of a terminal request, which
+// is what keeps requests that finished before this existed, and requests someone un-stamped, alone.
+//
+// A value that is already there wins: a submitter may set its own delete-after at creation, and a
+// person may extend it in the moment between the terminal status write and this stamp. So the patch
+// carries the resourceVersion it was computed from, and a conflict re-reads the request rather than
+// overwriting; if the annotation appeared meanwhile, it is left exactly as it is.
+//
+// A write that still fails is logged, not requeued: the request is then simply kept, the safe
+// direction, and a requeue would re-enter the finalize this controller must run at most once.
+func (r *CommitRequestReconciler) stampDeleteAfter(
+	ctx context.Context,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+) {
+	if r.TTL <= 0 {
+		return
+	}
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	deleteAfter := time.Now().Add(r.TTL).UTC().Format(time.RFC3339)
+
+	current := commitRequest
+	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
+		if _, set := current.Annotations[CommitRequestDeleteAfterAnnotation]; set {
+			return
+		}
+		patch := client.MergeFromWithOptions(current.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if current.Annotations == nil {
+			current.Annotations = map[string]string{}
+		}
+		current.Annotations[CommitRequestDeleteAfterAnnotation] = deleteAfter
+		err := r.Patch(ctx, current, patch)
+		if err == nil || apierrors.IsNotFound(err) {
+			return
+		}
+		if !apierrors.IsConflict(err) {
+			log.Error(err, "Failed to stamp delete-after on a finished CommitRequest; it will be kept",
+				"name", client.ObjectKeyFromObject(commitRequest))
+			return
+		}
+		var fresh configbutleraiv1alpha3.CommitRequest
+		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(commitRequest), &fresh); getErr != nil {
+			if !apierrors.IsNotFound(getErr) {
+				log.Error(getErr, "Failed to re-read CommitRequest to stamp delete-after; it will be kept",
+					"name", client.ObjectKeyFromObject(commitRequest))
+			}
+			return
+		}
+		if fresh.UID != commitRequest.UID {
+			return
+		}
+		current = &fresh
+	}
+	log.Error(nil, "Gave up stamping delete-after after repeated conflicts; the request will be kept",
+		"name", client.ObjectKeyFromObject(commitRequest))
 }
 
 // commitRequestStatusUpdateAttempts bounds the terminal-status conflict retry.
@@ -416,6 +541,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 
 		err := r.Status().Update(ctx, current)
 		if err == nil {
+			r.stampDeleteAfter(ctx, current)
 			finalizeError := ""
 			if finalizeErr != nil {
 				finalizeError = finalizeErr.Error()

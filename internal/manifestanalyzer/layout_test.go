@@ -45,7 +45,7 @@ func TestResolveLayout_SingleKustomizationRoot(t *testing.T) {
 }
 
 // A folder with no kustomization at all resolves to None and to Plain: the ladder falls
-// through to a declared template or the canonical path, and no file is registered anywhere.
+// through to a declared template or the built-in path, and no file is registered anywhere.
 func TestResolveLayout_NoKustomization(t *testing.T) {
 	store := layoutStore(t, map[string]string{"web.yaml": layoutWebDoc})
 

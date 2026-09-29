@@ -378,7 +378,7 @@ func pruneModeOf(name, namespace string) string {
 	return strings.TrimSpace(out)
 }
 
-// pruneConfigMapPath is the canonical mirror path for a ConfigMap under a GitTarget folder.
+// pruneConfigMapPath is the built-in mirror path for a ConfigMap under a GitTarget folder.
 func pruneConfigMapPath(basePath, ns, name string) string {
 	return path.Join(basePath, fmt.Sprintf("%s/configmaps/%s.yaml", ns, name))
 }
