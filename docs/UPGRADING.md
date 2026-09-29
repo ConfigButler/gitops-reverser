@@ -9,14 +9,15 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 ## Finished CommitRequests are deleted after 48 hours
 
-The controller now deletes a `CommitRequest` 48 hours after it finished. On the first reconcile after
-the upgrade that includes every request that finished more than 48 hours ago. To keep them, set
-`controllerManager.commitRequestTTL: "0"` (flag `--commit-request-ttl=0`) before upgrading, or
-annotate the ones you want with `configbutler.ai/keep: "true"`. See
+A `CommitRequest` that finishes after the upgrade gets a `configbutler.ai/delete-after` annotation
+48 hours ahead, and the controller deletes it once that time has passed. Requests that finished
+before the upgrade have no annotation and are kept. To keep new ones as well, set
+`controllerManager.commitRequestTTL: "0"` (flag `--commit-request-ttl=0`). See
 [finished requests](configuration.md#finished-requests-are-deleted-after-48-hours).
 
-The manager's ClusterRole gains the `delete` verb on `commitrequests`. A deployment that renders its
-own RBAC must add it, or the deletes fail and the requests stay.
+The manager's ClusterRole gains the `patch` and `delete` verbs on `commitrequests`. A deployment
+that renders its own RBAC must add them. Without `patch` no annotation is written and requests
+are kept. Without `delete`, requests stay after their time has passed.
 
 ## Placement `source="canonical"` is now `source="builtin"`
 

@@ -10,20 +10,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// finishedAgo stamps a Committed request whose Ready condition turned True `ago` before now,
-// created a minute before that.
-func finishedAgo(name string, ago time.Duration) *configv1alpha3.CommitRequest {
+// finishedWithDeleteAfter is a Committed request carrying the given delete-after value.
+func finishedWithDeleteAfter(name, deleteAfter string) *configv1alpha3.CommitRequest {
 	cr := withReadyCommitted(newCommitRequest(name))
-	finished := metav1.NewTime(time.Now().Add(-ago))
-	cr.CreationTimestamp = metav1.NewTime(finished.Add(-time.Minute))
-	apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady).LastTransitionTime = finished
+	cr.Annotations = map[string]string{CommitRequestDeleteAfterAnnotation: deleteAfter}
 	return cr
 }
 
@@ -38,69 +35,95 @@ func commitRequestExists(t *testing.T, c client.Client, name string) bool {
 	return true
 }
 
-func TestCommitRequestTTL_DeletesAFinishedRequestPastIt(t *testing.T) {
-	c := newCommitRequestClient(t, nil, finishedAgo("save-old", 49*time.Hour))
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}, TTL: 48 * time.Hour}
+func committedFinalizer() *fakeFinalizer {
+	return &fakeFinalizer{
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"},
+		resolved: true,
+	}
+}
+
+// Finishing is what writes the deletion time, so it is on the object for anyone to read or change
+// from the moment the outcome is.
+func TestCommitRequestTTL_FinishingStampsTheDeletionTime(t *testing.T) {
+	c := newCommitRequestClient(t, nil, newCommitRequest("save-now"))
+	r := &CommitRequestReconciler{
+		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+		TTL: 48 * time.Hour,
+	}
+
+	reconcileCommitRequest(t, r, "save-now")
+
+	got := fetchCommitRequest(t, c, "save-now")
+	value, ok := got.Annotations[CommitRequestDeleteAfterAnnotation]
+	require.True(t, ok, "a finished request carries its deletion time")
+	deleteAfter, err := time.Parse(time.RFC3339, value)
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now().Add(48*time.Hour), deleteAfter, time.Minute)
+}
+
+func TestCommitRequestTTL_ZeroStampsNothing(t *testing.T) {
+	c := newCommitRequestClient(t, nil, newCommitRequest("save-now"))
+	r := &CommitRequestReconciler{
+		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+	}
+
+	reconcileCommitRequest(t, r, "save-now")
+
+	assert.NotContains(t, fetchCommitRequest(t, c, "save-now").Annotations, CommitRequestDeleteAfterAnnotation)
+}
+
+// A request that finished before the annotation existed, or one someone removed it from, is kept:
+// only the transition to terminal stamps, never a later look at a terminal request.
+func TestCommitRequestTTL_AFinishedRequestWithoutTheAnnotationIsKept(t *testing.T) {
+	c := newCommitRequestClient(t, nil, withReadyCommitted(newCommitRequest("save-before")))
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}, TTL: time.Nanosecond}
+
+	res := reconcileCommitRequest(t, r, "save-before")
+
+	assert.Zero(t, res.RequeueAfter)
+	got := fetchCommitRequest(t, c, "save-before")
+	assert.NotContains(t, got.Annotations, CommitRequestDeleteAfterAnnotation, "it is not stamped after the fact")
+}
+
+func TestCommitRequestTTL_DeletesOnceTheTimeHasPassed(t *testing.T) {
+	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	c := newCommitRequestClient(t, nil, finishedWithDeleteAfter("save-old", past))
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
 
 	res := reconcileCommitRequest(t, r, "save-old")
 
 	assert.Zero(t, res.RequeueAfter)
-	assert.False(t, commitRequestExists(t, c, "save-old"), "a request past its TTL is deleted")
+	assert.False(t, commitRequestExists(t, c, "save-old"),
+		"the annotation alone decides; a TTL of zero now does not reach back to it")
 }
 
-// The request comes back when it expires rather than on a poll, so a namespace full of recent
+// The request comes back when its time is up rather than on a poll, so a namespace full of recent
 // saves costs one requeue each and nothing in between.
-func TestCommitRequestTTL_KeepsAYoungerRequestAndComesBackWhenItExpires(t *testing.T) {
-	c := newCommitRequestClient(t, nil, finishedAgo("save-recent", time.Hour))
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}, TTL: 48 * time.Hour}
+func TestCommitRequestTTL_ComesBackWhenTheTimeIsUp(t *testing.T) {
+	future := time.Now().Add(47 * time.Hour).UTC().Format(time.RFC3339)
+	c := newCommitRequestClient(t, nil, finishedWithDeleteAfter("save-recent", future))
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
 
 	res := reconcileCommitRequest(t, r, "save-recent")
 
 	assert.True(t, commitRequestExists(t, c, "save-recent"))
-	assert.InDelta(t, (47 * time.Hour).Seconds(), res.RequeueAfter.Seconds(), 60,
-		"the requeue lands when the TTL runs out")
+	assert.InDelta(t, (47 * time.Hour).Seconds(), res.RequeueAfter.Seconds(), 60)
 }
 
-// Age is counted from when the outcome became readable, not from creation: a request that took
-// long to resolve still gets the whole TTL after it did.
-func TestCommitRequestTTL_CountsFromTheFinishNotTheCreation(t *testing.T) {
-	cr := finishedAgo("save-slow", time.Hour)
-	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-72 * time.Hour))
-	c := newCommitRequestClient(t, nil, cr)
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}, TTL: 48 * time.Hour}
-
-	reconcileCommitRequest(t, r, "save-slow")
-
-	assert.True(t, commitRequestExists(t, c, "save-slow"))
-}
-
-func TestCommitRequestTTL_ZeroKeepsEverything(t *testing.T) {
-	c := newCommitRequestClient(t, nil, finishedAgo("save-kept", 365*24*time.Hour))
+func TestCommitRequestTTL_AnUnreadableTimeKeepsTheRequest(t *testing.T) {
+	c := newCommitRequestClient(t, nil, finishedWithDeleteAfter("save-typo", "tomorrow"))
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}}
 
-	res := reconcileCommitRequest(t, r, "save-kept")
-
-	assert.Zero(t, res.RequeueAfter, "with no TTL there is nothing to come back for")
-	assert.True(t, commitRequestExists(t, c, "save-kept"))
-}
-
-func TestCommitRequestTTL_KeepAnnotationExemptsOneRequest(t *testing.T) {
-	cr := finishedAgo("save-pinned", 49*time.Hour)
-	cr.Annotations = map[string]string{CommitRequestKeepAnnotation: "true"}
-	c := newCommitRequestClient(t, nil, cr)
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: &fakeFinalizer{}, TTL: 48 * time.Hour}
-
-	res := reconcileCommitRequest(t, r, "save-pinned")
+	res := reconcileCommitRequest(t, r, "save-typo")
 
 	assert.Zero(t, res.RequeueAfter)
-	assert.True(t, commitRequestExists(t, c, "save-pinned"))
+	assert.True(t, commitRequestExists(t, c, "save-typo"))
 }
 
-// Only a finished request expires. One still waiting for its outcome is polled as before, however
-// old it is, and is deleted only on a later pass once it has finished and aged.
-func TestCommitRequestTTL_NeverDeletesARequestInProgress(t *testing.T) {
+// A request still waiting for its outcome is neither stamped nor deleted; it is polled as before.
+func TestCommitRequestTTL_LeavesARequestInProgressAlone(t *testing.T) {
 	cr := withInProgress(newCommitRequest("save-pending"))
-	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
+	cr.CreationTimestamp = metav1.Now() // inside the resolve window, so it polls rather than fails closed
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{
@@ -110,6 +133,5 @@ func TestCommitRequestTTL_NeverDeletesARequestInProgress(t *testing.T) {
 	res := reconcileCommitRequest(t, r, "save-pending")
 
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter, "it keeps polling for the outcome")
-	assert.True(t, commitRequestExists(t, c, "save-pending"))
-	assert.Len(t, f.calls, 1)
+	assert.NotContains(t, fetchCommitRequest(t, c, "save-pending").Annotations, CommitRequestDeleteAfterAnnotation)
 }

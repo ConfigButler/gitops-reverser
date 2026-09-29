@@ -115,7 +115,7 @@
         },
         "commitRequestTTL": {
           "type": "string",
-          "description": "How long a finished CommitRequest is kept before the controller deletes it, as a duration counted from when it finished (e.g. 48h); \"0\" keeps them all. The annotation configbutler.ai/keep: \"true\" keeps a single request."
+          "description": "How long a CommitRequest is kept once it finishes, as a duration (e.g. 48h). Written onto the request as the configbutler.ai/delete-after annotation when it finishes; \"0\" writes none, so requests are kept."
         }
       }
     },

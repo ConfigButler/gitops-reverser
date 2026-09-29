@@ -1946,15 +1946,26 @@ request produced a pushed commit:
 
 ### Finished requests are deleted after 48 hours
 
-Every save leaves one `CommitRequest` behind. The controller deletes a finished request (`Ready=True`
-or `Stalled=True`) once `--commit-request-ttl` (Helm: `controllerManager.commitRequestTTL`, default
-`48h`) has passed since it finished. Age counts from the terminal condition, not from creation, so
-automation always has the full period to read an outcome. A request still in progress is never
-deleted.
+Every save leaves one `CommitRequest` behind. When a request finishes (`Ready=True` or
+`Stalled=True`), the controller writes the time it will be deleted onto it:
 
-- Set the TTL to `0` to keep every request.
-- Annotate a request `configbutler.ai/keep: "true"` to keep just that one. Removing the annotation
-  later lets the TTL apply again.
+```yaml
+metadata:
+  annotations:
+    configbutler.ai/delete-after: "2026-10-01T09:30:00Z"
+```
+
+Once that time has passed, the controller deletes the request. The annotation is the whole
+contract, so it is also how you change the outcome for one request:
+
+- Remove the annotation to keep the request.
+- Edit the time, in RFC 3339 format, to delete it earlier or later. A value that does not parse
+  keeps the request.
+
+The period comes from `--commit-request-ttl` (Helm: `controllerManager.commitRequestTTL`, default
+`48h`). Changing it only affects requests that finish afterwards. `0` writes no annotation, so new
+requests are kept. A request that finished before this feature existed has no annotation and is
+never deleted.
 
 ## Audit ingestion settings
 

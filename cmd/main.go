@@ -592,9 +592,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
 			"at the cost of commit latency.")
 	fs.DurationVar(&cfg.commitRequestTTL, "commit-request-ttl", controller.DefaultCommitRequestTTL,
-		"How long a finished CommitRequest is kept before the controller deletes it, counted from "+
-			"when it finished (duration string; default 48h, 0 keeps them all). A request annotated "+
-			controller.CommitRequestKeepAnnotation+"=true is kept regardless.")
+		"How long a CommitRequest is kept once it finishes (duration string; default 48h, 0 keeps "+
+			"them). The deletion time is written onto the request as the "+
+			controller.CommitRequestDeleteAfterAnnotation+" annotation when it finishes; remove or edit "+
+			"that annotation to keep the request or move its deletion.")
 	fs.DurationVar(&cfg.gitRefreshInterval, "git-refresh-interval", controller.DefaultGitRefreshInterval,
 		"How often an IDLE GitTarget re-proves where its branch is on the remote (duration string; "+
 			"default 10m, 0 disables it). A target that is publishing renews that knowledge on every "+
