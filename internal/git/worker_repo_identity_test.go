@@ -251,11 +251,22 @@ func TestEnqueue_RefusesOnceTheWorkerIsStopping(t *testing.T) {
 		"a running worker accepts the event and owns it from then on")
 
 	worker.Stop()
+	// Read after Stop rather than assumed zero: with no GitProvider the loop exits before it
+	// drains, so the event accepted above may still be sitting there.
+	inflight, queued := worker.inflightItems.Load(), len(worker.eventQueue)
 
 	assert.False(t, worker.Enqueue(Event{Operation: "UPDATE"}),
 		"an event the shutdown drain would discard must not be reported as accepted")
 	assert.False(t, worker.EnqueueResync(&ResyncRequest{}),
 		"and a resync must be answered rather than left waiting on a reply that never comes")
+	// The two fire-and-forget paths report nothing, so what they owe is to leave no trace: an
+	// increment here would be work the depth gauge counts and nothing will ever finish.
+	worker.EnqueueAttach(&AttachCommitRequest{Namespace: "ns", Name: "cr"})
+	worker.EnqueueRefresh(&RefreshRequest{})
+
+	assert.Equal(t, inflight, worker.inflightItems.Load(),
+		"no refused enqueue, on any of the four paths, may leave inflightItems moved")
+	assert.Len(t, worker.eventQueue, queued, "and none of them may reach the queue")
 }
 
 // TestEnqueue_AdmissionClosesAtOneInstant is the half a check-then-send misses.

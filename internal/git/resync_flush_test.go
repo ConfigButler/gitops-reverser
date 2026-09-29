@@ -79,7 +79,7 @@ func applyResyncViaWorktree(
 	return stats, changed
 }
 
-// A desired resource with no managed document in Git is created at its canonical
+// A desired resource with no managed document in Git is created at its built-in
 // placement path during resync.
 func TestResync_CreatesMissingResource(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
@@ -92,8 +92,8 @@ func TestResync_CreatesMissingResource(t *testing.T) {
 	assert.Equal(t, 0, stats.Deleted)
 
 	id := desiredCM("api", "green").Resource
-	canonical := filepath.Join(root, writer.filePathForIdentifier(id))
-	got, err := os.ReadFile(canonical)
+	builtinFull := filepath.Join(root, writer.filePathForIdentifier(id))
+	got, err := os.ReadFile(builtinFull)
 	require.NoError(t, err)
 	assert.Contains(t, string(got), "color: green")
 }
@@ -173,9 +173,9 @@ func TestResync_DropsManagedResourceAbsentFromCluster(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
-// A manifest a human moved off its canonical path is still swept by content identity
+// A manifest a human moved off its built-in path is still swept by content identity
 // when it is absent from the cluster — the moved-manifest disease M8 cures: the sweep
-// targets the document's real RecordRef, not a regenerated canonical path.
+// targets the document's real RecordRef, not a regenerated built-in path.
 func TestResync_DropsMovedManifestByContentIdentity(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
@@ -303,12 +303,12 @@ func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 
 	// Placement: the existing ConfigMaps under apps/ do not decide where a genuinely new
 	// one goes. With no declared policy and no kustomize root, the create lands at the
-	// canonical path — the same answer the live-event path gives, which is the point: a
+	// built-in path — the same answer the live-event path gives, which is the point: a
 	// resync must not place a resource anywhere a steady-state create would not.
 	_, siblingErr := os.Stat(filepath.Join(root, "apps", "fresh.yaml"))
 	assert.True(t, os.IsNotExist(siblingErr), "apps/ is not inferred from the siblings")
 	_, freshErr := os.Stat(filepath.Join(root, "default", "configmaps", "fresh.yaml"))
-	assert.NoError(t, freshErr, "the created resource lands at the canonical path")
+	assert.NoError(t, freshErr, "the created resource lands at the built-in path")
 }
 
 // A fail-safe placement refusal during resync is counted in PlacementSkipped, not

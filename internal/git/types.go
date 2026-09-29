@@ -279,7 +279,7 @@ type ResolvedTargetMetadata struct {
 	// Placement is the GitTarget's declared new-file placement policy, resolved
 	// from spec.placement. Nil when the GitTarget declares none, in which case new
 	// resources are placed beside the folder's one kustomize root, if it has exactly one,
-	// and otherwise at the canonical path.
+	// and otherwise at the built-in path.
 	Placement *manifestanalyzer.PlacementPolicy
 	// Namespaces is the GitTarget's declared namespace behavior — spec.serializeNamespace and the
 	// source namespaces reaching the target — which decides whether the documents this target
@@ -765,7 +765,7 @@ type ResourceRef struct {
 	// carries no object for one, because by then the object is gone from the cluster.
 	Kind string
 	// Namespace is the resource's namespace, or the literal "_cluster" when it is
-	// cluster-scoped — types.ClusterScopeSegment, the same word the canonical Git path and the
+	// cluster-scoped — types.ClusterScopeSegment, the same word the built-in Git path and the
 	// {namespace} placement variable use. A cluster-scoped resource HAS a scope name; it is
 	// simply not a namespace, and "_cluster" is a name no real namespace can collide with
 	// (DNS-1123 forbids "_"). A template therefore never has to guard this field.

@@ -26,7 +26,7 @@ what the documents omit.
 ## Why this shape is single-namespace
 
 `serializeNamespace: false` in a **multi-namespace** tree is the sharpest edge in the model, and it
-is worth stating plainly because the folder looks like it should work. Canonical paths would put
+is worth stating plainly because the folder looks like it should work. Built-in paths would put
 `shop/` and `billing/` in separate subtrees, so the tree still *looks* like it distinguishes them —
 but the namespace would live only in the path, and a path is not something any applier reads. A
 `kubectl apply -R -n shop`, a Flux `targetNamespace`, or an Argo `destination.namespace` puts

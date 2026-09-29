@@ -77,7 +77,7 @@ cannot know.
 
 A second kustomize root inside `spec.path` is a misconfiguration of the target rather than a
 placement puzzle: it resolves to `Ambiguous` and does not cause the operator to pick one. A folder
-with no root at all falls through to the canonical path — that is [shape 3](../3-tree-serialized/README.md),
+with no root at all falls through to the built-in path — that is [shape 3](../3-tree-serialized/README.md),
 not a failure.
 
 Both halves used to be separate use-case scenarios (`brownfield-kustomize` for adoption,

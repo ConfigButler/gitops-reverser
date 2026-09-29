@@ -46,7 +46,7 @@ func iceCreamCRDMirrorFile(group string) string {
 	return iceCreamCRDName(group) + ".yaml"
 }
 
-// iceCreamInstancePath returns the canonical mirror path for one IceCreamOrder
+// iceCreamInstancePath returns the built-in mirror path for one IceCreamOrder
 // instance under the new namespace-first, version-less layout:
 // "<namespace>/<group>/icecreamorders/<name>.yaml".
 func iceCreamInstancePath(group, namespace, name string) string {

@@ -103,7 +103,7 @@ var (
 	//
 	// It exists because sibling inference was deleted: a
 	// repository with a hand-authored layout now needs a placement.byType line, and
-	// `source="canonical"` is how its operator learns which type in which target is missing
+	// `source="builtin"` is how its operator learns which type in which target is missing
 	// one, WITHOUT reading the folder. The (GitTarget, type) labels are the whole point — a
 	// bare "a fall-back happened somewhere" counter is not actionable, which is why the
 	// design doc argued against leading with one. Cardinality is bounded by targets ×

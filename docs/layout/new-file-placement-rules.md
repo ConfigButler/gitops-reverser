@@ -5,7 +5,7 @@
 > Status: implemented (v1 — Option B2: one `byType`/`default` placement map,
 > with sensitivity treated as an internal write-safety classification rather than a
 > separate user-facing placement namespace) + the kustomize-root fallback + the
-> canonical path. **Option C (sibling inference) was implemented and then removed**;
+> built-in path. **Option C (sibling inference) was implemented and then removed**;
 > its sections below are kept as history because the argument is worth having on the
 > page, and because the risks it enumerated are what the removal answers. The earlier
 > B1 surface (a nested `sensitive:` override block) shipped first and was superseded
@@ -28,7 +28,7 @@
 > **What is live, in one paragraph.** A new resource — one with no document in Git yet —
 > gets its path from the GitTarget's declared `placement.byType`/`placement.default`
 > (Option B2); failing that, from the folder's one supported kustomization root, if it has
-> exactly one; failing that, from the built-in canonical
+> exactly one; failing that, from the built-in path
 > `{namespace}/{group}/{resource}/{name}.yaml` path. Nothing reads the layout of
 > the other documents of the same type. Option C did exactly that and was deleted — the
 > argument is in [`open-asks-priority.md`](../design/open-asks-priority.md) and summarised
@@ -47,7 +47,7 @@ are three viable shapes:
   B2's single map.
 - **Option C: follow the existing layout (sibling inference)** — no policy at all;
   place a new resource where resources like it already live in the repo, and only
-  fall back to canonical placement when there is no sibling to learn from.
+  fall back to built-in placement when there is no sibling to learn from.
 
 A and B both make placement a *declared CRD policy*. C makes it a *continuation
 of the layout already in the repo* — zero new API surface. They are not rivals;
@@ -67,11 +67,11 @@ they layer:
   at an existing folder and it just works" a demo, and it is what made a human's edit to
   the repository silently change where the operator writes. It was removed; what fills
   B's gaps now is one structural fact (the folder's single kustomize root, if it has one)
-  and then the canonical path. See
+  and then the built-in path. See
   [Option C … removed](#option-c-follow-the-existing-layout-sibling-inference--removed).
 
 So the shipped shape is **B for the declared surface, the kustomize root where the
-folder's own structure decides, and canonical otherwise.** The rest of this document
+folder's own structure decides, and the built-in path otherwise.** The rest of this document
 develops B; C's sections are retained as history, and its
 [problems-and-risks](#problems-and-risks-with-option-c-as-written-before-the-removal)
 list is the record of why inferring policy from mutable repo state was the wrong
@@ -103,10 +103,10 @@ In this example:
 
 - Secrets land in one identity-complete encrypted file per resource;
 - ConfigMaps are grouped into `clusters/prod/configmaps.yaml`;
-- every other new resource uses the identity-complete canonical-style fallback.
+- every other new resource uses the identity-complete built-in-style fallback.
 
 That is powerful enough to express layouts such as `namespace-{namespace}.yaml`,
-per-kind bundles, Secret-specific paths, and the current canonical
+per-kind bundles, Secret-specific paths, and the current built-in
 `group/version/resource/namespace/name.yaml` layout. Sensitivity is still what
 keeps this from becoming too sharp, but it is enforced after placement: a
 sensitive write must be encrypted, identity-complete, and single-document in v1.
@@ -184,7 +184,7 @@ spec:
 
 Compatibility option:
 
-- no `spec.placement` means the current canonical placement;
+- no `spec.placement` means the current built-in placement;
 - a future single-string `spec.newFilePath` can be treated as one fallback rule if
   it already exists by the time this lands;
 - do not expose both long-term. Pick one canonical surface in the CRD.
@@ -221,9 +221,9 @@ Rules are deliberately simple:
 - lists inside one field are ORed;
 - an omitted `match` matches everything;
 - each non-empty rule list must include a catch-all fallback rule;
-- omitted `placement` uses the built-in canonical fallback for both lists;
-- omitted `sensitiveRules` uses the built-in secure canonical SOPS fallback;
-- omitted `normalRules` uses the built-in canonical plaintext fallback;
+- omitted `placement` uses the built-in fallback for both lists;
+- omitted `sensitiveRules` uses the built-in secure SOPS fallback;
+- omitted `normalRules` uses the built-in plaintext fallback;
 - an explicitly empty rule list is invalid.
 
 That gives the user top-to-bottom control without needing CEL, Go-template
@@ -359,9 +359,9 @@ The semantics are:
 - classify the resource first;
 - sensitive resources consult `placement.sensitive.byType`, then
   `placement.sensitive.default`, then sibling inference, then the built-in secure
-  canonical SOPS fallback;
+  built-in SOPS fallback;
 - normal resources consult `placement.byType`, then `placement.default`, then
-  sibling inference, then the built-in canonical plaintext fallback;
+  sibling inference, then the built-in plaintext fallback;
 - a top-level `default` never applies to sensitive resources;
 - any supplied sensitive template is still strictly validated as SOPS and
   identity-complete.
@@ -424,7 +424,7 @@ type GitTargetPlacementSpec struct {
 The semantics are:
 
 - resolve placement from the single map: exact `byType` first, then `default`,
-  then the folder's single kustomize root, then canonical fallback;
+  then the folder's single kustomize root, then built-in fallback;
 - independently classify the resource as sensitive or not;
 - for a sensitive resource, require the selected path to be identity-complete;
 - for a sensitive resource, write encrypted content and refuse multi-document
@@ -432,7 +432,7 @@ The semantics are:
 - for a non-sensitive resource, allow plaintext multi-document append only into
   files that are not classified encrypted;
 - `.sops.yaml` is not required. It is a useful convention and may still be what
-  the built-in canonical SOPS fallback chooses, but real GitOps repositories can
+  the built-in SOPS fallback chooses, but real GitOps repositories can
   contain SOPS-encrypted files named `secret.yaml`, and the controller should
   infer encryption from content/classification, not from filename alone.
 
@@ -486,7 +486,7 @@ of the API-level split is written up in "Sensitivity as a write-safety classifie
 The validation rules are almost the same as for ordered rules:
 
 - omitted `placement.default` uses the kustomize-root fallback and then the built-in
-  canonical fallback;
+  built-in fallback;
 - every `byType` key must parse as a valid resolved type key;
 - every referenced type should be served and watched by the GitTarget, or at
   least reported as unused policy;
@@ -511,7 +511,7 @@ Implemented shape:
    write-safety rule;
 2. when B is absent or silent for a resource, the fallbacks run: the folder's single
    supported kustomize root (a structural fact, so a new file is reachable from a render
-   root), and otherwise canonical. Option C's sibling inference used to sit here and was
+   root), and otherwise the built-in path. Option C's sibling inference used to sit here and was
    removed;
 3. ordered rules (A) remain a future extension only if users hit the type-map
    limit;
@@ -539,7 +539,7 @@ placement API and stays there under B2:
   rule, and deleting it removed a second implementation rather than the guarantee.
 - **Sensitive never appends.** A sensitive resource whose resolved path already
   holds a document is refused (`finishPlacement`), never appended.
-- **Canonical stays SOPS.** The built-in fallback keeps the `.sops.yaml` suffix for
+- **The built-in path stays SOPS.** The built-in fallback keeps the `.sops.yaml` suffix for
   a sensitive resource.
 
 What B1's API split *did* additionally provide — the guarantee that a Secret could
@@ -588,7 +588,7 @@ and each one either answers or declines:
 | 1a | declared `placement.byType` for this exact type | `by_type` | the GitTarget named this type |
 | 1b | declared `placement.default`, the catch-all | `default` | the GitTarget named a fallback |
 | 2 | the folder's single supported kustomization root | `kustomize_root` | a file that root cannot reach never renders |
-| 3 | canonical `{namespace}/{group}/{resource}/{name}.yaml` | `canonical` | nothing else did |
+| 3 | built-in `{namespace}/{group}/{resource}/{name}.yaml` | `builtin` | nothing else did |
 
 Every resolved path — whichever step produced it — then passes one gate before a byte is
 written: [path validation](#path-validation), the append-safety rules, and the
@@ -598,9 +598,9 @@ being merely logged.
 
 ### The kustomize-root fallback
 
-The canonical path is a `{namespace}/{group}/{resource}/{name}.yaml` tree a
+The built-in path is a `{namespace}/{group}/{resource}/{name}.yaml` tree a
 kustomization's `resources:` graph can never reach. So in a folder that kustomize builds,
-a new document at the canonical path is not merely oddly placed — it is **never rendered**,
+a new document at the built-in path is not merely oddly placed — it is **never rendered**,
 and nothing applies it. That is the failure new-file placement exists to prevent, and it is
 why this step survived the Option C deletion.
 
@@ -614,7 +614,7 @@ This is a **structural fact, not an inference**: the destination follows from th
 one root, not from picking the largest matching cohort of similar documents. Consequently:
 
 - more than one supported kustomization under the scanned root is **ambiguous** and
-  declines to canonical rather than guessing which root the resource belongs to;
+  declines to the built-in path rather than guessing which root the resource belongs to;
 - an *unsupported* kustomization is never a root (the writer must not edit one), and never
   a destination;
 - under render-root scoping — where the scan reaches past `spec.path` into a base the
@@ -689,8 +689,8 @@ cannot express the object rather than the write quietly diverging.
 >   one it could not extend anyway (P4).** The user had to declare it regardless.
 >
 > **What replaced it:** nothing, deliberately. A layout this operator cannot derive from one
-> root is declared in `placement.byType`/`placement.default`, or it is canonical — and
-> `placements_total{source="canonical"}` names the GitTarget and the type that needs the
+> root is declared in `placement.byType`/`placement.default`, or it takes the built-in path — and
+> `placements_total{source="builtin"}` names the GitTarget and the type that needs the
 > line, so "you need a declaration here" is a query rather than an archaeology exercise. No
 > `spec.placement.mode` enum was added: an off-switch for a removed feature is a permanent
 > API field bought to solve a temporary problem.
@@ -718,7 +718,7 @@ template.
    | 1 | same (resource type, namespace) | that cohort's directory |
    | 2 | same resource type, any namespace | that cohort's directory |
    | 3 | same namespace, any type | never implemented (P5) |
-   | 4 | nothing matches | canonical `ToGitPath()` directory |
+   | 4 | nothing matches | built-in `ToGitPath()` directory |
 
 2. **One-per-file vs bundle** — look at how that cohort is stored:
    - cohort is **one resource per file** → create a new single-document file in
@@ -738,23 +738,23 @@ never the quality of its guard.
 The sensitive/normal split that A and B get from two config blocks, C got for
 free from the encryption classification already in the store: a sensitive resource never
 inferred from plaintext siblings and was never appended to a plaintext bundle; it inferred
-only from other encrypted siblings, and otherwise used the built-in secure canonical
+only from other encrypted siblings, and otherwise used the built-in secure
 fallback. That guarantee is unchanged by the removal — it is now enforced entirely by the
 [write-safety refusals](#sensitive-placement-and-uniqueness), which is where it always
 actually lived.
 
-### Empty folder → canonical, then self-propagating
+### Empty folder → the built-in path, then self-propagating
 
 A freshly bootstrapped repo has no siblings, so the first resource of each kind
-landed on canonical `ToGitPath()` — byte-identical to today. From then on the layout
+landed on built-in `ToGitPath()` — byte-identical to today. From then on the layout
 propagated itself. This is why **cold-start repositories are unaffected by the removal**:
-inference already fell to canonical there. The behaviour change is confined to a brownfield
+inference already fell to the built-in path there. The behaviour change is confined to a brownfield
 folder that had a layout to continue.
 
 ### Determinism and ambiguity
 
 A type can legitimately live in two layouts at once (some ConfigMaps bundled, some
-canonical), so the lookup picked the cohort with the **most members**, tie-breaking on
+on the built-in path), so the lookup picked the cohort with the **most members**, tie-breaking on
 lexically-smallest directory then file — stable and independent of walk order. The
 reasoning at the time was that a "wrong but valid" location is cosmetic, since the document
 is match-first the instant it exists. That is true of one document and false of a
@@ -777,26 +777,26 @@ six times, and only P7, P9 and P10 survive as facts about the code that remains.
 
 **P1 — Placement is path-dependent on history, and the "most members" tie-break can
 flip.** The cohort lookup is computed against the repo *as it is now*. A repo that is
-6-canonical / 5-bundled routes a new ConfigMap to canonical; after a human bundles four
-more it is 6-canonical / 9-bundled and the *next* new ConfigMap goes to the bundle. Same
+6-built-in / 5-bundled routes a new ConfigMap to the built-in path; after a human bundles four
+more it is 6-built-in / 9-bundled and the *next* new ConfigMap goes to the bundle. Same
 kind, different destination, purely because of *when* it arrived. *Retired by the
 deletion: the destination no longer depends on repo state at all.*
 
-**P2 — Cold start and batch resync collapse to canonical.** With no siblings, every
-resource falls to canonical — and a store mutating *within* one plan would have made a
+**P2 — Cold start and batch resync collapse to the built-in path.** With no siblings, every
+resource falls to the built-in path — and a store mutating *within* one plan would have made a
 whole batch's layout depend on intra-batch ordering. Decision at the time: resolve every
 cohort against the pre-plan store snapshot. *The snapshot rule is still in force* for the
 store reads that remain (does this path already hold an append-safe file; does its
 directory carry a kustomization), so a batch is still order-independent.
 
-**P3 — The self-fulfilling canonical bias.** A repo the operator bootstrapped itself stayed
-canonical forever unless a human reorganized it, so C's benefit was concentrated on the
-brownfield repo and was a no-op for the dominant path. *Retired: canonical is now simply
+**P3 — The self-fulfilling built-in-path bias.** A repo the operator bootstrapped itself stayed
+on the built-in path forever unless a human reorganized it, so C's benefit was concentrated on the
+brownfield repo and was a no-op for the dominant path. *Retired: the built-in path is now simply
 the documented answer, and the metric says when a declaration would be better.*
 
 **P4 — Step 2 cannot extend a custom per-namespace layout to an unseen namespace.**
 Inference refused to reverse-engineer a path segment, so a custom `{namespace}/…` layout
-could not be continued into a namespace it had never seen and fell to canonical, breaking
+could not be continued into a namespace it had never seen and fell to the built-in path, breaking
 the user's pattern. *This was the strongest argument for the deletion: the layout most
 likely to be hand-authored was the one inference could not reach, so the user had to
 declare it anyway.*
@@ -811,7 +811,7 @@ like then. *Retired: a recreated resource resolves the same way it did the first
 because the answer does not depend on the folder's history.*
 
 **P7 — A resolved path is still subject to the write-time ignore invariant.** Any resolved
-path — declared, kustomize-root, or canonical — can collide with a `.gittargetignore`
+path — declared, kustomize-root, or built-in — can collide with a `.gittargetignore`
 pattern and trip the §4.3 `IgnoreShadowsManagedPath` precondition
 ([gitpath-foreign-content-stringency.md](../spec/gitpath-foreign-content-stringency.md)), aborting
 the flush. *Still live, and unrelated to inference: placement inherits this failure mode
@@ -890,7 +890,7 @@ placement:
 ```
 
 `.sops.yaml` and `.sops.yml` remain good conventions, and the built-in secure
-canonical fallback may use them, but they are not required for correctness. Some
+built-in fallback may use them, but they are not required for correctness. Some
 GitOps repositories use SOPS metadata inside ordinary `*.yaml` files. The
 operator should classify encryption from file content and write behavior, not
 from suffix alone.
@@ -939,7 +939,7 @@ language into a field that is deliberately not one. It is what a user writes to 
 `configmap-cache.yaml` convention that the built-in rungs do not produce: the kustomize root names a
 new sibling `{name}.yaml` and never infers a naming convention from the folder's existing files.
 
-With those variables, the built-in canonical layout is **namespace-first, no
+With those variables, the built-in layout is **namespace-first, no
 version segment** (as implemented in `ResourceIdentifier.ToGitPath`):
 
 ```text
@@ -952,7 +952,7 @@ namespace) so a repository browses namespace-first; the group is omitted for cor
 resources, and the API version is deliberately left out — the operator writes one
 version per object, so a version segment only adds noise and would churn the path on
 a preferred-version bump. For a core `v1` ConfigMap named `app` in namespace
-`default`, empty segments are removed, so the canonical result is:
+`default`, empty segments are removed, so the built-in result is:
 
 ```text
 default/configmaps/app.yaml
@@ -1081,7 +1081,7 @@ that explanation rather than accepted as syntax that does nothing. The reason is
 not that the others always have a value — `{groupPath}` renders empty for a
 core-group resource — but that an empty group is a resource whose identity has
 no group segment rather than a resource missing one. Collapsing that segment is
-the canonical path's intent, and a bucket there would invent a folder the layout
+the built-in path's intent, and a bucket there would invent a folder the layout
 never asked for.
 
 This sentinel design is a deliberate change from the first cut of this feature,
@@ -1166,7 +1166,7 @@ encrypted content. The filename does not prove encryption.
 - a `default` that can catch sensitive resources must include type identity,
   scope identity, and `{name}`;
 - if no declared placement applies, sibling inference may follow existing
-  encrypted siblings, otherwise the controller uses the built-in secure canonical
+  encrypted siblings, otherwise the controller uses the built-in secure
   fallback.
 
 A Secret rule that renders `secrets/{name}.yaml` is only valid for cluster-scoped
@@ -1317,7 +1317,7 @@ placement:
 ```
 
 This keeps sensitive resources one-per-file and encrypted while leaving
-everything else in the current canonical layout. A `.sops.yaml` suffix could be
+everything else in the current built-in layout. A `.sops.yaml` suffix could be
 used here as a repository convention, but it is not part of the safety contract.
 
 ### ConfigMaps grouped with ordered rules
@@ -1364,14 +1364,14 @@ clusters/prod/
 ```
 
 A new ConfigMap `cache` in namespace `app` arrives. There is no declaration and no
-kustomization, so it lands at the canonical path
+kustomization, so it lands at the built-in path
 **`clusters/prod/app/configmaps/cache.yaml`** — *not* appended to `all.yaml`. The same for a
-new Secret, at the canonical encrypted path. The user's bundle is not extended, because
+new Secret, at the built-in encrypted path. The user's bundle is not extended, because
 nothing told the operator it was a convention rather than a coincidence, and it counts:
 
 ```promql
 sum by (gittarget_name, group, version, resource) (
-  increase(gitopsreverser_placements_total{source="canonical"}[24h])
+  increase(gitopsreverser_placements_total{source="builtin"}[24h])
 )
 ```
 
@@ -1399,10 +1399,10 @@ inside these limits:
 
 - GitTarget-level only;
 - three resolution steps and no more: declared, the folder's single kustomize root,
-  canonical. Nothing reads the layout of other documents to guess an intent (that was
+  the built-in path. Nothing reads the layout of other documents to guess an intent (that was
   Option C, removed);
 - a layout the ladder cannot reach is **declared**, not inferred — and the
-  `placements_total{source="canonical"}` series is how its absence is noticed;
+  `placements_total{source="builtin"}` series is how its absence is noticed;
 - keep sensitivity as an internal write-safety classifier, not a second public
   placement namespace;
 - prefer exact type-map overrides plus defaults unless ordered matching proves
@@ -1427,7 +1427,7 @@ catch-all layout.
    - B2: one top-level type map (`placement.byType`) plus one
      `placement.default`; sensitivity is applied as write policy after placement
      resolves;
-   - the kustomize-root fallback and the canonical path: no API surface, and no
+   - the kustomize-root fallback and the built-in path: no API surface, and no
      off-switch — see the note on `spec.placement.mode` in
      [`open-asks-priority.md`](../design/open-asks-priority.md);
    - A: ordered `sensitiveRules` / `normalRules`, a later escape hatch only, not
@@ -1444,7 +1444,7 @@ catch-all layout.
    }
    ```
 
-4. The fallback is the **kustomize root, then bare canonical.** B is consulted first;
+4. The fallback is the **kustomize root, then the bare built-in path.** B is consulted first;
    with no `spec.placement` the resolver looks for exactly one supported writable
    kustomization and otherwise returns `ResourceIdentifier.ToGitPath()`. It must:
    - read the store from the **pre-plan snapshot** only, so a batch of new creates is
@@ -1499,7 +1499,7 @@ Unit tests:
 - sensitive resources do not require `.sops.yaml`;
 - sensitive resources require identity-complete selected paths;
 - sensitive resources are written encrypted regardless of filename suffix;
-- an unmatched sensitive resource still uses the built-in secure canonical
+- an unmatched sensitive resource still uses the built-in secure
   fallback;
 - a broad default such as `all.yaml` is rejected if it can catch sensitive
   resources;
@@ -1511,7 +1511,7 @@ Unit tests:
 Resolution-ladder unit tests:
 
 - an empty repo reproduces `ResourceIdentifier.ToGitPath()` exactly;
-- **every layout sibling inference used to read resolves canonical** — a bundle of the same
+- **every layout sibling inference used to read resolves to the built-in path** — a bundle of the same
   type in the same namespace, one-document-per-file, a per-namespace bundle, a directory per
   namespace, a single directory holding one namespace, a bundle spanning two namespaces, and
   a shared directory spanning two. One table, because it is one contract: the destination
@@ -1521,7 +1521,7 @@ Resolution-ladder unit tests:
   the cascade the deletion retires;
 - a declared entry outranks both fallbacks;
 - a batch of new creates against one snapshot is order-independent;
-- two supported kustomizations are ambiguous and fall to canonical; one supported
+- two supported kustomizations are ambiguous and fall to the built-in path; one supported
   kustomization places beside it and reports the `resources:` entry to add; an unsupported
   one is never edited or used as a root;
 - namespace inheritance: omitted when the governing kustomization's `namespace:` matches the
@@ -1539,9 +1539,9 @@ Resolution-ladder unit tests:
 
 Metric tests (`internal/git/placement_metrics_test.go`), driving the real write path:
 
-- a canonical fall-back is labeled with the GitTarget and the type key a `byType` line
+- a built-in fall-back is labeled with the GitTarget and the type key a `byType` line
   would name — the labels are the feature, so they are asserted rather than the count alone;
-- declared and kustomize-root placements are distinguishable from canonical, and
+- declared and kustomize-root placements are distinguishable from the built-in path, and
   `kustomize_root` is never counted as a fall-back;
 - a declared bundle records `disposition="appended"`;
 - a refused resource is counted as a refusal and **never also** as a placement;
@@ -1563,7 +1563,7 @@ Integration/e2e tests:
 ## Open questions
 
 - For the ordered-rule option, should a custom rule list be required to end with
-  an explicit catch-all, or should the controller append the canonical fallback
+  an explicit catch-all, or should the controller append the built-in fallback
   implicitly? This document recommends explicit catch-all rules because they make
   the user's layout complete on the page.
 - ~~Should `{label:key}` and `{annotation:key}` ship in v1, or wait until somebody
@@ -1586,13 +1586,13 @@ Integration/e2e tests:
   layout, or is non-retroactive placement absolute? Today nothing moves an existing
   document; this would be a deliberate, separate, destructive feature. The removal makes it
   more interesting, not less: a brownfield folder that wants its bundle back declares it,
-  and the documents already at canonical paths stay where they are.
+  and the documents already at built-in paths stay where they are.
 - How much of the "why here" answer belongs in GitTarget *status* rather than in a metric?
   `placements_total{source}` says which (target, type) fell back; it does not say what the
   operator understood about the folder, and it expires with the scrape window. That is what
   `status.layout` (B2 in the config-surface doc) is for, and the two are complements: a
   status field is what a `kubectl get -o yaml` in a bug report contains.
-- ~~Whether the first canonical fall-back for a (target, type) should also raise a
+- ~~Whether the first built-in fall-back for a (target, type) should also raise a
   `corev1.Event` on the GitTarget for timeliness.~~ **Closed, no Event**
   ([#339](https://github.com/ConfigButler/gitops-reverser/issues/339)): the metric names the
   target and the missing key, and `status.placement` is the durable record.

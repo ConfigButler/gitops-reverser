@@ -11,7 +11,7 @@ import (
 // resource. It is the M6 milestone: closing the delete-identity gap the review names
 // (docs/spec/current-manifest-support-review.md, "Cons And Gaps") so a
 // moved manifest is still deleted, and the writer (M7) deletes by RecordRef instead of
-// regenerating a canonical path.
+// regenerating a built-in path.
 //
 // This is the per-event delete path of the design's "Two Paths, One Plan Type"
 // (docs/spec/reconcile-via-watchlist-mark-and-sweep.md). Unlike BuildPlan's

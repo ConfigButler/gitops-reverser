@@ -254,7 +254,7 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 // would diverge). GitTarget paths never overlap, so at most one target can match; a
 // base with no matching target (e.g. an event whose target metadata could not be
 // resolved) gets no declared policy, falling through to the kustomize root and then the
-// canonical path.
+// built-in path.
 // namespacePolicyForBase finds the namespace policy for the GitTarget that owns base among
 // targets, matching exactly as placementPolicyForBase does. A base with no matching target gets
 // the zero policy, which is "declares nothing" — the same fallback an unresolvable target gets for

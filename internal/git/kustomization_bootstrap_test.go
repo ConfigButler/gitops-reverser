@@ -146,7 +146,7 @@ func TestUseKustomize_RefusesAPlacementNoRootWouldRender(t *testing.T) {
 		"the root that was already there is untouched")
 }
 
-// Without the flag nothing is created, and the document lands at the canonical path. That is the
+// Without the flag nothing is created, and the document lands at the built-in path. That is the
 // default and it is the whole difference between adopting a kustomize folder and creating one.
 func TestUseKustomize_UnsetWritesNoRoot(t *testing.T) {
 	worktree := newWorktreeForTest(t)

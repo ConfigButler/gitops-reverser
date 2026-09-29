@@ -653,7 +653,7 @@ one — and a zero rate is the steady state, not a broken exporter.
 | `by_type` | a `spec.placement.byType` entry named this exact type | no — this is what you asked for |
 | `default` | no `byType` entry named the type, so the catch-all `spec.placement.default` answered | **maybe** — a rule you meant to write may not be matching |
 | `kustomize_root` | the folder is governed by exactly one supported kustomization, so the file went beside it and joined its `resources:` list | no — the folder's own structure decided |
-| `canonical` | nothing else applied, so the built-in `{namespace}/{group}/{resource}/{name}.yaml` path was used | **maybe** — see below |
+| `builtin` | nothing else applied, so the built-in `{namespace}/{group}/{resource}/{name}.yaml` path was used | **maybe** — see below |
 
 **Which types are falling back, and in which target?** Each series is a candidate for one
 `placement.byType` line. The operator never guesses a hand-authored layout from the folder, so this
@@ -661,10 +661,10 @@ is how you learn a layout needs declaring:
 
 ```promql
 sum by (gittarget_namespace, gittarget_name, group, version, resource) (
-  increase(gitopsreverser_placements_total{source="canonical"}[24h]))
+  increase(gitopsreverser_placements_total{source="builtin"}[24h]))
 ```
 
-Canonical is not an error. For a target whose repository the operator bootstrapped, it is the whole
+The built-in path is not an error. For a target whose repository the operator bootstrapped, it is the whole
 layout and always will be. It is worth acting on when the folder has a convention the operator was not
 told about — the file lands somewhere tidy but not where the rest of that type lives.
 

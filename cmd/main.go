@@ -162,7 +162,7 @@ func main() {
 	watchMgr.EventRouter = eventRouter
 
 	// Inject the live followability registry into the writer, so a GVR-only DELETE
-	// event resolves to a manifest moved off its canonical path (M6 in the writer).
+	// event resolves to a manifest moved off its built-in path (M6 in the writer).
 	// The registry is a stable pointer the watch manager refreshes in place. SetMapper is
 	// the LOCAL cluster's resolver; SetClusterMapper gives the writer each SOURCE cluster's
 	// registry so a folder mirroring a remote resolves its documents' GVK->GVR against that
@@ -379,6 +379,7 @@ func main() {
 		APIReader:    mgr.GetAPIReader(),
 		Finalizer:    eventRouter,
 		AuthorLookup: commandAuthorLookup,
+		TTL:          cfg.commitRequestTTL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)
@@ -440,6 +441,7 @@ type appConfig struct {
 	attributionFactTTL          time.Duration
 	attributionGrace            time.Duration
 	gitRefreshInterval          time.Duration
+	commitRequestTTL            time.Duration
 	attributionMaxFactsPerType  int
 	attributionMaxFacts         int
 	attributionCollectionWindow time.Duration
@@ -589,6 +591,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
 			"at the cost of commit latency.")
+	fs.DurationVar(&cfg.commitRequestTTL, "commit-request-ttl", controller.DefaultCommitRequestTTL,
+		"How long a finished CommitRequest is kept before the controller deletes it, counted from "+
+			"when it finished (duration string; default 48h, 0 keeps them all). A request annotated "+
+			controller.CommitRequestKeepAnnotation+"=true is kept regardless.")
 	fs.DurationVar(&cfg.gitRefreshInterval, "git-refresh-interval", controller.DefaultGitRefreshInterval,
 		"How often an IDLE GitTarget re-proves where its branch is on the remote (duration string; "+
 			"default 10m, 0 disables it). A target that is publishing renews that knowledge on every "+
@@ -681,6 +687,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	}
 	if err := validateAdmissionWebhookConfig(cfg); err != nil {
 		return appConfig{}, err
+	}
+	// Rejected rather than read as "keep everything": a negative age has no meaning, and 0 already
+	// says that.
+	if cfg.commitRequestTTL < 0 {
+		return appConfig{}, fmt.Errorf("commit-request-ttl must be >= 0, got %s", cfg.commitRequestTTL)
 	}
 
 	bufferQuantity, err := resource.ParseQuantity(branchBufferMaxSizeFlag)

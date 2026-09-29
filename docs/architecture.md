@@ -1284,14 +1284,14 @@ hydrates only touched files into buffers for the commit, and flushes only change
 - **Upserts:** if a managed document for the resource already exists, patch it in place (preserving
   siblings in a multi document file); if it is sensitive, encrypt the whole document again at its existing
   path; if no document exists, place a new file per [File Placement](#file-placement) (declared policy,
-  then the folder's one kustomize root, then the canonical default).
+  then the folder's one kustomize root, then the built-in path).
 - **Kustomize override edit-through:** a live value produced by a well-formed `images:` or `replicas:`
   entry in the document's kustomization chain is written back to that entry (comment-preserving, only
   fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
   express falls back to the plain in-place patch. See
   [images-and-replicas edit-through design](design/support-boundary/finished/images-and-replicas-edit-through.md).
 - **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
-  not at the canonical path.
+  not at the built-in path.
 - **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only
   patch an existing parent manifest and never fabricate a parent object from partial subresource data; a
   `spec.replicas` assignment governed by a `replicas:` override is routed to the entry instead.
@@ -1311,16 +1311,16 @@ placed never moves a file already in Git. A new resource is placed by the first 
 2. **The folder's one kustomize root.** When the whole writable subtree is governed by exactly one
    supported `kustomization.yaml`, the file lands beside it and gets a `resources:` entry in the same
    commit. This step is a structural fact rather than a reading of the folder's conventions: the
-   canonical path below is a tree a `resources:` graph cannot reach, so a file written there would never
+   built-in path below is a tree a `resources:` graph cannot reach, so a file written there would never
    be rendered. Two supported kustomizations is ambiguous and declines.
-3. **Canonical fallback.** Otherwise the built-in default
+3. **Built-in fallback.** Otherwise the built-in default
    `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml`: namespace-first, group omitted for core, no
    version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive.
 
 **The layout of the folder's other documents is not an input.** Where a new file goes is decided by the
 three rungs above and nothing else, so a human's edit to the repository never changes where the
 operator writes next. A layout the ladder cannot derive is declared in `spec.placement`, and
-`gitopsreverser_placements_total{source="canonical"}` names the target and type that needs the line.
+`gitopsreverser_placements_total{source="builtin"}` names the target and type that needs the line.
 
 Sensitivity is a write-safety classifier, not a placement input: whatever path is chosen, a sensitive
 resource is written encrypted, is never appended to an existing file, and is never co-mingled with a

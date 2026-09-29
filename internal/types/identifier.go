@@ -116,7 +116,7 @@ func (r ResourceIdentifier) IsClusterScoped() bool {
 // is itself a legal namespace name.
 //
 // It is one constant rather than a literal per renderer because every surface that names a
-// resource's scope must name it identically: the canonical Git path (ToGitPath), the {namespace}
+// resource's scope must name it identically: the built-in Git path (ToGitPath), the {namespace}
 // placement variable, and a commit message's .Namespace. There is no second, scope-aware spelling
 // of any of the three — one concept, one word.
 const ClusterScopeSegment = "_cluster"

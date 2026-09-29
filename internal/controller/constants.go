@@ -177,6 +177,10 @@ const (
 	// DefaultGitRefreshInterval is how often an IDLE branch's remote state is re-proved. A target
 	// that is publishing renews its observation on every push and never waits for this.
 	DefaultGitRefreshInterval = 10 * time.Minute
+	// DefaultCommitRequestTTL is how long a finished CommitRequest is kept before the controller
+	// deletes it. Each save leaves one object behind, so without an expiry they accumulate in etcd
+	// for as long as the namespace lives. Two days leaves a weekend's worth of saves to inspect.
+	DefaultCommitRequestTTL = 48 * time.Hour
 	// RequeueStreamSettleInterval is the requeue interval while a Ready GitTarget still
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.

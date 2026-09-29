@@ -256,10 +256,10 @@ var _ = Describe(
 				)
 
 				for _, name := range []string{bundleConfigMapName, nestedConfigMapName} {
-					canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, testNs, "configmaps", name+".yaml")
-					_, statErr := os.Stat(canonicalPath)
+					builtinPath := filepath.Join(repo.CheckoutDir, gitPath, testNs, "configmaps", name+".yaml")
+					_, statErr := os.Stat(builtinPath)
 					g.Expect(os.IsNotExist(statErr)).
-						To(BeTrue(), "must not create canonical duplicate %s", canonicalPath)
+						To(BeTrue(), "must not create duplicate at the built-in path %s", builtinPath)
 				}
 			}, 120*time.Second, 3*time.Second).Should(Succeed())
 

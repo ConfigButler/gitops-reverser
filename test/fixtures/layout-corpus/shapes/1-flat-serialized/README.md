@@ -19,7 +19,7 @@ mirror/prod/
 
 [`config/gittarget.yaml`](config/gittarget.yaml) declares two things, and both are load-bearing.
 
-**Flat is a declared shape.** With no `placement.default` the built-in ladder ends at the canonical
+**Flat is a declared shape.** With no `placement.default` the built-in ladder ends at the built-in
 identity path, which is a tree. `"{namespace}-{name}.yaml"` is what asks for one directory. The
 `{namespace}` prefix is what keeps two namespaces from colliding on a common name like `config`;
 without it, `shop/config` and `billing/config` resolve to one path and

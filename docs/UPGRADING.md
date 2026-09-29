@@ -7,6 +7,25 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Finished CommitRequests are deleted after 48 hours
+
+The controller now deletes a `CommitRequest` 48 hours after it finished. On the first reconcile after
+the upgrade that includes every request that finished more than 48 hours ago. To keep them, set
+`controllerManager.commitRequestTTL: "0"` (flag `--commit-request-ttl=0`) before upgrading, or
+annotate the ones you want with `configbutler.ai/keep: "true"`. See
+[finished requests](configuration.md#finished-requests-are-deleted-after-48-hours).
+
+The manager's ClusterRole gains the `delete` verb on `commitrequests`. A deployment that renders its
+own RBAC must add it, or the deletes fail and the requests stay.
+
+## Placement `source="canonical"` is now `source="builtin"`
+
+The last rung of the placement ladder, `{namespace}/{group}/{resource}/{name}.yaml`, is now called
+the **built-in path** throughout the docs and code. "Default path" was avoided on purpose, because
+`spec.placement.default` is a path you declare. The one externally visible change is the label
+value on `gitopsreverser_placements_total`: `source="canonical"` is now `source="builtin"`. Update
+any dashboard or alert that selects on the old value. Where files are written does not change.
+
 ## A removal in a Kustomize folder is one edit, whatever caused it
 
 `rules[].objectSelector` is new and optional; a rule without it selects what it did before. Three

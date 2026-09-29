@@ -24,7 +24,7 @@ a `ConfigMap` named `checkout-config` in namespace `shop`. Each folder holds `co
 |---|---|---|---|---|
 | [1](1-flat-serialized/README.md) | Flat, namespaces serialized | — | `true` | `"{namespace}-{name}.yaml"` |
 | [2](2-flat-namespace-free/README.md) | Flat, namespace-free | — | `false` | `"{name}.yaml"` |
-| [3](3-tree-serialized/README.md) | Tree, namespaces serialized | — | `true` | none — built-in canonical |
+| [3](3-tree-serialized/README.md) | Tree, namespaces serialized | — | `true` | none — built-in path |
 | [4](4-tree-namespace-free/README.md) | Tree, namespace-free | — | `false` | `"{resource}/{name}.yaml"` |
 | [5](5-kustomize-single-folder/README.md) | One kustomize folder | — / `true` | unset / `false` | none |
 | [6](6-kustomize-base-and-overlays/README.md) | Base + three environment overlays | — | unset | none |
@@ -54,7 +54,7 @@ flowchart TD
   P -->|"placement.byType has this GVR"| T1["byType template"]
   P -->|"placement.default is set"| T2["default template"]
   P -->|"neither, and the folder has one kustomize root"| T3["beside the root, {name}.yaml"]
-  P -->|"neither, and it has none"| T4["canonical:<br/>{namespace}/{groupPath}/{resource}/{name}.yaml"]
+  P -->|"neither, and it has none"| T4["built-in:<br/>{namespace}/{groupPath}/{resource}/{name}.yaml"]
 
   T1 --> K{"Does a kustomization<br/>govern that directory?"}
   T2 --> K
@@ -118,7 +118,7 @@ so every shape that relied on inference has to be *declared* instead.
 |---|---|---|
 | 1 — flat, serialized | **Works.** No root is needed; inference writes the namespace anyway | nothing — but declare `serializeNamespace: true` to pin it |
 | 2 — flat, namespace-free | **Works, unverifiably.** Nothing in the repository supplies the namespace, and nothing ever will | `serializeNamespace: false` plus an out-of-band supplier the operator cannot see. Not a fault. See below |
-| 3 — tree, serialized | **Works.** The canonical path needs no context | nothing |
+| 3 — tree, serialized | **Works.** The built-in path needs no context | nothing |
 | 4 — tree, namespace-free | **Broken**, same reason as 2 | same as 2 |
 | 5 — one kustomize folder | **Broken today**: no root exists, so nothing is registered and nothing renders | `placement.useKustomize: true` — the operator writes the root, `namespace:` included |
 | 6 — base + overlays | **Half.** `useKustomize` creates a *standalone* root, not an overlay | see the gap below |
@@ -224,7 +224,7 @@ succeeds would be advertising rather than specifying, which is why both halves a
 Shape 3 exists for a use that is not deployment at all: pointing GitOps Reverser at a cluster to
 **see** what is in it, as reviewable documents with a Git history, and never applying the result.
 That is why the tree stays, and it constrains two things. The path has to carry the identity — the
-canonical `{namespace}/{groupPath}/{resource}/{name}.yaml` is what makes a folder browsable
+built-in `{namespace}/{groupPath}/{resource}/{name}.yaml` is what makes a folder browsable
 without an index — and the document has to carry `metadata.namespace`, because a viewer reads one
 file at a time and a file that means something different depending on its folder is not a record.
 

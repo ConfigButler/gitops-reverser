@@ -11,7 +11,7 @@ had in the old layout. Read the label before you read the page.
 
 | Document | Class | What it holds |
 |---|---|---|
-| [`new-file-placement-rules.md`](new-file-placement-rules.md) | **spec** | where a brand-new resource's file goes: declared, the folder's one kustomize root, canonical. Go source cites it by path, and `task lint-docs` checks those citations |
+| [`new-file-placement-rules.md`](new-file-placement-rules.md) | **spec** | where a brand-new resource's file goes: declared, the folder's one kustomize root, the built-in path. Go source cites it by path, and `task lint-docs` checks those citations |
 | [`contextual-namespace.md`](contextual-namespace.md) | **spec** | kustomize graph-aware namespace inference, and the supported subset. This is the inference `serializeNamespace` overrides |
 | [`model.md`](model.md) | **built** | the proposal, reversed and much smaller, and now shipped: the path template **stays**, and gained two optional booleans — `spec.placement.useKustomize`, and `spec.serializeNamespace` one level up because it governs every write rather than only new files. Carries the status stanza, the post-scan pass, the order the work was built in, and the four questions it deliberately left open |
 

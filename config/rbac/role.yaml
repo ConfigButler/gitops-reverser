@@ -86,6 +86,7 @@ rules:
   resources:
   - commitrequests
   verbs:
+  - delete
   - get
   - list
   - watch

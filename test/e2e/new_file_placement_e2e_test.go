@@ -16,7 +16,7 @@ import (
 // existing document in Git — the "install something extra in test" launch use
 // case (docs/layout/new-file-placement-rules.md,
 // docs/design/support-boundary/README.md) — lands inside the kustomize-managed overlay
-// directory it belongs to, not the canonical GVR-tree path, and the overlay's
+// directory it belongs to, not the built-in GVR-tree path, and the overlay's
 // kustomization.yaml gains the resources: entry so kustomize actually renders it.
 var _ = Describe("Manager New-File Placement", Label("manager", "new-file-placement"), Ordered, func() {
 	var (
@@ -92,7 +92,7 @@ var _ = Describe("Manager New-File Placement", Label("manager", "new-file-placem
 		By("verifying the new file landed in the overlay and the kustomization was updated")
 		newFileFullPath := filepath.Join(repo.CheckoutDir, gitPath, newFileRepoPath)
 		kustFullPath := filepath.Join(repo.CheckoutDir, gitPath, kustRepoPath)
-		canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, testNs, "configmaps", newConfigMap+".yaml")
+		builtinPath := filepath.Join(repo.CheckoutDir, gitPath, testNs, "configmaps", newConfigMap+".yaml")
 
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, repo.CheckoutDir)
@@ -107,9 +107,9 @@ var _ = Describe("Manager New-File Placement", Label("manager", "new-file-placem
 			g.Expect(kustBody).To(ContainSubstring("- deployment.yaml"), "the existing entry must survive")
 			g.Expect(kustBody).To(ContainSubstring("- " + newFileRepoPath))
 
-			_, statErr := os.Stat(canonicalPath)
+			_, statErr := os.Stat(builtinPath)
 			g.Expect(os.IsNotExist(statErr)).
-				To(BeTrue(), "must not also create a canonical-path duplicate %s", canonicalPath)
+				To(BeTrue(), "must not also create a built-in-path duplicate %s", builtinPath)
 		}, 120*time.Second, 3*time.Second).Should(Succeed())
 
 		By("✅ new resource placed inside the kustomize overlay and registered in resources:")

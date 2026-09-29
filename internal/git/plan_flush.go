@@ -167,7 +167,7 @@ type writeBatch struct {
 	documents map[documentKey]int64
 	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
-	// placement falls through to the folder's one kustomize root and then the canonical path.
+	// placement falls through to the folder's one kustomize root and then the built-in path.
 	policy *manifestanalyzer.PlacementPolicy
 	// namespaces is the GitTarget's declared namespace behavior — spec.serializeNamespace — which
 	// decides whether the bytes this batch writes carry metadata.namespace at all. The zero value
@@ -424,11 +424,11 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 }
 
 // applyUpsert resolves an object-bearing event against the subtree. When a managed
-// document for its identity already lives there — even moved off the canonical path —
+// document for its identity already lives there — even moved off the built-in path —
 // the resource is edited where it lives: a non-sensitive document is patched in place;
 // a sensitive document is re-encrypted wholesale AT ITS EXISTING PATH (never patched in
 // place — that would drop the SOPS metadata and write the secret back in cleartext, and
-// never at the canonical path, which would orphan the moved copy). A resource with no
+// never at the built-in path, which would orphan the moved copy). A resource with no
 // existing document is placed by createNew. It returns what it did to the bytes
 // (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
@@ -558,7 +558,7 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	}
 	sensitive := wb.writer.isSensitiveIdentifier(event.Identifier)
 	// WriteScope tells placement the write jail: when render-root scoping re-rooted the scan
-	// past spec.path, a declared/canonical path is rebased under the jail rather than escaping
+	// past spec.path, a declared/built-in path is rebased under the jail rather than escaping
 	// it (see finishPlacement). It is "" for a self-contained subtree, where placement already
 	// resolves relative to spec.path.
 	placement, err := manifestanalyzer.LocateNew(wb.store, wb.policy, manifestanalyzer.PlacementRequest{
@@ -1376,7 +1376,7 @@ func gitDocRawObject(content []byte, idx int) (map[string]interface{}, bool) {
 }
 
 // writeWholeFile renders the event's clean content (sanitized, or SOPS-encrypted for a
-// sensitive resource) and writes it wholesale at rel: the canonical placement path for a
+// sensitive resource) and writes it wholesale at rel: the built-in placement path for a
 // new resource, or the existing file path for a located sensitive resource. It keeps the
 // two per-event-writer safety rules: it never overwrites a multi-document file (which
 // would drop siblings — splicing a single rendered/encrypted document into a multi-doc
@@ -1418,7 +1418,7 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 }
 
 // applyDelete mirrors an observed removal: the live DELETE path, located by content so a manifest
-// moved off its canonical path is still found. The removal itself is the shared removeDocument, so a
+// moved off its built-in path is still found. The removal itself is the shared removeDocument, so a
 // live delete and a snapshot sweep remove a document the same way.
 //
 // spec.prune.mode gates the whole path, and the check is FIRST, before the document is located: a

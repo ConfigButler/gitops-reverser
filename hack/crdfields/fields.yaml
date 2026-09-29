@@ -101,12 +101,12 @@ kinds:
         default: the built-in templates
         doc: How commits are phrased. See [commit messages](commit-messages.md)
       - path: placement.byType
-        default: the canonical path
+        default: the built-in path
         doc: >-
           Per-type path templates for new documents. See
           [where new resources are written](#where-new-resources-are-written-specplacement)
       - path: placement.default
-        default: the canonical path
+        default: the built-in path
         doc: Catch-all path template for types with no `byType` entry
       - path: placement.useKustomize
         default: "off"

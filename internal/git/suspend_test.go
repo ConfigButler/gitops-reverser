@@ -153,7 +153,7 @@ func TestLayoutReport_PublishedBeforeAnythingIsWritten(t *testing.T) {
 
 	require.Len(t, *reports, 1)
 	assert.Equal(t, manifestanalyzer.LayoutNone, (*reports)[0].Reason,
-		"an empty folder resolves to the canonical ladder, and says so before it is written to")
+		"an empty folder resolves to the built-in ladder, and says so before it is written to")
 }
 
 // An unattributable batch publishes nothing rather than filing a report under a key no

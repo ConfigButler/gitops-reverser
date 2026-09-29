@@ -86,6 +86,11 @@ controllerManager:
   # Bounds the open commit window plus the writes retained for replay until a push
   # succeeds; tripping it finalizes the window early, ignoring the commit cadence.
   branchBufferMaxSize: 8Mi
+  # How long a finished CommitRequest is kept before the controller deletes it, as a duration
+  # counted from when it finished. Every save leaves one object behind, so without this they
+  # accumulate for as long as the namespace lives. Set "0" to keep them all, or annotate a single
+  # request configbutler.ai/keep: "true" to keep just that one.
+  commitRequestTTL: 48h
 
 # How the operator treats the Git remote.
 git:

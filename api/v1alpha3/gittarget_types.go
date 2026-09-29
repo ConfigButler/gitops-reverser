@@ -160,7 +160,7 @@ type GitTargetSpec struct {
 	// "_" instead when you want a bucket no namespace can reach. Only these two variables take a
 	// fallback, and one written on any other is rejected rather than silently ignored — not
 	// because the others always have a value ({groupPath} renders empty for a core resource) but
-	// because an empty group segment collapses by design, which is the canonical path's intent.
+	// because an empty group segment collapses by design, which is the built-in path's intent.
 	//
 	// A label is never identity, so it does not contribute to the identity-completeness a
 	// sensitive route requires (a {namespace} fallback does not cost it either). Because
@@ -303,10 +303,10 @@ type GitTargetCommitSpec struct {
 // kustomization when the whole folder is governed by exactly one supported
 // kustomization (so the file is reachable from a render root instead of being
 // written where kustomize would never build it), and otherwise at the built-in
-// canonical, versionless {namespace}/{group}/{resource}/{name}.yaml path.
+// versionless {namespace}/{group}/{resource}/{name}.yaml path.
 // Nothing infers a destination from where the repository keeps other resources of
 // the same type: a layout this operator cannot derive from one root is declared
-// here or it is canonical. Because the canonical path omits the API version,
+// here or it takes the built-in path. Because the built-in path omits the API version,
 // objects that differ only by version share a file; a target that watches several
 // versions of the same group/resource and wants them separated must use a
 // ByType/Default template that includes {version}.
@@ -322,7 +322,7 @@ type GitTargetPlacementSpec struct {
 
 	// Default is the path template used for a new resource whose type has no ByType
 	// entry. Omitted, it falls through to the folder's one supported kustomization
-	// root, if it has exactly one, and then to the built-in canonical path.
+	// root, if it has exactly one, and then to the built-in path.
 	// A bundling default (one that is not identity-complete,
 	// such as "all.yaml") is only valid when a sensitive resource can never reach it
 	// — give every sensitive type an explicit identity-complete ByType entry.

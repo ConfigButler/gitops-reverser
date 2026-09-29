@@ -423,10 +423,10 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 //     single-identity path the steady-state writer uses (applyUpsert): a managed
 //     document for its identity is patched in place even when moved off its canonical
 //     path, a sensitive resource is re-encrypted wholesale at its existing path, and a
-//     resource with no managed document is created at its canonical placement path;
+//     resource with no managed document is created at its built-in placement path;
 //   - every watched, resolved managed document the snapshot did NOT contain is a
 //     managed drop (mark-and-sweep): the planner's PlanDropOrphan set, deleted by
-//     RecordRef so a manifest moved off its canonical path is still removed.
+//     RecordRef so a manifest moved off its built-in path is still removed.
 //
 // The desired set MUST be the whole watched state at one consistent revision (the
 // gatherer aborts and produces nothing on a partial stream), so an empty desired set
@@ -471,7 +471,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// The resync's events are synthesised from the desired snapshot and carry no GitTarget
 	// identity of their own, so the placement metrics take it from the resolved metadata. A
 	// resync creates resources exactly as the live path does, and its placements must land in
-	// the same series — otherwise a fall-back to canonical would be visible for a live create
+	// the same series — otherwise a fall-back to the built-in path would be visible for a live create
 	// and invisible for the reconcile that produced the same file.
 	batch.target = placementTarget{namespace: target.Namespace, name: target.Name}
 	// First materialization is the adoption gate: refuse a subtree that holds content the

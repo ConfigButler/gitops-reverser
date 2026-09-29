@@ -50,10 +50,10 @@ func TestPlanDelete_ByResourceIdentity(t *testing.T) {
 }
 
 // TestPlanDelete_MovedManifest is the headline M6 case: the Deployment lives at a
-// NON-canonical path (legacy/foo.yaml, not apps/v1/deployments/default/web.yaml), and a
+// NON-built-in path (legacy/foo.yaml, not apps/v1/deployments/default/web.yaml), and a
 // delete event with only GVR/name still finds it — because location is content-derived,
 // not path-derived. This is the gap the old path scan left (a moved manifest was
-// invisible to the canonical-path lookup).
+// invisible to the built-in-path lookup).
 func TestPlanDelete_MovedManifest(t *testing.T) {
 	fsys := fstest.MapFS{"legacy/foo.yaml": {Data: []byte(deployYAML)}}
 	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))

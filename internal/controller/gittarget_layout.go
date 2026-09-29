@@ -73,7 +73,7 @@ func publishLayout(
 // layoutCondition maps a resolution onto the condition's status and message.
 //
 // Only Ambiguous is False. None is a definite, healthy answer — the folder has no kustomization
-// and new documents take a declared template or the canonical path — and reporting it as False
+// and new documents take a declared template or the built-in path — and reporting it as False
 // would train operators to ignore the condition on the majority of folders, which is the same
 // mistake status.retention was designed not to make.
 func layoutCondition(report git.LayoutReport) (metav1.ConditionStatus, string) {
@@ -88,7 +88,7 @@ func layoutCondition(report git.LayoutReport) (metav1.ConditionStatus, string) {
 			fmt.Sprintf("render root %q governs new files", report.RenderRoot)
 	case manifestanalyzer.LayoutNone:
 		return metav1.ConditionTrue,
-			"no kustomization governs this folder; new files take the declared or canonical path"
+			"no kustomization governs this folder; new files take the declared or built-in path"
 	case manifestanalyzer.LayoutAmbiguous:
 		return metav1.ConditionFalse, fmt.Sprintf(
 			"the GitTarget path covers %d kustomize render roots (%s); point it at one of them, so "+
