@@ -1035,11 +1035,26 @@ tasks:
           }
           sleep 2
         done
-        helm upgrade --install argocd "$rendered/argo-cd-{{.ARGOCD_CHART_VERSION}}.tgz" \
-          --kube-context "{{.CTX}}" \
-          --namespace "{{.ARGOCD_NAMESPACE}}" --create-namespace \
-          --values "{{.ARGOCD_DIR}}/values.yaml" \
-          --wait --timeout "{{.ARGOCD_WAIT_TIMEOUT}}"
+        # One retry, with a diagnostic dump first. A CI run timed out with argocd-redis
+        # at Available 0/1 and nothing in the log said why; the dump makes the next
+        # occurrence diagnosable, and the retry is safe because upgrade --install is
+        # idempotent and a slow image pull keeps its progress across attempts.
+        for attempt in 1 2; do
+          if helm upgrade --install argocd "$rendered/argo-cd-{{.ARGOCD_CHART_VERSION}}.tgz" \
+              --kube-context "{{.CTX}}" \
+              --namespace "{{.ARGOCD_NAMESPACE}}" --create-namespace \
+              --values "{{.ARGOCD_DIR}}/values.yaml" \
+              --wait --timeout "{{.ARGOCD_WAIT_TIMEOUT}}"; then
+            break
+          fi
+          echo "⚠️  Argo CD install attempt $attempt did not become ready; state of {{.ARGOCD_NAMESPACE}}:" >&2
+          kubectl --context "{{.CTX}}" -n "{{.ARGOCD_NAMESPACE}}" get pods -o wide >&2 || true
+          kubectl --context "{{.CTX}}" -n "{{.ARGOCD_NAMESPACE}}" get events --sort-by=.lastTimestamp >&2 || true
+          # Every pod, not only non-Running ones: a pod failing readiness or crash-looping
+          # still reports phase Running.
+          kubectl --context "{{.CTX}}" -n "{{.ARGOCD_NAMESPACE}}" describe pods >&2 || true
+          [ "$attempt" -eq 2 ] && exit 1
+        done
         # helm --wait covers workload readiness but not CRD establishment; the specs
         # create Applications immediately, so gate on it explicitly.
         kubectl --context "{{.CTX}}" wait --for=condition=Established \
