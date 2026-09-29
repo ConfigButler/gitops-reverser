@@ -564,3 +564,29 @@ func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCollection(t *testin
 	assert.Equal(t, before, remoteCommits(t, f),
 		"a queued refusal must not move the branch after the same object was accepted")
 }
+
+// TestRefusalObservation_RecoverySurvivesASelectorChange: a refusal filed while the rule selected X
+// is answered by the next accepted snapshot of the same boundary, even though it now selects Y. The
+// two snapshots own the same Git documents, so keying the refusal by selector left X's queued
+// commit to fire after the recovery.
+func TestRefusalObservation_RecoverySurvivesASelectorChange(t *testing.T) {
+	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+	})
+	loop := newBranchWorkerEventLoop(w, time.Minute)
+	t.Cleanup(loop.stopTimers)
+
+	selecting := func(selector string) *ResyncRequest {
+		scope := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "team-a")
+		scope.Collection.LabelSelector = selector
+		return &ResyncRequest{Scope: &scope}
+	}
+	key := refusalKey{target: editingRef(), collection: selecting("tier=x").refusalCollection()}
+	w.recordRefusalObservation(key, "observation-1")
+	loop.armTrailingRefusalTouch(key, "the configmap was refused", "observation-1", 0)
+
+	loop.refusalRecovered(editingRef(), selecting("tier=y").refusalCollection())
+
+	assert.NotContains(t, loop.refusalPending, key)
+	assert.False(t, w.refusalAlreadyCovered(key, "observation-1"))
+}
