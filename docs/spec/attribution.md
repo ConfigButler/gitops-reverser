@@ -41,8 +41,8 @@ When no usable fact is found the commit ships with the explicit unresolved autho
 
 A commit names a person only when the Kubernetes API server **authenticated** that person for the
 change: the user in the audit record of a mirrored edit, or the submitter in the admission request
-of a `CommitRequest`. Every other commit carries an identity the operator's own configuration
-chooses, never one a submitter supplies:
+of a `CommitRequest`. Every other commit carries one of two identities the operator decides, never
+one a submitter supplies:
 
 - **Attribution is off** (the chart default): the configured Git identity.
 - **Reconcile and resync writes**, which have no single actor: the configured Git identity.
