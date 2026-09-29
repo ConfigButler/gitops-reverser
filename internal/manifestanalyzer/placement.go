@@ -430,20 +430,32 @@ func ValidateResolvedPlacementPath(p string) error {
 	return nil
 }
 
-// builtinPath mirrors internal/git's generateFilePath (ResourceIdentifier.ToGitPath
-// plus the .sops.yaml suffix for a sensitive resource). It is re-implemented here,
-// not imported, because internal/git already imports manifestanalyzer and importing
-// the other way would cycle; the duplicated logic is six lines and covered by tests
-// on both sides.
+// BuiltinPlacementTemplate is the last rung of the placement ladder: where a new document goes
+// when no byType entry, no default and no single kustomize root answered. It is an ordinary
+// placement template rendered by RenderPlacementTemplate, so the built-in path obeys exactly the
+// rules a declared one does: a core resource's empty {groupPath} collapses, a cluster-scoped
+// resource's {namespace} renders "_cluster", and {sensitiveSuffix} adds .sops.yaml for a Secret.
+//
+// types.ResourceIdentifier.ToGitPath is the hand-written statement of the same shape, kept as the
+// reference a test pins this against, not as a second implementation to call.
+const BuiltinPlacementTemplate = "{namespace}/{groupPath}/{resource}/{name}{sensitiveSuffix}"
+
+// BuiltinGitPath renders BuiltinPlacementTemplate for one resource. Every writer that needs the
+// built-in path calls this, so the placement ladder, the Git writer and the SOPS filename can never
+// disagree about it.
+func BuiltinGitPath(id types.ResourceIdentifier, sensitive bool) string {
+	path, err := RenderPlacementTemplate(BuiltinPlacementTemplate,
+		placementVars(PlacementRequest{Identifier: id, Sensitive: sensitive}))
+	if err != nil {
+		// The template is a constant over variables placementVars always supplies, and a test
+		// renders it; an error here is a broken build, not a runtime condition.
+		panic(fmt.Sprintf("built-in placement template %q does not render: %v", BuiltinPlacementTemplate, err))
+	}
+	return path
+}
+
 func builtinPath(req PlacementRequest) string {
-	base := req.Identifier.ToGitPath()
-	if !req.Sensitive {
-		return base
-	}
-	if strings.HasSuffix(base, ".yaml") {
-		return strings.TrimSuffix(base, ".yaml") + ".sops.yaml"
-	}
-	return base + ".sops.yaml"
+	return BuiltinGitPath(req.Identifier, req.Sensitive)
 }
 
 // --- Option B: declared type-map placement -------------------------------------

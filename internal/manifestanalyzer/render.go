@@ -192,7 +192,7 @@ func renderPlanText(w io.Writer, plan Plan) {
 // create (which has no existing location yet), the existing document otherwise.
 func planActionTarget(a PlanAction) string {
 	if a.Kind == PlanCreate {
-		return a.Resource.ToGitPath()
+		return BuiltinGitPath(a.Resource, false)
 	}
 	return fmt.Sprintf("%s#%d", a.Ref.FilePath, a.Ref.DocumentIndex)
 }

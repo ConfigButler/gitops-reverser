@@ -968,3 +968,41 @@ func TestValidPlacementTemplateSyntax_NamespaceOrClusterIsRemovedAndSaysSo(t *te
 		}
 	}
 }
+
+// The built-in path is now a template, and ToGitPath is the hand-written statement of the same
+// shape. This pins the two byte for byte across every shape an identity takes, so neither can
+// drift: cluster-scoped and namespaced, core and grouped, sensitive and not, plus the name
+// characters Kubernetes allows that a path might trip on.
+func TestBuiltinPlacementTemplate_MatchesToGitPath(t *testing.T) {
+	identities := []types.ResourceIdentifier{
+		types.NewResourceIdentifier("", "v1", "configmaps", "team-a", "cache"),
+		types.NewResourceIdentifier("apps", "v1", "deployments", "team-a", "api"),
+		types.NewResourceIdentifier("", "v1", "namespaces", "", "team-a"),
+		types.NewResourceIdentifier("rbac.authorization.k8s.io", "v1", "clusterroles", "", "system:admin"),
+		types.NewResourceIdentifier("shop.example.com", "v1alpha1", "icecreamorders", "team-a", "vanilla.v2"),
+		types.NewResourceIdentifier("", "v1", "secrets", "team-a", "db"),
+	}
+	for _, id := range identities {
+		for _, sensitive := range []bool{false, true} {
+			want := id.ToGitPath()
+			if sensitive {
+				want = strings.TrimSuffix(want, ".yaml") + ".sops.yaml"
+			}
+			if got := BuiltinGitPath(id, sensitive); got != want {
+				t.Errorf("%s/%s/%s (sensitive=%v): template renders %q, ToGitPath says %q",
+					id.Group, id.Resource, id.Name, sensitive, got, want)
+			}
+		}
+	}
+}
+
+// Where the two deliberately differ: the template escapes a path separator in a value, as every
+// placement template does, so a custom resource named with a backslash (legal for custom resources,
+// whose names only forbid "/" and "%") stays one file name instead of a directory on a Windows
+// checkout.
+func TestBuiltinGitPath_EscapesABackslashInAName(t *testing.T) {
+	id := types.NewResourceIdentifier("shop.example.com", "v1", "icecreamorders", "team-a", `a\b`)
+	if got, want := BuiltinGitPath(id, false), "team-a/shop.example.com/icecreamorders/a%5Cb.yaml"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

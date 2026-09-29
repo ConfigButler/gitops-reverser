@@ -522,7 +522,7 @@ because they are worth different urgency:
 | `status.layout` | **SHIPPED** as `status.placement` in #326 | The durable half of "what did the operator understand about this folder". It waited for the layout model's vocabulary and shipped with it |
 | Split `declared` into `byType` and `default`; unify the prose on "canonical" | **SHIPPED** as `by_type`/`default` | A catch-all quietly swallowing a type you meant to name looks identical to a rule working |
 | `{kindLower}` | **SHIPPED** in #400 | Small, self-contained |
-| Canonical path as a template constant | **filed, cleanup** | Removes the hand-written duplication; what a future default would reuse |
+| Canonical path as a template constant | **SHIPPED** in #400 as `BuiltinPlacementTemplate` | Removes the hand-written duplication; what a future default would reuse |
 | `renderRootReason: Ambiguous` | **SHIPPED** in #326 | Shipped with `status.placement`, and the layout model decided the policy: a folder covering two roots REFUSES the placement rather than writing it unrendered |
 | A CRD default for `placement.default` | **re-opened** | The reversal took away the answer this row used to give. There is no `layout.kind`; the template stays, and now that the ancestor walk registers a defaulted path, the objection is legibility rather than correctness. It is an open question in [`model.md`](../layout/model.md) |
 
