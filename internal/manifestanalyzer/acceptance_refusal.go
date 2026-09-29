@@ -91,7 +91,7 @@ func issueHint(issue AcceptanceIssue) string {
 	case IssueWriteEscapesScope:
 		return "keep writes under spec.path"
 	case IssueUnownedDeletePatch:
-		return "rename or remove the $patch: delete the operator did not write"
+		return "edit or remove the patch the operator did not write, and any kustomization reference to it"
 	case IssueDuplicate,
 		IssueImpureManagedFile,
 		IssueInvalidYAML,
