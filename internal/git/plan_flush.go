@@ -204,6 +204,35 @@ type writeBatch struct {
 	// by resource identity so the result does not depend on event order.
 	// See docs/layout/new-file-placement-rules.md, "Collision and append behavior".
 	coldBundles map[string][]coldBundleMember
+	// rendered records what this batch has already done to an inherited object's presence in the
+	// render: true once it retired the owned patch hiding the object, false once it authored one.
+	// The store was built before the batch, so without this a second event for the same object
+	// (ADDED then MODIFIED, or back and gone again) read the pre-batch render and was wrong about
+	// it. See rendersInBatch.
+	rendered map[renderKey]bool
+}
+
+// renderKey names one document of the store by where it lives and what it is.
+type renderKey struct {
+	path, kind, name string
+}
+
+// rendersInBatch reports whether the document at path renders once the batch's edits so far are
+// applied: what the batch itself did to it when it did anything, and the pre-batch render when
+// it did not.
+func (wb *writeBatch) rendersInBatch(path, kind, name string) bool {
+	if r, ok := wb.rendered[renderKey{path: path, kind: kind, name: name}]; ok {
+		return r
+	}
+	return wb.store.Renders(path, kind, name)
+}
+
+// setRenderedInBatch records that the batch took the document at path in or out of the render.
+func (wb *writeBatch) setRenderedInBatch(path, kind, name string, rendered bool) {
+	if wb.rendered == nil {
+		wb.rendered = map[renderKey]bool{}
+	}
+	wb.rendered[renderKey{path: path, kind: kind, name: name}] = rendered
 }
 
 // coldBundleMember is one new document contributing to a brand-new shared bundle
@@ -405,7 +434,7 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
 	// An inherited object back in the cluster first loses the owned delete patch that hid it, so
 	// the upsert below edits a base document the render holds again.
-	basePath, err := wb.retireInheritedDelete(ctx, event)
+	basePath, retired, err := wb.retireInheritedDelete(ctx, event)
 	if err != nil {
 		return upsertNoChange, err
 	}
@@ -417,7 +446,7 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 	}
 	intentsBefore := len(wb.intents)
 	outcome, err := wb.upsert(ctx, event)
-	if err == nil && basePath != "" {
+	if err == nil && retired {
 		// The object renders again, and the oracle must prove it renders as the live object: when
 		// the base already matches, the upsert wrote nothing and declared nothing, so the presence
 		// is declared here. For the mirror it is a created document either way.
@@ -1428,7 +1457,7 @@ func (wb *writeBatch) removeDocument(
 	target deleteTarget,
 	outcome string,
 ) (bool, error) {
-	if !wb.store.Renders(target.filePath, target.id.Kind, target.id.Name) {
+	if !wb.rendersInBatch(target.filePath, target.id.Kind, target.id.Name) {
 		// Already out of the render, whoever's $patch: delete did it. There is nothing to remove.
 		return false, nil
 	}

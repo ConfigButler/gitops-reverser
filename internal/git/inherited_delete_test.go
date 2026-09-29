@@ -355,3 +355,80 @@ func TestResync_ReEntryRefusesAnInJailDocumentAPatchHides(t *testing.T) {
 	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueUnownedDeletePatch))
 	assert.False(t, changed)
 }
+
+// flushOverlayEvents applies one live batch of events to the overlay.
+func flushOverlayEvents(t *testing.T, worktree *gogit.Worktree, events ...Event) (bool, error) {
+	t.Helper()
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	return w.flushEventsToWorktree(context.Background(), worktree, inheritedOverlay, events, nil,
+		namespacePolicy{}, v1alpha3.PruneOnEvent)
+}
+
+func sharedEvent(op types.OperationType, data string) Event {
+	cm := sharedConfigMap()
+	if op == types.OperationDelete {
+		return Event{Identifier: cm.Resource, Operation: string(op)}
+	}
+	cm.Object.Object["data"] = map[string]interface{}{"k": data}
+	return Event{Identifier: cm.Resource, Operation: string(op), Object: cm.Object}
+}
+
+// Two events for one returning object in a single batch (a relabel back into the selection, then
+// a status write, is the ordinary shape): the first retires the owned patch, and
+// the second must see the object the batch just brought back, not the pre-batch render that still
+// has it hidden. It read the pre-batch render, found no patch, and refused the whole batch as
+// hidden by a patch the operator does not own.
+func TestFlush_ReEntryThenUpdateInOneBatch(t *testing.T) {
+	worktree := seedInheritedOverlay(t)
+	_, _, err := resyncOverlay(t, worktree, v1alpha3.PruneAlways)
+	require.NoError(t, err)
+
+	changed, err := flushOverlayEvents(t, worktree,
+		sharedEvent(types.OperationCreate, "v"),
+		sharedEvent(types.OperationUpdate, "v"))
+	require.NoError(t, err)
+	assert.True(t, changed)
+	_, patchPresent := readRepoFile(t, worktree, inheritedPatch)
+	assert.False(t, patchPresent, "the owned patch is retired")
+	kust, _ := readRepoFile(t, worktree, inheritedOverlay+"/kustomization.yaml")
+	assert.NotContains(t, kust, "configmap-shared-delete.yaml")
+	base, _ := readRepoFile(t, worktree, "base/cm.yaml")
+	assert.Equal(t, inheritedBaseCM, base, "the read-only base is untouched")
+}
+
+// Back and gone again in one batch: the DELETE must see the object the batch just brought back.
+// It read the pre-batch render, took the object as already hidden, and did nothing, so the commit
+// left the overlay rendering an object the cluster no longer holds.
+func TestFlush_ReEntryThenDeleteInOneBatch(t *testing.T) {
+	worktree := seedInheritedOverlay(t)
+	_, _, err := resyncOverlay(t, worktree, v1alpha3.PruneAlways)
+	require.NoError(t, err)
+	patchBefore, _ := readRepoFile(t, worktree, inheritedPatch)
+	kustBefore, _ := readRepoFile(t, worktree, inheritedOverlay+"/kustomization.yaml")
+
+	_, err = flushOverlayEvents(t, worktree,
+		sharedEvent(types.OperationCreate, "v"),
+		sharedEvent(types.OperationDelete, ""))
+	require.NoError(t, err)
+	patch, patchPresent := readRepoFile(t, worktree, inheritedPatch)
+	require.True(t, patchPresent, "the object is gone again, so its owned patch stays")
+	assert.Equal(t, patchBefore, patch)
+	kust, _ := readRepoFile(t, worktree, inheritedOverlay+"/kustomization.yaml")
+	assert.Equal(t, kustBefore, kust)
+}
+
+// Gone and back again in one batch, from a rendered start: the patch the DELETE authored is the
+// batch's own, so the returning object retires it and the overlay is left as it was.
+func TestFlush_DeleteThenReEntryInOneBatch(t *testing.T) {
+	worktree := seedInheritedOverlay(t)
+	kustBefore, _ := readRepoFile(t, worktree, inheritedOverlay+"/kustomization.yaml")
+
+	_, err := flushOverlayEvents(t, worktree,
+		sharedEvent(types.OperationDelete, ""),
+		sharedEvent(types.OperationCreate, "v"))
+	require.NoError(t, err)
+	_, patchPresent := readRepoFile(t, worktree, inheritedPatch)
+	assert.False(t, patchPresent)
+	kust, _ := readRepoFile(t, worktree, inheritedOverlay+"/kustomization.yaml")
+	assert.Equal(t, kustBefore, kust)
+}

@@ -177,34 +177,37 @@ func (wb *writeBatch) authorInheritedDelete(
 	// flush is refused, re-applying what Git holds puts the object back.
 	wb.recordDocumentRemoval(patchBuf)
 	wb.putToKustomize = true
+	wb.setRenderedInBatch(target.filePath, target.id.Kind, target.id.Name, false)
 	return true, nil
 }
 
 // retireInheritedDelete undoes an owned delete patch for an inherited object that is present in the
 // cluster again: the patch file goes, and so does its patches: entry. It returns the base document's
-// path when it retired one, in which case the caller owes the oracle an intent that the object
-// renders again, and "" otherwise.
+// path when this batch has brought the object back into the render, now or by an earlier event, so
+// the caller plans the upsert against the staged render; retired reports that it happened now, in
+// which case the caller also owes the oracle an intent that the object renders again.
 //
 // It runs before the upsert, so the upsert edits the base document the render will hold rather
 // than one it hides.
-func (wb *writeBatch) retireInheritedDelete(ctx context.Context, event Event) (string, error) {
+func (wb *writeBatch) retireInheritedDelete(ctx context.Context, event Event) (string, bool, error) {
 	id, ok := manifestIdentity(event.Object)
 	if !ok {
-		return "", nil
+		return "", false, nil
 	}
 	dm := wb.store.ByManifestIdentity[id]
 	if dm == nil {
-		return "", nil
+		return "", false, nil
 	}
 	raw := rawManifestIDForCurrentBytes(id, dm)
 	basePath := wb.docLoc[dm].FilePath
-	rendered := wb.store.Renders(basePath, dm.ManifestIdentity.Kind, dm.ManifestIdentity.Name)
+	kind, name := dm.ManifestIdentity.Kind, dm.ManifestIdentity.Name
+	rendered := wb.rendersInBatch(basePath, kind, name)
 	d, inherited := wb.inheritedDeleteFor(basePath, raw)
 	if !inherited {
 		if !rendered {
-			return "", hiddenByUnownedPatchRefusal(basePath, raw, "")
+			return "", false, hiddenByUnownedPatchRefusal(basePath, raw, "")
 		}
-		return "", nil
+		return "", false, nil
 	}
 	patchBuf := wb.buffer(d.patchPath)
 	if patchBuf.current == nil {
@@ -212,12 +215,17 @@ func (wb *writeBatch) retireInheritedDelete(ctx context.Context, event Event) (s
 		// not write keeps it out. Upserting the document would edit bytes the render never shows
 		// and report the object mirrored while the folder still builds without it.
 		if !rendered {
-			return "", hiddenByUnownedPatchRefusal(basePath, raw, d.overlay)
+			return "", false, hiddenByUnownedPatchRefusal(basePath, raw, d.overlay)
 		}
-		return "", nil
+		if wb.rendered[renderKey{path: basePath, kind: kind, name: name}] {
+			// An earlier event in this batch retired the patch; the pre-batch store still has the
+			// object hidden, so this upsert too is planned against the staged render.
+			return basePath, false, nil
+		}
+		return "", false, nil
 	}
 	if !ownsInheritedDeletePatch(patchBuf.current, raw) {
-		return "", unownedDeletePatchRefusal(d, raw)
+		return "", false, unownedDeletePatchRefusal(d, raw)
 	}
 	patchBuf.current = nil
 
@@ -235,5 +243,6 @@ func (wb *writeBatch) retireInheritedDelete(ctx context.Context, event Event) (s
 	log.FromContext(ctx).Info("Retired $patch: delete for an inherited object that is back",
 		"kustomization", d.overlay, "patch", d.entry, "resource", event.Identifier.String())
 	wb.putToKustomize = true
-	return basePath, nil
+	wb.setRenderedInBatch(basePath, kind, name, true)
+	return basePath, true, nil
 }
