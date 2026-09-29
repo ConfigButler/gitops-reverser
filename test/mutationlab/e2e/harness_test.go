@@ -383,11 +383,13 @@ func (h *harness) clearRecords(t *testing.T) {
 }
 
 type watchProbeRequest struct {
-	Scenario      string `json:"scenario"`
-	Mode          string `json:"mode"`
-	Resource      string `json:"resource"`
-	Namespace     string `json:"namespace,omitempty"`
-	LabelSelector string `json:"labelSelector,omitempty"`
+	Scenario        string `json:"scenario"`
+	Mode            string `json:"mode"`
+	Resource        string `json:"resource"`
+	Namespace       string `json:"namespace,omitempty"`
+	LabelSelector   string `json:"labelSelector,omitempty"`
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+	UntilName       string `json:"untilName,omitempty"`
 }
 
 func (h *harness) probeWatch(t *testing.T, req watchProbeRequest) []mutationlab.Record {
@@ -505,9 +507,34 @@ func sortRecords(in []mutationlab.Record) []mutationlab.Record {
 		if a.Summary.ResponseCode != b.Summary.ResponseCode {
 			return a.Summary.ResponseCode < b.Summary.ResponseCode
 		}
+		// Two successful writes of one object by the same verb — two patches by different actors —
+		// share everything above. Their response resourceVersions are the order they happened in;
+		// without this the order would fall through to the random auditID.
+		if ra, rb := responseResourceVersion(a), responseResourceVersion(b); ra != rb {
+			return rvLess(ra, rb)
+		}
 		return a.Summary.AuditID < b.Summary.AuditID
 	})
 	return out
+}
+
+// responseResourceVersion reads an audit record's response resourceVersion, "" for any other record
+// or a response without one.
+func responseResourceVersion(r mutationlab.Record) string {
+	if r.Source != mutationlab.SourceAudit {
+		return ""
+	}
+	var event struct {
+		ResponseObject *struct {
+			Metadata struct {
+				ResourceVersion string `json:"resourceVersion"`
+			} `json:"metadata"`
+		} `json:"responseObject"`
+	}
+	if json.Unmarshal(r.Raw, &event) != nil || event.ResponseObject == nil {
+		return ""
+	}
+	return event.ResponseObject.Metadata.ResourceVersion
 }
 
 // rvLess orders two resourceVersions numerically when both parse as integers (the

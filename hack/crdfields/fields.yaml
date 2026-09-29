@@ -156,6 +156,11 @@ kinds:
         doc: >-
           Namespace to watch in the source cluster, or `*`. See
           [watching a different source namespace](#watching-a-different-source-namespace)
+      - path: rules.objectSelector
+        default: every object
+        doc: >-
+          Label selector the API server applies to the item's LIST and WATCH. See
+          [selecting objects by label](#selecting-objects-by-label-rulesobjectselector)
 
   - kind: ClusterWatchRule
     title: "`ClusterWatchRule` (cluster-scoped): what to capture, cluster-wide"
@@ -175,6 +180,11 @@ kinds:
       - path: rules.apiVersions
         default: the preferred served version
         doc: API versions to match. `["*"]` watches every served version
+      - path: rules.objectSelector
+        default: every object
+        doc: >-
+          Label selector the API server applies to the item's LIST and WATCH. See
+          [selecting objects by label](#selecting-objects-by-label-rulesobjectselector)
 
   - kind: CommitRequest
     title: "`CommitRequest` (namespaced): save now"

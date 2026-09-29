@@ -132,6 +132,7 @@ func TestAnalyze_Issues(t *testing.T) {
 		IssueWriteFanIn:           0,
 		IssueRenderRefused:        0,
 		IssueUnplaceableEdit:      0,
+		IssueUnownedDeletePatch:   0,
 	}
 	for kind, n := range want {
 		if got := countIssues(rep, kind); got != n {

@@ -178,7 +178,9 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 		for _, rec := range matched {
 			for _, namespace := range rr.SourceNamespaces {
-				collections = append(collections, types.CollectionKeyFor(rec.Identity.GVR, namespace))
+				collection := types.CollectionKeyFor(rec.Identity.GVR, namespace)
+				collection.LabelSelector = rr.LabelSelector
+				collections = append(collections, collection)
 			}
 			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
@@ -197,10 +199,15 @@ func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWa
 	var collections []types.CollectionKey
 	names := map[schema.GroupResource]string{}
 	for _, rr := range rule.Spec.Rules {
+		// An invalid selector cannot get here as a running rule: the compile path refused it. Its
+		// summary then expects the unselected key, which no stream holds, and reads as not ready.
+		selector, _ := types.CanonicalLabelSelector(rr.ObjectSelector)
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 		for _, rec := range matched {
-			collections = append(collections, types.CollectionKeyFor(rec.Identity.GVR, ""))
+			collection := types.CollectionKeyFor(rec.Identity.GVR, "")
+			collection.LabelSelector = selector
+			collections = append(collections, collection)
 			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
 	}

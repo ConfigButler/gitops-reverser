@@ -101,6 +101,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `rules[].apiGroups` | resolved from the resource name | API groups to match. `[""]` is the core group. Omitted resolves the named resource across the served surface, and selects nothing when more than one group serves that name |
 | `rules[].apiVersions` | the preferred served version | API versions to match. `["*"]` watches every served version |
 | `rules[].sourceNamespace` | the rule's own namespace | Namespace to watch in the source cluster, or `*`. See [watching a different source namespace](#watching-a-different-source-namespace) |
+| `rules[].objectSelector` | every object | Label selector the API server applies to the item's LIST and WATCH. See [selecting objects by label](#selecting-objects-by-label-rulesobjectselector) |
 
 ### `ClusterWatchRule` (cluster-scoped): what to capture, cluster-wide
 
@@ -112,6 +113,7 @@ The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespa
 | `rules[].resources` | **required** | Plural cluster-scoped resource names to watch |
 | `rules[].apiGroups` | resolved from the resource name | API groups to match. Omitted resolves the named resource across the served surface, and selects nothing when more than one group serves that name |
 | `rules[].apiVersions` | the preferred served version | API versions to match. `["*"]` watches every served version |
+| `rules[].objectSelector` | every object | Label selector the API server applies to the item's LIST and WATCH. See [selecting objects by label](#selecting-objects-by-label-rulesobjectselector) |
 
 ### `CommitRequest` (namespaced): save now
 
@@ -1725,6 +1727,92 @@ spec:
 
 Use `WatchRule` for every **namespaced** resource, whether or not it lives in the `GitTarget`'s own
 namespace.
+
+### Selecting objects by label (`rules[].objectSelector`)
+
+`spec.rules[].objectSelector` is a standard Kubernetes label selector (`matchLabels` and
+`matchExpressions`). It narrows a rule item to the objects whose labels match, on a `WatchRule` and
+on a `ClusterWatchRule`:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    objectSelector:
+      matchLabels:
+        internal.cozystack.io/tenantresource: "true"
+```
+
+**The cluster is the source of truth, and the mirror follows the selection.** The API server applies
+the selector to every LIST and WATCH the item opens, with list/watch semantics. An object that gains a
+matching label enters the mirror as a create. An object that loses one leaves the mirror exactly as a
+deleted object does. The operator does no label matching of its own, and never asks whether an object
+that left was deleted or relabeled.
+
+What a removal does to Git is the target's [deletion policy](#deletion-policy-specprunemode):
+
+| Mode | Object deleted or no longer matching | Absent from a complete snapshot |
+|---|---|---|
+| `Never` | kept | kept |
+| `OnEvent` (default) | removed | kept |
+| `Always` | removed | removed |
+
+**Under `Always`, a selected mirror owns every document of its type in its namespace scope,** not
+only the ones the selector matched. If Git holds Secrets `a` and `b` in `tenant-a` and the selector
+returns only `a`, the next complete snapshot removes `b`, even if `b` never matched. Labels in Git,
+and whether a document was ever mirrored, do not protect it. To keep documents the selector does not
+return, use `OnEvent` or `Never`, or give them a different target path. Under the retaining modes,
+each such document counts as [retained](#seeing-what-was-kept): it is absent from the selected
+mirror, whether or not the object still exists in the cluster.
+
+Consequences to plan for:
+
+- **Narrowing a selector is a removal.** Editing `team in (a,b)` to `team=a` starts a new
+  collection and a complete snapshot, and under `Always` every document it does not return goes.
+  Widening adds the newly selected objects without waiting for them to change. A mistaken selector
+  and an intentionally smaller mirror look the same to the operator.
+- **Removing a document can delete the live object.** When a GitOps tool such as Flux or Argo CD
+  applies this folder with pruning on, a document this mirror removes is an object that tool deletes.
+- **Enable `Always` only once the cluster is authoritative.** A document committed to Git that has
+  not yet been installed, or that another tool has yet to apply, is absent from the snapshot and is
+  removed.
+- **Selectors match the objects stored in the cluster.** A selector may use labels that the operator strips
+  before writing, such as `kustomize.toolkit.fluxcd.io/name`; the labels do not need to survive in
+  Git.
+
+**Overlapping collections share one selector.** Two items on one `GitTarget` overlap when they
+select the same type in the same namespace, or when one of them selects all namespaces. Overlapping
+items must use the same selector, written in any equivalent form: `matchLabels: {team: a}` and
+`matchExpressions: [{key: team, operator: In, values: [a]}]` are one selector. When they differ, the
+older rule, then the rule with the lower name, keeps its collections, and the newer rule is refused
+as a whole with `ResourcesResolved=False`, reason `ObjectSelectorConflict`. Different selectors in
+different namespaces are fine. To select several values, use one set-based selector such as
+`team in (a,b)`.
+
+The field is the Kubernetes `LabelSelector` type, so the CRD schema checks only its shape. The rule
+compiler checks the rest (operators, values, and label syntax, exactly as Kubernetes parses a
+selector) and refuses the whole rule before it opens any watch, with `ResourcesResolved=False`,
+reason `InvalidObjectSelector`. A valid selector that matches nothing is a valid, empty collection.
+
+**Kustomize layouts.** A removal from a supported Kustomize folder is the same edit whether a
+watch event or a snapshot caused it. A document is removed from its own file, keeping the other
+documents in that file, and a file that empties loses its `resources:` entry, so the root still
+builds. An object the overlay inherits from a read-only base is removed with a `$patch: delete`
+the operator writes in the overlay and lists under `patches:`. The operator owns that file: its
+first line says so, and when the object is back in the selection the operator removes the file
+and its entry. The file's exact contents are the ownership, so an edited patch, or an unrelated
+file at the same path, refuses the write (`GitPathAccepted=False`, reason `WriteBoundaryRefused`)
+rather than being overwritten or kept. Every such write is re-rendered before commit to prove the
+object left, or came back, and that nothing else in the render changed. The
+[Kustomize support boundary](#kustomize-support-in-the-target-path) still decides which folders are
+writable at all.
+
+**Attribution of a removal.** With [audit attribution](attribution-setup-guide.md) on, an object
+leaving a selected collection is attributed only to the write that produced that removal: the label
+change. A deletion from a selected collection never carries that evidence, so its removal commit is
+authored unresolved; a deletion that waited on a finalizer was already attributed when it was
+requested. The document is removed either way. See the
+[attribution contract](spec/attribution.md#four-rules-that-are-easy-to-miss).
 
 ## `ClusterWatchRule`
 

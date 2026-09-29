@@ -135,6 +135,16 @@ const (
 	// This is the one place the oracle cannot see, so it must fail loudly.
 	IssueUnplaceableEdit IssueKind = "unplaceable-edit"
 
+	// IssueUnownedDeletePatch marks a removal or re-entry of an object an overlay inherits from its
+	// base, refused because the path where the operator keeps that object's `$patch: delete` holds
+	// something the operator did not write: a human-edited patch, or an unrelated file under the
+	// same name. Overwriting it could lose someone's work, and retiring it could keep a deletion
+	// the operator never made, so the batch commits nothing until the file is renamed or removed.
+	// It also marks the re-entry of an object that some other `$patch: delete` keeps out of the
+	// render: the operator cannot retire a patch it did not write, and upserting the hidden document
+	// would report the object mirrored while the folder still builds without it.
+	IssueUnownedDeletePatch IssueKind = "unowned-delete-patch"
+
 	// A refusal made up purely of the write-boundary kinds above surfaces as the GitTarget
 	// reason WriteBoundaryRefused rather than the umbrella UnsupportedContent: the folder holds
 	// nothing the operator cannot manage, the edit simply had nowhere safe to land. See the

@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -145,6 +146,11 @@ func gitTargetReadyReasonIsStalled(reason string) bool {
 // registered in SetupWithManager, so the rule is woken by an event long before the steady tick;
 // polling it faster would find nothing.
 //
+// ObjectSelectorConflict is the exception. It clears when a SIBLING rule on the same GitTarget is
+// deleted or re-selects, and no watch edge wakes this rule on that: the only signal is the
+// best-effort stream-state event, which a full subscriber buffer drops. So that stall retries on
+// RequeueSelectorConflictInterval rather than keeping a resolved conflict for the steady interval.
+//
 // It is one function for both rule kinds. It was two identical methods, neither of which used its
 // receiver, and the pairing of a cadence with a verdict is exactly the decision that must not be
 // allowed to differ between them: the whole point of deriving it from the readiness is that one
@@ -155,8 +161,17 @@ func commitRule(ctx context.Context, st *reconcileStatus, rd *readiness) (ctrl.R
 		return ctrl.Result{}, err
 	}
 	cadence := RequeueSteadyInterval
-	if rd.converging() {
+	switch {
+	case rd.converging():
 		cadence = RequeueStreamSettleInterval
+	case selectorConflicted(*st.conditions):
+		cadence = RequeueSelectorConflictInterval
 	}
 	return ctrl.Result{RequeueAfter: st.requeueAfter(cadence)}, nil
+}
+
+// selectorConflicted reports whether conditions refuse the rule for an objectSelector conflict.
+func selectorConflicted(conditions []metav1.Condition) bool {
+	cond := apimeta.FindStatusCondition(conditions, ConditionTypeResourcesResolved)
+	return cond != nil && cond.Status == metav1.ConditionFalse && cond.Reason == watch.ReasonObjectSelectorConflict
 }

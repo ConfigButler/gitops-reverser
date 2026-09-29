@@ -51,5 +51,5 @@ user:
   - system:authenticated
   uid: <uid-2>
   username: system:serviceaccount:kube-system:generic-garbage-collector
-userAgent: k3s/v1.36.1+k3s1 (linux/amd64) kubernetes/a966326/system:serviceaccount:kube-system:generic-garbage-collector
+userAgent: k3s/v1.36.4+k3s1 (linux/amd64) kubernetes/4dedb15/system:serviceaccount:kube-system:generic-garbage-collector
 verb: delete

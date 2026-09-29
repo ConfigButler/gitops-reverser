@@ -462,8 +462,8 @@ func (idx *indices) transformScalar(key string, v any, parent map[string]any) an
 
 // transformStringScalar rewrites a string leaf by key: timestamps collapse, the
 // relational categories map through their index, an Expired watch message has its
-// embedded resourceVersions rewritten, and requestURI/selfLink have their embedded
-// namespace replaced. Any other string is preserved verbatim.
+// embedded resourceVersions rewritten, and requestURI/selfLink and an RBAC decision reason have
+// their embedded namespace replaced. Any other string is preserved verbatim.
 func (idx *indices) transformStringScalar(key, s string) any {
 	switch {
 	case isTimestampKey(key):
@@ -474,6 +474,10 @@ func (idx *indices) transformStringScalar(key, s string) any {
 		// Rewrite the resourceVersions embedded in a 410/Expired watch error into
 		// the relational <rv-N> space; other messages pass through.
 		return idx.rewriteExpiredMessage(s)
+	case key == "authorization.k8s.io/reason":
+		// An RBAC decision names the RoleBinding by namespace/name, so a unique per-run namespace
+		// would churn every audit record that carries it.
+		return idx.replaceNamespaces(s)
 	case key == "requestURI" || key == "selfLink":
 		// The namespace appears embedded in the path; replace it as a substring so
 		// a unique per-run namespace does not churn the corpus. A generated name appears there too

@@ -67,7 +67,10 @@ var classificationByKind = map[IssueKind][]Classification{
 	IssueRenderDoesNotMatchLive: {{Solvable: true, Actor: ActorPlatformOperator}},
 	IssueWriteFanIn:             {{Solvable: false}},
 	IssueUnplaceableEdit:        {{Solvable: false}},
-	IssueRenderRefused:          {{Solvable: false}},
+	// A human edited the operator's delete patch, or a file of theirs sits at its path: they rename
+	// or remove it.
+	IssueUnownedDeletePatch: {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueRenderRefused:      {{Solvable: false}},
 	// One code, two answers — the case that proves the whole ask. A build file the author
 	// broke is one commit from working; a generator is not solvable at all.
 	IssueUnsupportedKustomize: {

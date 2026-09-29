@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -84,7 +86,7 @@ func TestRedisStore_KeyPrefixReachesEveryKeyFamily(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 	require.Equal(t,
 		"cell-a:tenant-7:watch:v1:target:gtuid-3:apps/deployments:namespace:team-a:last-rv",
-		store.watchCursorKey("gtuid-3", gvr, "team-a"))
+		store.watchCursorKey("gtuid-3", types.CollectionKeyFor(gvr, "team-a")))
 
 	stream := store.FactStream(RedisFactStreamConfig{})
 	require.Equal(t, "cell-a:tenant-7:author:v2:audit:route:default:apps/deployments",
@@ -100,7 +102,7 @@ func TestRedisStore_DefaultPrefixIsUnchanged(t *testing.T) {
 	// previous release wrote.
 	store := newPrefixedRedisStore(t, DefaultKeyPrefix)
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
-		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
+		store.watchCursorKey("gtuid-3", types.CollectionKeyFor(coreConfigmapsGVR(), "")))
 	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 }
 
@@ -113,7 +115,7 @@ func TestRedisStore_ZeroValueStoreStillWritesPrefixedKeys(t *testing.T) {
 
 	var store RedisStore // keyPrefix == ""
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
-		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
+		store.watchCursorKey("gtuid-3", types.CollectionKeyFor(coreConfigmapsGVR(), "")))
 	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 	require.Equal(t, "gitops-reverser:author:v2:audit:route:default:configmaps",
 		store.FactStream(RedisFactStreamConfig{}).streamKey(
@@ -135,17 +137,17 @@ func TestRedisStore_DistinctPrefixesIsolateCursors(t *testing.T) {
 	tenantB, err := NewRedisStore(RedisStoreConfig{Addr: mr.Addr(), KeyPrefix: "tenant-b"})
 	require.NoError(t, err)
 
-	require.NoError(t, tenantA.RecordWatchCursor(ctx, "same-uid", gvr, "", "111"))
+	require.NoError(t, tenantA.RecordWatchCursor(ctx, "same-uid", types.CollectionKeyFor(gvr, ""), "111"))
 
-	rv, ok := tenantA.LookupWatchCursor(ctx, "same-uid", gvr, "")
+	rv, ok := tenantA.LookupWatchCursor(ctx, "same-uid", types.CollectionKeyFor(gvr, ""))
 	require.True(t, ok)
 	require.Equal(t, "111", rv)
 
-	_, ok = tenantB.LookupWatchCursor(ctx, "same-uid", gvr, "")
+	_, ok = tenantB.LookupWatchCursor(ctx, "same-uid", types.CollectionKeyFor(gvr, ""))
 	require.False(t, ok, "tenant-b must not see tenant-a's cursor on the same UID and database")
 
-	require.NoError(t, tenantB.RecordWatchCursor(ctx, "same-uid", gvr, "", "222"))
-	rv, ok = tenantA.LookupWatchCursor(ctx, "same-uid", gvr, "")
+	require.NoError(t, tenantB.RecordWatchCursor(ctx, "same-uid", types.CollectionKeyFor(gvr, ""), "222"))
+	rv, ok = tenantA.LookupWatchCursor(ctx, "same-uid", types.CollectionKeyFor(gvr, ""))
 	require.True(t, ok)
 	require.Equal(t, "111", rv, "tenant-b's write must not clobber tenant-a's cursor")
 }

@@ -25,10 +25,13 @@ type WatchedType struct {
 	ServedVersion string
 	Preferred     bool
 
-	// NamespaceScopes is the set of namespaces this type is watched in. The empty-string
-	// key is a cluster-wide collection: a cluster-scoped resource, or a namespaced resource
-	// a WatchRule follows across every namespace.
-	NamespaceScopes map[string]struct{}
+	// NamespaceScopes maps each namespace this type is watched in to the canonical object
+	// selector that scope is selected with ("" selects every object). The empty-string key is a
+	// cluster-wide collection: a cluster-scoped resource, or a namespaced resource a WatchRule
+	// follows across every namespace. One selector per scope is enough because two collections on
+	// one type and namespace overlap, and the resolver refuses a second selector over an
+	// overlapping collection (see refuseSelectorConflicts).
+	NamespaceScopes map[string]string
 }
 
 // ClusterWide reports whether this type is gathered under a cluster-wide scope: true for a
@@ -80,23 +83,27 @@ type WatchedTypeTable struct {
 }
 
 // watchSelection is one followable registry record a rule selected for a GitTarget,
-// with the namespace it was selected under ("" = cluster-wide collection).
+// with the namespace it was selected under ("" = cluster-wide collection), the canonical object
+// selector the item carries, and the rule that selected it.
 type watchSelection struct {
-	record    typeset.TypeRecord
-	namespace string
+	record        typeset.TypeRecord
+	namespace     string
+	labelSelector string
+	rule          selectingRule
 }
 
 // watchedTypeAccum accumulates one followable record's namespace scopes while folding a
 // GitTarget's selections.
 type watchedTypeAccum struct {
 	record          typeset.TypeRecord
-	namespaceScopes map[string]struct{}
+	namespaceScopes map[string]string
 }
 
 // buildWatchedTypeTable folds a GitTarget's selected followable records into its
 // watched-type table, deduplicating each record's namespace scopes. Identity
-// and followability are already settled by the registry, so this is a pure fold with no
-// catalog lookup and no conflict decision.
+// and followability are already settled by the registry, and selector conflicts by
+// refuseSelectorConflicts before this runs, so this is a pure fold with no catalog lookup and no
+// conflict decision.
 func buildWatchedTypeTable(
 	gitDest types.ResourceReference,
 	generation uint64,
@@ -107,10 +114,10 @@ func buildWatchedTypeTable(
 		gvr := sel.record.Identity.GVR
 		acc := byGVR[gvr]
 		if acc == nil {
-			acc = &watchedTypeAccum{record: sel.record, namespaceScopes: map[string]struct{}{}}
+			acc = &watchedTypeAccum{record: sel.record, namespaceScopes: map[string]string{}}
 			byGVR[gvr] = acc
 		}
-		acc.namespaceScopes[sel.namespace] = struct{}{}
+		acc.namespaceScopes[sel.namespace] = sel.labelSelector
 	}
 
 	table := WatchedTypeTable{GitDest: gitDest, ResolvedAt: generation}
@@ -123,7 +130,7 @@ func buildWatchedTypeTable(
 
 // watchedTypeFromRecord copies a followable registry record's identity into a
 // WatchedType, attaching the namespace scopes the rules folded.
-func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceScopes map[string]struct{}) WatchedType {
+func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceScopes map[string]string) WatchedType {
 	return WatchedType{
 		GVK:             rec.Identity.GVK,
 		GVR:             rec.Identity.GVR,

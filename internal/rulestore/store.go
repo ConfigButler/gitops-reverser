@@ -10,10 +10,12 @@ import (
 	"strings"
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // CompiledRule represents a fully processed WatchRule, ready for quick lookups.
@@ -30,6 +32,11 @@ type CompiledRule struct {
 	GitProviderNamespace string
 	Branch               string
 	Path                 string
+
+	// CreatedAt is the WatchRule's creation timestamp. Where two rules on one GitTarget ask for
+	// overlapping collections with different object selectors, the older rule (then the lower
+	// name) keeps the collection and the newer one is refused.
+	CreatedAt metav1.Time
 
 	// IsClusterScoped indicates if this rule watches cluster-scoped resources.
 	// Always false for WatchRule (namespace-scoped).
@@ -53,6 +60,10 @@ type compiledSelector struct {
 	APIVersions []string
 	// Resources specifies which resource types this rule matches.
 	Resources []string
+	// LabelSelector is the item's canonical objectSelector (types.CanonicalLabelSelector), empty
+	// for every object. It is not matched here: the API server applies it to the item's LIST and
+	// WATCH requests, and nothing in this process matches labels.
+	LabelSelector string
 }
 
 // clone returns a selector sharing no backing array with the receiver.
@@ -64,10 +75,32 @@ type compiledSelector struct {
 // to nil, which every reader here already treats as "match all", exactly as before.
 func (s *compiledSelector) clone() compiledSelector {
 	return compiledSelector{
-		APIGroups:   append([]string(nil), s.APIGroups...),
-		APIVersions: append([]string(nil), s.APIVersions...),
-		Resources:   append([]string(nil), s.Resources...),
+		APIGroups:     append([]string(nil), s.APIGroups...),
+		APIVersions:   append([]string(nil), s.APIVersions...),
+		Resources:     append([]string(nil), s.Resources...),
+		LabelSelector: s.LabelSelector,
 	}
+}
+
+// compileSelector builds one item's selector, canonicalizing its objectSelector. It reports false
+// for an invalid objectSelector, and the item is then left out: it opens no stream, so it can
+// neither widen a selection nor feed a sweep. The compile path (watch.CompileWatchRule and
+// watch.CompileClusterWatchRule) refuses such a rule before it reaches the store, so this is the
+// store's own fail-safe rather than the refusal.
+func compileSelector(
+	groups, versions, resources []string,
+	objectSelector *metav1.LabelSelector,
+) (compiledSelector, bool) {
+	canonical, err := itypes.CanonicalLabelSelector(objectSelector)
+	if err != nil {
+		return compiledSelector{}, false
+	}
+	return compiledSelector{
+		APIGroups:     groups,
+		APIVersions:   versions,
+		Resources:     resources,
+		LabelSelector: canonical,
+	}, true
 }
 
 // CompiledResourceRule represents a single resource matching rule with all its filters.
@@ -106,6 +139,9 @@ type CompiledClusterRule struct {
 	GitProviderNamespace string
 	Branch               string
 	Path                 string
+
+	// CreatedAt is the ClusterWatchRule's creation timestamp; see CompiledRule.CreatedAt.
+	CreatedAt metav1.Time
 
 	// Rules contains the compiled cluster resource rules with per-rule scope.
 	Rules []CompiledClusterResourceRule
@@ -184,6 +220,7 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 		GitProviderNamespace: gitProviderNamespace,
 		Branch:               branch,
 		Path:                 path,
+		CreatedAt:            rule.CreationTimestamp,
 		IsClusterScoped:      false,
 		ResourceRules:        make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
 	}
@@ -193,10 +230,9 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 		if i < len(sourceNamespaces) {
 			namespaces = append([]string(nil), sourceNamespaces[i]...)
 		}
-		selector := compiledSelector{
-			APIGroups:   r.APIGroups,
-			APIVersions: r.APIVersions,
-			Resources:   r.Resources,
+		selector, ok := compileSelector(r.APIGroups, r.APIVersions, r.Resources, r.ObjectSelector)
+		if !ok {
+			continue
 		}
 		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
 			compiledSelector: selector.clone(),
@@ -258,14 +294,14 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 		GitProviderNamespace: gitProviderNamespace,
 		Branch:               branch,
 		Path:                 path,
+		CreatedAt:            rule.CreationTimestamp,
 		Rules:                make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
 	for _, r := range rule.Spec.Rules {
-		selector := compiledSelector{
-			APIGroups:   r.APIGroups,
-			APIVersions: r.APIVersions,
-			Resources:   r.Resources,
+		selector, ok := compileSelector(r.APIGroups, r.APIVersions, r.Resources, r.ObjectSelector)
+		if !ok {
+			continue
 		}
 		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
 			compiledSelector: selector.clone(),

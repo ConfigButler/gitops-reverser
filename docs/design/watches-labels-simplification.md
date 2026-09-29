@@ -1,9 +1,11 @@
 # Label selection for watch rules
 
-> **Design requirements; implementation pending.** All three prune modes, including `Always`
-> with supported Kustomize layouts, are required from the first release.
+> **Implemented.** `rules[].objectSelector` shipped with all three prune modes, including `Always`
+> with supported Kustomize layouts, filtered-removal attribution, and ordered producer replacement.
 > **Step 2 of 2.** Step 1, the [collection rename and event-filter removal](collection-terminology-rename.md),
-> has shipped.
+> shipped first. This page is now the design record; the
+> [configuration reference](../configuration.md#selecting-objects-by-label-rulesobjectselector)
+> describes the behavior.
 > [Issue #146](https://github.com/ConfigButler/gitops-reverser/issues/146).
 > Index: [`../INDEX.md`](../INDEX.md). Checked: 2026-09-28, source at `69836e70`.
 > Related: [Kubernetes watch facts](../facts/kubernetes-watch-options.md),
@@ -22,7 +24,7 @@ performs no local label matching for mirror membership or pruning. This contract
 
 ## The API
 
-Add optional `objectSelector: metav1.LabelSelector` to
+Add optional `objectSelector`, typed as the upstream `metav1.LabelSelector`, to
 [`ResourceRule`](../../api/v1alpha3/watchrule_types.go) and
 [`ClusterResourceRule`](../../api/v1alpha3/clusterwatchrule_types.go):
 
@@ -36,9 +38,11 @@ rules:
 ```
 
 The field follows the existing admission-style rule vocabulary, but uses LIST/WATCH matching
-semantics; admission's old-or-new matching does not apply. Validate at admission and compilation
-with `metav1.LabelSelectorAsSelector`. Omitted and `{}` both select everything: normalize nil
-explicitly because the helper otherwise means “nothing.” Invalid selectors refuse the rule;
+semantics; admission's old-or-new matching does not apply. The native type's schema checks only
+shape, so validate at compilation with `metav1.LabelSelectorAsSelector`, per
+[where validation lives](../spec/where-validation-lives.md); no admission webhook. Omitted and
+`{}` both select everything: normalize nil explicitly because the helper otherwise means
+“nothing.” Invalid selectors refuse the rule;
 a valid zero-match selector initializes an empty collection.
 
 Selectors may use labels that [`sanitize`](../../internal/sanitize/types.go) strips before writing
@@ -219,6 +223,14 @@ There is also an avoidable delay. When an exact PATCH/UPDATE wins lookup, `await
 still treats it as a write fallback and waits the remaining grace for delete evidence (default
 `3s`). This is not true of every exit: eligible delete evidence can finish the wait earlier.
 
+> **As built:** exactly this policy, and the mutationlab `selector-membership` capture explains its
+> cost: a deletion never carries the `DELETED` frame's resourceVersion (an immediate delete answers
+> with a `Status` holding only the uid; a finalizer-held one is stamped one step earlier), so a real
+> deletion from a selected collection is unresolved. A uid-keyed deletion fact is not accepted
+> instead: an object relabeled out and then deleted by someone else produces one that would name
+> the deleter for the exit. See the
+> [attribution contract](../spec/attribution.md#four-rules-that-are-easy-to-miss).
+
 Filtered `DELETED` needs an explicit lookup policy, retaining raw event type, selector presence,
 UID/RV, and deletion timestamp. Require matching audit route, group/resource, UID, and RV;
 eligible evidence returns immediately, including a late arrival during grace. A nonterminating
@@ -227,7 +239,7 @@ requires exact deletion evidence; a finalizer PATCH must not name the deletion i
 Without eligible evidence, expire as unresolved. Do not use last-writer, sticky, collection,
 RV-only, or name-only fallbacks for these filtered removals.
 
-This deliberately extends the [current attribution contract](../spec/attribution.md#three-rules-that-are-easy-to-miss):
+This deliberately extends the [current attribution contract](../spec/attribution.md#four-rules-that-are-easy-to-miss):
 physical-removal fallbacks cannot establish who changed a label. Keep existing unfiltered and
 `MODIFIED` deletion-intent behavior. Merely changing `ExactCapable` is insufficient; weaker
 fallbacks remain. Update the attribution contract with the implementation. Resolution stays

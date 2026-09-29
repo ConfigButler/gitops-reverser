@@ -33,6 +33,8 @@ import (
 type cwaWatchManager struct {
 	replans     int
 	onReconcile func()
+	// selectorConflict, when set, is the refusal message both ObjectSelectorConflict methods report.
+	selectorConflict string
 }
 
 func (m *cwaWatchManager) TriggerRuleChange(internaltypes.ResourceReference) {
@@ -59,6 +61,18 @@ func (m *cwaWatchManager) ResolveClusterWatchRuleResources(
 	context.Context, configbutleraiv1alpha3.ClusterWatchRule,
 ) (bool, string) {
 	return true, "resolved"
+}
+
+func (m *cwaWatchManager) ObjectSelectorConflictForWatchRule(
+	configbutleraiv1alpha3.WatchRule,
+) (bool, string) {
+	return m.selectorConflict != "", m.selectorConflict
+}
+
+func (m *cwaWatchManager) ObjectSelectorConflictForClusterWatchRule(
+	configbutleraiv1alpha3.ClusterWatchRule,
+) (bool, string) {
+	return m.selectorConflict != "", m.selectorConflict
 }
 
 func (m *cwaWatchManager) StreamSummaryForGitTarget(internaltypes.ResourceReference) watch.StreamSummary {

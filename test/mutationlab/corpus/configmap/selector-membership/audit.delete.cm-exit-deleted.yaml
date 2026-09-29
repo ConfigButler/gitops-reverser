@@ -1,0 +1,52 @@
+annotations:
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: 'RBAC: allowed by RoleBinding "scenario-car/<ns-1>"
+    of Role "scenario-car" to User "carol@example.com"'
+  validate-all.configbutler.ai/scenario: selector-membership
+auditID: <auditID-2>
+impersonatedUser:
+  groups:
+  - system:authenticated
+  username: carol@example.com
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-exit-deleted
+  namespace: <ns-1>
+  resource: configmaps
+requestObject:
+  apiVersion: meta.k8s.io/__internal
+  kind: DeleteOptions
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-exit-deleted
+responseObject:
+  apiVersion: v1
+  details:
+    kind: configmaps
+    name: cm-exit-deleted
+    uid: <uid-1>
+  kind: Status
+  metadata: {}
+  status: Success
+responseStatus:
+  code: 200
+  details:
+    kind: configmaps
+    name: cm-exit-deleted
+    uid: <uid-1>
+  metadata: {}
+  status: Success
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-2>
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: delete

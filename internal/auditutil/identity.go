@@ -63,7 +63,7 @@ func bodyPriority(event auditv1.Event, op itypes.OperationType) (*runtime.Unknow
 }
 
 // backfillIdentityFromBody fills missing namespace/name/uid fields on id from
-// the metadata block of the given audit body. Already-populated fields are
+// the metadata block of the given audit body, or from the details of a Status body. Already-populated fields are
 // never overwritten. A nil or malformed body is a no-op.
 func backfillIdentityFromBody(id *AuditObjectIdentity, body *runtime.Unknown) {
 	if id.Namespace != "" && id.Name != "" && id.UID != "" {
@@ -79,9 +79,20 @@ func backfillIdentityFromBody(id *AuditObjectIdentity, body *runtime.Unknown) {
 			Name      string    `json:"name,omitempty"`
 			UID       types.UID `json:"uid,omitempty"`
 		} `json:"metadata,omitempty"`
+		// A delete the API server answers with a Status rather than the object names what it
+		// removed in details: an immediate deletion's only record of the object's uid.
+		Kind    string `json:"kind,omitempty"`
+		Details struct {
+			Name string    `json:"name,omitempty"`
+			UID  types.UID `json:"uid,omitempty"`
+		} `json:"details,omitempty"`
 	}
 	if err := json.Unmarshal(body.Raw, &envelope); err != nil {
 		return
+	}
+	if envelope.Kind == "Status" {
+		envelope.Metadata.Name = envelope.Details.Name
+		envelope.Metadata.UID = envelope.Details.UID
 	}
 
 	if id.Namespace == "" {

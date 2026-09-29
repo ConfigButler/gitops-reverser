@@ -295,6 +295,76 @@ func AppendKustomizationPatch(path string, content []byte, patchPath string) (Ed
 	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
 }
 
+// RemoveKustomizationPatch removes the path-based `patches:` entry naming patchPath, the inverse of
+// AppendKustomizationPatch. It retires an operator-owned `$patch: delete` when the object that
+// patch removed from the render comes back.
+//
+// Idempotent (an entry that is not there is EditNoChange) and all-or-nothing like its siblings. An
+// emptied sequence drops the key, since `patches: []` is noise the operator itself introduced.
+func RemoveKustomizationPatch(path string, content []byte, patchPath string) (EditResult, []Diagnostic) {
+	skip := func(format string, args ...interface{}) (EditResult, []Diagnostic) {
+		return EditResult{Content: content, Mode: EditSkipped},
+			[]Diagnostic{diag(DiagWarning, Location{Path: path}, format, args...)}
+	}
+
+	docs, idx, root, reason, ok := locateKustomizationDocument(path, content)
+	if !ok {
+		return skip("%s", reason)
+	}
+	target := docs[idx].body
+
+	seq := nodeMapGet(root, "patches")
+	if seq == nil {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	if seq.Kind != yaml.SequenceNode {
+		return skip("kustomization %s: patches is not a sequence", path)
+	}
+	kept := patchEntriesWithout(seq.Content, patchPath)
+	if len(kept) == len(seq.Content) {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	seq.Content = kept
+	if len(kept) == 0 {
+		nodeMapDelete(root, "patches")
+	}
+
+	encoded, err := encodeNode(root)
+	if err != nil {
+		return skip("kustomization %s: re-encode failed: %v", path, err)
+	}
+	body := reskinDocument(target, string(encoded))
+	if body == target {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	docs[idx].body = body
+	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
+}
+
+// patchEntriesWithout returns the patches: items except the path-based entry naming patchPath.
+func patchEntriesWithout(items []*yaml.Node, patchPath string) []*yaml.Node {
+	kept := make([]*yaml.Node, 0, len(items))
+	for _, item := range items {
+		if item.Kind == yaml.MappingNode {
+			if p := nodeMapGet(item, "path"); p != nil && strings.TrimSpace(p.Value) == strings.TrimSpace(patchPath) {
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	return kept
+}
+
+// nodeMapDelete removes key and its value from a mapping node, if present.
+func nodeMapDelete(m *yaml.Node, key string) {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content = append(m.Content[:i], m.Content[i+2:]...)
+			return
+		}
+	}
+}
+
 // overrideEntryPresent reports whether the sequence already holds an entry named name that sets
 // field to value — the idempotency check that keeps a resync from appending a duplicate.
 func overrideEntryPresent(seq *yaml.Node, name, field, value string) bool {

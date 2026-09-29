@@ -53,3 +53,21 @@ func TestCollectionKey_Matches(t *testing.T) {
 	// stores it at one versionless path, so a sweep that skipped it would leave it unmanaged.
 	assert.True(t, scoped.Matches(NewResourceIdentifier("", "v2", "configmaps", "team-a", "app")))
 }
+
+func TestCollectionKey_OverlapsIsStructural(t *testing.T) {
+	named := CollectionKey{Resource: "secrets", Namespace: "a", LabelSelector: "team in (a)"}
+	for _, tc := range []struct {
+		other CollectionKey
+		want  bool
+	}{
+		{CollectionKey{Resource: "secrets", Namespace: "a"}, true},
+		{CollectionKey{Resource: "secrets"}, true},
+		{CollectionKey{Resource: "secrets", Namespace: "b"}, false},
+		{CollectionKey{Resource: "configmaps", Namespace: "a"}, false},
+		{CollectionKey{Group: "x", Resource: "secrets", Namespace: "a"}, false},
+	} {
+		if got := named.Overlaps(tc.other); got != tc.want {
+			t.Errorf("%s overlaps %s = %v, want %v", named, tc.other, got, tc.want)
+		}
+	}
+}

@@ -83,6 +83,10 @@ const (
 	// IssueUnplaceableEdit marks a live change the writer could not place in any source
 	// document. Only a live write raises it.
 	IssueUnplaceableEdit IssueKind = "unplaceable-edit"
+	// IssueUnownedDeletePatch marks the path of an operator-owned `$patch: delete` holding content
+	// the operator did not write, or a document a `$patch: delete` the operator did not write keeps
+	// out of the render while its object is live. Only a live write raises it.
+	IssueUnownedDeletePatch IssueKind = "unowned-delete-patch"
 )
 
 // Actor names who can solve a refusal. It is empty unless the refusal is solvable —

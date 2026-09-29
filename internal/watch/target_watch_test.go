@@ -35,8 +35,8 @@ func TestTargetWatchKeys_UsesOneWatchPerScope(t *testing.T) {
 	table := WatchedTypeTable{
 		GitDest: types.NewResourceReference("target", "default"),
 		Types: []WatchedType{
-			{GVR: configmapsGVR, NamespaceScopes: map[string]struct{}{"apps": {}, "ops": {}}},
-			{GVR: clusterRoles, NamespaceScopes: map[string]struct{}{"": {}}},
+			{GVR: configmapsGVR, NamespaceScopes: map[string]string{"apps": "", "ops": ""}},
+			{GVR: clusterRoles, NamespaceScopes: map[string]string{"": ""}},
 		},
 	}
 
@@ -55,7 +55,7 @@ func TestTargetWatchKeys_NamedAndClusterWideScopesStayDistinctStreams(t *testing
 		GitDest: types.NewResourceReference("target", "default"),
 		Types: []WatchedType{{
 			GVR:             configmapsGVR,
-			NamespaceScopes: map[string]struct{}{"": {}, "team-a": {}},
+			NamespaceScopes: map[string]string{"": "", "team-a": ""},
 		}},
 	}
 
@@ -74,8 +74,8 @@ func TestTargetWatchStreams_OneStreamPerCollectionAcrossServedVersions(t *testin
 	table := WatchedTypeTable{
 		GitDest: types.NewResourceReference("target", "default"),
 		Types: []WatchedType{
-			{GVR: v1beta1, NamespaceScopes: map[string]struct{}{"team-a": {}}},
-			{GVR: v1, Preferred: true, NamespaceScopes: map[string]struct{}{"team-a": {}}},
+			{GVR: v1beta1, NamespaceScopes: map[string]string{"team-a": ""}},
+			{GVR: v1, Preferred: true, NamespaceScopes: map[string]string{"team-a": ""}},
 		},
 	}
 
@@ -91,7 +91,7 @@ func TestTargetWatchStreams_OneStreamPerCollectionAcrossServedVersions(t *testin
 func TestTargetWatchStreams_ServedVersionChoiceIsStable(t *testing.T) {
 	v1 := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 	v2 := schema.GroupVersionResource{Group: "apps", Version: "v2", Resource: "deployments"}
-	scopes := map[string]struct{}{"": {}}
+	scopes := map[string]string{"": ""}
 	ascending := WatchedTypeTable{Types: []WatchedType{
 		{GVR: v1, NamespaceScopes: scopes}, {GVR: v2, NamespaceScopes: scopes},
 	}}
@@ -134,7 +134,7 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 		GitDest: gitDest,
 		Types: []WatchedType{{
 			GVR:             configmapsGVR,
-			NamespaceScopes: map[string]struct{}{"apps": {}},
+			NamespaceScopes: map[string]string{"apps": ""},
 		}},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, first))
@@ -151,7 +151,7 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 		GitDest: gitDest,
 		Types: []WatchedType{{
 			GVR:             schema.GroupVersionResource{Version: "v2", Resource: "configmaps"},
-			NamespaceScopes: map[string]struct{}{"apps": {}},
+			NamespaceScopes: map[string]string{"apps": ""},
 		}},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, changed))
@@ -205,9 +205,7 @@ func TestRouteLiveTargetWatchEvent_StampsTheProducingCollection(t *testing.T) {
 		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
 	}
 	manager := &Manager{EventRouter: router}
-	watching := targetWatchStream{
-		key: targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-	}
+	watching := testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"})
 
 	_, err := manager.routeLiveTargetWatchEvent(
 		context.Background(),
@@ -582,8 +580,7 @@ func TestOpenTargetWatch_UsesConfiguredHook(t *testing.T) {
 	w, err := manager.openTargetWatch(
 		context.Background(),
 		configPlaneClusterID,
-		configmapsGVR,
-		"apps",
+		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
 		metav1.ListOptions{ResourceVersion: "42"},
 	)
 	require.NoError(t, err)
@@ -650,7 +647,7 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	childCtx, childCancel := context.WithCancel(ctx)
 	watchKey := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	manager := &Manager{}
-	manager.targetWatchSet(gitDest).streams[watchKey.Collection()] = &runningTargetWatch{
+	manager.targetWatchSet(gitDest).streams[watchKey.Collection()] = &runningTargetWatch{gate: &producerGate{},
 		key: watchKey,
 		cancel: func() {
 			childCancel()
@@ -824,35 +821,38 @@ func terminatingConfigMapObject(rv string) *unstructured.Unstructured {
 }
 
 type fakeWatchCursorStore struct {
-	mu          sync.Mutex
-	rv          string
-	ok          bool
-	recordedRV  string
-	recordedUID string
-	lookedUpUID string
+	mu                 sync.Mutex
+	rv                 string
+	ok                 bool
+	recordedRV         string
+	recordedUID        string
+	recordedCollection types.CollectionKey
+	lookedUpUID        string
+	lookedUpCollection types.CollectionKey
 }
 
 func (f *fakeWatchCursorStore) LookupWatchCursor(
 	_ context.Context,
 	gitTargetUID string,
-	_ schema.GroupVersionResource,
-	_ string,
+	collection types.CollectionKey,
 ) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lookedUpUID = gitTargetUID
+	f.lookedUpCollection = collection
 	return f.rv, f.ok
 }
 
 func (f *fakeWatchCursorStore) RecordWatchCursor(
 	_ context.Context,
 	gitTargetUID string,
-	_ schema.GroupVersionResource,
-	_, rv string,
+	collection types.CollectionKey,
+	rv string,
 ) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recordedUID = gitTargetUID
+	f.recordedCollection = collection
 	f.recordedRV = rv
 	return nil
 }
@@ -953,9 +953,9 @@ func planTestManager(t *testing.T, gitDest types.ResourceReference) (*Manager, c
 
 // planTable is a one-type table watching the given namespaces.
 func planTable(gitDest types.ResourceReference, namespaces ...string) WatchedTypeTable {
-	scopes := map[string]struct{}{}
+	scopes := map[string]string{}
 	for _, ns := range namespaces {
-		scopes[ns] = struct{}{}
+		scopes[ns] = ""
 	}
 	return WatchedTypeTable{
 		GitDest: gitDest,
@@ -1034,10 +1034,10 @@ func TestReplaceGitTargetWatches_AVersionEditRestartsThatCollectionAlone(t *test
 	edited := WatchedTypeTable{
 		GitDest: gitDest,
 		Types: []WatchedType{
-			{GVR: configmapsGVR, NamespaceScopes: map[string]struct{}{"ops": {}}},
+			{GVR: configmapsGVR, NamespaceScopes: map[string]string{"ops": ""}},
 			{
 				GVR:             schema.GroupVersionResource{Version: "v2", Resource: "configmaps"},
-				NamespaceScopes: map[string]struct{}{"apps": {}},
+				NamespaceScopes: map[string]string{"apps": ""},
 			},
 		},
 	}

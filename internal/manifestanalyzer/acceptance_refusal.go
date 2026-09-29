@@ -90,6 +90,8 @@ func issueHint(issue AcceptanceIssue) string {
 		return "use a supported source layout for this target"
 	case IssueWriteEscapesScope:
 		return "keep writes under spec.path"
+	case IssueUnownedDeletePatch:
+		return "edit or remove the patch the operator did not write, and any kustomization reference to it"
 	case IssueDuplicate,
 		IssueImpureManagedFile,
 		IssueInvalidYAML,
@@ -163,6 +165,7 @@ func GitPathRefusalReason(refused *AcceptanceRefusedError) string {
 		IssueWriteFanIn,
 		IssueRenderRefused,
 		IssueUnplaceableEdit,
+		IssueUnownedDeletePatch,
 	):
 		return "WriteBoundaryRefused"
 	default:

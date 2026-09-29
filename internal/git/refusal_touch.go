@@ -43,9 +43,28 @@ const refusalTouchInterval = time.Minute
 // still refused.
 //
 // The zero collection is the whole-GitTarget evaluation, which speaks for everything the target holds.
+//
+// Always build one with newRefusalKey, which drops the collection's selector. A refusal is about
+// the Git documents under the structural boundary, which a selector does not narrow (see
+// types.CollectionKey), and the rule compiler allows one selector per boundary. Every producer
+// must agree on the key: the live path files a refusal under the selector-bearing collection its
+// events came from, and when the accepted snapshot that recovers it was keyed differently, its
+// queued commit fired after recovery and its memory muted the next identical refusal. Kept with
+// the selector, a rule that changed selector left the old key behind the same way.
 type refusalKey struct {
 	target     itypes.ResourceReference
 	collection itypes.CollectionKey
+}
+
+// newRefusalKey files a refusal for target under collection's structural boundary.
+func newRefusalKey(target itypes.ResourceReference, collection itypes.CollectionKey) refusalKey {
+	return refusalKey{target: target, collection: refusalBoundary(collection)}
+}
+
+// refusalBoundary is collection without its selector: the part of it a refusal is about.
+func refusalBoundary(collection itypes.CollectionKey) itypes.CollectionKey {
+	collection.LabelSelector = ""
+	return collection
 }
 
 func (k refusalKey) String() string {
@@ -199,7 +218,7 @@ func (l *branchWorkerEventLoop) touchBranchForRefusal(
 	if !l.w.refusalConsent(l.w.ctx, target) {
 		return
 	}
-	key := refusalKey{target: target, collection: collection}
+	key := newRefusalKey(target, collection)
 
 	// An observation this collection's last commit already covered is not a new trigger. Checked here,
 	// after consent and before the rate limit, so a recheck of unchanged input neither commits nor
@@ -302,7 +321,7 @@ func (w *BranchWorker) refusalAlreadyCovered(key refusalKey, observation string)
 	}
 	w.refusalTouchMu.Lock()
 	defer w.refusalTouchMu.Unlock()
-	return w.coveredRefusal[key] == observation
+	return w.coveredRefusal[newRefusalKey(key.target, key.collection)] == observation
 }
 
 // recordRefusalObservation remembers what the commit just made covers.
@@ -315,7 +334,7 @@ func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation stri
 	if w.coveredRefusal == nil {
 		w.coveredRefusal = map[refusalKey]string{}
 	}
-	w.coveredRefusal[key] = observation
+	w.coveredRefusal[newRefusalKey(key.target, key.collection)] = observation
 }
 
 // refusalRecovered records that an evaluation for this target and collection was ACCEPTED, so whatever
@@ -337,6 +356,7 @@ func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference
 	if target.Name == "" || target.Namespace == "" {
 		return
 	}
+	collection = refusalBoundary(collection)
 	l.w.clearRefusalObservations(target, collection)
 	for _, key := range sortedRefusalKeys(l.refusalPending) {
 		if key.target == target && (collection == (itypes.CollectionKey{}) || key.collection == collection) {
@@ -352,7 +372,7 @@ func (w *BranchWorker) clearRefusalObservations(target itypes.ResourceReference,
 	w.refusalTouchMu.Lock()
 	defer w.refusalTouchMu.Unlock()
 	if collection != (itypes.CollectionKey{}) {
-		delete(w.coveredRefusal, refusalKey{target: target, collection: collection})
+		delete(w.coveredRefusal, newRefusalKey(target, collection))
 		return
 	}
 	for key := range w.coveredRefusal {

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,19 +46,19 @@ func TestRedisStore_WatchCursorRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	gvr := appsDeploymentGVR()
 
-	_, ok := store.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
+	_, ok := store.LookupWatchCursor(ctx, "uid-1", types.CollectionKeyFor(gvr, "apps"))
 	require.False(t, ok)
 
-	require.NoError(t, store.RecordWatchCursor(ctx, "uid-1", gvr, "apps", "42"))
-	got, ok := store.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
+	require.NoError(t, store.RecordWatchCursor(ctx, "uid-1", types.CollectionKeyFor(gvr, "apps"), "42"))
+	got, ok := store.LookupWatchCursor(ctx, "uid-1", types.CollectionKeyFor(gvr, "apps"))
 	require.True(t, ok)
 	require.Equal(t, "42", got)
 
 	// The cursor carries watchCursorTTL and is never deleted explicitly; it expires
 	// once a watch has been gone longer than the TTL.
-	require.Equal(t, watchCursorTTL, mr.TTL(store.watchCursorKey("uid-1", gvr, "apps")))
+	require.Equal(t, watchCursorTTL, mr.TTL(store.watchCursorKey("uid-1", types.CollectionKeyFor(gvr, "apps"))))
 	mr.FastForward(watchCursorTTL + time.Second)
-	_, ok = store.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
+	_, ok = store.LookupWatchCursor(ctx, "uid-1", types.CollectionKeyFor(gvr, "apps"))
 	require.False(t, ok)
 }
 
@@ -65,14 +67,14 @@ func TestRedisStore_WatchCursorIsolatedByGitTargetUID(t *testing.T) {
 	ctx := context.Background()
 	gvr := appsDeploymentGVR()
 
-	require.NoError(t, store.RecordWatchCursor(ctx, "uid-old", gvr, "apps", "42"))
+	require.NoError(t, store.RecordWatchCursor(ctx, "uid-old", types.CollectionKeyFor(gvr, "apps"), "42"))
 
 	// A GitTarget recreated under the same namespace/name but a new UID must not
 	// inherit its predecessor's cursor.
-	_, ok := store.LookupWatchCursor(ctx, "uid-new", gvr, "apps")
+	_, ok := store.LookupWatchCursor(ctx, "uid-new", types.CollectionKeyFor(gvr, "apps"))
 	require.False(t, ok)
 
-	got, ok := store.LookupWatchCursor(ctx, "uid-old", gvr, "apps")
+	got, ok := store.LookupWatchCursor(ctx, "uid-old", types.CollectionKeyFor(gvr, "apps"))
 	require.True(t, ok)
 	require.Equal(t, "42", got)
 }
@@ -81,8 +83,8 @@ func TestRedisStore_WatchCursorIgnoresEmptyResourceVersion(t *testing.T) {
 	store := newTestRedisStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.RecordWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps", ""))
-	_, ok := store.LookupWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps")
+	require.NoError(t, store.RecordWatchCursor(ctx, "uid-1", types.CollectionKeyFor(appsDeploymentGVR(), "apps"), ""))
+	_, ok := store.LookupWatchCursor(ctx, "uid-1", types.CollectionKeyFor(appsDeploymentGVR(), "apps"))
 	require.False(t, ok)
 }
 
@@ -91,12 +93,30 @@ func TestRedisStore_WatchCursorKeyReadableFormat(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:apps/deployments:namespace:team-a:last-rv",
-		store.watchCursorKey("gtuid-3", gvr, "team-a"))
+		store.watchCursorKey("gtuid-3", types.CollectionKeyFor(gvr, "team-a")))
 
 	// A cluster-wide watch (empty namespace) uses the cluster scope segment, and the GVR
 	// version is dropped.
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
-		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
+		store.watchCursorKey("gtuid-3", types.CollectionKeyFor(coreConfigmapsGVR(), "")))
+}
+
+// A selected collection resumes only its own cursor; an unselected one keeps the key it had before
+// selectors existed, so an upgrade resumes rather than replaying every stream.
+func TestRedisStore_WatchCursorKeyIsPerSelection(t *testing.T) {
+	store := newTestRedisStore(t)
+	ctx := context.Background()
+	selected := types.CollectionKeyFor(coreConfigmapsGVR(), "team-a")
+	selected.LabelSelector = "team in (a)"
+	unselected := types.CollectionKeyFor(coreConfigmapsGVR(), "team-a")
+
+	require.Equal(t,
+		"gitops-reverser:watch:v1:target:gtuid-3:configmaps:namespace:team-a:selector:team in (a):last-rv",
+		store.watchCursorKey("gtuid-3", selected))
+
+	require.NoError(t, store.RecordWatchCursor(ctx, "uid-1", unselected, "42"))
+	_, ok := store.LookupWatchCursor(ctx, "uid-1", selected)
+	require.False(t, ok, "a selected stream must not resume the unselected collection's cursor")
 }
 
 func TestNewRedisStore_RequiresAddr(t *testing.T) {

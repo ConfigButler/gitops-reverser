@@ -196,8 +196,13 @@ func (r *EventRouter) enqueueScopedResync(
 // replay must be swept under. It exists so the two halves of the invariant — the namespace a
 // stream gathered, and the namespace its sweep may touch — are derived from ONE value and
 // cannot drift apart at a call site.
+//
+// The scope carries the stream's whole collection, selector included, so two selections of one
+// boundary never coalesce into one queue position. Its sweep stays structural (ResyncScope.Matches).
 func resyncScopeForWatchKey(key targetWatchKey) git.ResyncScope {
-	return git.ResyncScopeFor(key.GVR, key.Namespace)
+	scope := git.ResyncScopeFor(key.GVR, key.Namespace)
+	scope.Collection = key.Collection()
+	return scope
 }
 
 // drainScopedResync logs a per-type reconcile/sweep's outcome and, on failure or timeout,

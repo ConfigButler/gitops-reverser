@@ -12,6 +12,10 @@ so this provenance tracks the k3s image used for the committed capture.
 
 | Field | Value |
 |---|---|
-| k3d image | `rancher/k3s:v1.36.1-k3s1` |
-| Server version | `v1.36.1+k3s1` (linux/amd64) |
-| Captured at | 2026-06-25 |
+| k3d image | `rancher/k3s:v1.36.4-k3s1` |
+| Server version | `v1.36.4+k3s1` (linux/amd64) |
+| Captured at | 2026-09-28 |
+
+Moving from `v1.36.1+k3s1` (captured 2026-06-25) to `v1.36.4+k3s1` changed one
+committed shape: the garbage collector's `userAgent` in
+`configmap/owner-ref-cascade/`. Every other scenario reproduced unchanged.

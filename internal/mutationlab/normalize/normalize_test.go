@@ -389,3 +389,15 @@ func TestNormalize_InvalidJSON(t *testing.T) {
 		t.Fatal("expected error for invalid JSON")
 	}
 }
+
+// An RBAC decision reason names the RoleBinding as namespace/name. The per-run namespace inside it
+// folds to the same placeholder the namespace field gets, or every capture would drift.
+func TestNormalize_RBACReasonNamespaceIsFolded(t *testing.T) {
+	got := normJSON(t,
+		`{"objectRef":{"namespace":"lab-x-1ab2"},"annotations":{"authorization.k8s.io/reason":`+
+			`"RBAC: allowed by RoleBinding \"scenario-ali/lab-x-1ab2\" of Role \"scenario-ali\""}}`,
+	)
+	if !strings.Contains(got[0], `RoleBinding \"scenario-ali/<ns-1>\"`) || strings.Contains(got[0], "lab-x-1ab2") {
+		t.Errorf("reason not folded: %s", got[0])
+	}
+}

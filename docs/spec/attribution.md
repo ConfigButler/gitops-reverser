@@ -350,7 +350,7 @@ every row above can be asked about either kind of actor. `tier` names the eviden
 matches how `commits_total` already models the same distinction; an earlier `result` label conflated
 the two and is gone (migration in [`../UPGRADING.md`](../UPGRADING.md)).
 
-### Three rules that are easy to miss
+### Four rules that are easy to miss
 
 **A fact about a DELETION may not be replaced by a fact about a WRITE.** Every ordinary structure
 here is last-writer-wins, and a finalizer patch's fact carries the resourceVersion the **deletion**
@@ -375,6 +375,35 @@ older, different author, so the lookup skips straight to the rv hatch and the na
 one-directional, and only one of the two tiers is gated: the exact tier is tried for *any* query
 carrying a uid and a resourceVersion, a removal included. What an exact-capable event may not do is
 the reverse, reaching the tiers below.
+
+**A removal from a label-selected collection resolves on the exact write alone.** When a rule
+carries `objectSelector`, a `DELETED` frame can mean the object stopped matching the selector rather
+than that it was deleted, and the watch cannot tell the two apart. Such a removal reads only the fact
+at the object's exact `(uid, resourceVersion)`: a `patch`, `update`, or `delete` there names the
+actor, and ends the wait the moment it arrives. For a terminating object only a deletion there
+counts, since that slot can hold the finalizer patch, which names whoever cleared a finalizer rather
+than who asked for the deletion. Nothing else is consulted, and without that fact the removal is
+unresolved when the grace expires.
+
+The shapes behind this were measured against a real API server in the mutationlab
+`selector-membership` scenario
+([`selector_membership_test.go`](../../test/mutationlab/e2e/selector_membership_test.go)), and
+[`fact_index_selector_corpus_test.go`](../../internal/queue/fact_index_selector_corpus_test.go)
+replays them in every delivery order:
+
+- A label exit's `DELETED` carries the object as it was before the write, at the resourceVersion the
+  relabeling write produced, and that write's audit response carries the same one. The exit is
+  always attributable when its fact arrives.
+- A deletion never carries the `DELETED` frame's resourceVersion. An immediate delete is answered
+  with a `Status` naming only the uid, and a finalizer-held one is stamped one step before its
+  final `DELETED`. So a real deletion from a selected collection is unresolved here. A
+  finalizer-held one was already attributed when its `deletionTimestamp` arrived (§1).
+- A deletion fact keyed by the uid alone is not evidence, however close it looks. An object
+  relabeled out and then deleted by someone else leaves exactly such a fact, and it can arrive
+  before the exit's own fact, or instead of it. It identifies the object, not the removal.
+
+An unselected removal, and a `MODIFIED` frame carrying a `deletionTimestamp` (deletion as intent,
+§1), keep the rules above. Uncertain authorship costs the commit its author, never the removal.
 
 ### The wait
 

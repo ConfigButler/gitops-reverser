@@ -79,6 +79,21 @@ type ClusterResourceRule struct {
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
+
+	// ObjectSelector selects which objects of the matched types are mirrored, by label. The API
+	// server applies it to every LIST and WATCH this item opens, with list/watch semantics: an
+	// object that stops matching leaves the collection exactly as a deleted one does, and the
+	// GitTarget's spec.prune.mode decides what that does to its Git document.
+	// It is a standard Kubernetes label selector: matchLabels and matchExpressions, ANDed.
+	// Omitted or {} selects every object. A selector that does not parse refuses the whole rule
+	// (ResourcesResolved=False, reason InvalidObjectSelector).
+	//
+	// A selected mirror owns every document of its type, including documents the selector never
+	// matched: under prune.mode Always, a complete snapshot removes them.
+	// Two rules feeding one GitTarget that match the same type must use the same selector; the
+	// newer rule is refused.
+	// +optional
+	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
 }
 
 // ClusterWatchRuleStatus defines the observed state of ClusterWatchRule.

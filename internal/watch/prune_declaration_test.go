@@ -150,7 +150,7 @@ func TestReplaceGitTargetWatches_ForceReplaysAnUnchangedSet(t *testing.T) {
 		GitDest: gitDest,
 		Types: []WatchedType{{
 			GVR:             configmapsGVR,
-			NamespaceScopes: map[string]struct{}{"apps": {}},
+			NamespaceScopes: map[string]string{"apps": ""},
 		}},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, table))

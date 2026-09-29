@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,6 +59,12 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
 	resolved, err := watch.CompileWatchRule(ctx, r.Client, r.RuleStore, *watchRule, target, provider)
+	var selectorErr *watch.ObjectSelectorError
+	if errors.As(err, &selectorErr) {
+		result, refuseErr := r.refuseRuleResources(ctx, st, watchRule, watch.ReasonInvalidObjectSelector,
+			selectorErr.Message, log)
+		return true, result, refuseErr
+	}
 	if err != nil {
 		// A transient apiserver failure must NOT tear down a running stream: CompileWatchRule left
 		// the compiled rule in place, so requeue with the error and re-run the gate on real data.

@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // watchCursorTTL bounds a stored watch-resume cursor. A live GitTarget refreshes its
@@ -99,10 +100,9 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 func (s *RedisStore) LookupWatchCursor(
 	ctx context.Context,
 	gitTargetUID string,
-	gvr schema.GroupVersionResource,
-	namespace string,
+	collection types.CollectionKey,
 ) (string, bool) {
-	rv, err := s.client.Get(ctx, s.watchCursorKey(gitTargetUID, gvr, namespace)).Result()
+	rv, err := s.client.Get(ctx, s.watchCursorKey(gitTargetUID, collection)).Result()
 	if err != nil || rv == "" {
 		return "", false
 	}
@@ -116,13 +116,13 @@ func (s *RedisStore) LookupWatchCursor(
 func (s *RedisStore) RecordWatchCursor(
 	ctx context.Context,
 	gitTargetUID string,
-	gvr schema.GroupVersionResource,
-	namespace, rv string,
+	collection types.CollectionKey,
+	rv string,
 ) error {
 	if rv == "" {
 		return nil
 	}
-	if err := s.client.Set(ctx, s.watchCursorKey(gitTargetUID, gvr, namespace), rv, watchCursorTTL).Err(); err != nil {
+	if err := s.client.Set(ctx, s.watchCursorKey(gitTargetUID, collection), rv, watchCursorTTL).Err(); err != nil {
 		return fmt.Errorf("store watch cursor: %w", err)
 	}
 	return nil
@@ -135,15 +135,18 @@ func (s *RedisStore) RecordWatchCursor(
 // per-resource counter shared across served versions, so it is redundant in a resume
 // cursor. The namespace scope stays, because the live data plane opens one raw watch per
 // (GitTarget, GVR, scope) and a namespaced watch must not resume a cluster-wide one.
-func (s *RedisStore) watchCursorKey(
-	gitTargetUID string,
-	gvr schema.GroupVersionResource,
-	namespace string,
-) string {
+//
+// A selected collection appends ":selector:<canonical selector>" before the leaf. An unselected
+// collection keeps the key it always had, so an upgrade resumes existing cursors; a selected one
+// can never resume a cursor recorded under another selection, whose events it never saw.
+func (s *RedisStore) watchCursorKey(gitTargetUID string, collection types.CollectionKey) string {
 	scope := "cluster"
-	if namespace != "" {
-		scope = "namespace:" + escapeKeyField(namespace)
+	if collection.Namespace != "" {
+		scope = "namespace:" + escapeKeyField(collection.Namespace)
+	}
+	if collection.LabelSelector != "" {
+		scope += ":selector:" + escapeKeyField(collection.LabelSelector)
 	}
 	return resolveKeyPrefix(s.keyPrefix) + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":" +
-		groupResourceKey(gvr.Group, gvr.Resource) + ":" + scope + ":last-rv"
+		groupResourceKey(collection.Group, collection.Resource) + ":" + scope + ":last-rv"
 }

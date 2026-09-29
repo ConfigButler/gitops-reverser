@@ -485,10 +485,10 @@ func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
 	assert.Contains(t, string(base), "name: shared", "the read-only base object must be untouched")
 }
 
-// TestOverlayAuthors_DeletePatch_SkipsOnPathCollision proves the delete-patch author never
-// clobbers an unrelated file that happens to occupy the deterministic patch path: the flush skips
-// the delete and leaves the existing file byte-for-byte, rather than overwriting it.
-func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
+// TestOverlayAuthors_DeletePatch_RefusesOnPathCollision proves the delete-patch author never
+// clobbers an unrelated file that happens to occupy the deterministic patch path: the batch is
+// refused and the existing file is left byte-for-byte, rather than overwritten or silently kept.
+func TestOverlayAuthors_DeletePatch_RefusesOnPathCollision(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem().Root()
 	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - cm.yaml\n")
@@ -517,7 +517,9 @@ func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
 		namespacePolicy{},
 		v1alpha3.PruneOnEvent,
 	)
-	require.NoError(t, err, "a patch-path collision must be skipped, not error")
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused, "a patch-path collision refuses the batch")
+	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueUnownedDeletePatch))
 
 	got, err := os.ReadFile(filepath.Join(root, "overlays/test/configmap-shared-delete.yaml"))
 	require.NoError(t, err)

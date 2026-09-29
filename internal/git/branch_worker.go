@@ -577,6 +577,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	if w.pendingResyncs == nil {
 		w.pendingResyncs = make(map[resyncKey]*pendingResync)
 	}
+	w.markResyncTailForResyncLocked(request, key)
 	if pending, queued := w.pendingResyncs[key]; queued && !pending.tailPassed {
 		// A marker for this key is already in the FIFO and nothing for this scope
 		// was queued behind it, so the marker's position is still the right place
@@ -662,6 +663,26 @@ func (w *BranchWorker) markResyncTailForWriteLocked(request *WriteRequest) {
 				pending.tailPassed = true
 				break
 			}
+		}
+	}
+}
+
+// markResyncTailForResyncLocked records, on every OTHER pending resync of the same GitTarget whose
+// sweep boundary overlaps this one's, that a snapshot is now queued behind its marker. A snapshot
+// is a write to its whole boundary, so it fences an earlier snapshot exactly as a live write does.
+//
+// Without it a selector changed A -> B -> A queued snapshots A1, B, A2 and coalesced A2 into A1's
+// position: A2 ran first and the retired B snapshot then ran after it, undoing the current
+// selection. With it A2 takes the tail, so the order stays A1, B, A2. The caller must hold
+// pendingResyncsMu.
+func (w *BranchWorker) markResyncTailForResyncLocked(request *ResyncRequest, key resyncKey) {
+	for pendingKey, pending := range w.pendingResyncs {
+		if pending.tailPassed || pendingKey == key {
+			continue
+		}
+		if pendingKey.namespace == request.GitTargetNamespace && pendingKey.name == request.GitTargetName &&
+			pending.request.Scope.Overlaps(request.Scope) {
+			pending.tailPassed = true
 		}
 	}
 }
