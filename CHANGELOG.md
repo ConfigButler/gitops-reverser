@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.49.1...v0.50.0) (2026-09-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* expire finished CommitRequests and name the placement fallback the built-in path ([#400](https://github.com/ConfigButler/gitops-reverser/issues/400))
+* **api:** rules[].operations is removed. A rule that listed a subset now also mirrors updates and removals; set spec.prune.mode: Never on the GitTarget before upgrading to keep documents on removal. See UPGRADING.md.
+* **api:** kubectl get -o wide no longer prints PROVIDERREADY, CLUSTERPROVIDERREADY (GitTarget) or GITTARGETREADY (WatchRule, ClusterWatchRule).
+
+### Features
+
+* **api:** adopt Kubernetes watch terms and remove rule operation filters ([#398](https://github.com/ConfigButler/gitops-reverser/issues/398)) ([cc32848](https://github.com/ConfigButler/gitops-reverser/commit/cc32848da39552b4c2e9a34ac49b5995ca419082))
+* **api:** give every concept one name, and make the API follow it ([#397](https://github.com/ConfigButler/gitops-reverser/issues/397)) ([b43ecf6](https://github.com/ConfigButler/gitops-reverser/commit/b43ecf61001667dc3c3bdd9e5b472fff56f603fa))
+* **api:** select rule objects by label with objectSelector ([#399](https://github.com/ConfigButler/gitops-reverser/issues/399)) ([70847ee](https://github.com/ConfigButler/gitops-reverser/commit/70847ee2f0a29cd4d8238b822618d100dcb6e46a))
+* expire finished CommitRequests and name the placement fallback the built-in path ([#400](https://github.com/ConfigButler/gitops-reverser/issues/400)) ([cd0c94c](https://github.com/ConfigButler/gitops-reverser/commit/cd0c94c823721888642d0227ac011f0b3aedf2b5))
+* key a branch worker to its repository, and give a repository its own status surface ([#396](https://github.com/ConfigButler/gitops-reverser/issues/396)) ([71eb515](https://github.com/ConfigButler/gitops-reverser/commit/71eb515273590f4d75d1118a7eb881fece673a0d))
+* report a folder somebody else broke, instead of discovering it on the next write ([#391](https://github.com/ConfigButler/gitops-reverser/issues/391)) ([ae4c823](https://github.com/ConfigButler/gitops-reverser/commit/ae4c82391ce67c6ade1806fb1aaf4fdb08d1ca6c))
+
 ## [0.49.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.49.0...v0.49.1) (2026-09-22)
 
 
