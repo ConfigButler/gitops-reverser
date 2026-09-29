@@ -18,15 +18,19 @@ version: 2
 # and must carry `patterns`. Security updates are driven by Dependabot alerts, not
 # by this file, so a single failing version bump here never holds a CVE fix back.
 #
-# Every entry carries the same `commit-message`, so the grouped pull request is
-# titled `chore(deps): bump ...`: the "Conventional Commit title" check rejects
-# Dependabot's default `Bump ...`, and release-please files `chore` as hidden.
-# It sits on each ecosystem rather than on the group because the ecosystem entry
-# is where Dependabot documents the key.
+# `commit-message` titles the grouped pull request `chore(deps): bump ...`: the
+# "Conventional Commit title" check rejects Dependabot's default `Bump ...`, and
+# release-please files `chore` as hidden. It MUST sit on the group: in a
+# multi-ecosystem setup `commit-message`, `milestone`, `target-branch` and
+# `pull-request-branch-name` are group-only, and setting one on an ecosystem is a
+# configuration error that stops every update.
 multi-ecosystem-groups:
   all-dependencies:
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
 
 updates:
   - package-ecosystem: "gomod"
@@ -41,18 +45,12 @@ updates:
     patterns:
       - "*"
     multi-ecosystem-group: "all-dependencies"
-    commit-message:
-      prefix: "chore"
-      include: "scope"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     patterns:
       - "*"
     multi-ecosystem-group: "all-dependencies"
-    commit-message:
-      prefix: "chore"
-      include: "scope"
 
   - package-ecosystem: "docker"
     # Covers the project Dockerfile, the devcontainer/CI base image and the
@@ -66,9 +64,6 @@ updates:
     patterns:
       - "*"
     multi-ecosystem-group: "all-dependencies"
-    commit-message:
-      prefix: "chore"
-      include: "scope"
 
   - package-ecosystem: "devcontainers"
     # The Features in .devcontainer/devcontainer.json are versioned dependencies
@@ -82,6 +77,3 @@ updates:
     patterns:
       - "*"
     multi-ecosystem-group: "all-dependencies"
-    commit-message:
-      prefix: "chore"
-      include: "scope"

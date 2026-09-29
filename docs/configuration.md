@@ -1981,6 +1981,8 @@ contract, so it is also how you change the outcome for one request:
 - Remove the annotation to keep the request.
 - Edit the time, in RFC 3339 format, to delete it earlier or later. A value that does not parse
   keeps the request.
+- Set it yourself when you create the request to choose the time up front. The controller never
+  replaces a value that is already there.
 
 The period comes from `--commit-request-ttl` (Helm: `controllerManager.commitRequestTTL`, default
 `48h`). Changing it only affects requests that finish afterwards. `0` writes no annotation, so new

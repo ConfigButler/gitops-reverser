@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -134,4 +135,56 @@ func TestCommitRequestTTL_LeavesARequestInProgressAlone(t *testing.T) {
 
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter, "it keeps polling for the outcome")
 	assert.NotContains(t, fetchCommitRequest(t, c, "save-pending").Annotations, CommitRequestDeleteAfterAnnotation)
+}
+
+// A person who extends delete-after in the moment between the terminal status write and the stamp
+// must keep the extension. The stamp is computed from the object the status write returned, so an
+// unconditional patch would overwrite the edit and delete the request early.
+func TestCommitRequestTTL_StampDoesNotOverwriteAConcurrentExtension(t *testing.T) {
+	const extended = "2099-01-01T00:00:00Z"
+	c := newCommitRequestClient(t, &interceptor.Funcs{
+		SubResourceUpdate: func(
+			ctx context.Context, cl client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption,
+		) error {
+			if err := cl.SubResource(sub).Update(ctx, obj, opts...); err != nil {
+				return err
+			}
+			if !commitRequestIsTerminal(obj.(*configv1alpha3.CommitRequest)) {
+				return nil
+			}
+			// The edit lands right after the terminal status is published, before the stamp.
+			var live configv1alpha3.CommitRequest
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(obj), &live))
+			live.Annotations = map[string]string{CommitRequestDeleteAfterAnnotation: extended}
+			require.NoError(t, cl.Update(ctx, &live))
+			return nil
+		},
+	}, newCommitRequest("save-now"))
+	r := &CommitRequestReconciler{
+		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+		TTL: time.Hour,
+	}
+
+	reconcileCommitRequest(t, r, "save-now")
+
+	assert.Equal(t, extended,
+		fetchCommitRequest(t, c, "save-now").Annotations[CommitRequestDeleteAfterAnnotation],
+		"the extension made after the request finished survives the stamp")
+}
+
+// A submitter may choose its own deletion time up front; finishing does not replace it.
+func TestCommitRequestTTL_AValueSetAtCreationIsKept(t *testing.T) {
+	const chosen = "2099-01-01T00:00:00Z"
+	cr := newCommitRequest("save-now")
+	cr.Annotations = map[string]string{CommitRequestDeleteAfterAnnotation: chosen}
+	c := newCommitRequestClient(t, nil, cr)
+	r := &CommitRequestReconciler{
+		Client: c, APIReader: c, Finalizer: committedFinalizer(), AuthorLookup: attributedAlice(),
+		TTL: time.Hour,
+	}
+
+	reconcileCommitRequest(t, r, "save-now")
+
+	assert.Equal(t, chosen,
+		fetchCommitRequest(t, c, "save-now").Annotations[CommitRequestDeleteAfterAnnotation])
 }

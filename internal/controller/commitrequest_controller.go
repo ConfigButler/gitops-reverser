@@ -450,8 +450,13 @@ func parseDeleteAfter(value string) (time.Time, bool) {
 // runs only on the transition to terminal, never on a later reconcile of a terminal request, which
 // is what keeps requests that finished before this existed, and requests someone un-stamped, alone.
 //
-// A failed write is logged, not retried: the request is then simply kept, the safe direction, and a
-// retry through requeue would re-enter the finalize this controller must run at most once.
+// A value that is already there wins: a submitter may set its own delete-after at creation, and a
+// person may extend it in the moment between the terminal status write and this stamp. So the patch
+// carries the resourceVersion it was computed from, and a conflict re-reads the request rather than
+// overwriting; if the annotation appeared meanwhile, it is left exactly as it is.
+//
+// A write that still fails is logged, not requeued: the request is then simply kept, the safe
+// direction, and a requeue would re-enter the finalize this controller must run at most once.
 func (r *CommitRequestReconciler) stampDeleteAfter(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
@@ -459,17 +464,47 @@ func (r *CommitRequestReconciler) stampDeleteAfter(
 	if r.TTL <= 0 {
 		return
 	}
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
 	deleteAfter := time.Now().Add(r.TTL).UTC().Format(time.RFC3339)
-	patch := client.MergeFrom(commitRequest.DeepCopy())
-	if commitRequest.Annotations == nil {
-		commitRequest.Annotations = map[string]string{}
+
+	current := commitRequest
+	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
+		if _, set := current.Annotations[CommitRequestDeleteAfterAnnotation]; set {
+			return
+		}
+		patch := client.MergeFromWithOptions(current.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if current.Annotations == nil {
+			current.Annotations = map[string]string{}
+		}
+		current.Annotations[CommitRequestDeleteAfterAnnotation] = deleteAfter
+		err := r.Patch(ctx, current, patch)
+		if err == nil || apierrors.IsNotFound(err) {
+			return
+		}
+		if !apierrors.IsConflict(err) {
+			log.Error(err, "Failed to stamp delete-after on a finished CommitRequest; it will be kept",
+				"name", client.ObjectKeyFromObject(commitRequest))
+			return
+		}
+		var fresh configbutleraiv1alpha3.CommitRequest
+		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(commitRequest), &fresh); getErr != nil {
+			if !apierrors.IsNotFound(getErr) {
+				log.Error(getErr, "Failed to re-read CommitRequest to stamp delete-after; it will be kept",
+					"name", client.ObjectKeyFromObject(commitRequest))
+			}
+			return
+		}
+		if fresh.UID != commitRequest.UID {
+			return
+		}
+		current = &fresh
 	}
-	commitRequest.Annotations[CommitRequestDeleteAfterAnnotation] = deleteAfter
-	if err := r.Patch(ctx, commitRequest, patch); err != nil {
-		logf.FromContext(ctx).WithName("CommitRequestReconciler").Error(err,
-			"Failed to stamp delete-after on a finished CommitRequest; it will be kept",
-			"name", client.ObjectKeyFromObject(commitRequest))
-	}
+	log.Error(nil, "Gave up stamping delete-after after repeated conflicts; the request will be kept",
+		"name", client.ObjectKeyFromObject(commitRequest))
 }
 
 // commitRequestStatusUpdateAttempts bounds the terminal-status conflict retry.
