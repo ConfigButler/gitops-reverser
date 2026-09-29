@@ -597,7 +597,7 @@ func (v placementVariable) renderable() bool {
 	}
 	switch v.name {
 	case "group", "groupPath", "version", "apiVersion", "resource",
-		"kind", "scope", placementNamespaceVariable, "name", "sensitiveSuffix":
+		"kind", "kindLower", "scope", placementNamespaceVariable, "name", "sensitiveSuffix":
 		return true
 	default:
 		return false
@@ -772,7 +772,11 @@ func placementVars(req PlacementRequest) map[string]string {
 		"apiVersion": apiVersion,
 		"resource":   id.Resource,
 		"kind":       req.Kind,
-		"scope":      scope,
+		// A variable rather than a lower function on purpose: a function invites an expression
+		// language into a field that is deliberately not one, and one variable answers the need
+		// ("{kindLower}-{name}.yaml" for configmap-cache.yaml).
+		"kindLower": strings.ToLower(req.Kind),
+		"scope":     scope,
 		// The RAW namespace, empty for a cluster-scoped resource, not NamespaceOrCluster(): the
 		// empty value is what tells the renderer this variable is absent, so {namespace} takes
 		// the same declared-fallback-then-sentinel path {label:key} does instead of having

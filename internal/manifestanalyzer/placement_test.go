@@ -616,8 +616,38 @@ func TestPlacementVars_GroupedClusterScoped(t *testing.T) {
 		t.Errorf("got %q, want %q (illegal-namespace sentinel for a cluster-scoped resource)",
 			rendered, want)
 	}
+	if want := "clusterrole"; vars["kindLower"] != want {
+		t.Errorf("kindLower = %q, want %q", vars["kindLower"], want)
+	}
 	if want := "rbac.authorization.k8s.io/v1"; vars["apiVersion"] != want {
 		t.Errorf("apiVersion = %q, want %q for a grouped resource", vars["apiVersion"], want)
+	}
+}
+
+// {kindLower} is the one way to ask for the "configmap-cache.yaml" naming convention, which no
+// built-in rung produces.
+func TestLocateNew_KindLowerNamesTheFileByKind(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	policy := &PlacementPolicy{Default: "{kindLower}-{name}{sensitiveSuffix}"}
+
+	res, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Source != PlacementSourceDefault || res.Path != "configmap-cache.yaml" {
+		t.Fatalf("got %+v, want the declared configmap-cache.yaml", res)
+	}
+}
+
+// The single-namespace recipe is not identity-complete, and the docs say so: two namespaces
+// holding a ConfigMap named "cache" render one path. The check that guards sensitive routes has to
+// agree, or a Secret could be routed through it.
+func TestIdentityCompletePlacementTemplate_KindLowerRecipeIsNot(t *testing.T) {
+	if IdentityCompletePlacementTemplate("{kindLower}-{name}{sensitiveSuffix}", true) {
+		t.Fatal("a template with no {namespace} folds two namespaces onto one path")
+	}
+	if !IdentityCompletePlacementTemplate("{namespace}/{kindLower}-{name}{sensitiveSuffix}", true) {
+		t.Fatal("adding {namespace} makes the same naming identity-complete for one type")
 	}
 }
 

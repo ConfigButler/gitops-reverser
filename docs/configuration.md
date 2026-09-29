@@ -1231,6 +1231,7 @@ named `api` in namespace `team-a`:
 | `{version}` | API version | `v1` |
 | `{apiVersion}` | manifest `apiVersion`: `group/version`, or `version` alone for core | `apps/v1` (a ConfigMap → `v1`) |
 | `{kind}` | manifest kind | `Deployment` |
+| `{kindLower}` | manifest kind, lower-cased | `deployment` |
 | `{scope}` | `namespaced` or `cluster` (a readable label, not a namespace-position value) | `namespaced` |
 | `{sensitiveSuffix}` | `.sops.yaml` for a sensitive resource, `.yaml` otherwise | `.yaml` (a Secret → `.sops.yaml`) |
 | `{label:key}` | the value of that label on the resource, or `_unlabeled` if it has none; the key may be prefixed (`{label:app.kubernetes.io/instance}`) | `voter` |
@@ -1244,6 +1245,25 @@ named `api` in namespace `team-a`:
 > `{namespace|_global}` (see [Naming the bucket yourself](#naming-the-bucket-yourself-fallback)).
 > `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute, so don't use it as the
 > folder for cluster resources.
+
+#### Naming files by kind (`{kindLower}`)
+
+`{kindLower}` gives the `deployment-api.yaml` naming convention, which none of the automatic steps
+produce:
+
+```yaml
+placement:
+  default: "{kindLower}-{name}{sensitiveSuffix}"   # deployment-api.yaml, configmap-cache.yaml
+```
+
+This template is **not identity-complete**: it has no `{namespace}`, so a Deployment named `api` in
+`team-a` and one in `team-b` render the same path and land as two documents in one file. Use it for a
+folder that mirrors one namespace. For a folder that mirrors several, keep the namespace in the path,
+for example `"{namespace}/{kindLower}-{name}{sensitiveSuffix}"`. A Secret still needs an
+identity-complete `byType` route of its own, as it does with any bundling `default`.
+
+It is a variable rather than a `lower` function on purpose: placement templates are not an expression
+language.
 
 #### Placing by label (`{label:key}`)
 

@@ -333,7 +333,7 @@ change at all.
 - **`placements_total` keeps its `source` label** — `by_type`, `default`, `kustomize_root` and
   `builtin`. It names the rung that answered rather than a resolved layout kind, so nothing here
   breaks a label.
-- **`{kindLower}` and the versionless identity fix** are template features and stay queued.
+- **`{kindLower}`** is built; the versionless identity fix is a template feature and stays queued.
 
 ## Previewing a target: point it at a scratch branch
 

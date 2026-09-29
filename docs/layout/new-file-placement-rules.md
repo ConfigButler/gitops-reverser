@@ -921,6 +921,7 @@ Recommended variables:
 | `{apiVersion}` | Kubernetes manifest `apiVersion` |
 | `{resource}` | plural resource name, for example `configmaps` |
 | `{kind}` | manifest kind, for example `ConfigMap` |
+| `{kindLower}` | manifest kind, lower-cased, for example `configmap` |
 | `{scope}` | `namespaced` or `cluster` |
 | `{namespace}` | the resource's namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for a cluster-scoped resource; `{namespace\|fallback}` names a different bucket ([details](#namespace-takes-the-same-fallback-fenced-the-same-way)) |
 | `{name}` | metadata name |
@@ -933,9 +934,9 @@ Recommended variables:
 supplies the extension itself, because it has to choose between `.yaml` and `.sops.yaml`. Any
 example that shows a template without a visible suffix is wrong.
 
-`{kindLower}` — the lower-cased kind, so `ConfigMap` becomes `configmap` — is **decided and not yet
-built**. It is a variable rather than a `toLower` function because a function invites an expression
-language into a field that is deliberately not one. It is what a user writes to ask for the
+`{kindLower}` — the lower-cased kind, so `ConfigMap` becomes `configmap` — is **built**. It is a
+variable rather than a `toLower` function because a function invites an expression language into a
+field that is deliberately not one. It is what a user writes to ask for the
 `configmap-cache.yaml` convention that the built-in rungs do not produce: the kustomize root names a
 new sibling `{name}.yaml` and never infers a naming convention from the folder's existing files.
 
