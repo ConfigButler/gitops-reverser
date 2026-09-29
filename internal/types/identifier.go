@@ -77,15 +77,15 @@ func (r ResourceIdentifier) Key() string {
 	return fmt.Sprintf("%s/%s/%s/%s", r.Group, r.Version, r.Resource, r.Name)
 }
 
-// ToGitPath generates the canonical Git file path for a new resource:
+// ToGitPath generates the built-in Git file path for a new resource:
 // {namespace-or-cluster}/{group}/{resource}/{name}.yaml. The scope segment leads
 // (a real namespace, or the literal "_cluster" for a cluster-scoped resource) so a
 // repository reads namespace-first, the way a human browses it; the API group is
 // omitted for core resources, and the API version is deliberately left out — the
 // operator writes one version per object, so a version segment adds noise and would
-// churn the path on a preferred-version bump. This is only the cold-start fallback:
-// once any layout exists in the target, sibling inference follows it, and an
-// existing document is always edited in place at its current location (match-first),
+// churn the path on a preferred-version bump. It is only the last rung for a NEW
+// document: a declared placement or the folder's one kustomize root answers first, and
+// an existing document is always edited in place at its current location (match-first),
 // so changing this shape never moves a file that is already in Git. See
 // docs/layout/new-file-placement-rules.md.
 //
