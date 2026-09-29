@@ -39,9 +39,16 @@ When no usable fact is found the commit ships with the explicit unresolved autho
 
 ## Authorship is established, never asserted
 
-A commit's author is the identity the Kubernetes API server **authenticated** for the change: the
-user in the audit record of a mirrored edit, or the submitter in the admission request of a
-`CommitRequest`. No field in any spec can name an author, and none ever will.
+A commit names a person only when the Kubernetes API server **authenticated** that person for the
+change: the user in the audit record of a mirrored edit, or the submitter in the admission request
+of a `CommitRequest`. Every other commit carries an identity the operator's own configuration
+chooses, never one a submitter supplies:
+
+- **Attribution is off** (the chart default): the configured Git identity.
+- **Reconcile and resync writes**, which have no single actor: the configured Git identity.
+- **Attribution is on but finds no usable fact**: the explicit unresolved author.
+
+No field in any spec can name an author, and none ever will.
 
 That is why `CommitRequest` has no `spec.author`, although one was asked for (consumer ask #5, with a
 `SubjectAccessReview` guard):
