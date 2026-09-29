@@ -111,16 +111,20 @@ func (s *targetWatchSet) plan() targetWatchPlan {
 	return plan
 }
 
-// stop retires one collection's stream, cancels it, and drops it. When it returns, the stream has
+// stop cancels one collection's stream, retires it, and drops it. When it returns, the stream has
 // enqueued everything it ever will (see producerGate). It never touches files: a deselected
 // collection's documents are converged by a Git-side sweep, not by the watch layer.
+//
+// Cancel comes first. retire waits out an enqueue in flight, and a snapshot's enqueue can be
+// blocked on the stream's context (resolving the worker reads the GitTarget through a cache that
+// may not have synced); retiring first held this owner loop for as long as that call took.
 func (s *targetWatchSet) stop(collection types.CollectionKey) {
 	running, ok := s.streams[collection]
 	if !ok {
 		return
 	}
-	running.gate.retire()
 	running.cancel()
+	running.gate.retire()
 	delete(s.streams, collection)
 }
 
