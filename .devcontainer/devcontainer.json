@@ -9,7 +9,7 @@
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.1": {},
-    "ghcr.io/devcontainers/features/common-utils:2.6.0": {
+    "ghcr.io/devcontainers/features/common-utils:2.7.0": {
       "userUid": "automatic",
       "userGid": "automatic",
       "username": "vscode"
