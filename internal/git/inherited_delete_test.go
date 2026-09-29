@@ -356,7 +356,12 @@ func TestResync_ReEntryRefusesAnInJailDocumentAPatchHides(t *testing.T) {
 	assert.False(t, changed)
 }
 
-// flushOverlayEvents applies one live batch of events to the overlay.
+// flushOverlayEvents applies one batch of events to the overlay, straight to the batch.
+//
+// The tests below pin a batch invariant, not a live-stream scenario: a commit window keeps only
+// the last event per path, so the ordinary stream never hands one batch two events for one object.
+// The batch must still be right when it is handed them, and a later event must see the render the
+// batch's own earlier events left.
 func flushOverlayEvents(t *testing.T, worktree *gogit.Worktree, events ...Event) (bool, error) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
@@ -373,8 +378,7 @@ func sharedEvent(op types.OperationType, data string) Event {
 	return Event{Identifier: cm.Resource, Operation: string(op), Object: cm.Object}
 }
 
-// Two events for one returning object in a single batch (a relabel back into the selection, then
-// a status write, is the ordinary shape): the first retires the owned patch, and
+// Two events for one returning object in a single batch: the first retires the owned patch, and
 // the second must see the object the batch just brought back, not the pre-batch render that still
 // has it hidden. It read the pre-batch render, found no patch, and refused the whole batch as
 // hidden by a patch the operator does not own.

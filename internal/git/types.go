@@ -490,18 +490,11 @@ type ResyncRequest struct {
 // reconcile, and the ZERO collection for a whole-GitTarget resync, which speaks for every collection the
 // target holds rather than for one of them. It is what keys a refusal's dedupe memory and its
 // queued commit, so that one watched type's success neither clears nor re-arms another's.
-//
-// The selector is dropped. A refusal is about the Git documents under the structural boundary,
-// which a selector does not narrow (see types.CollectionKey), and the rule compiler allows one
-// selector per boundary. Keyed by selector, a rule that changed selector left the old one's
-// memory and queued commit behind, and the new selector's success never cleared them.
 func (r *ResyncRequest) refusalCollection() types.CollectionKey {
 	if r == nil || r.Scope == nil {
 		return types.CollectionKey{}
 	}
-	c := r.Scope.Collection
-	c.LabelSelector = ""
-	return c
+	return r.Scope.Collection
 }
 
 // resyncKey identifies the slice of a mirror a resync reconciles: one GitTarget,

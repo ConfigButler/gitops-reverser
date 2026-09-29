@@ -565,28 +565,46 @@ func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCollection(t *testin
 		"a queued refusal must not move the branch after the same object was accepted")
 }
 
-// TestRefusalObservation_RecoverySurvivesASelectorChange: a refusal filed while the rule selected X
-// is answered by the next accepted snapshot of the same boundary, even though it now selects Y. The
-// two snapshots own the same Git documents, so keying the refusal by selector left X's queued
-// commit to fire after the recovery.
-func TestRefusalObservation_RecoverySurvivesASelectorChange(t *testing.T) {
-	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
-		OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
-	})
-	loop := newBranchWorkerEventLoop(w, time.Minute)
-	t.Cleanup(loop.stopTimers)
-
-	selecting := func(selector string) *ResyncRequest {
+// TestRefusalObservation_ASelectedLiveRefusalIsRecoveredByTheNextAcceptedSnapshot: the live path
+// files a refusal under the selector-bearing collection its events came from, and the accepted
+// snapshot of the same boundary must clear it, whether the rule still selects the same objects or
+// has since changed selector. Keyed inconsistently, the queued commit fired after recovery and the
+// memory muted the next identical live refusal.
+func TestRefusalObservation_ASelectedLiveRefusalIsRecoveredByTheNextAcceptedSnapshot(t *testing.T) {
+	selecting := func(selector string) ResyncScope {
 		scope := ResyncScopeFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "team-a")
 		scope.Collection.LabelSelector = selector
-		return &ResyncRequest{Scope: &scope}
+		return scope
 	}
-	key := refusalKey{target: editingRef(), collection: selecting("tier=x").refusalCollection()}
-	w.recordRefusalObservation(key, "observation-1")
-	loop.armTrailingRefusalTouch(key, "the configmap was refused", "observation-1", 0)
+	for name, snapshotSelector := range map[string]string{
+		"same selector":    "tier in (x)",
+		"changed selector": "tier in (y)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{
+				OnRefusal: configv1alpha3.RefusalActionPushEmptyCommit,
+			})
+			loop := newBranchWorkerEventLoop(w, time.Minute)
+			t.Cleanup(loop.stopTimers)
 
-	loop.refusalRecovered(editingRef(), selecting("tier=y").refusalCollection())
+			live := sourceCollectionForEvents([]Event{{SourceCollection: selecting("tier in (x)").Collection}})
+			key := newRefusalKey(editingRef(), live)
+			// A previous live refusal was committed for, so the next one is rate limited and queued.
+			w.recordRefusalObservation(key, "previous-live-refusal")
+			w.lastRefusalTouch = map[string]time.Time{editingRef().String(): time.Now()}
+			refused := &manifestanalyzer.AcceptanceRefusedError{Issues: []manifestanalyzer.AcceptanceIssue{{
+				Kind: manifestanalyzer.IssueWriteFanIn, ExistingDocument: true, Path: "base/cm.yaml",
+			}}}
+			loop.touchBranchForRefusal(editingRef().Name, editingRef().Namespace,
+				"live edit refused", refused, "new-live-refusal", live)
+			require.Len(t, loop.refusalPending, 1, "the live refusal queues its trailing commit")
 
-	assert.NotContains(t, loop.refusalPending, key)
-	assert.False(t, w.refusalAlreadyCovered(key, "observation-1"))
+			snapshot := selecting(snapshotSelector)
+			loop.refusalRecovered(editingRef(), (&ResyncRequest{Scope: &snapshot}).refusalCollection())
+
+			assert.Empty(t, loop.refusalPending, "the accepted snapshot cancels the queued commit")
+			assert.False(t, w.refusalAlreadyCovered(key, "previous-live-refusal"),
+				"and forgets what the last commit covered, so the same live refusal is new again")
+		})
+	}
 }
