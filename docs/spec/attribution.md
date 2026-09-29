@@ -37,6 +37,29 @@ The governing rule, which every choice below defers to: **a wrong author is wors
 When no usable fact is found the commit ships with the explicit unresolved author
 (`unknown (attribution unresolved)`), never with a guess.
 
+## Authorship is established, never asserted
+
+A commit's author is the identity the Kubernetes API server **authenticated** for the change: the
+user in the audit record of a mirrored edit, or the submitter in the admission request of a
+`CommitRequest`. No field in any spec can name an author, and none ever will.
+
+That is why `CommitRequest` has no `spec.author`, although one was asked for (consumer ask #5, with a
+`SubjectAccessReview` guard):
+
+- **A name in a spec is only a claim.** Anyone who can create the object can write any name. A
+  permission check narrows who may write it, but what it records is still only what the submitter
+  said.
+- **The claim outlives the check.** A `CommitRequest` applied from Git or copied between clusters
+  carries its name to wherever it lands, while the submitter who was checked is someone else.
+- **It would make the rule above a matter of configuration.** "A wrong author is worse than no
+  author" only holds if nothing can put a name into the history that the API server did not
+  authenticate.
+
+To commit under your own name, authenticate as yourself. Use your identity provider (OIDC, for
+example) so that the API server knows who you are. A request that cannot be attributed claims no
+actor (`AuthorAttributed=False`); it never falls back to a name it was given. See
+[`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md).
+
 ## 1. Deletion is attributed at intent time
 
 This is a render-layer rule rather than an attribution mechanism, and it comes first because
