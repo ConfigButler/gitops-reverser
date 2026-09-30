@@ -133,7 +133,7 @@ metadata:
 spec:
   gitTargetRef:
     name: window-demo
-  message: "feat(demo): save hello resources"
+  message: "feat(demo): save now please"
   window:
     attach: CurrentOrNext
     attachTimeout: "2s"
@@ -173,7 +173,7 @@ metadata:
 spec:
   gitTargetRef:
     name: window-demo
-  message: "feat(demo): save hello resources"
+  message: "feat(demo): save long running"
   window:
     attach: Next
     attachTimeout: "10s"
@@ -229,16 +229,17 @@ column show without `-o wide`. A terminal `Ready=True` on its own does not prove
 also the outcome when there was nothing to save or no matching open window.
 
 Applying several resources sends separate API writes. The window groups their captured changes into
-one commit:
+one commit. For `save-now.yaml`:
 
 ```text
-feat(demo): save hello resources
+feat(demo): save now please
 
 ServiceAccount/hello
 ConfigMap/hello
 ```
 
-The commit adds `apps/demo/serviceaccount-hello.yaml` and modifies `apps/demo/configmap-hello.yaml`.
+With `save-long.yaml` the first line is `feat(demo): save long running`. Either commit adds
+`apps/demo/serviceaccount-hello.yaml` and modifies `apps/demo/configmap-hello.yaml`.
 
 | Resource | Captured by this rule? |
 |---|---|
