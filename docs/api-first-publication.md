@@ -275,9 +275,11 @@ are never held by the same worker.
 
 ## Story 3: save now, and know what reached Git
 
-A `CommitRequest` closes a matching author-and-target window after its collection delay. It
-does not bypass the push cooldown. The default delay is `2s`, measured from the worker's first
-receipt; repeat attaches keep the original deadline. The accepted range is `0` to `300` seconds.
+A `CommitRequest` attaches to a matching author-and-target window and closes it. It does not
+bypass the push cooldown. Two settings with separate clocks set the timing: `attachTimeout` runs
+from the worker's registration of the request and bounds the wait for a window, and `maxDuration`
+runs from the attach and bounds the collection that follows. Both default to `2s` and accept `0s`
+to `5m`. A repeat attach restarts neither clock.
 
 ```mermaid
 sequenceDiagram
@@ -285,8 +287,10 @@ sequenceDiagram
     participant W as Branch worker
     participant G as Git remote
 
-    C->>W: Attach request to a matching window
-    Note over W: First receipt fixes the close deadline<br/>Default collection delay: 2s
+    C->>W: Register request
+    Note over W: Registration starts attachTimeout (default 2s)
+    W->>W: Attach to a matching window
+    Note over W: Attach starts maxDuration (default 2s)
     W->>W: Finalize window, keep request with retained write
     C->>W: Poll / repeat attach every 2s
     W-->>C: Still pending while awaiting publication
