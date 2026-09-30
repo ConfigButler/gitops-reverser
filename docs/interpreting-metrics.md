@@ -204,6 +204,8 @@ boundary, the commit, the push. Background:
 | `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, and only on the intervals where the branch had actually moved). See the note below. |
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync` / `refresh`. Every increment is lost work — except `refresh`, which the next reconcile asks for again; a standing rate there means the branch's status and placement stop being topped up. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
+| `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `atomic_before_apply` / `shutdown`; `timer_source` is `target` or `commit_request`. See [tuning commit windows](#tuning-commit-windows). |
+| `git_commit_window_duration_seconds` | histogram | `gittarget_namespace`, `gittarget_name` | How long each window collected: from the write that opened it to the start of its finalize. Its count equals `git_commit_windows_total` summed over `close_reason` and `timer_source`. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
 | `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labeled half of the pipeline and the branch-labeled half. Published per configured GitTarget, whether or not its worker runs. |
 | `commit_requests_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. A target that never resolved publishes the empty pair. See the counting note below. |
@@ -545,6 +547,58 @@ seen during its wait, so a foreign window that closes before `attachTimeout` run
 That is not one per `CommitRequest`: a terminal status that never persisted is re-decided when the
 request is redelivered, and a restart re-reconciles anything non-terminal. Read rates and ratios
 from it rather than exact request counts.
+
+### Tuning commit windows
+
+A GitTarget's `commit.window` timers decide when its changes become a commit, and a `CommitRequest`
+can bring its own. Two metrics show what those timers actually do.
+
+**Which timer ends the windows?** Every closed window is counted once, with what closed it and whose
+timers were in effect:
+
+```promql
+sum by (gittarget_namespace, gittarget_name, close_reason) (
+  rate(gitopsreverser_git_commit_windows_total{timer_source="target"}[1h])
+)
+```
+
+Filter on `timer_source="target"` when tuning a target's own timers. A window a save attached to
+runs on the save's timers, and a save omits `idleTimeout` by default, so its windows would pull the
+picture towards `max_duration`.
+
+- `idle_timeout` is the normal ending: the writes went quiet.
+- `max_duration` means the maximum was reached first. With the target's timers that usually means
+  writes kept arriving closer together than `idleTimeout`; raise `maxDuration` if those changes
+  belong in one commit. It does not prove continuous activity: an `idleTimeout` close to
+  `maxDuration` ends quiet windows this way too.
+- `identity_change` means a write arrived that could not join the open window: a different author,
+  a different GitTarget on the same branch, or a different attribution state. A high share means
+  commits are being split by interleaving rather than by time, and no timer changes that.
+- `attach_next` is a save with `attach: Next` closing the author's open window before it waits.
+- `buffer_limit` means the worker's retained-write budget was reached, and the window was flushed
+  to stay within it. Writes committed but not yet pushed count towards that budget, so this reads
+  as "the branch is holding too much", not as a measurement of pod memory. See
+  [sizing the branch worker queue](#sizing-the-branch-worker-queue-against-git_queue_drops_total).
+- `resync_before_apply` and `atomic_before_apply` close the window so a resync or an atomic write can
+  apply after it; `shutdown` is the worker stopping.
+
+The count includes windows that then committed nothing, because their writes already matched Git or
+their finalize failed. A push that replays commits onto a moved remote closes no window, and neither
+does the empty commit a `CommitEmpty` save records when no window reached it.
+
+**How long do changes wait in a window?** This is collection time only, one part of the delay before
+a change is in Git: watch or audit delivery comes before it, and the commit, the push cooldown and
+the push come after it.
+
+```promql
+histogram_quantile(0.95, sum by (le, gittarget_namespace, gittarget_name) (
+  rate(gitopsreverser_git_commit_window_duration_seconds_bucket[1h])
+))
+```
+
+A p95 at the target's `idleTimeout` is the expected shape for isolated changes. A p95 at
+`maxDuration` matches a `max_duration` share above. The buckets resolve the defaults (a save's `2s`,
+a target's `5s` and `1m`), a save's `5m` ceiling, and on up to the `24h` a GitTarget may set.
 
 **Commit rate per provider/branch:**
 
@@ -1210,6 +1264,9 @@ Listed so a missing panel is never read as a healthy zero. The plan for them is
 - **A relevance-filter breakdown beyond the ingest census.** `watch_events_total{outcome}` names
   where an event stopped; it does not attribute an `unchanged` to sanitization versus a genuine
   no-op diff.
+- **CommitRequest timing.** `commit_requests_total` counts how saves end; how long a save waited
+  to attach (including the waits that ran out), how long it took end to end, and whether a
+  `no_window` save was recorded in an empty commit are not emitted yet.
 - **The reference dashboard and alert rules.** The queries in this document are the specification
   they are written from; the JSON and the rule files are not shipped yet.
 

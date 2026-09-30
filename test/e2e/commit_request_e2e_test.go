@@ -147,7 +147,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		// The wiring check for both new instruments, made here because this is where the evidence
+		// The wiring check for the metric instruments, made here because this is where the evidence
 		// is: the commit above is verified in Git, so a missing series is a broken exporter rather
 		// than a spec that did not run. Both queries are scoped to this suite's own GitTarget, so
 		// they need no run bookkeeping to isolate from the other parallel processes.
@@ -160,6 +160,26 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				testNs, gitTargetName),
 			func(v float64) bool { return v > 0 },
 			"the committed save is counted under its own GitTarget",
+		)
+
+		By("verifying the window this save closed is counted and timed under its GitTarget")
+		// The save attached to the Deployment's window and its own maxDuration (the 2s default)
+		// closed it, so the window is counted under the request's timers, not the target's.
+		waitForMetric(
+			fmt.Sprintf(
+				`sum(gitopsreverser_git_commit_windows_total{close_reason="max_duration",`+
+					`timer_source="commit_request",gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
+				testNs, gitTargetName),
+			func(v float64) bool { return v > 0 },
+			"the save's window is counted with the timer that closed it",
+		)
+		waitForMetric(
+			fmt.Sprintf(
+				`sum(gitopsreverser_git_commit_window_duration_seconds_count{`+
+					`gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
+				testNs, gitTargetName),
+			func(v float64) bool { return v > 0 },
+			"the save's window has a collection time",
 		)
 
 		By("verifying the branch-target join series names this suite's GitTarget")

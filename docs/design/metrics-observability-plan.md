@@ -625,6 +625,8 @@ install for this product.
 | `attribution_resolutions_total` | 30 × 8 tiers × 3 actor kinds = **720** | |
 | `attribution_resolution_wait_seconds` | 8 tiers × 2 kinds × (13 buckets + `_sum` + `_count`) = **240** | **7,200** before the §5.3 trim. A histogram multiplies by its bucket count *plus two*, so this row moves whenever the bucket boundaries are re-tuned: which is the trap, and the reason bucket sets are declared in one place in `exporter.go` |
 | `placements_total` | 20 × 30 × 4 sources × 2 dispositions = **4,800** ceiling | far sparser in practice, and the ceiling is the wrong intuition: placement runs only for a resource with no document in Git yet, so a series appears when a (target, type, source, disposition) combination is first used and most combinations never are |
+| `git_commit_windows_total` | 20 targets × 8 close reasons × 2 timer sources = **320** ceiling | far sparser in practice: most targets see two or three reasons |
+| `git_commit_window_duration_seconds` | 20 targets × (14 buckets + `_sum` + `_count`) = **320** | close reason and timer source stay on the counter beside it, per the histogram rule below |
 | `resource_condition` | 60 config objects × 3 condition types × 3 statuses = **540** | the one family keyed on object identity, and the only one bounded by how many objects a human wrote rather than by what the cluster contains — see the identity rule below |
 | everything else | low hundreds | |
 

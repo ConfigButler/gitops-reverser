@@ -1461,6 +1461,9 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	}
 
 	l.stopCommitTimer()
+	// Counted here, before anything can fail or find no diff, so every window is counted once and
+	// its collection time never includes the commit.
+	l.w.recordWindowClosed(l.openWindow, reason)
 	events := l.openWindow.orderedEvents()
 	windowAuthor := l.openWindow.Author
 	targetName, targetNamespace := l.openWindow.GitTarget, l.openWindow.GitTargetNamespace
@@ -2493,6 +2496,67 @@ func (w *BranchWorker) recordCommitFailure(kind, reason string) {
 		attribute.String("kind", kind),
 		attribute.String("reason", reason),
 	)...))
+}
+
+// Commit window timer sources, reported as the commit_windows_total `timer_source` label.
+const (
+	windowTimerSourceTarget        = "target"
+	windowTimerSourceCommitRequest = "commit_request"
+)
+
+// metricLabel is the commit_windows_total `close_reason` value for this reason. The log field keeps
+// its hyphenated form; a label value follows the snake_case the other labels use.
+func (r windowFinalizeReason) metricLabel() string {
+	switch r {
+	case windowFinalizeReasonIdleTimeout:
+		return "idle_timeout"
+	case windowFinalizeReasonMaxDuration:
+		return "max_duration"
+	case windowFinalizeReasonAttachNext:
+		return "attach_next"
+	case windowFinalizeReasonIdentityChange:
+		return "identity_change"
+	case windowFinalizeReasonBufferLimit:
+		return "buffer_limit"
+	case windowFinalizeReasonResyncBeforeApply:
+		return "resync_before_apply"
+	case windowFinalizeReasonAtomicBeforeApply:
+		return "atomic_before_apply"
+	case windowFinalizeReasonShutdown:
+		return "shutdown"
+	case windowFinalizeReasonUnspecified:
+		return "unspecified"
+	default:
+		return "unspecified"
+	}
+}
+
+// recordWindowClosed counts one closed commit window and observes how long it collected. The
+// labels are the window's GitTarget, because the timers that shape it are that target's (or an
+// attached request's), not the branch's.
+func (w *BranchWorker) recordWindowClosed(window *openWindow, reason windowFinalizeReason) {
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	target := []attribute.KeyValue{
+		attribute.String("gittarget_namespace", window.GitTargetNamespace),
+		attribute.String("gittarget_name", window.GitTarget),
+	}
+	if telemetry.GitCommitWindowsTotal != nil {
+		source := windowTimerSourceTarget
+		if window.pendingCR != nil {
+			source = windowTimerSourceCommitRequest
+		}
+		telemetry.GitCommitWindowsTotal.Add(ctx, 1, metric.WithAttributes(append(target,
+			attribute.String("close_reason", reason.metricLabel()),
+			attribute.String("timer_source", source),
+		)...))
+	}
+	if telemetry.GitCommitWindowDurationSeconds != nil {
+		telemetry.GitCommitWindowDurationSeconds.Record(ctx, time.Since(window.openedAt).Seconds(),
+			metric.WithAttributes(target...))
+	}
 }
 
 // recordQueueDrop counts one item the queue was too full to accept.

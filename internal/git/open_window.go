@@ -50,6 +50,10 @@ type openWindow struct {
 	// timers decide when the window closes. They are the GitTarget's, snapshotted when the window
 	// opened, until a CommitRequest attaches and replaces them with its own.
 	timers windowTimers
+	// openedAt is when the write that opened the window arrived. Unlike the timers and lastWriteAt it
+	// never moves, not even when a CommitRequest attaches, so it is what the window's collection time
+	// is measured from.
+	openedAt time.Time
 	// lastWriteAt is when the idle interval last restarted: the latest collected write, or the
 	// attach of a CommitRequest.
 	lastWriteAt time.Time
@@ -87,6 +91,7 @@ func newOpenWindow(e Event, writer eventContentWriter) *openWindow {
 		GitTargetNamespace: e.GitTargetNamespace,
 		pathToEvent:        make(map[string]Event),
 		writer:             writer,
+		openedAt:           time.Now(),
 	}
 }
 
