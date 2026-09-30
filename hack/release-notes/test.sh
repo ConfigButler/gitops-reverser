@@ -22,9 +22,11 @@ expect() {
   for subject in "$@"; do
     git -C "$repo" -c commit.gpgsign=false -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$subject"
   done
-  local got=pass
-  (cd "$repo" && "$here/squash-message.sh" HEAD~$# HEAD "$title") \
-    | node "$here/check.mjs" >/dev/null || got=fail
+  # Built first, and on its own: under set -e a crash in squash-message.sh aborts the run here,
+  # instead of reading as the parse failure a "want fail" case expects.
+  local message got=pass
+  message=$(cd "$repo" && "$here/squash-message.sh" "HEAD~$#" HEAD "$title")
+  node "$here/check.mjs" <<<"$message" >/dev/null || got=fail
   if [[ "$got" == "$want" ]]; then
     echo "ok   $name"
   else

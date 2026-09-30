@@ -129,7 +129,7 @@ collects for its `maxDuration`.
 Two rules keep the edges honest:
 
 - **An expired save cannot take a later window.** Once `attachTimeout` has run out, the save
-  resolves; a window that opens afterwards is not its window. When the deadline and a matching write
+  resolves; a window that opens afterward is not its window. When the deadline and a matching write
   are ready on the same loop wake, the expiry is decided first, and the write opens a window of its
   own under the target's message. **This is new behavior.** #403 lets the overdue save attach to that
   window and finalizes it at once with the save's message; it only stops the save from getting a
@@ -161,7 +161,7 @@ Two rules keep the edges honest:
   them. A window carries at most one save; the next waits for the next window.
 
 What `Next` guarantees is narrower than its name suggests. It separates work the worker already
-collected from work that reaches the worker afterwards. It cannot prove a write was made after the
+collected from work that reaches the worker afterward. It cannot prove a write was made after the
 request: a write still held for its audit fact arrives later and lands in the next window, and
 waiting for the previous save to resolve does not exclude a delayed write from that save either.
 That is acceptable for this feature, and the docs say so plainly. A save that must wait for a
