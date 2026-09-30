@@ -279,7 +279,7 @@ Tests:
 ## Migration
 
 No production users outside our control, so this stays small: an in-place break of `v1alpha3`, as
-#388, #397 and #398 were, with an UPGRADING entry and no conversion machinery. A version bump would
+PRs #388, #397 and #398 were, with an UPGRADING entry and no conversion machinery. A version bump would
 not help here. With `None` conversion it relabels objects without rewriting them, so a stored string
 `commit.window` would fail to decode under a new version exactly as it does under the old one.
 
