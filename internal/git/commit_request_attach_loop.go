@@ -174,12 +174,20 @@ func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 // deadline at the claim: the window then collects for the full closeDelay, however much of it the
 // request spent waiting. When the window was already open at receipt the claim IS the receipt,
 // so the deadline is the one first stamped.
+//
+// A request whose wait has already run out is attached WITHOUT a restart. The deadline timer and a
+// matching event can be ready on the same loop wake, and this pass runs before
+// processDueCommitRequests, so restarting here would hand an expired request a second full delay
+// depending on which of the two the select picked. Left alone, it is finalized in this same pass,
+// carrying its message, which is also what an explicit "0s" relies on.
 func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 	l.openWindow.pendingMessage = pcr.message
 	id := pcr.id
 	l.openWindow.pendingCR = &id
 	pcr.attached = true
-	pcr.finalizeAt = time.Now().Add(pcr.closeDelay)
+	if now := time.Now(); pcr.finalizeAt.After(now) {
+		pcr.finalizeAt = now.Add(pcr.closeDelay)
+	}
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,
 		"author", pcr.author,

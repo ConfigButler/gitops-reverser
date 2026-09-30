@@ -1922,8 +1922,12 @@ the write still ships, as a window that names no actor, and a request naming a s
 claim it: the outcome is `WindowMismatch` no matter how long the request waits.
 
 The delay applies to each phase separately: once waiting for the window, and again collecting
-after the claim. A save that creates its request before making its writes therefore sizes the delay
-to the gap before its first write alone. The worst case to the commit is twice the delay.
+after the claim. A save that creates its request before making its writes needs a delay that covers
+both the gap before its first write and the span from its first write to its last. With `"2s"`,
+writes arriving 1 and 4 seconds after the request still split: the window is claimed at 1s and
+finalized at 3s. The target's `commit.window` also still applies, so a silence longer than it
+between two writes closes the window early. Twice the delay bounds the finalize; the push after it
+can add its cooldown and any retries.
 
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
 undershooting resolves the request `Ready=True` with reason `NoWindowInGrace` while the edit

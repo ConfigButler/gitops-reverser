@@ -253,6 +253,83 @@ func TestAttach_ClaimRestartsTheDeadline(t *testing.T) {
 		"the claim must restart the deadline at claim + closeDelay")
 }
 
+// TestAttach_AnExpiredWaitIsNotRestartedByALateClaim pins the deadline boundary: when the deadline
+// timer and a matching event are ready on the same loop wake and the event is served first, the
+// overdue request still claims the window, but it is finalized in that pass rather than handed a
+// second full closeDelay.
+func TestAttach_AnExpiredWaitIsNotRestartedByALateClaim(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	req := attachReq("alice", 60*time.Second)
+	req.Message = "late save"
+	serviceAttach(loop, req)
+	forceDue(loop) // the wait ran out, and its timer has not been served yet
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	loop.serviceCommitRequests()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok, "the overdue request must resolve in this pass, not wait out a fresh delay")
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeCommitted, res.Outcome, "it claimed the window, so the commit carries its message")
+	assert.Nil(t, loop.openWindow)
+}
+
+// TestAttach_WritesAfterTheClaimJoinOneCommit pins the save the claim restart exists for: a request
+// created before its writes, whose writes arrive one after another, publishes them as ONE commit
+// carrying its message.
+func TestAttach_WritesAfterTheClaimJoinOneCommit(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	req := attachReq("alice", 60*time.Second)
+	req.Message = "save: two writes"
+	serviceAttach(loop, req)
+
+	for _, name := range []string{"first", "second"} {
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+			Events:     []Event{configMapTargetEvent(name, "alice", "team-a")},
+			CommitMode: CommitModePerEvent,
+		}})
+		loop.serviceCommitRequests()
+		_, resolved := outcome(t, worker)
+		require.False(t, resolved, "a write inside the delay must not close the window: %s", name)
+	}
+
+	forceDue(loop)
+	loop.serviceCommitRequests()
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	require.Equal(t, FinalizeCommitted, res.Outcome)
+
+	repo, err := gogit.PlainOpen(worker.repoPath())
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(plumbing.NewHash(res.Commit))
+	require.NoError(t, err)
+	assert.Equal(t, "save: two writes", commit.Message)
+	stats, err := commit.Stats()
+	require.NoError(t, err)
+	changed := make([]string, 0, len(stats))
+	for _, stat := range stats {
+		changed = append(changed, stat.Name)
+	}
+	assert.Subset(t, changed, []string{
+		"team-a/default/configmaps/first.yaml",
+		"team-a/default/configmaps/second.yaml",
+	}, "both writes must land in the one commit carrying the message")
+}
+
 // TestAttach_ForeignWindowIsNotStolen verifies an attach for a different author
 // parks (never finalizes another author's window) and resolves WindowMismatch once
 // its grace elapses, leaving the foreign window open.

@@ -16,9 +16,10 @@ waiting for a matching window came out of it. It now bounds two phases: the requ
 
 A request whose window is already open when it arrives behaves as before. A request created before
 the writes it is saving now gets the whole delay after its first write, instead of whatever was left.
-Its commit can land up to one `closeDelay` later than it did, and the worst case from receipt to the
-commit is twice the delay. If you had raised `closeDelay` to make room for a slow first write, you may
-be able to lower it again. See [sizing `closeDelay`](configuration.md#sizing-closedelay).
+Its commit can be finalized up to one `closeDelay` later than it was, and the worst case from receipt
+to the finalize is twice the delay; the push follows as before. If you had raised `closeDelay` to make
+room for a slow first write, it now only needs to cover the longer of that gap and the span of the
+save's writes. See [sizing `closeDelay`](configuration.md#sizing-closedelay).
 
 ## Finished CommitRequests are deleted after 48 hours
 
