@@ -5,11 +5,11 @@
 > The short version: a commit window is opened only by writes and closes on two timers. A save (a
 > `CommitRequest`) attaches to one window and replaces both timers for it, longer or shorter. Both
 > kinds describe the window in one `window` block with the same words, and a save adds which window
-> it attaches to and whether it records its message when nothing changed. It ships as one coherent
-> `v1alpha4`:
+> it attaches to and whether it records its message when nothing changed. It is an in-place break of
+> `v1alpha3`, with one tested upgrade procedure:
 >
 > ```yaml
-> apiVersion: configbutler.ai/v1alpha4    apiVersion: configbutler.ai/v1alpha4
+> apiVersion: configbutler.ai/v1alpha3    apiVersion: configbutler.ai/v1alpha3
 > kind: GitTarget                         kind: CommitRequest
 > spec:                                   spec:
 >   commit:                                 message: "fix: raise the checkout memory limit"
@@ -88,8 +88,10 @@ still ends. CEL: `idleTimeout` must not exceed `maxDuration`.
 
 ### `CommitRequest.spec.whenNothingToCommit`
 
-What a save does when its time runs out with nothing to commit: `Resolve` (default) finishes without
-a commit, and `CommitEmpty` records the message in an empty commit. The field names the situation and
+What a save does when it ends with nothing to commit, because its `attachTimeout` ran out without an
+eligible window, or because the window it attached to closed, for any reason, without changing Git:
+`Resolve` (default) finishes without a commit, and `CommitEmpty` records the message in an empty
+commit. The outcome table below is the contract. The field names the situation and
 the values name the consequence, the pattern Kubernetes uses for
 `topologySpreadConstraints.whenUnsatisfiable` and StatefulSet's `whenDeleted`. "Nothing to commit"
 is Git's own phrase, and `CommitEmpty` mirrors `git commit --allow-empty`. It sits outside `window`
@@ -116,7 +118,8 @@ Each value means one thing, and none borrows from another:
 | Setting | Meaning |
 |---|---|
 | `attachTimeout: 0s` | attach to an eligible window already open, or give up at once; do not wait |
-| `maxDuration: 0s` | finalize right after the attach |
+| `maxDuration: 0s` (save) | finalize right after the attach |
+| `maxDuration: 0s` (target) | close right after the write that opened the window: a commit per write |
 | `idleTimeout` omitted (save) | no idle close; `maxDuration` alone ends collection |
 | `idleTimeout: 0s` | close on the first silence, which is right after the write that opened or extended it |
 
@@ -127,7 +130,11 @@ Two rules keep the edges honest:
 
 - **An expired save cannot take a later window.** Once `attachTimeout` has run out, the save
   resolves; a window that opens afterwards is not its window. When the deadline and a matching write
-  are ready on the same loop wake, the expiry is decided first. This is #403's boundary test.
+  are ready on the same loop wake, the expiry is decided first, and the write opens a window of its
+  own under the target's message. **This is new behavior.** #403 lets the overdue save attach to that
+  window and finalizes it at once with the save's message; it only stops the save from getting a
+  second delay. The stricter rule is simpler to state, and a test proves the late write stays out of
+  the expired save.
 - **A save gets its attach before a zero timer fires.** With the target's `idleTimeout: 0s` the
   worker finalizes a window in the same step the write opens it, so a waiting save never sees it.
   The worker must offer a new window to waiting saves before it applies the target's timers.
@@ -148,6 +155,8 @@ Two rules keep the edges honest:
   message goes with it, and that save resolves exactly as if its own deadline had fired.
 - **The close happens once per save.** It is keyed by the save's identity, so a controller re-send
   never closes a second window.
+- **`Next` needs time to wait.** CEL refuses `attach: Next` with `attachTimeout: 0s`: the save would
+  close the author's window and give up in the same instant, collecting nothing.
 - **Competing saves are served first come, first served,** in the order the worker first registered
   them. A window carries at most one save; the next waits for the next window.
 
@@ -155,8 +164,8 @@ What `Next` guarantees is narrower than its name suggests. It separates work the
 collected from work that reaches the worker afterwards. It cannot prove a write was made after the
 request: a write still held for its audit fact arrives later and lands in the next window, and
 waiting for the previous save to resolve does not exclude a delayed write from that save either.
-That is acceptable for this feature, and the docs say so plainly. A save that must cover exactly
-one write is what the named-write wait in the save-wait design is for.
+That is acceptable for this feature, and the docs say so plainly. A save that must wait for a
+specific write to be observed is what the named-write wait in the save-wait design is for.
 
 ## `whenNothingToCommit: CommitEmpty`
 
@@ -209,7 +218,6 @@ Every system that batches has the same timers, and a few also wait for the batch
 | Network proxies (Envoy, Gateway API, NGINX) | `idleTimeout` | `maxDuration` | `connectTimeout` |
 | Debounce (lodash, RxJS) | `wait` | `maxWait` | n/a |
 | Batch exporters (OpenTelemetry, Kafka) | n/a | `timeout`, `linger.ms` | n/a |
-| Alert grouping (Alertmanager) | `group_interval` | n/a | `group_wait` |
 | Kubernetes, Flux | n/a | `activeDeadlineSeconds`, `timeout` | n/a |
 
 The proxy words are the ones operators already know, and "timeout" is Flux's. "Idle" means "resets
@@ -233,7 +241,7 @@ type), flat fields on `commit` (they lose their subject), `batching` (drops the 
 
 ## Plan
 
-One `v1alpha4` change, built in three steps on one branch:
+One in-place `v1alpha3` break, built in three steps on one branch:
 
 1. **Timers.** The `window` blocks, the clock rules, the zero table, attach before a zero timer, the
    snapshot, the target's `maxDuration`. `closeDelay` and the string `window` are gone.
@@ -254,25 +262,37 @@ Tests:
 - A save's `idleTimeout` longer and shorter than the target's; a save with only `maxDuration` is not
   closed by the target's idle timer; continuous activity stops at `maxDuration` on both kinds.
 - Expiry versus a matching write on the same wake; a waiting save attaches under the target's
-  `idleTimeout: 0s`; `attachTimeout: 0s` with an open window still collects.
+  `idleTimeout: 0s`; `attachTimeout: 0s` with an open window still collects; a write arriving after
+  an expired save's deadline commits separately, without the save's message; `Next` with
+  `attachTimeout: 0s` is refused.
 - Overlapping saves in first-come order; a re-send restarts nothing and closes nothing; `Next`
   keeps another save's message on the window it closes.
 - A forced close (author change, memory limit, drain) of an attached window; push replay; each row
   of the empty-commit table, and a restart between push and status.
-- The upgrade, once, against stored `v1alpha3` objects.
+- The upgrade procedure below, once, against stored objects from the previous release.
 
 ## Open questions
 
 - **Is one minute the right target `maxDuration`?** It needs a look at real write bursts; the
   decision that matters is that it is finite.
-- **What else rides the `v1alpha4` bump?** Any break the vocabulary cleanup still owes costs less in
-  the same version change than in the next one.
 
 ## Migration
 
-No production users outside our control, so this stays small. All CRDs move to `v1alpha4` together,
-with no conversion webhook and no aliases. The version label alone does not rewrite stored fields:
-with `None` conversion a stored string `commit.window` still fails to decode, so the upgrade rewrites
-stored objects into the new shape before the new CRDs serve them, and deletes finished
-`CommitRequest`s rather than converting them. That procedure is tested once against real stored
-`v1alpha3` objects and written up in UPGRADING.
+No production users outside our control, so this stays small: an in-place break of `v1alpha3`, as
+#388, #397 and #398 were, with an UPGRADING entry and no conversion machinery. A version bump would
+not help here. With `None` conversion it relabels objects without rewriting them, so a stored string
+`commit.window` would fail to decode under a new version exactly as it does under the old one.
+
+That stored string is the one real hazard: once the new CRD is applied, a `GitTarget` still holding
+it cannot be decoded, and a single such object breaks listing the kind. A removed `closeDelay` is
+not a hazard: `kubectl apply` refuses it by name, and a stored one is simply unknown to the new
+schema. The procedure, run once against a cluster on the previous release before it ships:
+
+1. **Remove the old field while the old schema is still served.** List the targets that set it
+   (`kubectl get gittargets -A -o json | jq ...`), note their values, and remove
+   `spec.commit.window` from each with a JSON patch. The old schema accepts that, and the running
+   controller falls back to its `5s` default in the meantime.
+2. **Clear finished requests.** Delete finished `CommitRequest`s instead of carrying them across, and
+   let in-flight ones resolve first.
+3. **Upgrade** the chart: new CRDs and new controller together.
+4. **Restore the timing** on the targets noted in step 1, as `commit.window.idleTimeout`.
