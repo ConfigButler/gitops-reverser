@@ -50,8 +50,10 @@ stored one is dropped. In order:
 2. **Clear finished requests** rather than carrying them across: `kubectl delete commitrequests -A
    --all` once in-flight saves have resolved.
 3. **Upgrade** the chart: new CRDs and new controller together.
-4. **Restore the timing** on the targets noted in step 1, as `commit.window.idleTimeout`, and
-   update anything that creates `CommitRequest`s to set `window` instead of `closeDelay`.
+4. **Restore the timing** on the targets noted in step 1, as `commit.window.idleTimeout`. A value
+   over `1m` also needs `commit.window.maxDuration` raised to at least that value (at most `24h`),
+   or admission refuses it. Update anything that creates `CommitRequest`s to set `window` instead of
+   `closeDelay`.
 
 A GitOps source that still carries `window: "5s"` is refused at apply once the new CRD is in place;
 update it in step 4 along with the rest.

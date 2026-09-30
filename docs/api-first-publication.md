@@ -163,10 +163,12 @@ sequenceDiagram
     Note over E,P: With the default 5s window, this burst finalizes at t=7<br/>The cooldown has already elapsed by then
 ```
 
-The silence window has no independent maximum age. Continuous matching edits can keep it open
-until another closing condition occurs, such as a `CommitRequest`, identity change, or byte
-threshold. A five-second window therefore does not promise publication within five seconds of
-the first edit. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
+The idle timeout restarts on every matching edit, so continuous edits keep a window open until its
+`maxDuration` (`1m` by default, counted from the window opening) or another closing condition, such
+as an identity change or the byte threshold. A five-second idle timeout therefore does not promise
+publication within five seconds of the first edit. A `CommitRequest` that attaches replaces both
+timers: its `attachTimeout` runs from the worker's registration of the request, and its
+`maxDuration` from the attach. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
 
 ## What can stop a write before it reaches Git
 

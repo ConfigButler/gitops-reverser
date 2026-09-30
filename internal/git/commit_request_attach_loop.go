@@ -5,6 +5,7 @@ package git
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -261,8 +262,17 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 		// Which of the two refusals this is depends on whether anything was open that this
 		// request could not have: see pendingCommitRequest.expiryOutcome.
 		outcome := pcr.expiryOutcome()
-		if outcome == FinalizeNoOpenWindow && pcr.commitEmpty && l.recordCommitRequest(pcr) {
-			continue // it now rides the record write, and the push resolves it
+		if outcome == FinalizeNoOpenWindow && pcr.commitEmpty {
+			recorded, err := l.recordCommitRequest(pcr)
+			if err != nil {
+				// The request asked for its message to be recorded and it was not: a failure, not
+				// a benign NoWindow that would report Ready=True for a save that left no trace.
+				l.resolveCommitRequest(id, FinalizeResult{Err: err})
+				continue
+			}
+			if recorded {
+				continue // it now rides the record write, and the push resolves it
+			}
 		}
 		l.resolveCommitRequest(id, FinalizeResult{Outcome: outcome})
 	}
@@ -272,31 +282,32 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 var errTargetSuspended = errors.New("the GitTarget is suspended")
 
 // recordCommitRequest commits a request's message with an untouched tree, for a request that ran
-// out of time to attach and asked for whenNothingToCommit: CommitEmpty. It reports false when no
-// record was made — a suspended or unreadable target, or a failed commit — and the request then
-// resolves exactly as it would have without asking.
-func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) bool {
+// out of time to attach and asked for whenNothingToCommit: CommitEmpty. A suspended target records
+// nothing and is not an error: the request then resolves exactly as it would have without asking.
+// Any other reason no record was made is returned, so the request fails instead of reporting a
+// save it did not make.
+func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (bool, error) {
 	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
 	if errors.Is(err, errTargetSuspended) {
-		return false // an empty commit is a write too
+		return false, nil // an empty commit is a write too
 	}
 	if err != nil {
 		l.w.Log.Error(err, "Cannot build the empty commit recording a CommitRequest",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
-		return false
+		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
 	batch := []PendingWrite{*pendingWrite}
 	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
 		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
-		return false
+		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
 	l.pendingWrites = append(l.pendingWrites, batch...)
 	l.pendingWritesBytes += batch[0].ByteSize
 	pcr.committed = true
 	l.w.setCommitRequestPhase(pcr.id, PhaseWaitingForPush)
 	l.maybeSchedulePush()
-	return true
+	return true, nil
 }
 
 // buildRequestRecordWrite assembles the record commit's write, phrased and signed like every other

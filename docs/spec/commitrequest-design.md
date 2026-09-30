@@ -38,15 +38,18 @@ runs from the attach, and so does the first idle interval. A waiting request get
 the target's own timers are applied, so a target with `idleTimeout: 0s` does not close the window
 before the request can attach.
 
-The default is `"2s"` rather than `"0s"` because the write a request exists to publish reaches the
-worker strictly after the request does: a watch event is held until its audit fact arrives, so a
-zero deadline is shorter than the smallest window-open latency the pipeline can produce. The field
-is a pointer, so an omitted value and an explicit `"0s"` stay distinguishable — `"0s"` still means
-finalize on the next pass of the event loop.
-Normal flush triggers can close an attached window early, carrying its message. Each request claims
-at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
-provides no ordering guarantee; use a non-zero window for custom save messages. The delay does not
-reserve a transaction. Competing requests keep the earliest-finalize-deadline selection policy.
+`attachTimeout` defaults to `"2s"` rather than `"0s"` because the write a request exists to publish
+reaches the worker strictly after the request does: a watch event is held until its audit fact
+arrives, so a zero wait is shorter than the smallest window-open latency the pipeline can produce.
+The two durations are separate settings with separate clocks: `attachTimeout` runs from
+registration, `maxDuration` from the attach. Each is a pointer, so an omitted value and an explicit
+`"0s"` stay distinguishable. A zero `attachTimeout` attaches to a window already open, or gives up at
+once, and never shortens the collection that follows; a zero `maxDuration` finalizes right after the
+attach.
+Other flush triggers can close an attached window early, carrying its message. Each request attaches
+to at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
+provides no ordering guarantee. The wait does not reserve a transaction. Competing requests are
+served in registration order, first come, first served.
 
 `spec.message` is literal, including template-like text and surrounding spaces. It is never parsed
 as a template, so a request author cannot execute one. Omission uses

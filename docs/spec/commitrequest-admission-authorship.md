@@ -37,8 +37,9 @@ to an unnamed window. That window determines the actual Git author:
   `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`.
 
 The worker never closes another actor's window. If no matching window appears before `attachTimeout`
-runs out, the request ends successfully with `Ready=True`, `Pushed=False`, and `NoWindow` or
-`WindowMismatch`.
+runs out, the request ends successfully with `Ready=True` and `NoWindow` or `WindowMismatch`. That is
+`Pushed=False`, except for a `NoWindow` request with `whenNothingToCommit: CommitEmpty`, which records
+its message in a pushed empty commit (`Pushed=True`). A `WindowMismatch` never falls back to one.
 
 ## Conditions
 

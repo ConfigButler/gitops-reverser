@@ -3,11 +3,14 @@
 package git
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -150,4 +153,130 @@ func TestCommitEmpty_ResolveIsTheDefaultAndCommitsNothing(t *testing.T) {
 	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome)
 	assert.Empty(t, res.Commit)
 	assert.Empty(t, loop.pendingWrites)
+}
+
+// TestCommitEmpty_AFailedPushTreatsEveryCommitShapeAlike pins that a request's result follows the
+// data through a failed push, whichever commit carries it. A window with changes, a window that
+// changed nothing, and the record of a request no window reached all become one retained write, so
+// a push that keeps failing leaves each of them WaitingForPush, a re-sent attach resolves none of
+// them, and the push that finally succeeds settles each with the commit the remote now holds.
+func TestCommitEmpty_AFailedPushTreatsEveryCommitShapeAlike(t *testing.T) {
+	const message = "save: through a failed push"
+	cases := []struct {
+		name    string
+		commit  func(loop *branchWorkerEventLoop)
+		outcome FinalizeOutcome
+		empty   bool
+	}{
+		{
+			name: "a window that changed files",
+			commit: func(loop *branchWorkerEventLoop) {
+				serviceAttach(loop, commitEmptyReq("alice", message))
+				writeTo(loop, "new")
+				forceDue(loop)
+			},
+			outcome: FinalizeCommitted,
+		},
+		{
+			name: "a window that changed nothing",
+			commit: func(loop *branchWorkerEventLoop) {
+				writeTo(loop, "existing")
+				serviceAttach(loop, commitEmptyReq("alice", message))
+				forceDue(loop)
+			},
+			outcome: FinalizeAlreadyPresent,
+			empty:   true,
+		},
+		{
+			name: "the record of a request no window reached",
+			commit: func(loop *branchWorkerEventLoop) {
+				serviceAttach(loop, commitEmptyReq("alice", message))
+				forceDue(loop)
+				loop.serviceCommitRequests()
+			},
+			outcome: FinalizeNoOpenWindow,
+			empty:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+			createPlainGitTarget(t, worker, "team-a", "team-a")
+			loop := newBranchWorkerEventLoop(worker, time.Hour)
+			defer loop.stopTimers()
+
+			// A first commit, pushed, so the branch exists and the push cooldown is running: from
+			// here on only the explicit pushPending calls below publish anything.
+			writeTo(loop, "existing")
+			require.True(t, loop.finalizeOpenWindow())
+			loop.pushPending()
+			require.Empty(t, loop.pendingWrites)
+
+			originalPush := pushAtomicFn
+			pushAtomicFn = func(
+				_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
+				_ plumbing.ReferenceName, _ []gitclient.Option,
+			) (PushOutcome, error) {
+				return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
+			}
+			originalFetch := fetchRemoteBranchHashFn
+			fetchRemoteBranchHashFn = func(
+				_ context.Context, _ *gogit.Repository, _ plumbing.ReferenceName, _ []gitclient.Option,
+			) (plumbing.Hash, error) {
+				return worker.pushCycleRootHash, nil // unmoved: not contention, so no replay
+			}
+			restore := func() {
+				pushAtomicFn = originalPush
+				fetchRemoteBranchHashFn = originalFetch
+			}
+			defer restore()
+
+			tc.commit(loop)
+			require.Len(t, loop.pendingWrites, 1, "the request rides one retained write")
+
+			for range 3 {
+				loop.pushPending()
+				require.Len(t, loop.pendingWrites, 1, "a failed push retains the write")
+				serviceAttach(loop, commitEmptyReq("alice", message)) // the controller's re-send
+				_, resolved := outcome(t, worker)
+				require.False(t, resolved, "the remote has neither accepted nor refused it")
+				assert.Equal(t, PhaseWaitingForPush,
+					worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+				require.Len(t, loop.pendingWrites, 1, "and the re-send made no second write")
+			}
+
+			restore()
+			loop.pushPending()
+
+			res, ok := outcome(t, worker)
+			require.True(t, ok, "the push that succeeds settles it")
+			require.NoError(t, res.Err)
+			assert.Equal(t, tc.outcome, res.Outcome)
+			if tc.empty {
+				requirePushedEmptyCommit(t, serverRepo, res, message)
+				return
+			}
+			head, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+			require.NoError(t, err)
+			assert.Equal(t, head.Hash().String(), res.Commit)
+		})
+	}
+}
+
+func TestCommitEmpty_AFailedRecordFailsTheRequest(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	// No GitTarget exists for the request, so the record cannot be built: the request asked for its
+	// message to be recorded, and reporting a benign NoWindow would hide that it was not.
+	serviceAttach(loop, commitEmptyReq("alice", "save"))
+	forceDue(loop)
+	loop.serviceCommitRequests()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.Error(t, res.Err, "a record that could not be made fails the request")
+	assert.Empty(t, res.Commit)
 }

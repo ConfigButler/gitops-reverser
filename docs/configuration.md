@@ -2008,7 +2008,8 @@ reason, without changing Git.
 | The writes already matched Git | no commit, `AlreadyPresent` | empty commit, `AlreadyPresent` |
 | No eligible window before `attachTimeout` | no commit, `NoWindow` | empty commit, `NoWindow` |
 | Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
-| The commit or push failed, or the target is suspended | the failure | the failure |
+| The target is suspended | no commit, the cause | no commit, the cause |
+| The commit, the empty commit, or the push failed | `FinalizeFailed` | `FinalizeFailed` |
 
 The `Ready` reason keeps the cause, and `status.commit` with `Pushed=True` says the empty commit
 reached the remote. A hash proves the message is in Git; `NoWindow` says the request saw no writes,
