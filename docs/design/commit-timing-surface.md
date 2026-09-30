@@ -10,16 +10,24 @@
 > `v1alpha3`, with one tested upgrade procedure:
 >
 > ```yaml
-> apiVersion: configbutler.ai/v1alpha3    apiVersion: configbutler.ai/v1alpha3
-> kind: GitTarget                         kind: CommitRequest
-> spec:                                   spec:
->   commit:                                 message: "fix: raise the checkout memory limit"
->     window:                               window:
->       idleTimeout: 5s                       attach: CurrentOrNext   # or Next
->       maxDuration: 1m                       attachTimeout: 2s
->                                             idleTimeout: 1s         # omitted: no idle close
->                                             maxDuration: 10s
->                                           whenNothingToCommit: Resolve   # or CommitEmpty
+> apiVersion: configbutler.ai/v1alpha3
+> kind: GitTarget
+> spec:
+>   commit:
+>     window:
+>       idleTimeout: 5s
+>       maxDuration: 1m
+> ---
+> apiVersion: configbutler.ai/v1alpha3
+> kind: CommitRequest
+> spec:
+>   message: "fix: raise the checkout memory limit"
+>   window:
+>     attach: CurrentOrNext   # or Next
+>     attachTimeout: 2s
+>     idleTimeout: 1s         # omitted: no idle close
+>     maxDuration: 10s
+>   whenNothingToCommit: Resolve   # or CommitEmpty
 > ```
 >
 > It replaces `CommitRequest.spec.closeDelay` and the string `GitTarget.spec.commit.window`, and it
@@ -231,14 +239,15 @@ with "wait" as a verb.
   is unusual in Kubernetes APIs.
 - **"Attach", not "claim".** "Claimed" already names a rule's demand on the read side.
 - **`CurrentOrNext`, not `Current`.** The longer value states the fallback instead of hiding it.
-- **`whenNothingToCommit: Resolve | CommitEmpty`, not `emptyCommit: Skip | Create`.** A setting
-  about an edge case reads best as the situation and its consequence. The default is `Resolve`
-  rather than `Close`, because "close" is what a window does (rule 1), and a save finishing is
-  already called resolving in the status and the code.
+- **`whenNothingToCommit: Resolve | CommitEmpty`.** A setting about an edge case reads best as the
+  situation and its consequence: the field names the situation, and each value names what happens.
+  `Resolve` is the word the status and the code already use for a save finishing; "close" stays
+  what a window does (rule 1).
 
 Rejected: `windowTimeouts` and `windowPolicy` (both existed only to avoid changing a stored field's
-type), flat fields on `commit` (they lose their subject), `batching` (drops the defined word), and
-`closeDelay` as the cutoff (names an action, not a duration).
+type), flat fields on `commit` (they lose their subject), `batching` (drops the defined word),
+`closeDelay` as the cutoff (names an action, not a duration), and `emptyCommit: Skip | Create`
+(names the mechanism rather than the situation it handles).
 
 ## Plan
 
