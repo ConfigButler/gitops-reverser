@@ -2039,7 +2039,8 @@ request produced a pushed commit:
   worker that stops before the push fails the request rather than leaving it to time out.
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
   request is in progress, with the phase the branch worker reports as its reason: `Progressing`
-  (sent, not yet registered), `WaitingForWindow`, `CollectingWindow`, or `WaitingForPush`.
+  (sent, not yet registered), `WaitingForWorker` (the GitTarget has no branch worker yet),
+  `WaitingForWindow`, `CollectingWindow`, or `WaitingForPush`.
   `Stalled=True` when the finalize failed and needs attention (kstatus reports the object Failed).
 - **AuthorAttributed**: `True` with reason `AttributedFromAdmission` when the internal commands
   admission webhook captured the request submitter. `False` with reason `CommitterFallback` means capture

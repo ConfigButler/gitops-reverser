@@ -525,18 +525,20 @@ sum by (gittarget_namespace, gittarget_name, outcome) (
 )
 ```
 
-An empty `gittarget_name` is a request whose target never resolved. The name it asked for is on the
+An empty `gittarget_name` is a request whose GitTarget could not be read. A target that exists but
+has no branch worker yet keeps its labels: the request waits in `WaitingForWorker`, and if the
+worker never starts it counts as `failed` under that target. The name it asked for is on the
 object's conditions, deliberately not on the series: it is client-supplied text and would grow the
 metric without bound.
 
 `window_mismatch` is the value to watch, and the two refusals are deliberately separate. Both mean
-the grace elapsed without a window the request could claim, but only `window_mismatch` means one
-was open the whole time and belonged to somebody else: the author's edits went into that commit,
+`attachTimeout` ran out without a window the request could attach to, but only `window_mismatch`
+means one was open meanwhile and belonged to somebody else: the author's edits went into that commit,
 under a **generated** message instead of the sentence they typed. Nothing else in this document
 goes red for it. `no_window` is the benign half — nothing was pending to save.
 
-The distinction is recorded at expiry from whether a window the request could not claim was seen
-during its grace, so a foreign window that closes before the grace runs out still counts. Reading
+The distinction is recorded at expiry from whether a window the request could not attach to was
+seen during its wait, so a foreign window that closes before `attachTimeout` runs out still counts. Reading
 `no_window` as "users are being refused" over-reports; reading only `committed` under-reports.
 
 **What one increment means.** One terminal DECISION, recorded outside the status-write retry loop.

@@ -50,6 +50,10 @@ const (
 type CommitRequestPhase string
 
 const (
+	// PhaseWaitingForWorker is a request whose GitTarget has no branch worker yet, at startup or
+	// before the target's first reconcile. It is reported by the router, since there is no worker to
+	// report it, and the request is sent again on the controller's next poll.
+	PhaseWaitingForWorker CommitRequestPhase = "WaitingForWorker"
 	// PhaseWaitingForWindow is a registered request waiting for a window to attach to.
 	PhaseWaitingForWindow CommitRequestPhase = "WaitingForWindow"
 	// PhaseCollectingWindow is an attached request collecting writes until the window's timers close it.

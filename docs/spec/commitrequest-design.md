@@ -103,7 +103,7 @@ object is visible.
 | Finalize or push error | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
 
 `Reconciling=True` is the normal in-progress state, with the phase the worker reports as its reason:
-`Progressing`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. The controller fails
+`Progressing`, `WaitingForWorker`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. The controller fails
 with `FinalizeFailed` only if the worker does not resolve the request within its bounded safety window; it
 never polls indefinitely.
 

@@ -10,10 +10,12 @@ import (
 	"time"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,6 +25,8 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 const commitRequestsMetric = "gitopsreverser_commit_requests_total"
@@ -333,4 +337,50 @@ func TestCommitRequestMetric_RecreatedRequestCountsPerIncarnation(t *testing.T) 
 	value, ok := outcomeCount(t, reader, crOutcomeWindowMismatch)
 	require.True(t, ok)
 	assert.Equal(t, int64(2), value)
+}
+
+// TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels runs the real EventRouter against a
+// GitTarget that exists but whose branch worker never starts. The request waits in
+// WaitingForWorker, then fails closed at the safety bound, and that failure must be counted under
+// its GitTarget: the target DID resolve, so the empty fallback pair would hide a real tenant's
+// failed save from every per-target dashboard and alert.
+func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	target := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
+		Spec: configv1alpha3.GitTargetSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
+		},
+	}
+	fresh := newCommitRequest("save-fresh")
+	fresh.Spec.GitTargetRef = meta.LocalObjectReference{Name: target.Name}
+	fresh.CreationTimestamp = metav1.Now()
+	stale := newCommitRequest("save-stale")
+	stale.Spec.GitTargetRef = meta.LocalObjectReference{Name: target.Name}
+	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
+	stale.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(stale.Spec).resolveTimeout()))
+	c := newCommitRequestClient(t, nil, fresh, stale, target)
+	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
+	router := watch.NewEventRouter(workers, nil, c, logr.Discard())
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: router, AuthorLookup: attributedAlice()}
+
+	// Inside the safety window: pending, and the status says why.
+	res := reconcileCommitRequest(t, r, fresh.Name)
+	assert.Positive(t, res.RequeueAfter, "a missing worker is polled, not resolved")
+	reconciling := apimeta.FindStatusCondition(
+		fetchCommitRequest(t, c, fresh.Name).Status.Conditions, ConditionTypeReconciling)
+	require.NotNil(t, reconciling)
+	assert.Equal(t, string(git.PhaseWaitingForWorker), reconciling.Reason)
+
+	// Past it: failed, under the GitTarget that resolved.
+	reconcileCommitRequest(t, r, stale.Name)
+
+	value, ok := outcomeCountForTarget(t, reader, crOutcomeFailed, "default", target.Name)
+	require.True(t, ok, "the failure is counted under the GitTarget it resolved to")
+	assert.Equal(t, int64(1), value)
+	_, fallback := outcomeCountForTarget(t, reader, crOutcomeFailed, "", "")
+	assert.False(t, fallback, "and never under the empty fallback pair")
 }

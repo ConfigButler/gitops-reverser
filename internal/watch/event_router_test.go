@@ -318,9 +318,11 @@ func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	result, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("team-a-config", "team-a"))
-	require.ErrorIs(t, err, errNoBranchWorkerYet, "a worker that does not exist yet is a retry, not an answer")
-	assert.False(t, resolved)
+	require.NoError(t, err, "the GitTarget resolved; only its worker is missing")
+	assert.False(t, resolved, "a worker that does not exist yet is a retry, not an answer")
 	assert.Empty(t, result.Outcome)
+	assert.Equal(t, git.PhaseWaitingForWorker, result.Phase)
+	assert.Equal(t, "main", result.Branch)
 }
 
 func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T) {

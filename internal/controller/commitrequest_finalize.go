@@ -182,6 +182,7 @@ func setCommitRequestCondition(
 // phase. Until the worker has registered the request the reason is the generic Progressing.
 const (
 	progressingMessage      = "sent to the branch worker; waiting for it to register the request"
+	waitingForWorkerMessage = "the GitTarget has no branch worker yet; waiting for its reconcile to start one"
 	waitingForWindowMessage = "registered with the worker; waiting for a matching commit window to attach to"
 	collectingWindowMessage = "attached to a commit window; collecting writes until its timers close it"
 	waitingForPushMessage   = "committed locally; waiting for the push to reach the remote"
@@ -191,6 +192,8 @@ const (
 // progressFor maps a worker-reported phase to its progress reason and message.
 func progressFor(phase git.CommitRequestPhase) (string, string) {
 	switch phase {
+	case git.PhaseWaitingForWorker:
+		return string(phase), waitingForWorkerMessage
 	case git.PhaseWaitingForWindow:
 		return string(phase), waitingForWindowMessage
 	case git.PhaseCollectingWindow:
