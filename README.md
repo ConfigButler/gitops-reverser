@@ -140,16 +140,16 @@ next diff. The walkthrough includes status checks, troubleshooting, and cleanup.
 
 ## Batch changes into a commit
 
-Changes for the same target and author share a commit window: each change restarts the timer, and
-the commit is made after that much silence. Omitted, the window is `5s`; `0s` opts into a commit per
-event. A `CommitRequest` can close an open window early and supply the commit message. This allows the
-person making a change to explain **why** the change was necessary.
+Changes for the same target and author share a commit window, and each window becomes one commit.
+When a window closes is yours to tune: its timers are set per `GitTarget`, and a `CommitRequest` can
+bring its own timers along with the commit message. This allows the person making a change to explain
+**why** the change was necessary.
 
 ![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)
 
 The picture shows the [commit-window example](docs/demo/commit-window.md) running. It carries the
-manifests: a `GitTarget` with a `window`, a `WatchRule` selecting the two types, and the save request
-that closes the window early. It runs on top of the quickstart above.
+manifests: a `GitTarget` with a `window`, a `WatchRule` selecting the two types, and a save request
+made after the changes or before them. It runs on top of the quickstart above.
 
 ## Try it with your existing repo
 

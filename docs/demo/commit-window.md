@@ -1,8 +1,9 @@
 # Commit-window example
 
 Two Kubernetes resources become one Git commit: one created, one edited. A `CommitRequest` supplies
-the message and asks the operator to close the window before its normal timer expires. The request
-itself is outside the selected resource types, so saving never commits the save button.
+the message and its own timers, which replace the target's for that one window. You can save after
+the changes or before them; the example shows both. The request itself is outside the selected
+resource types, so saving never commits the save button.
 
 **Run the [quickstart](../quickstart.md) first.** It leaves behind everything this example builds
 on: the `gitops-reverser-quickstart-demo` namespace, the `git-creds` Secret, a `GitProvider` named
@@ -118,9 +119,9 @@ data:
   message: Hello from Reverse GitOps
 ```
 
-## Close the window with a message
+## Save after the changes
 
-Save as `save-now.yaml`. Use `kubectl create` rather than `kubectl apply`: the request has a
+Save as `save-after.yaml`. Use `kubectl create` rather than `kubectl apply`: the request has a
 `generateName` and no name, so each save is a fresh object and `apply` refuses it.
 
 ```yaml
@@ -134,21 +135,83 @@ spec:
     name: window-demo
   message: "feat(demo): save hello resources"
   window:
+    attach: CurrentOrNext
     attachTimeout: "2s"
     maxDuration: "2s"
 ```
 
-Run these commands together, creating the request only after the apply succeeds:
+These are the defaults written out. Apply the resources, then save:
 
 ```bash
-kubectl apply -f hello.yaml && kubectl create -f save-now.yaml
+kubectl apply -f hello.yaml && sleep 2 && kubectl create -f save-after.yaml
 ```
 
-The request must reach a matching open window. If you are stepping through this with pauses between
-commands, set the target's `commit.window.idleTimeout` to `30s` first. `attachTimeout: "2s"` gives
-watch events time to reach the worker, and `maxDuration: "2s"` closes the window two seconds after
-the request attaches; neither guarantees that every event has arrived. Change the ConfigMap's
-`message` value again on a repeat run, so there is something to commit.
+The `sleep` only spreads the timeline out so it matches the picture; the save works without it.
+
+![The changes open a window, and the save attaches two seconds later and closes it after its own maxDuration](../images/commit-window.excalidraw.svg)
+
+| Time | What happens |
+|---|---|
+| t=0 | `CREATE ServiceAccount` opens the window, under the target's timers: `idleTimeout: 5s` and the default `maxDuration: 1m` |
+| t=0.1 | `UPDATE ConfigMap` joins it and restarts the idle timer, which would now close the window at t=5.1 |
+| t≈2.4 | The request attaches to the open window. Its timers replace the target's: `maxDuration: 2s` from now, and no idle timer |
+| t≈4.4 | `maxDuration` closes the window, and the commit carries the request's message |
+
+`attachTimeout` hardly matters here, because the window is already open when the request arrives. It
+is there for the case where the watch events reach the operator a little after the request.
+
+## Save before the changes
+
+The request can come first, and wait for the changes. Save as `save-before.yaml`:
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: CommitRequest
+metadata:
+  generateName: save-hello-
+  namespace: gitops-reverser-quickstart-demo
+spec:
+  gitTargetRef:
+    name: window-demo
+  message: "feat(demo): save hello resources"
+  window:
+    attach: Next
+    attachTimeout: "10s"
+    idleTimeout: "2s"
+    maxDuration: "30s"
+```
+
+To run it after the first save, put the resources back where they started: delete the
+ServiceAccount, set the ConfigMap back to `Hello`, and wait five seconds for that commit to land.
+
+```bash
+kubectl delete serviceaccount hello -n gitops-reverser-quickstart-demo
+kubectl create configmap hello --from-literal=message="Hello" -n gitops-reverser-quickstart-demo \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Then save, and make the changes:
+
+```bash
+kubectl create -f save-before.yaml && sleep 2 && kubectl apply -f hello.yaml
+```
+
+![The save arrives first and waits; the first change opens the window, the save attaches at once, and its idle timer closes it](../images/commit-window-late.excalidraw.svg)
+
+| Time | What happens |
+|---|---|
+| t=0 | The request registers and waits up to `attachTimeout: 10s` for a window. `attach: Next` first closes any window of yours that is already open, so earlier edits keep their own commit |
+| t≈2.4 | `CREATE ServiceAccount` opens a window, and the waiting request attaches in the same step. Its timers replace the target's: `idleTimeout: 2s` and `maxDuration: 30s`, both counted from here |
+| t≈2.5 | `UPDATE ConfigMap` joins it and restarts the idle timer |
+| t≈4.5 | Two seconds of silence: `idleTimeout` closes the window, and the commit carries the request's message |
+
+A request that waits needs an `idleTimeout`. Without one, only `maxDuration` would close the window,
+thirty seconds after the first change. If no change arrives within `attachTimeout`, the request ends
+with `NoWindow` and commits nothing, unless it sets `whenNothingToCommit: CommitEmpty`.
+
+In both variants, the request must reach a matching open window, or one must open before
+`attachTimeout` runs out. Neither timer guarantees that every event has arrived: an event that
+reaches the operator after the window closed goes into the next commit.
 
 The default configured-author setup without request author capture works for this example. If actor
 attribution and request author capture are enabled, submit the resources and the request as the same

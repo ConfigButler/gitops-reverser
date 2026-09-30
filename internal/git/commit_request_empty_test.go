@@ -280,3 +280,82 @@ func TestCommitEmpty_AFailedRecordFailsTheRequest(t *testing.T) {
 	require.Error(t, res.Err, "a record that could not be made fails the request")
 	assert.Empty(t, res.Commit)
 }
+
+// TestCommitEmpty_ARecordThatFailedToPushLandsInOrderAfterTheRemoteMoved pins WHERE a retried empty
+// commit ends up. While its push keeps failing, the author makes another commit behind it and
+// another writer moves the remote. The push that finally succeeds must replay both onto the new tip
+// in the order they were made: the record first, still empty and still carrying its message, and
+// the later commit on top of it. The request resolves with the replayed record's SHA, not the head's
+// and not its stale pre-replay hash.
+func TestCommitEmpty_ARecordThatFailedToPushLandsInOrderAfterTheRemoteMoved(t *testing.T) {
+	const message = "save: recorded before the outage"
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	writeTo(loop, "existing")
+	require.True(t, loop.finalizeOpenWindow())
+	loop.pushPending()
+	require.Empty(t, loop.pendingWrites)
+
+	originalPush := pushAtomicFn
+	pushAtomicFn = func(
+		_ context.Context, _ *gogit.Repository, _ plumbing.Hash,
+		_ plumbing.ReferenceName, _ []gitclient.Option,
+	) (PushOutcome, error) {
+		return PushOutcome{}, errors.New("dial tcp: connection reset by peer")
+	}
+	originalFetch := fetchRemoteBranchHashFn
+	fetchRemoteBranchHashFn = func(
+		_ context.Context, _ *gogit.Repository, _ plumbing.ReferenceName, _ []gitclient.Option,
+	) (plumbing.Hash, error) {
+		return worker.pushCycleRootHash, nil // unmoved: not contention, so no replay yet
+	}
+	restore := func() {
+		pushAtomicFn = originalPush
+		fetchRemoteBranchHashFn = originalFetch
+	}
+	defer restore()
+
+	// The record, then a failed push.
+	serviceAttach(loop, commitEmptyReq("alice", message))
+	forceDue(loop)
+	loop.serviceCommitRequests()
+	require.Len(t, loop.pendingWrites, 1)
+	staleRecordSHA := loop.pendingWrites[0].CommitSHA
+	loop.pushPending()
+	require.Len(t, loop.pendingWrites, 1, "a failed push retains the record")
+
+	// A later commit of alice's queues up behind it, and another writer moves the remote.
+	writeTo(loop, "after-the-record")
+	require.True(t, loop.finalizeOpenWindow())
+	require.Len(t, loop.pendingWrites, 2)
+	pushCompetingCommit(t, remoteURL)
+	competing, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	restore()
+	loop.pushPending()
+	require.Empty(t, loop.pendingWrites, "the replayed push publishes both")
+
+	head, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	landed := commitsAfterHash(t, serverRepo, head.Hash(), competing.Hash())
+	require.Len(t, landed, 2, "both commits sit on top of the other writer's, which is kept")
+
+	record, later := landed[0], landed[1]
+	assert.Equal(t, message, record.Message, "the record comes first")
+	competingCommit, err := serverRepo.CommitObject(competing.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, competingCommit.TreeHash, record.TreeHash, "and it is still empty after the replay")
+	assert.NotEqual(t, message, later.Message, "the later commit is on top of it")
+	assert.NotEqual(t, record.TreeHash, later.TreeHash, "and carries its own change")
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome)
+	assert.Equal(t, record.Hash.String(), res.Commit, "the request reports the replayed record")
+	assert.NotEqual(t, staleRecordSHA.String(), res.Commit, "never its pre-replay hash")
+}
