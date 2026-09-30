@@ -39,7 +39,9 @@ spec:
   branch: {{ .Values.quickstart.gitTarget.branch | quote }}
   path: {{ .Values.quickstart.gitTarget.path | quote }}
   commit:
-    window: {{ .Values.quickstart.gitTarget.commit.window | quote }}
+    window:
+      idleTimeout: {{ .Values.quickstart.gitTarget.commit.window.idleTimeout | quote }}
+      maxDuration: {{ .Values.quickstart.gitTarget.commit.window.maxDuration | quote }}
   encryption:
     provider: {{ .Values.quickstart.gitTarget.encryption.provider | quote }}
     age:

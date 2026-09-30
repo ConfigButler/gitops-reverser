@@ -9,7 +9,9 @@ spec:
   branch: {{ .Branch }}
   path: {{ .Path }}
   commit:
-    window: "{{ .CommitWindow }}"
+    window:
+      idleTimeout: "{{ .CommitWindow }}"
+      maxDuration: "{{ .CommitMaxDuration }}"
 {{- if or .LiveTemplate .ReconcileTemplate }}
     message:
 {{- if .LiveTemplate }}

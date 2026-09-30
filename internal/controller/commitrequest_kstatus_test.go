@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
+
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 // TestCommitRequestKstatusContract pins the CommitRequest condition set to the
@@ -24,22 +26,22 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 		{
 			name: "missing admission author in the close-delay wait (AuthorAttributed=False is not a failure)",
 			conds: []map[string]interface{}{
-				conditionMap(ConditionTypeReady, "False", crReasonWaitingForCloseDelay, closeDelayMessage),
-				conditionMap(ConditionTypeReconciling, "True", crReasonWaitingForCloseDelay, closeDelayMessage),
-				conditionMap(ConditionTypeStalled, "False", crReasonWaitingForCloseDelay, notStalledMessage),
+				conditionMap(ConditionTypeReady, "False", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
+				conditionMap(ConditionTypeReconciling, "True", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
+				conditionMap(ConditionTypeStalled, "False", string(git.PhaseWaitingForWindow), notStalledMessage),
 				conditionMap(ConditionTypeAuthorAttributed, "False", crReasonCommitterFallback, "no admission record"),
-				conditionMap(ConditionTypePushed, "Unknown", crReasonWaitingForCloseDelay, pushPendingMessage),
+				conditionMap(ConditionTypePushed, "Unknown", string(git.PhaseWaitingForWindow), pushPendingMessage),
 			},
 			wantStatus: kstatus.InProgressStatus,
 		},
 		{
 			name: "admission-attributed in the close-delay wait",
 			conds: []map[string]interface{}{
-				conditionMap(ConditionTypeReady, "False", crReasonWaitingForCloseDelay, closeDelayMessage),
-				conditionMap(ConditionTypeReconciling, "True", crReasonWaitingForCloseDelay, closeDelayMessage),
-				conditionMap(ConditionTypeStalled, "False", crReasonWaitingForCloseDelay, notStalledMessage),
+				conditionMap(ConditionTypeReady, "False", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
+				conditionMap(ConditionTypeReconciling, "True", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
+				conditionMap(ConditionTypeStalled, "False", string(git.PhaseWaitingForWindow), notStalledMessage),
 				conditionMap(ConditionTypeAuthorAttributed, "True", crReasonAttributedFromAdmission, "from admission"),
-				conditionMap(ConditionTypePushed, "Unknown", crReasonWaitingForCloseDelay, pushPendingMessage),
+				conditionMap(ConditionTypePushed, "Unknown", string(git.PhaseWaitingForWindow), pushPendingMessage),
 			},
 			wantStatus: kstatus.InProgressStatus,
 		},
@@ -57,10 +59,10 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 		{
 			name: "benign rejection (no open window) is Current, not Failed",
 			conds: []map[string]interface{}{
-				conditionMap(ConditionTypeReady, "True", crReasonNoWindowInGrace, noWindowInGraceMessage),
-				conditionMap(ConditionTypeReconciling, "False", crReasonNoWindowInGrace, noWindowInGraceMessage),
-				conditionMap(ConditionTypeStalled, "False", crReasonNoWindowInGrace, notStalledMessage),
-				conditionMap(ConditionTypePushed, "False", crReasonNoWindowInGrace, noWindowInGraceMessage),
+				conditionMap(ConditionTypeReady, "True", crReasonNoWindow, noWindowMessage),
+				conditionMap(ConditionTypeReconciling, "False", crReasonNoWindow, noWindowMessage),
+				conditionMap(ConditionTypeStalled, "False", crReasonNoWindow, notStalledMessage),
+				conditionMap(ConditionTypePushed, "False", crReasonNoWindow, noWindowMessage),
 			},
 			wantStatus: kstatus.CurrentStatus,
 		},

@@ -208,7 +208,8 @@ spec:
   branch: main
   path: %s
   commit:
-    window: "0s"
+    window:
+      idleTimeout: "0s"
   clusterProviderRef:
     name: %s
 `, name, ns, gitProvider, path, clusterProvider)
@@ -361,7 +362,8 @@ spec:
   branch: main
   path: clusters/local
   commit:
-    window: "0s"
+    window:
+      idleTimeout: "0s"
 `, target, testNs, providerName)
 		_, err := kubectlRunWithStdin(testNs, manifest, "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())

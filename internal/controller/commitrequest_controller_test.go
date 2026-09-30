@@ -51,36 +51,6 @@ var _ = Describe("CommitRequest controller", func() {
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 
-	// The schema default is the whole of the R2 repair, so it is asserted against a real
-	// API server rather than inferred from the marker: an omitted field must come back as
-	// the default, and an explicit 0 must survive it.
-	It("defaults an omitted closeDelay and preserves an explicit zero", func() {
-		omitted := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{GenerateName: "save-", Namespace: namespace},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
-			},
-		}
-		Expect(k8sClient.Create(ctx, omitted)).To(Succeed())
-		var storedOmitted configbutleraiv1alpha3.CommitRequest
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(omitted), &storedOmitted)).To(Succeed())
-		Expect(storedOmitted.Spec.CloseDelay).NotTo(BeNil())
-		Expect(storedOmitted.Spec.CloseDelay.Duration).To(Equal(2 * time.Second))
-
-		immediate := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{GenerateName: "save-", Namespace: namespace},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
-				CloseDelay:   &metav1.Duration{},
-			},
-		}
-		Expect(k8sClient.Create(ctx, immediate)).To(Succeed())
-		var storedImmediate configbutleraiv1alpha3.CommitRequest
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(immediate), &storedImmediate)).To(Succeed())
-		Expect(storedImmediate.Spec.CloseDelay).NotTo(BeNil())
-		Expect(storedImmediate.Spec.CloseDelay.Duration).To(BeZero())
-	})
-
 	It("does not overwrite a terminal outcome that is already recorded", func() {
 		commitRequest := &configbutleraiv1alpha3.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{

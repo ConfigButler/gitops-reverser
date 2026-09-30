@@ -5,6 +5,8 @@ package git
 import (
 	"errors"
 	"time"
+
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // ErrFinalizeQueueFull is reported when a work item cannot be enqueued because
@@ -24,8 +26,8 @@ type FinalizeOutcome string
 const (
 	// FinalizeCommitted means an open commit window was finalized into a commit.
 	FinalizeCommitted FinalizeOutcome = "Committed"
-	// FinalizeNoOpenWindow means no matching same-author window was collected
-	// within the grace, so nothing was committed for the request.
+	// FinalizeNoOpenWindow means the request's attach timeout ran out before a matching
+	// same-author window was there to attach to, so nothing was committed for it.
 	FinalizeNoOpenWindow FinalizeOutcome = "NoOpenWindow"
 	// FinalizeWindowMismatch means a window was open during the request's grace that belonged to
 	// a different author or GitTarget, so it was left untouched and the grace elapsed without a
@@ -42,6 +44,20 @@ const (
 	FinalizeAlreadyPresent FinalizeOutcome = "AlreadyPresent"
 )
 
+// CommitRequestPhase is where an unresolved CommitRequest stands on the worker. It is what the
+// controller reports while it waits, and it comes from the worker because sending an attach does
+// not prove the request was registered, attached or committed.
+type CommitRequestPhase string
+
+const (
+	// PhaseWaitingForWindow: registered, waiting for a window to attach to.
+	PhaseWaitingForWindow CommitRequestPhase = "WaitingForWindow"
+	// PhaseCollectingWindow: attached, collecting writes until the window's timers close it.
+	PhaseCollectingWindow CommitRequestPhase = "CollectingWindow"
+	// PhaseWaitingForPush: committed locally, not yet confirmed by the remote.
+	PhaseWaitingForPush CommitRequestPhase = "WaitingForPush"
+)
+
 // FinalizeResult carries the resolved outcome of a CommitRequest back to the
 // controller, polled via LookupCommitRequestOutcome.
 type FinalizeResult struct {
@@ -53,13 +69,16 @@ type FinalizeResult struct {
 	Branch string
 	// Err is set when the request could not be completed.
 	Err error
+	// Phase is where an UNRESOLVED request stands on the worker; empty once resolved, and empty
+	// before the worker has registered it.
+	Phase CommitRequestPhase
 }
 
-// AttachCommitRequest is the "bind this CommitRequest's message to the author's
-// open window, then finalize that window after the grace" work item. It rides the same per-worker FIFO
+// AttachCommitRequest is the "attach this CommitRequest to the author's window, with its
+// message and its timers" work item. It rides the same per-worker FIFO
 // event queue as resource events, so by audit-stream ordering it is processed
 // after every earlier write for that worker. Re-sends are idempotent: the worker
-// keys pending requests by identity and keeps the first finalize deadline.
+// keys pending requests by identity and keeps everything the first delivery set.
 type AttachCommitRequest struct {
 	// Namespace, Name, UID identify the CommitRequest. UID may be empty (a
 	// Metadata-level audit policy can omit it); identity then keys on
@@ -86,10 +105,14 @@ type AttachCommitRequest struct {
 	// Message is the verbatim commit message to attach to the window. Empty keeps
 	// the generated grouped-commit message.
 	Message string
-	// CloseDelay bounds both phases of a request: it waits at most receipt + CloseDelay
-	// for a matching window, and once it claims one the worker finalizes that window at
-	// claim + CloseDelay.
-	CloseDelay time.Duration
+	// Attach selects the window: the author's current one or the next, or only the next.
+	Attach v1alpha3.AttachPolicy
+	// AttachTimeout bounds the wait for a window, counted from the worker's registration.
+	AttachTimeout time.Duration
+	// IdleTimeout closes the attached window after this much silence; nil means no idle close.
+	IdleTimeout *time.Duration
+	// MaxDuration closes the attached window this long after the attach.
+	MaxDuration time.Duration
 }
 
 // commitRequestID is the worker-local key for a CommitRequest: its namespaced
@@ -106,8 +129,8 @@ func (a AttachCommitRequest) id() commitRequestID {
 }
 
 // pendingCommitRequest is a CommitRequest registered with the worker and not yet
-// resolved: waiting for a same-author window to attach to, attached and awaiting its finalize
-// deadline, or committed locally and awaiting the push that settles it.
+// resolved: waiting for a same-author window to attach to, attached and collecting until the
+// window's timers close it, or committed locally and awaiting the push that settles it.
 type pendingCommitRequest struct {
 	id                 commitRequestID
 	author             string
@@ -115,18 +138,19 @@ type pendingCommitRequest struct {
 	gitTargetName      string
 	gitTargetNamespace string
 	message            string
-	// finalizeAt is receipt + closeDelay while the request waits for a window, stamped once on
-	// first registration (idempotent re-sends keep it), and is re-stamped to claim + closeDelay
-	// when the request attaches.
-	finalizeAt time.Time
-	// closeDelay is kept so the attach can re-stamp finalizeAt. A submitter that creates the
-	// request before making its writes would otherwise spend the delay waiting, and the window
-	// its writes open would be finalized moments after the first of them, splitting one save
-	// across two commits.
-	closeDelay time.Duration
+	// seq is the registration order: competing requests attach first come, first served.
+	seq uint64
+	// attachDeadline is registration + attachTimeout, stamped once on first registration
+	// (idempotent re-sends keep it). A request still waiting when it passes resolves, and never
+	// takes a later window.
+	attachDeadline time.Time
+	// timers are the request's own window timers, applied to the window it attaches to in place
+	// of the GitTarget's.
+	idleTimeout *time.Duration
+	maxDuration time.Duration
 	// attached is true once this request's message is bound to the open window.
 	attached bool
-	// committed is true once the window this request claimed has been finalized into a local
+	// committed is true once the window this request attached to has been finalized into a local
 	// commit. The request now rides that retained write and only the push can settle it, which is
 	// why it is `committed` and not `published`: the work exists locally and is nowhere else yet.
 	//
@@ -137,18 +161,18 @@ type pendingCommitRequest struct {
 	// pendingWrites waiting for the push cooldown — or, worse, claim the next same-author window
 	// and stamp this request's message onto a commit somebody else authored.
 	committed bool
-	// sawForeignWindow is set when a window was open during this request's grace that it could
-	// not claim, because the window belonged to a different author or GitTarget.
+	// sawForeignWindow is set when a window was open during this request's wait that it could
+	// not attach to, because the window belonged to a different author or GitTarget.
 	//
 	// It is STICKY rather than checked at expiry, and that is the whole point: a foreign window
-	// runs on its own timer and is usually finalized before this request's grace elapses, so an
+	// runs on its own timer and is usually finalized before this request's wait runs out, so an
 	// instant check at expiry would miss the common case and report the refusal as "nothing was
 	// pending" — intermittently, which is worse than never.
 	sawForeignWindow bool
 }
 
-// expiryOutcome is the terminal outcome for a request whose grace elapsed without it ever
-// attaching to a window.
+// expiryOutcome is the terminal outcome for a request whose attach timeout ran out without it
+// ever attaching to a window.
 //
 // The distinction it restores is the one the eager-attach refactor dropped: "nothing was pending
 // to save" and "someone else held the window the whole time" are different events with the same

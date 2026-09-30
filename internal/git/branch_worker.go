@@ -33,10 +33,14 @@ import (
 )
 
 const (
-	// DefaultCommitWindow is the default rolling silence window used to coalesce
-	// events into one commit per (author, gitTarget). Applied when
-	// GitTarget.spec.commit.window is unset or unparseable.
+	// DefaultCommitWindow is the default idle timeout that closes a commit window, used when
+	// GitTarget.spec.commit.window.idleTimeout is unset or the target cannot be read.
 	DefaultCommitWindow = 5 * time.Second
+
+	// DefaultCommitWindowMaxDuration is the default maximum duration of a commit window, used when
+	// GitTarget.spec.commit.window.maxDuration is unset or the target cannot be read. It keeps
+	// continuous activity from postponing a commit until the memory limit forces one.
+	DefaultCommitWindowMaxDuration = time.Minute
 
 	// PushCooldown is the minimum interval between successful pushes. The cooldown
 	// is intentionally fixed: commit cadence is a user concern (spec.commit.window on
@@ -272,6 +276,9 @@ type BranchWorker struct {
 	// accessors live in commit_request_attach_loop.go alongside the attach logic.
 	crOutcomesMu sync.Mutex
 	crOutcomes   map[commitRequestID]commitRequestOutcomeEntry
+	// crPhases holds where each unresolved CommitRequest stands, for the controller to report
+	// while it waits. Guarded by crOutcomesMu; the event loop is the only writer.
+	crPhases map[commitRequestID]CommitRequestPhase
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -294,13 +301,13 @@ type windowFinalizeReason string
 
 const (
 	windowFinalizeReasonUnspecified       windowFinalizeReason = "unspecified"
-	windowFinalizeReasonTimer             windowFinalizeReason = "timer"
-	windowFinalizeReasonFinalizeSignal    windowFinalizeReason = "finalize-signal"
+	windowFinalizeReasonIdleTimeout       windowFinalizeReason = "idle-timeout"
+	windowFinalizeReasonMaxDuration       windowFinalizeReason = "max-duration"
+	windowFinalizeReasonAttachNext        windowFinalizeReason = "attach-next"
 	windowFinalizeReasonResyncBeforeApply windowFinalizeReason = "resync-before-apply"
 	windowFinalizeReasonAtomicBeforeApply windowFinalizeReason = "atomic-before-apply"
 	windowFinalizeReasonIdentityChange    windowFinalizeReason = "author-or-target-change"
 	windowFinalizeReasonBufferLimit       windowFinalizeReason = "buffer-limit"
-	windowFinalizeReasonCommitWindowZero  windowFinalizeReason = "commit-window-zero"
 	windowFinalizeReasonShutdown          windowFinalizeReason = "shutdown"
 )
 
@@ -535,7 +542,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 			"request", req.Namespace+"/"+req.Name,
 			"author", req.Author,
 			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
-			"closeDelay", req.CloseDelay.String(),
+			"attach", string(req.Attach),
 			"messageOverride", req.Message != "")
 		// Nothing publishes depth here: the gauge reads inflightItems at scrape
 		// time, so an enqueue is visible to the next scrape whether or not the
@@ -962,17 +969,13 @@ func (w *BranchWorker) processEvents() {
 type branchWorkerEventLoop struct {
 	w *BranchWorker
 
-	// defaultCommitWindow is the operator-level default, used for any GitTarget that declares no
-	// spec.commit.window and for one that cannot be read or whose value will not parse.
-	defaultCommitWindow time.Duration
+	// defaultWindow is the operator-level default for a GitTarget's commit window timers, used
+	// for any target that declares no spec.commit.window field and for one that cannot be read.
+	defaultWindow commitWindowDefaults
 
-	// commitWindow is the CURRENTLY OPEN window's GitTarget's window, resolved from that target's
-	// spec.commit.window when the window opens and left at defaultCommitWindow until one does.
-	commitWindow time.Duration
-
-	// openWindow holds the one live commit-shaped event window. It is
-	// finalized eagerly on author/target changes, atomic arrivals, byte-cap
-	// trips, commit-window silence, a zero window, and shutdown.
+	// openWindow holds the one live commit-shaped event window. It is finalized when its idle or
+	// max-duration timer runs out, and eagerly on author/target changes, atomic arrivals, byte-cap
+	// trips, an attach: Next, and shutdown.
 	openWindow  *openWindow
 	windowBytes int64
 
@@ -994,9 +997,11 @@ type branchWorkerEventLoop struct {
 
 	// pendingCRs holds CommitRequests registered (via AttachCommitRequest) but not
 	// yet resolved, keyed by identity. A request is parked here until a same-author
-	// window opens (then it attaches to it) and until its finalize deadline fires.
+	// window opens (then it attaches to it) or its attach deadline passes.
 	// Loop-goroutine only.
 	pendingCRs map[commitRequestID]*pendingCommitRequest
+	// crSeq numbers registrations, so competing requests attach first come, first served.
+	crSeq uint64
 	// refusalTimer fires at the earliest deadline in refusalPending. See refusal_touch.go.
 	refusalTimer *time.Timer
 	// refusalPending holds one entry per GitTarget with a coalesced commit due.
@@ -1009,16 +1014,25 @@ type branchWorkerEventLoop struct {
 	// and per watched collection, so one collection recovering cancels only its own obligation.
 	refusalPending map[refusalKey]pendingRefusalTouch
 
-	// attachTimer fires at the earliest pending finalize deadline, so an attached
-	// window is finalized at the end of its grace even with no further events.
+	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
+	// that no window reaches still resolves on time. An attached request needs no timer of its own:
+	// its window's timers close it.
 	attachTimer *time.Timer
 }
 
-func newBranchWorkerEventLoop(w *BranchWorker, defaultCommitWindow time.Duration) *branchWorkerEventLoop {
+// commitWindowDefaults are a GitTarget's commit window timers when it declares none.
+type commitWindowDefaults struct {
+	idleTimeout time.Duration
+	maxDuration time.Duration
+}
+
+func newBranchWorkerEventLoop(w *BranchWorker, defaultIdleTimeout time.Duration) *branchWorkerEventLoop {
 	return &branchWorkerEventLoop{
-		w:                   w,
-		defaultCommitWindow: defaultCommitWindow,
-		commitWindow:        defaultCommitWindow,
+		w: w,
+		defaultWindow: commitWindowDefaults{
+			idleTimeout: defaultIdleTimeout,
+			maxDuration: DefaultCommitWindowMaxDuration,
+		},
 	}
 }
 
@@ -1038,8 +1052,7 @@ func (l *branchWorkerEventLoop) run() {
 			l.releaseHandledItem()
 		case <-commitC:
 			l.commitTimer = nil
-			l.finalizeOpenWindowWithReason(windowFinalizeReasonTimer)
-			l.maybeSchedulePush()
+			l.closeOrArmWindow()
 		case <-pushC:
 			l.pushTimer = nil
 			l.pushPending()
@@ -1174,18 +1187,25 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 			l.applyDeferredHeals()
 		}
 
+		opened := false
 		if l.openWindow == nil {
 			l.w.Log.Info("Opening commit window",
 				"author", event.UserInfo.Username,
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName,
 				"resource", event.Identifier.String())
 			l.openWindow = newOpenWindow(event, l.w.contentWriter)
-			// One window, one GitTarget: read that target's cadence now, so the timer below and
-			// the zero-window check are this target's and not the previous window's.
-			l.commitWindow = l.w.commitWindowFor(
-				l.w.ctx, event.GitTargetName, event.GitTargetNamespace, l.defaultCommitWindow)
+			// One window, one GitTarget: snapshot that target's timers now, so a later edit to the
+			// target never moves a deadline already running.
+			timers := l.w.commitWindowFor(
+				l.w.ctx, event.GitTargetName, event.GitTargetNamespace, l.defaultWindow)
+			l.openWindow.timers = windowTimers{
+				idle:  timers.idleTimeout,
+				maxAt: time.Now().Add(timers.maxDuration),
+			}
+			opened = true
 		}
 		l.openWindow.add(event)
+		l.openWindow.lastWriteAt = time.Now()
 		l.windowBytes += l.w.estimateEventSize(event)
 
 		if l.totalRetainedBytes() >= l.w.branchBufferMaxBytes {
@@ -1199,16 +1219,33 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 			continue
 		}
 
-		if l.commitWindow == 0 {
-			// Honest per-event commits: every event arrival commits
-			// immediately. Push cadence is the only thing the cooldown affects.
-			l.finalizeOpenWindowWithReason(windowFinalizeReasonCommitWindowZero)
-			l.maybeSchedulePush()
-			continue
+		if opened {
+			// A waiting CommitRequest gets the new window BEFORE the target's timers are applied.
+			// With idleTimeout or maxDuration at 0s the window would otherwise close in this very
+			// step, and the request's promise to replace those timers would never be kept.
+			l.noteForeignWindow()
+			l.attachWaitingCommitRequests()
 		}
-
-		l.resetCommitTimer()
+		l.closeOrArmWindow()
 	}
+}
+
+// closeOrArmWindow finalizes the open window when its first deadline has passed, and otherwise
+// arms the commit timer for that deadline. A zero timer therefore closes the window in the same
+// step that collected the write.
+func (l *branchWorkerEventLoop) closeOrArmWindow() {
+	if l.openWindow == nil {
+		l.stopCommitTimer()
+		return
+	}
+	closeAt, reason := l.openWindow.closeAt()
+	delay := time.Until(closeAt)
+	if delay <= 0 {
+		l.finalizeOpenWindowWithReason(reason)
+		l.maybeSchedulePush()
+		return
+	}
+	l.resetCommitTimer(delay)
 }
 
 // handleAtomicRequest applies one atomic write request. Atomic batches bypass the commit
@@ -1315,9 +1352,9 @@ func (l *branchWorkerEventLoop) drainUnhandledQueueItems() {
 	}
 }
 
-func (l *branchWorkerEventLoop) resetCommitTimer() {
+func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 	if l.commitTimer == nil {
-		l.commitTimer = time.NewTimer(l.commitWindow)
+		l.commitTimer = time.NewTimer(delay)
 		return
 	}
 	if !l.commitTimer.Stop() {
@@ -1326,7 +1363,7 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 		default:
 		}
 	}
-	l.commitTimer.Reset(l.commitWindow)
+	l.commitTimer.Reset(delay)
 }
 
 // recoverRetainedWrites resets and replays when retained work can no longer be trusted, for either
@@ -1499,6 +1536,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	l.windowBytes = 0
 
 	if pendingCR != nil {
+		l.w.setCommitRequestPhase(*pendingCR, PhaseWaitingForPush)
 		// Resolution moves to the push success path either way (§6.5), including for a no-diff
 		// window. It is no longer window-pending — it now rides the retained write.
 		//
@@ -2487,18 +2525,20 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha3.GitP
 
 // commitWindowFor returns the commit-window duration for ONE GitTarget.
 //
+// commitWindowFor resolves a GitTarget's commit window timers.
+//
 // The window is a GitTarget field but this worker serves every target sharing a (provider,
 // branch), so resolving per target is what makes the field mean what it says. Affordable because a
 // window is bound to one target already, so this is read once per window, not per event.
 //
-// There is nothing to parse and nothing to reject: the field is a metav1.Duration behind a
+// There is nothing to parse and nothing to reject: the fields are metav1.Durations behind a
 // duration pattern, so a malformed value never reaches storage. An unreadable GitTarget takes the
 // fallback, since a missing target is no reason to change how the events in hand are batched.
 func (w *BranchWorker) commitWindowFor(
 	ctx context.Context,
 	targetName, targetNamespace string,
-	fallback time.Duration,
-) time.Duration {
+	fallback commitWindowDefaults,
+) commitWindowDefaults {
 	// No client is legitimate — the CLI and the narrower unit tests run a worker with none — and it
 	// means there is no GitTarget to ask, not that the default is wrong.
 	if w.Client == nil || targetName == "" || targetNamespace == "" {
@@ -2510,10 +2550,17 @@ func (w *BranchWorker) commitWindowFor(
 			"gitTarget", targetNamespace+"/"+targetName, "error", err.Error())
 		return fallback
 	}
+	resolved := fallback
 	if target.Spec.Commit == nil || target.Spec.Commit.Window == nil {
-		return fallback
+		return resolved
 	}
-	return target.Spec.Commit.Window.Duration
+	if idle := target.Spec.Commit.Window.IdleTimeout; idle != nil {
+		resolved.idleTimeout = idle.Duration
+	}
+	if maxDuration := target.Spec.Commit.Window.MaxDuration; maxDuration != nil {
+		resolved.maxDuration = maxDuration.Duration
+	}
+	return resolved
 }
 
 // LastRemoteObservation returns what the worker last proved about the target branch, and whether

@@ -100,6 +100,11 @@ func (r *EventRouter) ServiceCommitRequest(
 	// finalize deadline), then poll the outcome.
 	worker.EnqueueAttach(&attach)
 	result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID)
+	if !resolved {
+		// Report where the worker says the request stands, so the controller never has to infer
+		// a phase from having sent the attach.
+		result.Phase = worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
+	}
 	return result, resolved, nil
 }
 

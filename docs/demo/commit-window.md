@@ -30,7 +30,8 @@ spec:
   branch: commit-window-demo
   path: apps/demo
   commit:
-    window: "5s"
+    window:
+      idleTimeout: "5s"
     message:
       requestTemplate: |-
         {{.RequestMessage}}

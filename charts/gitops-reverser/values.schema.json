@@ -538,7 +538,16 @@
             "commit": {
               "type": "object",
               "additionalProperties": false,
-              "properties": { "window": { "$ref": "#/$defs/duration" } }
+              "properties": {
+                "window": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "idleTimeout": { "$ref": "#/$defs/duration" },
+                    "maxDuration": { "$ref": "#/$defs/duration" }
+                  }
+                }
+              }
             },
             "encryption": {
               "type": "object",

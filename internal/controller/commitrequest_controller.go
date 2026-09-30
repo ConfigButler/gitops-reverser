@@ -29,9 +29,8 @@ import (
 // watch.EventRouter satisfies it without adaptation.
 //
 // There is no watermark barrier: the interactive case is covered by the human gap between the
-// edit and the save, UC2 by the collect-grace. The grace is anchored at attribution
-// — the worker stamps finalizeAt = receipt + closeDelay — so the
-// controller no longer holds the finalize itself.
+// edit and the save, UC2 by the request's attach wait. The worker anchors that wait at its own
+// registration and runs the window's timers, so the controller never holds the finalize itself.
 type CommitRequestFinalizer interface {
 	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
 }
@@ -61,30 +60,59 @@ const (
 	// for the attached request's outcome (attach-then-poll).
 	commitRequestPollInterval = 2 * time.Second
 
-	// commitRequestResolveTimeout bounds the attach-then-poll wait, measured from
-	// object creation: it must cover the longest a request can take (closeDelay ≤ 5m
-	// waiting for a window from receipt, then closeDelay again collecting from the
-	// claim) and the push cooldown plus retries. Authorship is now
-	// settled synchronously at first sight (no attribution wait), so the former
-	// +60s attribution component is gone. Past it, a request the worker never resolved
-	// (e.g. a vanished worker) fails closed instead of polling forever.
-	commitRequestResolveTimeout = 2*300*time.Second + 120*time.Second
+	// commitRequestPushAllowance is what the safety bound allows on top of a request's own
+	// timers, for the push cooldown and its retries. Authorship is settled synchronously at first
+	// sight, so no attribution wait belongs here.
+	commitRequestPushAllowance = 120 * time.Second
 
-	// defaultCloseDelay mirrors the +kubebuilder:default on
-	// CommitRequest.spec.closeDelay. The API server fills the field in, so nil
-	// reaches here only from a client that bypasses defaulting; resolving it to the same
-	// value keeps the two paths from disagreeing.
-	defaultCloseDelay = 2 * time.Second
+	// The request window defaults mirror the +kubebuilder:default markers on CommitRequestWindow.
+	// The API server fills them in, so these apply only to a client that bypasses defaulting;
+	// resolving to the same values keeps the two paths from disagreeing.
+	defaultAttachTimeout = 2 * time.Second
+	defaultMaxDuration   = 2 * time.Second
 )
 
-// closeDelay resolves the request's collect delay. A nil field is the schema
-// default (a request that named no delay); an explicit "0s" stays zero, which is what the
-// pointer type exists to preserve.
-func closeDelay(spec configbutleraiv1alpha3.CommitRequestSpec) time.Duration {
-	if spec.CloseDelay == nil {
-		return defaultCloseDelay
+// requestWindow is a CommitRequest's window, resolved to the values the worker applies.
+type requestWindow struct {
+	attach        configbutleraiv1alpha3.AttachPolicy
+	attachTimeout time.Duration
+	idleTimeout   *time.Duration
+	maxDuration   time.Duration
+}
+
+// resolveRequestWindow reads spec.window, falling back field by field to the schema defaults. An
+// explicit "0s" stays zero, and an omitted idleTimeout stays nil (no idle close).
+func resolveRequestWindow(spec configbutleraiv1alpha3.CommitRequestSpec) requestWindow {
+	resolved := requestWindow{
+		attach:        configbutleraiv1alpha3.AttachCurrentOrNext,
+		attachTimeout: defaultAttachTimeout,
+		maxDuration:   defaultMaxDuration,
 	}
-	return spec.CloseDelay.Duration
+	window := spec.Window
+	if window == nil {
+		return resolved
+	}
+	if window.Attach != "" {
+		resolved.attach = window.Attach
+	}
+	if window.AttachTimeout != nil {
+		resolved.attachTimeout = window.AttachTimeout.Duration
+	}
+	if window.IdleTimeout != nil {
+		idle := window.IdleTimeout.Duration
+		resolved.idleTimeout = &idle
+	}
+	if window.MaxDuration != nil {
+		resolved.maxDuration = window.MaxDuration.Duration
+	}
+	return resolved
+}
+
+// resolveTimeout bounds the attach-then-poll wait, measured from object creation: the request's
+// own attach wait, then its collection, then the push. Past it, a request the worker never resolved
+// (e.g. a vanished worker) fails closed instead of polling forever.
+func (w requestWindow) resolveTimeout() time.Duration {
+	return w.attachTimeout + w.maxDuration + commitRequestPushAllowance
 }
 
 // CommitRequestReconciler deliberately does NOT use reconcileStatus, which every other controller
@@ -115,11 +143,11 @@ func closeDelay(spec configbutleraiv1alpha3.CommitRequestSpec) time.Duration {
 //     author: the record is written before the object is visible, so waiting cannot
 //     help.
 //  2. ATTACH + POLL — the instant the author is settled, send the attach to the
-//     GitTarget's worker (bind the message to the author's open window, finalize
-//     after the grace) and poll the outcome. The grace is anchored at attribution
-//     by the worker (finalizeAt = receipt + closeDelay), so there is no
-//     controller-side delay. A window belonging to someone else (or no window)
-//     resolves NoOpenWindow; the foreign window stays open.
+//     GitTarget's worker, which attaches the request to the author's window with its
+//     message and timers, and poll the outcome. The attach wait is anchored at the worker's
+//     registration, so there is no controller-side delay. While it polls, the controller
+//     reports the phase the worker reports. No window before the attach deadline resolves
+//     NoWindow; a window belonging to someone else stays open for its own author.
 type CommitRequestReconciler struct {
 	client.Client
 
@@ -201,8 +229,9 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute
-	// (no controller-side delay — the worker anchors the grace at attribution,
-	// close-delay contract) and poll the outcome.
+	// (no controller-side delay — the worker anchors the wait at its registration)
+	// and poll the outcome.
+	window := resolveRequestWindow(commitRequest.Spec)
 	result, resolved, serviceErr := r.Finalizer.ServiceCommitRequest(ctx, git.AttachCommitRequest{
 		Namespace:          commitRequest.Namespace,
 		Name:               commitRequest.Name,
@@ -212,10 +241,13 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		GitTargetName:      commitRequest.Spec.GitTargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
 		Message:            commitRequest.Spec.Message,
-		CloseDelay:         closeDelay(commitRequest.Spec),
+		Attach:             window.attach,
+		AttachTimeout:      window.attachTimeout,
+		IdleTimeout:        window.idleTimeout,
+		MaxDuration:        window.maxDuration,
 	})
 	if serviceErr != nil || !resolved {
-		return r.awaitAttachOutcome(ctx, log, req, commitRequest, attribution, serviceErr)
+		return r.awaitAttachOutcome(ctx, log, req, commitRequest, attribution, window, result.Phase, serviceErr)
 	}
 
 	if result.Err != nil {
@@ -236,6 +268,8 @@ func (r *CommitRequestReconciler) awaitAttachOutcome(
 	req ctrl.Request,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
+	window requestWindow,
+	phase git.CommitRequestPhase,
 	serviceErr error,
 ) (ctrl.Result, error) {
 	if serviceErr != nil {
@@ -243,8 +277,8 @@ func (r *CommitRequestReconciler) awaitAttachOutcome(
 			"name", req.NamespacedName, "err", serviceErr.Error())
 	}
 
-	if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestResolveTimeout {
-		if err := r.recordCloseDelayWait(ctx, commitRequest, attribution); err != nil {
+	if time.Since(commitRequest.CreationTimestamp.Time) < window.resolveTimeout() {
+		if err := r.recordWorkerPhase(ctx, commitRequest, attribution, phase); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
@@ -275,7 +309,7 @@ func (r *CommitRequestReconciler) stampFirstSightConditions(
 	if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) != nil {
 		return nil
 	}
-	markCommitRequestWaitingForCloseDelay(commitRequest, attribution)
+	markCommitRequestProgressing(commitRequest, attribution, "")
 	if err := r.Status().Update(ctx, commitRequest); err != nil {
 		return err
 	}
@@ -352,21 +386,21 @@ func (r *CommitRequestReconciler) attributeAuthor(
 	return queue.CommandAuthor{}, attributionCommitter
 }
 
-// recordCloseDelayWait makes the post-attribution wait — the closeDelay
-// collect window followed by the commit and push. First sight already stamps this
-// state, so this is the post-restart re-stamp path: it writes once, at the transition,
-// and is a no-op once the request is already showing the WaitingForCloseDelay reason
-// (so polling does not re-write status every interval).
-func (r *CommitRequestReconciler) recordCloseDelayWait(
+// recordWorkerPhase reports the phase the worker says the request is in. It writes only on a
+// change, so polling does not re-write status every interval. An empty phase — the worker has not
+// registered the request yet — keeps whatever is shown, so the controller never reports a phase
+// the worker has not confirmed.
+func (r *CommitRequestReconciler) recordWorkerPhase(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
+	phase git.CommitRequestPhase,
 ) error {
-	if c := findCondition(commitRequest.Status.Conditions, ConditionTypeReconciling); c != nil &&
-		c.Reason == crReasonWaitingForCloseDelay {
+	current := findCondition(commitRequest.Status.Conditions, ConditionTypeReconciling)
+	if current != nil && (phase == "" || current.Reason == string(phase)) {
 		return nil
 	}
-	markCommitRequestWaitingForCloseDelay(commitRequest, attribution)
+	markCommitRequestProgressing(commitRequest, attribution, phase)
 	return r.Status().Update(ctx, commitRequest)
 }
 

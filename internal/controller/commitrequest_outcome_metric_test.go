@@ -106,7 +106,7 @@ func TestCommitRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 	cr := newCommitRequest("save-bogus")
 	cr.Spec.GitTargetRef = meta.LocalObjectReference{Name: "no-such-target"}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
-	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * commitRequestResolveTimeout))
+	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(cr.Spec).resolveTimeout()))
 	c := newCommitRequestClient(t, nil, cr)
 	// A service error is what EventRouter.ServiceCommitRequest returns when the GitTarget Get fails.
 	f := &fakeFinalizer{err: errors.New("get GitTarget default/no-such-target: not found")}

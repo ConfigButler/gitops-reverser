@@ -11,7 +11,8 @@ spec:
   path: live-cluster
   # Every event is its own commit, so a playground change shows up in Git immediately.
   commit:
-    window: "0s"
+    window:
+      idleTimeout: "0s"
   encryption:
     provider: sops
     age:

@@ -4,21 +4,25 @@ package git
 
 import (
 	"time"
+
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// This file holds the worker-loop side of CommitRequest eager attach. All methods run on the single event
-// loop goroutine, so pendingCRs needs no locking; only the resolved-outcome table
-// (BranchWorker.crOutcomes) crosses goroutines and is mutex-guarded.
+// This file holds the worker-loop side of CommitRequest attach. All methods run on the single
+// event loop goroutine, so pendingCRs needs no locking; only the resolved-outcome and phase tables
+// (BranchWorker.crOutcomes, crPhases) cross goroutines and are mutex-guarded.
 //
-// The lifecycle of one CommitRequest, worker-side:
+// The lifecycle of one CommitRequest, worker-side. A window is only ever opened by a write; a
+// request attaches to one and never opens one.
 //
-//   register (handleAttachCommitRequest) → [no matching window] WaitingForWindow
-//                                        → [matching window]     Attached
-//   a same-author window opens           → Attached
-//   finalize deadline fires while Attached → finalize the window with its message → resolved
-//   any other path finalizes the Attached window → same (the message rides the window)
-//   deadline fires while WaitingForWindow → resolved NoOpenWindow, or WindowMismatch when a
-//                                            window it could not claim was open during the grace
+//   register (handleAttachCommitRequest) → attach: Next closes the author's open window first
+//                                        → [matching window open, CurrentOrNext] Attached
+//                                        → otherwise WaitingForWindow
+//   a same-author window opens before the attach deadline → Attached (first come, first served)
+//   Attached: the request's timers replace the window's; whichever path closes the window
+//             carries the request's message → WaitingForPush → resolved on push
+//   attach deadline passes while WaitingForWindow → resolved NoOpenWindow, or WindowMismatch when
+//             a window it could not attach to was open meanwhile; never a later window
 
 // commitRequestOutcomeTTL bounds how long a resolved CommitRequest outcome is
 // retained for the controller to poll before it is GC'd. It comfortably exceeds
@@ -53,6 +57,28 @@ func (w *BranchWorker) LookupCommitRequestOutcome(namespace, name, uid string) (
 	return entry.result, ok
 }
 
+// setCommitRequestPhase records where an unresolved request stands; an empty phase forgets it.
+func (w *BranchWorker) setCommitRequestPhase(id commitRequestID, phase CommitRequestPhase) {
+	w.crOutcomesMu.Lock()
+	defer w.crOutcomesMu.Unlock()
+	if phase == "" {
+		delete(w.crPhases, id)
+		return
+	}
+	if w.crPhases == nil {
+		w.crPhases = map[commitRequestID]CommitRequestPhase{}
+	}
+	w.crPhases[id] = phase
+}
+
+// LookupCommitRequestPhase returns where an unresolved request stands on this worker, or "" when
+// the worker has not registered it (yet) or it is resolved.
+func (w *BranchWorker) LookupCommitRequestPhase(namespace, name, uid string) CommitRequestPhase {
+	w.crOutcomesMu.Lock()
+	defer w.crOutcomesMu.Unlock()
+	return w.crPhases[commitRequestID{Namespace: namespace, Name: name, UID: uid}]
+}
+
 // hasCommitRequestOutcome reports whether a request is already resolved, so a late
 // idempotent re-send of its attach is a no-op.
 func (w *BranchWorker) hasCommitRequestOutcome(id commitRequestID) bool {
@@ -62,10 +88,8 @@ func (w *BranchWorker) hasCommitRequestOutcome(id commitRequestID) bool {
 	return ok
 }
 
-// handleAttachCommitRequest registers a CommitRequest with the worker. It stamps
-// the finalize deadline once (idempotent re-sends keep the first one) and parks the
-// request; serviceCommitRequests — run after every loop wake — does the actual
-// attaching and finalizing.
+// handleAttachCommitRequest registers a CommitRequest with the worker. Everything is stamped once:
+// an idempotent re-send restarts nothing and closes nothing.
 func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitRequest) {
 	id := req.id()
 	if l.w.hasCommitRequestOutcome(id) {
@@ -75,68 +99,95 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		l.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
 	}
 	if _, exists := l.pendingCRs[id]; exists {
-		return // idempotent re-send: keep the first finalize deadline.
+		return // idempotent re-send: keep the first registration.
 	}
-	// Anchor the wait at receipt (≈ the attribution moment), not at object
-	// creation: under a delayed ingestion pipeline this lets closeDelay cover only
-	// the inter-stream spread instead of the absolute latency. attachToOpenWindow
-	// restarts it at the claim.
-	l.pendingCRs[id] = &pendingCommitRequest{
+	// Anchor the wait at registration (≈ the attribution moment), not at object creation: under a
+	// delayed ingestion pipeline this lets attachTimeout cover only the inter-stream spread
+	// instead of the absolute latency.
+	l.crSeq++
+	pcr := &pendingCommitRequest{
 		id:                 id,
 		author:             req.Author,
 		attribution:        req.Attribution,
 		gitTargetName:      req.GitTargetName,
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,
-		finalizeAt:         time.Now().Add(req.CloseDelay),
-		closeDelay:         req.CloseDelay,
+		seq:                l.crSeq,
+		attachDeadline:     time.Now().Add(req.AttachTimeout),
+		idleTimeout:        req.IdleTimeout,
+		maxDuration:        req.MaxDuration,
 	}
+	l.pendingCRs[id] = pcr
+	l.w.setCommitRequestPhase(id, PhaseWaitingForWindow)
 	l.w.Log.Info("CommitRequest registered with worker",
 		"request", id.Namespace+"/"+id.Name,
 		"author", req.Author,
 		"target", req.GitTargetNamespace+"/"+req.GitTargetName,
-		"closeDelay", req.CloseDelay.String())
+		"attach", string(req.Attach),
+		"attachTimeout", req.AttachTimeout.String())
+
+	if l.openWindow == nil || !pcr.matchesWindow(l.openWindow) {
+		return
+	}
+	if req.Attach == v1alpha3.AttachNext {
+		// Start clean: close the author's window under whatever message it already carries,
+		// including one another request attached, and wait for a write to open the next. The
+		// registration above is what makes this happen once per request.
+		l.finalizeOpenWindowWithReason(windowFinalizeReasonAttachNext)
+		l.maybeSchedulePush()
+		return
+	}
+	if l.openWindow.pendingCR == nil {
+		// CurrentOrNext attaches to a window already open at registration before any deadline is
+		// consulted, which is what lets attachTimeout: 0s attach at all.
+		l.attachToOpenWindow(pcr)
+	}
 }
 
-// serviceCommitRequests runs after every loop wake: bind any waiting request to an
-// open same-author window, finalize/reject any whose grace has elapsed, and re-arm
-// the deadline timer for the next one.
+// serviceCommitRequests runs after every loop wake: note foreign windows, resolve waiting requests
+// whose attach deadline passed, attach the next waiting request to an open window, and re-arm the
+// attach timer.
+//
+// Expiry runs BEFORE attach. When a request's deadline and a matching write are ready on the same
+// wake, the request has already run out: it resolves, and the write keeps its own window.
 func (l *branchWorkerEventLoop) serviceCommitRequests() {
 	if len(l.pendingCRs) == 0 {
 		l.stopAttachTimer()
 		return
 	}
 	l.noteForeignWindow()
+	l.expireWaitingCommitRequests()
 	l.attachWaitingCommitRequests()
-	l.processDueCommitRequests()
 	l.rearmAttachTimer()
 }
 
-// noteForeignWindow records, on every waiting request, that a window it cannot claim is open.
+// waiting reports whether a request is still looking for a window it may attach to at now.
+func (p *pendingCommitRequest) waiting(now time.Time) bool {
+	return !p.attached && !p.committed && p.attachDeadline.After(now)
+}
+
+// noteForeignWindow records, on every waiting request, that a window it cannot attach to is open.
 //
 // It runs BEFORE attachWaitingCommitRequests and independently of it, because that function
-// returns early when the window is already claimed — so the scan inside it cannot be the place
+// returns early when the window is already taken — so the scan inside it cannot be the place
 // this is observed. It also runs on every pass rather than at expiry: the foreign window is
-// finalized on its own timer, usually before this request's grace elapses.
+// finalized on its own timer, usually before this request's wait runs out.
 //
-// A window that MATCHES but is already claimed by another request is not a mismatch. That is
+// A window that MATCHES but already carries another request is not a mismatch. That is
 // contention between two of one author's own saves, it resolves on the next window, and calling
 // it a mismatch would attribute a queueing delay to the wrong cause.
 //
-// A request whose deadline has ALREADY passed is skipped, using the same predicate
-// processDueCommitRequests uses to select it: the two run back to back on one wake, so an event
-// arriving at the moment of expiry would otherwise open a window, mark the overdue request, and
-// resolve it as a mismatch in the same pass. Nothing refused that request; it waited out its whole
-// grace with nothing open, which is the benign outcome. Marking it would turn a timeout into a
-// refusal that never happened, in the one direction this instrument exists to keep apart.
+// A request whose deadline has ALREADY passed is skipped: an event arriving at the moment of expiry
+// would otherwise open a window, mark the overdue request, and resolve it as a mismatch in the same
+// pass. Nothing refused that request; it waited out its whole wait with nothing open, which is the
+// benign outcome.
 func (l *branchWorkerEventLoop) noteForeignWindow() {
 	if l.openWindow == nil {
 		return
 	}
 	now := time.Now()
 	for _, pcr := range l.pendingCRs {
-		if !pcr.finalizeAt.After(now) || pcr.attached || pcr.sawForeignWindow ||
-			pcr.matchesWindow(l.openWindow) {
+		if !pcr.waiting(now) || pcr.sawForeignWindow || pcr.matchesWindow(l.openWindow) {
 			continue
 		}
 		pcr.sawForeignWindow = true
@@ -149,91 +200,63 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 	}
 }
 
-// attachWaitingCommitRequests binds the waiting same-author request with the earliest finalize deadline to the
-// open window when it is unclaimed. A window carries at most one request; a second
-// waits for the next window.
+// attachWaitingCommitRequests attaches the first-registered waiting request that matches the open
+// window, when the window carries none yet. A window carries at most one request; a second waits
+// for the next window, and a request whose deadline has passed takes none.
 func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	if l.openWindow == nil || l.openWindow.pendingCR != nil {
 		return
 	}
-	var earliest *pendingCommitRequest
+	now := time.Now()
+	var first *pendingCommitRequest
 	for _, pcr := range l.pendingCRs {
-		if pcr.attached || !pcr.matchesWindow(l.openWindow) {
+		if !pcr.waiting(now) || !pcr.matchesWindow(l.openWindow) {
 			continue
 		}
-		if earliest == nil || pcr.finalizeAt.Before(earliest.finalizeAt) {
-			earliest = pcr
+		if first == nil || pcr.seq < first.seq {
+			first = pcr
 		}
 	}
-	if earliest != nil {
-		l.attachToOpenWindow(earliest)
+	if first != nil {
+		l.attachToOpenWindow(first)
 	}
 }
 
-// attachToOpenWindow binds a request's message to the currently-open window, and restarts its
-// deadline at the claim: the window then collects for the full closeDelay, however much of it the
-// request spent waiting. When the window was already open at receipt the claim IS the receipt,
-// so the deadline is the one first stamped.
-//
-// A request whose wait has already run out is attached WITHOUT a restart. The deadline timer and a
-// matching event can be ready on the same loop wake, and this pass runs before
-// processDueCommitRequests, so restarting here would hand an expired request a second full delay
-// depending on which of the two the select picked. Left alone, it is finalized in this same pass,
-// carrying its message, which is also what an explicit "0s" relies on.
+// attachToOpenWindow binds a request's message to the open window and replaces the window's timers
+// with the request's own: the request's maxDuration runs from this attach, and so does its first
+// idle interval. A zero maxDuration closes the window right here.
 func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
+	now := time.Now()
 	l.openWindow.pendingMessage = pcr.message
 	id := pcr.id
 	l.openWindow.pendingCR = &id
 	pcr.attached = true
-	if now := time.Now(); pcr.finalizeAt.After(now) {
-		pcr.finalizeAt = now.Add(pcr.closeDelay)
+	timers := windowTimers{noIdle: pcr.idleTimeout == nil, maxAt: now.Add(pcr.maxDuration)}
+	if pcr.idleTimeout != nil {
+		timers.idle = *pcr.idleTimeout
 	}
+	l.openWindow.timers = timers
+	l.openWindow.lastWriteAt = now
+	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,
 		"author", pcr.author,
 		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
-		"closeDelay", pcr.closeDelay.String())
+		"maxDuration", pcr.maxDuration.String())
+	l.closeOrArmWindow()
 }
 
-// processDueCommitRequests finalizes the windows of attached requests whose grace
-// has elapsed and rejects parked requests whose grace elapsed without a window.
-func (l *branchWorkerEventLoop) processDueCommitRequests() {
+// expireWaitingCommitRequests resolves every request whose attach deadline passed while it was
+// still waiting. An attached request is not here: its window's timers close it, and whichever path
+// closes the window resolves it.
+func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	now := time.Now()
-	var due []commitRequestID
 	for id, pcr := range l.pendingCRs {
-		if pcr.committed {
-			// Its window is already a local commit, so its grace has nothing left to decide. It
-			// is waiting on the push, and resolvePushedCommitRequests settles it from the write
-			// it rides. Treating it as due here is what produced a NoOpenWindow for work that
-			// was only waiting out the push cooldown.
+		if pcr.attached || pcr.committed || pcr.attachDeadline.After(now) {
 			continue
 		}
-		if !pcr.finalizeAt.After(now) {
-			due = append(due, id)
-		}
-	}
-	for _, id := range due {
-		pcr := l.pendingCRs[id]
-		if pcr == nil {
-			continue
-		}
-		if l.openWindow != nil && l.openWindow.pendingCR != nil && *l.openWindow.pendingCR == id {
-			// The attached window's grace elapsed: finalize it. finalizeOpenWindowWithReason
-			// resolves the request from the window's pendingCR; push so the commit lands.
-			l.finalizeOpenWindowWithReason(windowFinalizeReasonFinalizeSignal)
-			l.maybeSchedulePush()
-			// Belt-and-suspenders: a window it claimed always either commits it or fails it.
-			// A committed request is NOT covered by this — it is waiting on the push, which is
-			// the only thing that can settle it, and resolving it here would be the very
-			// premature NoOpenWindow this whole path exists to avoid.
-			if pcr := l.pendingCRs[id]; pcr != nil && !pcr.committed {
-				l.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeNoOpenWindow})
-			}
-			continue
-		}
-		// Grace elapsed with no matching same-author window collected. Which of the two refusals
-		// this is depends on whether anything was open that this request could not have: see
-		// pendingCommitRequest.expiryOutcome.
+		// Which of the two refusals this is depends on whether anything was open that this
+		// request could not have: see pendingCommitRequest.expiryOutcome.
 		l.resolveCommitRequest(id, FinalizeResult{Outcome: pcr.expiryOutcome()})
 	}
 }
@@ -246,6 +269,7 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 	}
 	l.w.recordCommitRequestOutcome(id, result)
 	delete(l.pendingCRs, id)
+	l.w.setCommitRequestPhase(id, "")
 	l.w.Log.Info("CommitRequest resolved",
 		"request", id.Namespace+"/"+id.Name,
 		"outcome", string(result.Outcome),
@@ -253,18 +277,16 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		"err", result.Err)
 }
 
-// rearmAttachTimer arms the deadline timer for the earliest pending finalize, so an
-// attached window is finalized at the end of its grace even with no further events.
+// rearmAttachTimer arms the timer for the earliest attach deadline among waiting requests, so a
+// request no window reaches still resolves on time.
 func (l *branchWorkerEventLoop) rearmAttachTimer() {
 	var earliest time.Time
 	for _, pcr := range l.pendingCRs {
-		if pcr.committed {
-			// Its deadline is spent and processDueCommitRequests skips it, so arming on it would
-			// re-fire at zero on every wake for as long as the push takes.
+		if pcr.attached || pcr.committed {
 			continue
 		}
-		if earliest.IsZero() || pcr.finalizeAt.Before(earliest) {
-			earliest = pcr.finalizeAt
+		if earliest.IsZero() || pcr.attachDeadline.Before(earliest) {
+			earliest = pcr.attachDeadline
 		}
 	}
 	if earliest.IsZero() {

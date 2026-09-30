@@ -34,7 +34,7 @@ func TestValidateCommitConfig(t *testing.T) {
 		{
 			name: "a valid window and template",
 			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{
-				Window: &metav1.Duration{Duration: 30 * time.Second},
+				Window: &configbutleraiv1alpha3.CommitWindow{IdleTimeout: &metav1.Duration{Duration: 30 * time.Second}},
 				Message: &configbutleraiv1alpha3.CommitMessageSpec{
 					LiveTemplate: "chore(mirror): {{.Count}} by {{.Author}}",
 				},
@@ -43,8 +43,10 @@ func TestValidateCommitConfig(t *testing.T) {
 		},
 		{
 			name: "zero is a real choice, not an omission",
-			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{Window: &metav1.Duration{}},
-			ok:   true,
+			spec: &configbutleraiv1alpha3.GitTargetCommitSpec{
+				Window: &configbutleraiv1alpha3.CommitWindow{IdleTimeout: &metav1.Duration{}, MaxDuration: &metav1.Duration{}},
+			},
+			ok: true,
 		},
 		{
 			// A retired field is refused before any template is parsed, so a stored legacy value

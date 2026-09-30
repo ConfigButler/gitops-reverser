@@ -9,10 +9,13 @@ spec:
   branch: main
   # Required relative repository path. Use "." only to deliberately write at repo root.
   path: live-cluster
-  # How this folder's writes become commits. Omitted, events coalesce over a 5s
-  # rolling silence window and the built-in message templates are used.
+  # How this folder's writes become commits. A commit window closes after
+  # idleTimeout of silence, or maxDuration after it opened. Omitted, it is
+  # {idleTimeout: 5s, maxDuration: 1m} and the built-in message templates are used.
   commit:
-    window: "5s"
+    window:
+      idleTimeout: "5s"
+      maxDuration: "1m"
     # message:
     #   liveTemplate: "audit: {{range .Resources}}[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}{{end}}"
     #   reconcileTemplate: "chore: reconcile {{.Count}} {{.Resource}}"

@@ -93,11 +93,11 @@ func withReadyCommitted(cr *configv1alpha3.CommitRequest) *configv1alpha3.Commit
 func withInProgress(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest {
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
 		Type: ConditionTypeReady, Status: metav1.ConditionFalse,
-		Reason: crReasonWaitingForCloseDelay, Message: "in progress",
+		Reason: string(git.PhaseWaitingForWindow), Message: "in progress",
 	})
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
 		Type: ConditionTypeReconciling, Status: metav1.ConditionTrue,
-		Reason: crReasonWaitingForCloseDelay, Message: "in progress",
+		Reason: string(git.PhaseWaitingForWindow), Message: "in progress",
 	})
 	return cr
 }
@@ -195,8 +195,8 @@ func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 
 	got := fetchCommitRequest(t, c, "save-now")
 	// A benign no-commit is Ready=True (serviced) with the specific reason, Pushed=False.
-	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindowInGrace)
-	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindowInGrace)
+	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindow)
+	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindow)
 	requireCondition(t, got, ConditionTypeStalled, metav1.ConditionFalse, "")
 	assert.Empty(t, got.Status.Commit)
 }
@@ -287,14 +287,14 @@ func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 }
 
-// A request that names no delay must reach the worker carrying the schema default,
-// not zero. The API server normally fills the field in, so nil arrives here only from
-// a client that bypassed defaulting — and a zero there is the reported defect: the
-// request expires before the write it exists to publish can open a window.
-func TestCommitRequestReconcile_OmittedCloseDelayUsesTheDefault(t *testing.T) {
+// A request whose window was never defaulted must reach the worker carrying the schema defaults,
+// not zeros. The API server normally fills the block in, so nil arrives here only from a client
+// that bypassed defaulting — and a zero there would be the old defect: the request expires before
+// the write it exists to publish can open a window.
+func TestCommitRequestReconcile_AnOmittedWindowUsesTheDefaults(t *testing.T) {
 	cr := newCommitRequest("save-default")
 	cr.CreationTimestamp = metav1.Now()
-	require.Nil(t, cr.Spec.CloseDelay, "the fixture must leave the field unset")
+	require.Nil(t, cr.Spec.Window, "the fixture must leave the block unset")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -302,16 +302,22 @@ func TestCommitRequestReconcile_OmittedCloseDelayUsesTheDefault(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-default")
 
 	require.Len(t, f.calls, 1)
-	assert.Equal(t, defaultCloseDelay, f.calls[0].CloseDelay,
-		"an omitted closeDelay is the default, never an immediate finalize")
+	assert.Equal(t, configv1alpha3.AttachCurrentOrNext, f.calls[0].Attach)
+	assert.Equal(t, defaultAttachTimeout, f.calls[0].AttachTimeout)
+	assert.Equal(t, defaultMaxDuration, f.calls[0].MaxDuration)
+	assert.Nil(t, f.calls[0].IdleTimeout, "no idle close unless one is asked for")
 }
 
-// The pointer type exists so that an explicit 0 survives defaulting. A caller that
-// asks for an immediate finalize still gets one.
-func TestCommitRequestReconcile_ExplicitZeroCloseDelayIsPreserved(t *testing.T) {
+// The pointer types exist so that an explicit zero survives defaulting, and each field keeps its
+// own meaning: a zero attachTimeout is not a zero maxDuration.
+func TestCommitRequestReconcile_ExplicitZerosArePreservedFieldByField(t *testing.T) {
 	cr := newCommitRequest("save-now")
 	cr.CreationTimestamp = metav1.Now()
-	cr.Spec.CloseDelay = &metav1.Duration{}
+	cr.Spec.Window = &configv1alpha3.CommitRequestWindow{
+		AttachTimeout: &metav1.Duration{},
+		IdleTimeout:   &metav1.Duration{},
+		MaxDuration:   &metav1.Duration{Duration: 30 * time.Second},
+	}
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -319,19 +325,19 @@ func TestCommitRequestReconcile_ExplicitZeroCloseDelayIsPreserved(t *testing.T) 
 	reconcileCommitRequest(t, r, "save-now")
 
 	require.Len(t, f.calls, 1)
-	assert.Zero(t, f.calls[0].CloseDelay,
-		"an explicit \"0s\" must not be re-read as an omitted field")
+	assert.Zero(t, f.calls[0].AttachTimeout, "an explicit \"0s\" must not be re-read as an omitted field")
+	require.NotNil(t, f.calls[0].IdleTimeout)
+	assert.Zero(t, *f.calls[0].IdleTimeout)
+	assert.Equal(t, 30*time.Second, f.calls[0].MaxDuration, "a zero attachTimeout never forces a zero collection")
 }
 
-// The close-delay collect window is the worker's job now: the controller does not
-// hold the finalize itself. While the worker has not resolved the attach, the
-// controller polls — spec.closeDelay is passed through to the worker, not
-// consumed here — and once the author is settled the request records the distinct
-// WaitingForCloseDelay wait (the post-attribution close delay plus commit and push).
-func TestCommitRequestReconcile_NotResolvedRecordsCloseDelayWait(t *testing.T) {
+// The window is the worker's job: the controller does not hold the finalize itself. While the
+// worker has not resolved the attach, the controller polls and reports the phase the WORKER
+// reports, never one it inferred from having sent the attach.
+func TestCommitRequestReconcile_NotResolvedReportsTheWorkersPhase(t *testing.T) {
 	cr := newCommitRequest("save-linger")
 	cr.CreationTimestamp = metav1.Now()
-	cr.Spec.CloseDelay = &metav1.Duration{Duration: 30 * time.Second}
+	cr.Spec.Window = &configv1alpha3.CommitRequestWindow{MaxDuration: &metav1.Duration{Duration: 30 * time.Second}}
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -341,16 +347,29 @@ func TestCommitRequestReconcile_NotResolvedRecordsCloseDelayWait(t *testing.T) {
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter,
 		"an unresolved attach must be polled, not held by a controller-side delay")
 	require.Len(t, f.calls, 1, "the attach is sent the instant the author is known")
-	assert.Equal(t, 30*time.Second, f.calls[0].CloseDelay,
-		"closeDelay is passed to the worker, not consumed here")
+	assert.Equal(t, 30*time.Second, f.calls[0].MaxDuration,
+		"the window is passed to the worker, not consumed here")
 
 	got := fetchCommitRequest(t, c, "save-linger")
-	// Author settled from admission and attached: the request is in the
-	// WaitingForCloseDelay wait.
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonWaitingForCloseDelay)
-	requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, crReasonWaitingForCloseDelay)
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
 	assert.False(t, commitRequestIsTerminal(&got), "an unresolved request is not terminal")
+
+	for _, phase := range []git.CommitRequestPhase{
+		git.PhaseWaitingForWindow, git.PhaseCollectingWindow, git.PhaseWaitingForPush,
+	} {
+		f.result = git.FinalizeResult{Phase: phase}
+		reconcileCommitRequest(t, r, "save-linger")
+		got = fetchCommitRequest(t, c, "save-linger")
+		requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, string(phase))
+		requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, string(phase))
+	}
+
+	// A phase the worker has not (yet) reported keeps what is shown rather than guessing.
+	f.result = git.FinalizeResult{}
+	reconcileCommitRequest(t, r, "save-linger")
+	got = fetchCommitRequest(t, c, "save-linger")
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, string(git.PhaseWaitingForPush))
 }
 
 // A transient service error (e.g. the GitTarget momentarily unreadable) keeps the
@@ -366,7 +385,7 @@ func TestCommitRequestReconcile_ServiceErrorPolls(t *testing.T) {
 
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter)
 	got := fetchCommitRequest(t, c, "save-transient")
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonWaitingForCloseDelay)
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
 	assert.False(t, commitRequestIsTerminal(&got))
 }
 
@@ -443,7 +462,7 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 
 // Webhook-disabled mode settles AuthorAttributed=False (AuthorCaptureDisabled) immediately
 // and never parks the request in a "waiting for the author" state: even while the
-// attach is still being polled, the request is in the WaitingForCloseDelay wait.
+// attach is still being polled, the request reports progress.
 func TestCommitRequestReconcile_ConfiguredAuthorAttributedImmediately(t *testing.T) {
 	cr := newCommitRequest("save-committer-poll")
 	cr.CreationTimestamp = metav1.Now()
@@ -459,8 +478,8 @@ func TestCommitRequestReconcile_ConfiguredAuthorAttributedImmediately(t *testing
 
 	got := fetchCommitRequest(t, c, "save-committer-poll")
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonWaitingForCloseDelay)
-	assert.False(t, commitRequestIsTerminal(&got), "in the close-delay wait, not terminal")
+	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, ReasonProgressing)
+	assert.False(t, commitRequestIsTerminal(&got), "in progress, not terminal")
 }
 
 // With no Finalizer wired the controller is inert: it neither attaches, stamps any
@@ -555,8 +574,8 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, attributionCommitter)
-		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindowInGrace)
-		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindowInGrace)
+		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindow)
+		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindow)
 		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 		assert.Empty(t, cr.Status.Commit)
 	})

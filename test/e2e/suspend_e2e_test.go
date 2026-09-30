@@ -218,7 +218,8 @@ spec:
   branch: main
   path: %s
   commit:
-    window: "0s"
+    window:
+      idleTimeout: "0s"
   suspend: %t
 `, name, namespace, providerName, targetPath, suspend)
 	out, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
