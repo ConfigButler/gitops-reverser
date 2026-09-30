@@ -18,7 +18,7 @@
 >       maxDuration: 1m                       attachTimeout: 2s
 >                                             idleTimeout: 1s         # omitted: no idle close
 >                                             maxDuration: 10s
->                                           emptyCommit: Skip         # or Create
+>                                           whenNothingToCommit: Resolve   # or CommitEmpty
 > ```
 >
 > It replaces `CommitRequest.spec.closeDelay` and the string `GitTarget.spec.commit.window`, and it
@@ -43,7 +43,7 @@ These are decided.
    collects that author's writes until it closes. Nothing else opens one: not a save, not a timer.
    A save that opens its own window, so the user has one to respond into, was weighed and rejected:
    it would cut off the window already open, create windows without writes, and give a save two ways
-   to start collecting. `attach: Next`, `attachTimeout` and `emptyCommit: Create` cover what it was
+   to start collecting. `attach: Next`, `attachTimeout` and `whenNothingToCommit: CommitEmpty` cover what it was
    for.
 2. **A save attaches; it never opens.** It attaches to at most one window and gives that window its
    message and its timers. "Attach" is the one word for the act, in the API, the code and the docs.
@@ -86,11 +86,15 @@ The default is a fixed two-second cutoff, so an explicit save finishes promptly.
 is one setting away: `idleTimeout: 1s, maxDuration: 10s` collects a save whose writes trickle in and
 still ends. CEL: `idleTimeout` must not exceed `maxDuration`.
 
-### `CommitRequest.spec.emptyCommit`
+### `CommitRequest.spec.whenNothingToCommit`
 
-`Skip` (default) or `Create`. It sits outside `window` because it decides the commit, not the
-window. CEL: `Create` requires `spec.message`, because a message is the only thing an empty commit
-records.
+What a save does when its time runs out with nothing to commit: `Resolve` (default) finishes without
+a commit, and `CommitEmpty` records the message in an empty commit. The field names the situation and
+the values name the consequence, the pattern Kubernetes uses for
+`topologySpreadConstraints.whenUnsatisfiable` and StatefulSet's `whenDeleted`. "Nothing to commit"
+is Git's own phrase, and `CommitEmpty` mirrors `git commit --allow-empty`. It sits outside `window`
+because it decides the commit, not the window. CEL: `CommitEmpty` requires `spec.message`, because a
+message is the only thing an empty commit records.
 
 ## Clock rules
 
@@ -154,11 +158,11 @@ waiting for the previous save to resolve does not exclude a delayed write from t
 That is acceptable for this feature, and the docs say so plainly. A save that must cover exactly
 one write is what the named-write wait in the save-wait design is for.
 
-## `emptyCommit: Create`
+## `whenNothingToCommit: CommitEmpty`
 
-With `Create`, a save records its message even when its writes changed nothing:
+With `CommitEmpty`, a save records its message even when nothing it collected changed Git:
 
-| Outcome | `Skip` (default) | `Create` |
+| Outcome | `Resolve` (default) | `CommitEmpty` |
 |---|---|---|
 | Eligible writes changed files | commit | commit |
 | Eligible writes already matched Git | no commit, `AlreadyPresent` | empty commit, `AlreadyPresent` |
@@ -218,6 +222,10 @@ with "wait" as a verb.
   is unusual in Kubernetes APIs.
 - **"Attach", not "claim".** "Claimed" already names a rule's demand on the read side.
 - **`CurrentOrNext`, not `Current`.** The longer value states the fallback instead of hiding it.
+- **`whenNothingToCommit: Resolve | CommitEmpty`, not `emptyCommit: Skip | Create`.** A setting
+  about an edge case reads best as the situation and its consequence. The default is `Resolve`
+  rather than `Close`, because "close" is what a window does (rule 1), and a save finishing is
+  already called resolving in the status and the code.
 
 Rejected: `windowTimeouts` and `windowPolicy` (both existed only to avoid changing a stored field's
 type), flat fields on `commit` (they lose their subject), `batching` (drops the defined word), and
@@ -231,7 +239,7 @@ One `v1alpha4` change, built in three steps on one branch:
    snapshot, the target's `maxDuration`. `closeDelay` and the string `window` are gone.
 2. **Attach selection.** `CurrentOrNext` and `Next`, the once-per-identity close, first-come
    ordering, and the split progress reasons with worker-sourced observations.
-3. **Empty commits.** `emptyCommit`, the message requirement, the outcome table, and the documented
+3. **Empty commits.** `whenNothingToCommit`, the message requirement, the outcome table, and the documented
    restart limitation.
 
 Alongside: "grace" and "claim" leave the commit path's code and comments; the finalize-reason
@@ -242,7 +250,7 @@ gains "only writes open a window" and "attach"; the save-wait design's timer mod
 Tests:
 
 - Omitted blocks, `{}`, partial blocks, every zero value, and duration round-trips.
-- The whole request spec is immutable, including `attach` and `emptyCommit`.
+- The whole request spec is immutable, including `attach` and `whenNothingToCommit`.
 - A save's `idleTimeout` longer and shorter than the target's; a save with only `maxDuration` is not
   closed by the target's idle timer; continuous activity stops at `maxDuration` on both kinds.
 - Expiry versus a matching write on the same wake; a waiting save attaches under the target's
