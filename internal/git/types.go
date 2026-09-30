@@ -261,6 +261,10 @@ const (
 	// an empty tree diff, and it is created only for a GitTarget with
 	// spec.onRefusal: PushEmptyCommit.
 	PendingWriteRefusalTouch PendingWriteKind = "refusal_touch"
+	// PendingWriteRequestRecord carries no content either. It records a CommitRequest's message
+	// in an empty commit when the request ran out of time to attach, and asked for that with
+	// whenNothingToCommit: CommitEmpty. It is not a window: only writes open windows.
+	PendingWriteRequestRecord PendingWriteKind = "request_record"
 )
 
 type pendingTargetKey struct {
@@ -354,6 +358,21 @@ type PendingWrite struct {
 	// pushed: doing so would advance the push cooldown and delay the next real
 	// snapshot's push past its window.
 	Committed *bool
+
+	// AllowEmpty makes a grouped window commit even when its events changed nothing, because the
+	// CommitRequest attached to it asked for whenNothingToCommit: CommitEmpty. A suspended target
+	// still writes nothing.
+	AllowEmpty bool
+	// RequestAuthor and RequestAttribution author a PendingWriteRequestRecord, which has no
+	// events to take an author from: they are the request submitter's, matched the same way a
+	// window's author is.
+	RequestAuthor      UserInfo
+	RequestAttribution AttributionOutcome
+	// emptyCommitted is stamped by executePendingWrites, the way CommitSHA is: the commit this
+	// write made changed no file. A request riding it resolves with the cause (AlreadyPresent or
+	// NoOpenWindow) and the commit, so a caller can tell "saved your changes" from "recorded your
+	// message". Re-stamped on a rebase-replay, where the same write may now change files.
+	emptyCommitted bool
 
 	// CommitRequest, when set, is the CommitRequest claiming this write: it is
 	// resolved Committed (with CommitSHA) once this write is pushed. It rides the write through the

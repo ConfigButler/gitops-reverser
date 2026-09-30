@@ -40,6 +40,7 @@ func (w *BranchWorker) executePendingWrites(
 			return commitsCreated, err
 		}
 		pendingWrites[i].CommitSHA = hash
+		pendingWrites[i].emptyCommitted = pendingWrites[i].mayCommitEmpty() && isEmptyCommit(repo, hash)
 		// Stamped for the same reason the hash is: publishCommitsForPush runs after the push and
 		// would otherwise recompute the source from the write, which cannot know that a
 		// requestTemplate render failed back here at commit time.
@@ -232,6 +233,8 @@ func (w *BranchWorker) executePendingWrite(
 	case PendingWriteRefusalTouch:
 		created, hash, err := w.executeRefusalTouch(ctx, worktree, pendingWrite)
 		return created, hash, messageResolutionPreRendered, err
+	case PendingWriteRequestRecord:
+		return w.executeRequestRecord(ctx, worktree, pendingWrite)
 	case PendingWriteResync:
 		// Resync writes never carry a CommitRequest, so their commit hash is unused;
 		// report ZeroHash to keep the per-write SHA bookkeeping uniform.
@@ -262,7 +265,8 @@ func (w *BranchWorker) executePendingWrite(
 	if err != nil {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
 	}
-	if !anyChanges {
+	recordEmpty := !anyChanges && pendingWrite.AllowEmpty && !target.Suspend
+	if !anyChanges && !recordEmpty {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, nil
 	}
 
@@ -270,6 +274,9 @@ func (w *BranchWorker) executePendingWrite(
 	if err != nil {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
 	}
+	// A window whose writes changed nothing still commits when its CommitRequest asked to record
+	// its message: whenNothingToCommit: CommitEmpty.
+	commitOptions.AllowEmptyCommits = recordEmpty
 
 	hash, err := worktree.Commit(commitMessage, commitOptions)
 	if err != nil {
@@ -347,4 +354,50 @@ func (w *BranchWorker) applyPendingWriteEvents(
 		}
 	}
 	return anyChanges, nil
+}
+
+// executeRequestRecord commits a CommitRequest's message with an untouched tree: the record a
+// request that ran out of time to attach leaves when it asked for whenNothingToCommit: CommitEmpty.
+func (w *BranchWorker) executeRequestRecord(
+	ctx context.Context,
+	worktree *gogit.Worktree,
+	pendingWrite PendingWrite,
+) (int, plumbing.Hash, messageResolution, error) {
+	message, options, source, err := pendingWrite.commitMetadata()
+	if err != nil {
+		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
+	}
+	options.AllowEmptyCommits = true
+	hash, err := worktree.Commit(message, options)
+	if err != nil {
+		return 0, plumbing.ZeroHash, messageResolutionUnsupported,
+			fmt.Errorf("failed to create request record commit: %w", err)
+	}
+	log.FromContext(ctx).Info("Empty commit created to record a CommitRequest that found nothing to commit",
+		"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName,
+		"branch", w.Branch, "commit", hash.String())
+	return 1, hash, source, nil
+}
+
+// mayCommitEmpty reports whether this write is allowed to produce an empty commit, and so whether
+// its commit is worth inspecting for one.
+func (p PendingWrite) mayCommitEmpty() bool {
+	return p.Kind == PendingWriteRequestRecord || p.AllowEmpty
+}
+
+// isEmptyCommit reports whether a commit changed no file: its tree is its first parent's. A zero
+// hash made no commit at all, and a root commit is never empty.
+func isEmptyCommit(repo *gogit.Repository, hash plumbing.Hash) bool {
+	if hash.IsZero() {
+		return false
+	}
+	commit, err := repo.CommitObject(hash)
+	if err != nil || commit.NumParents() == 0 {
+		return false
+	}
+	parent, err := commit.Parent(0)
+	if err != nil {
+		return false
+	}
+	return parent.TreeHash == commit.TreeHash
 }

@@ -201,6 +201,41 @@ func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 	assert.Empty(t, got.Status.Commit)
 }
 
+// whenNothingToCommit: CommitEmpty reaches the worker, and a recorded empty commit reports its
+// commit and Pushed=True while the Ready reason keeps the cause.
+func TestCommitRequestReconcile_CommitEmptyRecordsTheMessageAndKeepsTheCause(t *testing.T) {
+	for _, tc := range []struct {
+		outcome git.FinalizeOutcome
+		reason  string
+	}{
+		{git.FinalizeNoOpenWindow, crReasonNoWindow},
+		{git.FinalizeAlreadyPresent, crReasonAlreadyPresent},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			cr := newCommitRequest("save-empty")
+			cr.Spec.WhenNothingToCommit = configv1alpha3.NothingToCommitCommitEmpty
+			c := newCommitRequestClient(t, nil, cr)
+			f := &fakeFinalizer{
+				result:   git.FinalizeResult{Outcome: tc.outcome, Commit: "abc123", Branch: "main"},
+				resolved: true,
+			}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+
+			reconcileCommitRequest(t, r, "save-empty")
+
+			require.Len(t, f.calls, 1)
+			assert.True(t, f.calls[0].CommitEmpty, "the choice must reach the worker")
+			got := fetchCommitRequest(t, c, "save-empty")
+			requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, tc.reason)
+			requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded)
+			requireCondition(t, got, ConditionTypeStalled, metav1.ConditionFalse, "")
+			assert.Equal(t, "abc123", got.Status.Commit)
+			ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
+			assert.Contains(t, ready.Message, "recorded in an empty commit")
+		})
+	}
+}
+
 // The author-bound refusal: an open window belonging to someone else is left
 // open and the CommitRequest reports the WindowMismatch reason (no commit).
 func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {

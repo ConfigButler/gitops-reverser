@@ -245,6 +245,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		AttachTimeout:      window.attachTimeout,
 		IdleTimeout:        window.idleTimeout,
 		MaxDuration:        window.maxDuration,
+		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
 	})
 	if serviceErr != nil || !resolved {
 		return r.awaitAttachOutcome(ctx, log, req, commitRequest, attribution, window, result.Phase, serviceErr)

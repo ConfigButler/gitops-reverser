@@ -113,6 +113,9 @@ type AttachCommitRequest struct {
 	IdleTimeout *time.Duration
 	// MaxDuration closes the attached window this long after the attach.
 	MaxDuration time.Duration
+	// CommitEmpty records Message in an empty commit when the request ends with nothing to
+	// commit: whenNothingToCommit: CommitEmpty.
+	CommitEmpty bool
 }
 
 // commitRequestID is the worker-local key for a CommitRequest: its namespaced
@@ -148,6 +151,9 @@ type pendingCommitRequest struct {
 	// of the GitTarget's.
 	idleTimeout *time.Duration
 	maxDuration time.Duration
+	// commitEmpty records the message in an empty commit when the request ends with nothing to
+	// commit. Never for a WindowMismatch: that would claim more than happened.
+	commitEmpty bool
 	// attached is true once this request's message is bound to the open window.
 	attached bool
 	// committed is true once the window this request attached to has been finalized into a local

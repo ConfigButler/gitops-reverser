@@ -285,19 +285,40 @@ func applyFinalizeResultToStatus(
 		setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted, committedMsg)
 	case git.FinalizeNoOpenWindow:
 		// Benign: the attach timeout ran out with nothing pending to save.
-		rejectCommitRequest(cr, crReasonNoWindow, noWindowMessage)
+		resolveNothingToCommit(cr, result, crReasonNoWindow, noWindowMessage)
 	case git.FinalizeWindowMismatch:
 		// The author-bound refusal: deliberately not a failure — the foreign
 		// window stays open for its own author — but the reason is surfaced.
 		rejectCommitRequest(cr, crReasonWindowMismatch, windowMismatchMessage)
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
-		rejectCommitRequest(cr, crReasonAlreadyPresent, alreadyPresentMessage)
+		resolveNothingToCommit(cr, result, crReasonAlreadyPresent, alreadyPresentMessage)
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.
 		failCommitRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
 	}
+}
+
+// recordedEmptyMessage follows the cause when whenNothingToCommit: CommitEmpty recorded the request's
+// message anyway. The commit proves the message is in Git; the reason still says why it is empty.
+const recordedEmptyMessage = "; the message was recorded in an empty commit"
+
+// resolveNothingToCommit records an outcome with nothing to commit. Without a commit it is a benign
+// rejection. With one, whenNothingToCommit: CommitEmpty recorded the message: the reason keeps the
+// cause, and status.commit and Pushed=True say the empty commit reached the remote.
+func resolveNothingToCommit(cr *configv1alpha3.CommitRequest, result git.FinalizeResult, reason, message string) {
+	if result.Commit == "" {
+		rejectCommitRequest(cr, reason, message)
+		return
+	}
+	cr.Status.Commit = result.Commit
+	message += recordedEmptyMessage
+	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
+	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded,
+		"the empty commit was pushed to the remote repository")
+	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionTrue, reason, message)
 }
 
 // rejectCommitRequest records a benign terminal outcome that produced no commit:

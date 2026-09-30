@@ -3,6 +3,7 @@
 package git
 
 import (
+	"context"
 	"time"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -116,6 +117,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		attachDeadline:     time.Now().Add(req.AttachTimeout),
 		idleTimeout:        req.IdleTimeout,
 		maxDuration:        req.MaxDuration,
+		commitEmpty:        req.CommitEmpty,
 	}
 	l.pendingCRs[id] = pcr
 	l.w.setCommitRequestPhase(id, PhaseWaitingForWindow)
@@ -257,8 +259,79 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 		}
 		// Which of the two refusals this is depends on whether anything was open that this
 		// request could not have: see pendingCommitRequest.expiryOutcome.
-		l.resolveCommitRequest(id, FinalizeResult{Outcome: pcr.expiryOutcome()})
+		outcome := pcr.expiryOutcome()
+		if outcome == FinalizeNoOpenWindow && pcr.commitEmpty && l.recordCommitRequest(pcr) {
+			continue // it now rides the record write, and the push resolves it
+		}
+		l.resolveCommitRequest(id, FinalizeResult{Outcome: outcome})
 	}
+}
+
+// recordCommitRequest commits a request's message with an untouched tree, for a request that ran
+// out of time to attach and asked for whenNothingToCommit: CommitEmpty. It reports false when no
+// record was made — a suspended or unreadable target, or a failed commit — and the request then
+// resolves exactly as it would have without asking.
+func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) bool {
+	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
+	if err != nil {
+		l.w.Log.Error(err, "Cannot build the empty commit recording a CommitRequest",
+			"request", pcr.id.Namespace+"/"+pcr.id.Name)
+		return false
+	}
+	if pendingWrite == nil {
+		return false // suspended: an empty commit is a write too
+	}
+	batch := []PendingWrite{*pendingWrite}
+	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
+		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
+			"request", pcr.id.Namespace+"/"+pcr.id.Name)
+		return false
+	}
+	l.pendingWrites = append(l.pendingWrites, batch...)
+	l.pendingWritesBytes += batch[0].ByteSize
+	pcr.committed = true
+	l.w.setCommitRequestPhase(pcr.id, PhaseWaitingForPush)
+	l.maybeSchedulePush()
+	return true
+}
+
+// buildRequestRecordWrite assembles the record commit's write, phrased and signed like every other
+// commit the target makes and authored by the request's submitter. A suspended target gets none.
+func (w *BranchWorker) buildRequestRecordWrite(
+	ctx context.Context,
+	pcr *pendingCommitRequest,
+) (*PendingWrite, error) {
+	metadata, err := w.resolveTargetMetadata(ctx, pcr.gitTargetName, pcr.gitTargetNamespace)
+	if err != nil {
+		return nil, err
+	}
+	if metadata.Suspend {
+		return nil, nil
+	}
+	provider, err := w.getGitProvider(ctx)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := getCommitSigner(ctx, w.Client, provider)
+	if err != nil {
+		return nil, err
+	}
+	id := pcr.id
+	return &PendingWrite{
+		Kind:          PendingWriteRequestRecord,
+		CommitMessage: pcr.message,
+		CommitConfig: ResolveCommitConfig(provider.Spec.Commit).
+			WithTargetMessage(metadata.CommitMessage),
+		Signer:             signer,
+		GitTargetName:      pcr.gitTargetName,
+		GitTargetNamespace: pcr.gitTargetNamespace,
+		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
+			{Name: pcr.gitTargetName, Namespace: pcr.gitTargetNamespace}: metadata,
+		},
+		RequestAuthor:      UserInfo{Username: pcr.author},
+		RequestAttribution: pcr.attribution,
+		CommitRequest:      &id,
+	}, nil
 }
 
 // resolveCommitRequest records a request's terminal outcome for the controller to

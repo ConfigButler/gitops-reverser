@@ -1501,6 +1501,11 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	// Carry the claiming CommitRequest onto the write so its result follows the
 	// data: it is resolved Committed once this write is pushed (§6.5).
 	pendingWrite.CommitRequest = pendingCR
+	if pendingCR != nil {
+		if pcr := l.pendingCRs[*pendingCR]; pcr != nil {
+			pendingWrite.AllowEmpty = pcr.commitEmpty
+		}
+	}
 
 	// Commit on a single-element batch so executePendingWrites threads the resulting
 	// commit hash back onto batch[0]; the retained write then carries the real SHA
@@ -1661,6 +1666,16 @@ func (l *branchWorkerEventLoop) resolvePushedCommitRequests() {
 		}
 		if pw.CommitSHA.IsZero() {
 			l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{Outcome: FinalizeAlreadyPresent})
+			continue
+		}
+		if pw.emptyCommitted {
+			// Nothing changed, and the request asked to record its message anyway. The outcome
+			// keeps the cause, and the commit proves the message is in Git.
+			l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{
+				Outcome: pw.nothingToCommitOutcome(),
+				Commit:  pw.CommitSHA.String(),
+				Branch:  l.w.Branch,
+			})
 			continue
 		}
 		l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{
