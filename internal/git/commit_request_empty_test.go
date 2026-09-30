@@ -359,3 +359,38 @@ func TestCommitEmpty_ARecordThatFailedToPushLandsInOrderAfterTheRemoteMoved(t *t
 	assert.Equal(t, record.Hash.String(), res.Commit, "the request reports the replayed record")
 	assert.NotEqual(t, staleRecordSHA.String(), res.Commit, "never its pre-replay hash")
 }
+
+// TestCommitEmpty_AZeroAttachTimeoutStillSeesAnotherAuthorsWindow pins the refusal for a request
+// that never waits. With attachTimeout: 0s its deadline has passed by the time any servicing pass
+// runs, so the foreign window has to be noted at registration: otherwise bob's request resolves
+// NoWindow, and with CommitEmpty records an empty commit while alice's work is still in flight.
+func TestCommitEmpty_AZeroAttachTimeoutStillSeesAnotherAuthorsWindow(t *testing.T) {
+	for _, commitEmpty := range []bool{false, true} {
+		name := "Resolve"
+		if commitEmpty {
+			name = "CommitEmpty"
+		}
+		t.Run(name, func(t *testing.T) {
+			worker, _, _ := setupCommitPushSplitWorker(t)
+			createPlainGitTarget(t, worker, "team-a", "team-a")
+			loop := newBranchWorkerEventLoop(worker, time.Hour)
+			defer loop.stopTimers()
+
+			writeTo(loop, "alices-edit")
+			require.NotNil(t, loop.openWindow)
+
+			req := commitEmptyReq("bob", "bob's save")
+			req.AttachTimeout = 0
+			req.CommitEmpty = commitEmpty
+			serviceAttach(loop, req)
+
+			res, ok := outcome(t, worker)
+			require.True(t, ok, "a request that never waits resolves on the pass that registered it")
+			assert.Equal(t, FinalizeWindowMismatch, res.Outcome)
+			assert.Empty(t, res.Commit)
+			assert.Empty(t, loop.pendingWrites, "no record was made")
+			require.NotNil(t, loop.openWindow, "and alice's window is left alone")
+			assert.Nil(t, loop.openWindow.pendingCR)
+		})
+	}
+}

@@ -130,7 +130,15 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		"attach", string(req.Attach),
 		"attachTimeout", req.AttachTimeout.String())
 
-	if l.openWindow == nil || !pcr.matchesWindow(l.openWindow) {
+	if l.openWindow == nil {
+		return
+	}
+	if !pcr.matchesWindow(l.openWindow) {
+		// Noted here and not left to noteForeignWindow, which skips a request whose deadline has
+		// passed: with attachTimeout: 0s that is every request, so a foreign window open at
+		// registration would go unseen and the request would resolve NoWindow — and, with
+		// CommitEmpty, record an empty commit while another author's work is in flight.
+		pcr.sawForeignWindow = true
 		return
 	}
 	if req.Attach == v1alpha3.AttachNext {
@@ -293,6 +301,13 @@ func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (
 	}
 	if err != nil {
 		l.w.Log.Error(err, "Cannot build the empty commit recording a CommitRequest",
+			"request", pcr.id.Namespace+"/"+pcr.id.Name)
+		return false, fmt.Errorf("record the message in an empty commit: %w", err)
+	}
+	// An empty commit is only empty on a clean worktree: a failed write's staged leftovers would
+	// otherwise ride along in it.
+	if err := l.recoverRetainedWrites(); err != nil {
+		l.w.Log.Error(err, "Cannot recover the worktree for the empty commit recording a CommitRequest",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}

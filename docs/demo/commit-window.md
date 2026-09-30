@@ -205,8 +205,8 @@ kubectl create -f save-long.yaml && sleep 2 && kubectl apply -f hello.yaml
 | t≈2.5 | `UPDATE ConfigMap` joins it and restarts the idle timer |
 | t≈4.5 | Two seconds of silence: `idleTimeout` closes the window, and the commit carries the request's message |
 
-A request that waits needs an `idleTimeout`. Without one, only `maxDuration` would close the window,
-thirty seconds after the first change. If no change arrives within `attachTimeout`, the request ends
+Set `idleTimeout` to finish after a quiet period. Omit it to collect until `maxDuration`: here, thirty
+seconds after the first change. If no change arrives within `attachTimeout`, the request ends
 with `NoWindow` and commits nothing, unless it sets `whenNothingToCommit: CommitEmpty`.
 
 In both variants, the request must reach a matching open window, or one must open before

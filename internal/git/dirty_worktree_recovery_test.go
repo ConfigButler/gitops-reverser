@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // leftoverPath is the file a half-finished write staged before it died.
@@ -133,7 +135,7 @@ func TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers(t *testing.T) {
 // one dirty fixture.
 //
 // It is written as a table on purpose. recoverRetainedWrites has to be called by every path that
-// reaches commitPendingWrites, and nothing in the type system says so — a fifth entry point added
+// reaches commitPendingWrites, and nothing in the type system says so — a new entry point added
 // later would silently commit leftovers. Adding its row here is the cheapest way to make that
 // omission fail loudly.
 func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
@@ -178,6 +180,25 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 					Result:             resultCh,
 				})
 				require.NoError(t, (<-resultCh).Err)
+			},
+		},
+		{
+			name: "empty commit recording a CommitRequest",
+			commit: func(t *testing.T, loop *branchWorkerEventLoop) {
+				t.Helper()
+				serviceAttach(loop, commitEmptyReq("alice", "save: nothing changed"))
+				forceDue(loop)
+				loop.serviceCommitRequests()
+				require.Len(t, loop.pendingWrites, 2, "the record was made")
+			},
+		},
+		{
+			name: "empty commit for a refused write",
+			commit: func(t *testing.T, loop *branchWorkerEventLoop) {
+				t.Helper()
+				target := itypes.NewResourceReference("team-a", "default")
+				loop.commitRefusalTouch(refusalKeyFor(target, "configmaps"), "refused", "observation")
+				require.Len(t, loop.pendingWrites, 2, "the empty commit was made")
 			},
 		},
 	}

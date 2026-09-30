@@ -1370,8 +1370,9 @@ func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 // of two reasons: a previous write left the worktree dirty, or a reset discarded the local commits
 // behind the retained writes and the replay that should have rebuilt them did not finish.
 //
-// It runs before any commit the loop makes — finalizeOpenWindowWithReason, handleAtomicRequest and
-// applyResync — and before any push it makes. A path that reaches commitPendingWrites without
+// It runs before any commit the loop makes — finalizeOpenWindowWithReason, handleAtomicRequest,
+// applyResync, and the two empty commits, recordCommitRequest and commitRefusalTouch — and before
+// any push it makes. A path that reaches commitPendingWrites without
 // calling this can commit a failed write's leftovers;
 // TestEveryLoopCommitPathRecoversADirtyWorktree is what makes adding one fail loudly.
 //
