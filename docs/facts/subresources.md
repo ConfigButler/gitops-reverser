@@ -439,7 +439,7 @@ status:
   conditions:
     - type: Ready        # summary: True once it reached a non-error terminal outcome
       status: "True"
-      reason: Committed  # Committed | NoWindowInGrace | WindowMismatch | AlreadyPresent | FinalizeFailed
+      reason: Committed  # Committed | NoWindow | WindowMismatch | AlreadyPresent | FinalizeFailed
     - type: Attributed   # True immediately when attribution is not required (configured-author)
       status: "True"
       reason: AttributedFromAuditEvent

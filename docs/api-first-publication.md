@@ -125,7 +125,8 @@ a publication succeeds. These clocks overlap.
 
 | Control | Value | Starts or resets when | Purpose |
 | --- | --- | --- | --- |
-| `GitTarget.spec.commit.window` | Default `5s`; `0s` disables waiting | A same-author, same-target event enters the open window | Group an editing burst into one commit |
+| `GitTarget.spec.commit.window.idleTimeout` | Default `5s`; `0s` disables waiting | A same-author, same-target event enters the open window | Group an editing burst into one commit |
+| `GitTarget.spec.commit.window.maxDuration` | Default `1m` | The window opens | Stop continuous activity from postponing a commit |
 | `PushCooldown` | Fixed `5s` per worker | A publication succeeds, including a verified no-op | Accumulate finalized commits for one push |
 | Identity boundary | Immediate | Author or target changes | Keep commit attribution and scope separate |
 | Atomic write | Immediate local processing | A caller-defined batch arrives | Preserve a batch after finalizing earlier open work |
@@ -133,7 +134,7 @@ a publication succeeds. These clocks overlap.
 | Shutdown | Immediate attempt | The worker exits | Attempt to publish finalized work without waiting for cooldown |
 
 The first publication can push as soon as a commit is ready. There is no initial five-second
-push wait. Setting `commit.window: 0s` makes local commits immediately; subsequent publications
+push wait. Setting `commit.window.idleTimeout: 0s` makes local commits immediately; subsequent publications
 still share the branch cooldown. Multiple targets do not each receive a separate push allowance.
 
 For a healthy, quiet branch, a useful approximation is:
@@ -153,7 +154,7 @@ sequenceDiagram
     participant C as Local commits
     participant P as Remote publication
 
-    Note over E,P: Illustrative times, commit.window = 2s<br/>Previous successful push finished at t=0
+    Note over E,P: Illustrative times, idleTimeout = 2s<br/>Previous successful push finished at t=0
     E->>C: t=1: Alice edits
     E->>C: t=2: Alice edits again, silence deadline moves to t=4
     C->>C: t=4: Finalize one commit
@@ -304,10 +305,10 @@ cadence and Kubernetes status writes. The controller's safety timeout is `420s` 
 creation; resolved worker outcomes are retained for `15m` with cleanup on subsequent resolutions.
 See the [request contract](spec/commitrequest-design.md).
 
-The two-second collection delay is not a guarantee that an earlier API edit has reached the
+The two-second `attachTimeout` is not a guarantee that an earlier API edit has reached the
 worker. Attribution can wait up to three seconds per event, and queueing adds more. A request
-whose matching event arrives after its deadline can finish with `NoWindowInGrace`. Increasing the
-delay permits more collection time; it does not reserve an API transaction.
+whose matching event arrives after its deadline finishes with `NoWindow`. Increasing
+`attachTimeout` permits a longer wait; it does not reserve an API transaction.
 
 ## Story 4: an idle target and a Git-side edit
 

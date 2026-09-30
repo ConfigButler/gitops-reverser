@@ -669,7 +669,9 @@ coalesced need not be two connections.
 ```yaml
 spec:
   commit:
-    window: "5s"
+    window:
+      idleTimeout: "5s"
+      maxDuration: "1m"
     message:
       liveTemplate: "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}"
 ```
@@ -679,19 +681,28 @@ and interpret its [conditions](#commitrequest).
 
 #### The commit window (`spec.commit.window`)
 
-`spec.commit.window` controls how arriving events are grouped into commits. The timer resets on
-every event; when it has been silent for the configured duration, the buffered events for a given
-author are written as one commit. The default is `5s`. Setting `0s` opts into per-event commits in
-the steady-state.
+A commit window collects one author's writes to this target and commits them together. **Only
+writes open a window**: an author's first write opens it, and nothing else does. It closes on two
+timers, whichever comes first:
+
+- `idleTimeout` closes it after this much silence. Every write it collects restarts it. The
+  default is `5s`; `0s` commits every write on its own.
+- `maxDuration` closes it this long after it opened, however much keeps arriving, so continuous
+  activity cannot postpone a commit indefinitely. The default is `1m`.
+
+`idleTimeout` may not exceed `maxDuration`. A window takes the target's timers when it opens, so
+editing them affects windows that open afterwards, never one already running. A
+[`CommitRequest`](#the-request-window-specwindow) that attaches to a window replaces both timers
+for that window.
 
 One branch worker holds one live window, bound to an author and target. Interleaved authors or
-targets split a burst. Atomic writes, buffer limits, shutdown, and request finalization can close
-the inactivity window early. Push cooldown is independent: `0s` does not promise an immediate
+targets split a burst. Atomic writes, buffer limits, shutdown, and an `attach: Next` request can
+close a window early. Push cooldown is independent: a zero timer does not promise an immediate
 remote push. See the [complete trigger rules](spec/commit-window-refactor.md).
 
-The value is a **Go duration string with a mandatory unit**, at most `24h`, checked by the API
+Both values are **Go duration strings with a mandatory unit**, at most `24h`, checked by the API
 server: `"750ms"`, `"1.5m"` and `"1m30s"` are accepted, while `"30"`, `".5s"`, `"5 seconds"` and
-`"-1s"` are refused at admission with the field named. Nothing downstream re-checks it, because a
+`"-1s"` are refused at admission with the field named. Nothing downstream re-checks them, because a
 malformed value can no longer be stored.
 
 The units are Go's own (`ns`, `us`/`µs`, `ms`, `s`, `m`, `h`) rather than the shorter set Flux
@@ -1873,18 +1884,18 @@ setups.
 
 ## `CommitRequest`
 
-`CommitRequest` is a one-shot "save now" signal for a same-namespace `GitTarget`. It does not create
-or change watch rules. Instead, it asks the branch worker to finalize a matching open commit window
-for the request's author instead of waiting for `GitTarget.spec.commit.window`.
+`CommitRequest` is a one-shot "save" signal for a same-namespace `GitTarget`. It does not create or
+change watch rules. It attaches to its author's commit window, gives that window its message, and
+decides when the window closes, instead of the target's timers.
 
 The important fields are:
 
-- `spec.gitTargetRef.name`: target whose open window should be finalized
+- `spec.gitTargetRef.name`: the target whose window to attach to
 - `spec.message`: optional literal commit message, preserved verbatim
-- `spec.closeDelay`: a Go duration string, at most `"5m"`. The request waits this long from the
-  worker's first receipt for a matching window, and a window it claims keeps collecting this long
-  from the claim, so a request created before its writes still gets the whole delay after them.
-  Repeated registration keeps the original waiting deadline. Defaults to `"2s"`
+- `spec.window`: which window to attach to and when it closes; see
+  [the request window](#the-request-window-specwindow)
+- `spec.whenNothingToCommit`: what to do when the request ends with nothing to commit; see
+  [when there is nothing to commit](#when-there-is-nothing-to-commit)
 
 Example:
 
@@ -1901,7 +1912,10 @@ spec:
     fix(api): correct the service port
 
     Route traffic to the port exposed by the API container.
-  closeDelay: "2s"
+  window:
+    attach: CurrentOrNext
+    attachTimeout: "2s"
+    maxDuration: "2s"
 ```
 
 The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
@@ -1914,41 +1928,95 @@ configure [`requestTemplate`](commit-messages.md#framing-a-save-message) on the 
 parsed as a template. A rejected request leaves automatic mirroring
 available. The submitter chooses any semantic prefix; free-form messages are accepted.
 
-### Sizing `closeDelay`
+### The request window (`spec.window`)
 
-The delay covers the gap between the API accepting a write and that write reaching the branch
-worker. A write is held in the watch path until its audit fact arrives, so the floor is the API
-server's `--audit-webhook-batch-max-wait` plus the attribution join (roughly 1 to 1.5 seconds at
-the reference configuration of `1s`). The default of `"2s"` clears that with headroom to spare; a
-loaded or distant cluster may want `"4s"` to `"5s"`.
+A request never opens a window; only writes do. It waits for one, attaches to at most one, and
+replaces that window's timers with its own, shorter or longer:
 
-Do not size the delay against `--author-attribution-grace`. When that grace expires with no fact
-the write still ships, as a window that names no actor, and a request naming a submitter can never
-claim it: the outcome is `WindowMismatch` no matter how long the request waits.
+| Field | Meaning | Default |
+|---|---|---|
+| `attach` | `CurrentOrNext` attaches to the author's window if one is open when the worker registers the request, and otherwise to the next one a write opens. `Next` first closes the author's open window, under the message it already carries, and attaches to the next one | `CurrentOrNext` |
+| `attachTimeout` | stop waiting for a window this long after the worker registers the request | `2s` |
+| `idleTimeout` | close the attached window after this much silence; every write restarts it | no idle close |
+| `maxDuration` | close the attached window this long after the attach, however much keeps arriving | `2s` |
 
-The delay applies to each phase separately: once waiting for the window, and again collecting
-after the claim. A save that creates its request before making its writes needs a delay that covers
-both the gap before its first write and the span from its first write to its last. With `"2s"`,
-writes arriving 1 and 4 seconds after the request still split: the window is claimed at 1s and
-finalized at 3s. The target's `commit.window` also still applies, so a silence longer than it
-between two writes closes the window early. Twice the delay bounds the finalize; the push after it
-can add its cooldown and any retries.
+The defaults are a fixed two-second cutoff after the attach, so an explicit save finishes promptly.
+For a save whose writes trickle in, ask for rolling collection, which `maxDuration` still ends:
+`idleTimeout: "1s"` with `maxDuration: "10s"`. Durations are at most `5m`, `idleTimeout` may not
+exceed `maxDuration`, and `attach: Next` needs a positive `attachTimeout`.
+
+Each value means one thing: `attachTimeout: "0s"` attaches to a window already open, or gives up at
+once, and still collects for the full `maxDuration`; `maxDuration: "0s"` finalizes right after the
+attach; `idleTimeout: "0s"` closes on the first silence. A request whose `attachTimeout` has run out
+never takes a later window: the write that arrives afterwards commits on its own, without the
+request's message. Author or target changes, the memory limit, a drain before a resync, and
+shutdown still close an attached window early, and its message goes with it.
+
+**Pick `attach` by when the request is created.** A save made *after* its writes, like the
+[commit-window example](demo/commit-window.md), wants `CurrentOrNext`. A save created *before* its
+writes wants `Next`, so it does not sweep up the author's earlier, unrelated edits. `Next`
+separates work the worker already collected from work that reaches it afterwards. It cannot prove a
+write was made after the request: a write still held for its audit fact arrives later and lands in
+the next window.
+
+Competing requests from one author are served first come, first served. A window carries at most
+one request; the next waits for the next window. A re-sent request is recognized by its identity
+and restarts nothing: its deadlines and, for `Next`, its one close are fixed at first registration.
+
+#### Sizing the request window
+
+`attachTimeout` covers the gap between creating the request and its first write reaching the
+branch worker. A write is held in the watch path until its audit fact arrives, so the floor is the
+API server's `--audit-webhook-batch-max-wait` plus the attribution join (roughly 1 to 1.5 seconds at
+the reference configuration of `1s`). The default of `"2s"` clears that; a loaded or distant cluster
+may want `"4s"` to `"5s"`, and a save created before its writes needs the time to its first write
+on top.
+
+`maxDuration`, and `idleTimeout` when set, cover the span of the save's own writes after the
+attach. The worst case from registration to the finalize is `attachTimeout` plus `maxDuration`; the
+push follows, with its cooldown and any retries.
+
+Do not size either against `--author-attribution-grace`. When that grace expires with no fact the
+write still ships, as a window that names no actor, and a request naming a submitter can never
+attach to it: the outcome is `WindowMismatch` no matter how long the request waits.
 
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
-undershooting resolves the request `Ready=True` with reason `NoWindowInGrace` while the edit
-commits seconds later under the target's `liveTemplate`, which reads as a save button that did
-nothing. Setting `"0s"` opts out of the wait entirely and is only useful when the window is known
-to be open already.
+undershooting `attachTimeout` resolves the request `Ready=True` with reason `NoWindow` while the
+edit commits seconds later under the target's `liveTemplate`, which reads as a save button that did
+nothing.
 
-A request attaches to at most one matching open window. Normal flush triggers may close it early;
-its message travels with that window. It cannot rename a finalized commit, including a local commit
-waiting for push. Between that finalize and the push the request is still in flight, and the
-controller keeps re-sending its attach until it reads an outcome; the worker recognizes the re-send
-as the same request rather than treating it as a new one, so a request does not resolve
-`NoOpenWindow` while its commit is waiting out the push cooldown. Applying resources and a request
-together gives no ordering guarantee between controllers and watch streams. Use a non-zero commit
-window when custom save messages matter: `0s` leaves little opportunity to attach, and a request
-delay does not reserve a transaction or extend every normal flush timer. See the [request contract](spec/commitrequest-design.md).
+A request cannot rename a finalized commit, including a local commit waiting for push. Between the
+finalize and the push the request is still in flight, and the controller keeps re-sending its
+attach until it reads an outcome; the worker recognizes the re-send as the same request, so a
+request never resolves `NoWindow` while its commit waits out the push cooldown. Applying resources
+and a request together gives no ordering guarantee between controllers and watch streams. See the
+[request contract](spec/commitrequest-design.md).
+
+### When there is nothing to commit
+
+`spec.whenNothingToCommit` decides what a request does when it ends with nothing to commit: its
+`attachTimeout` ran out with no eligible window, or the window it attached to closed, for any
+reason, without changing Git.
+
+- `Resolve` (the default) finishes without a commit.
+- `CommitEmpty` records `spec.message` in an empty commit, authored like any other commit by the
+  request's submitter. It requires `spec.message`.
+
+| Outcome | `Resolve` | `CommitEmpty` |
+|---|---|---|
+| The writes changed files | commit, `Committed` | commit, `Committed` |
+| The writes already matched Git | no commit, `AlreadyPresent` | empty commit, `AlreadyPresent` |
+| No eligible window before `attachTimeout` | no commit, `NoWindow` | empty commit, `NoWindow` |
+| Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
+| The commit or push failed, or the target is suspended | the failure | the failure |
+
+The `Ready` reason keeps the cause, and `status.commit` with `Pushed=True` says the empty commit
+reached the remote. A hash proves the message is in Git; `NoWindow` says the request saw no writes,
+so a write delayed past `attachTimeout` is not in that commit. A request that only saw another
+author's window never records one, because the history would then claim more than happened.
+
+A crash between the push and the status write can record the message twice: the worker recognizes a
+repeated request only while it runs.
 
 Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
 `kubectl get commitrequest` shows `Ready`, its `Reason` and the `Commit`; `-o wide` adds
@@ -1959,8 +2027,9 @@ request produced a pushed commit:
 
 - **Ready** (summary): `True` once the request reached a non-error terminal outcome. The `Ready`
   condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.commit` set),
-  or a benign no-commit: `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. A failed finalize is
-  `Ready=False` with reason `FinalizeFailed`.
+  or an outcome with nothing to commit: `NoWindow`, `WindowMismatch`, or `AlreadyPresent`. With
+  [`CommitEmpty`](#when-there-is-nothing-to-commit), `NoWindow` and `AlreadyPresent` can come with a
+  recorded empty commit. A failed finalize is `Ready=False` with reason `FinalizeFailed`.
 
   `AlreadyPresent` means **the remote confirmed there was nothing to add**, so it is reported after
   the push rather than when the local plan found no difference. That costs a few seconds and buys a
@@ -1968,15 +2037,16 @@ request produced a pushed commit:
   the worker replays onto the moved branch, and such a request resolves `Committed` instead. A
   worker that stops before the push fails the request rather than leaving it to time out.
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
-  request is finalizing or waiting through `closeDelay`; `Stalled=True` when the finalize failed
-  and needs attention (kstatus reports the object Failed).
+  request is in progress, with the phase the branch worker reports as its reason: `Progressing`
+  (sent, not yet registered), `WaitingForWindow`, `CollectingWindow`, or `WaitingForPush`.
+  `Stalled=True` when the finalize failed and needs attention (kstatus reports the object Failed).
 - **AuthorAttributed**: `True` with reason `AttributedFromAdmission` when the internal commands
   admission webhook captured the request submitter. `False` with reason `CommitterFallback` means capture
   ran but no admission record exists; `False` with reason `AuthorCaptureDisabled` means capture is not
   configured. Neither is a failure. The request then claims no actor and can attach only to an unnamed
   watch window, whose Git author remains either the configured committer or the explicit unresolved author
   according to the watch attribution outcome.
-- **Pushed**: `True` once the commit is in the remote repository.
+- **Pushed**: `True` once the commit, empty or not, is in the remote repository.
 
 ### Finished requests are deleted after 48 hours
 

@@ -323,20 +323,21 @@ The two namespace controls intentionally live in different planes:
 A one shot "save now" signal that finalizes the open commit window for a same namespace `GitTarget`
 instead of waiting for the silence timer. The **entire spec is immutable**. Key fields:
 
-- `spec.gitTargetRef.name`: target whose open window should be finalized.
+- `spec.gitTargetRef.name`: target whose window the request attaches to.
 - `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
-- `spec.closeDelay`: a Go duration string, at most `5m`, delaying the close so the author's own
-  in flight changes can join the window before it closes. Defaults to `"2s"`, which covers the wait
-  a write spends on its audit fact before the window opens; an explicit `"0s"` finalizes
-  immediately and usually finds nothing pending.
+- `spec.window`: `attach` (`CurrentOrNext` or `Next`), `attachTimeout` (default `2s`, the wait for a
+  window), and the timers that replace the target's for the attached window: `idleTimeout` (none by
+  default) and `maxDuration` (default `2s`). A request never opens a window; only writes do.
+- `spec.whenNothingToCommit`: `Resolve` (default) or `CommitEmpty`, which records the message in an
+  empty commit when the request ends with nothing to commit.
 - `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
   terminal outcome that is not an error: a pushed commit, or a benign no-commit);
   **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports
   whether the `/validate-operator-types` validating admission webhook named the submitter; an absent record
   means the request claims no actor and can attach only to an unnamed window. **Pushed** reports whether the
   commit reached the remote. The `Ready`
-  condition's `reason` carries `Committed`, `NoWindowInGrace`, `WindowMismatch`, `AlreadyPresent`, or
-  `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False`, a correct
+  condition's `reason` carries `Committed`, `NoWindow`, `WindowMismatch`, `AlreadyPresent`, or
+  `FinalizeFailed`. A benign no-commit (e.g. `NoWindow`) is `Ready=True`, `Stalled=False`, a correct
   non-error outcome, whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
 - `status.branch` / `status.commit`: set when the commit was pushed (`Pushed=True`).
 
@@ -357,7 +358,8 @@ Key fields:
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
-- `spec.commit.window`: rolling silence window for this target's grouped commits, defaulting to `5s`.
+- `spec.commit.window`: when this target's commit windows close: `idleTimeout` (default `5s`) of
+  silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
 
 `spec.commit` describes the folder, not the connection, so two `GitTarget`s sharing one `GitProvider`
@@ -1203,10 +1205,10 @@ pair at a time:
 - different author or GitTarget: finalize the current window first;
 - repeated writes to the same Git path inside a window use last write wins.
 
-The window finalizes when the open window's `GitTarget.spec.commit.window` passes with no new matching
-event, the retained buffer
-reaches `--branch-buffer-max-size` (default `8Mi`), a `CommitRequest` finalize deadline matches the open
-author and GitTarget, or a resync request that is not a heal or shutdown arrives. Successful local commits
+The window finalizes when its `idleTimeout` passes with no new matching event, its `maxDuration` runs
+out, the retained buffer reaches `--branch-buffer-max-size` (default `8Mi`), an `attach: Next`
+`CommitRequest` closes it, or a resync request that is not a heal or shutdown arrives. The timers
+are the GitTarget's `spec.commit.window` until a `CommitRequest` attaches and replaces them. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
 bursts. Heal resyncs that arrive during a window are deferred and drained at the next idle boundary.
 
@@ -1362,13 +1364,15 @@ immediately. That is not a failure:
 
 1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
    `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
-2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
-   wait for a window at `receipt + closeDelay`. The worker binds it to an open window only when the author
-   state and GitTarget match, and restarts the deadline at `claim + closeDelay`, so time spent waiting
-   never shortens the collection. It **never finalizes another author's window**; a window carries at most one request.
-3. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes an
-   open window, the worker always schedules a push, so a window closed by an otherwise no-op resync is not
-   stranded.
+2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), which
+   waits for a window until `registration + attachTimeout`. The worker binds it to an open window only
+   when the author state and GitTarget match, first come first served, and replaces the window's timers
+   with the request's own, so time spent waiting never shortens the collection. It **never finalizes
+   another author's window**; a window carries at most one request. The controller reports the phase the
+   worker reports: `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`.
+3. The window finalizes when the request's timers close it (or when it closes for any other reason).
+   If a finalize closes an open window, the worker always schedules a push, so a window closed by an
+   otherwise no-op resync is not stranded.
 4. Outcomes resolve on push and are reported as conditions: a pushed commit sets `Ready=True` /
    `Pushed=True` with `branch`/`sha`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
    `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message. **Between the window's

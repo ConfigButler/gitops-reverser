@@ -508,7 +508,7 @@ landed all read the same way here, because none of them produce a commit carryin
 message. Confirm against the requests themselves before changing the window: a request that
 attached reports `Ready=True`, one that produced a pushed commit also reports `Pushed=True` with
 `status.commit`, and one that gave up reports `Stalled=True`. Only if those show requests resolving
-without their message reaching a commit is the window worth tuning against `closeDelay`.
+without their message reaching a commit is the request's `window` worth tuning.
 
 `commit_requests_total` answers the same question in aggregate, which per-object conditions cannot:
 

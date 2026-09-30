@@ -124,8 +124,15 @@ Observation failure supplies no evidence of absence. The code calls this write-s
 branch)` tuple. Every write to that branch goes through it. Two words, lowercase in prose,
 `BranchWorker` as the Go type.
 
-**Commit window.** The interval a branch worker batches writes over before it commits. Windows do
-not merge across authors, which is why attribution can be per-commit.
+**Commit window.** The interval a branch worker batches one author's writes to one target over before
+it commits. Only a write opens one; nothing else does. It closes on its `idleTimeout` of silence or
+its `maxDuration` after opening, whichever comes first. Windows do not merge across authors, which
+is why attribution can be per-commit.
+
+**Attach.** What a `CommitRequest` does to a commit window: it gives the window its message and
+replaces the window's timers with its own. A request attaches to at most one window and never opens
+one. One word for the act, in the API (`window.attach`, `attachTimeout`), the code and the docs: not
+"claim", which names a rule's demand on the read side.
 
 **Publication.** One commit-and-push cycle by a branch worker. The thing a `GitTarget` reports in
 `status.remote`.

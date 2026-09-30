@@ -1,6 +1,7 @@
 # Commit windows and saves: one configuration surface
 
-> **design**: a proposal for the PR after #403, not built. Index: [`../INDEX.md`](../INDEX.md)
+> **built**: shipped in the PR after #403; [`configuration.md`](../configuration.md#the-request-window-specwindow)
+> is the reference now, and this page keeps the reasoning. Index: [`../INDEX.md`](../INDEX.md)
 >
 > The short version: a commit window is opened only by writes and closes on two timers. A save (a
 > `CommitRequest`) attaches to one window and replaces both timers for it, longer or shorter. Both
@@ -250,10 +251,10 @@ One in-place `v1alpha3` break, built in three steps on one branch:
 3. **Empty commits.** `whenNothingToCommit`, the message requirement, the outcome table, and the documented
    restart limitation.
 
-Alongside: "grace" and "claim" leave the commit path's code and comments; the finalize-reason
-metric label splits into `idle-timeout` and `max-duration`, and `Next`'s close gets its own reason,
-recorded in [`interpreting-metrics.md`](../interpreting-metrics.md); [`definitions.md`](../definitions.md)
-gains "only writes open a window" and "attach"; the save-wait design's timer model points here.
+Alongside: "grace" and "claim" leave the commit path's code and comments; the window finalize
+reason, which appears in log lines only, splits into `idle-timeout` and `max-duration`, and `Next`'s
+close is `attach-next` (no metric label changes); [`definitions.md`](../definitions.md) gains "only
+writes open a window" and "attach"; the save-wait design's timer model points here.
 
 Tests:
 

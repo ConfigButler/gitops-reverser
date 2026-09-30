@@ -133,7 +133,9 @@ spec:
   gitTargetRef:
     name: window-demo
   message: "feat(demo): save hello resources"
-  closeDelay: "2s"
+  window:
+    attachTimeout: "2s"
+    maxDuration: "2s"
 ```
 
 Run these commands together, creating the request only after the apply succeeds:
@@ -143,10 +145,10 @@ kubectl apply -f hello.yaml && kubectl create -f save-now.yaml
 ```
 
 The request must reach a matching open window. If you are stepping through this with pauses between
-commands, set the target's `commit.window` to `30s` first. `closeDelay: "2s"` gives watch events
-time to reach the worker; it does not extend the normal window or guarantee that every event has
-arrived. Change the ConfigMap's `message` value again on a repeat run, so there is something to
-commit.
+commands, set the target's `commit.window.idleTimeout` to `30s` first. `attachTimeout: "2s"` gives
+watch events time to reach the worker, and `maxDuration: "2s"` closes the window two seconds after
+the request attaches; neither guarantees that every event has arrived. Change the ConfigMap's
+`message` value again on a repeat run, so there is something to commit.
 
 The default configured-author setup without request author capture works for this example. If actor
 attribution and request author capture are enabled, submit the resources and the request as the same

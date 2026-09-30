@@ -10,7 +10,8 @@ worker to close that window after the requested collect delay.
 ## Request and window contract
 
 The request identifies the target in `spec.gitTargetRef.name`, may provide `spec.message`, and sets
-`spec.closeDelay` (a Go duration string, at most `5m`, default `"2s"`). It is handled by the target’s single branch worker,
+`spec.window` (which window to attach to, how long to wait for one, and the timers that close it) and
+`spec.whenNothingToCommit`. It is handled by the target’s single branch worker,
 so resource events and the attach request share one FIFO.
 
 The worker attaches a request only when all of these match an open window:
@@ -24,11 +25,18 @@ coupled. A request with no named submitter can attach to either a configured-aut
 window, but never to a named actor’s window. A request with a named submitter can attach only to that
 actor’s named window. Therefore one user’s request never finalizes another user’s work.
 
-On its first receipt, the worker sets the deadline to receipt plus `closeDelay`. Repeated reconciles
-are idempotent and keep that first deadline. When the request claims a window, the worker restarts the
-deadline at the claim plus `closeDelay`: time spent waiting for a matching window does not shorten the
-collection, so a request created before its writes still collects for the whole delay after them. A
-request that claims a window already open at receipt keeps the deadline it was first given.
+A window is only ever opened by a write; a request attaches to one and never opens one. On first
+registration, the worker sets the attach deadline to registration plus `window.attachTimeout`, and
+repeated reconciles are idempotent: they restart nothing and, for `attach: Next`, close nothing again.
+With `CurrentOrNext` the request attaches to the author's window already open at registration, before
+any deadline is consulted, so `attachTimeout: 0s` can attach at all. Otherwise it waits, and waiting
+requests are served first come, first served. A request whose deadline has passed resolves and never
+takes a later window; when its deadline and a matching write are ready on the same wake, expiry wins.
+
+On attach, the request's `idleTimeout` and `maxDuration` replace the window's timers: `maxDuration`
+runs from the attach, and so does the first idle interval. A waiting request gets a new window before
+the target's own timers are applied, so a target with `idleTimeout: 0s` does not close the window
+before the request can attach.
 
 The default is `"2s"` rather than `"0s"` because the write a request exists to publish reaches the
 worker strictly after the request does: a watch event is held until its audit fact arrives, so a
@@ -84,16 +92,18 @@ object is visible.
 | Outcome | Conditions |
 |---|---|
 | Commit pushed | `Ready=True`, `Pushed=True`, reason `Committed`; `status.commit` and `status.branch` are set |
-| No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindowInGrace` or `WindowMismatch` |
+| No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindow` or `WindowMismatch` |
+| Nothing to commit, with `whenNothingToCommit: CommitEmpty` | `Ready=True`, `Pushed=True`, reason `NoWindow` or `AlreadyPresent`; `status.commit` is the empty commit |
 | Window produced no diff, and the remote agreed | `Ready=True`, `Pushed=False`, reason `AlreadyPresent` |
 | Finalize or push error | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
 
-`Reconciling=True` with reason `WaitingForCloseDelay` is the normal in-progress state. The controller fails
+`Reconciling=True` is the normal in-progress state, with the phase the worker reports as its reason:
+`Progressing`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. The controller fails
 with `FinalizeFailed` only if the worker does not resolve the request within its bounded safety window; it
 never polls indefinitely.
 
 **`Committed` and `AlreadyPresent` are decided by the push, including the no-commit one.**
-(`NoWindowInGrace` and `WindowMismatch` are decided locally, at the deadline: no window was claimed,
+(`NoWindow` and `WindowMismatch` are decided locally, at the deadline: no window was attached,
 so there is nothing for a push to say.) A window that produced no diff used to resolve
 `AlreadyPresent` at finalize, on the strength of the local plan. That was only sound while every
 cycle fetched before it planned. It no longer does (see
