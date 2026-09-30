@@ -37,6 +37,10 @@ const (
 var (
 	errTargetWatchClosed  = errors.New("target watch result channel closed")
 	errTargetWatchExpired = errors.New("target watch resourceVersion expired")
+	// errAPISurfaceNotObserved is the pass failing because shared discovery has not yet run for the
+	// target's source cluster. Every rollout meets it once per target, and the retry resolves it, so
+	// it is logged as the wait it is rather than as an error.
+	errAPISurfaceNotObserved = errors.New("the cluster API surface has not been observed yet")
 )
 
 // targetWatchClosedErr distinguishes a watch that died under us from one that closed because
@@ -221,8 +225,7 @@ func (m *Manager) ensureGitTargetWatches(
 		return err
 	}
 	if !m.registryForGitTarget(gitDest).Ready() {
-		return fmt.Errorf("aborting watch setup for %s: the cluster API surface has not been observed yet",
-			gitDest.String())
+		return fmt.Errorf("aborting watch setup for %s: %w", gitDest.String(), errAPISurfaceNotObserved)
 	}
 
 	table := m.residentWatchedTypeTable(gitDest)

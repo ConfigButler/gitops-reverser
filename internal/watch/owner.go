@@ -4,6 +4,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -709,7 +710,11 @@ func (m *Manager) runTargetPass(ctx context.Context, log logr.Logger, entry *dir
 	err := m.applyTargetPlan(passCtx, planned)
 	m.recordPassOutcome(planned.ref, started, err)
 
-	if err != nil {
+	switch {
+	case errors.Is(err, errAPISurfaceNotObserved):
+		log.Info("GitTarget plan pass is waiting for API discovery; it will be retried",
+			"gitDest", planned.ref.String(), "reasons", sortedKeys(entry.reasons))
+	case err != nil:
 		log.Error(err, "GitTarget plan pass failed; the target stays dirty",
 			"gitDest", planned.ref.String(), "reasons", sortedKeys(entry.reasons))
 	}

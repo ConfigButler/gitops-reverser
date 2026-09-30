@@ -296,7 +296,9 @@ func TestOwner_AFailedPassLeavesTheRunningPlanUntouched(t *testing.T) {
 	// This pass cannot gather: nothing has observed the cluster's API surface.
 	err := m.applyTargetPlan(context.Background(), declareIntent{ref: ref, clusterID: configPlaneClusterID})
 
-	require.Error(t, err, "a pass that cannot observe the surface fails rather than planning against nothing")
+	require.ErrorIs(t, err, errAPISurfaceNotObserved,
+		"a pass that cannot observe the surface fails rather than planning against nothing, "+
+			"and says so in a way the owner loop can log as a wait")
 	assert.False(t, *cancelled, "the running stream is left alone; the failure installs nothing")
 	assert.Len(t, m.targetWatchSet(ref).streams, 1, "and the plan it was built from still stands")
 }
