@@ -289,7 +289,7 @@ type GitTargetCommitSpec struct {
 }
 
 // CommitWindow holds the two timers that close a GitTarget's commit windows. A change to them
-// applies to windows that open afterwards; a window already open keeps the timers it opened with.
+// applies to windows that open afterward; a window already open keeps the timers it opened with.
 // +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || !has(self.maxDuration) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.commit.window.idleTimeout must not exceed maxDuration"
 type CommitWindow struct {
 	// IdleTimeout closes the window after this much silence, as a Go duration string ("5s",

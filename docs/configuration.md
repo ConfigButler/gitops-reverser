@@ -691,7 +691,7 @@ timers, whichever comes first:
   activity cannot postpone a commit indefinitely. The default is `1m`.
 
 `idleTimeout` may not exceed `maxDuration`. A window takes the target's timers when it opens, so
-editing them affects windows that open afterwards, never one already running. A
+editing them affects windows that open afterward, never one already running. A
 [`CommitRequest`](#the-request-window-specwindow) that attaches to a window replaces both timers
 for that window.
 
@@ -1948,14 +1948,14 @@ exceed `maxDuration`, and `attach: Next` needs a positive `attachTimeout`.
 Each value means one thing: `attachTimeout: "0s"` attaches to a window already open, or gives up at
 once, and still collects for the full `maxDuration`; `maxDuration: "0s"` finalizes right after the
 attach; `idleTimeout: "0s"` closes on the first silence. A request whose `attachTimeout` has run out
-never takes a later window: the write that arrives afterwards commits on its own, without the
+never takes a later window: the write that arrives afterward commits on its own, without the
 request's message. Author or target changes, the memory limit, a drain before a resync, and
 shutdown still close an attached window early, and its message goes with it.
 
 **Pick `attach` by when the request is created.** A save made *after* its writes, like the
 [commit-window example](demo/commit-window.md), wants `CurrentOrNext`. A save created *before* its
 writes wants `Next`, so it does not sweep up the author's earlier, unrelated edits. `Next`
-separates work the worker already collected from work that reaches it afterwards. It cannot prove a
+separates work the worker already collected from work that reaches it afterward. It cannot prove a
 write was made after the request: a write still held for its audit fact arrives later and lands in
 the next window.
 

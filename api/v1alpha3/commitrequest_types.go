@@ -85,7 +85,7 @@ const (
 	AttachCurrentOrNext AttachPolicy = "CurrentOrNext"
 	// AttachNext closes the author's open window, under its own message, and attaches to the
 	// next one a write opens. It separates work the worker already collected from work that
-	// reaches it afterwards; it cannot prove a write was made after the request.
+	// reaches it afterward; it cannot prove a write was made after the request.
 	AttachNext AttachPolicy = "Next"
 )
 
