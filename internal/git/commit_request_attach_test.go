@@ -224,6 +224,35 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 	assert.Nil(t, loop.openWindow)
 }
 
+// TestAttach_ClaimRestartsTheDeadline pins that the time a request spent waiting for its window
+// does not come out of that window's collection: a request created before the writes it is saving
+// gets the full closeDelay after it claims the window, not whatever was left of it.
+func TestAttach_ClaimRestartsTheDeadline(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	const closeDelay = 60 * time.Second
+	serviceAttach(loop, attachReq("alice", closeDelay))
+	id := commitRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
+	// Almost all of the delay spent waiting: the writes arrive with a second of it left.
+	loop.pendingCRs[id].finalizeAt = time.Now().Add(time.Second)
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	claimed := time.Now()
+	loop.serviceCommitRequests()
+	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the request claimed the window")
+
+	assert.False(t, loop.pendingCRs[id].finalizeAt.Before(claimed.Add(closeDelay)),
+		"the claim must restart the deadline at claim + closeDelay")
+}
+
 // TestAttach_ForeignWindowIsNotStolen verifies an attach for a different author
 // parks (never finalizes another author's window) and resolves WindowMismatch once
 // its grace elapses, leaving the foreign window open.

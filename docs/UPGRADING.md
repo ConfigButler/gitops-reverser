@@ -7,6 +7,19 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A `CommitRequest`'s `closeDelay` restarts when it claims a window
+
+`closeDelay` used to be one deadline counted from when the worker received the request. Time spent
+waiting for a matching window came out of it. It now bounds two phases: the request waits up to
+`closeDelay` from receipt for a matching window, and a window it claims keeps collecting for
+`closeDelay` from the claim. The field, its default and its bounds are unchanged.
+
+A request whose window is already open when it arrives behaves as before. A request created before
+the writes it is saving now gets the whole delay after its first write, instead of whatever was left.
+Its commit can land up to one `closeDelay` later than it did, and the worst case from receipt to the
+commit is twice the delay. If you had raised `closeDelay` to make room for a slow first write, you may
+be able to lower it again. See [sizing `closeDelay`](configuration.md#sizing-closedelay).
+
 ## Finished CommitRequests are deleted after 48 hours
 
 A `CommitRequest` that finishes after the upgrade gets a `configbutler.ai/delete-after` annotation
@@ -18,7 +31,9 @@ before the upgrade have no annotation and are kept. To keep new ones as well, se
 
 The manager's ClusterRole includes the `patch` and `delete` verbs on `commitrequests`. A deployment
 that renders its own RBAC must add them. Without `patch` no annotation is written and requests
-are kept. Without `delete`, requests stay after their time has passed.
+are kept, and each such failure is logged. Without `delete`, requests stay after their time has
+passed, and the controller logs a `Reconciler error` with a Forbidden cause for each one it tries to
+delete.
 
 ## Placement `source="canonical"` is now `source="builtin"`
 

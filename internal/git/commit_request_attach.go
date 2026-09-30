@@ -86,9 +86,9 @@ type AttachCommitRequest struct {
 	// Message is the verbatim commit message to attach to the window. Empty keeps
 	// the generated grouped-commit message.
 	Message string
-	// CloseDelay is the close-delay collect window: the worker closes the
-	// attached window and finalizes it at receipt + CloseDelay (the delay is
-	// anchored at attach receipt).
+	// CloseDelay bounds both phases of a request: it waits at most receipt + CloseDelay
+	// for a matching window, and once it claims one the worker finalizes that window at
+	// claim + CloseDelay.
 	CloseDelay time.Duration
 }
 
@@ -115,9 +115,15 @@ type pendingCommitRequest struct {
 	gitTargetName      string
 	gitTargetNamespace string
 	message            string
-	// finalizeAt is receipt + CloseDelay, stamped once on first registration
-	// (idempotent re-sends keep it).
+	// finalizeAt is receipt + closeDelay while the request waits for a window, stamped once on
+	// first registration (idempotent re-sends keep it), and is re-stamped to claim + closeDelay
+	// when the request attaches.
 	finalizeAt time.Time
+	// closeDelay is kept so the attach can re-stamp finalizeAt. A submitter that creates the
+	// request before making its writes would otherwise spend the delay waiting, and the window
+	// its writes open would be finalized moments after the first of them, splitting one save
+	// across two commits.
+	closeDelay time.Duration
 	// attached is true once this request's message is bound to the open window.
 	attached bool
 	// committed is true once the window this request claimed has been finalized into a local
