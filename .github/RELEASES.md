@@ -259,7 +259,7 @@ Publishing it instead freezes a release whose own notes link to assets it does n
 `last-release-sha` does not rescue this: release-please reads it only as a top-level key,
 and this repo's copy sits under `packages["."]`, where it is ignored.
 
-### A Merged PR Is Missing From the Changelog
+### A merged PR is missing from the changelog
 
 **Symptom:** a `feat` or `fix` merged since the last release has no changelog line, and none
 of its breaking changes appear. The Release Please job log says nothing at its default level.
@@ -276,8 +276,12 @@ text, in the commit that holds it. To check a branch locally:
 
 ```bash
 (cd hack/release-notes && npm ci --ignore-scripts)
-git log --reverse --format='* %B' origin/main..HEAD | node hack/release-notes/check.mjs
+hack/release-notes/squash-message.sh origin/main HEAD "<PR title>" | node hack/release-notes/check.mjs
 ```
+
+`squash-message.sh` builds the message the way GitHub does for this repository: a single-commit PR
+squashes to that commit's own message, and the PR title is not used; several commits squash to the
+PR title over the bulleted commit messages. `hack/release-notes/test.sh` covers both shapes.
 
 **Repair after a release:** add the missing entries to that release's section of `CHANGELOG.md`
 by hand (release-please only prepends, so it never rewrites them) and edit the GitHub Release

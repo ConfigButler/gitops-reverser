@@ -9,7 +9,7 @@
 // The parser is pinned to the version release-please 17 depends on, the major that
 // googleapis/release-please-action v5 bundles. Bump it with the action, not on its own.
 //
-// Usage: git log --format='* %B' origin/main..HEAD | node hack/release-notes/check.mjs
+// Usage: hack/release-notes/squash-message.sh origin/main HEAD "<PR title>" | node hack/release-notes/check.mjs
 import { readFileSync } from 'node:fs';
 import { parser } from '@conventional-commits/parser';
 
