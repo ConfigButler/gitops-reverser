@@ -121,7 +121,7 @@ data:
 
 ## Save after the changes
 
-Save as `save-after.yaml`. Use `kubectl create` rather than `kubectl apply`: the request has a
+Save as `save-now.yaml`. Use `kubectl create` rather than `kubectl apply`: the request has a
 `generateName` and no name, so each save is a fresh object and `apply` refuses it.
 
 ```yaml
@@ -143,7 +143,7 @@ spec:
 These are the defaults written out. Apply the resources, then save:
 
 ```bash
-kubectl apply -f hello.yaml && sleep 2 && kubectl create -f save-after.yaml
+kubectl apply -f hello.yaml && sleep 2 && kubectl create -f save-now.yaml
 ```
 
 The `sleep` only spreads the timeline out so it matches the picture; the save works without it.
@@ -162,7 +162,7 @@ is there for the case where the watch events reach the operator a little after t
 
 ## Save before the changes
 
-The request can come first, and wait for the changes. Save as `save-before.yaml`:
+The request can come first, and wait for the changes. Save as `save-long.yaml`:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -193,7 +193,7 @@ kubectl create configmap hello --from-literal=message="Hello" -n gitops-reverser
 Then save, and make the changes:
 
 ```bash
-kubectl create -f save-before.yaml && sleep 2 && kubectl apply -f hello.yaml
+kubectl create -f save-long.yaml && sleep 2 && kubectl apply -f hello.yaml
 ```
 
 ![The save arrives first and waits; the first change opens the window, the save attaches at once, and its idle timer closes it](../images/commit-window-late.excalidraw.svg)
