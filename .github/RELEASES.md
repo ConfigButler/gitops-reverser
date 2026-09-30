@@ -259,6 +259,30 @@ Publishing it instead freezes a release whose own notes link to assets it does n
 `last-release-sha` does not rescue this: release-please reads it only as a top-level key,
 and this repo's copy sits under `packages["."]`, where it is ignored.
 
+### A Merged PR Is Missing From the Changelog
+
+**Symptom:** a `feat` or `fix` merged since the last release has no changelog line, and none
+of its breaking changes appear. The Release Please job log says nothing at its default level.
+
+**Cause:** release-please parses each commit with `@conventional-commits/parser` and, when the
+parse throws, drops the whole commit with only a debug log. A body line that starts with a word
+followed by nested parentheses, such as `` `^([0-9]+(\.[0-9]+)?`` or `f(a(b))`, reads as an
+unclosed `type(scope` token and throws. The squash body carries every commit message on the
+branch, so one such line in any commit is enough. This dropped #388 from 0.50.0.
+
+**Prevention:** the "Squash message parses" check in `pr-title.yml` rebuilds the squash message
+and parses it before merge. Fix a failure by indenting the named line, or starting it with other
+text, in the commit that holds it. To check a branch locally:
+
+```bash
+(cd hack/release-notes && npm ci --ignore-scripts)
+git log --reverse --format='* %B' origin/main..HEAD | node hack/release-notes/check.mjs
+```
+
+**Repair after a release:** add the missing entries to that release's section of `CHANGELOG.md`
+by hand (release-please only prepends, so it never rewrites them) and edit the GitHub Release
+notes to match.
+
 ### Docker Build Failed
 
 **Check:**
