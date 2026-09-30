@@ -16,7 +16,7 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 | `GitTarget.spec.commit.window: "5s"` | `GitTarget.spec.commit.window.idleTimeout: "5s"`, plus `maxDuration` (default `1m`) |
 | `CommitRequest.spec.closeDelay: "2s"` | `CommitRequest.spec.window.attachTimeout: "2s"` and `window.maxDuration: "2s"` |
 | Ready reason `NoWindowInGrace` | `NoWindow` |
-| progress reason `WaitingForCloseDelay` | `Progressing`, then the worker's phase: `WaitingForWindow`, `CollectingWindow`, `WaitingForPush` |
+| progress reason `WaitingForCloseDelay` | `Progressing`, then the worker's phase: `WaitingForWorker` (the GitTarget has no branch worker yet), `WaitingForWindow`, `CollectingWindow`, `WaitingForPush` |
 
 What behaves differently:
 

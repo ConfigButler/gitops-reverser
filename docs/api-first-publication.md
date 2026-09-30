@@ -167,8 +167,10 @@ The idle timeout restarts on every matching edit, so continuous edits keep a win
 `maxDuration` (`1m` by default, counted from the window opening) or another closing condition, such
 as an identity change or the byte threshold. A five-second idle timeout therefore does not promise
 publication within five seconds of the first edit. A `CommitRequest` that attaches replaces both
-timers: its `attachTimeout` runs from the worker's registration of the request, and its
-`maxDuration` from the attach. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
+timers with its own `idleTimeout` and `maxDuration`, both counted from the attach; an omitted
+`idleTimeout` leaves `maxDuration` alone to close the window. Its `attachTimeout` is separate: it
+runs from the worker's registration of the request and only bounds the wait for a window to attach
+to. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
 
 ## What can stop a write before it reaches Git
 
