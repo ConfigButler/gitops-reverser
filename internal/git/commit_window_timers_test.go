@@ -241,3 +241,35 @@ func TestAttachSelection_TheWorkerReportsEachPhase(t *testing.T) {
 	require.True(t, resolved)
 	assert.Empty(t, phase(), "a resolved request has an outcome, not a phase")
 }
+
+// TestWindowTimers_AWaitingRequestWithMaxDurationZeroCommitsExactlyTheNextWrite pins the "save
+// first, then make one change" use: a request with attach: Next, a long attachTimeout and
+// maxDuration: 0s waits for the next write, and that write alone becomes the commit with the
+// request's message. The write after it is ordinary again: its own window, the generated message.
+func TestWindowTimers_AWaitingRequestWithMaxDurationZeroCommitsExactlyTheNextWrite(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now() // hold the pushes, so the retained writes can be inspected
+	defer loop.stopTimers()
+
+	req := attachReq("alice", time.Hour)
+	req.Attach = configv1alpha3.AttachNext
+	req.MaxDuration = 0
+	req.Message = "save: exactly the next change"
+	serviceAttach(loop, req)
+	require.Nil(t, loop.openWindow, "the request waits; it opens nothing")
+	assert.Equal(t, PhaseWaitingForWindow, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+
+	writeTo(loop, "the-change")
+	loop.serviceCommitRequests()
+	assert.Nil(t, loop.openWindow, "the write opened a window, the request attached, and maxDuration: 0s closed it")
+	require.Len(t, loop.pendingWrites, 1)
+	assert.Equal(t, req.Message, loop.pendingWrites[0].CommitMessage)
+	require.Len(t, loop.pendingWrites[0].Events, 1, "the commit holds that one write")
+
+	writeTo(loop, "the-next-change")
+	require.NotNil(t, loop.openWindow, "a later write opens an ordinary window under the target's timers")
+	assert.Nil(t, loop.openWindow.pendingCR)
+	assert.Empty(t, loop.openWindow.pendingMessage)
+}
