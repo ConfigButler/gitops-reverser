@@ -241,11 +241,20 @@ func (w *BranchWorker) executePendingWrite(
 		created, err := w.executeResyncPendingWrite(ctx, repo, worktree, pendingWrite)
 		return created, plumbing.ZeroHash, messageResolutionPreRendered, err
 	case PendingWriteCommit, PendingWriteAtomic:
+		return w.executeEventWrite(ctx, repo, worktree, pendingWrite)
 	default:
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported,
 			fmt.Errorf("unsupported pending write kind %q", pendingWrite.Kind)
 	}
+}
 
+// executeEventWrite applies a grouped window's or an atomic batch's events and commits them.
+func (w *BranchWorker) executeEventWrite(
+	ctx context.Context,
+	repo *gogit.Repository,
+	worktree *gogit.Worktree,
+	pendingWrite PendingWrite,
+) (int, plumbing.Hash, messageResolution, error) {
 	if len(pendingWrite.Events) == 0 {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, nil
 	}

@@ -60,8 +60,8 @@ func NewEventRouter(
 
 // ServiceCommitRequest is the controller's attach-then-poll seam (§6.4.3): it
 // resolves the GitTarget's branch worker, registers the CommitRequest attach
-// idempotently on that worker's FIFO event queue (bind the message to the author's
-// open window, finalize after the grace), and returns the request's current
+// idempotently on that worker's FIFO event queue (attach it to the author's window
+// with its message and timers), and returns the request's current
 // outcome. resolved=false means the worker has not finished — the controller
 // requeues and polls again.
 //

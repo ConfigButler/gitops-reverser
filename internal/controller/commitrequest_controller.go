@@ -24,7 +24,7 @@ import (
 // CommitRequestFinalizer is the EventRouter seam the reconciler drives, using the
 // attach-then-poll protocol (docs/spec/commitrequest-design.md):
 // ServiceCommitRequest registers the attach idempotently on the GitTarget's branch
-// worker (bind the message to the author's open window, finalize after the grace)
+// worker (attach it to the author's window with its message and timers)
 // and returns the request's current outcome — resolved=false means keep polling.
 // watch.EventRouter satisfies it without adaptation.
 //

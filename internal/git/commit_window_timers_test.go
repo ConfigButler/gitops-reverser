@@ -17,15 +17,17 @@ import (
 // longer. Each one drives the loop directly, so no test waits on a real timer longer than a few
 // milliseconds.
 
-func writeTo(loop *branchWorkerEventLoop, name, author string) {
+// writeTo delivers one write by alice, the author every request in these tests speaks for unless it
+// names another.
+func writeTo(loop *branchWorkerEventLoop, name string) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapTargetEvent(name, author, "team-a")},
+		Events:     []Event{configMapTargetEvent(name, "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
 	}})
 }
 
-func namedAttachReq(name, author string, d time.Duration) *AttachCommitRequest {
-	req := attachReq(author, d)
+func namedAttachReq(name string, d time.Duration) *AttachCommitRequest {
+	req := attachReq("alice", d)
 	req.Name = name
 	req.UID = "uid-" + name
 	return req
@@ -41,10 +43,10 @@ func TestWindowTimers_ContinuousActivityStopsAtTheTargetsMaxDuration(t *testing.
 	loop.defaultWindow.maxDuration = 20 * time.Millisecond
 	loop.lastPushAt = time.Now() // hold the push, so the local commit stays inspectable
 
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 	require.NotNil(t, loop.openWindow)
 	time.Sleep(30 * time.Millisecond)
-	writeTo(loop, "second", "alice") // restarts idle, but maxDuration has already passed
+	writeTo(loop, "second") // restarts idle, but maxDuration has already passed
 
 	assert.Nil(t, loop.openWindow, "a window closes at maxDuration however much keeps arriving")
 	require.Len(t, loop.pendingWrites, 1, "both writes are in the one window it closed")
@@ -59,8 +61,8 @@ func TestWindowTimers_ATargetMaxDurationOfZeroCommitsEveryWrite(t *testing.T) {
 	loop.defaultWindow.maxDuration = 0
 	loop.lastPushAt = time.Now()
 
-	writeTo(loop, "first", "alice")
-	writeTo(loop, "second", "alice")
+	writeTo(loop, "first")
+	writeTo(loop, "second")
 
 	assert.Nil(t, loop.openWindow)
 	assert.Len(t, loop.pendingWrites, 2, "maxDuration 0s closes the window right after the write that opened it")
@@ -75,7 +77,7 @@ func TestWindowTimers_ARequestIdleTimeoutLongerThanTheTargetsKeepsTheWindowOpen(
 	req := attachReq("alice", time.Hour)
 	req.IdleTimeout = durationPtr(time.Hour)
 	serviceAttach(loop, req)
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 	require.NotNil(t, loop.openWindow.pendingCR, "precondition: attached")
 
 	time.Sleep(20 * time.Millisecond)
@@ -93,7 +95,7 @@ func TestWindowTimers_ARequestIdleTimeoutShorterThanTheTargetsClosesSooner(t *te
 	req := attachReq("alice", time.Hour)
 	req.IdleTimeout = durationPtr(5 * time.Millisecond)
 	serviceAttach(loop, req)
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 	require.NotNil(t, loop.openWindow.pendingCR, "precondition: attached")
 
 	time.Sleep(20 * time.Millisecond)
@@ -109,7 +111,7 @@ func TestWindowTimers_ARequestWithOnlyMaxDurationIgnoresTheTargetsIdleTimer(t *t
 	defer loop.stopTimers()
 
 	serviceAttach(loop, attachReq("alice", time.Hour)) // no idleTimeout
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 	time.Sleep(20 * time.Millisecond)
 	loop.closeOrArmWindow()
 
@@ -125,7 +127,7 @@ func TestWindowTimers_AWaitingRequestAttachesBeforeATargetIdleOfZeroCloses(t *te
 	req := attachReq("alice", time.Hour)
 	req.Message = "save"
 	serviceAttach(loop, req)
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 
 	require.NotNil(t, loop.openWindow,
 		"the request attaches in the step the write opens the window, before the zero timer closes it")
@@ -138,7 +140,7 @@ func TestWindowTimers_AZeroAttachTimeoutStillCollectsForMaxDuration(t *testing.T
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 	req := attachReq("alice", time.Hour)
 	req.AttachTimeout = 0
 	serviceAttach(loop, req)
@@ -155,7 +157,7 @@ func TestWindowTimers_ARequestMaxDurationOfZeroFinalizesRightAfterTheAttach(t *t
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 	req := attachReq("alice", time.Hour)
 	req.MaxDuration = 0
 	serviceAttach(loop, req)
@@ -173,9 +175,9 @@ func TestAttachSelection_CompetingRequestsAreServedFirstComeFirstServed(t *testi
 	defer loop.stopTimers()
 
 	// Registered first, with the LATER deadline: order is registration, not deadline.
-	serviceAttach(loop, namedAttachReq("early", "alice", time.Hour))
-	serviceAttach(loop, namedAttachReq("late", "alice", time.Minute))
-	writeTo(loop, "first", "alice")
+	serviceAttach(loop, namedAttachReq("early", time.Hour))
+	serviceAttach(loop, namedAttachReq("late", time.Minute))
+	writeTo(loop, "first")
 
 	require.NotNil(t, loop.openWindow.pendingCR)
 	assert.Equal(t, "early", loop.openWindow.pendingCR.Name)
@@ -188,13 +190,13 @@ func TestAttachSelection_NextClosesTheOpenWindowUnderItsOwnMessage(t *testing.T)
 	defer loop.stopTimers()
 
 	loop.lastPushAt = time.Now()
-	writeTo(loop, "earlier", "alice")
-	current := namedAttachReq("current", "alice", time.Hour)
+	writeTo(loop, "earlier")
+	current := namedAttachReq("current", time.Hour)
 	current.Message = "the earlier save"
 	serviceAttach(loop, current)
 	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the earlier save is attached")
 
-	next := namedAttachReq("next", "alice", time.Hour)
+	next := namedAttachReq("next", time.Hour)
 	next.Attach = configv1alpha3.AttachNext
 	next.Message = "the new save"
 	serviceAttach(loop, next)
@@ -204,7 +206,7 @@ func TestAttachSelection_NextClosesTheOpenWindowUnderItsOwnMessage(t *testing.T)
 	assert.Equal(t, "the earlier save", loop.pendingWrites[0].CommitMessage,
 		"the closed window keeps the message another request attached to it")
 
-	writeTo(loop, "after", "alice")
+	writeTo(loop, "after")
 	require.NotNil(t, loop.openWindow)
 	require.NotNil(t, loop.openWindow.pendingCR)
 	assert.Equal(t, "next", loop.openWindow.pendingCR.Name, "Next attaches to the window the next write opens")
@@ -228,7 +230,7 @@ func TestAttachSelection_TheWorkerReportsEachPhase(t *testing.T) {
 	serviceAttach(loop, attachReq("alice", time.Hour))
 	assert.Equal(t, PhaseWaitingForWindow, phase())
 
-	writeTo(loop, "first", "alice")
+	writeTo(loop, "first")
 	assert.Equal(t, PhaseCollectingWindow, phase())
 
 	forceDue(loop)

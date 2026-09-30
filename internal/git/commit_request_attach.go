@@ -29,9 +29,9 @@ const (
 	// FinalizeNoOpenWindow means the request's attach timeout ran out before a matching
 	// same-author window was there to attach to, so nothing was committed for it.
 	FinalizeNoOpenWindow FinalizeOutcome = "NoOpenWindow"
-	// FinalizeWindowMismatch means a window was open during the request's grace that belonged to
-	// a different author or GitTarget, so it was left untouched and the grace elapsed without a
-	// window this request could claim. It is a refusal a human can see: the author's own edits
+	// FinalizeWindowMismatch means a window was open during the request's wait that belonged to
+	// a different author or GitTarget, so it was left untouched and the wait ran out without a
+	// window this request could attach to. It is a refusal a human can see: the author's own edits
 	// went into somebody else's commit, under a generated message rather than theirs.
 	//
 	// Raised at expiry from pendingCommitRequest.sawForeignWindow, never at attach time: under
@@ -50,11 +50,11 @@ const (
 type CommitRequestPhase string
 
 const (
-	// PhaseWaitingForWindow: registered, waiting for a window to attach to.
+	// PhaseWaitingForWindow is a registered request waiting for a window to attach to.
 	PhaseWaitingForWindow CommitRequestPhase = "WaitingForWindow"
-	// PhaseCollectingWindow: attached, collecting writes until the window's timers close it.
+	// PhaseCollectingWindow is an attached request collecting writes until the window's timers close it.
 	PhaseCollectingWindow CommitRequestPhase = "CollectingWindow"
-	// PhaseWaitingForPush: committed locally, not yet confirmed by the remote.
+	// PhaseWaitingForPush is a request committed locally and not yet confirmed by the remote.
 	PhaseWaitingForPush CommitRequestPhase = "WaitingForPush"
 )
 
@@ -163,8 +163,8 @@ type pendingCommitRequest struct {
 	// The flag exists because the request must stay IDENTIFIABLE while it waits. The controller
 	// re-sends its attach every couple of seconds until it reads an outcome, and forgetting the
 	// request at finalize made that re-send look like a brand-new one: it would register again,
-	// expire against its fresh grace, and report NoOpenWindow for work that was sitting in
-	// pendingWrites waiting for the push cooldown — or, worse, claim the next same-author window
+	// expire against its fresh deadline, and report NoOpenWindow for work that was sitting in
+	// pendingWrites waiting for the push cooldown — or, worse, attach to the next same-author window
 	// and stamp this request's message onto a commit somebody else authored.
 	committed bool
 	// sawForeignWindow is set when a window was open during this request's wait that it could
@@ -213,7 +213,7 @@ func (p *pendingCommitRequest) expiryOutcome() FinalizeOutcome {
 // empties compare equal anyway) but is not: it makes cross-author attachment depend on the
 // outcome fields being right, so any path that leaves an outcome unset while the author IS set
 // would let one author's request finalize another's window. Comparing both costs nothing and
-// keeps "bob never claims alice's window" true regardless of what the outcomes say.
+// keeps "bob never attaches to alice's window" true regardless of what the outcomes say.
 func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false

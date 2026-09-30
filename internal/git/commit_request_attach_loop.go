@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -267,19 +268,22 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	}
 }
 
+// errTargetSuspended declines a request record for a suspended target, which writes nothing.
+var errTargetSuspended = errors.New("the GitTarget is suspended")
+
 // recordCommitRequest commits a request's message with an untouched tree, for a request that ran
 // out of time to attach and asked for whenNothingToCommit: CommitEmpty. It reports false when no
 // record was made — a suspended or unreadable target, or a failed commit — and the request then
 // resolves exactly as it would have without asking.
 func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) bool {
 	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
+	if errors.Is(err, errTargetSuspended) {
+		return false // an empty commit is a write too
+	}
 	if err != nil {
 		l.w.Log.Error(err, "Cannot build the empty commit recording a CommitRequest",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false
-	}
-	if pendingWrite == nil {
-		return false // suspended: an empty commit is a write too
 	}
 	batch := []PendingWrite{*pendingWrite}
 	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
@@ -296,7 +300,8 @@ func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) b
 }
 
 // buildRequestRecordWrite assembles the record commit's write, phrased and signed like every other
-// commit the target makes and authored by the request's submitter. A suspended target gets none.
+// commit the target makes and authored by the request's submitter. A suspended target gets none,
+// reported as errTargetSuspended.
 func (w *BranchWorker) buildRequestRecordWrite(
 	ctx context.Context,
 	pcr *pendingCommitRequest,
@@ -306,7 +311,7 @@ func (w *BranchWorker) buildRequestRecordWrite(
 		return nil, err
 	}
 	if metadata.Suspend {
-		return nil, nil
+		return nil, errTargetSuspended
 	}
 	provider, err := w.getGitProvider(ctx)
 	if err != nil {

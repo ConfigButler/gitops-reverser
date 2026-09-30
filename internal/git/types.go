@@ -374,7 +374,7 @@ type PendingWrite struct {
 	// message". Re-stamped on a rebase-replay, where the same write may now change files.
 	emptyCommitted bool
 
-	// CommitRequest, when set, is the CommitRequest claiming this write: it is
+	// CommitRequest, when set, is the CommitRequest attached to this write: it is
 	// resolved Committed (with CommitSHA) once this write is pushed. It rides the write through the
 	// push cooldown and the conflict rebase-replay, so the result follows the data.
 	CommitRequest *commitRequestID
@@ -397,7 +397,7 @@ type WorkItem struct {
 	// Request is a resource-write request.
 	Request *WriteRequest
 	// Attach is a CommitRequest attach: bind a message to the author's window and
-	// finalize it after the grace.
+	// let its timers close that window.
 	Attach *AttachCommitRequest
 	// Resync is a streaming-snapshot resync request (M8): a synchronous
 	// request/reply that materialises a GitTarget's complete desired set.

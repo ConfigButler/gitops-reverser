@@ -47,7 +47,7 @@ func TestCommitEmpty_NoWindowBeforeTheTimeoutRecordsTheMessage(t *testing.T) {
 	defer loop.stopTimers()
 
 	// A first commit, so the branch exists and the record has a parent.
-	writeTo(loop, "existing", "alice")
+	writeTo(loop, "existing")
 	require.True(t, loop.finalizeOpenWindow())
 	loop.pushPending()
 
@@ -73,12 +73,12 @@ func TestCommitEmpty_AWindowThatChangedNothingRecordsTheMessage(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	writeTo(loop, "present", "alice")
+	writeTo(loop, "present")
 	require.True(t, loop.finalizeOpenWindow())
 	loop.pushPending()
 
 	// The same object again: a window with no diff, which the request attaches to.
-	writeTo(loop, "present", "alice")
+	writeTo(loop, "present")
 	serviceAttach(loop, commitEmptyReq("alice", "save: already there"))
 	forceDue(loop)
 	loop.pushPending()
@@ -97,7 +97,7 @@ func TestCommitEmpty_AWindowThatChangedFilesIsAnOrdinaryCommit(t *testing.T) {
 	defer loop.stopTimers()
 
 	serviceAttach(loop, commitEmptyReq("alice", "save: real change"))
-	writeTo(loop, "new", "alice")
+	writeTo(loop, "new")
 	forceDue(loop)
 	loop.pushPending()
 
@@ -112,14 +112,14 @@ func TestCommitEmpty_AWindowMismatchNeverFallsBackToAnEmptyCommit(t *testing.T) 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	writeTo(loop, "existing", "alice")
+	writeTo(loop, "existing")
 	require.True(t, loop.finalizeOpenWindow())
 	loop.pushPending()
 	before, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
 
 	serviceAttach(loop, commitEmptyReq("bob", "bob's save"))
-	writeTo(loop, "alices-edit", "alice") // only alice's window is ever open
+	writeTo(loop, "alices-edit") // only alice's window is ever open
 	forceDue(loop)
 	loop.serviceCommitRequests()
 

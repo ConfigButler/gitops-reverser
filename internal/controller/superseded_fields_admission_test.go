@@ -88,7 +88,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 				Branch:         "main",
 				Path:           "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
-					Window: &configbutleraiv1alpha3.CommitWindow{IdleTimeout: &metav1.Duration{Duration: 30 * time.Second}},
+					Window: &configbutleraiv1alpha3.CommitWindow{
+						IdleTimeout: &metav1.Duration{Duration: 30 * time.Second},
+					},
 					Message: &configbutleraiv1alpha3.CommitMessageSpec{
 						LiveTemplate: "chore(mirror): {{ .Count }}",
 					},

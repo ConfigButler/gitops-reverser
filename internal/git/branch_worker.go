@@ -1065,7 +1065,7 @@ func (l *branchWorkerEventLoop) run() {
 			l.flushPendingRefusalTouch()
 		}
 		// After every wake: bind any waiting CommitRequest to an open window,
-		// finalize/reject any whose grace has elapsed, and re-arm the deadline timer.
+		// resolve any whose attach deadline has passed, and re-arm the deadline timer.
 		l.serviceCommitRequests()
 		// Drain any heal resync parked while a window was open, now that this wake may have
 		// finalized it (a silence timeout, a CommitRequest finalize). A no-op while a window
@@ -1447,7 +1447,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
 // creates the local commit. The attached CommitRequest message overrides the live template.
 //
 // On failure the window is DROPPED rather than retried: the repo is unreachable or the events are
-// unrecoverable, and retrying the same broken state every cycle helps nobody. A claiming
+// unrecoverable, and retrying the same broken state every cycle helps nobody. An attached
 // CommitRequest is then resolved Failed.
 func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) bool {
 	if l.openWindow == nil {
@@ -1498,7 +1498,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		return false
 	}
 	pendingWrite.CommitMessage = effectiveMessage
-	// Carry the claiming CommitRequest onto the write so its result follows the
+	// Carry the attached CommitRequest onto the write so its result follows the
 	// data: it is resolved Committed once this write is pushed (§6.5).
 	pendingWrite.CommitRequest = pendingCR
 	if pendingCR != nil {
@@ -1569,7 +1569,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	return true
 }
 
-// dropOpenWindow discards a window whose finalize failed, resolving any claiming
+// dropOpenWindow discards a window whose finalize failed, resolving any attached
 // CommitRequest as Failed so the controller does not poll forever.
 func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause error) {
 	l.openWindow = nil
