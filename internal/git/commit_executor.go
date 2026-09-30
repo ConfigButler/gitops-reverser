@@ -395,14 +395,19 @@ func (p PendingWrite) mayCommitEmpty() bool {
 }
 
 // isEmptyCommit reports whether a commit changed no file: its tree is its first parent's. A zero
-// hash made no commit at all, and a root commit is never empty.
+// hash made no commit at all. A root commit has no parent to compare with, so it is empty when its
+// tree holds no file — the empty commit CommitEmpty makes on a repository with no history yet.
 func isEmptyCommit(repo *gogit.Repository, hash plumbing.Hash) bool {
 	if hash.IsZero() {
 		return false
 	}
 	commit, err := repo.CommitObject(hash)
-	if err != nil || commit.NumParents() == 0 {
+	if err != nil {
 		return false
+	}
+	if commit.NumParents() == 0 {
+		tree, err := commit.Tree()
+		return err == nil && len(tree.Entries) == 0
 	}
 	parent, err := commit.Parent(0)
 	if err != nil {

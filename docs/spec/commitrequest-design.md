@@ -59,7 +59,9 @@ the message still arrives unaltered, as `.RequestMessage`, and a template that d
 is rejected at admission, so the request's bytes always reach the commit. A `requestTemplate` that
 fails to render commits the message verbatim rather than losing the window. A present value accepts 1–1024 Unicode characters;
 newline is allowed, other ASCII controls and whitespace-only text are rejected. Validation never
-truncates accepted text. A no-op still creates no commit. The message does not change Git identities.
+truncates accepted text. With the default `whenNothingToCommit: Resolve`, a no-op creates no commit;
+`CommitEmpty` records the message in an empty commit instead. The message does not change Git
+identities.
 
 Automation stops on `Ready=True` or `Stalled=True`. Require `Pushed=True` and `status.commit` when a
 pushed commit is required; `Ready=True` also includes successful no-commit outcomes.
@@ -106,10 +108,11 @@ with `FinalizeFailed` only if the worker does not resolve the request within its
 never polls indefinitely.
 
 **`Committed` and `AlreadyPresent` are decided by the push, including the no-commit one.**
-(`NoWindow` and `WindowMismatch` are decided locally, at the deadline: no window was attached,
-so there is nothing for a push to say.) A window that produced no diff used to resolve
-`AlreadyPresent` at finalize, on the strength of the local plan. That was only sound while every
-cycle fetched before it planned. It no longer does (see
+(`WindowMismatch` is decided locally, at the deadline: no window was attached, so there is nothing
+for a push to say. So is `NoWindow` under `Resolve`. Under `CommitEmpty` a `NoWindow` request records
+its message in an empty commit, and it resolves when that commit reaches the remote.) A window that
+produced no diff used to resolve `AlreadyPresent` at finalize, on the strength of the local plan.
+That was only sound while every cycle fetched before it planned. It no longer does (see
 [inbound push notification](../design/push-notification-and-reconcile-trigger.md) §3), so the plan may have run
 against a tree the remote has moved past, and the replay that follows a rejected push can turn the
 same captured object into a real commit. "Already present" is a claim about the remote, so the

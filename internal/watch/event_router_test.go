@@ -294,7 +294,11 @@ func TestGitPathRefusalReason(t *testing.T) {
 	}
 }
 
-func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
+// TestServiceCommitRequest_NoWorkerKeepsTheRequestPending pins that a missing worker is not an
+// outcome. At startup a CommitRequest can reach the controller before its GitTarget's worker exists;
+// resolving it then would end the save before anything could collect its writes or record its
+// message, so it stays pending and the controller polls within its safety window.
+func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
@@ -314,10 +318,9 @@ func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	result, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("team-a-config", "team-a"))
-	require.NoError(t, err)
-	assert.True(t, resolved, "no worker means no window to collect into; resolve immediately")
-	assert.Equal(t, git.FinalizeNoOpenWindow, result.Outcome)
-	assert.Equal(t, "main", result.Branch)
+	require.ErrorIs(t, err, errNoBranchWorkerYet, "a worker that does not exist yet is a retry, not an answer")
+	assert.False(t, resolved)
+	assert.Empty(t, result.Outcome)
 }
 
 func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T) {

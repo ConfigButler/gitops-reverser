@@ -1208,6 +1208,19 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 		l.openWindow.lastWriteAt = time.Now()
 		l.windowBytes += l.w.estimateEventSize(event)
 
+		if opened {
+			// A waiting CommitRequest gets the new window BEFORE anything can close it: before the
+			// target's timers are applied, and before a buffer-limit flush. With idleTimeout or
+			// maxDuration at 0s, or a write that trips the cap, the window would otherwise close in
+			// this very step, and a waiting request would miss the write it was waiting for — or,
+			// waiting on another author, never see the window that refuses it.
+			l.noteForeignWindow()
+			l.attachWaitingCommitRequests()
+			if l.openWindow == nil {
+				continue // the attached request's maxDuration: 0s closed it already
+			}
+		}
+
 		if l.totalRetainedBytes() >= l.w.branchBufferMaxBytes {
 			// Memory-pressure trip: drain immediately, ignoring the commit
 			// window. The cap exists to bound pod memory, not to shape
@@ -1217,14 +1230,6 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonBufferLimit)
 			l.maybeSchedulePush()
 			continue
-		}
-
-		if opened {
-			// A waiting CommitRequest gets the new window BEFORE the target's timers are applied.
-			// With idleTimeout or maxDuration at 0s the window would otherwise close in this very
-			// step, and the request's promise to replace those timers would never be kept.
-			l.noteForeignWindow()
-			l.attachWaitingCommitRequests()
 		}
 		l.closeOrArmWindow()
 	}

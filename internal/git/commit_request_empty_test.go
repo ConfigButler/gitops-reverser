@@ -13,6 +13,8 @@ import (
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // These tests pin whenNothingToCommit: CommitEmpty (docs/design/commit-timing-surface.md): a
@@ -393,4 +395,84 @@ func TestCommitEmpty_AZeroAttachTimeoutStillSeesAnotherAuthorsWindow(t *testing.
 			assert.Nil(t, loop.openWindow.pendingCR)
 		})
 	}
+}
+
+// TestCommitEmpty_ARecordOnARepositoryWithNoHistoryKeepsItsCause pins the root-commit case. On a
+// remote with no commits yet, the record is the branch's first commit: it has no parent to compare
+// with, and its empty tree is what makes it empty. It must still resolve NoOpenWindow, the cause,
+// and not Committed, which would claim the save saw writes.
+func TestCommitEmpty_ARecordOnARepositoryWithNoHistoryKeepsItsCause(t *testing.T) {
+	worker, serverRepo, _ := setupCommitPushSplitWorkerOnEmptyRemote(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	serviceAttach(loop, commitEmptyReq("alice", "save: the first commit"))
+	forceDue(loop)
+	loop.serviceCommitRequests()
+	loop.pushPending()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome, "the cause is kept on a root commit too")
+	require.NotEmpty(t, res.Commit)
+
+	commit, err := serverRepo.CommitObject(plumbing.NewHash(res.Commit))
+	require.NoError(t, err)
+	assert.Equal(t, 0, commit.NumParents(), "it is the branch's first commit")
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+	assert.Empty(t, tree.Entries, "and it changes no file")
+}
+
+// TestCommitEmpty_ABufferFlushStillServesTheWaitingSaves pins the order in the write path: a write
+// that opens a window AND trips the buffer limit is flushed at once, so the waiting saves must be
+// served before the flush. Otherwise a waiting save misses the very write it waited for, and a save
+// waiting on another author never sees the window that refuses it.
+func TestCommitEmpty_ABufferFlushStillServesTheWaitingSaves(t *testing.T) {
+	t.Run("a waiting Next save takes the write that trips the limit", func(t *testing.T) {
+		worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+		createPlainGitTarget(t, worker, "team-a", "team-a")
+		worker.branchBufferMaxBytes = 1
+		loop := newBranchWorkerEventLoop(worker, time.Hour)
+		defer loop.stopTimers()
+
+		req := commitEmptyReq("alice", "save: the flushed write")
+		req.Attach = configv1alpha3.AttachNext
+		serviceAttach(loop, req)
+		writeTo(loop, "oversized")
+		assert.Nil(t, loop.openWindow, "the buffer limit flushed the window")
+		loop.serviceCommitRequests()
+		loop.pushPending()
+
+		res, ok := outcome(t, worker)
+		require.True(t, ok)
+		require.NoError(t, res.Err)
+		assert.Equal(t, FinalizeCommitted, res.Outcome, "the save took the write, not NoWindow")
+		commit, err := serverRepo.CommitObject(plumbing.NewHash(res.Commit))
+		require.NoError(t, err)
+		assert.Equal(t, "save: the flushed write", commit.Message)
+	})
+
+	t.Run("another author's waiting CommitEmpty save sees the flushed window", func(t *testing.T) {
+		worker, _, _ := setupCommitPushSplitWorker(t)
+		createPlainGitTarget(t, worker, "team-a", "team-a")
+		worker.branchBufferMaxBytes = 1
+		loop := newBranchWorkerEventLoop(worker, time.Hour)
+		loop.lastPushAt = time.Now() // hold the pushes, so the retained writes can be counted
+		defer loop.stopTimers()
+
+		serviceAttach(loop, commitEmptyReq("bob", "bob's save"))
+		writeTo(loop, "oversized") // alice's write, flushed in the step that opened it
+		require.Len(t, loop.pendingWrites, 1, "only alice's commit")
+		forceDue(loop)
+		loop.serviceCommitRequests()
+
+		res, ok := outcome(t, worker)
+		require.True(t, ok)
+		assert.Equal(t, FinalizeWindowMismatch, res.Outcome)
+		assert.Empty(t, res.Commit)
+		assert.Len(t, loop.pendingWrites, 1, "no record was made while alice's work was in flight")
+	})
 }
