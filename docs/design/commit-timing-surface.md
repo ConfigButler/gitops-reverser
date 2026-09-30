@@ -63,9 +63,16 @@ window's silence timeout. The save's is `closeDelay`. The worker's code calls it
 
 ## Principles
 
-1. **Only writes open a window.** A commit window opens on the first write of an author to a target
-   and collects that author's writes until it closes. Nothing else opens one: not a save, not a
-   timer. This is today's behaviour, stated as a rule so the save's settings can lean on it.
+1. **Only writes open a window. Decided.** A commit window opens on the first write of an author to
+   a target and collects that author's writes until it closes. Nothing else opens one: not a save,
+   not a timer. This is today's behaviour, stated as a rule so the save's settings can lean on it.
+
+   The alternative was weighed and rejected: a save that opens its own window, so the user gets a
+   window to respond into. It would have to cut off whatever window is open at that moment, it would
+   create windows that contain no writes, and it would give a save two ways to start collecting
+   instead of one. What it was for is covered without it: `attach: Next` gives a save a fresh start,
+   `attachTimeout` gives the user time to make the first write, and `emptyCommit: Create` records
+   the message when nothing comes.
 2. **A save attaches; it never opens.** It waits for a window it may attach to, attaches to at most
    one, and gives that window its message and its timers. "Attach" is the one word for this, in the
    API, the code and the docs.
