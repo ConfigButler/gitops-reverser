@@ -623,10 +623,10 @@ install for this product.
 | `watch_events_total` | 20 × 30 × 6 outcomes = **3,600** | the largest counter, and the reason the event `type` label was dropped |
 | `git_documents_total` | 20 × 30 × 5 outcomes = **3,000** | |
 | `attribution_resolutions_total` | 30 × 8 tiers × 3 actor kinds = **720** | |
-| `attribution_resolution_wait_seconds` | 8 tiers × 2 kinds × (13 buckets + `_sum` + `_count`) = **240** | **7,200** before the §5.3 trim. A histogram multiplies by its bucket count *plus two*, so this row moves whenever the bucket boundaries are re-tuned: which is the trap, and the reason bucket sets are declared in one place in `exporter.go` |
+| `attribution_resolution_wait_seconds` | 8 tiers × 2 kinds × (13 buckets + `+Inf` + `_sum` + `_count`) = **256** | **7,680** before the §5.3 trim. A histogram multiplies by its finite bucket count *plus three* (the implicit `+Inf` bucket, `_sum` and `_count`), so this row moves whenever the bucket boundaries are re-tuned: which is the trap, and the reason bucket sets are declared in one place in `exporter.go` |
 | `placements_total` | 20 × 30 × 4 sources × 2 dispositions = **4,800** ceiling | far sparser in practice, and the ceiling is the wrong intuition: placement runs only for a resource with no document in Git yet, so a series appears when a (target, type, source, disposition) combination is first used and most combinations never are |
 | `git_commit_windows_total` | 20 targets × 8 close reasons × 2 timer sources = **320** ceiling | far sparser in practice: most targets see two or three reasons |
-| `git_commit_window_duration_seconds` | 20 targets × (14 buckets + `_sum` + `_count`) = **320** | close reason and timer source stay on the counter beside it, per the histogram rule below |
+| `git_commit_window_duration_seconds` | 20 targets × (18 buckets + `+Inf` + `_sum` + `_count`) = **420** | close reason and timer source stay on the counter beside it, per the histogram rule below |
 | `resource_condition` | 60 config objects × 3 condition types × 3 statuses = **540** | the one family keyed on object identity, and the only one bounded by how many objects a human wrote rather than by what the cluster contains — see the identity rule below |
 | everything else | low hundreds | |
 
@@ -636,7 +636,7 @@ the rest into a single `otel.metric.overflow=true` point, discarding the labels 
 Three families above exceed 2,000 in this very model install, so `exporter.go` sets the cap
 explicitly at 15,000 — roughly 3x the largest designed family, which leaves headroom for an install
 several times this model. That is a per-instrument allowance and **not** a process total: the sum
-over every instrument is much larger, and for a histogram each data point becomes bucket count + 2
+over every instrument is much larger, and for a histogram each data point becomes finite bucket count + 3
 exported series. The cap is raised rather than removed so an unbounded label set overflows visibly,
 and it is a backstop rather than a target — the numbers in this table, not the cap, are what keep
 the surface small.

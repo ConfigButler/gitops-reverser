@@ -610,7 +610,12 @@ func registerHistograms() error {
 	gitPushBuckets := []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 	// commitWindowBuckets span a window closed by a zero timer through the defaults (a request's 2s,
 	// a target's 5s idle and 1m maximum) and a save's 5m ceiling, on to the 24h a GitTarget may set.
-	commitWindowBuckets := []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 900, 3600, 14400, 86400}
+	// A window closes just after its deadline, never on it, so each of those timers has a bucket 10%
+	// above it: without one, a healthy 5s window lands in (5, 10] and histogram_quantile, which
+	// interpolates across the bucket, reads its p95 as nearly 10s.
+	commitWindowBuckets := []float64{
+		0.1, 0.5, 1, 2, 2.2, 5, 5.5, 10, 30, 60, 66, 120, 300, 330, 900, 3600, 14400, 86400,
+	}
 	// watchHandlingBuckets span an event routed immediately through one that sat out the whole
 	// attribution grace window, and past it.
 	watchHandlingBuckets := []float64{0.0005, 0.001, 0.005, 0.025, 0.1, 0.5, 1, 3, 10, 30}

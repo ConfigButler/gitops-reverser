@@ -596,9 +596,14 @@ histogram_quantile(0.95, sum by (le, gittarget_namespace, gittarget_name) (
 ))
 ```
 
-A p95 at the target's `idleTimeout` is the expected shape for isolated changes. A p95 at
-`maxDuration` matches a `max_duration` share above. The buckets resolve the defaults (a save's `2s`,
-a target's `5s` and `1m`), a save's `5m` ceiling, and on up to the `24h` a GitTarget may set.
+The p95 is an estimate: `histogram_quantile` interpolates linearly inside the bucket that holds it,
+so it can only be as sharp as the bucket boundaries around it. A p95 just above the target's
+`idleTimeout` is the expected shape for isolated changes. A p95 just above `maxDuration` matches a
+`max_duration` share above. A window closes shortly after its deadline, never on it, so each default
+timer (a save's `2s`, a target's `5s` and `1m`) and a save's `5m` ceiling has a bucket ending 10%
+above it: a healthy `5s` window reads between `5s` and `5.5s`, not in the wide `(5.5, 10]` bucket.
+The buckets then continue up to the `24h` a GitTarget may set. A timer set away from the defaults
+falls in a wider bucket, and its p95 reads correspondingly coarser.
 
 **Commit rate per provider/branch:**
 
