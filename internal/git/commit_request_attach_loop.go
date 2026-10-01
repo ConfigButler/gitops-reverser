@@ -29,7 +29,8 @@ import (
 
 // commitRequestOutcomeTTL bounds how long a resolved CommitRequest outcome is
 // retained for the controller to poll before it is GC'd. It comfortably exceeds
-// the controller's poll cadence and safety bound.
+// the controller's poll cadence, and a withdrawn request's tombstone must outlive
+// any attach the controller could still have in flight.
 const commitRequestOutcomeTTL = 15 * time.Minute
 
 // recordCommitRequestOutcome stores a resolved outcome and GCs stale entries. The
@@ -363,6 +364,24 @@ func (w *BranchWorker) buildRequestRecordWrite(
 		RequestAttribution: pcr.attribution,
 		CommitRequest:      &id,
 	}, nil
+}
+
+// handleWithdrawCommitRequest cancels a request the worker has not acted on: one that is only
+// waiting for a window, or that was never registered at all. A request attached to a window or
+// already committed is held, and withdrawing it is a no-op; the controller reads the held phase and
+// keeps waiting. Either way the worker's answer and the controller's agree.
+func (l *branchWorkerEventLoop) handleWithdrawCommitRequest(req *AttachCommitRequest) {
+	id := req.id()
+	if l.w.hasCommitRequestOutcome(id) {
+		return // already resolved, or already withdrawn.
+	}
+	if pcr, ok := l.pendingCRs[id]; ok && (pcr.attached || pcr.committed) {
+		l.w.Log.Info("CommitRequest withdraw ignored: the worker already holds it",
+			"request", id.Namespace+"/"+id.Name)
+		return
+	}
+	l.resolveCommitRequest(id, FinalizeResult{Err: ErrCommitRequestWithdrawn})
+	l.rearmAttachTimer()
 }
 
 // resolveCommitRequest records a request's terminal outcome for the controller to

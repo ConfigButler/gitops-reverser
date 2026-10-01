@@ -112,8 +112,13 @@ func TestCommitRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(cr.Spec).resolveTimeout()))
 	c := newCommitRequestClient(t, nil, cr)
-	// A service error is what EventRouter.ServiceCommitRequest returns when the GitTarget Get fails.
-	f := &fakeFinalizer{err: errors.New("get GitTarget default/no-such-target: not found")}
+	// A service error is what EventRouter.ServiceCommitRequest returns when the GitTarget Get fails,
+	// and a missing GitTarget has no worker to hold the request, so the withdraw resolves at once.
+	f := &fakeFinalizer{
+		err:              errors.New("get GitTarget default/no-such-target: not found"),
+		withdrawResult:   git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn},
+		withdrawResolved: true,
+	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
 	reconcileCommitRequest(t, r, "save-bogus")
@@ -187,7 +192,7 @@ func TestCommitRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.
 			nil,
 			crOutcomeAlreadyPresent,
 		},
-		{"failed", git.FinalizeResult{}, errors.New("attach failed"), crOutcomeFailed},
+		{"failed", git.FinalizeResult{Branch: "main", Err: errors.New("commit failed")}, nil, crOutcomeFailed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

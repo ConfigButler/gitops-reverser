@@ -529,6 +529,28 @@ func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
 	w.enqueueRequest(request)
 }
 
+// EnqueueWithdraw asks the loop to cancel a CommitRequest it has not acted on. It never blocks: a
+// full queue or a stopping worker drops it, and the controller sends it again on its next poll.
+func (w *BranchWorker) EnqueueWithdraw(req *AttachCommitRequest) {
+	if req == nil {
+		return
+	}
+	w.inflightItems.Add(1)
+	w.pendingResyncsMu.Lock()
+	defer w.pendingResyncsMu.Unlock()
+	if w.stoppingLocked() {
+		w.inflightItems.Add(-1)
+		return
+	}
+	select {
+	case w.eventQueue <- WorkItem{Withdraw: req}:
+	default:
+		w.inflightItems.Add(-1)
+		w.Log.V(1).Info("Queue full, CommitRequest withdraw dropped (the controller re-sends)",
+			"request", req.Namespace+"/"+req.Name)
+	}
+}
+
 // EnqueueAttach adds a CommitRequest attach to this worker's queue. Riding the
 // same queue as resource events is what makes it process in audit order, after
 // every earlier write. The attach is fire-and-forget: the controller polls the
@@ -1143,6 +1165,11 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	if item.Attach != nil {
 		l.handleAttachCommitRequest(item.Attach)
+		return
+	}
+
+	if item.Withdraw != nil {
+		l.handleWithdrawCommitRequest(item.Withdraw)
 		return
 	}
 

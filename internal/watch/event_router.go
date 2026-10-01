@@ -109,6 +109,56 @@ func (r *EventRouter) ServiceCommitRequest(
 	return result, resolved, nil
 }
 
+// WithdrawCommitRequest is the controller's fail-closed seam: it cancels a request the worker has
+// not acted on, and reports the worker's answer, so the controller never fails a request the worker
+// could still commit.
+//
+//   - No worker for the GitTarget: nothing holds the request and nothing can commit it, so it
+//     resolves at once as withdrawn. The controller stops sending attaches, so a worker that starts
+//     later never sees it.
+//   - A worker: the withdraw rides the FIFO behind every attach already sent, and is a no-op for a
+//     request the worker holds. Until it is handled, resolved=false and Phase says where the
+//     request stands; a held phase means the controller keeps waiting.
+func (r *EventRouter) WithdrawCommitRequest(
+	ctx context.Context,
+	attach git.AttachCommitRequest,
+) (git.FinalizeResult, bool, error) {
+	var gitTarget configv1alpha3.GitTarget
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Name:      attach.GitTargetName,
+		Namespace: attach.GitTargetNamespace,
+	}, &gitTarget); err != nil {
+		if apierrors.IsNotFound(err) {
+			// A deleted GitTarget has no worker left to hold the request.
+			return git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn}, true, nil
+		}
+		return git.FinalizeResult{}, false, fmt.Errorf("get GitTarget %s/%s: %w",
+			attach.GitTargetNamespace, attach.GitTargetName, err)
+	}
+
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		gitTarget.Spec.GitProviderRef.Name,
+		gitTarget.Namespace,
+		gitTarget.Spec.Branch,
+	)
+	if !exists {
+		return git.FinalizeResult{
+			Branch: gitTarget.Spec.Branch,
+			Phase:  git.PhaseWaitingForWorker,
+			Err:    git.ErrCommitRequestWithdrawn,
+		}, true, nil
+	}
+
+	if result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID); resolved {
+		return result, true, nil
+	}
+	worker.EnqueueWithdraw(&attach)
+	return git.FinalizeResult{
+		Branch: gitTarget.Spec.Branch,
+		Phase:  worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID),
+	}, false, nil
+}
+
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or
 // timed out at the worker, so the failure is observable even though delivery was already
 // marked on enqueue. No-op until the counter is registered.

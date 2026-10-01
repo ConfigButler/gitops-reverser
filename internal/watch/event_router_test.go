@@ -375,6 +375,87 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 	assert.Equal(t, "main", result.Branch)
 }
 
+// TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker: a deleted GitTarget, or one whose worker
+// never started, has nothing that could commit the request, so the withdraw resolves at once and
+// says why when it can.
+func TestWithdrawCommitRequest_NothingHoldsItWithoutAWorker(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	gitTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
+		Spec: configv1alpha3.GitTargetSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
+	workerManager := git.NewWorkerManager(
+		client, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+
+	result, resolved, err := router.WithdrawCommitRequest(context.Background(), saveAttach("team-a-config", "team-a"))
+	require.NoError(t, err)
+	require.True(t, resolved)
+	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	assert.Equal(t, git.PhaseWaitingForWorker, result.Phase)
+	assert.Equal(t, "main", result.Branch)
+
+	result, resolved, err = router.WithdrawCommitRequest(context.Background(), saveAttach("deleted", "team-b"))
+	require.NoError(t, err)
+	require.True(t, resolved)
+	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	assert.Empty(t, result.Branch, "a deleted GitTarget has no identity to report")
+}
+
+// TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest: the withdraw rides the FIFO behind the
+// attach, cancels the request while it only waits for a window, and an attach sent afterwards
+// cannot bring it back.
+func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	provider := &configv1alpha3.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
+		Spec:       configv1alpha3.GitProviderSpec{URL: "file:///tmp/does-not-need-to-exist"},
+	}
+	gitTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
+		Spec: configv1alpha3.GitTargetSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
+	workerManager := git.NewWorkerManager(
+		client, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = workerManager.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond) // allow the manager to record its context
+	require.NoError(t, workerManager.EnsureWorker(
+		ctx, "team-a-provider", "team-a", "main", git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"}, ""))
+
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+	attach := saveAttach("team-a-config", "team-a")
+	attach.AttachTimeout = time.Hour // it would wait an hour for a window
+
+	_, resolved, err := router.ServiceCommitRequest(context.Background(), attach)
+	require.NoError(t, err)
+	require.False(t, resolved)
+
+	var result git.FinalizeResult
+	require.Eventually(t, func() bool {
+		var err error
+		result, resolved, err = router.WithdrawCommitRequest(context.Background(), attach)
+		require.NoError(t, err)
+		return resolved
+	}, 5*time.Second, 50*time.Millisecond, "the worker must answer the withdraw")
+	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+
+	result, resolved, err = router.ServiceCommitRequest(context.Background(), attach)
+	require.NoError(t, err)
+	require.True(t, resolved, "a re-sent attach finds the withdrawn outcome")
+	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+}
+
 // TestDrainScopedResync_QueueFullIsDrainedNotOrphaned guards the ordering invariant behind
 // Failure A/B: EnqueueResync answers a dropped request on its reply channel, so the drain MUST be
 // started even when the request never entered the FIFO.

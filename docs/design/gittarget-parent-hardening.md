@@ -19,24 +19,14 @@
   merged into it.
 - Run `git fetch` and `git log origin/main..HEAD` before starting.
 
-### Prerequisite: CommitRequest liveness
+### Done first: CommitRequest liveness
 
-The recovery in §4.4 can hold work for up to its 5m backoff cap. Today the controller fails a
-CommitRequest closed after `attachTimeout + maxDuration + 120s` (about 124s with defaults), counted
-from creation, and the worker keeps the attach. So a request retained through a recovery can be
-reported `FinalizeFailed` and then committed anyway.
-
-Fix this first, in a small PR against main (it is the first item in [`../TODO.md`](../TODO.md)).
-Raising the timeout only moves the contradiction. Controller and worker must agree:
-
-- **While the worker holds the request** (waiting, collecting, retained for a push, or blocked on a
-  missing parent), the worker is authoritative and the controller keeps polling. A blocked request
-  reports a phase that names the cause.
-- **The controller's bound applies only to a request the worker does not know** (a vanished worker).
-- **Failing closed withdraws the attach first**, so a request reported failed can never be
-  committed later.
-
-Test: a request retained through a recovery longer than the old bound resolves `Committed`.
+Recovery can hold work for minutes, so a request must not be failed on a controller clock while the
+worker still holds it. That is already fixed on this branch: the controller waits for any request
+the worker holds (`CollectingWindow`, `WaitingForPush`), and fails an unheld one only after
+withdrawing it from the worker (`docs/spec/commitrequest-design.md`). The §4.4 tests must still
+include a request retained through a recovery longer than `attachTimeout + maxDuration + 120s`,
+resolving `Committed`.
 
 ### Out of scope for this pass
 

@@ -4,18 +4,8 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 ## Follow-ups from #404 (commit window surface)
 
-PR #404 is merged; these need fix PRs against main, in this order.
-
-**Before #407 merges**: the parent-branch recovery holds work longer than this timeout (see
-[gittarget-parent-hardening.md](design/gittarget-parent-hardening.md), "Prerequisite").
-
-- [ ] **CommitRequest timeout and outcome agree with the worker.**
-  `resolveTimeout()` in `commitrequest_controller.go` is `attachTimeout + maxDuration + 120s` (about
-  124s with defaults), counted from creation, while the worker keeps the attach. A remote down for
-  about two minutes, a long `WaitingForWorker`, or a controller restart reports `FinalizeFailed`, and
-  the commit (or a `CommitEmpty` record) still lands. Raising the bound only moves the contradiction:
-  the worker is authoritative while it holds a request, the bound applies to requests it does not
-  know, and failing closed withdraws the attach first.
+PR #404 is merged; these need fix PRs against main, in this order. (Its CommitRequest timeout
+finding is fixed in #407: the controller no longer fails a request the worker holds.)
 
 **Next, in one fix PR:**
 
@@ -50,8 +40,6 @@ PR #404 is merged; these need fix PRs against main, in this order.
   the same author identity as a window commit.
 - [ ] A record commit skips `requestTemplate`; fix the code or the doc comment that says it is phrased
   like every other commit.
-- [ ] A request whose GitTarget never starts a worker fails with the generic safety-window message;
-  name `WaitingForWorker` when that was the last phase.
 - [ ] Nits: a stale doc comment stacked on `commitWindowFor`; kstatus test names that still say
   "close-delay".
 
