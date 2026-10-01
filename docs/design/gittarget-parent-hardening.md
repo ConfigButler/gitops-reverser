@@ -1,8 +1,8 @@
 # GitTarget parent branch: hardening pass before #407 merges
 
-> **Plan**: done, 2026-10-01; the shipped contract is in
-> [`gittarget-parent-branch.md`](gittarget-parent-branch.md). It came from a three-way review of
-> #407 and two rounds of second opinions; §7 records the design choices those rounds settled.
+> **Plan**: done, 2026-10-01, including the two recovery fixes the review of `93120caf` found
+> (below). The implemented contract is in
+> [`gittarget-parent-branch.md`](gittarget-parent-branch.md). §7 records the settled design choices.
 >
 > **Where the build departed from the plan.**
 >
@@ -24,6 +24,55 @@
 > Related: [`gittarget-parent-branch.md`](gittarget-parent-branch.md), the feature as built;
 > [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
 > [`gittarget-parent-observation.md`](gittarget-parent-observation.md), deferred follow-ups.
+
+## Merge review at `93120caf`
+
+Both are fixed, each with the reviewer's reproduction as its regression test (red before the fix).
+Both failures were reproduced through the worker event handlers against canonical `git http-backend`.
+
+1. **P1: a second parent outage loses the obligation for newer dropped writes.** A recovery
+   snapshot commits locally and enters `awaitingPush`. Before it is pushed, the parent disappears
+   again and another event from the same scope is dropped. `noteParentUnavailable` keeps the
+   scope's old `awaitingPush` entry. On recovery, `noteRecoveryPublished` clears that scope after
+   publishing the older snapshot, and no new snapshot is requested. The reproduction publishes
+   `cm1`, leaves `cm2` absent, closes recovery, and leaves `SnapshotRequestSeq` at 1. Invalidate
+   the old publication credit when new work is dropped, or track the obligation's generation.
+   Acceptance: publishing the old snapshot keeps the newer obligation open, requests a fresh
+   snapshot, and eventually publishes `cm2` without another cluster edit.
+   **Fixed:** a dropped write removes its scope's publication credit; pinned by
+   `TestParentRecovery_ASecondOutageKeepsTheWorkDroppedInIt`.
+2. **P2: retained replay bypasses the parent probe backoff.** After a failed push loses its parent,
+   retained writes have `replayRequired` set. Every incoming live write calls
+   `recoverRetainedWrites`, which fetches through `invalidateAndRefresh` without checking
+   `awaitingParentProbe`. Three writes before the deadline produced three remote connections.
+   The existing probe-budget test starts with dropped work and no retained batch, so it misses
+   this path. Apply the hold before replay I/O and extend the budget test to retained work.
+   Acceptance: incoming writes before the deadline spend no remote connection; the scheduled
+   probe still drives recovery.
+   **Fixed:** `recoverRetainedWrites` checks the hold before its rebuild; pinned by the
+   `retained writes` case of `TestParentRecovery_ProbeBudgetIsPerWorker`.
+
+The fixes preserve the existing API and require no new policy. The required lint, unit, and e2e
+gates have to pass on the corrected code; a green run on `93120caf` does not cover these
+reproductions.
+
+At review, CI lint and unit tests passed. The local run passed all three parent-branch e2e specs,
+including recovery without another cluster edit; the full local run and CI e2e were still running.
+The targeted worker, controller, and router tests passed under `-race`.
+
+### After merge
+
+The immediate next fix PR remains the two `CommitEmpty` findings from #404 in
+[`../TODO.md`](../TODO.md#follow-ups-from-404-commit-window-surface).
+For the next GitTarget feature PR, take only step 1 of the parent-observation plan: retain parent
+availability and its timestamp after the write branch exists, using existing advertisements.
+Keep readiness and publication behavior unchanged, and prove no extra remote connections.
+
+Ancestry classification follows only after measuring the pinned go-git shallow-history behavior.
+The empty-repository plan starts with the upstream unborn-HEAD fix; choosing which branch the first
+commit creates remains a separate compatibility decision. The configuration-freshness record stays
+deferred, and the remaining red-status contract work stays on its own branch. Do not reopen the
+older API-wave plan as part of any of these changes.
 
 ## 0. Handoff: read this first
 

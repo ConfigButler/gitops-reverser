@@ -46,6 +46,14 @@ finding is fixed in #407: the controller no longer fails a request the worker ho
 
 ## Current backlog
 
+- [ ] After #407 and the #404 fixes above, take the first
+  [parent-observation step](design/gittarget-parent-observation.md#implementation-and-validation):
+  retain parent availability and its timestamp after the write branch exists. Use existing
+  advertisements, with no extra connections or changes to readiness or publication. Keep ancestry
+  classification and empty-repository bootstrap policy in separate changes. The
+  [merge review](design/gittarget-parent-hardening.md#merge-review-at-93120caf) records the two
+  recovery fixes made before #407 merged.
+
 - [ ] Finish making `GitTarget` turn red quickly and explain why no commit was made.
   The plan is in [gittarget-red-status-plan.md](design/gittarget-red-status-plan.md). This is the
   replacement direction for Git write preflight: no admission webhook Git work, no extra state

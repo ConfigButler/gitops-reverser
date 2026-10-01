@@ -1523,6 +1523,12 @@ func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
 	if !dirty && !needsReplay && !parentChanged {
 		return nil
 	}
+	// The rebuild fetches, and a parent known to be missing is not fetched again before its probe
+	// is due: every commit path calls this, so without the check each write arriving in the
+	// meantime would cost a connection.
+	if l.w.awaitingParentProbe() {
+		return errAwaitingParentProbe
+	}
 
 	l.w.Log.Info("Rebuilding retained writes onto the remote tip",
 		"pendingWrites", len(l.pendingWrites),

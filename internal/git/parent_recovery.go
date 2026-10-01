@@ -113,6 +113,9 @@ func (l *branchWorkerEventLoop) noteParentUnavailable(err error, scopes ...recov
 			r.scopes = map[recoveryScope]struct{}{}
 		}
 		r.scopes[scope] = struct{}{}
+		// A snapshot of this scope that is still waiting for its push was taken before this write
+		// was dropped, so publishing it proves nothing about this write. The scope needs a new one.
+		delete(r.awaitingPush, scope)
 	}
 	l.armRecoveryTimer()
 	l.publishRecovery()
