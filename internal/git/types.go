@@ -142,6 +142,9 @@ type PullReport struct {
 	ExistsOnRemote  bool // Branch exists on remote
 	HEAD            BranchInfo
 	IncomingChanges bool // SHA changed, requiring resource-level reconcile
+	// ParentBranch is the branch checked out instead, when the target branch is absent: the parent
+	// it would be created from. HEAD.Sha is then the parent's commit. Empty otherwise.
+	ParentBranch string
 }
 
 // BranchKey uniquely identifies a (GitProvider, Branch) combination.

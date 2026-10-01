@@ -79,7 +79,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 |---|---|---|
 | `gitProviderRef` | **required** | The `GitProvider` backing this target, in the same namespace |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches` |
-| `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Mutable, and only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
+| `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Immutable. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
 | `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
@@ -774,7 +774,12 @@ spec:
   starts a branch with no history.
 - Once the write branch exists, it is used as it is: new commits on the parent do not reach it.
   Delete the write branch after its changes are merged, and the next edit starts a fresh one.
-- `parentBranch` is mutable, and it is only read, so it does not need to be in `allowedBranches`.
+- `parentBranch` is immutable, including adding or removing it: delete and recreate the target to
+  change it, which loses nothing because the destination is unchanged. It is only read, so it does
+  not need to be in `allowedBranches`.
+- While the write branch is absent, `status.remote.parent` shows the parent and the commit the
+  first commit would build on. With `parentBranch` omitted, that is how you see which default branch
+  the remote resolved.
 - All `GitTarget` objects on one `GitProvider` and branch must name the same parent branch; omitted
   counts as its own value. The later-created one reports `TargetConflict`.
 
@@ -893,6 +898,9 @@ status:
     commit: 4f2c1ab9e0...               # empty = the branch is not on the remote
     lastVerifiedAt: "2026-09-23T10:14:02Z"
     verifiedBy: Push                    # Push | Fetch
+    parent:                             # only while the branch is not on the remote
+      branch: main                      # spec.parentBranch, or the remote's default branch
+      commit: 9a1e07c3d2...             # empty = the parent is not on the remote either
 ```
 
 - `commit` is where the branch is. Empty means the branch is not on the remote at all, which is
@@ -904,6 +912,9 @@ status:
   commit is Reverser's own work. `Fetch` means it went and looked, and this is what was there.
   A `Fetch` beside a commit none of your publications produced is how a **foreign push** to the
   branch is read off `kubectl`.
+- `parent` appears only while the branch is not on the remote: it names what the branch would be
+  created from and where that was, observed together with the branch's absence. See
+  [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
 
 `kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.
 

@@ -257,3 +257,66 @@ func TestBranchWorker_AParentChangeRebuildsRetainedWrites(t *testing.T) {
 		})
 	}
 }
+
+// TestBranchWorker_ObservesTheParentOfAnAbsentBranch: every way the worker looks at the remote
+// records, alongside the write branch's absence, the parent it would be created from, which
+// status.remote.parent publishes. With spec.parentBranch omitted that names the remote's default
+// branch. Once the write branch exists, there is no parent to report.
+func TestBranchWorker_ObservesTheParentOfAnAbsentBranch(t *testing.T) {
+	observed := func(f *newBranchFixture) RemoteObservation {
+		t.Helper()
+		o, known := f.worker.LastRemoteObservation()
+		require.True(t, known)
+		return o
+	}
+
+	t.Run("a fetch names the default branch when the parent is omitted", func(t *testing.T) {
+		f := newNewBranchFixture(t, nil)
+		hashA := f.warmOnParent()
+		o := observed(f)
+		assert.Equal(t, ObservedByFetch, o.By)
+		assert.Empty(t, o.Commit)
+		assert.Equal(t, "main", o.ParentBranch)
+		assert.Equal(t, hashA.String(), o.ParentCommit)
+	})
+
+	t.Run("a push that leaves the branch absent confirms the parent", func(t *testing.T) {
+		f := newNewBranchFixture(t, map[string]string{cmFile("cm1"): cmDocument("cm1")})
+		hashA := f.warmOnParent()
+		loop := newBranchWorkerEventLoop(f.worker, 0)
+		defer loop.stopTimers()
+
+		liveWrite(loop, "cm1")
+
+		o := observed(f)
+		assert.Equal(t, ObservedByPush, o.By)
+		assert.Equal(t, "main", o.ParentBranch)
+		assert.Equal(t, hashA.String(), o.ParentCommit)
+
+		loop.lastPushAt = time.Time{}
+		liveWrite(loop, "cm2")
+		o = observed(f)
+		assert.NotEmpty(t, o.Commit, "the branch exists now")
+		assert.Empty(t, o.ParentBranch, "and its parent is no longer followed")
+	})
+
+	t.Run("a configured parent, present and missing", func(t *testing.T) {
+		f := newNewBranchFixture(t, nil)
+		f.worker.SetParentBranch("release")
+		loop := newBranchWorkerEventLoop(f.worker, 0)
+		defer loop.stopTimers()
+
+		liveWrite(loop, "cm1")
+		o := observed(f)
+		assert.Equal(t, "release", o.ParentBranch)
+		assert.Empty(t, o.ParentCommit, "the parent is not on the remote")
+		assert.Equal(t, "release", o.MissingParent)
+
+		r1 := f.pushToRelease("RELEASE.md", "release\n")
+		require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
+		o = observed(f)
+		assert.Equal(t, "release", o.ParentBranch)
+		assert.Equal(t, r1.String(), o.ParentCommit)
+		assert.Empty(t, o.MissingParent)
+	})
+}

@@ -53,6 +53,11 @@ type RemoteObservation struct {
 	// MissingParent names the configured parent branch when the remote carries neither it nor the
 	// branch, so the branch cannot be created. Empty otherwise, including for an omitted parent.
 	MissingParent string
+	// ParentBranch and ParentCommit are the parent an absent branch would be created from, and
+	// where it was, observed together with the branch's absence. Both are empty while the branch
+	// exists, and for an empty repository. ParentCommit is empty when the parent is missing.
+	ParentBranch string
+	ParentCommit string
 }
 
 // Age is how long ago the observation was made, against now.

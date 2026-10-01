@@ -224,3 +224,24 @@ func TestParentBranchReadiness_IgnoresAnotherRepository(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", secondRepo).Status,
 		"the old repository's missing parent is not evidence about the replacement")
 }
+
+// TestParentStatusOf: status.remote.parent is present only while the write branch is absent and
+// a parent was named, and a moved parent is news even when the write branch is still absent.
+func TestParentStatusOf(t *testing.T) {
+	absent := git.RemoteObservation{ParentBranch: "main", ParentCommit: "aaaa"}
+	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{Branch: "main", Commit: "aaaa"},
+		parentStatusOf(absent))
+	assert.Nil(t, parentStatusOf(git.RemoteObservation{Commit: "bbbb", ParentBranch: "main"}),
+		"an existing write branch does not follow its parent")
+	assert.Nil(t, parentStatusOf(git.RemoteObservation{}), "an empty repository has no parent")
+	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{Branch: "release"},
+		parentStatusOf(git.RemoteObservation{ParentBranch: "release", MissingParent: "release"}),
+		"a missing parent is named with no commit")
+
+	at := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	published := &configbutleraiv1alpha3.GitTargetRemoteStatus{LastVerifiedAt: &at, Parent: parentStatusOf(absent)}
+	moved := published.DeepCopy()
+	moved.Parent.Commit = "cccc"
+	assert.True(t, remoteStatusIsNews(published, moved), "the parent moved")
+	assert.False(t, remoteStatusIsNews(published, published.DeepCopy()))
+}

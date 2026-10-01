@@ -2013,13 +2013,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			w.setBaseTrusted(true)
 			// The half a fetch-only record could not carry: on an active branch the push is the
 			// event that MOVES the revision.
-			revision := ""
-			if !outcome.Head.IsZero() {
-				revision = outcome.Head.String()
-			}
-			w.recordRemoteObservation(revision, ObservedByPush)
-			w.Log.V(1).Info("Remote observed by push",
-				"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
+			w.recordPushObservation(outcome, rootBranch, rootHash)
 			w.endPushCycle(outcome.Kind)
 			w.firsts.push.Do(func() {
 				w.Log.Info("First push to remote completed",
@@ -2348,6 +2342,25 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 	return baseBranch, baseHash, nil
 }
 
+// recordPushObservation records what a push that returned without an error observed.
+func (w *BranchWorker) recordPushObservation(
+	outcome PushOutcome, rootBranch plumbing.ReferenceName, rootHash plumbing.Hash,
+) {
+	revision := ""
+	if !outcome.Head.IsZero() {
+		revision = outcome.Head.String()
+	}
+	if outcome.Kind == PushNoBranch && rootBranch != plumbing.NewBranchReferenceName(w.Branch) {
+		// Settled without creating the branch, after confirming its parent against this
+		// advertisement: the root IS the parent's tip.
+		w.recordAbsentBranch(rootBranch.Short(), rootHash.String(), ObservedByPush)
+	} else {
+		w.recordRemoteObservation(revision, ObservedByPush)
+	}
+	w.Log.V(1).Info("Remote observed by push",
+		"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
+}
+
 // endPushCycle clears the cycle's root after a push the remote answered. Only a push that left the
 // branch absent keeps the parent it would be created from.
 func (w *BranchWorker) endPushCycle(kind PushOutcomeKind) {
@@ -2367,8 +2380,9 @@ func (w *BranchWorker) ParentBranch() string {
 }
 
 // SetParentBranch configures the parent branch. A change invalidates the base, so the next cycle
-// fetches and compares against the new parent; the worker and its clone are kept, because
-// nothing already written is abandoned. It reports whether the value changed.
+// fetches and compares against the new parent, and the event loop rebuilds retained writes on it;
+// the worker and its clone are kept. spec.parentBranch is immutable, so a change reaches a live
+// worker only when the targets on its branch were replaced. It reports whether the value changed.
 func (w *BranchWorker) SetParentBranch(name string) bool {
 	if w.ParentBranch() == name {
 		return false
@@ -2776,7 +2790,20 @@ func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSo
 
 // recordMissingParent records that the write branch is absent and its configured parent is too.
 func (w *BranchWorker) recordMissingParent(parent string, by ObservationSource) {
-	w.publishObservation(RemoteObservation{At: time.Now(), By: by, Repo: w.repo, MissingParent: parent})
+	w.publishObservation(RemoteObservation{
+		At: time.Now(), By: by, Repo: w.repo, MissingParent: parent, ParentBranch: parent,
+	})
+}
+
+// recordAbsentBranch records that the write branch is absent, and where the parent it would be
+// created from is. An empty parent is an empty repository, which has none.
+func (w *BranchWorker) recordAbsentBranch(parentBranch, parentCommit string, by ObservationSource) {
+	if parentBranch == "" {
+		parentCommit = ""
+	}
+	w.publishObservation(RemoteObservation{
+		At: time.Now(), By: by, Repo: w.repo, ParentBranch: parentBranch, ParentCommit: parentCommit,
+	})
 }
 
 func (w *BranchWorker) publishObservation(observed RemoteObservation) {
@@ -2881,11 +2908,11 @@ func (w *BranchWorker) shouldReadRetainedLocalRepository(repoPath string) bool {
 func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	// A branch the remote does not have is recorded as an observation with no revision, which is
 	// the honest answer rather than a missing one: a git branch without a commit does not exist.
-	revision := ""
 	if report.ExistsOnRemote {
-		revision = report.HEAD.Sha
+		w.recordRemoteObservation(report.HEAD.Sha, ObservedByFetch)
+	} else {
+		w.recordAbsentBranch(report.ParentBranch, report.HEAD.Sha, ObservedByFetch)
 	}
-	w.recordRemoteObservation(revision, ObservedByFetch)
 
 	// This is the ONE place trust can be gained by a fetch, because it is the one place a fetch
 	// is known to have been followed by a reset: every call site is a PrepareBranch or a

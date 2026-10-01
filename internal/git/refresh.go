@@ -197,17 +197,15 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 		return fmt.Errorf("read the remote advertisement: %w", err)
 	}
 	advertised := advertisement.branch
-	// Neither the branch nor the parent it would be created from: there is nothing to follow,
-	// and the GitTarget reports the parent as missing until somebody creates it.
-	if advertised.IsZero() && parentBranch != "" && advertisement.parent.IsZero() {
-		w.recordMissingParent(parentBranch, ObservedByFetch)
+	if missingParent := w.recordAdvertisement(advertisement, parentBranch); missingParent {
+		// Neither the branch nor the parent it would be created from: there is nothing to follow,
+		// and the GitTarget reports the parent as missing until somebody creates it.
 		return nil
 	}
 	revision := ""
 	if !advertised.IsZero() {
 		revision = advertised.String()
 	}
-	w.recordRemoteObservation(revision, ObservedByFetch)
 
 	// The remote does not carry this branch — the ordinary state of a target that has not written
 	// yet. That IS the observation. What the checkout holds instead is the parent the branch would
@@ -249,6 +247,25 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 		return err
 	}
 	return nil
+}
+
+// recordAdvertisement records what one advertisement said about the write branch and, while it
+// is absent, its parent. It reports a configured parent that is missing as well.
+func (w *BranchWorker) recordAdvertisement(advertisement remoteAdvertisement, parentBranch string) bool {
+	if !advertisement.branch.IsZero() {
+		w.recordRemoteObservation(advertisement.branch.String(), ObservedByFetch)
+		return false
+	}
+	if advertisement.parent.IsZero() {
+		if parentBranch != "" {
+			w.recordMissingParent(parentBranch, ObservedByFetch)
+			return true
+		}
+		w.recordAbsentBranch("", "", ObservedByFetch) // an empty repository: no parent at all
+		return false
+	}
+	w.recordAbsentBranch(advertisement.parentBranch, advertisement.parent.String(), ObservedByFetch)
+	return false
 }
 
 // followParent brings the checkout of an absent write branch onto its parent's advertised tip.
@@ -358,6 +375,8 @@ type remoteAdvertisement struct {
 	// branch, or the remote's default branch when none is configured. Zero when the remote does
 	// not carry it, which includes an empty repository.
 	parent plumbing.Hash
+	// parentBranch is that parent's short name; empty when the remote's HEAD names no branch.
+	parentBranch string
 }
 
 // advertiseRemoteBranch asks the remote where a branch and its parent are, and transfers nothing
@@ -390,7 +409,9 @@ func advertiseRemoteBranch(
 	if parentBranch != "" {
 		defaultBranch = plumbing.NewBranchReferenceName(parentBranch)
 	}
-	return remoteAdvertisement{branch: hashes[branch], parent: hashes[defaultBranch]}, nil
+	return remoteAdvertisement{
+		branch: hashes[branch], parent: hashes[defaultBranch], parentBranch: defaultBranch.Short(),
+	}, nil
 }
 
 // localHead is the commit the worktree is on, or the zero hash when the branch is unborn.

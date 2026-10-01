@@ -283,9 +283,10 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 // and the caller can fail. See ReplacementPending; the delivery is the GitTarget reconcile's
 // worker wiring gate.
 //
-// parentBranch is the GitTarget's spec.parentBranch. A change is not a replacement: it says where
-// a write branch the remote does not carry is created from, so it abandons nothing already
-// written. The worker keeps its clone and drops its base trust instead.
+// parentBranch is the GitTarget's spec.parentBranch. It is immutable on a GitTarget, so a live
+// worker sees a different one only when every target on its branch was replaced before the worker
+// sweep ran. That is not a replacement: the worker keeps its clone, and SetParentBranch drops its
+// base trust and rebuilds any retained writes on the new parent.
 //
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(

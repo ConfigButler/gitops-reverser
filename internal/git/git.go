@@ -406,7 +406,11 @@ func syncToRemoteFrom(
 		}
 
 		remoteExists := availableBranch.Short() == branch.Short()
-		return createPullReport(branch.Short(), currentHash, newHash, remoteExists, false), nil
+		report := createPullReport(branch.Short(), currentHash, newHash, remoteExists, false)
+		if !remoteExists {
+			report.ParentBranch = availableBranch.Short()
+		}
+		return report, nil
 	}
 
 	// Failed to fetch from both sources, so let's configure head to be unborn at targetbranch.

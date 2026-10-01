@@ -91,7 +91,7 @@ kinds:
       - path: parentBranch
         default: the remote's default branch
         doc: >-
-          Branch a `branch` the remote does not have yet is created from. Mutable, and only read, so
+          Branch a `branch` the remote does not have yet is created from. Immutable. Only read, so
           it need not be allowed. See
           [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch)
       - path: path

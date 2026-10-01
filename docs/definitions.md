@@ -147,8 +147,8 @@ one. One word for the act, in the API (`window.attach`, `attachTimeout`), the co
 `status.remote`.
 
 **Commit.** A bare Git commit hash, wherever one appears in the API: `status.remote.commit`,
-`CommitRequest.status.commit`, `status.placement.resolvedAtCommit`. Not "sha", which names an
-algorithm Git is in the middle of changing, and not "revision", which Flux uses for a polymorphic
+`status.remote.parent.commit`, `CommitRequest.status.commit`, `status.placement.resolvedAtCommit`.
+Not "sha", which names an algorithm Git is in the middle of changing, and not "revision", which Flux uses for a polymorphic
 identifier that may be a tag, a chart version or a composite like `main@sha1:<hash>`. If this project
 ever needs that composite, `revision` is the word waiting for it.
 

@@ -28,6 +28,7 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.gitProviderRef) || self.gitProviderRef == oldSelf.gitProviderRef",message="spec.gitProviderRef is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
+// +kubebuilder:validation:XValidation:rule="has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch) || self.parentBranch == oldSelf.parentBranch)",message="spec.parentBranch is immutable; delete and recreate the GitTarget to change it"
 //
 // spec.clusterProviderRef names the SOURCE cluster a GitTarget mirrors FROM (see its field doc). It
 // is immutable — a folder's source cluster is part of what the folder means, like
@@ -50,9 +51,10 @@ type GitTargetSpec struct {
 	Branch string `json:"branch"`
 
 	// Why "parent" and not base/source/revision: docs/definitions.md reserves those words, and the
-	// field is flat because it is one fact. It is mutable because it only says where a branch
-	// starts; changing it abandons nothing already written, unlike branch and path. It can never
-	// hold a commit or tag: a pinned starting point would be a sibling field.
+	// field is flat because it is one fact. It is immutable like branch and path: it decides what
+	// history a new write branch gets, and a parent changed under a worker holding writes is the
+	// one case that needed its own replay. Delete and recreate is cheap, because the destination is
+	// unchanged. It can never hold a commit or tag: a pinned starting point would be a sibling field.
 
 	// ParentBranch is the branch the write branch (spec.branch) is created from, and the branch the
 	// target compares against while the write branch does not exist on the remote. Omitted: the
@@ -62,6 +64,7 @@ type GitTargetSpec struct {
 	// write branch exists, it is used as it is and the parent is not followed. It is only read, so
 	// it does not need to be in the GitProvider's allowedBranches. All GitTargets on one GitProvider
 	// and branch must name the same parent branch (omitted counts as its own value).
+	// Immutable, including adding or removing it: delete and recreate the GitTarget to change it.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	ParentBranch string `json:"parentBranch,omitempty"`
@@ -474,6 +477,25 @@ type GitTargetRemoteStatus struct {
 	// +optional
 	// +kubebuilder:validation:Enum=Push;Fetch
 	VerifiedBy string `json:"verifiedBy,omitempty"`
+
+	// Parent is what the write branch would be created from, observed with it: present only
+	// while the remote does not carry the write branch. Once the branch exists its parent is not
+	// followed, so this is omitted.
+	// +optional
+	Parent *GitTargetParentStatus `json:"parent,omitempty"`
+}
+
+// GitTargetParentStatus is the parent branch of a write branch that does not exist yet.
+type GitTargetParentStatus struct {
+	// Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
+	// that is omitted.
+	Branch string `json:"branch"`
+
+	// Commit is the commit hash the parent branch is at on the remote: the commit the write
+	// branch's first commit would build on. EMPTY means the parent branch is not on the remote;
+	// the GitTarget then reports ParentBranchNotFound.
+	// +optional
+	Commit string `json:"commit,omitempty"`
 }
 
 // Two rules for anything added here. A field earns its place only if a reader cannot get it from

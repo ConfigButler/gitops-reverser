@@ -683,3 +683,17 @@ func TestRefresh_ReportsAMissingConfiguredParent(t *testing.T) {
 	assert.Equal(t, "release", last.MissingParent)
 	assert.Empty(t, last.Commit)
 }
+
+// TestRefresh_ObservesTheParentOfAnAbsentBranch: the advertisement that answers for the write
+// branch also names its parent, so the refresher reports both at one connection.
+func TestRefresh_ObservesTheParentOfAnAbsentBranch(t *testing.T) {
+	h := newRefreshHarnessForBranch(t, "refresh-parent-observed", true, "feature")
+	h.reported = nil
+
+	assert.Equal(t, int64(1), h.refresh(time.Nanosecond))
+	require.NotEmpty(t, h.reported)
+	last := h.reported[len(h.reported)-1]
+	assert.Empty(t, last.Commit)
+	assert.Equal(t, "main", last.ParentBranch, "an omitted parent is the branch the remote's HEAD names")
+	assert.Equal(t, revParseMain(t, h.repoDir), last.ParentCommit)
+}

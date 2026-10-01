@@ -359,7 +359,7 @@ Key fields:
 - `spec.gitProviderRef`: a `GitProvider` in the same namespace, by name.
 - `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 - `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
-- `spec.parentBranch`: optional, mutable branch the write branch is created from and compared
+- `spec.parentBranch`: optional, immutable branch the write branch is created from and compared
   against while it does not exist. Omitted means the remote's default branch. An explicit parent
   must exist when creating the write branch. It does not need to be in `allowedBranches` because
   it is only read.
@@ -375,9 +375,10 @@ may batch and phrase their commits differently. A branch worker serves a `(provi
 resolves the window per open window, since a window is bound to exactly one target.
 
 `gitProviderRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
-orphan an old materialization or change its source cluster. The controller also rejects path overlaps
-between GitTargets sharing a provider and branch, and rejects two GitTargets on one branch that name
-different parent branches.
+orphan an old materialization or change its source cluster. `parentBranch` is immutable too,
+including adding or removing it, because it decides what history a new write branch gets. The
+controller also rejects path overlaps between GitTargets sharing a provider and branch, and rejects
+two GitTargets on one branch that name different parent branches.
 
 Status has a kstatus-compatible summary layer plus domain conditions:
 

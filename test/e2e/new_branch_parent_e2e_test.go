@@ -145,7 +145,7 @@ spec:
 				"README.md": "main is not the parent here\n",
 			})
 		}
-		commitFilesToBranchFromOutside(repo, testNs, parent, "e2e: seed A", map[string]string{
+		hashA := commitFilesToBranchFromOutside(repo, testNs, parent, "e2e: seed A", map[string]string{
 			"README.md": "seed\n",
 			path.Join(gitPath, testNs, "configmaps", "standby-present.yaml"): mirroredDocument("standby-present"),
 		})
@@ -177,6 +177,14 @@ spec:
 		waitForMetricWithTimeout(branchSeries("gitopsreverser_git_fetches_total", ""),
 			func(v float64) bool { return v > 0 },
 			"the worker for the write branch checked out the parent", 2*time.Minute)
+
+		By("status.remote names the parent the write branch would be created from")
+		Eventually(func(g Gomega) {
+			g.Expect(gitTargetRemoteField(g, destName, testNs, "commit")).To(BeEmpty(), "the write branch is absent")
+			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.branch")).To(Equal(parent),
+				"with spec.parentBranch omitted this is the default branch the remote resolved")
+			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.commit")).To(Equal(hashA))
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("an idle, in-sync target creates no branch")
 		Consistently(func(g Gomega) {
