@@ -1434,7 +1434,15 @@ func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
 	// fetchReasonRecovery, the same series the no-retained-writes case records in
 	// ensureBaseForCycle: this is one event, and which half of it an operator sees must not depend
 	// on whether a push happened to be in cooldown at the time.
-	return l.invalidateAndRefresh("retained writes cannot be trusted", fetchReasonRecovery)
+	err := l.invalidateAndRefresh("retained writes cannot be trusted", fetchReasonRecovery)
+	if err != nil && parentChanged {
+		// The rebuild can fail before its reset marks a replay required (reading the GitProvider or
+		// the credentials, say), and then nothing else remembers that the retained writes sit on
+		// the old parent: the next attempt would publish from it. Hand the change back until a
+		// rebuild succeeds.
+		l.w.parentChangedState.Store(true)
+	}
+	return err
 }
 
 // invalidateAndRefresh drops base trust and, when writes are retained, acts on that invalidation

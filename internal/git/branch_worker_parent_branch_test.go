@@ -9,6 +9,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -255,6 +258,52 @@ func TestBranchWorker_AParentChangeRebuildsRetainedWrites(t *testing.T) {
 			}
 			require.True(t, exists)
 			assert.Equal(t, release, f.commitParent(tip), "the first push uses the configured parent")
+		})
+	}
+}
+
+// TestBranchWorker_AParentChangeSurvivesAFailedRebuild: the rebuild a parent change asks for can
+// fail before it resets anything, here on reading the GitProvider. The change must still be
+// pending on the next attempt; taking it at the first try would leave the retained writes planned
+// on the old parent, and the retry would publish from it, or create the branch although the new
+// parent is missing.
+func TestBranchWorker_AParentChangeSurvivesAFailedRebuild(t *testing.T) {
+	for _, parent := range []string{"release", "missing"} {
+		t.Run(parent, func(t *testing.T) {
+			f := newNewBranchFixture(t, nil)
+			release := f.pushToRelease("RELEASE.md", "release\n")
+			f.warmOnParent()
+			loop := newBranchWorkerEventLoop(f.worker, 0)
+			defer loop.stopTimers()
+
+			loop.lastPushAt = time.Now()
+			liveWrite(loop, "cm1")
+			require.Len(t, loop.pendingWrites, 1)
+			require.True(t, f.worker.SetParentBranch(parent))
+
+			inner := f.worker.Client.(client.WithWatch)
+			f.worker.Client = interceptor.NewClient(inner, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+					opts ...client.GetOption) error {
+					if _, ok := obj.(*configv1alpha3.GitProvider); ok {
+						return errors.New("transient API failure")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			loop.pushPending()
+			require.Len(t, loop.pendingWrites, 1, "a failed rebuild keeps the work")
+
+			f.worker.Client = inner
+			loop.pushPending()
+
+			tip, exists := f.featureOnRemote()
+			if parent == "missing" {
+				assert.False(t, exists, "the missing new parent still prevents branch creation on the retry")
+				return
+			}
+			require.True(t, exists)
+			assert.Equal(t, release, f.commitParent(tip), "the retry starts from the new parent")
 		})
 	}
 }
