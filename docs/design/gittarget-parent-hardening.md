@@ -1,13 +1,15 @@
 # GitTarget parent branch: hardening pass before #407 merges
 
-> **Plan**, to be executed from a fresh context. Nothing in it is implemented yet.
+> **Plan**: open, nothing built. Dated 2026-10-01. It comes from a three-way review of #407 and two
+> rounds of second opinions; §7 records the design choices those rounds settled.
 >
-> Revision 2, 2026-10-01. It folds in a second review of revision 1; §7 records what changed and
-> why. The source was a three-way review of #407 at `dcbc8b82` plus a second opinion on that
-> review.
+> **The merge boundary.** #407 merges when this pass is done: the existing parent-branch feature
+> behaves correctly under races and recovery, and stays as cheap as it is today. New policy
+> (empty-repository bootstrap rules, ancestry status) is not part of it.
 >
-> Siblings: [`gittarget-parent-branch.md`](gittarget-parent-branch.md) is the original plan, and
-> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) follows this one.
+> Related: [`gittarget-parent-branch.md`](gittarget-parent-branch.md), the feature as built;
+> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
+> [`gittarget-parent-observation.md`](gittarget-parent-observation.md), deferred follow-ups.
 
 ## 0. Handoff: read this first
 
@@ -15,18 +17,33 @@
 
 - Branch `fix/new-branch-checks-parent` = PR #407. #408 (the `spec.parentBranch` field) is already
   merged into it.
-- It is checked out in `/workspaces/gitops-reverser2`. Ignore the worktree
-  `/tmp/gitops-parent-branch`; it holds the stale `feat/gittarget-parent-branch`.
-- The tip was `dcbc8b82` when this plan was written. Run `git fetch` and `git log origin/main..HEAD`
-  before starting.
+- Run `git fetch` and `git log origin/main..HEAD` before starting.
 
-### Neighbouring work, out of scope here
+### Prerequisite: CommitRequest liveness
 
-- `todo.md` holds follow-ups from #404, which are unrelated.
-- [`gittarget-parent-observation.md`](gittarget-parent-observation.md) is a separate proposal: keep
-  the parent visible after the write branch exists. Do not implement it here.
-- [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) runs after this
-  pass.
+The recovery in §4.4 can hold work for up to its 5m backoff cap. Today the controller fails a
+CommitRequest closed after `attachTimeout + maxDuration + 120s` (about 124s with defaults), counted
+from creation, and the worker keeps the attach. So a request retained through a recovery can be
+reported `FinalizeFailed` and then committed anyway.
+
+Fix this first, in a small PR against main (it is the first item in [`../TODO.md`](../TODO.md)).
+Raising the timeout only moves the contradiction. Controller and worker must agree:
+
+- **While the worker holds the request** (waiting, collecting, retained for a push, or blocked on a
+  missing parent), the worker is authoritative and the controller keeps polling. A blocked request
+  reports a phase that names the cause.
+- **The controller's bound applies only to a request the worker does not know** (a vanished worker).
+- **Failing closed withdraws the attach first**, so a request reported failed can never be
+  committed later.
+
+Test: a request retained through a recovery longer than the old bound resolves `Committed`.
+
+### Out of scope for this pass
+
+- [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md): which branch an
+  empty repository's first commit may create. Keep today's bootstrap behavior here.
+- [`gittarget-parent-observation.md`](gittarget-parent-observation.md): the parent's state after
+  the write branch exists.
 
 ### Process
 
@@ -176,7 +193,7 @@ reconciles and refresh ticks occur. §4.4 defines it and tests it.
     a distrust that is gone.
   - The `newBranchParent` shortcut in `ensureWriteBranch` (~2346) then roots the cycle on
     `(main, A)`, and the push is accepted.
-  - Reproduced by the worker reviewer.
+  - Reproduced in review.
 - **Between recovery and publication.**
   - `pushPending` (~1656) runs `recoverRetainedWrites`, then `pushPendingCommits`. A change that
     lands between the two is pushed on the old root.
@@ -232,7 +249,7 @@ reconciles and refresh ticks occur. §4.4 defines it and tests it.
    - Assert that `feature`'s first commit sits on `release`'s tip.
    - Assert that the observation recorded for that fetch names the parent it actually used
      (`main`), not `release`.
-2. **Change during a no-op push** that settles as `PushNoBranch`. This is the reviewer's
+2. **Change during a no-op push** that settles as `PushNoBranch`. This is the review's
    reproduction, an "after" case. Assert that the next real write lands on `release`.
 3. **Change before admission** (the `beforePushAdmission` hook) in a cycle with retained writes.
    - Assert that no push leaves on the old root.
@@ -425,10 +442,16 @@ Update the documentation in three places:
    - The latch has two independent halves:
      - **`retained`**: set when writes were kept. It clears only when `pushPending` actually
        publishes them, or settles them as `PushNoBranch`.
-     - **`snapshotNeeded`**: set when the worker **dropped** writes, or refused a resync, because
-       of the missing parent. Before implementing, verify which paths drop and which retain:
-       `noteMissingParent` at ~2425 and its callers. It clears only when a resync snapshot cycle
-       completes successfully *after* the parent was found.
+     - **`snapshotNeeded`, per scope**: the set of `(target, collection)` scopes whose writes the
+       worker **dropped**, or whose resync it refused, because of the missing parent. One worker
+       serves several targets, and resyncs run per collection, so a successful ConfigMap
+       snapshot for target A proves nothing about a Deployment of A, or about target B. (The
+       refusal recovery in `resync_flush.go` is scoped the same way, for the same reason.)
+       Before implementing, verify which paths drop and which retain: `noteMissingParent` at
+       ~2425 and its callers.
+     - A scope clears only when a resync of that scope, started *after* the parent was found, is
+       **published**: its commit pushed, or settled as a no-op. A resync reply is not enough,
+       because a resync can succeed while its write still waits for the push.
    - Neither half clears on an observation, on a probe result, or on a failed attempt. A failed
      attempt re-arms the probe deadline (step 3).
 2. **The worker drives recovery.** It runs on the event loop, while the latch is set, whatever the
@@ -439,9 +462,9 @@ Update the documentation in three places:
    - If the parent (or the write branch) is now present, record it. Then:
      - with `retained` set, call `pushPending`. It recovers through the normal replay: one fetch,
        a rebuild, a push. A failure leaves the latch set and re-arms the deadline;
-     - with `snapshotNeeded` set, raise a **snapshot request**. That is a monotonically increasing
-       `snapshotRequestSeq` that the worker exposes alongside its observation. A failed snapshot
-       cycle raises it again on the next deadline.
+     - for every target with an open scope, raise a **snapshot request**: a monotonically
+       increasing `snapshotRequestSeq` per target, exposed alongside the observation. A scope
+       that fails raises its target's sequence again on the next deadline.
 3. **One probe deadline per worker, shared by every background probe.**
    - The worker keeps `nextRemoteProbeAt`, with backoff 10s, doubling, capped at 5m. It resets on
      a generation change (§4.1) and on success.
@@ -478,9 +501,11 @@ Write the recovery tests first, against current code. They are the safety net fo
    - the next deadline recovers and publishes, **without another cluster edit**.
 
    Run it with refresh enabled and with refresh at `0`.
-2. **Worker, dropped writes.** Assert that `snapshotNeeded` latches, that the sequence rises when
-   the parent appears, that it rises again after a failed snapshot cycle, and that the latch
-   clears only after a successful one.
+2. **Worker, dropped writes, two scopes.** Two targets share the worker; writes for both are
+   dropped while the parent is missing. When it appears, one scope's resync succeeds and the
+   other's fails once. Assert that only the published scope clears, that the failing target's
+   sequence rises again, and that it clears after a later success. A resync that succeeded but
+   has not been pushed yet must not clear its scope.
 3. **Controller unit.** A sequence bump forces exactly one recheck. A bump that happens entirely
    between two reconciles is still acted on. Ten reconciles at an unchanged sequence force
    nothing.
@@ -502,7 +527,7 @@ Write the recovery tests first, against current code. They are the safety net fo
      tip;
    - make no cluster edit after the push.
 
-   This also covers the controller reviewer's item 4.
+   It also covers recovery from `ParentBranchNotFound`, which no test exercises today.
 7. **Ledger rows.** Add "parent probe while missing" = 1 connection, 0 fetches. Row-level counts
    do not prove frequency; test 4 does.
 
@@ -510,11 +535,15 @@ Write the recovery tests first, against current code. They are the safety net fo
 
 - Keep step 1 (the obligation) and step 4 (the request sequence). The obligation is the
   correctness part and is non-negotiable.
-- Replace the worker probe with a controller-side forced recheck under exponential backoff
-  (`lastForcedAt` per target, 10s → 5m), still gated on the latch rather than on the Ready
-  reason.
-- Tests 1–3 and 6 still apply. Test 4 then asserts the controller-side schedule.
-- Record the worker probe as deferred work in the PR body, and adjust §5's memory note.
+- Replace the worker probe with a controller-side forced recheck under exponential backoff, still
+  gated on the latch rather than on the Ready reason.
+- **The schedule is per worker, not per target**, so the per-worker budget in §2 still holds: key
+  `lastForcedAt` by the worker's `(provider, branch)` and force all of that worker's affected
+  targets in one round. Per-target backoff would give three targets on one worker three
+  independent retry streams.
+- Tests 1–3 and 6 still apply. Test 4 then asserts the controller-side schedule across three
+  targets on one worker.
+- Record the worker probe as deferred work in the PR body.
 
 ### 4.5 Vocabulary (review item 5)
 
@@ -606,54 +635,34 @@ explained by the steps above, and do not tune toward row 6.
 4. Read the CodeRabbit inline comments again after each push.
 5. Run `task test-e2e`, and the `full-manager` leg in CI. §4.4's new e2e context must pass at least
    once before calling the PR ready.
-6. Update the memory note `gittarget-parent-branch-design` with what actually shipped:
-   - `parentConfig{name, gen}`, generation-scoped trust, and the push admission boundary replace
-     `parentChangedState`;
-   - `Unborn` means an advertisement with no hash refs;
-   - the default branch follows go-git's resolution;
-   - the recovery obligation, with `retained` and `snapshotNeeded`, and `snapshotRequestSeq`;
-   - **either** "a worker-side probe with one shared deadline" **or**, if the §4.4 fallback
-     shipped, "a controller-side backoff; the worker probe is deferred".
+6. Fold what shipped into [`gittarget-parent-branch.md`](gittarget-parent-branch.md) (the
+   built contract) and `architecture.md`, and mark this plan done.
 
 ## 6. Out of scope
 
-- Keeping the parent visible after the write branch exists. See
-  `docs/design/gittarget-parent-observation.md`.
-- Resetting a surviving write branch onto its parent, and PR management.
+- The two deferred follow-ups named in §0.
+- Resetting, force-pushing or deleting a surviving write branch, and PR management. Ancestry
+  status or folder equality is not enough authorization for those mutations.
 - Any fetch before publication on a trusted checkout.
 
-## 7. Changes from revision 1, and where they push back
+## 7. Design choices the review rounds settled
 
-Each point of the second review was checked against the code before it was accepted:
+Kept here so they are not re-litigated. Each was checked against the code.
 
-1. **Recovery must stay pending until it succeeds.** Accepted. §4.4 now has the latch with
-   `retained` and `snapshotNeeded`, and the `snapshotRequestSeq` handshake. Test 1 injects a
-   failed first recovery.
-   - **Partly pushed back:** the dropped-write integration is the new e2e context, not a new
-     controller+watch+worker harness. None exists outside e2e, and building one would be larger
-     than the bug. The worker and controller halves get their own unit tests (tests 2 and 3).
-2. **The generation check and the race test disagreed.** Accepted. §4.1 now defines a
-   `{name, gen}` snapshot loaded once per operation, an explicit admission boundary, and the
-   `beforePushAdmission` hook. Tests 3 and 4 sit on either side of the boundary.
-3. **R6 needs a production fix.** Accepted, and verified: the fallback probes the root only
-   (`branch_worker.go` ~2100). R6 has its own measured ledger row.
-4. **One probe deadline for all probes.** Accepted. One `nextRemoteProbeAt` per worker; refresher
-   ticks before it are no-ops; reconciles never probe. Test 4 counts connections over time, not
-   per row.
-5. **Resolver evidence.** Verified: go-git rewrites a hash-only `HEAD` before `List` returns.
-   - **Pushed back on the conservative option:** the plan adopts go-git's resolution, which
-     follows git's fallback spirit, instead of going below `Remote.List` for a rare server
-     setup.
-   - The tests run through the real transport, including a detached `HEAD`, to pin the
-     decision. The "the way `git clone` does" wording is gone.
-6. **Truthful evidence for "no longer empty", and tags.** Accepted. There is a new
-   `RepositoryNotEmptyError`, and "empty" is defined once (no hash refs). A repository with only
-   tags is non-empty and goes through §4.3's refusal.
-
-Smaller corrections:
-
-- ledger rows 1–12 instead of 1–10;
-- "no unconditional preflight fetch on a trusted checkout";
-- the push instruction is quoted inline, because a fresh session cannot read the memory note;
-- the memory update depends on which §4.4 variant shipped;
-- H4 maps to the existing row 11, so it needs no new row.
+- **No pull before push.** A pull cannot close the race; the compare-and-swap plus bounded replay
+  does. Every fix in this pass reads evidence the push or discovery already holds.
+- **Recovery is an obligation, not an observation.** It stays open until the work is published,
+  so a transient failure after the parent reappears cannot strand it (§4.4). It is tracked per
+  `(target, collection)` scope.
+- **A configuration change is applied at a push admission boundary**, with one `{name, gen}`
+  snapshot per operation (§4.1). A push already admitted is not recalled.
+- **One probe budget per worker**, whichever variant of §4.4 ships.
+- **An empty repository has no hash refs**, tags included, and gaining one is reported with its own
+  typed error, not a `RemoteMovedError` that would misstate its fields (§4.2).
+- **Default-branch resolution follows go-git**, which rewrites a hash-only `HEAD` before `List`
+  returns; a stricter rule would need a bespoke advertisement path for a rare server setup (§4.3).
+- **The refused upload (R6) needed a production fix**: the fallback probe looked at the root only
+  (§4.7). It gets its own ledger row, because a refused upload costs more than a refusal at the
+  advertisement.
+- **The dropped-write integration test is e2e.** No controller, watch and worker harness exists
+  outside it, and building one would be larger than the bug.

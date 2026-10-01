@@ -2,6 +2,59 @@
 
 This file is meant to track the smaller current backlog, not historical notes.
 
+## Follow-ups from #404 (commit window surface)
+
+PR #404 is merged; these need fix PRs against main, in this order.
+
+**Before #407 merges**: the parent-branch recovery holds work longer than this timeout (see
+[gittarget-parent-hardening.md](design/gittarget-parent-hardening.md), "Prerequisite").
+
+- [ ] **CommitRequest timeout and outcome agree with the worker.**
+  `resolveTimeout()` in `commitrequest_controller.go` is `attachTimeout + maxDuration + 120s` (about
+  124s with defaults), counted from creation, while the worker keeps the attach. A remote down for
+  about two minutes, a long `WaitingForWorker`, or a controller restart reports `FinalizeFailed`, and
+  the commit (or a `CommitEmpty` record) still lands. Raising the bound only moves the contradiction:
+  the worker is authoritative while it holds a request, the bound applies to requests it does not
+  know, and failing closed withdraws the attach first.
+
+**Next, in one fix PR:**
+
+- [ ] **A suspended target makes a `CommitEmpty` save report Ready=True with no commit.**
+  `recordCommitRequest` returns `false, nil` on `errTargetSuspended`; the design table
+  (`docs/design/commit-timing-surface.md`) says a suspended target is a failure. An attached window
+  that changed nothing resolves `AlreadyPresent` the same way. Decide: fail the save, or change the
+  table.
+- [ ] **A `CommitEmpty` save is recorded while the render-fidelity gate is closed.** Found by reading;
+  reproduce first. `recordCommitRequest` never calls `normalWritesAllowed`, so a save whose events the
+  gate dropped records "no writes were seen". The attached-window path fails the request instead.
+
+**Before the next release** (docs only):
+
+- [ ] `docs/UPGRADING.md`, the v1alpha3 window entry:
+  - step 1: GitOps-managed GitTargets need their Flux or Argo source suspended (or the field removed
+    there) until step 4, or the string `commit.window` is re-applied and breaks LIST;
+  - the Was/Is table needs a row for the chart value `quickstart.gitTarget.commit.window`, now an
+    object;
+  - "a removed `closeDelay` is not a hazard" is too strong: it is pruned silently for programmatic
+    clients (see `duration_fields_admission_test.go`).
+- [ ] Descriptions that still say a save "closes the window now": the CommitRequest godoc and CRD
+  description, `docs/configuration.md` (lines 14, 32, 123), and the GitTarget `Commit` godoc, which
+  also omits the 1m `maxDuration` default. `docs/spec/commitrequest-design.md:126` still says
+  `NoOpenWindow` and "close deadline".
+
+**Later, non-blocking:**
+
+- [ ] `expireWaitingCommitRequests` ranges over a map, so empty commits for saves that time out in
+  the same pass land in random order; sort by `seq`.
+- [ ] `buildRequestRecordWrite` keeps only the username; carry the full `UserInfo` so the record has
+  the same author identity as a window commit.
+- [ ] A record commit skips `requestTemplate`; fix the code or the doc comment that says it is phrased
+  like every other commit.
+- [ ] A request whose GitTarget never starts a worker fails with the generic safety-window message;
+  name `WaitingForWorker` when that was the last phase.
+- [ ] Nits: a stale doc comment stacked on `commitWindowFor`; kstatus test names that still say
+  "close-delay".
+
 ## Current backlog
 
 - [ ] Finish making `GitTarget` turn red quickly and explain why no commit was made.

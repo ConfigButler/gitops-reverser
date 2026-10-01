@@ -1,6 +1,6 @@
 # GitTarget parent observations with shallow history
 
-> **design**: proposed follow-up to PR #407; nothing in this document is implemented.
+> **design**: deferred follow-up to PR #407; nothing in this document is implemented.
 > Date: 2026-10-01.
 
 Keep the parent branch visible after the write branch exists. Reuse remote ref advertisements to
@@ -225,9 +225,18 @@ implies write-branch absence.
 
 ## Implementation and validation
 
-Start by testing the shallow-object behavior with the pinned `go-git/v6` version. Then retain
-parent observations through the existing refresh path, add the bounded comparison, and project
-the evidence into status. Keep changes on a follow-up branch to PR #407.
+Ship it in two steps, on a follow-up branch after PR #407:
+
+1. **Parent availability and timestamps**: retain the parent observation through the existing
+   refresh path after the write branch exists, and project it into status. This needs no history.
+2. **Ancestry classification**, only after measuring how often the shallow checkout can answer
+   it. If most results come out `Unknown`, the graph walk is worth less than it looks, and the
+   remembered starting tip above may be enough.
+
+Before step 2, test the shallow-object behavior with the pinned `go-git/v6` version.
+
+Status is informational only. Nothing here authorizes resetting, force-pushing or deleting a write
+branch; that stays with the PR-creation design.
 
 The implementation needs these cases:
 

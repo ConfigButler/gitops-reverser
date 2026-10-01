@@ -1,14 +1,11 @@
 # GitTarget parent branch: an empty repository's default branch
 
-> **Plan**. The experiment in §2 is done; nothing else is implemented. Dated 2026-10-01.
+> **design**: deferred; not part of #407. The experiment in §2 is done, nothing else is built.
+> Dated 2026-10-01.
 >
-> Siblings:
->
-> - [`gittarget-parent-branch.md`](gittarget-parent-branch.md), the original plan;
-> - [`gittarget-parent-hardening.md`](gittarget-parent-hardening.md), the hardening pass on #407.
->
-> Run it **after** the hardening pass. Its §4.2 and §4.3 define "empty" and `Unborn`, and this
-> plan refines that `Unborn` case.
+> Related: [`gittarget-parent-branch.md`](gittarget-parent-branch.md), the feature as built;
+> [`gittarget-parent-hardening.md`](gittarget-parent-hardening.md), which keeps today's
+> empty-repository behavior and defines "empty" (§4.2) and `Unborn` (§4.3).
 
 ## 1. The problem
 
@@ -20,11 +17,14 @@ Today the first write creates **`reverser/edits` as the repository's first branc
 - The commit has no parent, and no `main` exists afterwards.
 - What we pushed does not match the branch the repository says is its default.
 - On GitHub, the first branch pushed to an empty repository probably becomes the default branch
-  (verify this, §5 step 0). If so, the operator's review branch silently becomes the repository's
-  default branch. Even if not, the eventual PR `reverser/edits` → `main` cannot be made: the two
-  branches have no common history.
+  (unverified, §5). If so, the operator's review branch silently becomes the repository's default
+  branch. Even if not, the eventual PR `reverser/edits` → `main` cannot be made: the two branches
+  have no common history.
 
-This is not a status detail. It is the wrong branch name on the first commit we make.
+This is more than a status detail: for a review-branch workflow it is the wrong branch on the first
+commit we make. It is also what the bootstrap contract says today ("only an omitted parent
+bootstraps", and the first commit is a root on the write branch), so changing it is a policy and
+compatibility decision, not a bug fix.
 
 `branch: main`, which is what the quickstart uses, is unaffected: the first commit creates `main`,
 which is correct.
@@ -61,7 +61,7 @@ disabled. It skips only without network. It asserts that `DefaultBranch` is **em
 the local HEAD is unborn on the *write* branch (`cool-test`). It pins today's behavior rather than
 the server's knowledge.
 
-**A small, backward-compatible go-git patch recovers the answer.** I tested this patch through a
+**A small, backward-compatible go-git patch recovers the answer.** It was tested through a
 temporary `-modfile` `replace`; nothing in the repository changed. The patch:
 
 - adds `transport.EmptyRemoteRepositoryError{Unborn plumbing.ReferenceName}`, whose `Is(ErrEmptyRemoteRepository)`
@@ -84,134 +84,73 @@ no `Unborn`.
 unknown; the harness assumes v0. SSH to GitHub needs `GIT_PROTOCOL` sent over the session; that is
 not verified.
 
-## 3. Proposed behavior
+## 3. Direction
 
-Everything below turns on one name, the **default branch D** of an empty repository. There are two
-ways to know D, and they ship in two stages.
+Two things, in this order:
 
-### 3.1 Stage 1, which this plan leads with: assume `main`
+1. **Get the evidence.** Recover the server's unborn `HEAD` through go-git (§4). With it, an empty
+   repository can report what it actually is: `status.remote.parent = {state: Unborn, branch: X}`
+   when the server said X, and an empty `branch` when it did not. Behavior does not change.
+2. **Then decide the policy**, separately, with an explicit compatibility note. The question: when
+   the server says the default branch is X and the write branch is not X, may the first commit
+   still create the write branch as the repository's first branch?
 
-**D is `main`**, hardcoded. This needs no go-git change, so it can ship now, alongside or right
-after the hardening pass.
+   | Option | Effect |
+   |---|---|
+   | keep today's bootstrap | the write branch becomes the first branch (as now) |
+   | refuse until X exists | `Ready=False`, `Stalled=True`, a reason naming X: "push a first commit to 'X', or set `spec.branch: X`"; recovery is the normal standby flow |
+   | opt-in bootstrap of X | one atomic push: an empty-tree commit on X and the content on the write branch; X must be in `allowedBranches`. This writes to a branch the parent contract says is only read, so it needs its own field |
 
-- `main` is what GitHub, GitLab and Azure DevOps create for a new repository, and what `git init`
-  suggests. `master` is not an acceptable default in 2026, and nothing here falls back to it.
-- Nothing is guessed silently. The assumption is visible in `status.remote.parent.branch`, it is
-  named in the refusal message, and it is documented in `configuration.md`.
+   Whichever is chosen applies only when the server reported X. Without that evidence, today's
+   behavior stays.
 
-### 3.2 Stage 2: ask the server
+### Considered and rejected: assume `main`
 
-When the server reports its unborn HEAD (§2: protocol v2 `ls-refs` with `unborn`, once go-git
-passes it through, §4), **D is what the server said**. This only refines stage 1: the rules below
-are the same, and only where D comes from changes.
+Assuming the default branch is `main` when the server does not say (never `master`) was considered
+as a stage that needs no go-git change. It is rejected:
 
-### 3.3 The rules, given D
+- It turns working configurations into refusals. A repository whose default is `trunk`, with
+  `branch: trunk`, bootstraps correctly today and would be refused.
+- The default is configurable in practice: `git init` takes `init.defaultBranch`, and GitHub
+  organizations set the default name for new repositories. A guess is wrong exactly for those
+  users.
+- It would publish a guessed name inside a remote observation. Making the guess visible does not
+  make it evidence; `status.remote` reports what the remote said.
 
-| Empty repository, and… | Behavior |
-|---|---|
-| `branch == D`, parent omitted | as today: the first commit creates D as the root. `status.remote.parent = {state: Unborn, branch: D}` |
-| `branch != D`, parent omitted | **refuse.** Ready=False/Stalled, reason `ParentBranchUnborn`: "the repository is empty; its default branch 'D' has no commits yet. Push a first commit to 'D', or set `spec.branch: D`". Nothing is written; the work is retained, or remembered per hardening §4.4. When D appears, the normal standby flow creates the write branch from it |
-| `parentBranch: P` | the same refusal and reason, naming P. Today this is `Missing`, a less precise message. See the escape hatch below for `P == branch` |
+Also not introduced here: reading `parentBranch == branch` on an empty repository as "start this
+branch with no history". That would reverse a rule of the built contract as a side effect; if an
+explicit bootstrap form is wanted, it gets its own design.
 
-**The cost of stage 1.** A repository whose real default branch is not `main` (say `trunk`), on a
-server that does not report its unborn HEAD (v0/v1; Azure DevOps is unverified), with
-`branch: trunk`:
-
-- Today that bootstraps `trunk` correctly.
-- Under stage 1 it is refused, because we believe D is `main`. The message says exactly what to
-  do: push a first commit to `trunk`, after which everything works.
-- Stage 2 removes the refusal for every server that reports its unborn HEAD, which includes
-  GitHub.
-
-**Escape hatch, decision for the user:** allow `parentBranch == branch` on an empty repository to
-mean "start this branch with no history".
-
-- This is explicit intent, needs no knowledge of D, and fixes the cost above without a manual
-  push.
-- It reverses one rule from #408. Today, `parentBranch == branch` on an absent branch is refused
-  even in an empty repository.
-
-**Why refuse rather than bootstrap D ourselves.** The parent-branch contract is that the parent is
-*only read*, and it is not in `allowedBranches`. Creating D ourselves would break that, and would
-mean inventing an "initialize repository" commit on a branch we don't own. Refusing is the "clear
-failure" this design asks for, and recovery is the existing standby flow.
-
-**Second decision for the user:** an opt-in that bootstraps instead.
-
-- The mechanism would be one atomic push of two refs: an empty-tree commit on D, and the content
-  commit on the write branch on top of it, with D required to be in `allowedBranches`.
-- This plan does not include it. If you want it, it is a follow-up.
-
-**`RemoteObservation` and the API.** For `Unborn`, `ParentBranch` and `status.remote.parent.branch`
-now always carry D. Update the doc comments that today say "empty when Unborn":
-
-- `internal/git/remote_observation.go`;
-- `api/v1alpha3/gittarget_types.go` ~498–512;
-- `configuration.md`.
-
-## 4. Getting the go-git change (stage 2 only)
+## 4. Getting the go-git change
 
 1. **Upstream first.** Open a go-git issue and a PR with §7: the error type, both paths, and tests
-   against a v2 `git http-backend` and over `file://`.
-   - The change is additive, and backward-compatible for every `errors.Is` caller.
-   - For prior art on our upstream write-ups, see the `file://` CAS write-up in
-     `external-sources/go-git/` (gitignored).
-2. **Our side waits for a go-git release that carries it.** Until then stage 1 applies, so nothing
-   waits on upstream.
-3. **Fallback, if upstream stalls:** a temporary `replace` to a fork tag.
-   - Only with the user's agreement. We already pin an alpha.
-   - Do not hand-roll a v2 `ls-refs` client in this repository.
+   against a v2 `git http-backend` and over `file://`. It is additive and backward-compatible for
+   every `errors.Is` caller. An upstream PR may prefer to expose the unborn target on the
+   `Remote.List` result rather than only through the error; settle the shape with the
+   maintainers.
+2. **Our side waits for a go-git release that carries it.** Until then nothing changes.
+3. **Fallback, if upstream stalls:** a temporary `replace` to a fork tag, only with the user's
+   agreement. Do not hand-roll a v2 `ls-refs` client in this repository.
 
-## 5. Steps
+## 5. Steps once go-git carries it
 
-### 5.1 Stage 1 (now)
-
-0. **Verify the GitHub claim** in §1 on a *throwaway* repository the user creates, never on
-   `ConfigButler/empty.git`. The question: does pushing a non-default branch first make it the
-   default? Record the answer in §1. It sharpens the motivation but does not change the design.
-1. **Discovery.** The empty-repository result carries D. For now that is the constant
-   `DefaultBranchForEmptyRepository = "main"`, with one comment explaining why `main` and why
-   never `master`. `CheckRepo` returns `DefaultBranch{ShortName: "main", Unborn: true}`.
-2. **Worker.**
-   - The empty-repository path applies the §3.3 table before `makeHeadUnborn`.
-   - The refusal is a new sentinel, `ErrParentBranchUnborn`. Handle it like
-     `ErrParentBranchNotFound` on fetch, refresh, publication and the hardening probe, so the same
-     recovery obligation applies.
-   - The observation becomes `ParentState=Unborn` with `ParentBranch=D`.
-3. **Controller.** `parentBranchReadiness` maps that observation (with a `ParentRequested` match)
-   to `ParentBranchUnborn`, Stalled, using the §3.3 message.
-4. **Tests**, red first:
-   - empty repository with `branch: main`: a root commit on `main`, as today. This covers the
-     quickstart path;
-   - `branch: feature`: refused, nothing pushed, the work retained. Then push `main` externally,
-     and assert that `feature` is created from it without another cluster edit;
-   - `parentBranch: release` on an empty repository: the `ParentBranchUnborn` message;
-   - the escape hatch, if chosen;
-   - ledger: rows unchanged. A constant costs no connection.
-5. **Live test.** `TestCheckRepo_PublicConnectivityEmpty` expects `main` / `Unborn`, and its
-   `PrepareBranch("cool-test")` half now expects the refusal.
-6. **Docs.**
-   - In `configuration.md`'s parent-branch section: add the empty-repository rows, the `main`
-     assumption, and the escape hatch, if chosen.
-   - In UPGRADING: a target writing anything other than `main` into an empty repository now waits
-     for `main`, or for the escape hatch.
-
-### 5.2 Stage 2 (once go-git carries the change)
-
-1. **Harness.** Add a `startRealGitServerV2`, or an option, that keeps `Git-Protocol`, so v2
-   reaches `git http-backend`. Leave the ADO/v0 server and the ledger rows untouched.
-2. **Discovery.** `listRemoteRefs`/`SmartFetchFrom` and `CheckRepo` use `errors.As` to read the
-   unborn target. When present it replaces the constant; when absent, the constant stays.
-3. **Tests**, on the v2 harness, with a bare repository made by `init -b trunk`:
-   - `branch: trunk` bootstraps `trunk`;
-   - `branch: feature` is refused, naming `trunk`.
-
-   On the v0 harness, the stage 1 behavior holds and is pinned. The ledger is unchanged: the
-   unborn target rides on the `ls-refs` call discovery already makes.
+1. **Verify the GitHub claim** in §1 on a *throwaway* repository, never on `ConfigButler/empty.git`:
+   does pushing a non-default branch first make it the default? Record the answer in §1.
+2. **Harness.** Add a v2 variant of `startRealGitServer` that keeps `Git-Protocol`. Leave the
+   ADO/v0 server and the ledger rows untouched.
+3. **Discovery.** `CheckRepo`, `listRemoteRefs` and `SmartFetchFrom` read the unborn target with
+   `errors.As`. `CheckRepo` returns `DefaultBranch{ShortName: X, Unborn: true}`; the observation
+   carries `ParentBranch=X` for `Unborn`. Update the doc comments that say "empty when Unborn"
+   (`remote_observation.go`, `api/v1alpha3/gittarget_types.go`, `configuration.md`).
+4. **Tests.** On the v2 harness with a bare repository made by `init -b trunk`, status reports
+   `trunk`; on the v0 harness it reports an empty branch. Behavior is unchanged in both. The
+   ledger is unchanged: the target rides on the `ls-refs` call discovery already makes.
+5. **Live test.** `TestCheckRepo_PublicConnectivityEmpty` expects `main` / `Unborn`.
+6. **Then the policy decision in §3**, as its own change with an UPGRADING note.
 
 ## 6. Out of scope
 
-- The opt-in bootstrap (§3.3, a decision for the user).
+- The policy decision in §3, until the evidence exists.
 - Repositories that are non-empty but whose default branch is unresolved. That is hardening §4.3.
 
 ## 7. The go-git patch used in the experiment (against v6.0.0-alpha.5)
@@ -257,6 +196,3 @@ To reproduce the experiment:
 2. Copy `go.mod` and `go.sum` to `exp.mod` and `exp.sum`, and append
    `replace github.com/go-git/go-git/v6 => <scratch>/go-git`.
 3. Run `go test -modfile=exp.mod ./internal/git -run <a temporary test calling Remote.List>`.
-
-An upstream PR should probably also expose the unborn target on `Remote.List`'s caller-facing API
-rather than only through the error. Discuss the shape with the maintainers.
