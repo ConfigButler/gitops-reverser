@@ -88,7 +88,9 @@ var _ = Describe("Superseded source-scope fields", func() {
 				Branch:         "main",
 				Path:           "clusters/prod",
 				Commit: &configbutleraiv1alpha3.GitTargetCommitSpec{
-					Window: &metav1.Duration{Duration: 30 * time.Second},
+					Window: &configbutleraiv1alpha3.CommitWindow{
+						IdleTimeout: &metav1.Duration{Duration: 30 * time.Second},
+					},
 					Message: &configbutleraiv1alpha3.CommitMessageSpec{
 						LiveTemplate: "chore(mirror): {{ .Count }}",
 					},
@@ -102,7 +104,7 @@ var _ = Describe("Superseded source-scope fields", func() {
 		Expect(k8sClient.Get(ctx,
 			types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, &storedTarget)).To(Succeed())
 		Expect(storedTarget.Spec.Commit).NotTo(BeNil(), "spec.commit must round-trip, not be pruned")
-		Expect(storedTarget.Spec.Commit.Window.Duration).To(Equal(30 * time.Second))
+		Expect(storedTarget.Spec.Commit.Window.IdleTimeout.Duration).To(Equal(30 * time.Second))
 		Expect(storedTarget.Spec.Commit.Message.LiveTemplate).To(Equal("chore(mirror): {{ .Count }}"))
 	})
 

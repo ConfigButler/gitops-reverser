@@ -15,11 +15,13 @@ import (
 // Immutability is field-by-field rather than `self == oldSelf`, and the reason is the one thing to
 // remember when adding a field here: ADD IT TO THIS RULE TOO, or it becomes quietly mutable.
 //
-// A whole-object comparison compares closeDelay as a STRING, and this field does not round-trip as
+// A whole-object comparison compares a duration as a STRING, and a duration does not round-trip as
 // one: a request created with "1m" reads into Go as a time.Duration and serializes back as "1m0s",
 // so every typed update — including one that only touches metadata — was rejected as a spec
-// change. Comparing it as a duration compares what the field means instead of how it was spelled.
-// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.closeDelay) == has(oldSelf.closeDelay) && (!has(self.closeDelay) || duration(self.closeDelay) == duration(oldSelf.closeDelay))",message="CommitRequest spec is immutable after creation"
+// change. CommitRequestWindow compares its durations as durations, which compares what the fields
+// mean instead of how they were spelled.
+// +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit)",message="CommitRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="!has(self.whenNothingToCommit) || self.whenNothingToCommit != 'CommitEmpty' || has(self.message)",message="whenNothingToCommit: CommitEmpty requires spec.message, because a message is all an empty commit records"
 type CommitRequestSpec struct {
 	// GitTargetRef names the GitTarget whose open commit window to finalize.
 	// The GitTarget must be in the same namespace as this CommitRequest.
@@ -41,30 +43,99 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.matches(r'[^\\s\\x{0085}\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}]')",message="message must contain a non-whitespace character"
 	Message string `json:"message,omitempty"`
 
-	// A pointer, not a bare metav1.Duration, so that an omitted field and an explicit "0s" stay
-	// distinguishable once the default is stored: a schema default on a bare value would make
-	// "finalize immediately" inexpressible from a typed Go client, whose zero value is not
-	// serialized, and would erase the distinction a cluster-level default needs.
-	//
-	// The pattern, the CEL bound and the wider-than-Flux unit set are the shape every duration in
-	// this API takes, and GitTargetCommitSpec.Window carries the reasoning for all three.
+	// The default is spelled out rather than {} because the API server checks a default against
+	// the block's CEL rules without applying the nested field defaults first.
 
-	// CloseDelay is how long the request waits for a matching window from the worker's first
-	// receipt, and how long a window it claims keeps collecting from the claim, as a Go duration
-	// string ("2s", "750ms", "1m"). Time spent waiting does not shorten the collection, so a
-	// request created before its writes still gets the whole delay after them; repeated receipt
-	// keeps the waiting deadline. Normal flush triggers can close an attached window early,
-	// carrying its message. A request claims at most one open window and cannot rename a
-	// finalized commit. At most "5m".
-	// Defaults to "2s", which covers the time a write spends waiting for its audit fact before
-	// the commit window opens; an explicit "0s" requests immediate finalization and will usually
-	// find nothing pending. A delay does not reserve a transaction.
+	// Window says which commit window this request attaches to, how long it waits for one, and
+	// the timers that close the window once it has attached. They replace the GitTarget's timers
+	// for that window, shorter or longer. Omitted, it is the defaults of every field below: attach
+	// to the author's current or next window within 2s, then close it 2s later.
+	// +optional
+	// +kubebuilder:default={attach: "CurrentOrNext", attachTimeout: "2s", maxDuration: "2s"}
+	Window *CommitRequestWindow `json:"window,omitempty"`
+
+	// WhenNothingToCommit decides what the request does when it ends with nothing to commit:
+	// because attachTimeout ran out with no eligible window, or because the window it attached to
+	// closed, for any reason, without changing Git. Resolve finishes without a commit; CommitEmpty
+	// records spec.message in an empty commit, and the Ready reason still says which of the two
+	// happened. A window that belonged to another author never falls back to an empty commit, and
+	// neither does a suspended GitTarget. Defaults to Resolve.
+	// +optional
+	// +kubebuilder:validation:Enum=Resolve;CommitEmpty
+	// +kubebuilder:default=Resolve
+	WhenNothingToCommit NothingToCommitAction `json:"whenNothingToCommit,omitempty"`
+}
+
+// NothingToCommitAction is what a CommitRequest does when it ends with nothing to commit.
+type NothingToCommitAction string
+
+const (
+	// NothingToCommitResolve finishes the request without a commit.
+	NothingToCommitResolve NothingToCommitAction = "Resolve"
+	// NothingToCommitCommitEmpty records the request's message in an empty commit.
+	NothingToCommitCommitEmpty NothingToCommitAction = "CommitEmpty"
+)
+
+// AttachPolicy selects the commit window a CommitRequest attaches to.
+type AttachPolicy string
+
+const (
+	// AttachCurrentOrNext attaches to the author's window if one is open when the worker
+	// registers the request, and otherwise to the next one a write opens.
+	AttachCurrentOrNext AttachPolicy = "CurrentOrNext"
+	// AttachNext closes the author's open window, under its own message, and attaches to the
+	// next one a write opens. It separates work the worker already collected from work that
+	// reaches it afterward; it cannot prove a write was made after the request.
+	AttachNext AttachPolicy = "Next"
+)
+
+// CommitRequestWindow is how a CommitRequest attaches to a commit window and when that window
+// closes. A window is only ever opened by a write; a request waits for one and never opens one.
+//
+// Every duration shares the shape GitTargetCommitSpec documents: a Go duration string behind a
+// pattern and a CEL bound. The immutability rule compares them as durations, for the reason
+// CommitRequestSpec gives.
+// +kubebuilder:validation:XValidation:rule="self.attach == oldSelf.attach && duration(self.attachTimeout) == duration(oldSelf.attachTimeout) && duration(self.maxDuration) == duration(oldSelf.maxDuration) && has(self.idleTimeout) == has(oldSelf.idleTimeout) && (!has(self.idleTimeout) || duration(self.idleTimeout) == duration(oldSelf.idleTimeout))",message="CommitRequest spec is immutable after creation"
+// +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.window.idleTimeout must not exceed maxDuration"
+// +kubebuilder:validation:XValidation:rule="self.attach != 'Next' || duration(self.attachTimeout) > duration('0s')",message="attach: Next needs a positive attachTimeout; with 0s it would close the author's window and give up in the same instant"
+type CommitRequestWindow struct {
+	// Attach selects the window: CurrentOrNext attaches to the author's window if one is open
+	// when the worker registers the request, and otherwise to the next one; Next first closes the
+	// author's open window, under its own message, and attaches to the next one. Defaults to
+	// CurrentOrNext.
+	// +optional
+	// +kubebuilder:validation:Enum=CurrentOrNext;Next
+	// +kubebuilder:default=CurrentOrNext
+	Attach AttachPolicy `json:"attach,omitempty"`
+
+	// AttachTimeout is how long the request waits for a window to attach to, counted from when
+	// the branch worker registers it, as a Go duration string. "0s" attaches to a window already
+	// open, or gives up at once. A request whose wait ran out never takes a later window. At most
+	// "5m". Defaults to "2s", which covers a write's wait for its audit fact.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
 	// +kubebuilder:default="2s"
-	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="closeDelay must not exceed 5m"
-	CloseDelay *metav1.Duration `json:"closeDelay,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="spec.window.attachTimeout must not exceed 5m"
+	AttachTimeout *metav1.Duration `json:"attachTimeout,omitempty"`
+
+	// IdleTimeout closes the attached window after this much silence; every write it collects
+	// restarts it. Omitted, the window has no idle close and maxDuration alone ends it. At most
+	// "5m".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="spec.window.idleTimeout must not exceed 5m"
+	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
+
+	// MaxDuration closes the attached window this long after the request attached, however much
+	// keeps arriving. "0s" finalizes right after the attach. At most "5m". Defaults to "2s".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:default="2s"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('5m')",message="spec.window.maxDuration must not exceed 5m"
+	MaxDuration *metav1.Duration `json:"maxDuration,omitempty"`
 }
 
 // CommitRequestStatus defines the observed state of CommitRequest. Progress and

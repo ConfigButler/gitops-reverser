@@ -26,7 +26,8 @@ import (
 // discovered later by whichever component reads it first. What it costs is that `30` is not a
 // duration: the unit is mandatory, as it is everywhere else in this project.
 var _ = Describe("Duration fields", func() {
-	newTarget := func(name string, window any) *unstructured.Unstructured {
+	// newTargetWindow builds a GitTarget with the given commit.window block.
+	newTargetWindow := func(name string, window map[string]any) *unstructured.Unstructured {
 		spec := map[string]any{
 			"gitProviderRef": map[string]any{"name": "any-provider"},
 			"branch":         "main",
@@ -40,13 +41,18 @@ var _ = Describe("Duration fields", func() {
 			"spec":       spec,
 		}}
 	}
+	// newTarget sets idleTimeout under a maxDuration raised to its own bound, so the shape tables
+	// below test the duration alone and not the idleTimeout <= maxDuration rule.
+	newTarget := func(name string, idle any) *unstructured.Unstructured {
+		return newTargetWindow(name, map[string]any{"idleTimeout": idle, "maxDuration": "24h"})
+	}
 
 	DescribeTable("reject anything that is not a Go duration",
 		func(name string, window string) {
 			ctx := context.Background()
 			err := k8sClient.Create(ctx, newTarget(name, window))
 			Expect(err).To(HaveOccurred(), "the API server must refuse %q, not store it", window)
-			Expect(err.Error()).To(ContainSubstring("spec.commit.window"),
+			Expect(err.Error()).To(ContainSubstring("spec.commit.window.idleTimeout"),
 				"the rejection must name the field, or an operator has to guess which value it meant")
 		},
 		Entry("prose", "window-prose", "5 seconds"),
@@ -72,14 +78,14 @@ var _ = Describe("Duration fields", func() {
 			var stored configbutleraiv1alpha3.GitTarget
 			Expect(k8sClient.Get(ctx,
 				types.NamespacedName{Name: name, Namespace: "default"}, &stored)).To(Succeed())
-			Expect(stored.Spec.Commit.Window.Duration).To(Equal(want),
+			Expect(stored.Spec.Commit.Window.IdleTimeout.Duration).To(Equal(want),
 				"what round-trips must be the duration that was written")
 		},
 		Entry("sub-second", "window-ms", "750ms", 750*time.Millisecond),
 		Entry("seconds", "window-s", "5s", 5*time.Second),
 		Entry("fractional", "window-fraction", "1.5m", 90*time.Second),
 		Entry("compound", "window-compound", "1m30s", 90*time.Second),
-		Entry("zero, which opts into per-event commits", "window-zero", "0s", time.Duration(0)),
+		Entry("zero, which commits every write on its own", "window-zero", "0s", time.Duration(0)),
 		// Go's own units, admitted because the accepted set has to be closed under
 		// serialization: see the round-trip spec below.
 		Entry("microseconds, as Go spells them", "window-micros", "500µs", 500*time.Microsecond),
@@ -129,65 +135,138 @@ var _ = Describe("Duration fields", func() {
 		Entry("a value Go leaves alone", "rt-stable", "750ms"),
 	)
 
-	It("defaults CommitRequest.spec.closeDelay to 2s and preserves an explicit 0s", func() {
+	It("fills a GitTarget's window block field by field, and refuses an idleTimeout past maxDuration", func() {
+		ctx := context.Background()
+
+		empty := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "GitTarget",
+			"metadata":   map[string]any{"name": "window-empty-block", "namespace": "default"},
+			"spec": map[string]any{
+				"gitProviderRef": map[string]any{"name": "any-provider"},
+				"branch":         "main",
+				"path":           "clusters/prod",
+				"commit":         map[string]any{"window": map[string]any{}},
+			},
+		}}
+		Expect(k8sClient.Create(ctx, empty)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, empty) })
+		window, _, err := unstructured.NestedStringMap(empty.Object, "spec", "commit", "window")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(window).To(Equal(map[string]string{"idleTimeout": "5s", "maxDuration": "1m"}),
+			"an empty block takes both defaults")
+
+		err = k8sClient.Create(ctx, newTargetWindow("window-idle-past-max", map[string]any{"idleTimeout": "2m"}))
+		Expect(err).To(HaveOccurred(), "an idleTimeout past the default 1m maxDuration can never fire")
+		Expect(err.Error()).To(ContainSubstring("idleTimeout must not exceed maxDuration"))
+	})
+
+	// The one upgrade hazard, pinned: before this release commit.window was a duration string.
+	// The new schema refuses that shape at admission rather than storing something no typed client
+	// can decode — which is why UPGRADING removes it from stored targets before the upgrade.
+	It("refuses the old string commit.window", func() {
+		ctx := context.Background()
+		legacy := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "GitTarget",
+			"metadata":   map[string]any{"name": "window-legacy-string", "namespace": "default"},
+			"spec": map[string]any{
+				"gitProviderRef": map[string]any{"name": "any-provider"},
+				"branch":         "main",
+				"path":           "clusters/prod",
+				"commit":         map[string]any{"window": "5s"},
+			},
+		}}
+		err := k8sClient.Create(ctx, legacy)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.commit.window"))
+	})
+
+	newRequest := func(name string, spec map[string]any) *unstructured.Unstructured {
+		spec["gitTargetRef"] = map[string]any{"name": "any-target"}
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "CommitRequest",
+			"metadata":   map[string]any{"name": name, "namespace": "default"},
+			"spec":       spec,
+		}}
+	}
+
+	It("defaults an omitted CommitRequest window and whenNothingToCommit, and keeps explicit zeros", func() {
 		ctx := context.Background()
 
 		omitted := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: "delay-omitted", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "window-omitted", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
 				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, omitted)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, omitted) })
-		Expect(omitted.Spec.CloseDelay).NotTo(BeNil(), "the schema default must be filled in")
-		Expect(omitted.Spec.CloseDelay.Duration).To(Equal(2 * time.Second))
+		Expect(omitted.Spec.Window).NotTo(BeNil(), "the block default must be filled in")
+		Expect(omitted.Spec.Window.Attach).To(Equal(configbutleraiv1alpha3.AttachCurrentOrNext))
+		Expect(omitted.Spec.Window.AttachTimeout.Duration).To(Equal(2 * time.Second))
+		Expect(omitted.Spec.Window.MaxDuration.Duration).To(Equal(2 * time.Second))
+		Expect(omitted.Spec.Window.IdleTimeout).To(BeNil(), "no idle close unless one is asked for")
+		Expect(omitted.Spec.WhenNothingToCommit).To(Equal(configbutleraiv1alpha3.NothingToCommitResolve))
 
-		// The pointer exists for exactly this: an explicit "0s" is a request to finalize
-		// immediately, and defaulting must not read it as an omission.
-		immediate := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: "delay-immediate", Namespace: "default"},
+		// The pointers exist for exactly this: an explicit "0s" is a value, and defaulting must
+		// not read it as an omission.
+		zero := &configbutleraiv1alpha3.CommitRequest{
+			ObjectMeta: metav1.ObjectMeta{Name: "window-zeros", Namespace: "default"},
 			Spec: configbutleraiv1alpha3.CommitRequestSpec{
 				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
-				CloseDelay:   &metav1.Duration{},
+				Window: &configbutleraiv1alpha3.CommitRequestWindow{
+					AttachTimeout: &metav1.Duration{},
+					IdleTimeout:   &metav1.Duration{},
+					MaxDuration:   &metav1.Duration{},
+				},
 			},
 		}
-		Expect(k8sClient.Create(ctx, immediate)).To(Succeed())
-		DeferCleanup(func() { _ = k8sClient.Delete(ctx, immediate) })
-		Expect(immediate.Spec.CloseDelay).NotTo(BeNil())
-		Expect(immediate.Spec.CloseDelay.Duration).To(BeZero())
+		Expect(k8sClient.Create(ctx, zero)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, zero) })
+		Expect(zero.Spec.Window.AttachTimeout.Duration).To(BeZero())
+		Expect(zero.Spec.Window.IdleTimeout.Duration).To(BeZero())
+		Expect(zero.Spec.Window.MaxDuration.Duration).To(BeZero())
 	})
 
-	// The bound the int field carried as Maximum=300 survives the retype, as CEL: the field is a
-	// string to the API server, so the pattern decides whether a value is a duration at all and
-	// only CEL can compare two that are.
-	It("keeps the upper bound on closeDelay, now as a CEL rule", func() {
+	DescribeTable("refuse a CommitRequest window the rules forbid",
+		func(name string, spec map[string]any, message string) {
+			err := k8sClient.Create(context.Background(), newRequest(name, spec))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(message))
+		},
+		Entry("a maxDuration past its bound", "window-max-too-long",
+			map[string]any{"window": map[string]any{"maxDuration": "10m"}}, "maxDuration must not exceed 5m"),
+		Entry("an attachTimeout past its bound", "window-attach-too-long",
+			map[string]any{"window": map[string]any{"attachTimeout": "6m"}}, "attachTimeout must not exceed 5m"),
+		Entry("an idleTimeout past maxDuration", "window-idle-past-max",
+			map[string]any{"window": map[string]any{"idleTimeout": "5s"}}, "idleTimeout must not exceed maxDuration"),
+		Entry("Next with no time to wait", "window-next-zero",
+			map[string]any{"window": map[string]any{"attach": "Next", "attachTimeout": "0s"}},
+			"attach: Next needs a positive attachTimeout"),
+		Entry("an attach value that does not exist", "window-attach-bogus",
+			map[string]any{"window": map[string]any{"attach": "Current"}}, "spec.window.attach"),
+		Entry("CommitEmpty with no message to record", "empty-no-message",
+			map[string]any{"whenNothingToCommit": "CommitEmpty"}, "CommitEmpty requires spec.message"),
+	)
+
+	It("accepts the documented rolling shape and the bounds themselves", func() {
 		ctx := context.Background()
-
-		tooLong := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: "delay-too-long", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
-				CloseDelay:   &metav1.Duration{Duration: 10 * time.Minute},
-			},
+		for name, spec := range map[string]map[string]any{
+			"window-rolling": {"window": map[string]any{"idleTimeout": "1s", "maxDuration": "10s"}},
+			"window-bounds":  {"window": map[string]any{"attachTimeout": "5m", "maxDuration": "5m"}},
+			"window-next":    {"window": map[string]any{"attach": "Next", "attachTimeout": "10s"}},
+			"empty-recorded": {"whenNothingToCommit": "CommitEmpty", "message": "save"},
+		} {
+			request := newRequest(name, spec)
+			Expect(k8sClient.Create(ctx, request)).To(Succeed(), name)
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, request) })
 		}
-		err := k8sClient.Create(ctx, tooLong)
-		Expect(err).To(HaveOccurred(), "a request may not hold a window open for ten minutes")
-		Expect(err.Error()).To(ContainSubstring("closeDelay must not exceed 5m"))
-
-		atTheBound := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: "delay-at-bound", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
-				CloseDelay:   &metav1.Duration{Duration: 5 * time.Minute},
-			},
-		}
-		Expect(k8sClient.Create(ctx, atTheBound)).To(Succeed(), "the bound itself is allowed")
-		DeferCleanup(func() { _ = k8sClient.Delete(ctx, atTheBound) })
 	})
 
 	// CommitRequest carries the same hazard with immutability on top: its spec may not change
-	// after creation, and a whole-object comparison compares the delay as a STRING. "1m" reads
+	// after creation, and a whole-object comparison compares a duration as a STRING. "1m" reads
 	// back into Go and serializes as "1m0s", so before the rule compared durations instead of
 	// spellings, every typed update — including one that only touches a label — was rejected as
 	// an attempt to change an immutable spec.
@@ -195,31 +274,21 @@ var _ = Describe("Duration fields", func() {
 		ctx := context.Background()
 
 		// Created as UNSTRUCTURED, carrying the spelling a HUMAN writes. That is the whole
-		// reproduction, and an earlier version of this spec missed it: a typed create serializes
-		// metav1.Duration{time.Minute} as "1m0s", so the stored value was already canonical and
-		// the update below sent back a byte-identical spec. The spec passed against the broken
-		// `self == oldSelf` rule, which is the definition of testing nothing.
-		request := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "configbutler.ai/v1alpha3",
-			"kind":       "CommitRequest",
-			"metadata":   map[string]any{"name": "delay-respelled", "namespace": "default"},
-			"spec": map[string]any{
-				"gitTargetRef": map[string]any{"name": "any-target"},
-				"closeDelay":   "1m",
-			},
-		}}
+		// reproduction: a typed create serializes metav1.Duration{time.Minute} as "1m0s", so the
+		// stored value would already be canonical and the update below would send back a
+		// byte-identical spec, testing nothing.
+		request := newRequest("window-respelled", map[string]any{
+			"window": map[string]any{"attachTimeout": "1m", "idleTimeout": "0.5m", "maxDuration": "1m"},
+		})
 		Expect(k8sClient.Create(ctx, request)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, request) })
 
-		stored, _, err := unstructured.NestedString(request.Object, "spec", "closeDelay")
+		stored, _, err := unstructured.NestedString(request.Object, "spec", "window", "maxDuration")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stored).To(Equal("1m"),
 			"the API server stores what was written; nothing normalizes it on the way in")
 
-		// Now the TYPED round trip: read "1m" into a time.Duration and write the whole object
-		// back, which re-serializes the spec as "1m0s". Only a rule that compares durations
-		// rather than spellings accepts that.
-		key := types.NamespacedName{Name: "delay-respelled", Namespace: "default"}
+		key := types.NamespacedName{Name: "window-respelled", Namespace: "default"}
 		Eventually(func() error {
 			var typed configbutleraiv1alpha3.CommitRequest
 			if err := k8sClient.Get(ctx, key, &typed); err != nil {
@@ -234,60 +303,65 @@ var _ = Describe("Duration fields", func() {
 			"the same duration spelled differently is not a spec change")
 	})
 
-	It("still refuses a real change to an immutable CommitRequest spec", func() {
+	DescribeTable("still refuse a real change to an immutable CommitRequest spec",
+		func(name string, mutate func(*configbutleraiv1alpha3.CommitRequestSpec)) {
+			ctx := context.Background()
+			request := &configbutleraiv1alpha3.CommitRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				Spec: configbutleraiv1alpha3.CommitRequestSpec{
+					GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
+					Message:      "save",
+					Window: &configbutleraiv1alpha3.CommitRequestWindow{
+						MaxDuration: &metav1.Duration{Duration: time.Minute},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, request)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, request) })
+
+			key := types.NamespacedName{Name: request.Name, Namespace: request.Namespace}
+			Eventually(func() string {
+				var current configbutleraiv1alpha3.CommitRequest
+				if err := k8sClient.Get(ctx, key, &current); err != nil {
+					return err.Error()
+				}
+				mutate(&current.Spec)
+				if err := k8sClient.Update(ctx, &current); err != nil {
+					return err.Error()
+				}
+				return ""
+			}, "10s", "200ms").Should(ContainSubstring("immutable"),
+				"comparing by value must not become comparing by nothing")
+		},
+		Entry("maxDuration", "immutable-max", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+			spec.Window.MaxDuration = &metav1.Duration{Duration: 30 * time.Second}
+		}),
+		Entry("attach", "immutable-attach", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+			spec.Window.Attach = configbutleraiv1alpha3.AttachNext
+		}),
+		Entry("an idleTimeout added later", "immutable-idle", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+			spec.Window.IdleTimeout = &metav1.Duration{Duration: time.Second}
+		}),
+		Entry("whenNothingToCommit", "immutable-empty", func(spec *configbutleraiv1alpha3.CommitRequestSpec) {
+			spec.WhenNothingToCommit = configbutleraiv1alpha3.NothingToCommitCommitEmpty
+		}),
+	)
+
+	// closeDelay is GONE, and a removed field is pruned on write rather than refused by a client
+	// that does not validate fields strictly, which is how a controller writes. The UPGRADING entry
+	// exists for exactly this: a request that still sets closeDelay: 30s now collects for 2s.
+	It("prunes a removed closeDelay instead of honouring it", func() {
 		ctx := context.Background()
 
-		request := &configbutleraiv1alpha3.CommitRequest{
-			ObjectMeta: metav1.ObjectMeta{Name: "delay-immutable", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.CommitRequestSpec{
-				GitTargetRef: meta.LocalObjectReference{Name: "any-target"},
-				CloseDelay:   &metav1.Duration{Duration: time.Minute},
-			},
-		}
-		Expect(k8sClient.Create(ctx, request)).To(Succeed())
-		DeferCleanup(func() { _ = k8sClient.Delete(ctx, request) })
-
-		var stored configbutleraiv1alpha3.CommitRequest
-		key := types.NamespacedName{Name: request.Name, Namespace: request.Namespace}
-		Expect(k8sClient.Get(ctx, key, &stored)).To(Succeed())
-		stored.Spec.CloseDelay = &metav1.Duration{Duration: 30 * time.Second}
-		Eventually(func() string {
-			var current configbutleraiv1alpha3.CommitRequest
-			if err := k8sClient.Get(ctx, key, &current); err != nil {
-				return err.Error()
-			}
-			current.Spec.CloseDelay = &metav1.Duration{Duration: 30 * time.Second}
-			if err := k8sClient.Update(ctx, &current); err != nil {
-				return err.Error()
-			}
-			return ""
-		}, "10s", "200ms").Should(ContainSubstring("immutable"),
-			"comparing by value must not become comparing by nothing")
-	})
-
-	// The int spelling is GONE, and a removed field is pruned on write rather than refused — the
-	// same quiet behaviour the superseded-field specs pin. It is quiet in a way that matters here:
-	// a legacy `closeDelaySeconds: 30` applies cleanly and finalizes after 2 seconds instead of
-	// 30. That is what the UPGRADING.md entry and its inventory command exist for.
-	It("prunes a legacy closeDelaySeconds instead of honouring it", func() {
-		ctx := context.Background()
-
-		legacy := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "configbutler.ai/v1alpha3",
-			"kind":       "CommitRequest",
-			"metadata":   map[string]any{"name": "legacy-close-delay", "namespace": "default"},
-			"spec": map[string]any{
-				"gitTargetRef":      map[string]any{"name": "any-target"},
-				"closeDelaySeconds": int64(30),
-			},
-		}}
+		legacy := newRequest("legacy-close-delay", map[string]any{"closeDelay": "30s"})
 		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, legacy) })
 
 		spec, _, err := unstructured.NestedMap(legacy.Object, "spec")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(spec).NotTo(HaveKey("closeDelaySeconds"), "the int spelling is dropped silently")
-		Expect(spec).To(HaveKeyWithValue("closeDelay", "2s"),
-			"and the default lands, so the request finalizes in 2s where it asked for 30")
+		Expect(spec).NotTo(HaveKey("closeDelay"), "the removed field is dropped")
+		maxDuration, _, err := unstructured.NestedString(legacy.Object, "spec", "window", "maxDuration")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(maxDuration).To(Equal("2s"), "and the default lands in its place")
 	})
 })

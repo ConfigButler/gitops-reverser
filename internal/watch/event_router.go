@@ -60,15 +60,19 @@ func NewEventRouter(
 
 // ServiceCommitRequest is the controller's attach-then-poll seam (§6.4.3): it
 // resolves the GitTarget's branch worker, registers the CommitRequest attach
-// idempotently on that worker's FIFO event queue (bind the message to the author's
-// open window, finalize after the grace), and returns the request's current
+// idempotently on that worker's FIFO event queue (attach it to the author's window
+// with its message and timers), and returns the request's current
 // outcome. resolved=false means the worker has not finished — the controller
 // requeues and polls again.
 //
 // attach.GitTargetName/GitTargetNamespace name the GitTarget; the worker is keyed
-// by its provider+branch. When no worker exists there is, by definition, no window
-// to collect into, so the request resolves NoOpenWindow (as before). A GitTarget
-// that cannot be read is a transient error the controller surfaces and retries.
+// by its provider+branch. A worker that does not exist YET — at startup, or before the GitTarget's
+// first reconcile — is not an answer: the request stays pending in phase WaitingForWorker and the
+// controller polls again, within its safety window. Resolving NoOpenWindow there would end a save
+// before the worker that could collect its writes, or record its CommitEmpty message, had started.
+// It is reported as pending and NOT as an error, because the GitTarget did resolve: the controller
+// reads a service error as "the target never resolved" and would count the request's eventual
+// failure without its GitTarget labels. A GitTarget that cannot be read is that error.
 func (r *EventRouter) ServiceCommitRequest(
 	ctx context.Context,
 	attach git.AttachCommitRequest,
@@ -88,18 +92,20 @@ func (r *EventRouter) ServiceCommitRequest(
 		gitTarget.Spec.Branch,
 	)
 	if !exists {
-		r.Log.V(1).Info("ServiceCommitRequest: no worker for GitTarget, nothing to collect into",
+		r.Log.V(1).Info("ServiceCommitRequest: no branch worker for the GitTarget yet; will retry",
 			"gitTarget", attach.GitTargetNamespace+"/"+attach.GitTargetName)
-		return git.FinalizeResult{
-			Outcome: git.FinalizeNoOpenWindow,
-			Branch:  gitTarget.Spec.Branch,
-		}, true, nil
+		return git.FinalizeResult{Branch: gitTarget.Spec.Branch, Phase: git.PhaseWaitingForWorker}, false, nil
 	}
 
 	// Idempotent register (the worker keys by request identity and keeps the first
 	// finalize deadline), then poll the outcome.
 	worker.EnqueueAttach(&attach)
 	result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID)
+	if !resolved {
+		// Report where the worker says the request stands, so the controller never has to infer
+		// a phase from having sent the attach.
+		result.Phase = worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
+	}
 	return result, resolved, nil
 }
 

@@ -1,7 +1,8 @@
-# CommitRequest is a one-shot "save" signal. Creating one finalizes the open
-# commit window for the referenced GitTarget immediately, instead of waiting
-# for the rolling silence timer. The resulting commit is reported in
-# .status.commit when the finalize has pushed.
+# CommitRequest is a one-shot "save" signal. It attaches to its author's commit
+# window for the referenced GitTarget, gives that window its message, and
+# replaces the window's timers with its own. A window is only ever opened by a
+# write; a request waits for one and never opens one. The resulting commit is
+# reported in .status.commit once it has been pushed.
 #
 # Frontends typically use metadata.generateName so each "save" is a fresh
 # object. The referenced GitTarget must live in the same namespace.
@@ -17,9 +18,17 @@ spec:
   # for a subject plus body; other control characters are rejected. When
   # omitted, the generated grouped-commit message is used.
   message: "Increase checkout API memory after load-test failures"
-  # Optional collect delay as a Go duration string, at most "5m", default "2s". It
-  # covers the wait a write spends on its audit fact before the commit window opens,
-  # so a save issued right after the edit still finds its own window. Raise it on a
-  # loaded or distant cluster; "0s" finalizes immediately and usually finds nothing
-  # pending.
-  closeDelay: "2s"
+  # Optional. Every field shown is its default.
+  window:
+    # CurrentOrNext attaches to the author's open window, or the next one a write
+    # opens. Next first closes the open window, under its own message.
+    attach: CurrentOrNext
+    # How long to wait for a window, from when the branch worker registers the
+    # request. "2s" covers a write's wait for its audit fact.
+    attachTimeout: "2s"
+    # Close the attached window this long after the attach. Add idleTimeout (at
+    # most maxDuration) to also close it after that much silence.
+    maxDuration: "2s"
+  # Resolve finishes without a commit when nothing changed; CommitEmpty records
+  # the message in an empty commit instead.
+  whenNothingToCommit: Resolve

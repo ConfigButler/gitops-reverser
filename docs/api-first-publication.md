@@ -125,7 +125,8 @@ a publication succeeds. These clocks overlap.
 
 | Control | Value | Starts or resets when | Purpose |
 | --- | --- | --- | --- |
-| `GitTarget.spec.commit.window` | Default `5s`; `0s` disables waiting | A same-author, same-target event enters the open window | Group an editing burst into one commit |
+| `GitTarget.spec.commit.window.idleTimeout` | Default `5s`; `0s` disables waiting | A same-author, same-target event enters the open window | Group an editing burst into one commit |
+| `GitTarget.spec.commit.window.maxDuration` | Default `1m` | The window opens | Stop continuous activity from postponing a commit |
 | `PushCooldown` | Fixed `5s` per worker | A publication succeeds, including a verified no-op | Accumulate finalized commits for one push |
 | Identity boundary | Immediate | Author or target changes | Keep commit attribution and scope separate |
 | Atomic write | Immediate local processing | A caller-defined batch arrives | Preserve a batch after finalizing earlier open work |
@@ -133,7 +134,7 @@ a publication succeeds. These clocks overlap.
 | Shutdown | Immediate attempt | The worker exits | Attempt to publish finalized work without waiting for cooldown |
 
 The first publication can push as soon as a commit is ready. There is no initial five-second
-push wait. Setting `commit.window: 0s` makes local commits immediately; subsequent publications
+push wait. Setting `commit.window.idleTimeout: 0s` makes local commits immediately; subsequent publications
 still share the branch cooldown. Multiple targets do not each receive a separate push allowance.
 
 For a healthy, quiet branch, a useful approximation is:
@@ -153,7 +154,7 @@ sequenceDiagram
     participant C as Local commits
     participant P as Remote publication
 
-    Note over E,P: Illustrative times, commit.window = 2s<br/>Previous successful push finished at t=0
+    Note over E,P: Illustrative times, idleTimeout = 2s<br/>Previous successful push finished at t=0
     E->>C: t=1: Alice edits
     E->>C: t=2: Alice edits again, silence deadline moves to t=4
     C->>C: t=4: Finalize one commit
@@ -162,10 +163,14 @@ sequenceDiagram
     Note over E,P: With the default 5s window, this burst finalizes at t=7<br/>The cooldown has already elapsed by then
 ```
 
-The silence window has no independent maximum age. Continuous matching edits can keep it open
-until another closing condition occurs, such as a `CommitRequest`, identity change, or byte
-threshold. A five-second window therefore does not promise publication within five seconds of
-the first edit. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
+The idle timeout restarts on every matching edit, so continuous edits keep a window open until its
+`maxDuration` (`1m` by default, counted from the window opening) or another closing condition, such
+as an identity change or the byte threshold. A five-second idle timeout therefore does not promise
+publication within five seconds of the first edit. A `CommitRequest` that attaches replaces both
+timers with its own `idleTimeout` and `maxDuration`, both counted from the attach; an omitted
+`idleTimeout` leaves `maxDuration` alone to close the window. Its `attachTimeout` is separate: it
+runs from the worker's registration of the request and only bounds the wait for a window to attach
+to. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
 
 ## What can stop a write before it reaches Git
 
@@ -272,9 +277,11 @@ are never held by the same worker.
 
 ## Story 3: save now, and know what reached Git
 
-A `CommitRequest` closes a matching author-and-target window after its collection delay. It
-does not bypass the push cooldown. The default delay is `2s`, measured from the worker's first
-receipt; repeat attaches keep the original deadline. The accepted range is `0` to `300` seconds.
+A `CommitRequest` attaches to a matching author-and-target window and closes it. It does not
+bypass the push cooldown. Two settings with separate clocks set the timing: `attachTimeout` runs
+from the worker's registration of the request and bounds the wait for a window, and `maxDuration`
+runs from the attach and bounds the collection that follows. Both default to `2s` and accept `0s`
+to `5m`. A repeat attach restarts neither clock.
 
 ```mermaid
 sequenceDiagram
@@ -282,8 +289,10 @@ sequenceDiagram
     participant W as Branch worker
     participant G as Git remote
 
-    C->>W: Attach request to a matching window
-    Note over W: First receipt fixes the close deadline<br/>Default collection delay: 2s
+    C->>W: Register request
+    Note over W: Registration starts attachTimeout (default 2s)
+    W->>W: Attach to a matching window
+    Note over W: Attach starts maxDuration (default 2s)
     W->>W: Finalize window, keep request with retained write
     C->>W: Poll / repeat attach every 2s
     W-->>C: Still pending while awaiting publication
@@ -304,10 +313,10 @@ cadence and Kubernetes status writes. The controller's safety timeout is `420s` 
 creation; resolved worker outcomes are retained for `15m` with cleanup on subsequent resolutions.
 See the [request contract](spec/commitrequest-design.md).
 
-The two-second collection delay is not a guarantee that an earlier API edit has reached the
+The two-second `attachTimeout` is not a guarantee that an earlier API edit has reached the
 worker. Attribution can wait up to three seconds per event, and queueing adds more. A request
-whose matching event arrives after its deadline can finish with `NoWindowInGrace`. Increasing the
-delay permits more collection time; it does not reserve an API transaction.
+whose matching event arrives after its deadline finishes with `NoWindow`. Increasing
+`attachTimeout` permits a longer wait; it does not reserve an API transaction.
 
 ## Story 4: an idle target and a Git-side edit
 

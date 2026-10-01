@@ -267,7 +267,8 @@ spec:
   clusterProviderRef:
     name: %s
   commit:
-    window: "0s"
+    window:
+      idleTimeout: "0s"
 `, name, ns, gitProvider, targetPath, clusterProvider)
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }

@@ -87,6 +87,32 @@ func CollectHistogramCount(
 	return count, ok
 }
 
+// CollectHistogramSum returns the sum of the named float histogram data points whose attributes
+// are a superset of match. ok is false when no matching data point exists.
+func CollectHistogramSum(
+	reader *sdkmetric.ManualReader,
+	metricName string,
+	match map[string]string,
+) (float64, bool) {
+	data, found := collectMetric(reader, metricName)
+	if !found {
+		return 0, false
+	}
+	agg, isHist := data.(metricdata.Histogram[float64])
+	if !isHist {
+		return 0, false
+	}
+	var sum float64
+	var ok bool
+	for _, dp := range agg.DataPoints {
+		if attrsMatch(dp.Attributes, match) {
+			sum += dp.Sum
+			ok = true
+		}
+	}
+	return sum, ok
+}
+
 // attrsMatch reports whether every key/value in match is present in set.
 func attrsMatch(set attribute.Set, match map[string]string) bool {
 	for key, want := range match {

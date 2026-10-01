@@ -2,6 +2,8 @@
 
 package git
 
+import "time"
+
 // openWindow is the one live commit-shaped event window owned by a branch
 // worker. It accepts only events with the same author and target; repeated
 // writes to the same Git path are last-write-wins while preserving first-seen
@@ -41,9 +43,42 @@ type openWindow struct {
 	// Once set, whichever path finalizes the window uses it instead of the
 	// generated grouped-commit message, so an early cut-off still carries intent.
 	pendingMessage string
-	// pendingCR identifies the CommitRequest claiming this window; at most one. On
+	// pendingCR identifies the CommitRequest attached to this window; at most one. On
 	// finalize its outcome is resolved (Committed once the carrying write pushes).
 	pendingCR *commitRequestID
+
+	// timers decide when the window closes. They are the GitTarget's, snapshotted when the window
+	// opened, until a CommitRequest attaches and replaces them with its own.
+	timers windowTimers
+	// openedAt is when the write that opened the window arrived. Unlike the timers and lastWriteAt it
+	// never moves, not even when a CommitRequest attaches, so it is what the window's collection time
+	// is measured from.
+	openedAt time.Time
+	// lastWriteAt is when the idle interval last restarted: the latest collected write, or the
+	// attach of a CommitRequest.
+	lastWriteAt time.Time
+}
+
+// windowTimers are the two timers that close a commit window, resolved to absolute terms.
+type windowTimers struct {
+	// idle is the silence that closes the window. Ignored when noIdle is set.
+	idle time.Duration
+	// noIdle disables the idle close: a CommitRequest that set no idleTimeout collects until
+	// maxAt alone.
+	noIdle bool
+	// maxAt closes the window whatever keeps arriving: the window's opening (or the attach) plus
+	// maxDuration.
+	maxAt time.Time
+}
+
+// closeAt is when the window closes, and which timer closes it. The first deadline reached wins.
+func (w *openWindow) closeAt() (time.Time, windowFinalizeReason) {
+	if !w.timers.noIdle {
+		if idleAt := w.lastWriteAt.Add(w.timers.idle); idleAt.Before(w.timers.maxAt) {
+			return idleAt, windowFinalizeReasonIdleTimeout
+		}
+	}
+	return w.timers.maxAt, windowFinalizeReasonMaxDuration
 }
 
 const groupedCommitOperationKinds = 3
@@ -56,6 +91,7 @@ func newOpenWindow(e Event, writer eventContentWriter) *openWindow {
 		GitTargetNamespace: e.GitTargetNamespace,
 		pathToEvent:        make(map[string]Event),
 		writer:             writer,
+		openedAt:           time.Now(),
 	}
 }
 

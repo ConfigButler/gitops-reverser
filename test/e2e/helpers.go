@@ -192,12 +192,17 @@ func getBaseFolder() string {
 // where the whole suite used to set it once per provider.
 const e2eCommitWindow = "0s"
 
+// e2eCommitMaxDuration keeps a spec's windows from being closed by maxDuration: every spec that
+// sets a long idleTimeout does so to rule out a timer as the cause of a commit, and a 1m default
+// cap would be exactly such a timer.
+const e2eCommitMaxDuration = "24h"
+
 // createGitTarget creates a GitTarget that binds a GitProvider, branch and path.
 func createGitTarget(name, namespace, providerName, path, branch string) {
 	createGitTargetWithCommitWindow(name, namespace, providerName, path, branch, e2eCommitWindow)
 }
 
-// createGitTargetWithCommitWindow is createGitTarget with an explicit spec.commit.window, for the
+// createGitTargetWithCommitWindow is createGitTarget with an explicit spec.commit.window.idleTimeout, for the
 // specs that need a window long enough that a silence timeout cannot be what produced a commit.
 func createGitTargetWithCommitWindow(name, namespace, providerName, path, branch, commitWindow string) {
 	createGitTargetWithOptions(name, namespace, providerName, path, branch,
@@ -260,6 +265,7 @@ func createGitTargetWithOptions(
 		EncryptionSecretName string
 		GenerateWhenMissing  bool
 		CommitWindow         string
+		CommitMaxDuration    string
 		LiveTemplate         string
 		ReconcileTemplate    string
 	}{
@@ -271,6 +277,7 @@ func createGitTargetWithOptions(
 		EncryptionSecretName: encryptionSecretName,
 		GenerateWhenMissing:  generateWhenMissing,
 		CommitWindow:         commit.Window,
+		CommitMaxDuration:    e2eCommitMaxDuration,
 		LiveTemplate:         commit.LiveTemplate,
 		ReconcileTemplate:    commit.ReconcileTemplate,
 	}

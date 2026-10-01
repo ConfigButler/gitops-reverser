@@ -147,7 +147,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		// The wiring check for both new instruments, made here because this is where the evidence
+		// The wiring check for the metric instruments, made here because this is where the evidence
 		// is: the commit above is verified in Git, so a missing series is a broken exporter rather
 		// than a spec that did not run. Both queries are scoped to this suite's own GitTarget, so
 		// they need no run bookkeeping to isolate from the other parallel processes.
@@ -160,6 +160,26 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				testNs, gitTargetName),
 			func(v float64) bool { return v > 0 },
 			"the committed save is counted under its own GitTarget",
+		)
+
+		By("verifying the window this save closed is counted and timed under its GitTarget")
+		// The save attached to the Deployment's window and its own maxDuration (the 2s default)
+		// closed it, so the window is counted under the request's timers, not the target's.
+		waitForMetric(
+			fmt.Sprintf(
+				`sum(gitopsreverser_git_commit_windows_total{close_reason="max_duration",`+
+					`timer_source="commit_request",gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
+				testNs, gitTargetName),
+			func(v float64) bool { return v > 0 },
+			"the save's window is counted with the timer that closed it",
+		)
+		waitForMetric(
+			fmt.Sprintf(
+				`sum(gitopsreverser_git_commit_window_duration_seconds_count{`+
+					`gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
+				testNs, gitTargetName),
+			func(v float64) bool { return v > 0 },
+			"the save's window has a collection time",
 		)
 
 		By("verifying the branch-target join series names this suite's GitTarget")
@@ -283,11 +303,10 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 
 // The UC2 suite exercises a `kubectl apply` bundle that includes a CommitRequest
 // as its FIRST document — the deliberately-hard ordering where the save intent
-// arrives before the work it is meant to save (docs/spec/commitrequest-design.md). A non-zero
-// spec.closeDelay is the close-delay collect
-// window that lets the bundle's resources arrive and join the same window after the
-// CommitRequest is attributed, so the whole bundle lands in ONE commit carrying
-// the CommitRequest's message.
+// arrives before the work it is meant to save (docs/spec/commitrequest-design.md). The request
+// waits (spec.window.attachTimeout) for the first Deployment to open a window, attaches, and
+// collects (spec.window.maxDuration from the attach) while the rest of the bundle arrives, so the
+// whole bundle lands in ONE commit carrying the CommitRequest's message.
 //
 // Its own dedicated Gitea repo (own GitProvider → GitTarget → namespace-scoped
 // Deployment WatchRule) makes the one-commit assertion unambiguous: main does not
@@ -368,8 +387,8 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		}, 5*time.Second, 1*time.Second).Should(Succeed())
 
 		By("applying a bundle whose FIRST document is a CommitRequest, then three Deployments")
-		// closeDelay is sized to comfortably exceed the bundle's per-type ingestion
-		// spread so the close-delay collect window is deterministic.
+		// The window is sized to comfortably exceed the bundle's per-type ingestion spread, so the
+		// collection after the attach is deterministic.
 		var bundle strings.Builder
 		bundle.WriteString(commitRequestManifest(testNs, commitRequestName, gitTargetName, message, "8s"))
 		for _, name := range deployNames {
@@ -429,10 +448,10 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 	})
 })
 
-// commitRequestManifest renders a single CommitRequest document with an explicit
-// message and closeDelay (the close-delay collect window, a Go duration string). It is used to
-// build multi-document `kubectl apply` bundles where the CommitRequest is the first document.
-func commitRequestManifest(namespace, name, gitTargetName, message, closeDelay string) string {
+// commitRequestManifest renders a single CommitRequest document with an explicit message and a
+// window that waits and then collects for the given Go duration each. It is used to build
+// multi-document `kubectl apply` bundles where the CommitRequest is the first document.
+func commitRequestManifest(namespace, name, gitTargetName, message, window string) string {
 	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
@@ -442,8 +461,10 @@ spec:
   gitTargetRef:
     name: %s
   message: %q
-  closeDelay: %q
-`, name, namespace, gitTargetName, message, closeDelay)
+  window:
+    attachTimeout: %q
+    maxDuration: %q
+`, name, namespace, gitTargetName, message, window, window)
 }
 
 // deploymentManifest renders a single zero-replica Deployment document for use in
@@ -472,12 +493,11 @@ spec:
 }
 
 // applyCommitRequestWithGenerateName creates a CommitRequest using
-// metadata.generateName and returns the server-allocated name. It sets a non-zero
-// closeDelay because the spec creates the Deployment and this CommitRequest
-// back-to-back: authorship is now settled synchronously at admission (no controller-side
-// wait), so a closeDelay of "0s" would race the Deployment's watch event and
-// could resolve NoOpenWindow before the window opens. The collect window is the
-// documented mechanism for a CommitRequest issued concurrently with its work (UC2).
+// metadata.generateName and returns the server-allocated name. It sets a generous attachTimeout
+// because the spec creates the Deployment and this CommitRequest back-to-back: authorship is
+// settled synchronously at admission (no controller-side wait), so a zero wait would race the
+// Deployment's watch event and could resolve NoWindow before the window opens. Waiting to attach
+// is the documented mechanism for a CommitRequest issued concurrently with its work (UC2).
 func applyCommitRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
@@ -489,7 +509,9 @@ spec:
   gitTargetRef:
     name: %s
   message: %q
-  closeDelay: "8s"
+  window:
+    attachTimeout: "8s"
+    maxDuration: "8s"
 `, prefix, namespace, gitTargetName, message)
 	out, err := kubectlRunWithStdin(namespace, manifest,
 		"create", "-f", "-", "-o", "jsonpath={.metadata.name}")
@@ -591,7 +613,7 @@ func readCommitRequestOutcome(g Gomega, namespace, name string) commitRequestOut
 // It gives up early on any other terminal ending rather than polling to the timeout. A terminal
 // outcome is final — the controller will not revisit it — so continuing to re-read it cannot
 // change the result; it only delays the report and buries the reason. Failing at the moment the
-// ending is known means the message names it: "NoWindowInGrace" instead of an empty string.
+// ending is known means the message names it: "NoWindow" instead of an empty string.
 func expectCommitRequestCommitted(g Gomega, namespace, name, diagnostics string) string {
 	outcome := readCommitRequestOutcome(g, namespace, name)
 	if outcome.isTerminal() && outcome.Reason != commitRequestReasonCommitted {

@@ -26,7 +26,8 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
-	target := func(name string, window *metav1.Duration) *configv1alpha3.GitTarget {
+	d := func(v time.Duration) *metav1.Duration { return &metav1.Duration{Duration: v} }
+	target := func(name string, window *configv1alpha3.CommitWindow) *configv1alpha3.GitTarget {
 		spec := configv1alpha3.GitTargetSpec{
 			GitProviderRef: meta.LocalObjectReference{Name: "p"},
 			Branch:         "main",
@@ -43,37 +44,42 @@ func TestCommitWindowFor_DefaultsAndParsing(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
 		target("unset", nil),
-		target("quarter", &metav1.Duration{Duration: 250 * time.Millisecond}),
-		target("zero", &metav1.Duration{Duration: 0}),
+		target("empty", &configv1alpha3.CommitWindow{}),
+		target("quarter", &configv1alpha3.CommitWindow{IdleTimeout: d(250 * time.Millisecond)}),
+		target("both", &configv1alpha3.CommitWindow{IdleTimeout: d(0), MaxDuration: d(10 * time.Second)}),
 	).Build()
 	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", RepoIdentity{}, nil, BranchWorkerLimits{})
 	ctx := t.Context()
+	defaults := commitWindowDefaults{idleTimeout: DefaultCommitWindow, maxDuration: DefaultCommitWindowMaxDuration}
 
 	for _, tc := range []struct {
 		name   string
 		target string
-		want   time.Duration
+		want   commitWindowDefaults
 		why    string
 	}{
-		{"unset", "unset", DefaultCommitWindow, "a target that declares no window takes the default"},
-		{"explicit", "quarter", 250 * time.Millisecond, "an explicit window is honored"},
-		{"zero", "zero", 0, `"0s" opts into per-event commits`},
+		{"unset", "unset", defaults, "a target that declares no window takes the defaults"},
+		{"empty", "empty", defaults, "an empty block takes the defaults field by field"},
+		{"partial", "quarter", commitWindowDefaults{idleTimeout: 250 * time.Millisecond, maxDuration: DefaultCommitWindowMaxDuration},
+			"a field left out keeps its default while the other is honored"},
+		{"both", "both", commitWindowDefaults{idleTimeout: 0, maxDuration: 10 * time.Second},
+			`"0s" is honored as a value, not read as "unset"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, w.commitWindowFor(ctx, tc.target, "ns", DefaultCommitWindow), tc.why)
+			assert.Equal(t, tc.want, w.commitWindowFor(ctx, tc.target, "ns", defaults), tc.why)
 		})
 	}
 
 	// A window is a property of the GitTarget, so a worker serving two targets on one branch
 	// resolves two different cadences — which is the whole reason the field moved off GitProvider.
 	assert.NotEqual(t,
-		w.commitWindowFor(ctx, "quarter", "ns", DefaultCommitWindow),
-		w.commitWindowFor(ctx, "unset", "ns", DefaultCommitWindow),
+		w.commitWindowFor(ctx, "quarter", "ns", defaults),
+		w.commitWindowFor(ctx, "unset", "ns", defaults),
 		"two GitTargets on one (provider, branch) worker may disagree about their commit window")
 
-	assert.Equal(t, DefaultCommitWindow, w.commitWindowFor(ctx, "absent", "ns", DefaultCommitWindow),
+	assert.Equal(t, defaults, w.commitWindowFor(ctx, "absent", "ns", defaults),
 		"an unreadable GitTarget takes the fallback rather than stalling the batch")
-	assert.Equal(t, DefaultCommitWindow, w.commitWindowFor(ctx, "", "", DefaultCommitWindow),
+	assert.Equal(t, defaults, w.commitWindowFor(ctx, "", "", defaults),
 		"an unbound window (no target) takes the fallback")
 }
 
@@ -128,12 +134,12 @@ func TestEventLoop_ResetCommitTimer(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	loop := newBranchWorkerEventLoop(w, 30*time.Millisecond)
 
-	loop.resetCommitTimer()
+	loop.resetCommitTimer(30 * time.Millisecond)
 	require.NotNil(t, loop.commitTimer)
 	first := loop.commitTimer
 
 	// Reset before fire — same timer object, fresh deadline.
-	loop.resetCommitTimer()
+	loop.resetCommitTimer(30 * time.Millisecond)
 	assert.Same(t, first, loop.commitTimer, "reset reuses the existing timer")
 
 	// Wait for the timer to fire and verify the channel becomes readable.
@@ -148,7 +154,7 @@ func TestEventLoop_StopTimers(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	loop := newBranchWorkerEventLoop(w, time.Second)
 
-	loop.resetCommitTimer()
+	loop.resetCommitTimer(time.Second)
 	loop.pushTimer = time.NewTimer(time.Hour)
 
 	loop.stopTimers()

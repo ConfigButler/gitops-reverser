@@ -7,7 +7,60 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Commit windows get a `window` block on both kinds; `closeDelay` is gone
+
+**Breaking.** Two fields change shape, and the rules around them are new.
+
+| Was | Is |
+|---|---|
+| `GitTarget.spec.commit.window: "5s"` | `GitTarget.spec.commit.window.idleTimeout: "5s"`, plus `maxDuration` (default `1m`) |
+| `CommitRequest.spec.closeDelay: "2s"` | `CommitRequest.spec.window.attachTimeout: "2s"` and `window.maxDuration: "2s"` |
+| Ready reason `NoWindowInGrace` | `NoWindow` |
+| progress reason `WaitingForCloseDelay` | `Progressing`, then the worker's phase: `WaitingForWorker` (the GitTarget has no branch worker yet), `WaitingForWindow`, `CollectingWindow`, `WaitingForPush` |
+
+What behaves differently:
+
+- **A target's window now closes after at most `1m`**, even under continuous activity. Before, only
+  the memory limit ended a window that kept receiving writes. Set `maxDuration` up to `24h` to keep
+  the old behavior; `idleTimeout` may not exceed it.
+- **A request's timers replace the target's** for the window it attaches to, shorter or longer. The
+  target's silence timer no longer cuts a request's collection short.
+- **A request whose wait ran out never takes a later window.** Before, an overdue request could still
+  attach to a window that opened on the same wake and commit it at once with its message.
+- **New:** `window.attach: Next` for a save created before its writes, `window.idleTimeout` for
+  rolling collection, and `whenNothingToCommit: CommitEmpty` to record the message in an empty
+  commit. See [the request window](configuration.md#the-request-window-specwindow).
+
+**The upgrade procedure.** The one hazard is a stored `GitTarget` whose `commit.window` is still a
+string: once the new CRD is served, that object cannot be decoded, and a single one breaks listing
+every `GitTarget`. A removed `closeDelay` is not a hazard: `kubectl apply` refuses it by name, and a
+stored one is dropped. In order:
+
+1. **Remove the old field while the old schema is still served**, noting each value:
+
+   ```bash
+   kubectl get gittargets -A -o json \
+     | jq -r '.items[] | select(.spec.commit.window != null)
+         | "\(.metadata.namespace)\t\(.metadata.name)\t\(.spec.commit.window)"'
+   kubectl -n <namespace> patch gittarget <name> --type=json \
+     -p '[{"op": "remove", "path": "/spec/commit/window"}]'
+   ```
+
+   The running controller uses its `5s` default meanwhile.
+2. **Clear finished requests** rather than carrying them across: `kubectl delete commitrequests -A
+   --all` once in-flight saves have resolved.
+3. **Upgrade** the chart: new CRDs and new controller together.
+4. **Restore the timing** on the targets noted in step 1, as `commit.window.idleTimeout`. A value
+   over `1m` also needs `commit.window.maxDuration` raised to at least that value (at most `24h`),
+   or admission refuses it. Update anything that creates `CommitRequest`s to set `window` instead of
+   `closeDelay`.
+
+A GitOps source that still carries `window: "5s"` is refused at apply once the new CRD is in place;
+update it in step 4 along with the rest.
+
 ## A `CommitRequest`'s `closeDelay` restarts when it claims a window
+
+> Superseded by the entry above, which replaces `closeDelay` altogether.
 
 `closeDelay` used to be one deadline counted from when the worker received the request. Time spent
 waiting for a matching window came out of it. It now bounds two phases: the request waits up to
@@ -19,7 +72,7 @@ the writes it is saving now gets the whole delay after its first write, instead 
 Its commit can be finalized up to one `closeDelay` later than it was, and the worst case from receipt
 to the finalize is twice the delay; the push follows as before. If you had raised `closeDelay` to make
 room for a slow first write, it now only needs to cover the longer of that gap and the span of the
-save's writes. See [sizing `closeDelay`](configuration.md#sizing-closedelay).
+save's writes. See [sizing the request window](configuration.md#sizing-the-request-window).
 
 ## Finished CommitRequests are deleted after 48 hours
 
@@ -528,7 +581,7 @@ spare. A loaded or distant cluster may want `4` to `5`. Do **not** size the dela
 `--author-attribution-grace`: when that grace expires with no fact, the write still ships as a
 window naming no actor, which a request naming a submitter can never claim, and no amount of waiting
 changes the `WindowMismatch`. See
-[configuration.md](./configuration.md#sizing-closedelay).
+[configuration.md](./configuration.md#sizing-the-request-window).
 
 ### Check your integration's assertion
 

@@ -20,7 +20,8 @@ spec:
   branch: demo-test
   path: voter-coffee
   commit:
-    window: "0s"
+    window:
+      idleTimeout: "0s"
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule

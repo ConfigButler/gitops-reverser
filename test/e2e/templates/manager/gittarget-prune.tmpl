@@ -9,7 +9,8 @@ spec:
   branch: {{ .Branch }}
   path: {{ .Path }}
   commit:
-    window: "0s"
+    window:
+      idleTimeout: "0s"
 {{- if .PruneMode }}
   prune:
     mode: {{ .PruneMode }}

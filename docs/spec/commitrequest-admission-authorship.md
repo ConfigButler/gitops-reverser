@@ -36,9 +36,10 @@ to an unnamed window. That window determines the actual Git author:
 - live attribution that ran but found no usable audit fact:
   `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`.
 
-The worker never closes another actor's window. If no matching window appears before the close delay
-expires, the request ends successfully with `Ready=True`, `Pushed=False`, and `NoWindowInGrace` or
-`WindowMismatch`.
+The worker never closes another actor's window. If no matching window appears before `attachTimeout`
+runs out, the request ends successfully with `Ready=True` and `NoWindow` or `WindowMismatch`. That is
+`Pushed=False`, except for a `NoWindow` request with `whenNothingToCommit: CommitEmpty`, which records
+its message in a pushed empty commit (`Pushed=True`). A `WindowMismatch` never falls back to one.
 
 ## Conditions
 
@@ -50,8 +51,9 @@ expires, the request ends successfully with `Ready=True`, `Pushed=False`, and `N
 | `Pushed` | the attached window was committed and pushed | a benign no-commit or finalize failure |
 | `Ready` | a pushed commit or benign no-commit | progress or a finalize failure |
 
-`Reconciling=True` with `WaitingForCloseDelay` is the only normal in-progress state. It covers the
-optional collect delay followed by worker finalization and push.
+`Reconciling=True` is the normal in-progress state, with the phase the branch worker reports as its
+reason: `Progressing` until the worker registers the request, then `WaitingForWindow`,
+`CollectingWindow` and `WaitingForPush`.
 
 ## Wiring
 

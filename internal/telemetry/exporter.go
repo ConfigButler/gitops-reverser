@@ -236,6 +236,18 @@ var (
 	// every object in that window until the next resync re-derives them, and until now the only
 	// trace was a log line (or, for a refusal, a GitTarget condition nobody is alerting on).
 	GitCommitFailuresTotal metric.Int64Counter
+	// GitCommitWindowsTotal counts closed commit windows, labelled by {gittarget_namespace,
+	// gittarget_name, close_reason, timer_source}. close_reason says what ended the window
+	// (idle_timeout, max_duration, attach_next, identity_change, buffer_limit, resync_before_apply,
+	// atomic_before_apply, shutdown); timer_source says whose timers were in effect: the GitTarget's,
+	// or a CommitRequest's that attached and replaced them. Every window is counted exactly once, at
+	// the start of its finalize, so a window that then produces no diff or fails to commit is counted
+	// too. A push replay rebuilds commits and closes no window, and a CommitEmpty record has none.
+	//
+	// It is the answer to "which timer ends my windows?", which the timing surface otherwise leaves
+	// to log lines. timer_source keeps explicit saves from distorting the tuning of a target's own
+	// defaults.
+	GitCommitWindowsTotal metric.Int64Counter
 	// GitPushesTotal counts push CYCLES at their terminal end, labelled by {provider_namespace,
 	// provider_name, branch, outcome} where outcome is `pushed` or `failed`. A cycle that exhausts
 	// its replay retries was previously a log line and nothing else: the mirror stops advancing and
@@ -273,6 +285,14 @@ var (
 	// what an operator wants is how long it took the mirror to accept the work, not how fast one
 	// attempt was.
 	GitPushDurationSeconds metric.Float64Histogram
+	// GitCommitWindowDurationSeconds records how long each commit window collected, labelled by
+	// {gittarget_namespace, gittarget_name}: from the write that opened it to the start of its
+	// finalize. It is ONE component of the delay a user sees before a change is in Git: watch or audit
+	// delivery comes before it, and the commit, the push cooldown and the push come after. Observed at
+	// the same point as GitCommitWindowsTotal, so its count equals that counter summed over
+	// close_reason and timer_source. The reason and source stay on the counter: a histogram's label
+	// set costs bucket count + 2 series.
+	GitCommitWindowDurationSeconds metric.Float64Histogram
 	// GitQueueDropsTotal counts work the branch worker threw away because its queue was full,
 	// labelled by {provider_namespace, provider_name, branch, kind} where kind is `write`,
 	// `attach` or `resync`. Every increment is lost work: a write is recovered only by the next
@@ -528,6 +548,7 @@ func registerCounters() error {
 		{"gitopsreverser_git_commits_total", &GitCommitsTotal},
 		{"gitopsreverser_commit_requests_total", &CommitRequestsTotal},
 		{"gitopsreverser_git_commit_failures_total", &GitCommitFailuresTotal},
+		{"gitopsreverser_git_commit_windows_total", &GitCommitWindowsTotal},
 		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
 		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
 		{"gitopsreverser_git_fetches_total", &GitFetchesTotal},
@@ -587,6 +608,14 @@ func registerHistograms() error {
 	// gitPushBuckets span a push to a healthy nearby remote (tens of milliseconds) up through a
 	// contended one that replays, and on to a remote that is timing out.
 	gitPushBuckets := []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
+	// commitWindowBuckets span a window closed by a zero timer through the defaults (a request's 2s,
+	// a target's 5s idle and 1m maximum) and a save's 5m ceiling, on to the 24h a GitTarget may set.
+	// A window closes just after its deadline, never on it, so each of those timers has a bucket 10%
+	// above it: without one, a healthy 5s window lands in (5, 10] and histogram_quantile, which
+	// interpolates across the bucket, reads its p95 as nearly 10s.
+	commitWindowBuckets := []float64{
+		0.1, 0.5, 1, 2, 2.2, 5, 5.5, 10, 30, 60, 66, 120, 300, 330, 900, 3600, 14400, 86400,
+	}
 	// watchHandlingBuckets span an event routed immediately through one that sat out the whole
 	// attribution grace window, and past it.
 	watchHandlingBuckets := []float64{0.0005, 0.001, 0.005, 0.025, 0.1, 0.5, 1, 3, 10, 30}
@@ -594,6 +623,11 @@ func registerHistograms() error {
 	watchReplayBuckets := []float64{0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 300}
 	hists := []hSpec{
 		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds, gitPushBuckets},
+		{
+			"gitopsreverser_git_commit_window_duration_seconds",
+			&GitCommitWindowDurationSeconds,
+			commitWindowBuckets,
+		},
 		{"gitopsreverser_watch_event_handling_seconds", &WatchEventHandlingSeconds, watchHandlingBuckets},
 		{"gitopsreverser_watch_replay_duration_seconds", &WatchReplayDurationSeconds, watchReplayBuckets},
 		{

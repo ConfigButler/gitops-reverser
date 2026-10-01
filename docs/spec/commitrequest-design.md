@@ -10,7 +10,8 @@ worker to close that window after the requested collect delay.
 ## Request and window contract
 
 The request identifies the target in `spec.gitTargetRef.name`, may provide `spec.message`, and sets
-`spec.closeDelay` (a Go duration string, at most `5m`, default `"2s"`). It is handled by the target’s single branch worker,
+`spec.window` (which window to attach to, how long to wait for one, and the timers that close it) and
+`spec.whenNothingToCommit`. It is handled by the target’s single branch worker,
 so resource events and the attach request share one FIFO.
 
 The worker attaches a request only when all of these match an open window:
@@ -24,21 +25,31 @@ coupled. A request with no named submitter can attach to either a configured-aut
 window, but never to a named actor’s window. A request with a named submitter can attach only to that
 actor’s named window. Therefore one user’s request never finalizes another user’s work.
 
-On its first receipt, the worker sets the deadline to receipt plus `closeDelay`. Repeated reconciles
-are idempotent and keep that first deadline. When the request claims a window, the worker restarts the
-deadline at the claim plus `closeDelay`: time spent waiting for a matching window does not shorten the
-collection, so a request created before its writes still collects for the whole delay after them. A
-request that claims a window already open at receipt keeps the deadline it was first given.
+A window is only ever opened by a write; a request attaches to one and never opens one. On first
+registration, the worker sets the attach deadline to registration plus `window.attachTimeout`, and
+repeated reconciles are idempotent: they restart nothing and, for `attach: Next`, close nothing again.
+With `CurrentOrNext` the request attaches to the author's window already open at registration, before
+any deadline is consulted, so `attachTimeout: 0s` can attach at all. Otherwise it waits, and waiting
+requests are served first come, first served. A request whose deadline has passed resolves and never
+takes a later window; when its deadline and a matching write are ready on the same wake, expiry wins.
 
-The default is `"2s"` rather than `"0s"` because the write a request exists to publish reaches the
-worker strictly after the request does: a watch event is held until its audit fact arrives, so a
-zero deadline is shorter than the smallest window-open latency the pipeline can produce. The field
-is a pointer, so an omitted value and an explicit `"0s"` stay distinguishable — `"0s"` still means
-finalize on the next pass of the event loop.
-Normal flush triggers can close an attached window early, carrying its message. Each request claims
-at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
-provides no ordering guarantee; use a non-zero window for custom save messages. The delay does not
-reserve a transaction. Competing requests keep the earliest-finalize-deadline selection policy.
+On attach, the request's `idleTimeout` and `maxDuration` replace the window's timers: `maxDuration`
+runs from the attach, and so does the first idle interval. A waiting request gets a new window before
+the target's own timers are applied, so a target with `idleTimeout: 0s` does not close the window
+before the request can attach.
+
+`attachTimeout` defaults to `"2s"` rather than `"0s"` because the write a request exists to publish
+reaches the worker strictly after the request does: a watch event is held until its audit fact
+arrives, so a zero wait is shorter than the smallest window-open latency the pipeline can produce.
+The two durations are separate settings with separate clocks: `attachTimeout` runs from
+registration, `maxDuration` from the attach. Each is a pointer, so an omitted value and an explicit
+`"0s"` stay distinguishable. A zero `attachTimeout` attaches to a window already open, or gives up at
+once, and never shortens the collection that follows; a zero `maxDuration` finalizes right after the
+attach.
+Other flush triggers can close an attached window early, carrying its message. Each request attaches
+to at most one window and cannot rename a finalized commit, including one waiting for push. A bundle
+provides no ordering guarantee. The wait does not reserve a transaction. Competing requests are
+served in registration order, first come, first served.
 
 `spec.message` is literal, including template-like text and surrounding spaces. It is never parsed
 as a template, so a request author cannot execute one. Omission uses
@@ -48,7 +59,9 @@ the message still arrives unaltered, as `.RequestMessage`, and a template that d
 is rejected at admission, so the request's bytes always reach the commit. A `requestTemplate` that
 fails to render commits the message verbatim rather than losing the window. A present value accepts 1–1024 Unicode characters;
 newline is allowed, other ASCII controls and whitespace-only text are rejected. Validation never
-truncates accepted text. A no-op still creates no commit. The message does not change Git identities.
+truncates accepted text. With the default `whenNothingToCommit: Resolve`, a no-op creates no commit;
+`CommitEmpty` records the message in an empty commit instead. The message does not change Git
+identities.
 
 Automation stops on `Ready=True` or `Stalled=True`. Require `Pushed=True` and `status.commit` when a
 pushed commit is required; `Ready=True` also includes successful no-commit outcomes.
@@ -84,19 +97,22 @@ object is visible.
 | Outcome | Conditions |
 |---|---|
 | Commit pushed | `Ready=True`, `Pushed=True`, reason `Committed`; `status.commit` and `status.branch` are set |
-| No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindowInGrace` or `WindowMismatch` |
+| No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindow` or `WindowMismatch` |
+| Nothing to commit, with `whenNothingToCommit: CommitEmpty` | `Ready=True`, `Pushed=True`, reason `NoWindow` or `AlreadyPresent`; `status.commit` is the empty commit |
 | Window produced no diff, and the remote agreed | `Ready=True`, `Pushed=False`, reason `AlreadyPresent` |
 | Finalize or push error | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
 
-`Reconciling=True` with reason `WaitingForCloseDelay` is the normal in-progress state. The controller fails
+`Reconciling=True` is the normal in-progress state, with the phase the worker reports as its reason:
+`Progressing`, `WaitingForWorker`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. The controller fails
 with `FinalizeFailed` only if the worker does not resolve the request within its bounded safety window; it
 never polls indefinitely.
 
 **`Committed` and `AlreadyPresent` are decided by the push, including the no-commit one.**
-(`NoWindowInGrace` and `WindowMismatch` are decided locally, at the deadline: no window was claimed,
-so there is nothing for a push to say.) A window that produced no diff used to resolve
-`AlreadyPresent` at finalize, on the strength of the local plan. That was only sound while every
-cycle fetched before it planned. It no longer does (see
+(`WindowMismatch` is decided locally, at the deadline: no window was attached, so there is nothing
+for a push to say. So is `NoWindow` under `Resolve`. Under `CommitEmpty` a `NoWindow` request records
+its message in an empty commit, and it resolves when that commit reaches the remote.) A window that
+produced no diff used to resolve `AlreadyPresent` at finalize, on the strength of the local plan.
+That was only sound while every cycle fetched before it planned. It no longer does (see
 [inbound push notification](../design/push-notification-and-reconcile-trigger.md) §3), so the plan may have run
 against a tree the remote has moved past, and the replay that follows a rejected push can turn the
 same captured object into a real commit. "Already present" is a claim about the remote, so the

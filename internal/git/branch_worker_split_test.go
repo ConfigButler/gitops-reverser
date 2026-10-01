@@ -135,18 +135,32 @@ func commitsAfterHash(
 // remote so commit and push paths can be exercised end to end.
 func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, string) {
 	t.Helper()
+	return setupCommitPushSplitWorkerSeeded(t, true)
+}
+
+// setupCommitPushSplitWorkerOnEmptyRemote is setupCommitPushSplitWorker against a remote with no
+// history at all, so the worker's first commit is a root commit.
+func setupCommitPushSplitWorkerOnEmptyRemote(t *testing.T) (*BranchWorker, *git.Repository, string) {
+	t.Helper()
+	return setupCommitPushSplitWorkerSeeded(t, false)
+}
+
+func setupCommitPushSplitWorkerSeeded(t *testing.T, seed bool) (*BranchWorker, *git.Repository, string) {
+	t.Helper()
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	remotePath := filepath.Join(tempDir, "remote.git")
 	remoteURL := "file://" + remotePath
 	serverRepo := createBareRepo(t, remotePath)
 
-	seedPath := filepath.Join(tempDir, "seed")
-	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
-	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
-	require.NoError(t, seedRepo.Push(&git.PushOptions{
-		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
-	}))
+	if seed {
+		seedPath := filepath.Join(tempDir, "seed")
+		seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+		commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+		require.NoError(t, seedRepo.Push(&git.PushOptions{
+			RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+		}))
+	}
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))

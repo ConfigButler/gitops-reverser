@@ -301,14 +301,15 @@ const (
 )
 ```
 
-A request has one progress wait: its optional `closeDelay` collect window, followed by finalization
-and push. `AuthorAttributed` settles at first sight because command authorship is captured synchronously
-at admission; it never has an `Unknown` or audit-wait state.
+A request's progress runs through the phases the branch worker reports: waiting for a window,
+collecting in it, and waiting for the push. `AuthorAttributed` settles at first sight because command
+authorship is captured synchronously at admission; it never has an `Unknown` or audit-wait state.
 
 Canonical reads:
 
-- waiting for the close delay: `Reconciling=True` reason `WaitingForCloseDelay`, `AuthorAttributed`
-  settled, `Pushed=Unknown` → kstatus InProgress
+- in progress: `Reconciling=True` reason `Progressing` or `WaitingForWorker`, then `WaitingForWindow`,
+  `CollectingWindow` or `WaitingForPush` as the worker reports it, `AuthorAttributed` settled,
+  `Pushed=Unknown` → kstatus InProgress
 - committed: `Ready=True`, `Pushed=True`, `Stalled=False`, reason `Committed` → kstatus Current
 - benign no-commit (nothing to save / already present / foreign open window): `Ready=True`, `Pushed=False`,
   `Stalled=False`, with the specific reason on `Ready` → kstatus Current (a correct, non-error outcome)

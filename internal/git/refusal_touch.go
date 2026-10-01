@@ -485,6 +485,14 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, obser
 		return
 	}
 
+	// An empty commit is only empty on a clean worktree: the refused write that brought us here can
+	// have left staged changes behind, and they would otherwise ride along in it.
+	if err := l.recoverRetainedWrites(); err != nil {
+		l.w.Log.Error(err, "Cannot recover the worktree for the empty commit for a refused write",
+			"gitTarget", target.String())
+		return
+	}
+
 	// Single-element batch for the same reason every other commit site uses one: the executor
 	// stamps CommitSHA back into the slice it is given, and the retained write is what the push
 	// counts from.

@@ -49,8 +49,8 @@ worker. Events are applied in arrival order and never overtake each other, and t
 objects on the same provider and branch share that worker and its ordering.
 
 1. **Commit.** Events collapse into one local commit per author after
-   [`spec.commit.window`](configuration.md#the-commit-window-speccommitwindow) of silence,
-   `5s` by default. `0s` gives one commit per event.
+   [`spec.commit.window.idleTimeout`](configuration.md#the-commit-window-speccommitwindow) of silence,
+   `5s` by default, or at most `maxDuration` (`1m`) after the first. `0s` gives one commit per event.
 2. **Push.** Local commits go to the remote at most once every five seconds, as a
    compare-and-swap. The push declares the SHA it expects the branch to be at, and the Git host
    refuses the update if the branch has moved off the commits' base.

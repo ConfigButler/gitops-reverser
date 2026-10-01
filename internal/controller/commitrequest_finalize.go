@@ -17,9 +17,8 @@ import (
 
 // CommitRequest condition reasons (CamelCase tokens surfaced on status.conditions).
 const (
-	crReasonWaitingForCloseDelay    = "WaitingForCloseDelay"
 	crReasonCommitted               = "Committed"
-	crReasonNoWindowInGrace         = "NoWindowInGrace"
+	crReasonNoWindow                = "NoWindow"
 	crReasonWindowMismatch          = "WindowMismatch"
 	crReasonAlreadyPresent          = "AlreadyPresent"
 	crReasonFinalizeFailed          = "FinalizeFailed"
@@ -115,9 +114,9 @@ func recordCommitRequestOutcome(ctx context.Context, outcome string, target comm
 	))
 }
 
-// noWindowInGraceMessage is the prose for a NoWindowInGrace outcome: the grace
-// elapsed with nothing pending to save.
-const noWindowInGraceMessage = "no matching open commit window was collected within the grace; " +
+// noWindowMessage is the prose for a NoWindow outcome: the attach timeout ran out before a window
+// the request could attach to was there.
+const noWindowMessage = "no matching commit window was there to attach to before attachTimeout ran out; " +
 	"nothing was pending to save"
 
 // alreadyPresentMessage is the prose for an AlreadyPresent outcome: the finalized
@@ -178,14 +177,33 @@ func setCommitRequestCondition(
 	cr.Status.Conditions = upsertCondition(cr.Status.Conditions, conditionType, status, reason, message, cr.Generation)
 }
 
-// Progress-condition messages. The author is settled synchronously at first sight
-// (present-or-never, §2), so a CommitRequest has a single observable wait before it
-// terminates: WaitingForCloseDelay — author settled, attached to the worker, waiting
-// out the close delay before the window closes and the commit is made and pushed.
+// Progress-condition messages, one per phase the worker reports. The author is settled
+// synchronously at first sight (present-or-never, §2), so there is no "waiting for the author"
+// phase. Until the worker has registered the request the reason is the generic Progressing.
 const (
-	closeDelayMessage  = "registered with the worker; waiting for a matching window, finalization, or push"
-	pushPendingMessage = "the commit has not been pushed yet"
+	progressingMessage      = "sent to the branch worker; waiting for it to register the request"
+	waitingForWorkerMessage = "the GitTarget has no branch worker yet; waiting for its reconcile to start one"
+	waitingForWindowMessage = "registered with the worker; waiting for a matching commit window to attach to"
+	collectingWindowMessage = "attached to a commit window; collecting writes until its timers close it"
+	waitingForPushMessage   = "committed locally; waiting for the push to reach the remote"
+	pushPendingMessage      = "the commit has not been pushed yet"
 )
+
+// progressFor maps a worker-reported phase to its progress reason and message.
+func progressFor(phase git.CommitRequestPhase) (string, string) {
+	switch phase {
+	case git.PhaseWaitingForWorker:
+		return string(phase), waitingForWorkerMessage
+	case git.PhaseWaitingForWindow:
+		return string(phase), waitingForWindowMessage
+	case git.PhaseCollectingWindow:
+		return string(phase), collectingWindowMessage
+	case git.PhaseWaitingForPush:
+		return string(phase), waitingForPushMessage
+	default:
+		return ReasonProgressing, progressingMessage
+	}
+}
 
 // setCommitRequestProgress stamps the four progress conditions (Ready=False,
 // Reconciling=True, Stalled=False, Pushed=Unknown) with one unifying reason, so a
@@ -197,15 +215,17 @@ func setCommitRequestProgress(cr *configv1alpha3.CommitRequest, reason, message 
 	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionUnknown, reason, pushPendingMessage)
 }
 
-// markCommitRequestWaitingForCloseDelay records the single still-running state. The
-// author is settled synchronously at first sight (present-or-never, §2), so there is no
-// prior "waiting for the author" phase: the request is attributed and attached to the
-// worker, waiting out the close delay before the window closes and the commit is made
-// and pushed (Reconciling=True, reason WaitingForCloseDelay).
-func markCommitRequestWaitingForCloseDelay(cr *configv1alpha3.CommitRequest, attribution commitRequestAttribution) {
+// markCommitRequestProgressing records the still-running state for a worker-reported phase
+// (Reconciling=True). An empty phase is the generic Progressing: sent, not yet confirmed.
+func markCommitRequestProgressing(
+	cr *configv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	phase git.CommitRequestPhase,
+) {
 	cr.Status.ObservedGeneration = cr.Generation
 	setCommitRequestAttributed(cr, attribution)
-	setCommitRequestProgress(cr, crReasonWaitingForCloseDelay, closeDelayMessage)
+	reason, message := progressFor(phase)
+	setCommitRequestProgress(cr, reason, message)
 }
 
 // setCommitRequestAttributed records the settled, binary author decision on the
@@ -267,20 +287,41 @@ func applyFinalizeResultToStatus(
 			"the commit was pushed to the remote repository")
 		setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted, committedMsg)
 	case git.FinalizeNoOpenWindow:
-		// Benign: the grace elapsed with nothing pending to save.
-		rejectCommitRequest(cr, crReasonNoWindowInGrace, noWindowInGraceMessage)
+		// Benign: the attach timeout ran out with nothing pending to save.
+		resolveNothingToCommit(cr, result, crReasonNoWindow, noWindowMessage)
 	case git.FinalizeWindowMismatch:
 		// The author-bound refusal: deliberately not a failure — the foreign
 		// window stays open for its own author — but the reason is surfaced.
 		rejectCommitRequest(cr, crReasonWindowMismatch, windowMismatchMessage)
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
-		rejectCommitRequest(cr, crReasonAlreadyPresent, alreadyPresentMessage)
+		resolveNothingToCommit(cr, result, crReasonAlreadyPresent, alreadyPresentMessage)
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.
 		failCommitRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
 	}
+}
+
+// recordedEmptyMessage follows the cause when whenNothingToCommit: CommitEmpty recorded the request's
+// message anyway. The commit proves the message is in Git; the reason still says why it is empty.
+const recordedEmptyMessage = "; the message was recorded in an empty commit"
+
+// resolveNothingToCommit records an outcome with nothing to commit. Without a commit it is a benign
+// rejection. With one, whenNothingToCommit: CommitEmpty recorded the message: the reason keeps the
+// cause, and status.commit and Pushed=True say the empty commit reached the remote.
+func resolveNothingToCommit(cr *configv1alpha3.CommitRequest, result git.FinalizeResult, reason, message string) {
+	if result.Commit == "" {
+		rejectCommitRequest(cr, reason, message)
+		return
+	}
+	cr.Status.Commit = result.Commit
+	message += recordedEmptyMessage
+	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
+	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionTrue, ReasonSucceeded,
+		"the empty commit was pushed to the remote repository")
+	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionTrue, reason, message)
 }
 
 // rejectCommitRequest records a benign terminal outcome that produced no commit:

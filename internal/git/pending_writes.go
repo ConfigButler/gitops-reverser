@@ -311,6 +311,9 @@ func (p PendingWrite) Author() string {
 // writes, including any OIDC display name and email. Atomic and empty writes
 // have no per-user author and return the zero value.
 func (p PendingWrite) AuthorUserInfo() UserInfo {
+	if p.Kind == PendingWriteRequestRecord {
+		return p.RequestAuthor
+	}
 	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
 		return UserInfo{}
 	}
@@ -362,10 +365,22 @@ const (
 // mirrors AuthorUserInfo: the window is single-author, so the first event's outcome describes
 // the whole write. Atomic and empty writes never attempt attribution.
 func (p PendingWrite) AttributionOutcome() AttributionOutcome {
+	if p.Kind == PendingWriteRequestRecord {
+		return p.RequestAttribution
+	}
 	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
 		return AttributionNotAttempted
 	}
 	return p.Events[0].Attribution
+}
+
+// nothingToCommitOutcome is the cause an empty commit records: a request record says no window
+// arrived in time, and an empty grouped window says what arrived already matched Git.
+func (p PendingWrite) nothingToCommitOutcome() FinalizeOutcome {
+	if p.Kind == PendingWriteRequestRecord {
+		return FinalizeNoOpenWindow
+	}
+	return FinalizeAlreadyPresent
 }
 
 func (p PendingWrite) createdCommit() bool {

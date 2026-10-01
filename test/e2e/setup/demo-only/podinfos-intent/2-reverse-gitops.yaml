@@ -20,7 +20,8 @@ spec:
   branch: nl-stuff
   path: podinfos
   commit:
-    window: "5s"
+    window:
+      idleTimeout: "5s"
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule

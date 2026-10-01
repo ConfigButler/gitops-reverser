@@ -274,20 +274,44 @@ type GitTargetCommitSpec struct {
 	// overflows time.ParseDuration — and one stored value that no typed client can decode breaks
 	// GET and LIST for the whole kind, taking the GitTarget informer down with it.
 
-	// Window is the rolling silence window used to coalesce this target's events into a single
-	// commit per author, as a Go duration string ("5s", "750ms", "1m30s"). The timer resets on
-	// every event arrival, and the commit is made after this much silence. "0s" opts into
-	// per-event commits. At most "24h". Omitted, it is "5s".
+	// Window configures when this target's commit windows close. A commit window opens on an
+	// author's first write to this target and collects that author's writes until it closes: after
+	// idleTimeout of silence, or maxDuration after it opened, whichever comes first. Omitted, it is
+	// {idleTimeout: 5s, maxDuration: 1m}. A CommitRequest attached to a window replaces both timers
+	// for that window.
 	// +optional
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
-	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('24h')",message="spec.commit.window must be a Go duration of at most 24h"
-	Window *metav1.Duration `json:"window,omitempty"`
+	Window *CommitWindow `json:"window,omitempty"`
 
 	// Message configures how this target's commit messages are formatted. Omitted, or with any
 	// individual template left empty, the built-in templates are used.
 	// +optional
 	Message *CommitMessageSpec `json:"message,omitempty"`
+}
+
+// CommitWindow holds the two timers that close a GitTarget's commit windows. A change to them
+// applies to windows that open afterward; a window already open keeps the timers it opened with.
+// +kubebuilder:validation:XValidation:rule="!has(self.idleTimeout) || !has(self.maxDuration) || duration(self.idleTimeout) <= duration(self.maxDuration)",message="spec.commit.window.idleTimeout must not exceed maxDuration"
+type CommitWindow struct {
+	// IdleTimeout closes the window after this much silence, as a Go duration string ("5s",
+	// "750ms"). Every write the window collects restarts it. "0s" closes the window right after
+	// each write, a commit per write. At most "24h". Defaults to "5s".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:default="5s"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('24h')",message="spec.commit.window.idleTimeout must be a Go duration of at most 24h"
+	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
+
+	// MaxDuration closes the window this long after it opened, however much keeps arriving, as a
+	// Go duration string ("1m", "90s"). It keeps continuous activity from postponing a commit
+	// indefinitely. "0s" closes the window right after the write that opened it. At most "24h".
+	// Defaults to "1m".
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
+	// +kubebuilder:default="1m"
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('24h')",message="spec.commit.window.maxDuration must be a Go duration of at most 24h"
+	MaxDuration *metav1.Duration `json:"maxDuration,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document

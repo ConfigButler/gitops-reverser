@@ -37,7 +37,9 @@ func serviceAttach(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
 	loop.serviceCommitRequests()
 }
 
-func attachReq(author string, closeDelay time.Duration) *AttachCommitRequest {
+// attachReq builds a CurrentOrNext request that waits up to d for a window and, once attached,
+// collects for d with no idle close: the defaults' shape, at any length.
+func attachReq(author string, d time.Duration) *AttachCommitRequest {
 	return &AttachCommitRequest{
 		Namespace:          "default",
 		Name:               crName,
@@ -45,15 +47,25 @@ func attachReq(author string, closeDelay time.Duration) *AttachCommitRequest {
 		Author:             author,
 		GitTargetName:      crTarget,
 		GitTargetNamespace: "default",
-		CloseDelay:         closeDelay,
+		Attach:             configv1alpha3.AttachCurrentOrNext,
+		AttachTimeout:      d,
+		MaxDuration:        d,
 	}
 }
 
-// forceDue backdates the registered request's finalize deadline so the next
-// serviceCommitRequests treats its grace as elapsed — deterministic without sleeping.
+// forceDue runs out the registered request's clock, deterministically and without sleeping: a
+// waiting request's attach deadline passes, and an attached request's window reaches its
+// maxDuration and closes.
 func forceDue(loop *branchWorkerEventLoop) {
 	id := commitRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
-	loop.pendingCRs[id].finalizeAt = time.Now().Add(-time.Millisecond)
+	past := time.Now().Add(-time.Millisecond)
+	if pcr := loop.pendingCRs[id]; pcr != nil && !pcr.attached {
+		pcr.attachDeadline = past
+	}
+	if loop.openWindow != nil && loop.openWindow.pendingCR != nil && *loop.openWindow.pendingCR == id {
+		loop.openWindow.timers.maxAt = past
+		loop.closeOrArmWindow()
+	}
 }
 
 func outcome(t *testing.T, w *BranchWorker) (FinalizeResult, bool) {
@@ -91,7 +103,7 @@ func TestEnqueueAttach_Nil(t *testing.T) {
 	assert.Empty(t, w.eventQueue)
 }
 
-// TestAttach_NoOpenWindow verifies an attach (closeDelay 0) with nothing pending
+// TestAttach_NoOpenWindow verifies an attach (attachTimeout 0s) with nothing pending
 // resolves NoOpenWindow — the author pressed save with no edits, not an error.
 func TestAttach_NoOpenWindow(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
@@ -224,40 +236,41 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 	assert.Nil(t, loop.openWindow)
 }
 
-// TestAttach_ClaimRestartsTheDeadline pins that the time a request spent waiting for its window
-// does not come out of that window's collection: a request created before the writes it is saving
-// gets the full closeDelay after it claims the window, not whatever was left of it.
-func TestAttach_ClaimRestartsTheDeadline(t *testing.T) {
+// TestAttach_TheAttachStartsTheRequestsMaxDuration pins that the time a request spent waiting for
+// its window does not come out of that window's collection: a request created before the writes it
+// is saving collects for its whole maxDuration after it attaches, however long it waited.
+func TestAttach_TheAttachStartsTheRequestsMaxDuration(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	const closeDelay = 60 * time.Second
-	serviceAttach(loop, attachReq("alice", closeDelay))
+	const maxDuration = 60 * time.Second
+	serviceAttach(loop, attachReq("alice", maxDuration))
 	id := commitRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
-	// Almost all of the delay spent waiting: the writes arrive with a second of it left.
-	loop.pendingCRs[id].finalizeAt = time.Now().Add(time.Second)
+	// Almost all of the wait spent: the writes arrive with a second of it left.
+	loop.pendingCRs[id].attachDeadline = time.Now().Add(time.Second)
 
+	attached := time.Now()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
 	}})
-	claimed := time.Now()
-	loop.serviceCommitRequests()
 	require.NotNil(t, loop.openWindow)
-	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the request claimed the window")
+	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the request attached to the window")
 
-	assert.False(t, loop.pendingCRs[id].finalizeAt.Before(claimed.Add(closeDelay)),
-		"the claim must restart the deadline at claim + closeDelay")
+	assert.False(t, loop.openWindow.timers.maxAt.Before(attached.Add(maxDuration)),
+		"the attach must start the request's maxDuration")
+	assert.True(t, loop.openWindow.timers.noIdle,
+		"a request that set no idleTimeout replaces the target's idle close with none")
 }
 
-// TestAttach_AnExpiredWaitIsNotRestartedByALateClaim pins the deadline boundary: when the deadline
-// timer and a matching event are ready on the same loop wake and the event is served first, the
-// overdue request still claims the window, but it is finalized in that pass rather than handed a
-// second full closeDelay.
-func TestAttach_AnExpiredWaitIsNotRestartedByALateClaim(t *testing.T) {
+// TestAttach_AnExpiredWaitNeverTakesALaterWindow pins the deadline boundary: when the attach
+// deadline and a matching write are ready on the same loop wake and the write is served first, the
+// request has already run out. It resolves NoOpenWindow, and the late write stays in a window of
+// its own, without the request's message.
+func TestAttach_AnExpiredWaitNeverTakesALaterWindow(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
@@ -276,10 +289,12 @@ func TestAttach_AnExpiredWaitIsNotRestartedByALateClaim(t *testing.T) {
 	loop.serviceCommitRequests()
 
 	res, ok := outcome(t, worker)
-	require.True(t, ok, "the overdue request must resolve in this pass, not wait out a fresh delay")
+	require.True(t, ok, "the overdue request must resolve in this pass")
 	require.NoError(t, res.Err)
-	assert.Equal(t, FinalizeCommitted, res.Outcome, "it claimed the window, so the commit carries its message")
-	assert.Nil(t, loop.openWindow)
+	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome)
+	require.NotNil(t, loop.openWindow, "the late write keeps its own window")
+	assert.Nil(t, loop.openWindow.pendingCR, "the expired request must not take the later window")
+	assert.Empty(t, loop.openWindow.pendingMessage, "so the late write never carries its message")
 }
 
 // TestAttach_WritesAfterTheClaimJoinOneCommit pins the save the claim restart exists for: a request
@@ -407,7 +422,7 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 	serviceAttach(loop, attachReq("bob", 60*time.Second))
 
 	// Alice's window is finalized on its own account, long before bob's grace elapses.
-	loop.finalizeOpenWindowWithReason(windowFinalizeReasonTimer)
+	loop.finalizeOpenWindowWithReason(windowFinalizeReasonIdleTimeout)
 	require.Nil(t, loop.openWindow, "precondition: nothing is open when bob's grace runs out")
 
 	forceDue(loop)
@@ -500,11 +515,11 @@ func TestAttach_IdempotentReSendKeepsFirstDeadline(t *testing.T) {
 	serviceAttach(loop, attachReq("alice", 60*time.Second))
 	id := commitRequestID{Namespace: "default", Name: "save", UID: "uid-save"}
 	require.Contains(t, loop.pendingCRs, id)
-	firstDeadline := loop.pendingCRs[id].finalizeAt
+	firstDeadline := loop.pendingCRs[id].attachDeadline
 
 	serviceAttach(loop, attachReq("alice", 300*time.Second)) // larger grace, re-send
 	require.Len(t, loop.pendingCRs, 1, "a re-send must not duplicate the registration")
-	assert.Equal(t, firstDeadline, loop.pendingCRs[id].finalizeAt, "the first deadline must be kept")
+	assert.Equal(t, firstDeadline, loop.pendingCRs[id].attachDeadline, "the first deadline must be kept")
 }
 
 // TestAttach_FinalizeFailureResolvesFailed verifies that when the attached
@@ -609,7 +624,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	loop.lastPushAt = time.Now()
 
 	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
-	// finalize it (closeDelay 0).
+	// finalize it (maxDuration 0s).
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:     []Event{configMapTargetEvent("present", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,

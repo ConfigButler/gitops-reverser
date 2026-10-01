@@ -294,7 +294,11 @@ func TestGitPathRefusalReason(t *testing.T) {
 	}
 }
 
-func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
+// TestServiceCommitRequest_NoWorkerKeepsTheRequestPending pins that a missing worker is not an
+// outcome. At startup a CommitRequest can reach the controller before its GitTarget's worker exists;
+// resolving it then would end the save before anything could collect its writes or record its
+// message, so it stays pending and the controller polls within its safety window.
+func TestServiceCommitRequest_NoWorkerKeepsTheRequestPending(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
@@ -314,9 +318,10 @@ func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	result, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("team-a-config", "team-a"))
-	require.NoError(t, err)
-	assert.True(t, resolved, "no worker means no window to collect into; resolve immediately")
-	assert.Equal(t, git.FinalizeNoOpenWindow, result.Outcome)
+	require.NoError(t, err, "the GitTarget resolved; only its worker is missing")
+	assert.False(t, resolved, "a worker that does not exist yet is a retry, not an answer")
+	assert.Empty(t, result.Outcome)
+	assert.Equal(t, git.PhaseWaitingForWorker, result.Phase)
 	assert.Equal(t, "main", result.Branch)
 }
 
@@ -354,7 +359,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	// No events routed and closeDelay 0, so the worker has no window: the attach
+	// No events routed and attachTimeout 0s, so the worker has no window: the attach
 	// is enqueued, processed by the worker loop, and resolves NoOpenWindow. The
 	// controller polls via repeated (idempotent) ServiceCommitRequest calls.
 	attach := saveAttach("team-a-config", "team-a")

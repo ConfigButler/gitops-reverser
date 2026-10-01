@@ -93,10 +93,13 @@ kinds:
       - path: clusterProviderRef
         doc: "Source cluster to mirror from. The default names a `ClusterProvider` called `default`"
       - path: commit.window
-        default: "`5s`"
+        skip: a block; its two timers are listed below
+      - path: commit.window.idleTimeout
         doc: >-
-          How long to coalesce changes into one commit. `0s` commits per event. See
+          Close a commit window after this much silence. `0s` commits every write on its own. See
           [the commit window](#the-commit-window-speccommitwindow)
+      - path: commit.window.maxDuration
+        doc: Close a commit window this long after it opened, however much keeps arriving
       - path: commit.message
         default: the built-in templates
         doc: How commits are phrased. See [commit messages](commit-messages.md)
@@ -194,7 +197,16 @@ kinds:
       - path: message
         default: the target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it
-      - path: closeDelay
+      - path: window.attach
         doc: >-
-          How long to wait for pending events, as a Go duration string. See
-          [sizing `closeDelay`](#sizing-closedelay)
+          Which window to attach to: the author's current or next one, or only the next. See
+          [the request window](#the-request-window-specwindow)
+      - path: window.attachTimeout
+        doc: How long to wait for a window to attach to
+      - path: window.idleTimeout
+        default: no idle close
+        doc: Close the attached window after this much silence
+      - path: window.maxDuration
+        doc: Close the attached window this long after the attach
+      - path: whenNothingToCommit
+        doc: "`CommitEmpty` records the message in an empty commit when nothing changed"
