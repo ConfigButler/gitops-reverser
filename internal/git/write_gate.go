@@ -16,8 +16,10 @@ import (
 //
 //   - a request no window reached (expireWaitingCommitRequests, before the record it may make);
 //   - the record itself (buildRequestRecordWrite);
-//   - a window a request is attached to (finalizeOpenWindowWithReason, which reads the
-//     render-fidelity gate once per window, and suspension from the write it built).
+//   - a window a request is attached to (finalizeOpenWindowWithReason before it builds the write,
+//     and gateBuiltWindow after, right before the commit). A render-fidelity refusal seen at
+//     either look stops the whole window; suspension fails only the request, and the write still
+//     runs so the target's scan stays fresh.
 //
 // A WindowMismatch is not asked: that request was refused by another author's window, which is
 // what it reports. Neither is a request whose commit already exists locally. The gates are read

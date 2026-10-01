@@ -1638,15 +1638,11 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		return false
 	}
 	pendingWrite.CommitMessage = effectiveMessage
-	pendingCR = l.failRequestOnRefusedTarget(pendingCR, pendingWrite.Target())
-	// Carry the attached CommitRequest onto the write so its result follows the
-	// data: it is resolved Committed once this write is pushed (§6.5).
-	pendingWrite.CommitRequest = pendingCR
-	if pendingCR != nil {
-		if pcr := l.pendingCRs[*pendingCR]; pcr != nil {
-			pendingWrite.AllowEmpty = pcr.commitEmpty
-		}
+	pendingCR, proceed := l.gateBuiltWindow(pendingCR, pendingWrite.Target(), reason)
+	if !proceed {
+		return false
 	}
+	l.carryRequestOnWrite(pendingWrite, pendingCR)
 
 	// Commit on a single-element batch so executePendingWrites threads the resulting
 	// commit hash back onto batch[0]; the retained write then carries the real SHA
@@ -1711,22 +1707,42 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	return true
 }
 
-// failRequestOnRefusedTarget fails the request attached to a window whose write was planned for a
-// suspended target, and returns the request the write still carries: none, then. The write itself
-// still runs, so the target's scan stays fresh, but it commits nothing, and the push would report
-// that as AlreadyPresent. See write_gate.go.
-//
-// Only suspension is asked here. The render-fidelity gate is shared and moves concurrently, and
-// finalizeOpenWindowWithReason already read it once for this window: a second read could fail the
-// request while the write it rode still commits.
-func (l *branchWorkerEventLoop) failRequestOnRefusedTarget(
-	pendingCR *commitRequestID, target ResolvedTargetMetadata,
-) *commitRequestID {
-	if pendingCR == nil || !target.Suspend {
-		return pendingCR
+// carryRequestOnWrite carries the attached CommitRequest onto the write so its result follows the
+// data: it is resolved Committed once this write is pushed (§6.5). The request's
+// whenNothingToCommit rides along, so a window that changed nothing can still record its message.
+func (l *branchWorkerEventLoop) carryRequestOnWrite(pendingWrite *PendingWrite, pendingCR *commitRequestID) {
+	pendingWrite.CommitRequest = pendingCR
+	if pendingCR == nil {
+		return
 	}
-	l.resolveCommitRequest(*pendingCR, FinalizeResult{Err: errTargetSuspended})
-	return nil
+	if pcr := l.pendingCRs[*pendingCR]; pcr != nil {
+		pendingWrite.AllowEmpty = pcr.commitEmpty
+	}
+}
+
+// gateBuiltWindow asks the write gates once more for a window whose write is built, right before
+// it commits, and returns the request the write still carries and whether to commit it at all.
+//
+// The render-fidelity gate is shared and moves concurrently, and recovering the checkout or
+// resolving the target's metadata can take long enough for it to close after the finalize's first
+// look. Whichever look sees it closed, the whole window stops: its request fails and nothing
+// commits, so the two can never disagree. Suspension is different: the write still runs, so the
+// target's scan stays fresh, but it commits nothing, and the push would report that as
+// AlreadyPresent, so only the request fails. See write_gate.go.
+func (l *branchWorkerEventLoop) gateBuiltWindow(
+	pendingCR *commitRequestID, target ResolvedTargetMetadata, reason windowFinalizeReason,
+) (*commitRequestID, bool) {
+	if err := l.w.targetWriteRefusal(target.Name, target.Namespace, false); err != nil {
+		l.w.Log.V(1).Info("Discarding built window: render fidelity closed while it was finalized",
+			"reason", string(reason), "gitTarget", target.Namespace+"/"+target.Name)
+		l.dropOpenWindow(pendingCR, err)
+		return nil, false
+	}
+	if pendingCR != nil && target.Suspend {
+		l.resolveCommitRequest(*pendingCR, FinalizeResult{Err: errTargetSuspended})
+		return nil, true
+	}
+	return pendingCR, true
 }
 
 // dropOpenWindow discards a window whose finalize failed, resolving any attached

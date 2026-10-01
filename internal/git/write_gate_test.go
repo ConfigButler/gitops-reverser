@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -327,22 +329,56 @@ func TestWriteGate_AWindowMismatchIsStillAMismatch(t *testing.T) {
 	assert.Equal(t, FinalizeWindowMismatch, res.Outcome)
 }
 
-// TestWriteGate_AWindowReadsTheRenderGateOnce pins that the attached-request check after the write
-// is built asks suspension only. The render gate moves concurrently and the finalize already read
-// it for this window; reading it again could fail the request while the write it rode commits.
-func TestWriteGate_AWindowReadsTheRenderGateOnce(t *testing.T) {
-	worker, _, loop := seededLoop(t)
-	closeRenderGate(worker) // closed after the finalize's own read, as far as this check can tell
-	id := commitRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
-	target := ResolvedTargetMetadata{Name: crTarget, Namespace: "default"}
+// TestWriteGate_ARenderGateClosingDuringFinalizeStopsTheWholeWindow is the race the first look
+// cannot see: the gate is open when the finalize starts and closes while it resolves the target's
+// metadata. The request and the write must agree, so the window is dropped as a whole: the request
+// fails, and nothing is committed, retained or pushed. Before, the request failed while the write
+// it rode still committed, carrying the request's message.
+func TestWriteGate_ARenderGateClosingDuringFinalizeStopsTheWholeWindow(t *testing.T) {
+	for _, withRequest := range []bool{false, true} {
+		name := "a live window"
+		if withRequest {
+			name = "a window a request is attached to"
+		}
+		t.Run(name, func(t *testing.T) {
+			worker, serverRepo, loop := seededLoop(t)
+			before := remoteHead(t, serverRepo)
+			req := requestFor("save", crTarget, false)
+			if withRequest {
+				serviceAttach(loop, req)
+			}
+			writeTo(loop, "new")
+			require.NotNil(t, loop.openWindow)
+			require.True(t, worker.normalWritesAllowed(crTarget, "default"), "the first look finds the gate open")
 
-	assert.Equal(t, &id, loop.failRequestOnRefusedTarget(&id, target), "the request rides its write")
-	_, resolved := worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
-	assert.False(t, resolved)
+			// Close the gate from inside the finalize, at the GitTarget read that resolves its metadata.
+			inner, ok := worker.Client.(client.WithWatch)
+			require.True(t, ok)
+			worker.Client = interceptor.NewClient(inner, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+					opts ...client.GetOption) error {
+					if _, isTarget := obj.(*configv1alpha3.GitTarget); isTarget && worker.renderFidelityGate == nil {
+						closeRenderGate(worker)
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
 
-	target.Suspend = true
-	assert.Nil(t, loop.failRequestOnRefusedTarget(&id, target), "a suspended write carries no request")
-	res, resolved := worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
-	require.True(t, resolved)
-	require.ErrorIs(t, res.Err, errTargetSuspended)
+			if withRequest {
+				forceDueNamed(loop, req)
+			} else {
+				require.False(t, loop.finalizeOpenWindow())
+			}
+			loop.pushPending()
+
+			assert.Nil(t, loop.openWindow)
+			assert.Empty(t, loop.pendingWrites, "nothing is retained")
+			assert.Equal(t, before, remoteHead(t, serverRepo), "nothing reached the remote")
+			if withRequest {
+				res, ok := worker.LookupCommitRequestOutcome("default", req.Name, req.UID)
+				require.True(t, ok)
+				require.ErrorIs(t, res.Err, errRenderFidelityClosed)
+			}
+		})
+	}
 }
