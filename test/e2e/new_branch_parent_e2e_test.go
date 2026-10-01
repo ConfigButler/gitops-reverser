@@ -196,7 +196,8 @@ spec:
 			g.Expect(fetchErr).NotTo(HaveOccurred())
 			parent, revErr := gitRun(repo.CheckoutDir, "rev-parse", tip+"^")
 			g.Expect(revErr).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(parent)).To(Equal(hashB), "the first commit must sit on the parent's current tip")
+			g.Expect(strings.TrimSpace(parent)).To(Equal(hashB),
+				"the first commit must sit on the parent's current tip")
 			for _, file := range []string{path.Join(gitPath, "NOTES.md"), editPath} {
 				_, showErr := gitRun(repo.CheckoutDir, "cat-file", "-e", tip+":"+file)
 				g.Expect(showErr).NotTo(HaveOccurred(), "%s must be on the new branch", file)
@@ -220,41 +221,50 @@ func commitFilesToMainFromOutside(repo *RepoArtifacts, namespace, message string
 	configureRepoOriginWithCredentials(repo, namespace)
 
 	Eventually(func() error {
-		if _, err := gitRun(repo.CheckoutDir, "fetch", "origin", "main"); err == nil {
-			if out, err := gitRun(repo.CheckoutDir, "checkout", "-B", "main", "origin/main"); err != nil {
-				return fmt.Errorf("checkout: %w: %s", err, out)
-			}
-			if out, err := gitRun(repo.CheckoutDir, "reset", "--hard", "origin/main"); err != nil {
-				return fmt.Errorf("reset: %w: %s", err, out)
-			}
-		} else {
-			if out, err := gitRun(repo.CheckoutDir, "checkout", "--orphan", "main"); err != nil {
-				return fmt.Errorf("orphan: %w: %s", err, out)
-			}
-			_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
-		}
-		for name, content := range files {
-			full := filepath.Join(repo.CheckoutDir, name)
-			if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
-				return err
-			}
-			if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
-				return err
-			}
-			if out, err := gitRun(repo.CheckoutDir, "add", name); err != nil {
-				return fmt.Errorf("add: %w: %s", err, out)
-			}
-		}
-		if out, err := gitRun(repo.CheckoutDir, "commit", "-m", message); err != nil {
-			return fmt.Errorf("commit: %w: %s", err, out)
-		}
-		if out, err := gitRun(repo.CheckoutDir, "push", "origin", "HEAD:main"); err != nil {
-			return fmt.Errorf("push: %w: %s", err, out)
-		}
-		return nil
+		return attemptCommitFilesToMain(repo, message, files)
 	}, seedPushTimeout, seedPushInterval).Should(Succeed(), "the outside writer kept losing the push race")
 
 	head, err := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
 	Expect(err).NotTo(HaveOccurred())
 	return strings.TrimSpace(head)
+}
+
+// attemptCommitFilesToMain is one attempt, from the CURRENT remote tip. It returns errors rather
+// than asserting, so Eventually can rebuild on the tip that beat it.
+func attemptCommitFilesToMain(repo *RepoArtifacts, message string, files map[string]string) error {
+	runGit := func(args ...string) error {
+		if out, err := gitRun(repo.CheckoutDir, args...); err != nil {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
+		}
+		return nil
+	}
+	if _, err := gitRun(repo.CheckoutDir, "fetch", "origin", "main"); err == nil {
+		if err := runGit("checkout", "-B", "main", "origin/main"); err != nil {
+			return err
+		}
+		if err := runGit("reset", "--hard", "origin/main"); err != nil {
+			return err
+		}
+	} else {
+		if err := runGit("checkout", "--orphan", "main"); err != nil {
+			return err
+		}
+		_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
+	}
+	for name, content := range files {
+		full := filepath.Join(repo.CheckoutDir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			return err
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			return err
+		}
+		if err := runGit("add", name); err != nil {
+			return err
+		}
+	}
+	if err := runGit("commit", "-m", message); err != nil {
+		return err
+	}
+	return runGit("push", "origin", "HEAD:main")
 }

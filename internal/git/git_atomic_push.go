@@ -190,8 +190,7 @@ func validatePushState(
 	// Determine the "old" hash for the push command and validate state
 	var oldHash = plumbing.ZeroHash
 	remoteHash, found := refs[branch]
-	currentRootHash, rootFound := refs[rootBranch]
-	if !rootFound && !rootHash.IsZero() {
+	if _, rootFound := refs[rootBranch]; !rootFound && !rootHash.IsZero() {
 		return pushPlan{}, &RemoteMovedError{
 			Branch:     rootBranch,
 			Expected:   rootHash,
@@ -200,34 +199,64 @@ func validatePushState(
 		}
 	}
 
-	if found {
-		// Target branch exists on remote
-		oldHash = remoteHash
-
-		// Check if we are already up2date
-		if localHash == remoteHash {
-			logger.Info("remote already up2date", "branch", branchName, "hash", localHash)
-			return pushPlan{settled: PushUpToDate, head: remoteHash}, nil
-		}
-
-		// Check if the remoteHash is what we based our work on
-		if rootHash != currentRootHash {
-			logger.Info("Remote branch not in expected state", "branch", branchName)
-			return pushPlan{}, &RemoteMovedError{
-				Branch:     rootBranch,
-				Expected:   rootHash,
-				Advertised: currentRootHash,
-			}
-		}
+	if found && localHash == remoteHash {
+		logger.Info("remote already up2date", "branch", branchName, "hash", localHash)
+		return pushPlan{settled: PushUpToDate, head: remoteHash}, nil
 	}
 
-	// Nothing on the remote and nothing local to send. The advertisement still answered the
-	// question the caller asked: this branch is not there.
-	if !found && localHash.IsZero() {
+	if err := remoteMovedSinceBase(branch, rootBranch, rootHash, refs); err != nil {
+		logger.Info("Remote branch not in expected state", "branch", branchName, "root", rootBranch.Short())
+		return pushPlan{}, err
+	}
+
+	if found {
+		oldHash = remoteHash
+	} else if nothingToPublish(branch, localHash, rootBranch, rootHash) {
+		// The advertisement still answered the question the caller asked: this branch is not there.
+		logger.Info("Nothing to publish; the branch stays absent", "branch", branchName)
 		return pushPlan{settled: PushNoBranch}, nil
 	}
 
+	// Old stays zero for a new branch, so the server also refuses it if somebody creates it after
+	// this advertisement.
 	return pushPlan{old: oldHash, new: localHash}, nil
+}
+
+// nothingToPublish reports, for a branch the remote does not carry, that there is nothing to
+// create it with: no local commit at all, or a new branch (rooted on another branch, its parent)
+// whose local tip is still the parent's, which the caller has just confirmed. Creating it would
+// publish nothing but a name, so it stays absent until a write has something to commit.
+func nothingToPublish(branch plumbing.ReferenceName, localHash plumbing.Hash,
+	rootBranch plumbing.ReferenceName, rootHash plumbing.Hash,
+) bool {
+	if localHash.IsZero() {
+		return true
+	}
+	return rootBranch != branch && localHash == rootHash
+}
+
+// remoteMovedSinceBase reports a remote that is no longer where the local commits were based, or
+// nil. Both checks hold whether or not the pushed branch exists, because the case they guard
+// hardest is the one where it does not.
+func remoteMovedSinceBase(
+	branch, rootBranch plumbing.ReferenceName,
+	rootHash plumbing.Hash,
+	refs map[plumbing.ReferenceName]plumbing.Hash,
+) error {
+	// Somebody created the branch we believed absent. Pushing with Old = their commit would
+	// overwrite it with a commit that does not descend from it, on any server that accepts a
+	// non-fast-forward update; the root check below cannot see it, because the root is the parent.
+	if remoteHash, found := refs[branch]; found && rootBranch != branch {
+		return &RemoteMovedError{Branch: branch, Expected: plumbing.ZeroHash, Advertised: remoteHash}
+	}
+
+	// The commits were built on rootHash. For an existing branch that is the branch itself; for a
+	// new one it is the parent, which must not have moved either: a branch born on a stale parent
+	// is born behind it.
+	if advertised := refs[rootBranch]; advertised != rootHash {
+		return &RemoteMovedError{Branch: rootBranch, Expected: rootHash, Advertised: advertised}
+	}
+	return nil
 }
 
 // performPush executes the packfile creation and push operation.

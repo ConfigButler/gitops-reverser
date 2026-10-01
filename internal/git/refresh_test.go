@@ -4,7 +4,9 @@ package git
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,8 +46,14 @@ func newRefreshHarness(t *testing.T, slug string) *refreshHarness {
 // newRefreshHarnessOn builds the harness on a remote that may or may not already have the branch.
 func newRefreshHarnessOn(t *testing.T, slug string, seeded bool) *refreshHarness {
 	t.Helper()
+	return newRefreshHarnessForBranch(t, slug, seeded, "main")
+}
+
+// newRefreshHarnessForBranch builds the harness for a worker on another branch than main.
+func newRefreshHarnessForBranch(t *testing.T, slug string, seeded bool, branch string) *refreshHarness {
+	t.Helper()
 	h := &refreshHarness{
-		ledgerFixture: newLedgerFixture(t, slug, seeded),
+		ledgerFixture: newLedgerFixtureOnBranch(t, slug, seeded, branch),
 		target:        itypes.NewResourceReference("checkout", "shop"),
 		path:          "team-a",
 	}
@@ -237,6 +245,46 @@ func TestRefresh_AnAbsentBranchCostsOneConnection(t *testing.T) {
 	require.NotEmpty(t, h.reported)
 	assert.Empty(t, h.reported[len(h.reported)-1].Commit,
 		"no revision IS the observation: a branch does not exist without a commit")
+}
+
+// TestRefresh_AnAbsentBranchFollowsItsParent: while the write branch does not exist, the checkout
+// holds its parent, and a parent somebody moved is followed from the same advertisement, so the
+// folder the scan re-reads is the one the next commit builds on. It writes nothing.
+func TestRefresh_AnAbsentBranchFollowsItsParent(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	h := newRefreshHarnessForBranch(t, "refresh-absent-parent-moved", true, "feature")
+	require.NoError(t, h.worker.ensureRepositoryInitialized(h.worker.ctx))
+	h.contend("OUTSIDE.md", "from-another-writer\n")
+	moved := revParseMain(t, h.repoDir)
+
+	h.refresh(time.Nanosecond)
+
+	assert.Equal(t, int64(1), fetchCount(t, reader, h.worker, fetchReasonRefresh),
+		"the parent moved, so the checkout has to be brought onto it")
+	repo, err := gogit.PlainOpen(h.worker.repoPath())
+	require.NoError(t, err)
+	assert.Equal(t, moved, localHead(repo).String(), "the checkout is on the parent's new tip")
+	require.NotEmpty(t, h.reported)
+	assert.Empty(t, h.reported[len(h.reported)-1].Commit, "the write branch is still not on the remote")
+	assert.NotEmpty(t, h.scanVerdicts, "and the folder was re-read from it")
+	out, err := exec.Command("git", "-C", h.repoDir, "branch", "--list", "feature").Output()
+	require.NoError(t, err)
+	assert.Empty(t, strings.TrimSpace(string(out)), "and following it created no branch")
+}
+
+// TestRefresh_AnAbsentBranchWithAnUnmovedParentCostsOneConnection: following the parent is free
+// when it has not moved, because the advertisement that answers for the write branch carries it.
+func TestRefresh_AnAbsentBranchWithAnUnmovedParentCostsOneConnection(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	h := newRefreshHarnessForBranch(t, "refresh-absent-parent-unmoved", true, "feature")
+	require.NoError(t, h.worker.ensureRepositoryInitialized(h.worker.ctx))
+
+	assert.Equal(t, int64(1), h.refresh(time.Nanosecond), "one advertisement answers for both branches")
+	assert.Zero(t, fetchCount(t, reader, h.worker, fetchReasonRefresh))
 }
 
 // TestRefresh_ObservesTheRemoteWithNoCheckoutYet. A GitTarget that has been declared but has not
@@ -568,4 +616,31 @@ func TestRefresh_WithNoPathScansNothing(t *testing.T) {
 	h.loop.handleRefreshRequest(&RefreshRequest{Target: h.target, MaxAge: time.Nanosecond})
 
 	assert.Empty(t, layouts)
+}
+
+// TestRefresh_ANewBranchDoesNotDependOnARecentRefresh: a refresh that completed just before the
+// parent moved leaves the checkout one commit behind, and the next write must still create the
+// write branch on the parent's current tip. Publication checks the parent itself; a refresh tick is
+// never what makes it fresh.
+func TestRefresh_ANewBranchDoesNotDependOnARecentRefresh(t *testing.T) {
+	h := newRefreshHarnessForBranch(t, "refresh-then-parent-moves", true, "feature")
+	h.worker.mapper = configMapMapper()
+	h.createLedgerTarget("live", nil)
+	require.NoError(t, h.worker.ensureRepositoryInitialized(h.worker.ctx))
+
+	h.refresh(time.Nanosecond)
+	h.contend("LATEST.md", "moved right after the refresh\n")
+	moved := revParseMain(t, h.repoDir)
+
+	loop := newBranchWorkerEventLoop(h.worker, 0)
+	defer loop.stopTimers()
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("cm1", "alice", ledgerTargetName)},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.Empty(t, loop.pendingWrites, "the write was published")
+
+	out, err := exec.Command("git", "-C", h.repoDir, "rev-parse", "refs/heads/feature^").Output()
+	require.NoError(t, err)
+	assert.Equal(t, moved, strings.TrimSpace(string(out)), "the new branch starts on the parent's current tip")
 }

@@ -71,7 +71,11 @@ that a write failed part-way and is cleared **only by a reset** (a third, `repla
 retained writes whose local commits a reset discarded before the replay could rebuild them).
 Collapsing them would let one kind of doubt clear another. Either flag makes the next cycle fetch. The
 failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
-is caught by the compare-and-swap on the next push. **The corollary is the rule to keep in your head
+is caught by the compare-and-swap on the next push. For a new write branch, the worker checks the
+parent's advertised tip before sending the push. A moved parent triggers fetch, reset, and replay.
+The server's compare-and-swap protects creation of the write branch with `Old = zero`; it does not
+lock the parent. The parent can still move after the advertisement, so what is guaranteed is the
+parent's tip as that advertisement showed it. **The corollary is the rule to keep in your head
 when adding code here:** anything that resolves, commits, or concludes without reaching a push
 advertisement must either fetch, or refuse to conclude. See
 [inbound push notification](design/push-notification-and-reconcile-trigger.md) §3.
@@ -561,14 +565,15 @@ instead.
 
 ### Remote moved while we were writing
 
-If someone else pushes to the same remote branch before GitOps Reverser's push lands, the operator does
-not treat its local clone as authoritative. It keeps the finalized pending writes, fetches the new remote
+If someone else pushes to the same remote branch before GitOps Reverser's push lands, or, for a branch
+not created yet, if its parent branch moved, the operator does not treat its local clone as
+authoritative. It keeps the finalized pending writes, fetches the new remote
 tip, resets the local clone, replays those writes, and pushes again.
 
 ```mermaid
 flowchart TD
     LOCAL[Window finalized<br/>pending write retained] --> CHECK[PushAtomic checks remote ref]
-    CHECK --> MATCH{Remote still at expected SHA?}
+    CHECK --> MATCH{Write branch, or while it is absent its parent,<br/>still at the expected commit?}
     MATCH -->|yes| ACCEPT[Push accepted]
     ACCEPT --> CLEAR[Clear retained pending writes]
 
@@ -1234,6 +1239,16 @@ because every pending write is rebuilt from sanitized API state; nothing depends
 A branch whose remote has been **deleted** takes the same path. The advertisement does not carry the
 branch at all, which is reported as a moved remote with a zero hash, so the replay re-roots on the remote's
 default branch and the retry re-creates the branch with the retained writes on top.
+
+**A branch that does not exist yet** is created from the remote's default branch (its parent) only
+when a write has something to commit, so an idle or in-sync target never creates it. Until then the
+worker compares the folder against the parent. Periodic refresh, ten minutes by default, follows the
+parent from the same advertisement and updates the idle view independently of the publication
+check. The push records the parent and the commit it started from as its root, and treats a moved
+parent like a moved branch: fetch, reset, replay, check again. A branch somebody else created in the
+meantime is a moved remote too, so the replay builds on their commit instead of overwriting it.
+Proved end to end by the e2e spec "New write branch starts from its parent", whose recovery is
+attributed to the publication path rather than the refresher.
 
 **When the cycle fetches at all.** Only the first commit of a cycle may fetch, and only when the base
 is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans

@@ -33,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
-	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
@@ -143,10 +142,9 @@ func (f *newBranchFixture) warmOnParent() plumbing.Hash {
 }
 
 // noopResync runs a completed resync that finds nothing to change.
-func (f *newBranchFixture) noopResync(loop *branchWorkerEventLoop, desired ...manifestanalyzer.DesiredResource) {
+func (f *newBranchFixture) noopResync(loop *branchWorkerEventLoop) {
 	f.t.Helper()
 	req := &ResyncRequest{
-		Desired:            desired,
 		ResourceVersion:    "1",
 		GitTargetName:      newBranchTarget,
 		GitTargetNamespace: "default",
@@ -489,4 +487,30 @@ func TestBranchWorker_NewBranchIsNotPublishedOnAnUncheckedParent(t *testing.T) {
 		_, onRemote := f.featureOnRemote()
 		assert.False(t, onRemote)
 	})
+}
+
+// TestBranchWorker_WriteBranchCreatedConcurrentlyIsBuiltOn is §2.1a through the worker: somebody
+// creates the write branch between our plan and our push. Their commit must survive, and ours
+// must be replayed on top of it rather than pushed over it.
+func TestBranchWorker_WriteBranchCreatedConcurrentlyIsBuiltOn(t *testing.T) {
+	f := newNewBranchFixture(t, nil)
+	loop := newBranchWorkerEventLoop(f.worker, 0)
+	defer loop.stopTimers()
+	f.warmOnParent()
+
+	loop.lastPushAt = time.Now()
+	liveWrite(loop, "cm1")
+	require.Len(t, loop.pendingWrites, 1)
+
+	theirs := simulateClientCommitOnDisk(t, f.remote, "feature", "THEIRS.md", "theirs\n")
+	loop.pushPending()
+	require.Empty(t, loop.pendingWrites)
+
+	tip, onRemote := f.featureOnRemote()
+	require.True(t, onRemote)
+	commit, err := f.server.CommitObject(tip)
+	require.NoError(t, err)
+	assert.Equal(t, []plumbing.Hash{theirs}, commit.ParentHashes, "our commit descends from theirs")
+	assert.True(t, treeHas(t, f.server, tip, "THEIRS.md"))
+	assert.True(t, treeHas(t, f.server, tip, cmFile("cm1")))
 }

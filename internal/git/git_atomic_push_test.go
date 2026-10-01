@@ -123,10 +123,7 @@ func TestAtomicPush_PushToOther_DetectsMovedRoot(t *testing.T) {
 
 	var moved *RemoteMovedError
 	require.ErrorAs(t, err, &moved)
-	assert.Equal(t, mainBranch, moved.Branch)
-	assert.Equal(t, commitA, moved.Expected)
-	assert.Equal(t, commitB, moved.Advertised)
-	assert.False(t, moved.Missing)
+	assert.Equal(t, RemoteMovedError{Branch: mainBranch, Expected: commitA, Advertised: commitB}, *moved)
 
 	_, err = remoteRepo.Reference(featureBranch, true)
 	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "the new branch must not be created")
@@ -157,9 +154,8 @@ func TestAtomicPush_PushToOther_DetectsConcurrentlyCreatedBranch(t *testing.T) {
 
 	var moved *RemoteMovedError
 	require.ErrorAs(t, err, &moved)
-	assert.Equal(t, featureBranch, moved.Branch)
-	assert.Equal(t, plumbing.ZeroHash, moved.Expected, "we expected the branch to be absent")
-	assert.Equal(t, theirs, moved.Advertised)
+	assert.Equal(t, RemoteMovedError{Branch: featureBranch, Expected: plumbing.ZeroHash, Advertised: theirs}, *moved,
+		"we expected the branch to be absent")
 
 	ref, err := remoteRepo.Reference(featureBranch, true)
 	require.NoError(t, err)

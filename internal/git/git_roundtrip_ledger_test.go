@@ -67,6 +67,13 @@ type ledgerFixture struct {
 // has a commit on main, which is the difference between ledger rows 1 and 2.
 func newLedgerFixture(t *testing.T, slug string, seeded bool) *ledgerFixture {
 	t.Helper()
+	return newLedgerFixtureOnBranch(t, slug, seeded, "main")
+}
+
+// newLedgerFixtureOnBranch is newLedgerFixture with a worker for another branch than main, which
+// the remote does not carry: the write branch of a target that has not written yet.
+func newLedgerFixtureOnBranch(t *testing.T, slug string, seeded bool, branch string) *ledgerFixture {
+	t.Helper()
 
 	projectRoot := t.TempDir()
 	repoDir := filepath.Join(projectRoot, "repo.git")
@@ -104,7 +111,7 @@ func newLedgerFixture(t *testing.T, slug string, seeded bool) *ledgerFixture {
 		logr.Discard(),
 		providerName,
 		"default",
-		"main",
+		branch,
 		RepoIdentity{URL: sim.RepoURL},
 		nil,
 		BranchWorkerLimits{},

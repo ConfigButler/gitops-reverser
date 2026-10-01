@@ -190,24 +190,27 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 	// is what makes it honest for the two targets a clone-first version skipped silently — one
 	// declared but never published to, and one whose GitProvider was recreated against a
 	// different repository.
-	advertised, err := advertiseRemoteBranch(
+	advertisement, err := advertiseRemoteBranch(
 		w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
 	}
+	advertised := advertisement.branch
 	revision := ""
 	if !advertised.IsZero() {
 		revision = advertised.String()
 	}
 	w.recordRemoteObservation(revision, ObservedByFetch)
 
-	// The remote does not carry this branch. That IS the answer, and there is nothing to fetch: a
-	// fetch would fall back to the default branch and teach us nothing about a branch nobody has
-	// created — the ordinary state of a target that has not written yet. A branch somebody
-	// DELETED is caught by the compare-and-swap on the next push.
+	// The remote does not carry this branch — the ordinary state of a target that has not written
+	// yet. That IS the observation. What the checkout holds instead is the parent the branch would
+	// be created from, so that is what is followed, from the same advertisement. This keeps the
+	// folder's published shape about the tree the next commit builds on; it is not what keeps
+	// that commit fresh, which the push checks for itself. A branch somebody DELETED is caught by
+	// the compare-and-swap on the next push.
 	if advertised.IsZero() {
 		w.Log.V(1).Info("Refresh found no such branch on the remote", "branch", w.Branch)
-		return nil
+		return l.followParent(advertisement.parent)
 	}
 
 	// Everything below compares the advertisement against the local checkout, so a missing one is
@@ -239,6 +242,31 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 		return err
 	}
 	return nil
+}
+
+// followParent brings the checkout of an absent write branch onto its parent's advertised tip.
+// It costs nothing beyond the advertisement already read when the parent has not moved, and it
+// writes nothing either way.
+func (l *branchWorkerEventLoop) followParent(parent plumbing.Hash) error {
+	w := l.w
+	// An empty repository has no parent to follow.
+	if parent.IsZero() {
+		return nil
+	}
+	repo, err := gogit.PlainOpen(w.repoPath())
+	if errors.Is(err, gogit.ErrRepositoryNotExists) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open repository: %w", err)
+	}
+	if w.baseTrusted() && parent == localHead(repo) {
+		w.Log.V(1).Info("Refresh confirmed the parent branch has not moved", "branch", w.Branch)
+		return nil
+	}
+	w.Log.Info("Refresh found the parent branch elsewhere; resetting onto it",
+		"branch", w.Branch, "parent", parent.String())
+	return w.syncWithRemote(w.ctx, fetchReasonRefresh)
 }
 
 // rescanLayoutForTarget re-reads the target's folder, publishes what its shape resolves to, and
@@ -315,7 +343,17 @@ func (w *BranchWorker) rescanLayoutForTarget(ctx context.Context, req *RefreshRe
 	w.reportLayout(ctx, batch, worktreeRevision(worktree))
 }
 
-// advertiseRemoteBranch asks the remote where a branch is, and transfers nothing else.
+// remoteAdvertisement is what one ref advertisement says about a write branch.
+type remoteAdvertisement struct {
+	// branch is where the write branch is; zero when the remote does not carry it.
+	branch plumbing.Hash
+	// parent is where the remote's default branch is: the parent a new write branch is created
+	// from. Zero for an empty repository, or a HEAD that names no branch.
+	parent plumbing.Hash
+}
+
+// advertiseRemoteBranch asks the remote where a branch and its parent are, and transfers nothing
+// else.
 //
 // It is built on a storage-less remote, the way CheckRepo is, so it needs no clone on disk. Zero
 // means the advertisement did not carry the branch, which includes an empty repository — an
@@ -324,18 +362,23 @@ func advertiseRemoteBranch(
 	remoteURL string,
 	branch plumbing.ReferenceName,
 	auth []gitclient.Option,
-) (plumbing.Hash, error) {
+) (remoteAdvertisement, error) {
 	remote := gogit.NewRemote(nil, &config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
 	refs, err := listRemoteRefs(remote, auth)
 	if err != nil {
-		return plumbing.ZeroHash, err
+		return remoteAdvertisement{}, err
 	}
+	hashes := map[plumbing.ReferenceName]plumbing.Hash{}
+	var defaultBranch plumbing.ReferenceName
 	for _, ref := range refs {
-		if ref.Type() == plumbing.HashReference && ref.Name() == branch {
-			return ref.Hash(), nil
+		switch {
+		case ref.Type() == plumbing.HashReference:
+			hashes[ref.Name()] = ref.Hash()
+		case ref.Name() == plumbing.HEAD && ref.Type() == plumbing.SymbolicReference:
+			defaultBranch = ref.Target()
 		}
 	}
-	return plumbing.ZeroHash, nil
+	return remoteAdvertisement{branch: hashes[branch], parent: hashes[defaultBranch]}, nil
 }
 
 // localHead is the commit the worktree is on, or the zero hash when the branch is unborn.

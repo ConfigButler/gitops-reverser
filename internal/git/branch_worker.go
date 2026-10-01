@@ -227,6 +227,17 @@ type BranchWorker struct {
 	// Cleared after a successful push. Protected by repoMu.
 	pushCycleRootHash plumbing.Hash
 
+	// newBranchParent and newBranchParentHash are the parent the local write branch was created
+	// from, while the remote does not carry the write branch. They let a cycle that finds HEAD
+	// already on the local write branch still root itself on the parent: a no-op cycle (a resync
+	// or a live write with nothing to commit) creates the local branch and leaves HEAD on it, and
+	// local HEAD alone cannot say that the branch is absent on the remote.
+	//
+	// Cleared as soon as the remote is known to carry the branch: a fetch that found it, or a push
+	// that created or confirmed it. Protected by repoMu.
+	newBranchParent     plumbing.ReferenceName
+	newBranchParentHash plumbing.Hash
+
 	// firsts surfaces the first successful commit and push at default verbosity.
 	firsts branchWorkerLogFirsts
 
@@ -1996,8 +2007,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			w.recordRemoteObservation(revision, ObservedByPush)
 			w.Log.V(1).Info("Remote observed by push",
 				"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
-			w.pushCycleRootBranch = ""
-			w.pushCycleRootHash = plumbing.ZeroHash
+			w.endPushCycle(outcome.Kind)
 			w.firsts.push.Do(func() {
 				w.Log.Info("First push to remote completed",
 					"branch", w.Branch,
@@ -2063,6 +2073,15 @@ func (w *BranchWorker) remoteMovedDuringPush(
 	rootHash plumbing.Hash,
 	auth []gitclient.Option,
 ) bool {
+	// A push that creates the write branch is rooted on its parent, so a rejection naming the
+	// write branch itself is not about the root: somebody created the branch since we based our
+	// work. That is contention all the same, and the replay builds on their commit.
+	var moved *RemoteMovedError
+	if errors.As(pushErr, &moved) && moved.Branch != rootBranch &&
+		moved.Branch == plumbing.NewBranchReferenceName(w.Branch) {
+		return true
+	}
+
 	remoteHash, known := advertisedRootHash(pushErr, rootBranch)
 	if !known {
 		var fetchErr error
@@ -2300,9 +2319,36 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 		if err := switchOrCreateBranch(repo, targetBranch, w.Log, w.Branch, baseHash); err != nil {
 			return "", plumbing.ZeroHash, err
 		}
+		// HEAD was on another branch, which happens only when a fetch found the write branch
+		// absent and checked out its parent instead. Remember it, so the next cycle on this local
+		// branch is still rooted on the parent.
+		w.newBranchParent, w.newBranchParentHash = baseBranch, baseHash
+		return baseBranch, baseHash, nil
+	}
+
+	// Already on the local write branch, with nothing committed on top of the parent it was
+	// created from: the remote still does not carry it, so the parent remains the root.
+	if w.newBranchParent != "" && baseHash == w.newBranchParentHash {
+		return w.newBranchParent, w.newBranchParentHash, nil
 	}
 
 	return baseBranch, baseHash, nil
+}
+
+// endPushCycle clears the cycle's root after a push the remote answered. Only a push that left the
+// branch absent keeps the parent it would be created from.
+func (w *BranchWorker) endPushCycle(kind PushOutcomeKind) {
+	w.pushCycleRootBranch = ""
+	w.pushCycleRootHash = plumbing.ZeroHash
+	if kind != PushNoBranch {
+		w.clearNewBranchParent()
+	}
+}
+
+// clearNewBranchParent forgets the parent once the remote carries the write branch.
+func (w *BranchWorker) clearNewBranchParent() {
+	w.newBranchParent = ""
+	w.newBranchParentHash = plumbing.ZeroHash
 }
 
 // Push cycle outcomes and retry reasons.
@@ -2786,12 +2832,17 @@ func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	// based on the default branch (or an empty one) IS that state. There is nothing on the remote
 	// left to learn, so a fetch per cycle could only ever return the same answer.
 	//
-	// What makes it safe is the same thing that makes it safe everywhere else: the
-	// compare-and-swap. A push onto a branch we believe is absent declares Old = zero, which the
-	// server rejects if somebody has since created it, and the rejection invalidates the base and
-	// fetches. So the cost of being wrong is one rejection, not a bad write.
+	// What makes it safe is the push. For a branch we believe absent, the push is rooted on the
+	// parent the branch is created from, and validatePushState refuses it if that parent moved or
+	// if somebody has since created the branch; either rejection invalidates the base and replays
+	// onto what the advertisement showed. The push then declares Old = zero, so the server also
+	// refuses a branch created after the advertisement. So the cost of being wrong is one
+	// rejection, not a bad write.
 	w.setBaseTrusted(true)
 	w.markWorktreeClean()
+	if report.ExistsOnRemote {
+		w.clearNewBranchParent()
+	}
 
 	// Log if this was an unborn branch
 	if report.HEAD.Unborn {
