@@ -359,6 +359,10 @@ Key fields:
 - `spec.gitProviderRef`: a `GitProvider` in the same namespace, by name.
 - `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 - `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
+- `spec.parentBranch`: optional, mutable branch the write branch is created from and compared
+  against while it does not exist. Omitted means the remote's default branch. An explicit parent
+  must exist when creating the write branch. It does not need to be in `allowedBranches` because
+  it is only read.
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
@@ -372,7 +376,8 @@ resolves the window per open window, since a window is bound to exactly one targ
 
 `gitProviderRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
 orphan an old materialization or change its source cluster. The controller also rejects path overlaps
-between GitTargets sharing a provider and branch.
+between GitTargets sharing a provider and branch, and rejects two GitTargets on one branch that name
+different parent branches.
 
 Status has a kstatus-compatible summary layer plus domain conditions:
 
@@ -1240,9 +1245,10 @@ A branch whose remote has been **deleted** takes the same path. The advertisemen
 branch at all, which is reported as a moved remote with a zero hash, so the replay re-roots on the remote's
 default branch and the retry re-creates the branch with the retained writes on top.
 
-**A branch that does not exist yet** is created from the remote's default branch (its parent) only
-when a write has something to commit, so an idle or in-sync target never creates it. Until then the
-worker compares the folder against the parent. Periodic refresh, ten minutes by default, follows the
+**A branch that does not exist yet** is created from its parent (`spec.parentBranch`, or the
+remote's default branch when that is omitted) only when a write has something to commit, so an
+idle or in-sync target never creates it. Until then the worker compares the folder against the
+parent. Periodic refresh, ten minutes by default, follows the
 parent from the same advertisement and updates the idle view independently of the publication
 check. The push records the parent and the commit it started from as its root, and treats a moved
 parent like a moved branch: fetch, reset, replay, check again. A branch somebody else created in the

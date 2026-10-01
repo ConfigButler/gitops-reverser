@@ -164,7 +164,7 @@ func TestGitTargetReadinessGates(t *testing.T) {
 			st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
 			rd := newGitTargetReadiness()
-			gitTargetReadinessGates(rd, observed, tt.provider, tt.clusterProvider, tt.sourceReach)
+			gitTargetReadinessGates(rd, observed, conditionValue{}, tt.provider, tt.clusterProvider, tt.sourceReach)
 			st.applyReadiness(rd)
 
 			ready := findCondition(target.Status.Conditions, GitTargetConditionReady)

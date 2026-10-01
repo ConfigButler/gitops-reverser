@@ -130,7 +130,7 @@ func TestEnsureWorker_WaitsForTheWorkerItReplacesToStop(t *testing.T) {
 
 	ensured := make(chan struct{})
 	go func() {
-		_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main", RepoIdentity{})
+		_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main", RepoIdentity{}, "")
 		close(ensured)
 	}()
 
@@ -178,7 +178,7 @@ func TestReconcileWorkers_DoesNotStopAWorkerEnsureWorkerJustHandedOut(t *testing
 			// The SAME repository the retiring worker is about, deliberately: that is what makes
 			// an unguarded EnsureWorker take its "already there" path, which is the regression
 			// this test is here to catch.
-			_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main", retiring.repo)
+			_ = manager.EnsureWorker(context.Background(), "test-provider", "test-ns", "main", retiring.repo, "")
 		}()
 		// Long enough for an unguarded EnsureWorker to finish inside the window; a guarded one is
 		// blocked on lifecycleMu and finishes after the sweep instead.
@@ -243,7 +243,7 @@ func TestReconcileWorkers_DoesNotStopAWorkerCreatedAfterItsSnapshot(t *testing.T
 					go func() {
 						defer close(ensured)
 						_ = manager.EnsureWorker(
-							context.Background(), "newcomer-provider", "test-ns", "main", RepoIdentity{})
+							context.Background(), "newcomer-provider", "test-ns", "main", RepoIdentity{}, "")
 					}()
 					time.Sleep(200 * time.Millisecond)
 				})

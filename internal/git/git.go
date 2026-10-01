@@ -99,8 +99,19 @@ func PrepareBranch(
 	repoURL, repoPath, targetBranchName string,
 	auth []gitclient.Option,
 ) (*PullReport, error) {
+	return PrepareBranchFrom(ctx, repoURL, repoPath, targetBranchName, "", auth)
+}
+
+// PrepareBranchFrom is PrepareBranch with an explicit parent branch for a target branch the remote
+// does not carry; empty means the remote's default branch. See SmartFetchFrom.
+func PrepareBranchFrom(
+	ctx context.Context,
+	repoURL, repoPath, targetBranchName, parentBranch string,
+	auth []gitclient.Option,
+) (*PullReport, error) {
 	logger := log.FromContext(ctx)
-	logger.Info("Preparing branch for operations", "url", repoURL, "path", repoPath, "branch", targetBranchName)
+	logger.Info("Preparing branch for operations", "url", repoURL, "path", repoPath, "branch", targetBranchName,
+		"parentBranch", parentBranch)
 
 	// Ensure the directory exists
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0750); err != nil {
@@ -136,7 +147,7 @@ func PrepareBranch(
 	}
 
 	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
-	pullReport, err := syncToRemote(ctx, repo, targetBranch, auth)
+	pullReport, err := syncToRemoteFrom(ctx, repo, targetBranch, parentBranch, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -367,12 +378,23 @@ func syncToRemote(
 	branch plumbing.ReferenceName,
 	auth []gitclient.Option,
 ) (*PullReport, error) {
+	return syncToRemoteFrom(ctx, repo, branch, "", auth)
+}
+
+// syncToRemoteFrom is syncToRemote with an explicit parent branch; see SmartFetchFrom.
+func syncToRemoteFrom(
+	ctx context.Context,
+	repo *git.Repository,
+	branch plumbing.ReferenceName,
+	parent string,
+	auth []gitclient.Option,
+) (*PullReport, error) {
 	_, currentHash, err := GetCurrentBranch(repo)
 	if err != nil {
 		return nil, fmt.Errorf("unexpected fail to read HEAD: %w", err)
 	}
 
-	availableBranch, err := SmartFetch(ctx, repo, branch, auth)
+	availableBranch, err := SmartFetchFrom(ctx, repo, branch, parent, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch: %w", err)
 	}

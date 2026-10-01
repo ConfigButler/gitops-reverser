@@ -37,8 +37,8 @@ import (
 )
 
 const (
-	newBranchTarget = "target-a"
-	newBranchFolder = "live"
+	newBranchTarget = "standby-target"
+	newBranchFolder = "standby"
 )
 
 // newBranchFixture is a remote whose main is seeded and whose write branch `feature` is absent,
@@ -88,7 +88,8 @@ func newNewBranchFixture(t *testing.T, seedFiles map[string]string) *newBranchFi
 	f.worker.ctx = ctx
 	f.worker.mapper = configMapMapper()
 	t.Cleanup(func() { _ = os.RemoveAll(f.worker.repoRootPath()) })
-	createGitTargetWithPruneMode(t, f.worker, newBranchTarget, newBranchFolder, configv1alpha3.PruneAlways)
+	createGitTarget(t, f.worker, newBranchTarget, newBranchFolder,
+		&configv1alpha3.PrunePolicy{Mode: configv1alpha3.PruneAlways})
 	return f
 }
 
@@ -448,9 +449,10 @@ func TestBranchWorker_NewBranchIsNotPublishedOnAnUncheckedParent(t *testing.T) {
 		t.Cleanup(func() { syncToRemoteFn = original })
 		moves := 0
 		syncToRemoteFn = func(
-			ctx context.Context, repo *git.Repository, branch plumbing.ReferenceName, auth []gitclient.Option,
+			ctx context.Context, repo *git.Repository, branch plumbing.ReferenceName, parent string,
+			auth []gitclient.Option,
 		) (*PullReport, error) {
-			report, err := original(ctx, repo, branch, auth)
+			report, err := original(ctx, repo, branch, parent, auth)
 			moves++
 			f.pushToMain(map[string]string{"MOVING.md": time.Now().String() + string(rune('a'+moves))})
 			return report, err

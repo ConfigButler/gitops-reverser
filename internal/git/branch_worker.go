@@ -56,7 +56,7 @@ var (
 	//nolint:gochecknoglobals
 	fetchRemoteBranchHashFn = fetchRemoteBranchHash
 	//nolint:gochecknoglobals
-	syncToRemoteFn = syncToRemote
+	syncToRemoteFn = syncToRemoteFrom
 )
 
 // BranchWorker processes events for a single (GitProvider, Branch) combination.
@@ -237,6 +237,11 @@ type BranchWorker struct {
 	// that created or confirmed it. Protected by repoMu.
 	newBranchParent     plumbing.ReferenceName
 	newBranchParentHash plumbing.Hash
+
+	// parentBranchName is the GitTarget's spec.parentBranch: the branch a write branch the remote
+	// does not carry is created from. Empty means the remote's default branch. It is set by the
+	// reconcile and read by the event loop, hence atomic.
+	parentBranchName atomic.Pointer[string]
 
 	// firsts surfaces the first successful commit and push at default verbosity.
 	firsts branchWorkerLogFirsts
@@ -923,7 +928,7 @@ func (w *BranchWorker) prepareBootstrapRepository(
 
 	repoPath := w.repoPath()
 	w.recordFetch(fetchReasonBootstrap)
-	pullReport, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
+	pullReport, err := w.prepareBranch(ctx, repoPath, auth)
 	if err != nil {
 		return "", fmt.Errorf("failed to prepare repository: %w", err)
 	}
@@ -1858,7 +1863,7 @@ func (w *BranchWorker) ensureBaseForCycle(
 	}
 	w.recordFetch(reason)
 
-	pullReport, err := PrepareBranch(w.ctx, w.repo.URL, repoPath, w.Branch, auth)
+	pullReport, err := w.prepareBranch(w.ctx, repoPath, auth)
 	if err != nil {
 		return fmt.Errorf("prepare repository: %w", err)
 	}
@@ -2035,7 +2040,7 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 		// changed nothing.
 		w.markReplayRequired()
 		w.recordFetch(fetchReasonContention)
-		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
+		pullReport, syncErr := w.syncToRemote(w.ctx, repo, auth)
 		if syncErr != nil {
 			w.invalidateBase("sync during replay failed")
 			return fmt.Errorf("sync remote during replay: %w", syncErr)
@@ -2185,7 +2190,7 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 	// false, which is precisely the state no other flag describes.
 	w.markReplayRequired()
 	w.recordFetch(reason)
-	pullReport, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
+	pullReport, err := w.syncToRemote(ctx, repo, auth)
 	if err != nil {
 		w.invalidateBase("sync before replay failed")
 		return fmt.Errorf("sync remote before replay: %w", err)
@@ -2342,6 +2347,52 @@ func (w *BranchWorker) endPushCycle(kind PushOutcomeKind) {
 	w.pushCycleRootHash = plumbing.ZeroHash
 	if kind != PushNoBranch {
 		w.clearNewBranchParent()
+	}
+}
+
+// ParentBranch is the configured parent branch, or empty for the remote's default branch.
+func (w *BranchWorker) ParentBranch() string {
+	if name := w.parentBranchName.Load(); name != nil {
+		return *name
+	}
+	return ""
+}
+
+// SetParentBranch configures the parent branch. A change invalidates the base, so the next cycle
+// fetches and compares against the new parent; the worker and its clone are kept, because
+// nothing already written is abandoned. It reports whether the value changed.
+func (w *BranchWorker) SetParentBranch(name string) bool {
+	if w.ParentBranch() == name {
+		return false
+	}
+	w.parentBranchName.Store(&name)
+	w.invalidateBase("parent branch changed")
+	return true
+}
+
+// prepareBranch is PrepareBranch for this worker's branch and parent. A configured parent the
+// remote does not carry is recorded as an observation, because it is one: the advertisement said
+// so, and the GitTarget reports it as ParentBranchNotFound.
+func (w *BranchWorker) prepareBranch(
+	ctx context.Context, repoPath string, auth []gitclient.Option,
+) (*PullReport, error) {
+	report, err := PrepareBranchFrom(ctx, w.repo.URL, repoPath, w.Branch, w.ParentBranch(), auth)
+	w.noteMissingParent(err)
+	return report, err
+}
+
+// syncToRemote is syncToRemoteFn for this worker's branch and parent; see prepareBranch.
+func (w *BranchWorker) syncToRemote(
+	ctx context.Context, repo *gogit.Repository, auth []gitclient.Option,
+) (*PullReport, error) {
+	report, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), w.ParentBranch(), auth)
+	w.noteMissingParent(err)
+	return report, err
+}
+
+func (w *BranchWorker) noteMissingParent(err error) {
+	if errors.Is(err, ErrParentBranchNotFound) {
+		w.recordMissingParent(w.ParentBranch(), ObservedByFetch)
 	}
 }
 
@@ -2711,9 +2762,17 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 // that died mid-upload or an advertisement that never arrived observed nothing, and recording a
 // guess there is how a stale revision reaches status.
 func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) {
+	w.publishObservation(RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo})
+}
+
+// recordMissingParent records that the write branch is absent and its configured parent is too.
+func (w *BranchWorker) recordMissingParent(parent string, by ObservationSource) {
+	w.publishObservation(RemoteObservation{At: time.Now(), By: by, Repo: w.repo, MissingParent: parent})
+}
+
+func (w *BranchWorker) publishObservation(observed RemoteObservation) {
 	// Stamped with the repository it is about, so that whoever publishes it can tell whether it
 	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
-	observed := RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo}
 	w.lastObservation.Store(&observed)
 	// Delivered here, at the one point where an observation is made, rather than by each caller
 	// against whichever GitTargets it happened to be holding. The fact is about the BRANCH, so it
@@ -2751,7 +2810,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context, reason string) error 
 
 	// PrepareBranch handles both initial and update cases
 	w.recordFetch(reason)
-	report, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
+	report, err := w.prepareBranch(ctx, repoPath, auth)
 	if err != nil {
 		return fmt.Errorf("failed to sync with remote: %w", err)
 	}
@@ -2786,7 +2845,7 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 	}
 
 	// Use new PrepareBranch abstraction
-	pullReport, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
+	pullReport, err := w.prepareBranch(ctx, repoPath, auth)
 	if err != nil {
 		return fmt.Errorf("failed to prepare repository: %w", err)
 	}
@@ -2873,6 +2932,12 @@ func (w *BranchWorker) SeedRemoteObservationForTest(revision string, at time.Tim
 	w.baseTrustedState.Store(true)
 	observed := RemoteObservation{Commit: revision, At: at, By: ObservationSource(by), Repo: w.repo}
 	w.lastObservation.Store(&observed)
+}
+
+// RecordMissingParentForTest records the observation a fetch makes when neither the write branch
+// nor its configured parent exists, for tests in another package.
+func (w *BranchWorker) RecordMissingParentForTest(parent string) {
+	w.recordMissingParent(parent, ObservedByFetch)
 }
 
 // BaseTrustedForTest exposes the flag to tests in another package.

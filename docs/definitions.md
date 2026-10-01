@@ -124,6 +124,15 @@ Observation failure supplies no evidence of absence. The code calls this write-s
 branch)` tuple. Every write to that branch goes through it. Two words, lowercase in prose,
 `BranchWorker` as the Go type.
 
+**Write branch.** The branch a `GitTarget` writes to: `spec.branch`. It must be in the
+`GitProvider`'s `allowedBranches`.
+
+**Parent branch.** The branch a write branch is created from, and compared against while the write
+branch does not exist on the remote: `spec.parentBranch`, or the remote's default branch when that
+is omitted. Always with its noun: "parent" alone already names a parent resource. Not "base", which
+names a kustomize read-only base and base trust, and not "source", which names the source cluster.
+Once the write branch exists, the parent is not followed.
+
 **Commit window.** The interval a branch worker batches one author's writes to one target over before
 it commits. Only a write opens one; nothing else does. It closes on its `idleTimeout` of silence or
 its `maxDuration` after opening, whichever comes first. Windows do not merge across authors, which

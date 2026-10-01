@@ -283,12 +283,17 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 // and the caller can fail. See ReplacementPending; the delivery is the GitTarget reconcile's
 // worker wiring gate.
 //
+// parentBranch is the GitTarget's spec.parentBranch. A change is not a replacement: it says where
+// a write branch the remote does not carry is created from, so it abandons nothing already
+// written. The worker keeps its clone and drops its base trust instead.
+//
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(
 	_ context.Context,
 	providerName, providerNamespace string,
 	branch string,
 	repo RepoIdentity,
+	parentBranch string,
 ) error {
 	// Held across the whole check-and-create so a replacement cannot start while the worker it
 	// replaces is still stopping; they would share a clone.
@@ -307,6 +312,10 @@ func (m *WorkerManager) EnsureWorker(
 
 	if exists {
 		if existing.repo == repo {
+			if existing.SetParentBranch(parentBranch) {
+				m.Log.Info("Parent branch changed; the worker re-reads the remote on its next cycle",
+					"key", key.String(), "parentBranch", parentBranch)
+			}
 			return nil
 		}
 		// Both identities, at default verbosity: a comparison that is not stable across steady
@@ -338,6 +347,7 @@ func (m *WorkerManager) EnsureWorker(
 		// Inject the resolver before Start: the field is read only by the event-loop
 		// goroutine Start spawns, so setting it here (under m.mu, before that goroutine
 		// exists) is race-free.
+		worker.SetParentBranch(parentBranch)
 		worker.mapper = m.mapper
 		worker.clusterMapper = m.clusterMapper
 		worker.sshHostKeys = m.sshHostKeys

@@ -190,12 +190,19 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 	// is what makes it honest for the two targets a clone-first version skipped silently — one
 	// declared but never published to, and one whose GitProvider was recreated against a
 	// different repository.
+	parentBranch := w.ParentBranch()
 	advertisement, err := advertiseRemoteBranch(
-		w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), auth)
+		w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), parentBranch, auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
 	}
 	advertised := advertisement.branch
+	// Neither the branch nor the parent it would be created from: there is nothing to follow,
+	// and the GitTarget reports the parent as missing until somebody creates it.
+	if advertised.IsZero() && parentBranch != "" && advertisement.parent.IsZero() {
+		w.recordMissingParent(parentBranch, ObservedByFetch)
+		return nil
+	}
 	revision := ""
 	if !advertised.IsZero() {
 		revision = advertised.String()
@@ -347,13 +354,14 @@ func (w *BranchWorker) rescanLayoutForTarget(ctx context.Context, req *RefreshRe
 type remoteAdvertisement struct {
 	// branch is where the write branch is; zero when the remote does not carry it.
 	branch plumbing.Hash
-	// parent is where the remote's default branch is: the parent a new write branch is created
-	// from. Zero for an empty repository, or a HEAD that names no branch.
+	// parent is where the parent a new write branch is created from is: the configured parent
+	// branch, or the remote's default branch when none is configured. Zero when the remote does
+	// not carry it, which includes an empty repository.
 	parent plumbing.Hash
 }
 
 // advertiseRemoteBranch asks the remote where a branch and its parent are, and transfers nothing
-// else.
+// else. An empty parentBranch means the branch the remote's HEAD names.
 //
 // It is built on a storage-less remote, the way CheckRepo is, so it needs no clone on disk. Zero
 // means the advertisement did not carry the branch, which includes an empty repository — an
@@ -361,6 +369,7 @@ type remoteAdvertisement struct {
 func advertiseRemoteBranch(
 	remoteURL string,
 	branch plumbing.ReferenceName,
+	parentBranch string,
 	auth []gitclient.Option,
 ) (remoteAdvertisement, error) {
 	remote := gogit.NewRemote(nil, &config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
@@ -377,6 +386,9 @@ func advertiseRemoteBranch(
 		case ref.Name() == plumbing.HEAD && ref.Type() == plumbing.SymbolicReference:
 			defaultBranch = ref.Target()
 		}
+	}
+	if parentBranch != "" {
+		defaultBranch = plumbing.NewBranchReferenceName(parentBranch)
 	}
 	return remoteAdvertisement{branch: hashes[branch], parent: hashes[defaultBranch]}, nil
 }

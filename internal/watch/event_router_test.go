@@ -353,8 +353,8 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 
 	ensureErr := workerManager.EnsureWorker(
 		ctx, "team-a-provider", "team-a", "main",
-		git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"},
-	)
+		git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"}, "")
+
 	require.NoError(t, ensureErr)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())

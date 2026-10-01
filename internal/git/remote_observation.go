@@ -50,6 +50,9 @@ type RemoteObservation struct {
 	// It is zero for a worker that has no identity of its own: the CLI, and tests that never reach
 	// a remote. A comparison against an unknown identity proves nothing, so it is not made.
 	Repo RepoIdentity
+	// MissingParent names the configured parent branch when the remote carries neither it nor the
+	// branch, so the branch cannot be created. Empty otherwise, including for an omitted parent.
+	MissingParent string
 }
 
 // Age is how long ago the observation was made, against now.

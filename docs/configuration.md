@@ -79,6 +79,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 |---|---|---|
 | `gitProviderRef` | **required** | The `GitProvider` backing this target, in the same namespace |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches` |
+| `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Mutable, and only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
 | `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
@@ -551,6 +552,8 @@ The important fields are:
 - `spec.clusterProviderRef`: which `ClusterProvider` supplies resources; omit it to reference the
   user-created `default` provider
 - `spec.branch`: which allowed branch to write to
+- `spec.parentBranch`: which branch `spec.branch` is created from while it does not exist yet; omit it
+  for the remote's default branch
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
@@ -746,6 +749,34 @@ are happy, delete the preview target and declare the real one. `spec.branch` is 
 two are always separate objects, and deleting the preview cannot disturb the real folder.
 
 For inspecting a repository without a cluster at all, use the `manifest-analyzer` CLI.
+
+### Starting the write branch from another branch (`spec.parentBranch`)
+
+A target whose `spec.branch` does not exist on the remote waits on standby: it compares the cluster
+against the **parent branch** and creates nothing while they agree. The first write that has
+something to commit creates the branch from the parent's current tip, checked when it pushes, so a
+target that waited a week does not publish onto a week-old checkout. A write that finds nothing to
+change creates no branch at all.
+
+The parent is the remote's default branch unless you name one:
+
+```yaml
+spec:
+  gitProviderRef: {name: homelab}
+  branch: reverser/prod-edits     # the write branch: created on the first commit
+  parentBranch: env/prod          # what it is created from
+  path: apps/checkout
+```
+
+- An explicit parent must exist when the write branch is created. Otherwise the target reports
+  `Ready=False` with reason `ParentBranchNotFound`, writes nothing, and recovers once the branch is
+  pushed. An omitted parent never fails this way, and in an empty repository the first commit
+  starts a branch with no history.
+- Once the write branch exists, it is used as it is: new commits on the parent do not reach it.
+  Delete the write branch after its changes are merged, and the next edit starts a fresh one.
+- `parentBranch` is mutable, and it is only read, so it does not need to be in `allowedBranches`.
+- All `GitTarget` objects on one `GitProvider` and branch must name the same parent branch; omitted
+  counts as its own value. The later-created one reports `TargetConflict`.
 
 `spec.suspend` is **not** this. It is the next section.
 

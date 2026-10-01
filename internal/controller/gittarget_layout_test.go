@@ -206,7 +206,7 @@ func TestGitTargetReadiness_StalledFollowsGitPathAccepted(t *testing.T) {
 					},
 					Render: conditionValue{Status: metav1.ConditionTrue},
 				},
-			}, healthyDependency(), healthyDependency(), healthyDependency())
+			}, healthyDependency(), healthyDependency(), healthyDependency(), healthyDependency())
 
 			trio := rd.trio()
 			assert.Equal(t, wantStalled.Status, string(trio.Stalled.Status))

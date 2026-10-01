@@ -49,6 +49,23 @@ type GitTargetSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Branch string `json:"branch"`
 
+	// Why "parent" and not base/source/revision: docs/definitions.md reserves those words, and the
+	// field is flat because it is one fact. It is mutable because it only says where a branch
+	// starts; changing it abandons nothing already written, unlike branch and path. It can never
+	// hold a commit or tag: a pinned starting point would be a sibling field.
+
+	// ParentBranch is the branch the write branch (spec.branch) is created from, and the branch the
+	// target compares against while the write branch does not exist on the remote. Omitted: the
+	// branch the remote's HEAD points at (its default branch), or a branch with no history when
+	// the repository is empty. When set, it must exist on the remote for the write branch to be
+	// created; otherwise the GitTarget reports ParentBranchNotFound and writes nothing. Once the
+	// write branch exists, it is used as it is and the parent is not followed. It is only read, so
+	// it does not need to be in the GitProvider's allowedBranches. All GitTargets on one GitProvider
+	// and branch must name the same parent branch (omitted counts as its own value).
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	ParentBranch string `json:"parentBranch,omitempty"`
+
 	// Path within the repository to write resources to, relative to the repository
 	// root. Required and must be non-empty — there is no default, so a GitTarget can
 	// never silently write to the repository root. To deliberately target the

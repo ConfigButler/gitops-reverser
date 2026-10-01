@@ -68,7 +68,7 @@ func mustEnsureWorker(
 	repo RepoIdentity,
 ) bool {
 	t.Helper()
-	require.NoError(t, m.EnsureWorker(ctx, providerName, providerNamespace, branch, repo))
+	require.NoError(t, m.EnsureWorker(ctx, providerName, providerNamespace, branch, repo, ""))
 	key := BranchKey{RepoNamespace: providerNamespace, RepoName: providerName, Branch: branch}
 	pending := m.ReplacementPending(key)
 	m.AcknowledgeReplacement(key)
@@ -144,7 +144,7 @@ func TestEnsureWorker_CreatesAWorkerWithTheIdentityItWasAskedFor(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "clusters/prod")
 
 	// Register first target
-	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, "")
 	if err != nil {
 		t.Fatalf("Failed to register target: %v", err)
 	}
@@ -237,12 +237,12 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	createTargetForRegister(ctx, t, client, "target-dev", "repo1", "develop", "base/")
 
 	// Register targets for same repo, different branches
-	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+	err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, "")
 	if err != nil {
 		t.Fatalf("Failed to register target-main: %v", err)
 	}
 
-	err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop", repo)
+	err = manager.EnsureWorker(ctx, "repo1", "gitops-system", "develop", repo, "")
 	if err != nil {
 		t.Fatalf("Failed to register target-dev: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := range 10 {
 		go func(index int) {
-			err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo)
+			err := manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, "")
 			if err != nil {
 				t.Errorf("Failed to ensure worker %d: %v", index, err)
 			}
@@ -529,7 +529,7 @@ func TestWorkerLifecycle_BuildsAndReclaimsItsOwnState(t *testing.T) {
 	root := workerStateRoot
 	repo := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", repo, ""))
 	worker, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 	require.True(t, strings.HasPrefix(worker.repoPath(), root+string(filepath.Separator)),
@@ -573,7 +573,7 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	before := RepoIdentity{ProviderUID: "uid-1", URL: sameURL}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: sameURL}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
 	old, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 	require.NoError(t, os.MkdirAll(old.repoPath(), 0o750))
@@ -585,7 +585,7 @@ func TestWorkerLifecycle_AReplacementDoesNotReclaimItsPredecessorsCheckout(t *te
 	sentinel := filepath.Join(successor, "HEAD")
 	require.NoError(t, os.WriteFile(sentinel, []byte("ref: refs/heads/main\n"), 0o600))
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
 	replacement, ok := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	require.True(t, ok)
 	require.NotSame(t, old, replacement)

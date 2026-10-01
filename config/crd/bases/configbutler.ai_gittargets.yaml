@@ -348,6 +348,18 @@ spec:
                 - Ignore
                 - PushEmptyCommit
                 type: string
+              parentBranch:
+                description: |-
+                  ParentBranch is the branch the write branch (spec.branch) is created from, and the branch the
+                  target compares against while the write branch does not exist on the remote. Omitted: the
+                  branch the remote's HEAD points at (its default branch), or a branch with no history when
+                  the repository is empty. When set, it must exist on the remote for the write branch to be
+                  created; otherwise the GitTarget reports ParentBranchNotFound and writes nothing. Once the
+                  write branch exists, it is used as it is and the parent is not followed. It is only read, so
+                  it does not need to be in the GitProvider's allowedBranches. All GitTargets on one GitProvider
+                  and branch must name the same parent branch (omitted counts as its own value).
+                minLength: 1
+                type: string
               path:
                 description: |-
                   Path within the repository to write resources to, relative to the repository

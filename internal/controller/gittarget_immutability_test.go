@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -73,6 +74,49 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		expectImmutable(func(gt *configbutleraiv1alpha3.GitTarget) {
 			gt.Spec.GitProviderRef.Name = "prov-b"
 		}, "spec.gitProviderRef is immutable")
+	})
+
+	// spec.parentBranch is NOT part of the destination: it says where a write branch starts, so it
+	// can change on a live target. It can be omitted, but not set to the empty string.
+	It("allows spec.parentBranch to be set, changed and cleared, but never empty", func() {
+		ctx := context.Background()
+		key := types.NamespacedName{Name: "parent-branch-target", Namespace: "default"}
+
+		gitTarget := &configbutleraiv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Spec: configbutleraiv1alpha3.GitTargetSpec{
+				GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+				Branch:         "edits",
+				Path:           "apps",
+				ParentBranch:   "main",
+			},
+		}
+		Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, gitTarget) })
+
+		for _, parent := range []string{"release", ""} {
+			Eventually(func(g Gomega) {
+				current := &configbutleraiv1alpha3.GitTarget{}
+				g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+				current.Spec.ParentBranch = parent
+				g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
+			}, timeout, interval).Should(Succeed())
+		}
+
+		empty := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "GitTarget",
+			"metadata":   map[string]interface{}{"name": "empty-parent-target", "namespace": "default"},
+			"spec": map[string]interface{}{
+				"gitProviderRef": map[string]interface{}{"name": "prov-a"},
+				"branch":         "edits",
+				"path":           "apps",
+				"parentBranch":   "",
+			},
+		}}
+		err := k8sClient.Create(ctx, empty)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.parentBranch"))
 	})
 
 	It("requires a non-empty path: rejects an omitted or empty path but allows an explicit \".\" root", func() {

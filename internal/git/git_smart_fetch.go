@@ -28,6 +28,26 @@ func SmartFetch(
 	target plumbing.ReferenceName, // e.g. "refs/heads/feature" or "HEAD"
 	auth []gitclient.Option,
 ) (plumbing.ReferenceName, error) {
+	return SmartFetchFrom(ctx, repo, target, "", auth)
+}
+
+// ErrParentBranchNotFound reports that a configured parent branch is absent on the remote while
+// the target branch is absent too, so there is nothing to create the target branch from. It is
+// never reported for an omitted parent: that falls back to the remote's default branch, and to
+// an unborn branch in an empty repository.
+var ErrParentBranchNotFound = errors.New("parent branch not found on the remote")
+
+// SmartFetchFrom is SmartFetch with an explicit parent: the branch to fall back to when the target
+// branch is absent. Empty means the remote's default branch. A configured parent that is absent is
+// an error rather than a fallback, so a typo can never start an orphan branch; it does not matter
+// while the target branch exists.
+func SmartFetchFrom(
+	ctx context.Context,
+	repo *git.Repository,
+	target plumbing.ReferenceName,
+	parent string,
+	auth []gitclient.Option,
+) (plumbing.ReferenceName, error) {
 	remoteName := "origin"
 	remote, err := repo.Remote(remoteName)
 	if err != nil {
@@ -39,12 +59,17 @@ func SmartFetch(
 	if err != nil {
 		return "", err
 	}
-	if len(refs) == 0 {
+	if len(refs) == 0 && parent == "" {
 		return "", nil
 	}
 
 	// 2. Analyze: Find default branch and check target existence
-	defaultFull, defaultShort, targetExists := analyzeRemoteRefs(ctx, refs, target.String())
+	headFull, headShort, targetExists := analyzeRemoteRefs(ctx, refs, target.String())
+
+	defaultFull, defaultShort, err := fallbackBranch(refs, parent, headFull, headShort, targetExists)
+	if err != nil {
+		return "", err
+	}
 
 	// 3. Plan: Build RefSpecs based on analysis
 	refSpecs := buildSmartRefSpecs(remoteName, defaultFull, defaultShort, target, targetExists)
@@ -75,10 +100,37 @@ func SmartFetch(
 		}
 	}
 
-	// 5. Repair: Fix local symbolic HEAD
-	repairRemoteSymbolicHead(repo, remoteName, defaultShort)
+	// 5. Repair: Fix local symbolic HEAD. It mirrors the remote's HEAD, never a configured parent.
+	repairRemoteSymbolicHead(repo, remoteName, headShort)
 
 	return result, nil
+}
+
+// fallbackBranch is the branch to fall back on, and to fetch as the safety net: the configured
+// parent, or the remote's default branch when none is configured. A configured parent the remote
+// does not carry is an error only while the target is absent too.
+func fallbackBranch(
+	refs []*plumbing.Reference, parent, headFull, headShort string, targetExists bool,
+) (string, string, error) {
+	if parent == "" {
+		return headFull, headShort, nil
+	}
+	full, short := configuredParent(refs, parent)
+	if full == "" && !targetExists {
+		return "", "", fmt.Errorf("%w: %q", ErrParentBranchNotFound, parent)
+	}
+	return full, short, nil
+}
+
+// configuredParent finds a configured parent branch in the advertisement, or returns empty names.
+func configuredParent(refs []*plumbing.Reference, parent string) (string, string) {
+	full := plumbing.NewBranchReferenceName(parent)
+	for _, ref := range refs {
+		if ref.Name() == full && ref.Type() == plumbing.HashReference {
+			return full.String(), parent
+		}
+	}
+	return "", ""
 }
 
 func listRemoteRefs(remote *git.Remote, auth []gitclient.Option) ([]*plumbing.Reference, error) {

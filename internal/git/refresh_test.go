@@ -644,3 +644,42 @@ func TestRefresh_ANewBranchDoesNotDependOnARecentRefresh(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, moved, strings.TrimSpace(string(out)), "the new branch starts on the parent's current tip")
 }
+
+// TestRefresh_FollowsTheConfiguredParent: with spec.parentBranch set, the refresher follows that
+// branch rather than the remote's default, and a parent changed on a live target is re-read on the
+// next refresh.
+func TestRefresh_FollowsTheConfiguredParent(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	h := newRefreshHarnessForBranch(t, "refresh-configured-parent", true, "feature")
+	release := simulateClientCommitOnDisk(t, h.repoDir, "release", "RELEASE.md", "release\n")
+	require.NoError(t, h.worker.ensureRepositoryInitialized(h.worker.ctx))
+
+	require.True(t, h.worker.SetParentBranch("release"), "changed on a live target")
+	h.refresh(time.Nanosecond)
+
+	assert.Equal(t, int64(1), fetchCount(t, reader, h.worker, fetchReasonRefresh))
+	repo, err := gogit.PlainOpen(h.worker.repoPath())
+	require.NoError(t, err)
+	assert.Equal(t, release, localHead(repo), "the checkout is on the configured parent")
+	assert.NotEmpty(t, h.scanVerdicts, "and the folder was re-read from it")
+}
+
+// TestRefresh_ReportsAMissingConfiguredParent: one advertisement shows neither the write branch nor
+// its configured parent, which is reported and fetches nothing.
+func TestRefresh_ReportsAMissingConfiguredParent(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	h := newRefreshHarnessForBranch(t, "refresh-missing-parent", true, "feature")
+	h.worker.SetParentBranch("release")
+	h.reported = nil
+
+	assert.Equal(t, int64(1), h.refresh(time.Nanosecond))
+	assert.Zero(t, fetchCount(t, reader, h.worker, fetchReasonRefresh))
+	require.NotEmpty(t, h.reported)
+	last := h.reported[len(h.reported)-1]
+	assert.Equal(t, "release", last.MissingParent)
+	assert.Empty(t, last.Commit)
+}

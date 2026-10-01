@@ -44,3 +44,9 @@ func conditionIsTrue(conditions []metav1.Condition, conditionType string) bool {
 func conditionIsFalse(conditions []metav1.Condition, conditionType string) bool {
 	return apimeta.IsStatusConditionFalse(conditions, conditionType)
 }
+
+// readyReasonIs reports whether the Ready condition carries the given reason.
+func readyReasonIs(conditions []metav1.Condition, reason string) bool {
+	ready := apimeta.FindStatusCondition(conditions, ConditionTypeReady)
+	return ready != nil && ready.Reason == reason
+}

@@ -31,7 +31,19 @@ import (
 // `contention` fetch (the rejected push), with no `refresh` fetch in between. That takes the
 // periodic refresher out of the proof without redeploying the controller with it disabled, which
 // would disturb every other spec on the leg.
-var _ = Describe("New write branch starts from its parent", Label("manager"), Ordered, func() {
+//
+// It runs twice: once with spec.parentBranch omitted (the remote's default branch, main), and once
+// naming `release`, which the GitProvider does not allow writing to because it is only read.
+var _ = Describe("New write branch starts from its parent", Label("manager"), func() {
+	Context("with spec.parentBranch omitted", Ordered, func() {
+		describeNewWriteBranchSpec("", "main", "parent-branch")
+	})
+	Context("with spec.parentBranch naming release", Ordered, func() {
+		describeNewWriteBranchSpec("release", "release", "parent-release")
+	})
+})
+
+func describeNewWriteBranchSpec(parentBranch, parent, slug string) {
 	const (
 		providerName  = "parent-provider"
 		destName      = "parent-dest"
@@ -94,11 +106,11 @@ data:
 
 	BeforeAll(func() {
 		ensurePrometheusClient()
-		testNs = testNamespaceFor("manager-parent-branch")
+		testNs = testNamespaceFor("manager-" + slug)
 		_, _ = kubectlRun("create", "namespace", testNs)
 		writeBranch = fmt.Sprintf("reverser-e2e-%d", GinkgoRandomSeed())
 
-		repo = SetupRepo(resolveE2EContext(), testNs, fmt.Sprintf("e2e-parent-branch-%d", GinkgoRandomSeed()))
+		repo = SetupRepo(resolveE2EContext(), testNs, fmt.Sprintf("e2e-%s-%d", slug, GinkgoRandomSeed()))
 		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
 		applySOPSAgeKeyToNamespace(testNs)
@@ -127,14 +139,19 @@ spec:
 	})
 
 	It("stays on standby, then creates the write branch on the parent's current tip", func() {
-		By("seeding main with commit A, whose folder already holds a document the cluster will match")
-		commitFilesToMainFromOutside(repo, testNs, "e2e: seed A", map[string]string{
+		By("seeding " + parent + " with commit A, whose folder already holds a document the cluster will match")
+		if parent != "main" {
+			commitFilesToBranchFromOutside(repo, testNs, "main", "e2e: seed main", map[string]string{
+				"README.md": "main is not the parent here\n",
+			})
+		}
+		commitFilesToBranchFromOutside(repo, testNs, parent, "e2e: seed A", map[string]string{
 			"README.md": "seed\n",
 			path.Join(gitPath, testNs, "configmaps", "standby-present.yaml"): mirroredDocument("standby-present"),
 		})
 
 		By("creating a GitTarget on an absent write branch, and a WatchRule that selects nothing yet")
-		createGitTarget(destName, testNs, providerName, gitPath, writeBranch)
+		createGitTargetWithParentBranch(destName, testNs, providerName, gitPath, writeBranch, parentBranch)
 		rule := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
@@ -178,10 +195,10 @@ spec:
 		Expect(remoteBranchHeadOf(Default, repo.CheckoutDir, writeBranch)).To(BeEmpty(),
 			"a write that commits nothing must not create the write branch")
 
-		By("main moves to B from outside, touching the target's folder")
+		By(parent + " moves to B from outside, touching the target's folder")
 		contentionBefore, refreshBefore := fetches("contention"), fetches("refresh")
-		hashB := commitFilesToMainFromOutside(repo, testNs, "e2e: B moves main", map[string]string{
-			path.Join(gitPath, "NOTES.md"): "added on main at B\n",
+		hashB := commitFilesToBranchFromOutside(repo, testNs, parent, "e2e: B moves the parent", map[string]string{
+			path.Join(gitPath, "NOTES.md"): "added on the parent at B\n",
 		})
 
 		By("a live edit arrives with no resync in between")
@@ -211,17 +228,20 @@ spec:
 		Expect(fetches("refresh")).To(Equal(refreshBefore),
 			"no refresh fetch may stand in for the publication check")
 	})
-})
+}
 
-// commitFilesToMainFromOutside commits files to main and pushes it directly, the way another
-// writer would, and returns the new tip. It starts main when the repository is still empty, and
-// retries because losing a push race with the controller says nothing about the behavior under test.
-func commitFilesToMainFromOutside(repo *RepoArtifacts, namespace, message string, files map[string]string) string {
+// commitFilesToBranchFromOutside commits files to a branch and pushes it directly, the way another
+// writer would, and returns the new tip. A branch the remote does not carry yet starts from main,
+// or from nothing in an empty repository. It retries because losing a push race with the
+// controller says nothing about the behavior under test.
+func commitFilesToBranchFromOutside(
+	repo *RepoArtifacts, namespace, branch, message string, files map[string]string,
+) string {
 	GinkgoHelper()
 	configureRepoOriginWithCredentials(repo, namespace)
 
 	Eventually(func() error {
-		return attemptCommitFilesToMain(repo, message, files)
+		return attemptCommitFilesToBranch(repo, branch, message, files)
 	}, seedPushTimeout, seedPushInterval).Should(Succeed(), "the outside writer kept losing the push race")
 
 	head, err := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
@@ -229,27 +249,17 @@ func commitFilesToMainFromOutside(repo *RepoArtifacts, namespace, message string
 	return strings.TrimSpace(head)
 }
 
-// attemptCommitFilesToMain is one attempt, from the CURRENT remote tip. It returns errors rather
+// attemptCommitFilesToBranch is one attempt, from the CURRENT remote tip. It returns errors rather
 // than asserting, so Eventually can rebuild on the tip that beat it.
-func attemptCommitFilesToMain(repo *RepoArtifacts, message string, files map[string]string) error {
+func attemptCommitFilesToBranch(repo *RepoArtifacts, branch, message string, files map[string]string) error {
 	runGit := func(args ...string) error {
 		if out, err := gitRun(repo.CheckoutDir, args...); err != nil {
 			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
 		}
 		return nil
 	}
-	if _, err := gitRun(repo.CheckoutDir, "fetch", "origin", "main"); err == nil {
-		if err := runGit("checkout", "-B", "main", "origin/main"); err != nil {
-			return err
-		}
-		if err := runGit("reset", "--hard", "origin/main"); err != nil {
-			return err
-		}
-	} else {
-		if err := runGit("checkout", "--orphan", "main"); err != nil {
-			return err
-		}
-		_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
+	if err := checkoutRemoteTipOf(repo, branch, runGit); err != nil {
+		return err
 	}
 	for name, content := range files {
 		full := filepath.Join(repo.CheckoutDir, name)
@@ -266,5 +276,24 @@ func attemptCommitFilesToMain(repo *RepoArtifacts, message string, files map[str
 	if err := runGit("commit", "-m", message); err != nil {
 		return err
 	}
-	return runGit("push", "origin", "HEAD:main")
+	return runGit("push", "origin", "HEAD:refs/heads/"+branch)
+}
+
+// checkoutRemoteTipOf checks out branch at its remote tip; a branch the remote does not carry
+// starts from main, and from an orphan when main is absent too.
+func checkoutRemoteTipOf(repo *RepoArtifacts, branch string, runGit func(...string) error) error {
+	for _, start := range []string{branch, "main"} {
+		if _, err := gitRun(repo.CheckoutDir, "fetch", "origin", start); err != nil {
+			continue
+		}
+		if err := runGit("checkout", "-B", branch, "origin/"+start); err != nil {
+			return err
+		}
+		return runGit("reset", "--hard", "origin/"+start)
+	}
+	if err := runGit("checkout", "--orphan", branch); err != nil {
+		return err
+	}
+	_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
+	return nil
 }
