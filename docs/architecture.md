@@ -71,7 +71,11 @@ that a write failed part-way and is cleared **only by a reset** (a third, `repla
 retained writes whose local commits a reset discarded before the replay could rebuild them).
 Collapsing them would let one kind of doubt clear another. Either flag makes the next cycle fetch. The
 failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
-is caught by the compare-and-swap on the next push. **The corollary is the rule to keep in your head
+is caught by the compare-and-swap on the next push. For a new write branch, the worker checks the
+parent's advertised tip before sending the push. A moved parent triggers fetch, reset, and replay.
+The server's compare-and-swap protects creation of the write branch with `Old = zero`; it does not
+lock the parent. The parent can still move after the advertisement, so what is guaranteed is the
+parent's tip as that advertisement showed it. **The corollary is the rule to keep in your head
 when adding code here:** anything that resolves, commits, or concludes without reaching a push
 advertisement must either fetch, or refuse to conclude. See
 [inbound push notification](design/push-notification-and-reconcile-trigger.md) §3.
@@ -355,6 +359,10 @@ Key fields:
 - `spec.gitProviderRef`: a `GitProvider` in the same namespace, by name.
 - `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 - `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
+- `spec.parentBranch`: optional, immutable branch the write branch is created from and compared
+  against while it does not exist. Omitted means the remote's default branch. An explicit parent
+  must exist when creating the write branch. It does not need to be in `allowedBranches` because
+  it is only read.
 - `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
@@ -367,8 +375,10 @@ may batch and phrase their commits differently. A branch worker serves a `(provi
 resolves the window per open window, since a window is bound to exactly one target.
 
 `gitProviderRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
-orphan an old materialization or change its source cluster. The controller also rejects path overlaps
-between GitTargets sharing a provider and branch.
+orphan an old materialization or change its source cluster. `parentBranch` is immutable too,
+including adding or removing it, because it decides what history a new write branch gets. The
+controller also rejects path overlaps between GitTargets sharing a provider and branch, and rejects
+two GitTargets on one branch that name different parent branches.
 
 Status has a kstatus-compatible summary layer plus domain conditions:
 
@@ -561,14 +571,15 @@ instead.
 
 ### Remote moved while we were writing
 
-If someone else pushes to the same remote branch before GitOps Reverser's push lands, the operator does
-not treat its local clone as authoritative. It keeps the finalized pending writes, fetches the new remote
+If someone else pushes to the same remote branch before GitOps Reverser's push lands, or, for a branch
+not created yet, if its parent branch moved, the operator does not treat its local clone as
+authoritative. It keeps the finalized pending writes, fetches the new remote
 tip, resets the local clone, replays those writes, and pushes again.
 
 ```mermaid
 flowchart TD
     LOCAL[Window finalized<br/>pending write retained] --> CHECK[PushAtomic checks remote ref]
-    CHECK --> MATCH{Remote still at expected SHA?}
+    CHECK --> MATCH{Write branch, or while it is absent its parent,<br/>still at the expected commit?}
     MATCH -->|yes| ACCEPT[Push accepted]
     ACCEPT --> CLEAR[Clear retained pending writes]
 
@@ -1234,6 +1245,23 @@ because every pending write is rebuilt from sanitized API state; nothing depends
 A branch whose remote has been **deleted** takes the same path. The advertisement does not carry the
 branch at all, which is reported as a moved remote with a zero hash, so the replay re-roots on the remote's
 default branch and the retry re-creates the branch with the retained writes on top.
+
+**A branch that does not exist yet** is created from its parent (`spec.parentBranch`, or the
+remote's default branch when that is omitted) only when a write has something to commit, so an
+idle or in-sync target never creates it. Until then the worker compares the folder against the
+parent. Periodic refresh, ten minutes by default, follows the
+parent from the same advertisement and updates the idle view independently of the publication
+check. The push records the parent and the commit it started from as its root, and treats a moved
+parent like a moved branch: fetch, reset, replay, check again. A branch somebody else created in the
+meantime is a moved remote too, so the replay builds on their commit instead of overwriting it; that
+holds when the server refuses our upload too, because the fallback reads both refs from one
+advertisement. A cycle planned on an empty repository that has since gained refs is refused at the
+advertisement (`RepositoryNotEmptyError`) and replayed, never pushed as an orphan. A parent that is
+missing, or a default branch that does not resolve, is a recovery obligation on the worker: it
+probes on its own backoff and publishes what it held back once the parent exists (see
+`docs/design/gittarget-parent-branch.md`). Proved end to end by the e2e spec "New write branch
+starts from its parent"; that publication alone finds a moved parent is proved by worker tests
+with no refresher.
 
 **When the cycle fetches at all.** Only the first commit of a cycle may fetch, and only when the base
 is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans

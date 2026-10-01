@@ -615,6 +615,7 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 		_ context.Context,
 		_ *git.Repository,
 		_ plumbing.ReferenceName,
+		_ string,
 		_ []gitclient.Option,
 	) (*PullReport, error) {
 		syncCalled = true
@@ -694,6 +695,7 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 		_ context.Context,
 		_ *git.Repository,
 		_ plumbing.ReferenceName,
+		_ string,
 		_ []gitclient.Option,
 	) (*PullReport, error) {
 		syncCalled = true

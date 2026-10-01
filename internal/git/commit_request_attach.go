@@ -62,6 +62,18 @@ const (
 	PhaseWaitingForPush CommitRequestPhase = "WaitingForPush"
 )
 
+// Held reports whether the worker has acted on a request in this phase: it is attached to a window
+// or committed. From there only the worker can say how it ends, so the controller waits for it
+// however long that takes, instead of failing the request on a clock of its own.
+func (p CommitRequestPhase) Held() bool {
+	return p == PhaseCollectingWindow || p == PhaseWaitingForPush
+}
+
+// ErrCommitRequestWithdrawn is the outcome of a request the controller withdrew before the worker
+// acted on it. The worker records it, so a late re-send of the attach can never register the
+// request again, and the controller's failure and the worker's answer are the same answer.
+var ErrCommitRequestWithdrawn = errors.New("the CommitRequest was withdrawn before the worker acted on it")
+
 // FinalizeResult carries the resolved outcome of a CommitRequest back to the
 // controller, polled via LookupCommitRequestOutcome.
 type FinalizeResult struct {

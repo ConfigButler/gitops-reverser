@@ -56,7 +56,14 @@ var (
 	//nolint:gochecknoglobals
 	fetchRemoteBranchHashFn = fetchRemoteBranchHash
 	//nolint:gochecknoglobals
-	syncToRemoteFn = syncToRemote
+	syncToRemoteFn = syncToRemoteFrom
+	// beforePushAdmission runs right before a push cycle compares its root's parent generation
+	// with the current one. Nil in production; a test changes the parent here to land a change
+	// just before admission.
+	//nolint:gochecknoglobals
+	beforePushAdmission func()
+	//nolint:gochecknoglobals
+	advertiseRemoteBranchFn = advertiseRemoteBranch
 )
 
 // BranchWorker processes events for a single (GitProvider, Branch) combination.
@@ -155,6 +162,11 @@ type BranchWorker struct {
 	// block on the lock, and send after Stop had finished draining, into a queue with no loop left
 	// to read it — and still answer "accepted".
 	stoppingState bool
+	// exitedState is set once the event loop has returned, for whatever reason, and the worker
+	// has settled every CommitRequest it knew. From then on nothing can act on a request, so a
+	// withdraw is answered at once instead of being queued for a loop that is gone. Guarded by
+	// pendingResyncsMu, like stoppingState.
+	exitedState bool
 
 	// lastObservation is what this worker last PROVED about the target branch on the remote, and
 	// when. See RemoteObservation: it replaces a fetch-only trio (branchExists, lastCommitSHA,
@@ -227,6 +239,30 @@ type BranchWorker struct {
 	// Cleared after a successful push. Protected by repoMu.
 	pushCycleRootHash plumbing.Hash
 
+	// newBranchParent and newBranchParentHash are the parent the local write branch was created
+	// from, while the remote does not carry the write branch. They let a cycle that finds HEAD
+	// already on the local write branch still root itself on the parent: a no-op cycle (a resync
+	// or a live write with nothing to commit) creates the local branch and leaves HEAD on it, and
+	// local HEAD alone cannot say that the branch is absent on the remote.
+	//
+	// Cleared as soon as the remote is known to carry the branch: a fetch that found it, or a push
+	// that created or confirmed it. Protected by repoMu.
+	newBranchParent     plumbing.ReferenceName
+	newBranchParentHash plumbing.Hash
+
+	// parentState is the GitTarget's spec.parentBranch, with a generation that SetParentBranch
+	// raises on every change. It is set by the reconcile and read by the event loop, hence atomic.
+	// See parentConfig.
+	parentState atomic.Pointer[parentConfig]
+	// baseParentGen is the generation of the parent configuration the checkout was last proven
+	// against: the snapshot whose fetch produced it, or the current one once the checkout is known
+	// not to depend on the parent (the write branch exists). Trust is scoped to it, so a push or a
+	// fetch that finishes after a change can never vouch for the new configuration.
+	baseParentGen atomic.Uint64
+	// pushCycleRootGen is the parent generation pushCycleRootBranch was chosen under. The push
+	// admission check compares it with the current one. Protected by repoMu.
+	pushCycleRootGen uint64
+
 	// firsts surfaces the first successful commit and push at default verbosity.
 	firsts branchWorkerLogFirsts
 
@@ -279,6 +315,26 @@ type BranchWorker struct {
 	// crPhases holds where each unresolved CommitRequest stands, for the controller to report
 	// while it waits. Guarded by crOutcomesMu; the event loop is the only writer.
 	crPhases map[commitRequestID]CommitRequestPhase
+	// crQueuedAttaches counts, per request, the attaches on the FIFO that the loop has not handled
+	// yet. An outcome is not collected while any are queued: the outcome is what turns a late attach
+	// into a no-op, so collecting it first would let that attach register a withdrawn request
+	// again, however long the outcome had been kept. Guarded by crOutcomesMu.
+	crQueuedAttaches map[commitRequestID]int
+	// crOwners is the manager's table of which worker holds each request. See commitRequestOwners.
+	// Set by the WorkerManager before Start; nil for a worker built on its own.
+	crOwners *commitRequestOwners
+
+	// clock is the time source of the parent-recovery schedule; nil is time.Now. See now().
+	clock func() time.Time
+	// parentRecoveryOpen, parentRecoveryFound and parentProbeHold mirror the event loop's
+	// recovery latch for readers outside it. See parent_recovery.go.
+	parentRecoveryOpen  atomic.Bool
+	parentRecoveryFound atomic.Bool
+	parentProbeHold     atomic.Pointer[parentProbeHold]
+	// snapshotRequests counts, per GitTarget, the snapshots the worker has asked for. See
+	// SnapshotRequestSeq.
+	snapshotRequestsMu sync.Mutex
+	snapshotRequests   map[itypes.ResourceReference]uint64
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -466,6 +522,7 @@ func (w *BranchWorker) Start(parentCtx context.Context) error {
 	go func() {
 		defer w.wg.Done()
 		w.processEvents()
+		w.settleCommitRequestsAfterExit()
 	}()
 
 	return nil
@@ -509,6 +566,35 @@ func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
 	w.enqueueRequest(request)
 }
 
+// EnqueueWithdraw asks the loop to cancel a CommitRequest it has not acted on. It never blocks: a
+// full queue or a stopping worker drops it, and the controller sends it again on its next poll. A
+// worker whose loop has exited answers at once, because nothing is left that could act on it.
+func (w *BranchWorker) EnqueueWithdraw(req *AttachCommitRequest) {
+	if req == nil {
+		return
+	}
+	w.pendingResyncsMu.Lock()
+	if w.exitedState {
+		w.pendingResyncsMu.Unlock()
+		w.answerWithdrawAfterExit(req.id())
+		return
+	}
+	defer w.pendingResyncsMu.Unlock()
+	if w.stoppingLocked() {
+		// Still draining: its last push may yet carry the request, so only the exited worker can
+		// answer. The controller asks again on its next poll.
+		return
+	}
+	w.inflightItems.Add(1)
+	select {
+	case w.eventQueue <- WorkItem{Withdraw: req}:
+	default:
+		w.inflightItems.Add(-1)
+		w.Log.V(1).Info("Queue full, CommitRequest withdraw dropped (the controller re-sends)",
+			"request", req.Namespace+"/"+req.Name)
+	}
+}
+
 // EnqueueAttach adds a CommitRequest attach to this worker's queue. Riding the
 // same queue as resource events is what makes it process in audit order, after
 // every earlier write. The attach is fire-and-forget: the controller polls the
@@ -534,7 +620,18 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
+	id := req.id()
+	if !w.crOwners.claim(id, w) {
+		// The router routes to the owner, so only a request that moved workers between two polls
+		// gets here. The owner answers for it; registering it twice could commit it twice.
+		w.pendingResyncsMu.Unlock()
+		w.inflightItems.Add(-1)
+		w.Log.Info("CommitRequest attach refused: another branch worker holds the request",
+			"request", req.Namespace+"/"+req.Name)
+		return
+	}
 	w.markResyncTailForTargetLocked(req.GitTargetNamespace, req.GitTargetName)
+	w.countQueuedAttach(id)
 	select {
 	case w.eventQueue <- WorkItem{Attach: req}:
 		w.pendingResyncsMu.Unlock()
@@ -548,6 +645,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		// time, so an enqueue is visible to the next scrape whether or not the
 		// loop has woken to notice it.
 	default:
+		w.uncountQueuedAttach(id)
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropAttach)
@@ -912,7 +1010,7 @@ func (w *BranchWorker) prepareBootstrapRepository(
 
 	repoPath := w.repoPath()
 	w.recordFetch(fetchReasonBootstrap)
-	pullReport, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
+	pullReport, err := w.prepareBranch(ctx, repoPath, auth)
 	if err != nil {
 		return "", fmt.Errorf("failed to prepare repository: %w", err)
 	}
@@ -1018,6 +1116,10 @@ type branchWorkerEventLoop struct {
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
 	// its window's timers close it.
 	attachTimer *time.Timer
+
+	// recovery is the obligation to write what a missing parent branch held back, and the probe
+	// that drives it. See parent_recovery.go.
+	recovery parentRecovery
 }
 
 // commitWindowDefaults are a GitTarget's commit window timers when it declares none.
@@ -1063,6 +1165,9 @@ func (l *branchWorkerEventLoop) run() {
 		case <-refusalC:
 			l.refusalTimer = nil
 			l.flushPendingRefusalTouch()
+		case <-l.recoveryTimerC():
+			l.recovery.timer = nil
+			l.runParentProbe()
 		}
 		// After every wake: bind any waiting CommitRequest to an open window,
 		// resolve any whose attach deadline has passed, and re-arm the deadline timer.
@@ -1123,6 +1228,11 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	if item.Attach != nil {
 		l.handleAttachCommitRequest(item.Attach)
+		return
+	}
+
+	if item.Withdraw != nil {
+		l.handleWithdrawCommitRequest(item.Withdraw)
 		return
 	}
 
@@ -1273,6 +1383,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping atomic request",
 			"events", len(request.Events))
+		l.noteParentUnavailable(err, atomicScope(request))
 		return
 	}
 
@@ -1300,6 +1411,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
 		}
+		l.noteParentUnavailable(err, atomicScope(request))
 		return
 	}
 
@@ -1342,15 +1454,22 @@ func (l *branchWorkerEventLoop) failUnpushedCommitRequests() {
 	}
 }
 
-// drainUnhandledQueueItems clears items the exiting loop will never handle. Each was counted into
-// inflightItems at enqueue and decremented only after handling, so without this the final depth
-// would stay non-zero forever: the loop has stopped, so nothing republishes a corrected value. A
-// buffered CommitRequest attach is dropped; the controller re-sends on its next poll.
-func (l *branchWorkerEventLoop) drainUnhandledQueueItems() {
+// drainUnhandledQueueItems clears items the exiting loop will never handle. See drainQueue.
+func (l *branchWorkerEventLoop) drainUnhandledQueueItems() { l.w.drainQueue() }
+
+// drainQueue clears items no loop will handle. Each was counted into inflightItems at enqueue and
+// decremented only after handling, so without this the final depth would stay non-zero forever:
+// the loop has stopped, so nothing republishes a corrected value. A buffered CommitRequest attach
+// is dropped, and the request given back unless the worker knows it otherwise; the controller
+// re-sends on its next poll, to whichever worker holds it then.
+func (w *BranchWorker) drainQueue() {
 	for {
 		select {
-		case <-l.w.eventQueue:
-			l.w.inflightItems.Add(-1)
+		case item := <-w.eventQueue:
+			if item.Attach != nil {
+				w.uncountQueuedAttach(item.Attach.id())
+			}
+			w.inflightItems.Add(-1)
 		default:
 			return
 		}
@@ -1398,15 +1517,24 @@ func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
 		l.w.markReplayComplete()
 		return nil
 	}
-	dirty, needsReplay := l.w.worktreeDirty(), l.w.replayRequired()
-	if !dirty && !needsReplay {
+	// A parent change is read from the generations, not taken from a flag: a rebuild that fails
+	// leaves them apart, so the next attempt rebuilds again.
+	dirty, needsReplay, parentChanged := l.w.worktreeDirty(), l.w.replayRequired(), l.w.rootParentStale()
+	if !dirty && !needsReplay && !parentChanged {
 		return nil
+	}
+	// The rebuild fetches, and a parent known to be missing is not fetched again before its probe
+	// is due: every commit path calls this, so without the check each write arriving in the
+	// meantime would cost a connection.
+	if l.w.awaitingParentProbe() {
+		return errAwaitingParentProbe
 	}
 
 	l.w.Log.Info("Rebuilding retained writes onto the remote tip",
 		"pendingWrites", len(l.pendingWrites),
 		"worktreeDirty", dirty,
-		"replayRequired", needsReplay)
+		"replayRequired", needsReplay,
+		"parentBranchChanged", parentChanged)
 	// fetchReasonRecovery, the same series the no-retained-writes case records in
 	// ensureBaseForCycle: this is one event, and which half of it an operator sees must not depend
 	// on whether a push happened to be in cooldown at the time.
@@ -1491,7 +1619,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping open window",
 			"reason", string(reason), "windowTarget", windowTarget)
-		l.dropOpenWindow(pendingCR, err)
+		l.dropFailedWindow(err, pendingCR, err, windowScopes(targetNamespace, targetName, events))
 		return false
 	}
 
@@ -1540,7 +1668,8 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 				"windowTarget", windowTarget,
 				"events", len(events))
 		}
-		l.dropOpenWindow(pendingCR, fmt.Errorf("commit failed: %w", err))
+		l.dropFailedWindow(err, pendingCR, fmt.Errorf("commit failed: %w", err),
+			windowScopes(targetNamespace, targetName, events))
 		return false
 	}
 
@@ -1580,6 +1709,15 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 
 // dropOpenWindow discards a window whose finalize failed, resolving any attached
 // CommitRequest as Failed so the controller does not poll forever.
+// dropFailedWindow drops a window whose write failed with err, and when the parent branch is what
+// failed it, remembers the scopes the dropped writes belong to so they are recovered.
+func (l *branchWorkerEventLoop) dropFailedWindow(
+	err error, pendingCR *commitRequestID, cause error, scopes []recoveryScope,
+) {
+	l.noteParentUnavailable(err, scopes...)
+	l.dropOpenWindow(pendingCR, cause)
+}
+
 func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause error) {
 	l.openWindow = nil
 	l.windowBytes = 0
@@ -1626,6 +1764,11 @@ func (l *branchWorkerEventLoop) pushPending() {
 		l.stopPushTimer()
 		return
 	}
+	if l.w.awaitingParentProbe() {
+		// The parent is known missing and the probe is not due: it publishes these when it is.
+		l.stopPushTimer()
+		return
+	}
 
 	// A reset may have discarded the local commits behind these writes while the replay that
 	// rebuilds them did not finish. Pushing now would find the branch already at the remote tip,
@@ -1635,10 +1778,12 @@ func (l *branchWorkerEventLoop) pushPending() {
 		l.w.Log.Error(err, "Cannot publish until the retained writes are rebuilt; keeping them",
 			"pendingWrites", len(l.pendingWrites))
 		l.stopPushTimer()
+		l.noteParentUnavailable(err)
 		return
 	}
 
 	if err := l.w.pushPendingCommits(l.pendingWrites); err != nil {
+		l.noteParentUnavailable(err)
 		l.w.Log.Error(err, "Push failed; pending writes retained for retry",
 			"pendingWrites", len(l.pendingWrites))
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
@@ -1656,6 +1801,7 @@ func (l *branchWorkerEventLoop) pushPending() {
 	l.pendingWritesBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
+	l.noteRecoveryPublished()
 }
 
 // resolvePushedCommitRequests settles every CommitRequest carried by a just-pushed write, now
@@ -1726,6 +1872,10 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopPushTimer()
 	l.stopAttachTimer()
 	l.stopRefusalTimer()
+	if l.recovery.timer != nil {
+		l.recovery.timer.Stop()
+		l.recovery.timer = nil
+	}
 }
 
 func (l *branchWorkerEventLoop) stopRefusalTimer() {
@@ -1740,7 +1890,13 @@ func (l *branchWorkerEventLoop) stopRefusalTimer() {
 //
 // The failure direction is the safe one. A stale false costs one fetch. A stale true is caught by
 // the compare-and-swap on the next push, which is the mechanism the write path already relies on.
-func (w *BranchWorker) baseTrusted() bool { return w.baseTrustedState.Load() }
+//
+// Trust is scoped to the parent configuration: a checkout proven under an older one is not
+// trusted, whatever the flag says, because the flag can be set by a push or a fetch that started
+// before the change.
+func (w *BranchWorker) baseTrusted() bool {
+	return w.baseTrustedState.Load() && w.baseParentGen.Load() == w.parentSnapshot().gen
+}
 
 // worktreeDirty reports whether the worktree may hold a partial write.
 //
@@ -1826,8 +1982,15 @@ func (w *BranchWorker) ensureBaseForCycle(
 	repoPath string,
 	hasPendingCommits bool,
 ) error {
-	if hasPendingCommits || (w.baseTrusted() && !w.worktreeDirty()) {
+	if hasPendingCommits {
 		return nil
+	}
+	w.restampParentGenIfIndependent()
+	if w.baseTrusted() && !w.worktreeDirty() {
+		return nil
+	}
+	if w.awaitingParentProbe() {
+		return errAwaitingParentProbe
 	}
 
 	// Resolve credentials only on the branch that touches the remote. A cycle planning on a
@@ -1847,7 +2010,7 @@ func (w *BranchWorker) ensureBaseForCycle(
 	}
 	w.recordFetch(reason)
 
-	pullReport, err := PrepareBranch(w.ctx, w.repo.URL, repoPath, w.Branch, auth)
+	pullReport, err := w.prepareBranch(w.ctx, repoPath, auth)
 	if err != nil {
 		return fmt.Errorf("prepare repository: %w", err)
 	}
@@ -1896,6 +2059,7 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 	if !hasPendingCommits {
 		w.pushCycleRootBranch = baseBranch
 		w.pushCycleRootHash = baseHash
+		w.pushCycleRootGen = w.baseParentGen.Load()
 	}
 
 	commitsCreated, err := w.executePendingWrites(w.ctx, repo, pendingWrites)
@@ -1965,13 +2129,30 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 	}
 
 	const maxRetries = 3
-	rootHash := w.pushCycleRootHash
 	var lastErr error
 
 	for range maxRetries {
+		// Re-read every attempt: a replay below re-roots the cycle.
+		rootHash := w.pushCycleRootHash
 		rootBranch := w.pushCycleRootBranch
 		if rootBranch == "" {
 			rootBranch = plumbing.NewBranchReferenceName(w.Branch)
+		}
+
+		// The admission boundary for a parent change: compared here, under repoMu and right before
+		// the push, so a change made after the cycle was planned never leaves on the old root. A
+		// change after this point is in flight, and the push is not recalled.
+		if beforePushAdmission != nil {
+			beforePushAdmission()
+		}
+		if !w.admitPushRoot(rootBranch) {
+			w.Log.Info("Parent branch changed since this cycle was planned; rebuilding before the push",
+				"branch", w.Branch, "parentBranch", w.ParentBranch())
+			w.recordFetch(fetchReasonRecovery)
+			if err := w.replayOntoRemote(repo, pendingWrites, auth); err != nil {
+				return err
+			}
+			continue
 		}
 
 		outcome, err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
@@ -1989,15 +2170,8 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			w.setBaseTrusted(true)
 			// The half a fetch-only record could not carry: on an active branch the push is the
 			// event that MOVES the revision.
-			revision := ""
-			if !outcome.Head.IsZero() {
-				revision = outcome.Head.String()
-			}
-			w.recordRemoteObservation(revision, ObservedByPush)
-			w.Log.V(1).Info("Remote observed by push",
-				"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
-			w.pushCycleRootBranch = ""
-			w.pushCycleRootHash = plumbing.ZeroHash
+			w.recordPushObservation(outcome, rootBranch, rootHash)
+			w.endPushCycle(outcome.Kind)
 			w.firsts.push.Do(func() {
 				w.Log.Info("First push to remote completed",
 					"branch", w.Branch,
@@ -2017,32 +2191,93 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			return err
 		}
 		w.recordPushRetry(pushRetryRemoteMoved)
-
-		// Marked BEFORE the reset, not after it. A reset moves the branch ref and then rewrites
-		// the worktree, so it can fail with the ref already moved and the commits behind these
-		// writes already unreachable. Marking afterwards misses exactly that case, and the cost of
-		// marking too eagerly is one fetch on the next cycle if the reset turns out to have
-		// changed nothing.
-		w.markReplayRequired()
 		w.recordFetch(fetchReasonContention)
-		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
-		if syncErr != nil {
-			w.invalidateBase("sync during replay failed")
-			return fmt.Errorf("sync remote during replay: %w", syncErr)
-		}
-		w.updateBranchMetadataFromPullReport(pullReport)
-
-		rootBranch, rootHash, err = w.rebuildPendingWrites(repo, pendingWrites)
-		if err != nil {
-			w.invalidateBase("replay rebuild failed")
+		if err := w.replayOntoRemote(repo, pendingWrites, auth); err != nil {
 			return err
 		}
-		w.pushCycleRootBranch = rootBranch
-		w.pushCycleRootHash = rootHash
-		w.markReplayComplete()
 	}
 
+	if lastErr == nil {
+		return fmt.Errorf("push not admitted after %d attempts: the parent branch kept changing", maxRetries)
+	}
 	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// replayOntoRemote syncs to the remote, rebuilds the pending writes on what it found, and makes
+// that the cycle's root. The caller owns repoMu and has recorded the fetch.
+func (w *BranchWorker) replayOntoRemote(
+	repo *gogit.Repository,
+	pendingWrites []PendingWrite,
+	auth []gitclient.Option,
+) error {
+	// Marked BEFORE the reset, not after it. A reset moves the branch ref and then rewrites
+	// the worktree, so it can fail with the ref already moved and the commits behind these
+	// writes already unreachable. Marking afterwards misses exactly that case, and the cost of
+	// marking too eagerly is one fetch on the next cycle if the reset turns out to have
+	// changed nothing.
+	w.markReplayRequired()
+	pullReport, err := w.syncToRemote(w.ctx, repo, auth)
+	if err != nil {
+		w.invalidateBase("sync during replay failed")
+		return fmt.Errorf("sync remote during replay: %w", err)
+	}
+	w.updateBranchMetadataFromPullReport(pullReport)
+
+	rootBranch, rootHash, err := w.rebuildPendingWrites(repo, pendingWrites)
+	if err != nil {
+		w.invalidateBase("replay rebuild failed")
+		return err
+	}
+	w.pushCycleRootBranch = rootBranch
+	w.pushCycleRootHash = rootHash
+	w.pushCycleRootGen = w.baseParentGen.Load()
+	w.markReplayComplete()
+	return nil
+}
+
+// admitPushRoot reports whether a push rooted on rootBranch may leave under the current parent
+// configuration: the root was chosen under it, or the root is the write branch itself, which a
+// parent change cannot move. In that second case it re-stamps the root, at no cost. The caller
+// owns repoMu.
+func (w *BranchWorker) admitPushRoot(rootBranch plumbing.ReferenceName) bool {
+	gen := w.parentSnapshot().gen
+	if w.pushCycleRootGen == gen {
+		return true
+	}
+	if rootBranch != plumbing.NewBranchReferenceName(w.Branch) || !w.writeBranchProvenPresent() {
+		return false
+	}
+	w.pushCycleRootGen = gen
+	w.restampParentGenIfIndependent()
+	return true
+}
+
+// writeBranchProvenPresent reports whether the last observation of the remote found the write
+// branch. A parent change cannot alter a cycle rooted on an existing write branch, and the push's
+// compare-and-swap still guards the branch if the observation went stale.
+func (w *BranchWorker) writeBranchProvenPresent() bool {
+	observed := w.lastObservation.Load()
+	return observed != nil && observed.Commit != ""
+}
+
+// restampParentGenIfIndependent carries trust across a parent change when the checkout does not
+// depend on the parent: the write branch exists, and HEAD is not a local branch still rooted on a
+// parent. It costs no connection, which is what keeps an existing write branch's cycles free.
+func (w *BranchWorker) restampParentGenIfIndependent() {
+	if w.newBranchParent == "" && w.writeBranchProvenPresent() {
+		w.baseParentGen.Store(w.parentSnapshot().gen)
+	}
+}
+
+// rootParentStale reports whether the retained cycle's root was chosen under an older parent
+// configuration, and the root depends on the parent.
+func (w *BranchWorker) rootParentStale() bool {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+	if w.pushCycleRootGen == w.parentSnapshot().gen {
+		return false
+	}
+	return w.pushCycleRootBranch != plumbing.NewBranchReferenceName(w.Branch) || !w.writeBranchProvenPresent()
 }
 
 // remoteMovedDuringPush reports whether a failed push was contention — the remote branch no
@@ -2063,7 +2298,26 @@ func (w *BranchWorker) remoteMovedDuringPush(
 	rootHash plumbing.Hash,
 	auth []gitclient.Option,
 ) bool {
+	// A push that creates the write branch is rooted on its parent, so a rejection naming the
+	// write branch itself is not about the root: somebody created the branch since we based our
+	// work. That is contention all the same, and the replay builds on their commit.
+	var moved *RemoteMovedError
+	if errors.As(pushErr, &moved) && moved.Branch != rootBranch &&
+		moved.Branch == plumbing.NewBranchReferenceName(w.Branch) {
+		return true
+	}
+	// An empty repository gained refs since the cycle was planned on it. The replay's fetch
+	// resolves the new default branch, or refuses, and the rebuild re-plans from the retained
+	// writes instead of reusing the orphan commits.
+	var notEmpty *RepositoryNotEmptyError
+	if errors.As(pushErr, &notEmpty) {
+		return true
+	}
+
 	remoteHash, known := advertisedRootHash(pushErr, rootBranch)
+	if !known && rootBranch != plumbing.NewBranchReferenceName(w.Branch) {
+		return w.newBranchMovedDuringPush(rootBranch, rootHash, auth)
+	}
 	if !known {
 		var fetchErr error
 		w.recordFetch(fetchReasonPushFailureProbe)
@@ -2074,6 +2328,29 @@ func (w *BranchWorker) remoteMovedDuringPush(
 		}
 	}
 	return remoteHash != rootHash
+}
+
+// newBranchMovedDuringPush is the fallback for a push that was creating the write branch and failed
+// without an advertisement to read: a dropped connection, or the server refusing an upload whose
+// Old was zero because somebody created the branch after our advertisement. Probing the root alone
+// would find the parent unmoved and conclude nothing happened, and the work would never replay. So
+// it reads both refs from one advertisement, and a write branch that is now there is contention,
+// exactly like the typed rejection naming it. It runs only on this exceptional path.
+func (w *BranchWorker) newBranchMovedDuringPush(
+	rootBranch plumbing.ReferenceName, rootHash plumbing.Hash, auth []gitclient.Option,
+) bool {
+	advertisement, err := advertiseRemoteBranchFn(w.repo.URL, plumbing.NewBranchReferenceName(w.Branch),
+		rootBranch.Short(), auth)
+	if err != nil {
+		w.invalidateBase("remote-state probe failed")
+		return false
+	}
+	if !advertisement.branch.IsZero() {
+		w.Log.Info("The write branch was created by somebody else during our push; replaying onto it",
+			"branch", w.Branch)
+		return true
+	}
+	return advertisement.parent != rootHash
 }
 
 // advertisedRootHash reads the remote's own answer out of a failed push, when the push got one.
@@ -2166,7 +2443,7 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 	// false, which is precisely the state no other flag describes.
 	w.markReplayRequired()
 	w.recordFetch(reason)
-	pullReport, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
+	pullReport, err := w.syncToRemote(ctx, repo, auth)
 	if err != nil {
 		w.invalidateBase("sync before replay failed")
 		return fmt.Errorf("sync remote before replay: %w", err)
@@ -2180,6 +2457,7 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 	}
 	w.pushCycleRootBranch = rootBranch
 	w.pushCycleRootHash = rootHash
+	w.pushCycleRootGen = w.baseParentGen.Load()
 	w.markReplayComplete()
 	return nil
 }
@@ -2300,9 +2578,137 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 		if err := switchOrCreateBranch(repo, targetBranch, w.Log, w.Branch, baseHash); err != nil {
 			return "", plumbing.ZeroHash, err
 		}
+		// HEAD was on another branch, which happens only when a fetch found the write branch
+		// absent and checked out its parent instead. Remember it, so the next cycle on this local
+		// branch is still rooted on the parent.
+		w.newBranchParent, w.newBranchParentHash = baseBranch, baseHash
+		return baseBranch, baseHash, nil
+	}
+
+	// Already on the local write branch, with nothing committed on top of the parent it was
+	// created from: the remote still does not carry it, so the parent remains the root. Only while
+	// the parent configuration is the one that checkout was made under: after a change, the
+	// remembered parent is the old one, and rooting on it would let the push create the branch
+	// there. The root then names the local branch, which the admission check refuses.
+	if w.newBranchParent != "" && baseHash == w.newBranchParentHash &&
+		w.baseParentGen.Load() == w.parentSnapshot().gen {
+		return w.newBranchParent, w.newBranchParentHash, nil
 	}
 
 	return baseBranch, baseHash, nil
+}
+
+// recordPushObservation records what a push that returned without an error observed.
+func (w *BranchWorker) recordPushObservation(
+	outcome PushOutcome, rootBranch plumbing.ReferenceName, rootHash plumbing.Hash,
+) {
+	revision := ""
+	if !outcome.Head.IsZero() {
+		revision = outcome.Head.String()
+	}
+	if outcome.Kind == PushNoBranch && rootBranch != plumbing.NewBranchReferenceName(w.Branch) {
+		// Settled without creating the branch, after confirming its parent against this
+		// advertisement: the root IS the parent's tip.
+		w.recordAbsentBranch(rootBranch.Short(), rootHash.String(), ObservedByPush)
+	} else {
+		w.recordRemoteObservation(revision, ObservedByPush)
+	}
+	w.Log.V(1).Info("Remote observed by push",
+		"branch", w.Branch, "outcome", string(outcome.Kind), "head", revision)
+}
+
+// endPushCycle clears the cycle's root after a push the remote answered. Only a push that left the
+// branch absent keeps the parent it would be created from.
+func (w *BranchWorker) endPushCycle(kind PushOutcomeKind) {
+	w.pushCycleRootBranch = ""
+	w.pushCycleRootHash = plumbing.ZeroHash
+	if kind != PushNoBranch {
+		w.clearNewBranchParent()
+	}
+}
+
+// parentConfig is one immutable snapshot of the parent configuration. Every operation that
+// consults the parent loads it once, at its start, and uses that name and generation throughout:
+// nothing re-reads the current name after a network call returns, so an old lookup can never
+// report a result about a newly configured parent.
+type parentConfig struct {
+	// name is spec.parentBranch; empty means the remote's default branch.
+	name string
+	// gen rises on every change. Zero is the configuration a worker starts with.
+	gen uint64
+}
+
+// parentSnapshot returns the current parent configuration.
+func (w *BranchWorker) parentSnapshot() parentConfig {
+	if p := w.parentState.Load(); p != nil {
+		return *p
+	}
+	return parentConfig{}
+}
+
+// ParentBranch is the configured parent branch, or empty for the remote's default branch.
+func (w *BranchWorker) ParentBranch() string { return w.parentSnapshot().name }
+
+// SetParentBranch configures the parent branch, and reports whether the value changed. A change
+// raises the generation, which is what every later decision compares against: trust earned under
+// the old one no longer counts, a cycle planned under it is rebuilt before its push is admitted,
+// and retained writes are replayed on the new parent. The worker and its clone are kept, and an
+// existing write branch, which a parent cannot move, keeps its trust at no cost.
+// spec.parentBranch is immutable, so a change reaches a live worker only when the targets on its
+// branch were replaced.
+func (w *BranchWorker) SetParentBranch(name string) bool {
+	current := w.parentSnapshot()
+	if current.name == name {
+		return false
+	}
+	w.parentState.Store(&parentConfig{name: name, gen: current.gen + 1})
+	w.Log.V(1).Info("Parent branch changed", "branch", w.Branch, "parentBranch", name)
+	return true
+}
+
+// prepareBranch is PrepareBranch for this worker's branch and parent. A configured parent the
+// remote does not carry is recorded as an observation, because it is one: the advertisement said
+// so, and the GitTarget reports it as ParentBranchNotFound.
+func (w *BranchWorker) prepareBranch(
+	ctx context.Context, repoPath string, auth []gitclient.Option,
+) (*PullReport, error) {
+	parent := w.parentSnapshot()
+	report, err := PrepareBranchFrom(ctx, w.repo.URL, repoPath, w.Branch, parent.name, auth)
+	w.noteFetchParent(parent, err)
+	return report, err
+}
+
+// syncToRemote is syncToRemoteFn for this worker's branch and parent; see prepareBranch.
+func (w *BranchWorker) syncToRemote(
+	ctx context.Context, repo *gogit.Repository, auth []gitclient.Option,
+) (*PullReport, error) {
+	parent := w.parentSnapshot()
+	report, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), parent.name, auth)
+	w.noteFetchParent(parent, err)
+	return report, err
+}
+
+// noteFetchParent records what a fetch under one parent snapshot proved: on success, that the
+// checkout now matches that configuration; on a missing parent, the observation, naming the
+// parent the fetch actually asked for.
+func (w *BranchWorker) noteFetchParent(parent parentConfig, err error) {
+	if err == nil {
+		w.baseParentGen.Store(parent.gen)
+		return
+	}
+	var unresolved *DefaultBranchUnresolvedError
+	switch {
+	case errors.As(err, &unresolved):
+		w.recordMissingParent(parent.name, unresolved.Head)
+	case errors.Is(err, ErrParentBranchNotFound):
+		w.recordMissingParent(parent.name, parent.name)
+	}
+}
+
+// clearNewBranchParent forgets the parent once the remote carries the write branch.
+func (w *BranchWorker) clearNewBranchParent() {
+	w.newBranchParent = ""
+	w.newBranchParentHash = plumbing.ZeroHash
 }
 
 // Push cycle outcomes and retry reasons.
@@ -2664,10 +3070,44 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 // accepted — because both prove the same kind of fact. An error path must NOT call it: a push
 // that died mid-upload or an advertisement that never arrived observed nothing, and recording a
 // guess there is how a stale revision reaches status.
+//
+// An empty revision is a branch the remote does not carry, observed without a parent to name: an
+// empty repository, which leaves the first commit unborn.
 func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) {
+	if revision == "" {
+		w.recordAbsentBranch("", "", by)
+		return
+	}
+	w.publishObservation(RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo})
+}
+
+// recordMissingParent records that the write branch is absent and so is the parent it would be
+// created from. requested is spec.parentBranch as the observing operation read it (empty for the
+// remote's default branch); branch is the parent that is missing: the configured one, or the
+// branch an unresolved HEAD names. Only a look at the remote can prove it, so it is by Fetch.
+func (w *BranchWorker) recordMissingParent(requested, branch string) {
+	w.publishObservation(RemoteObservation{
+		At: time.Now(), By: ObservedByFetch, Repo: w.repo,
+		ParentState: ParentMissing, ParentRequested: requested, ParentBranch: branch,
+	})
+}
+
+// recordAbsentBranch records that the write branch is absent, and where the parent it would be
+// created from is. An empty parent is an empty repository, which has none.
+func (w *BranchWorker) recordAbsentBranch(parentBranch, parentCommit string, by ObservationSource) {
+	state := ParentFound
+	if parentBranch == "" {
+		state, parentCommit = ParentUnborn, ""
+	}
+	w.publishObservation(RemoteObservation{
+		At: time.Now(), By: by, Repo: w.repo,
+		ParentState: state, ParentBranch: parentBranch, ParentCommit: parentCommit,
+	})
+}
+
+func (w *BranchWorker) publishObservation(observed RemoteObservation) {
 	// Stamped with the repository it is about, so that whoever publishes it can tell whether it
 	// still describes the repository the GitTarget points at. See RemoteObservation.Repo.
-	observed := RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo}
 	w.lastObservation.Store(&observed)
 	// Delivered here, at the one point where an observation is made, rather than by each caller
 	// against whichever GitTargets it happened to be holding. The fact is about the BRANCH, so it
@@ -2705,7 +3145,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context, reason string) error 
 
 	// PrepareBranch handles both initial and update cases
 	w.recordFetch(reason)
-	report, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
+	report, err := w.prepareBranch(ctx, repoPath, auth)
 	if err != nil {
 		return fmt.Errorf("failed to sync with remote: %w", err)
 	}
@@ -2740,7 +3180,7 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 	}
 
 	// Use new PrepareBranch abstraction
-	pullReport, err := PrepareBranch(ctx, w.repo.URL, repoPath, w.Branch, auth)
+	pullReport, err := w.prepareBranch(ctx, repoPath, auth)
 	if err != nil {
 		return fmt.Errorf("failed to prepare repository: %w", err)
 	}
@@ -2767,11 +3207,11 @@ func (w *BranchWorker) shouldReadRetainedLocalRepository(repoPath string) bool {
 func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	// A branch the remote does not have is recorded as an observation with no revision, which is
 	// the honest answer rather than a missing one: a git branch without a commit does not exist.
-	revision := ""
 	if report.ExistsOnRemote {
-		revision = report.HEAD.Sha
+		w.recordRemoteObservation(report.HEAD.Sha, ObservedByFetch)
+	} else {
+		w.recordAbsentBranch(report.ParentBranch, report.HEAD.Sha, ObservedByFetch)
 	}
-	w.recordRemoteObservation(revision, ObservedByFetch)
 
 	// This is the ONE place trust can be gained by a fetch, because it is the one place a fetch
 	// is known to have been followed by a reset: every call site is a PrepareBranch or a
@@ -2786,12 +3226,17 @@ func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	// based on the default branch (or an empty one) IS that state. There is nothing on the remote
 	// left to learn, so a fetch per cycle could only ever return the same answer.
 	//
-	// What makes it safe is the same thing that makes it safe everywhere else: the
-	// compare-and-swap. A push onto a branch we believe is absent declares Old = zero, which the
-	// server rejects if somebody has since created it, and the rejection invalidates the base and
-	// fetches. So the cost of being wrong is one rejection, not a bad write.
+	// What makes it safe is the push. For a branch we believe absent, the push is rooted on the
+	// parent the branch is created from, and validatePushState refuses it if that parent moved or
+	// if somebody has since created the branch; either rejection invalidates the base and replays
+	// onto what the advertisement showed. The push then declares Old = zero, so the server also
+	// refuses a branch created after the advertisement. So the cost of being wrong is one
+	// rejection, not a bad write.
 	w.setBaseTrusted(true)
 	w.markWorktreeClean()
+	if report.ExistsOnRemote {
+		w.clearNewBranchParent()
+	}
 
 	// Log if this was an unborn branch
 	if report.HEAD.Unborn {
@@ -2822,6 +3267,19 @@ func (w *BranchWorker) SeedRemoteObservationForTest(revision string, at time.Tim
 	w.baseTrustedState.Store(true)
 	observed := RemoteObservation{Commit: revision, At: at, By: ObservationSource(by), Repo: w.repo}
 	w.lastObservation.Store(&observed)
+}
+
+// RecordMissingParentForTest records the observation a fetch makes when neither the write branch
+// nor its configured parent exists, for tests in another package.
+func (w *BranchWorker) RecordMissingParentForTest(parent string) {
+	w.recordMissingParent(parent, parent)
+}
+
+// RecordUnresolvedDefaultBranchForTest records the observation a fetch makes when the write branch
+// is absent, no parent is configured, and the remote's HEAD names head, which it does not carry
+// (empty: no HEAD at all), for tests in another package.
+func (w *BranchWorker) RecordUnresolvedDefaultBranchForTest(head string) {
+	w.recordMissingParent("", head)
 }
 
 // BaseTrustedForTest exposes the flag to tests in another package.

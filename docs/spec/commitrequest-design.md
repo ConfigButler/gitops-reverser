@@ -103,9 +103,21 @@ object is visible.
 | Finalize or push error | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
 
 `Reconciling=True` is the normal in-progress state, with the phase the worker reports as its reason:
-`Progressing`, `WaitingForWorker`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. The controller fails
-with `FinalizeFailed` only if the worker does not resolve the request within its bounded safety window; it
-never polls indefinitely.
+`Progressing`, `WaitingForWorker`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. Once the
+request is `CollectingWindow` or `WaitingForPush` the worker holds it, and only the worker ends it. Before
+that, a request still unresolved `attachTimeout + maxDuration + 120s` after creation is withdrawn from the
+worker, which cancels it for good, and fails with `FinalizeFailed`; a GitTarget that never started a worker
+is named in the message. The withdraw rides the worker's queue behind every attach, and is a no-op for a
+request the worker holds, so the controller's failure and the worker's answer cannot disagree.
+
+The withdraw goes to the worker that accepted the request's attach, not to whichever worker the GitTarget
+names now: a worker shared by several GitTargets outlives a deleted one, and a retired worker finishes its
+last push after the manager stopped listing it. Only a request no worker holds falls back to the GitTarget,
+and only then does "no GitTarget" or "no worker" mean that nothing can commit it. Once the controller starts
+withdrawing it sends no further attach, and the worker keeps a request's outcome while any attach for it is
+still queued, so a late attach can never register a withdrawn request again. A worker whose loop has exited,
+including one that never started because its GitProvider could not be read, gives back every request it
+never acted on and answers a withdraw at once.
 
 **`Committed` and `AlreadyPresent` are decided by the push, including the no-commit one.**
 (`WindowMismatch` is decided locally, at the deadline: no window was attached, so there is nothing
@@ -127,8 +139,8 @@ the re-send is recognized as the same request: it cannot register afresh and exp
 same-author window and stamp its message on somebody else's commit. Its close deadline is spent and
 no longer arms anything.
 
-**A worker that stops while still holding the write fails the request**, rather than leaving the
-controller to poll until its own safety window expires: a timeout says nothing about what happened,
-and "the worker stopped before the commit reached the remote" does.
+**A worker that stops while still holding the write fails the request**, because the controller
+does not time out a request the worker holds, and "the worker stopped before the commit reached the
+remote" says what happened.
 
 The complete status vocabulary is in the [status conditions guide](status-conditions-guide.md).

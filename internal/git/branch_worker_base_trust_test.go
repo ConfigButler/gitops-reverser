@@ -188,7 +188,7 @@ func TestBaseTrust_LostWhenSomebodySaysTheRemoteMoved(t *testing.T) {
 	syncFailed := errors.New("sync failed")
 	original := syncToRemoteFn
 	syncToRemoteFn = func(
-		_ context.Context, _ *gogit.Repository, _ plumbing.ReferenceName, _ []gitclient.Option,
+		_ context.Context, _ *gogit.Repository, _ plumbing.ReferenceName, _ string, _ []gitclient.Option,
 	) (*PullReport, error) {
 		return nil, syncFailed
 	}

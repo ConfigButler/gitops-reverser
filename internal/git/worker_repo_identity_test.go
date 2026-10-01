@@ -352,21 +352,21 @@ func TestEnsureWorker_AnUndeliveredRecoveryIsStillPendingOnTheNextPass(t *testin
 	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
 	require.False(t, manager.ReplacementPending(key))
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
 	require.True(t, manager.ReplacementPending(key))
 
 	// The delivery fails, so nothing acknowledges it. Two more reconciles of this target, and of
 	// a sibling on the same branch, still find the recovery waiting.
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
 	assert.True(t, manager.ReplacementPending(key),
 		"a recovery nobody delivered must survive the calls that come after it")
 
 	manager.AcknowledgeReplacement(key)
 	assert.False(t, manager.ReplacementPending(key))
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
 	assert.False(t, manager.ReplacementPending(key),
 		"and a delivered one must not be asked for again on every steady tick")
 }
@@ -379,8 +379,8 @@ func TestReconcileWorkers_DropsARecoveryForABranchNothingNeeds(t *testing.T) {
 	before := RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/first.git"}
 	after := RepoIdentity{ProviderUID: "uid-2", URL: "https://example.invalid/second.git"}
 
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before))
-	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", before, ""))
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", "gitops-system", "main", after, ""))
 	require.True(t, manager.ReplacementPending(key))
 
 	// No GitTarget names this branch, so the sweep retires its worker.

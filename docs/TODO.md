@@ -2,7 +2,57 @@
 
 This file is meant to track the smaller current backlog, not historical notes.
 
+## Follow-ups from #404 (commit window surface)
+
+PR #404 is merged; these need fix PRs against main, in this order. (Its CommitRequest timeout
+finding is fixed in #407: the controller no longer fails a request the worker holds.)
+
+**Next, in one fix PR:**
+
+- [ ] **A suspended target makes a `CommitEmpty` save report Ready=True with no commit.**
+  `recordCommitRequest` returns `false, nil` on `errTargetSuspended`; the design table
+  (`docs/design/commit-timing-surface.md`) says a suspended target is a failure. An attached window
+  that changed nothing resolves `AlreadyPresent` the same way. Decide: fail the save, or change the
+  table.
+- [ ] **The worker records a `CommitEmpty` save while the render-fidelity gate is closed.** Found by
+  reading; reproduce first. `recordCommitRequest` never calls `normalWritesAllowed`, so a save whose events the
+  gate dropped records "no writes were seen". The attached-window path fails the request instead.
+
+**Before the next release** (docs only):
+
+- [ ] `docs/UPGRADING.md`, the v1alpha3 window entry:
+  - step 1: tell readers to suspend the Flux or Argo source of a GitOps-managed GitTarget (or remove
+    the field there) until step 4; otherwise that tool re-applies the string `commit.window` and
+    breaks LIST;
+  - the Was/Is table needs a row for the chart value `quickstart.gitTarget.commit.window`, now an
+    object;
+  - "a removed `closeDelay` is not a hazard" is too strong: the API server prunes it silently for
+    programmatic clients (see `duration_fields_admission_test.go`).
+- [ ] Descriptions that still say a save "closes the window now": the CommitRequest godoc and CRD
+  description, `docs/configuration.md` (lines 14, 32, 123), and the GitTarget `Commit` godoc, which
+  also omits the 1m `maxDuration` default. `docs/spec/commitrequest-design.md:126` still says
+  `NoOpenWindow` and "close deadline".
+
+**Later, non-blocking:**
+
+- [ ] `expireWaitingCommitRequests` ranges over a map, so empty commits for saves that time out in
+  the same pass land in random order; sort by `seq`.
+- [ ] `buildRequestRecordWrite` keeps only the username; carry the full `UserInfo` so the record has
+  the same author identity as a window commit.
+- [ ] A record commit skips `requestTemplate`; fix the code or the doc comment that says it is phrased
+  like every other commit.
+- [ ] Nits: a stale doc comment stacked on `commitWindowFor`; kstatus test names that still say
+  "close-delay".
+
 ## Current backlog
+
+- [ ] After #407 and the #404 fixes above, take the first
+  [parent-observation step](design/gittarget-parent-observation.md#implementation-and-validation):
+  retain parent availability and its timestamp after the write branch exists. Use existing
+  advertisements, with no extra connections or changes to readiness or publication. Keep ancestry
+  classification and empty-repository bootstrap policy in separate changes. The
+  [merge review](design/gittarget-parent-hardening.md#merge-review-at-93120caf) records the two
+  recovery fixes made before #407 merged.
 
 - [ ] Finish making `GitTarget` turn red quickly and explain why no commit was made.
   The plan is in [gittarget-red-status-plan.md](design/gittarget-red-status-plan.md). This is the

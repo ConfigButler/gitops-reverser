@@ -95,7 +95,11 @@ type WorkerManager struct {
 	// the scrape goroutine. Take it BEFORE mu, never the other way round.
 	lifecycleMu sync.Mutex
 	workers     map[BranchKey]*BranchWorker
-	ctx         context.Context
+	// commitRequests records which worker holds each CommitRequest. It outlives the map above on
+	// purpose: a retired worker leaves the map before it stops, and keeps answering for the
+	// requests it held. See commitRequestOwners.
+	commitRequests *commitRequestOwners
+	ctx            context.Context
 	// mapper is the GVK->GVR resolver injected into every worker so store scans build a
 	// resource-identity inventory. It is set once at startup (SetMapper) before any
 	// worker is created; a nil mapper keeps workers structure-only. It is the LOCAL cluster's
@@ -168,6 +172,7 @@ func NewWorkerManager(
 		limits:             limits.withDefaults(),
 		sensitiveResources: sensitiveResources,
 		workers:            make(map[BranchKey]*BranchWorker),
+		commitRequests:     &commitRequestOwners{},
 		remotes:            make(map[BranchKey]RemoteObservation),
 		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
@@ -283,12 +288,19 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 // and the caller can fail. See ReplacementPending; the delivery is the GitTarget reconcile's
 // worker wiring gate.
 //
+// parentBranch is the GitTarget's spec.parentBranch. It is immutable on a GitTarget, so a live
+// worker sees a different one only when every target on its branch was replaced before the worker
+// sweep ran. That is not a replacement: the worker keeps its clone, and SetParentBranch raises the
+// parent generation, so nothing planned under the old parent is pushed and retained writes are
+// rebuilt on the new one.
+//
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(
 	_ context.Context,
 	providerName, providerNamespace string,
 	branch string,
 	repo RepoIdentity,
+	parentBranch string,
 ) error {
 	// Held across the whole check-and-create so a replacement cannot start while the worker it
 	// replaces is still stopping; they would share a clone.
@@ -307,6 +319,10 @@ func (m *WorkerManager) EnsureWorker(
 
 	if exists {
 		if existing.repo == repo {
+			if existing.SetParentBranch(parentBranch) {
+				m.Log.Info("Parent branch changed; the worker re-reads the remote on its next cycle",
+					"key", key.String(), "parentBranch", parentBranch)
+			}
 			return nil
 		}
 		// Both identities, at default verbosity: a comparison that is not stable across steady
@@ -338,6 +354,7 @@ func (m *WorkerManager) EnsureWorker(
 		// Inject the resolver before Start: the field is read only by the event-loop
 		// goroutine Start spawns, so setting it here (under m.mu, before that goroutine
 		// exists) is race-free.
+		worker.SetParentBranch(parentBranch)
 		worker.mapper = m.mapper
 		worker.clusterMapper = m.clusterMapper
 		worker.sshHostKeys = m.sshHostKeys
@@ -347,6 +364,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
 		worker.scanAcceptance = m.scanAcceptance
 		worker.renderFidelityGate = m.renderFidelityGate
+		worker.crOwners = m.commitRequests
 
 		if err := worker.Start(m.ctx); err != nil {
 			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
@@ -454,6 +472,14 @@ func (m *WorkerManager) GetWorkerForTarget(
 
 	worker, exists := m.workers[key]
 	return worker, exists
+}
+
+// CommitRequestOwner returns the worker that holds a CommitRequest: the one that accepted its
+// attach and has not given it back. It is found whatever has happened to the request's GitTarget
+// since, including a worker retired and still finishing its last push, so a caller that finds no
+// owner knows that no worker can still commit the request.
+func (m *WorkerManager) CommitRequestOwner(namespace, name, uid string) (*BranchWorker, bool) {
+	return m.commitRequests.owner(commitRequestID{Namespace: namespace, Name: name, UID: uid})
 }
 
 // afterOrphanSelection runs between choosing the workers to retire and retiring them. It is nil in

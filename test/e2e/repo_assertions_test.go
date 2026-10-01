@@ -45,8 +45,15 @@ func pullLatestRepoState(g Gomega, checkoutDir string) {
 // commit, and UNCHANGED (== the prior SHA) for an already-established branch.
 func remoteBranchHead(g Gomega, checkoutDir string) string {
 	GinkgoHelper()
+	return remoteBranchHeadOf(g, checkoutDir, "main")
+}
 
-	output, err := gitRun(checkoutDir, "ls-remote", "--heads", "origin", "main")
+// remoteBranchHeadOf is remoteBranchHead for any branch: the SHA at its tip on the remote, or ""
+// when the remote does not carry it.
+func remoteBranchHeadOf(g Gomega, checkoutDir, branch string) string {
+	GinkgoHelper()
+
+	output, err := gitRun(checkoutDir, "ls-remote", "--heads", "origin", branch)
 	g.Expect(err).NotTo(HaveOccurred(),
 		fmt.Sprintf("git ls-remote must succeed even when the branch is absent. Output: %s", output))
 
@@ -54,7 +61,7 @@ func remoteBranchHead(g Gomega, checkoutDir string) string {
 	if len(fields) == 0 {
 		return "" // branch does not exist yet — nothing committed
 	}
-	return fields[0] // ls-remote prints "<sha>\trefs/heads/main"
+	return fields[0] // ls-remote prints "<sha>\trefs/heads/<branch>"
 }
 
 func recentCommitDiagnostics(checkoutDir, pathspec string) string {

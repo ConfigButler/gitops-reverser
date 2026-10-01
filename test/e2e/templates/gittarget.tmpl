@@ -7,6 +7,9 @@ spec:
   gitProviderRef:
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
+{{- if .ParentBranch }}
+  parentBranch: {{ .ParentBranch }}
+{{- end }}
   path: {{ .Path }}
   commit:
     window:

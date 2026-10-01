@@ -79,6 +79,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 |---|---|---|
 | `gitProviderRef` | **required** | The `GitProvider` backing this target, in the same namespace |
 | `branch` | **required** | Branch to write. Must be in the provider's `allowedBranches` |
+| `parentBranch` | the remote's default branch | Branch a `branch` the remote does not have yet is created from. Immutable. Only read, so it need not be allowed. See [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch) |
 | `path` | **required** | Folder within the repository. `.` targets the root; empty is rejected |
 | `clusterProviderRef` | `{"name":"default"}` | Source cluster to mirror from. The default names a `ClusterProvider` called `default` |
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
@@ -551,6 +552,8 @@ The important fields are:
 - `spec.clusterProviderRef`: which `ClusterProvider` supplies resources; omit it to reference the
   user-created `default` provider
 - `spec.branch`: which allowed branch to write to
+- `spec.parentBranch`: which branch `spec.branch` is created from while it does not exist yet; omit it
+  for the remote's default branch
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
@@ -747,6 +750,53 @@ two are always separate objects, and deleting the preview cannot disturb the rea
 
 For inspecting a repository without a cluster at all, use the `manifest-analyzer` CLI.
 
+### Starting the write branch from another branch (`spec.parentBranch`)
+
+A target whose `spec.branch` does not exist on the remote waits on standby: it compares the cluster
+against the **parent branch** and creates nothing while they agree. The first write that has
+something to commit creates the branch from the parent's current tip, checked when it pushes, so a
+target that waited a week does not publish onto a week-old checkout. A write that finds nothing to
+change creates no branch at all.
+
+The parent is the remote's default branch unless you name one:
+
+```yaml
+spec:
+  gitProviderRef: {name: homelab}
+  branch: reverser/prod-edits     # the write branch: created on the first commit
+  parentBranch: env/prod          # what it is created from
+  path: apps/checkout
+```
+
+- An explicit parent must exist when the write branch is created. Otherwise the target reports
+  `Ready=False` with reason `ParentBranchNotFound` and writes nothing.
+- It recovers on its own once the parent is pushed, with no edit to the cluster and with periodic
+  refresh on or off. The branch worker looks for the parent with one ref advertisement after 10s,
+  then after twice as long each time, up to every 5 minutes, shared by every target on the branch.
+  When the parent is back it publishes the writes it held and asks for a fresh snapshot of the ones
+  it had to drop; until those are published the target reports `Ready=False` with reason
+  `RecoveringParentBranch`.
+- An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
+  refs at all, tags included) the first commit starts a branch with no history. A repository that
+  is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and
+  writes nothing until `HEAD` is fixed or `parentBranch` is set; that never starts an orphan.
+- A detached `HEAD`, or a server that does not say what `HEAD` points at, resolves the way go-git
+  resolves it: to `master` when it is at `HEAD`'s commit, otherwise to the alphabetically first
+  branch that is. Set `parentBranch` when you need certainty rather than that guess.
+- When the remote's `HEAD` switches to another branch, the next discovery (a refresh, or any fetch)
+  follows it. A push cannot see `HEAD`, so with periodic refresh off a write branch can still start
+  from the previous default branch until then.
+- Once the write branch exists, it is used as it is: new commits on the parent do not reach it.
+  Delete the write branch after its changes are merged, and the next edit starts a fresh one.
+- `parentBranch` is immutable, including adding or removing it: delete and recreate the target to
+  change it, which loses nothing because the destination is unchanged. It is only read, so it does
+  not need to be in `allowedBranches`.
+- While the write branch is absent, `status.remote.parent` shows the parent, whether it was
+  `Found`, `Missing` or `Unborn`, and the commit the first commit would build on. With
+  `parentBranch` omitted, that is how you see which default branch the remote resolved.
+- All `GitTarget` objects on one `GitProvider` and branch must name the same parent branch; omitted
+  counts as its own value. The later-created one reports `TargetConflict`.
+
 `spec.suspend` is **not** this. It is the next section.
 
 ### Stopping a target from writing (`spec.suspend`)
@@ -859,9 +909,13 @@ target has written anything:
 ```yaml
 status:
   remote:
-    commit: 4f2c1ab9e0...               # empty = the branch is not on the remote
+    commit: ""                          # empty = the branch is not on the remote (yet)
     lastVerifiedAt: "2026-09-23T10:14:02Z"
     verifiedBy: Push                    # Push | Fetch
+    parent:                             # only while the branch is not on the remote
+      state: Found                      # Found | Missing | Unborn
+      branch: main                      # spec.parentBranch, or the remote's default branch
+      commit: 9a1e07c3d2...             # set only when Found
 ```
 
 - `commit` is where the branch is. Empty means the branch is not on the remote at all, which is
@@ -873,6 +927,12 @@ status:
   commit is Reverser's own work. `Fetch` means it went and looked, and this is what was there.
   A `Fetch` beside a commit none of your publications produced is how a **foreign push** to the
   branch is read off `kubectl`.
+- `parent` appears only while the branch is not on the remote: it says what the branch would be
+  created from, observed together with the branch's absence. `state` is `Found` (the first commit
+  builds on `commit`, the parent's tip), `Missing` (the parent is not on the remote either; the
+  target reports `ParentBranchNotFound` and writes nothing) or `Unborn` (an empty repository, with
+  no refs at all, and no parent configured; the first commit starts the branch with no history). See
+  [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
 
 `kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.
 

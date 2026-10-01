@@ -334,7 +334,7 @@ func TestReplayFailure_AResetThatDiesHalfwayIsAlsoHeld(t *testing.T) {
 	original := syncToRemoteFn
 	syncToRemoteFn = func(
 		ctx context.Context, repo *gogit.Repository,
-		branch plumbing.ReferenceName, auth []gitclient.Option,
+		branch plumbing.ReferenceName, _ string, auth []gitclient.Option,
 	) (*PullReport, error) {
 		if _, err := SmartFetch(ctx, repo, branch, auth); err != nil {
 			return nil, err

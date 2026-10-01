@@ -215,8 +215,11 @@ after the remote confirmed the push.
 Every one of these comes from the worker. Sending an attach does not prove an attach, so the
 controller reports a phase only when the worker says the save reached it.
 
-The controller's safety timeout covers the largest `attachTimeout`, the largest `maxDuration`, and
-the push cooldown and retries.
+The controller's safety timeout applies only to a save the worker has not acted on:
+`attachTimeout + maxDuration + 120s` from creation. Then the controller asks the worker to withdraw
+the save and reports the worker's answer: failed when it cancelled the save, or the real outcome when
+it resolved the save first. Once the worker holds a save (attached, or committed and waiting for the push), only the
+worker ends it, so the controller never reports a failure the worker later contradicts.
 
 ## Naming
 

@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -73,6 +74,60 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		expectImmutable(func(gt *configbutleraiv1alpha3.GitTarget) {
 			gt.Spec.GitProviderRef.Name = "prov-b"
 		}, "spec.gitProviderRef is immutable")
+	})
+
+	// spec.parentBranch decides what history a new write branch gets, so it is fixed at creation
+	// like the destination, including adding or removing it. It can be omitted, but never empty.
+	It("rejects changing, adding or removing spec.parentBranch, and an empty one", func() {
+		ctx := context.Background()
+		withParent := types.NamespacedName{Name: "parent-branch-target", Namespace: "default"}
+		withoutParent := types.NamespacedName{Name: "no-parent-branch-target", Namespace: "default"}
+
+		for _, tc := range []struct {
+			key    types.NamespacedName
+			parent string
+		}{{withParent, "main"}, {withoutParent, ""}} {
+			gitTarget := &configbutleraiv1alpha3.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{Name: tc.key.Name, Namespace: tc.key.Namespace},
+				Spec: configbutleraiv1alpha3.GitTargetSpec{
+					GitProviderRef: meta.LocalObjectReference{Name: "prov-a"},
+					Branch:         "edits",
+					Path:           "apps-" + tc.key.Name,
+					ParentBranch:   tc.parent,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, gitTarget) })
+		}
+
+		expectRejected := func(key types.NamespacedName, parent string) {
+			Eventually(func(g Gomega) {
+				current := &configbutleraiv1alpha3.GitTarget{}
+				g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+				current.Spec.ParentBranch = parent
+				err := k8sClient.Update(ctx, current)
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(ContainSubstring("spec.parentBranch is immutable"))
+			}, timeout, interval).Should(Succeed())
+		}
+		expectRejected(withParent, "release")    // changed
+		expectRejected(withParent, "")           // removed
+		expectRejected(withoutParent, "release") // added
+
+		empty := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "configbutler.ai/v1alpha3",
+			"kind":       "GitTarget",
+			"metadata":   map[string]interface{}{"name": "empty-parent-target", "namespace": "default"},
+			"spec": map[string]interface{}{
+				"gitProviderRef": map[string]interface{}{"name": "prov-a"},
+				"branch":         "edits",
+				"path":           "apps",
+				"parentBranch":   "",
+			},
+		}}
+		err := k8sClient.Create(ctx, empty)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.parentBranch"))
 	})
 
 	It("requires a non-empty path: rejects an omitted or empty path but allows an explicit \".\" root", func() {

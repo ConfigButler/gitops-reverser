@@ -148,6 +148,7 @@ func (r *GitTargetReconciler) publishRemote(
 		Commit:         observed.Commit,
 		LastVerifiedAt: &metav1.Time{Time: observed.At},
 		VerifiedBy:     string(observed.By),
+		Parent:         parentStatusOf(observed),
 	}
 	if !remoteStatusIsNews(target.Status.Remote, next) {
 		return
@@ -203,10 +204,30 @@ func remoteStatusIsNews(published, next *configbutleraiv1alpha3.GitTargetRemoteS
 	if published == nil || published.LastVerifiedAt == nil || next.LastVerifiedAt == nil {
 		return true
 	}
-	if published.Commit != next.Commit {
+	if published.Commit != next.Commit || !equalParentStatus(published.Parent, next.Parent) {
 		return true
 	}
 	// metav1.Time is second-granular on the wire, so this compares against what was PUBLISHED: a
 	// sub-second difference the API server would round away is not movement.
 	return next.LastVerifiedAt.Time.After(published.LastVerifiedAt.Time)
+}
+
+// parentStatusOf is the parent stanza of status.remote: present only while the observation found
+// the write branch absent, which is when it says what the branch would be created from.
+func parentStatusOf(observed git.RemoteObservation) *configbutleraiv1alpha3.GitTargetParentStatus {
+	if observed.Commit != "" || observed.ParentState == "" {
+		return nil
+	}
+	return &configbutleraiv1alpha3.GitTargetParentStatus{
+		State:  configbutleraiv1alpha3.GitTargetParentState(observed.ParentState),
+		Branch: observed.ParentBranch,
+		Commit: observed.ParentCommit,
+	}
+}
+
+func equalParentStatus(a, b *configbutleraiv1alpha3.GitTargetParentStatus) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

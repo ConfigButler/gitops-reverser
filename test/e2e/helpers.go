@@ -253,6 +253,26 @@ func createGitTargetWithOptions(
 	generateWhenMissing bool,
 	commit gitTargetCommitOptions,
 ) {
+	applyGitTarget(name, namespace, providerName, path, branch, "", encryptionSecretName, generateWhenMissing, commit)
+}
+
+// createGitTargetWithParentBranch is createGitTarget with spec.parentBranch; empty omits it.
+func createGitTargetWithParentBranch(name, namespace, providerName, path, branch, parentBranch string) {
+	applyGitTarget(name, namespace, providerName, path, branch, parentBranch,
+		e2eEncryptionRefName, false, gitTargetCommitOptions{Window: e2eCommitWindow})
+}
+
+func applyGitTarget(
+	name,
+	namespace,
+	providerName,
+	path,
+	branch,
+	parentBranch,
+	encryptionSecretName string,
+	generateWhenMissing bool,
+	commit gitTargetCommitOptions,
+) {
 	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' for GitProvider '%s' with path '%s'",
 		name, namespace, providerName, path))
 
@@ -261,6 +281,7 @@ func createGitTargetWithOptions(
 		Namespace            string
 		ProviderName         string
 		Branch               string
+		ParentBranch         string
 		Path                 string
 		EncryptionSecretName string
 		GenerateWhenMissing  bool
@@ -273,6 +294,7 @@ func createGitTargetWithOptions(
 		Namespace:            namespace,
 		ProviderName:         providerName,
 		Branch:               branch,
+		ParentBranch:         parentBranch,
 		Path:                 path,
 		EncryptionSecretName: encryptionSecretName,
 		GenerateWhenMissing:  generateWhenMissing,

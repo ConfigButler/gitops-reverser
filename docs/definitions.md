@@ -124,6 +124,17 @@ Observation failure supplies no evidence of absence. The code calls this write-s
 branch)` tuple. Every write to that branch goes through it. Two words, lowercase in prose,
 `BranchWorker` as the Go type.
 
+**Write branch.** The branch a `GitTarget` writes to: `spec.branch`. It must be in the
+`GitProvider`'s `allowedBranches`.
+
+**Parent branch.** The branch a write branch is created from, and compared against while the write
+branch does not exist on the remote: `spec.parentBranch`, or the remote's default branch when that
+is omitted. Say "parent branch"; a bare "parent" is fine where the subject is already a branch, such
+as the `status.remote.parent` stanza or a sentence that has just named the parent branch. Use the
+full term wherever a parent *resource* could be meant. Not "base", which names a kustomize read-only
+base and base trust, and not "source", which names the source cluster. Once the write branch exists,
+the parent branch is not followed.
+
 **Commit window.** The interval a branch worker batches one author's writes to one target over before
 it commits. Only a write opens one; nothing else does. It closes on its `idleTimeout` of silence or
 its `maxDuration` after opening, whichever comes first. Windows do not merge across authors, which
@@ -138,8 +149,8 @@ one. One word for the act, in the API (`window.attach`, `attachTimeout`), the co
 `status.remote`.
 
 **Commit.** A bare Git commit hash, wherever one appears in the API: `status.remote.commit`,
-`CommitRequest.status.commit`, `status.placement.resolvedAtCommit`. Not "sha", which names an
-algorithm Git is in the middle of changing, and not "revision", which Flux uses for a polymorphic
+`status.remote.parent.commit`, `CommitRequest.status.commit`, `status.placement.resolvedAtCommit`.
+Not "sha", which names an algorithm Git is in the middle of changing, and not "revision", which Flux uses for a polymorphic
 identifier that may be a tag, a chart version or a composite like `main@sha1:<hash>`. If this project
 ever needs that composite, `revision` is the word waiting for it.
 

@@ -61,11 +61,20 @@ type ledgerFixture struct {
 	// pending is the retained-write slice the event loop would own. The ops drive commit and push
 	// directly, so they carry it here.
 	pending []PendingWrite
+	// loop is the event loop, for the rows whose state lives on it.
+	loop *branchWorkerEventLoop
 }
 
 // newLedgerFixture builds that world. seeded chooses between an empty remote and one that already
 // has a commit on main, which is the difference between ledger rows 1 and 2.
 func newLedgerFixture(t *testing.T, slug string, seeded bool) *ledgerFixture {
+	t.Helper()
+	return newLedgerFixtureOnBranch(t, slug, seeded, "main")
+}
+
+// newLedgerFixtureOnBranch is newLedgerFixture with a worker for another branch than main, which
+// the remote does not carry: the write branch of a target that has not written yet.
+func newLedgerFixtureOnBranch(t *testing.T, slug string, seeded bool, branch string) *ledgerFixture {
 	t.Helper()
 
 	projectRoot := t.TempDir()
@@ -104,7 +113,7 @@ func newLedgerFixture(t *testing.T, slug string, seeded bool) *ledgerFixture {
 		logr.Discard(),
 		providerName,
 		"default",
-		"main",
+		branch,
 		RepoIdentity{URL: sim.RepoURL},
 		nil,
 		BranchWorkerLimits{},
@@ -182,6 +191,9 @@ type ledgerOp struct {
 	slug string
 	// seeded starts the remote with a commit on main.
 	seeded bool
+	// branch is the worker's write branch; empty is main. A branch the remote does not carry is a
+	// target on standby.
+	branch string
 	// prime puts the fixture in the state the row describes. It runs BEFORE the measurement
 	// starts, so a row about steady-state publication is not charged for the initial clone.
 	prime func(f *ledgerFixture)
@@ -359,6 +371,82 @@ func ledgerOperations() []ledgerOp {
 				<-done
 			},
 		},
+		{
+			// H3: a target on standby, and a live write that changes nothing (a deployment's echo,
+			// here the delete of an object Git never had). The branch stays absent, and the push
+			// advertisement that confirms the parent is the only connection.
+			name:   "13. standby, a live write that changes nothing",
+			slug:   "standby-noop",
+			seeded: true,
+			branch: "feature",
+			prime:  func(f *ledgerFixture) { require.NoError(f.t, f.worker.ensureRepositoryInitialized(f.worker.ctx)) },
+			run: func(f *ledgerFixture) {
+				deleted := configMapEvent("never-written", "alice", "team-a")
+				deleted.Operation = "DELETE"
+				deleted.Object = nil
+				pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{deleted})
+				require.NoError(f.t, err)
+				require.NoError(f.t, f.worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+				f.pending = append(f.pending, *pendingWrite)
+				f.push()
+			},
+		},
+		{
+			// H5: a target on standby whose parent moved since its checkout. The advertisement
+			// refuses the stale root client-side, one contention fetch replays onto the new tip,
+			// and the push creates the branch there. It is row 6, for a new branch.
+			name:   "14. standby, the first write after the parent moved",
+			slug:   "standby-parent-moved",
+			seeded: true,
+			branch: "feature",
+			prime: func(f *ledgerFixture) {
+				require.NoError(f.t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
+				f.contend("MOVED.md", "the parent moved\n")
+			},
+			run: func(f *ledgerFixture) { f.publish("first") },
+		},
+		{
+			// §4.4: while the parent is missing, the worker's probe is one advertisement per
+			// deadline and never a fetch. How often it runs is test 4 of parent_recovery_test.go.
+			name:   "15. parent probe while the parent is missing",
+			slug:   "parent-probe",
+			seeded: true,
+			branch: "feature",
+			prime: func(f *ledgerFixture) {
+				f.worker.SetParentBranch("release")
+				f.loop = newBranchWorkerEventLoop(f.worker, time.Hour)
+				f.t.Cleanup(f.loop.stopTimers)
+				pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx,
+					[]Event{configMapEvent("held", "alice", "team-a")})
+				require.NoError(f.t, err)
+				err = f.worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false)
+				require.ErrorIs(f.t, err, ErrParentBranchNotFound)
+				f.loop.noteParentUnavailable(err)
+			},
+			run: func(f *ledgerFixture) {
+				f.worker.clock = func() time.Time { return time.Now().Add(time.Hour) }
+				f.loop.runParentProbe()
+			},
+		},
+		{
+			// R6: somebody creates the write branch between our advertisement and our upload, with
+			// the parent unmoved. The server refuses the upload; one advertisement reads both refs
+			// and finds the branch; the replay fetches it, rebuilds, and pushes onto it. It costs
+			// more than row 6, which is refused at the advertisement, before any upload.
+			name:   "16. standby, the write branch created during our upload",
+			slug:   "refused-upload",
+			seeded: true,
+			branch: "feature",
+			prime:  func(f *ledgerFixture) { require.NoError(f.t, f.worker.ensureRepositoryInitialized(f.worker.ctx)) },
+			run: func(f *ledgerFixture) {
+				afterPushValidation = func() {
+					afterPushValidation = nil
+					simulateClientCommitOnDisk(f.t, f.repoDir, "feature", "THEIRS.md", "theirs\n")
+				}
+				defer func() { afterPushValidation = nil }()
+				f.publish("first")
+			},
+		},
 	}
 }
 
@@ -413,7 +501,11 @@ func TestGitRoundTripLedger(t *testing.T) {
 	for _, op := range ops {
 		row := ledgerRow{Operation: op.name}
 		ok := t.Run(op.name, func(t *testing.T) {
-			f := newLedgerFixture(t, op.slug, op.seeded)
+			branch := op.branch
+			if branch == "" {
+				branch = "main"
+			}
+			f := newLedgerFixtureOnBranch(t, op.slug, op.seeded, branch)
 			if op.prime != nil {
 				op.prime(f)
 			}
@@ -435,18 +527,19 @@ func TestGitRoundTripLedger(t *testing.T) {
 
 	// A harness that measures nothing measures nothing consistently, and a golden file is happy
 	// to record that. Row 12 is meant to be zero; everything else is not.
-	for _, row := range rows[:len(rows)-1] {
+	const idleRow = "12. an idle target held across several commit windows"
+	for _, row := range rows {
+		if row.Operation == idleRow {
+			// Row 12 is a property, not a measurement: an idle target is silent. It is asserted
+			// here directly so it can never be "accepted" by regenerating the golden file.
+			require.Zero(t, row.Snapshot.connections(),
+				"an idle target must not talk to the Git host at all; it opened %s", row.Snapshot.exactBytes())
+			continue
+		}
 		require.Positive(t, row.Snapshot.connections(),
 			"%s recorded no traffic at all, so the harness — not the code — is what this row is "+
 				"describing", row.Operation)
 	}
-
-	// Row 12 is a property, not a measurement: an idle target is silent. It is asserted here
-	// directly so it can never be "accepted" by regenerating the golden file.
-	idle := rows[len(rows)-1]
-	require.Equal(t, "12. an idle target held across several commit windows", idle.Operation)
-	require.Zero(t, idle.Snapshot.connections(),
-		"an idle target must not talk to the Git host at all; it opened %s", idle.Snapshot.exactBytes())
 
 	assertLedgerGolden(t, rows)
 }

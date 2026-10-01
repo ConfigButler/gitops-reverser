@@ -97,6 +97,71 @@ func TestAtomicPush_PushToOther(t *testing.T) {
 	require.Equal(t, createdCommit, ref.Hash())
 }
 
+// TestAtomicPush_PushToOther_DetectsMovedRoot covers the push that creates a branch. Its root is
+// the parent it was built from, and a parent that moved since the checkout must refuse the push:
+// otherwise the new branch is born on a stale tree.
+func TestAtomicPush_PushToOther_DetectsMovedRoot(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server")
+	remoteURL := "file://" + serverPath
+
+	localPath := filepath.Join(tempDir, "local")
+	remoteRepo := createBareRepo(t, serverPath)
+	commitA := simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "A")
+
+	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "feature")
+	commitFileChange(t, worktree, localPath, "README.md", "ours, built on A")
+
+	commitB := simulateClientCommitOnDisk(t, remoteURL, "main", "OTHER.md", "B")
+
+	mainBranch := plumbing.NewBranchReferenceName("main")
+	featureBranch := plumbing.NewBranchReferenceName("feature")
+	outcome, err := PushAtomic(ctx, localRepo, commitA, mainBranch, nil)
+	require.Error(t, err)
+	assert.Empty(t, outcome.Kind, "an error means nothing was observed")
+
+	var moved *RemoteMovedError
+	require.ErrorAs(t, err, &moved)
+	assert.Equal(t, RemoteMovedError{Branch: mainBranch, Expected: commitA, Advertised: commitB}, *moved)
+
+	_, err = remoteRepo.Reference(featureBranch, true)
+	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "the new branch must not be created")
+}
+
+// TestAtomicPush_PushToOther_DetectsConcurrentlyCreatedBranch covers a branch somebody else created
+// between our checkout and our push. We believed it absent, so we must not push over their commit.
+func TestAtomicPush_PushToOther_DetectsConcurrentlyCreatedBranch(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server")
+	remoteURL := "file://" + serverPath
+
+	localPath := filepath.Join(tempDir, "local")
+	remoteRepo := createBareRepo(t, serverPath)
+	commitA := simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "A")
+
+	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "feature")
+	commitFileChange(t, worktree, localPath, "README.md", "ours, built on A")
+
+	theirs := simulateClientCommitOnDisk(t, remoteURL, "feature", "THEIRS.md", "theirs")
+
+	mainBranch := plumbing.NewBranchReferenceName("main")
+	featureBranch := plumbing.NewBranchReferenceName("feature")
+	outcome, err := PushAtomic(ctx, localRepo, commitA, mainBranch, nil)
+	require.Error(t, err)
+	assert.Empty(t, outcome.Kind, "an error means nothing was observed")
+
+	var moved *RemoteMovedError
+	require.ErrorAs(t, err, &moved)
+	assert.Equal(t, RemoteMovedError{Branch: featureBranch, Expected: plumbing.ZeroHash, Advertised: theirs}, *moved,
+		"we expected the branch to be absent")
+
+	ref, err := remoteRepo.Reference(featureBranch, true)
+	require.NoError(t, err)
+	assert.Equal(t, theirs, ref.Hash(), "their commit must be untouched")
+}
+
 // TestAtomicPush_DetectsMissingBranch tests that push detects when remote branch doesn't exist anymore.
 func TestAtomicPush_DetectsMissingBranch(t *testing.T) {
 	ctx := context.Background()

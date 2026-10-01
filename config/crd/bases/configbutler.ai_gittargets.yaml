@@ -348,6 +348,19 @@ spec:
                 - Ignore
                 - PushEmptyCommit
                 type: string
+              parentBranch:
+                description: |-
+                  ParentBranch is the branch the write branch (spec.branch) is created from, and the branch the
+                  target compares against while the write branch does not exist on the remote. Omitted: the
+                  branch the remote's HEAD points at (its default branch), or a branch with no history when
+                  the repository is empty. When set, it must exist on the remote for the write branch to be
+                  created; otherwise the GitTarget reports ParentBranchNotFound and writes nothing. Once the
+                  write branch exists, it is used as it is and the parent is not followed. It is only read, so
+                  it does not need to be in the GitProvider's allowedBranches. All GitTargets on one GitProvider
+                  and branch must name the same parent branch (omitted counts as its own value).
+                  Immutable, including adding or removing it: delete and recreate the GitTarget to change it.
+                minLength: 1
+                type: string
               path:
                 description: |-
                   Path within the repository to write resources to, relative to the repository
@@ -521,6 +534,10 @@ spec:
             - message: spec.path is immutable; delete and recreate the GitTarget to
                 change its destination
               rule: self.path == oldSelf.path
+            - message: spec.parentBranch is immutable; delete and recreate the GitTarget
+                to change it
+              rule: has(self.parentBranch) == has(oldSelf.parentBranch) && (!has(self.parentBranch)
+                || self.parentBranch == oldSelf.parentBranch)
             - message: spec.clusterProviderRef is immutable; delete and recreate the
                 GitTarget to change the cluster it mirrors
               rule: self.clusterProviderRef == oldSelf.clusterProviderRef
@@ -682,6 +699,35 @@ spec:
                       an old value there means the layout has not changed rather than that nothing has looked.
                     format: date-time
                     type: string
+                  parent:
+                    description: |-
+                      Parent is what the write branch would be created from, observed with it: present only
+                      while the remote does not carry the write branch. Once the branch exists its parent is not
+                      followed, so this is omitted.
+                    properties:
+                      branch:
+                        description: |-
+                          Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
+                          that is omitted. Empty when State is Unborn, and when the remote names no default branch.
+                        type: string
+                      commit:
+                        description: |-
+                          Commit is the commit hash the parent branch is at on the remote: the commit the write
+                          branch's first commit would build on. Set only when State is Found.
+                        type: string
+                      state:
+                        description: |-
+                          State is what the write branch would be created from: Found (the parent's tip), Missing
+                          (the parent is not on the remote; nothing is written) or Unborn (an empty repository, with no
+                          refs at all, and no parent configured; the first commit has no history).
+                        enum:
+                        - Found
+                        - Missing
+                        - Unborn
+                        type: string
+                    required:
+                    - state
+                    type: object
                   verifiedBy:
                     description: |-
                       VerifiedBy is what proved it: `Push` means the server accepted a ref update of ours, so

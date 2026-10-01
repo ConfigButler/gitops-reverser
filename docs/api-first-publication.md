@@ -309,8 +309,13 @@ leaving it to time out, so a shutdown mid-publication is reported as a failure a
 
 Use `Pushed=True` plus `status.commit` when a particular commit must exist in Git. `Ready=True` also
 covers successful outcomes with no commit. Status visibility follows the controller's polling
-cadence and Kubernetes status writes. The controller's safety timeout is `420s` from object
-creation; resolved worker outcomes are retained for `15m` with cleanup on subsequent resolutions.
+cadence and Kubernetes status writes. A request the worker holds (attached to a window, or committed
+and waiting for the push) has no controller-side timeout: it ends when the worker says so, however
+long a down remote takes. For a request the worker has not acted on within
+`attachTimeout + maxDuration + 120s` of creation, the controller asks the worker to withdraw it, and
+reports whatever the worker answers: failed when the worker cancelled it, or the real outcome when
+the worker resolved it first. A request reported failed is therefore never committed later. The
+worker keeps resolved outcomes for `15m`.
 See the [request contract](spec/commitrequest-design.md).
 
 The two-second `attachTimeout` is not a guarantee that an earlier API edit has reached the

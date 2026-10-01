@@ -53,9 +53,12 @@ const (
 const (
 	// GitTargetReasonOK is the healthy reason. It is the shared Succeeded vocabulary rather than
 	// a per-kind spelling; the name is kept for call-site stability.
-	GitTargetReasonOK                   = ReasonSucceeded
-	GitTargetReasonProviderNotFound     = "ProviderNotFound"
-	GitTargetReasonBranchNotAllowed     = "BranchNotAllowed"
+	GitTargetReasonOK               = ReasonSucceeded
+	GitTargetReasonProviderNotFound = "ProviderNotFound"
+	GitTargetReasonBranchNotAllowed = "BranchNotAllowed"
+	// GitTargetReasonParentBranchNotFound is the Ready reason for a write branch that cannot be
+	// created: the remote carries neither it nor the spec.parentBranch it would start from.
+	GitTargetReasonParentBranchNotFound = "ParentBranchNotFound"
 	GitTargetReasonTargetConflict       = "TargetConflict"
 	GitTargetReasonNotChecked           = "NotChecked"
 	GitTargetReasonBlocked              = "Blocked"
@@ -141,6 +144,10 @@ type GitTargetReconciler struct {
 	// value is usable.
 	reconcileRequests reconcileRequestTracker
 
+	// snapshotRequests remembers which of a branch worker's snapshot requests were acted on, so a
+	// missing parent's recovery forces one recheck per request rather than one per reconcile.
+	snapshotRequests snapshotRequestTracker
+
 	// remotePublications is what each GitTarget last wrote to status.remote: when, and about which
 	// repository. It is internal by design; see remotePublicationLedger.
 	remotePublications remotePublicationLedger
@@ -181,6 +188,10 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	st := beginStatus(r.Client, r.Recorder, &target)
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
+	// Writes are dropped while the parent is missing, so its return is recovered the way a refused
+	// folder is: by a recheck that re-derives what the cluster holds. The branch worker decides
+	// when, and asks; this acts once per request.
+	parentRecheck, recoveringParent := r.parentRecovery(&target, target.Namespace)
 
 	providerNS := target.Namespace
 	// One read of the GitProvider for everything below it; see getGitProvider.
@@ -266,7 +277,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// A standing reconcile request forces the same re-check a refused Git path does: the watch
 	// plane re-anchors the target's streams, which is what makes it re-read the folder rather than
 	// wait for the periodic pass. Taken once per distinct annotation value.
-	forceRecheck := gitPathWasRefused || r.reconcileRequests.take(
+	forceRecheck := gitPathWasRefused || parentRecheck || r.reconcileRequests.take(
 		types.NewResourceReference(target.Name, target.Namespace), reconcileRequestedAt(&target))
 	observed := r.observeDataPlane(&target, sourceProvider, forceRecheck, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
@@ -277,7 +288,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
-	gitTargetReadinessGates(rd, observed, refs.gitProvider, refs.clusterProvider, refs.sourceCluster)
+	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
+		refs.gitProvider, refs.clusterProvider, refs.sourceCluster)
+	parentRecoveryReadiness(rd, recoveringParent)
 	st.applyReadiness(rd)
 
 	if err := st.commit(ctx); err != nil {
@@ -762,12 +775,14 @@ func (r *GitTargetReconciler) publishReferenceReadiness(
 func gitTargetReadinessGates(
 	rd *readiness,
 	observed dataPlaneObservation,
-	provider, clusterProvider, sourceReach conditionValue,
+	parent, provider, clusterProvider, sourceReach conditionValue,
 ) {
 	// Terminal, most specific first. Each of these needs a human: the folder holds content the
-	// operator will not manage, a watch is refused, or what was written no longer matches live.
+	// operator will not manage, the write branch has no parent to be created from, a watch is
+	// refused, or what was written no longer matches live.
 	rd.stalledIf(observed.axes.GitPath.Status == metav1.ConditionFalse,
 		observed.axes.GitPath.Reason, observed.axes.GitPath.Message)
+	rd.stalledIf(parent.Status == metav1.ConditionFalse, parent.Reason, parent.Message)
 	rd.stalledIf(observed.streams.Blocked > 0, observed.streams.Reason, observed.streams.Message)
 	rd.stalledIf(observed.axes.Render.Status == metav1.ConditionFalse,
 		observed.axes.Render.Reason, observed.axes.Render.Message)
@@ -801,6 +816,55 @@ func gitTargetReadinessGates(
 	rd.progressingIf(observed.declare.Pending && observed.declare.Failures == 0,
 		metav1.ConditionFalse, ReasonProgressing,
 		"Stream declaration has not landed yet; the data-plane surface is not observable")
+}
+
+// parentBranchReadiness reports whether the write branch can be created: False when the last
+// look at the remote found neither the write branch nor the parent it would be created from. That
+// parent is the configured spec.parentBranch, or, when it is omitted, the remote's default branch:
+// a repository that is not empty but whose HEAD names no branch it carries refuses as well, because
+// starting there would make an orphan.
+//
+// It is read from the branch worker's remote observation, so it costs no round trip and holds
+// with periodic refresh disabled: every fetch on the write path records the same observation. The
+// observation counts only when it was made under the parent configured now, and only for the
+// repository the GitProvider names now (a repoint proves nothing about the new one).
+func (r *GitTargetReconciler) parentBranchReadiness(
+	target *configbutleraiv1alpha3.GitTarget,
+	providerNS string,
+	repo git.RepoIdentity,
+) conditionValue {
+	ok := conditionValue{Status: metav1.ConditionTrue, Reason: GitTargetReasonOK}
+	observed, seen := r.observeRemote(target, providerNS)
+	if !seen || observed.ParentState != git.ParentMissing ||
+		observed.ParentRequested != target.Spec.ParentBranch || differentRepository(observed.Repo, repo) {
+		return ok
+	}
+	return conditionValue{
+		Status:  metav1.ConditionFalse,
+		Reason:  GitTargetReasonParentBranchNotFound,
+		Message: parentBranchNotFoundMessage(target, observed.ParentBranch),
+	}
+}
+
+// parentBranchNotFoundMessage says which parent is missing and what fixes it.
+func parentBranchNotFoundMessage(target *configbutleraiv1alpha3.GitTarget, missing string) string {
+	switch {
+	case target.Spec.ParentBranch != "":
+		return fmt.Sprintf(
+			"Branch '%s' does not exist on the remote, and neither does its parent branch '%s' to create "+
+				"it from; nothing is written until one of them exists",
+			target.Spec.Branch, target.Spec.ParentBranch)
+	case missing != "":
+		return fmt.Sprintf(
+			"Branch '%s' does not exist on the remote, and the remote's default branch (HEAD -> '%s') does "+
+				"not exist either; fix the remote's HEAD or set spec.parentBranch. Nothing is written until then",
+			target.Spec.Branch, missing)
+	default:
+		return fmt.Sprintf(
+			"Branch '%s' does not exist on the remote, and the remote has no default branch to create it "+
+				"from; set the remote's HEAD or spec.parentBranch. Nothing is written until then",
+			target.Spec.Branch)
+	}
 }
 
 // requestRemoteRefresh asks this target's branch worker to re-prove where the branch is, if
@@ -902,6 +966,7 @@ func (r *GitTargetReconciler) ensureEventStream(
 		providerNS,
 		target.Spec.Branch,
 		repo,
+		target.Spec.ParentBranch,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -1089,13 +1154,6 @@ func (r *GitTargetReconciler) checkForConflicts(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) (bool, string, string, error) {
-	// A path the writer would reject (absolute, backslashes, ".." traversal) owns
-	// nothing, so it must neither block others nor be blocked here — its own write
-	// path fails it. Only well-formed paths participate in overlap detection.
-	if !git.IsValidTargetPath(target.Spec.Path) {
-		return false, "", "", nil
-	}
-
 	var allTargets configbutleraiv1alpha3.GitTargetList
 	if err := r.List(ctx, &allTargets); err != nil {
 		return false, "", "", fmt.Errorf("list GitTargets for conflict validation: %w", err)
@@ -1109,46 +1167,94 @@ func (r *GitTargetReconciler) checkForConflicts(
 		if existing.Namespace != providerNS || existing.Spec.GitProviderRef.Name != target.Spec.GitProviderRef.Name {
 			continue
 		}
-		if existing.Spec.Branch != target.Spec.Branch ||
-			!git.IsValidTargetPath(existing.Spec.Path) ||
-			!gitTargetPathsOverlap(target.Spec.Path, existing.Spec.Path) {
+		if existing.Spec.Branch != target.Spec.Branch {
 			continue
 		}
-		// Two GitTargets on the same provider+branch whose paths are equal or
-		// nested fight over which documents each one owns. The later-created
-		// target loses (ties broken deterministically by identity) so every
-		// materialized folder keeps exactly one owner.
-		if gitTargetLosesConflict(target, existing) {
-			var msg string
-			if normalizeGitTargetPath(target.Spec.Path) == normalizeGitTargetPath(existing.Spec.Path) {
-				msg = fmt.Sprintf(
-					"Conflict detected. Another GitTarget '%s/%s' (created at %s) is already using GitProvider '%s/%s', branch '%s', path '%s'. This GitTarget was created later and will not be processed.",
-					existing.Namespace,
-					existing.Name,
-					existing.CreationTimestamp.Format(time.RFC3339),
-					providerNS,
-					target.Spec.GitProviderRef.Name,
-					target.Spec.Branch,
-					target.Spec.Path,
-				)
-			} else {
-				msg = fmt.Sprintf(
-					"Conflict detected. This GitTarget's path '%s' overlaps the path '%s' of GitTarget '%s/%s' (created at %s) on GitProvider '%s/%s', branch '%s' — one path nests inside the other (sibling paths are allowed). This GitTarget was created later and will not be processed.",
-					target.Spec.Path,
-					existing.Spec.Path,
-					existing.Namespace,
-					existing.Name,
-					existing.CreationTimestamp.Format(time.RFC3339),
-					providerNS,
-					target.Spec.GitProviderRef.Name,
-					target.Spec.Branch,
-				)
-			}
+		// Checked whatever either path looks like: a target with a path its writer will reject
+		// still wires the shared worker, and would set its parent.
+		if lost, msg := losesParentBranchConflict(target, existing, providerNS); lost {
+			return true, msg, GitTargetReasonTargetConflict, nil
+		}
+		if existing.Spec.ParentBranch != target.Spec.ParentBranch {
+			continue // the other target loses, on its own reconcile
+		}
+		if lost, msg := losesPathConflict(target, existing, providerNS); lost {
 			return true, msg, GitTargetReasonTargetConflict, nil
 		}
 	}
 
 	return false, "", "", nil
+}
+
+// losesPathConflict reports whether target loses to existing, on the same write branch, because
+// their paths are equal or nested. Two such targets fight over which documents each one owns. The
+// later-created target loses (ties broken deterministically by identity) so every materialized
+// folder keeps exactly one owner.
+//
+// A path the writer would reject (absolute, backslashes, ".." traversal) owns nothing, so it must
+// neither block others nor be blocked here — its own write path fails it. Only well-formed paths
+// participate in overlap detection.
+func losesPathConflict(target, existing *configbutleraiv1alpha3.GitTarget, providerNS string) (bool, string) {
+	if !git.IsValidTargetPath(target.Spec.Path) ||
+		!git.IsValidTargetPath(existing.Spec.Path) ||
+		!gitTargetPathsOverlap(target.Spec.Path, existing.Spec.Path) ||
+		!gitTargetLosesConflict(target, existing) {
+		return false, ""
+	}
+	if normalizeGitTargetPath(target.Spec.Path) == normalizeGitTargetPath(existing.Spec.Path) {
+		return true, fmt.Sprintf(
+			"Conflict detected. Another GitTarget '%s/%s' (created at %s) is already using GitProvider '%s/%s', branch '%s', path '%s'. This GitTarget was created later and will not be processed.",
+			existing.Namespace,
+			existing.Name,
+			existing.CreationTimestamp.Format(time.RFC3339),
+			providerNS,
+			target.Spec.GitProviderRef.Name,
+			target.Spec.Branch,
+			target.Spec.Path,
+		)
+	}
+	return true, fmt.Sprintf(
+		"Conflict detected. This GitTarget's path '%s' overlaps the path '%s' of GitTarget '%s/%s' (created at %s) on GitProvider '%s/%s', branch '%s' — one path nests inside the other (sibling paths are allowed). This GitTarget was created later and will not be processed.",
+		target.Spec.Path,
+		existing.Spec.Path,
+		existing.Namespace,
+		existing.Name,
+		existing.CreationTimestamp.Format(time.RFC3339),
+		providerNS,
+		target.Spec.GitProviderRef.Name,
+		target.Spec.Branch,
+	)
+}
+
+// losesParentBranchConflict reports whether target loses to existing, on the same write branch,
+// because the two name different parent branches. One branch worker owns one checkout per write
+// branch, so every target on it has to agree on where the branch starts. Compared as written, with
+// omitted as its own value: the answer needs no remote round trip and cannot flip when somebody
+// changes the remote's default branch.
+func losesParentBranchConflict(target, existing *configbutleraiv1alpha3.GitTarget, providerNS string) (bool, string) {
+	if existing.Spec.ParentBranch == target.Spec.ParentBranch || !gitTargetLosesConflict(target, existing) {
+		return false, ""
+	}
+	return true, parentBranchConflictMessage(target, existing, providerNS)
+}
+
+// parentBranchConflictMessage explains a TargetConflict over spec.parentBranch.
+func parentBranchConflictMessage(target, existing *configbutleraiv1alpha3.GitTarget, providerNS string) string {
+	return fmt.Sprintf(
+		"Conflict detected. GitTarget '%s/%s' (created at %s) writes GitProvider '%s/%s', branch '%s' with parent "+
+			"branch %s, and this GitTarget names parent branch %s. All GitTargets on one branch must name the same "+
+			"parent branch. This GitTarget was created later and will not be processed.",
+		existing.Namespace, existing.Name, existing.CreationTimestamp.Format(time.RFC3339),
+		providerNS, target.Spec.GitProviderRef.Name, target.Spec.Branch,
+		describeParentBranch(existing.Spec.ParentBranch), describeParentBranch(target.Spec.ParentBranch),
+	)
+}
+
+func describeParentBranch(name string) string {
+	if name == "" {
+		return "(omitted: the remote's default branch)"
+	}
+	return "'" + name + "'"
 }
 
 func (r *GitTargetReconciler) ensureEncryptionSecret(
@@ -1359,6 +1465,7 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// condition gauge is released on the same terms and for a sharper reason: a condition series
 	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
+	r.snapshotRequests.forget(gitDest)
 	// Same terms: the publication ledger is this reconciler's memory of what the object's status
 	// said, and an entry that outlives the object is a rate limit held against a name that may be
 	// recreated tomorrow with nothing published.

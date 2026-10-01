@@ -142,6 +142,9 @@ type PullReport struct {
 	ExistsOnRemote  bool // Branch exists on remote
 	HEAD            BranchInfo
 	IncomingChanges bool // SHA changed, requiring resource-level reconcile
+	// ParentBranch is the branch checked out instead, when the target branch is absent: the parent
+	// it would be created from. HEAD.Sha is then the parent's commit. Empty otherwise.
+	ParentBranch string
 }
 
 // BranchKey uniquely identifies a (GitProvider, Branch) combination.
@@ -405,6 +408,9 @@ type WorkItem struct {
 	// Refresh asks the worker to re-prove where its branch is on the remote. It is the only
 	// work item that never writes anything: see RefreshRequest.
 	Refresh *RefreshRequest
+	// Withdraw cancels a CommitRequest the worker has not acted on yet. It rides the same FIFO as
+	// the attach, so it is always handled after every attach sent before it.
+	Withdraw *AttachCommitRequest
 }
 
 // ResyncScope restricts a resync's mark-and-sweep to the slice of the mirror the desired
