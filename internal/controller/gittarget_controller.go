@@ -283,7 +283,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
-	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS),
+	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
 		refs.gitProvider, refs.clusterProvider, refs.sourceCluster)
 	st.applyReadiness(rd)
 
@@ -817,17 +817,20 @@ func gitTargetReadinessGates(
 //
 // It is read from the branch worker's remote observation, so it costs no round trip and holds
 // with periodic refresh disabled: every fetch on the write path records the same observation.
-// An omitted parent is never missing; it falls back to the remote's default branch.
+// An omitted parent is never missing; it falls back to the remote's default branch. An
+// observation proved against another repository than the one the GitProvider names now (a
+// repoint) says nothing about this one.
 func (r *GitTargetReconciler) parentBranchReadiness(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
+	repo git.RepoIdentity,
 ) conditionValue {
 	ok := conditionValue{Status: metav1.ConditionTrue, Reason: GitTargetReasonOK}
 	if target.Spec.ParentBranch == "" {
 		return ok
 	}
 	observed, seen := r.observeRemote(target, providerNS)
-	if !seen || observed.MissingParent != target.Spec.ParentBranch {
+	if !seen || observed.MissingParent != target.Spec.ParentBranch || differentRepository(observed.Repo, repo) {
 		return ok
 	}
 	return conditionValue{
@@ -1127,13 +1130,6 @@ func (r *GitTargetReconciler) checkForConflicts(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) (bool, string, string, error) {
-	// A path the writer would reject (absolute, backslashes, ".." traversal) owns
-	// nothing, so it must neither block others nor be blocked here — its own write
-	// path fails it. Only well-formed paths participate in overlap detection.
-	if !git.IsValidTargetPath(target.Spec.Path) {
-		return false, "", "", nil
-	}
-
 	var allTargets configbutleraiv1alpha3.GitTargetList
 	if err := r.List(ctx, &allTargets); err != nil {
 		return false, "", "", fmt.Errorf("list GitTargets for conflict validation: %w", err)
@@ -1150,6 +1146,8 @@ func (r *GitTargetReconciler) checkForConflicts(
 		if existing.Spec.Branch != target.Spec.Branch {
 			continue
 		}
+		// Checked whatever either path looks like: a target with a path its writer will reject
+		// still wires the shared worker, and would set its parent.
 		if lost, msg := losesParentBranchConflict(target, existing, providerNS); lost {
 			return true, msg, GitTargetReasonTargetConflict, nil
 		}
@@ -1168,8 +1166,13 @@ func (r *GitTargetReconciler) checkForConflicts(
 // their paths are equal or nested. Two such targets fight over which documents each one owns. The
 // later-created target loses (ties broken deterministically by identity) so every materialized
 // folder keeps exactly one owner.
+//
+// A path the writer would reject (absolute, backslashes, ".." traversal) owns nothing, so it must
+// neither block others nor be blocked here — its own write path fails it. Only well-formed paths
+// participate in overlap detection.
 func losesPathConflict(target, existing *configbutleraiv1alpha3.GitTarget, providerNS string) (bool, string) {
-	if !git.IsValidTargetPath(existing.Spec.Path) ||
+	if !git.IsValidTargetPath(target.Spec.Path) ||
+		!git.IsValidTargetPath(existing.Spec.Path) ||
 		!gitTargetPathsOverlap(target.Spec.Path, existing.Spec.Path) ||
 		!gitTargetLosesConflict(target, existing) {
 		return false, ""

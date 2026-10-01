@@ -141,7 +141,7 @@ func TestParentBranchReadiness(t *testing.T) {
 	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
 	target := parentBranchTarget("apps", "edits", "apps", "release", time.Now())
 
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop").Status,
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status,
 		"nothing has looked yet")
 
 	_, err := r.ensureEventStream(context.Background(), target, "shop", repo, logr.Discard())
@@ -149,7 +149,7 @@ func TestParentBranchReadiness(t *testing.T) {
 	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
 	worker.RecordMissingParentForTest("release")
 
-	got := r.parentBranchReadiness(target, "shop")
+	got := r.parentBranchReadiness(target, "shop", repo)
 	assert.Equal(t, metav1.ConditionFalse, got.Status)
 	assert.Equal(t, GitTargetReasonParentBranchNotFound, got.Reason)
 	assert.Contains(t, got.Message, "'release'")
@@ -165,10 +165,10 @@ func TestParentBranchReadiness(t *testing.T) {
 	assert.Equal(t, GitTargetReasonParentBranchNotFound, trio.Ready.Reason)
 
 	target.Spec.ParentBranch = "other"
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop").Status,
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status,
 		"the observation is about another parent")
 	target.Spec.ParentBranch = ""
-	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop").Status)
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status)
 }
 
 func TestReadyReasonIs(t *testing.T) {
@@ -177,4 +177,50 @@ func TestReadyReasonIs(t *testing.T) {
 	assert.True(t, readyReasonIs(conditions, GitTargetReasonParentBranchNotFound))
 	assert.False(t, readyReasonIs(conditions, GitTargetReasonTargetConflict))
 	assert.False(t, readyReasonIs(nil, GitTargetReasonParentBranchNotFound))
+}
+
+// TestCheckForConflicts_ParentBranchAppliesToInvalidPaths: a target whose path its writer will
+// reject still wires the shared worker, so it must not escape the parent check in either role and
+// repoint the healthy sibling's parent.
+func TestCheckForConflicts_ParentBranchAppliesToInvalidPaths(t *testing.T) {
+	earlier := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	healthy := parentBranchTarget("first", "edits", "apps/a", "main", earlier)
+	invalid := parentBranchTarget("second", "edits", "../bad", "release", earlier.Add(time.Hour))
+
+	r, workers := startParentBranchWorkers(t)
+	require.NoError(t, r.Client.Create(context.Background(), healthy))
+	_, err := r.ensureEventStream(context.Background(), healthy, "shop", firstRepo, logr.Discard())
+	require.NoError(t, err)
+
+	conflict, _, reason, err := r.checkForConflicts(context.Background(), invalid, "shop")
+	require.NoError(t, err)
+	assert.True(t, conflict, "an invalid path must not bypass the parent conflict")
+	assert.Equal(t, GitTargetReasonTargetConflict, reason)
+	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
+	assert.Equal(t, "main", worker.ParentBranch())
+
+	// And as the earlier object, the invalid target still wins the parent.
+	k8sClient := fake.NewClientBuilder().WithScheme(parentBranchScheme(t)).
+		WithObjects(parentBranchTarget("older", "edits", "../bad", "release", earlier)).Build()
+	conflict, _, _, err = (&GitTargetReconciler{Client: k8sClient}).checkForConflicts(
+		context.Background(), parentBranchTarget("newer", "edits", "apps/a", "main", earlier.Add(time.Hour)), "shop")
+	require.NoError(t, err)
+	assert.True(t, conflict)
+}
+
+// TestParentBranchReadiness_IgnoresAnotherRepository: the manager keeps a branch's observation across
+// a repoint, and a missing parent in the old repository says nothing about the new one.
+func TestParentBranchReadiness_IgnoresAnotherRepository(t *testing.T) {
+	r, workers := startParentBranchWorkers(t)
+	target := parentBranchTarget("apps", "edits", "apps", "release", time.Now())
+	_, err := r.ensureEventStream(context.Background(), target, "shop", firstRepo, logr.Discard())
+	require.NoError(t, err)
+	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
+	worker.RecordMissingParentForTest("release")
+	require.Equal(t, metav1.ConditionFalse, r.parentBranchReadiness(target, "shop", firstRepo).Status)
+
+	_, err = r.ensureEventStream(context.Background(), target, "shop", secondRepo, logr.Discard())
+	require.NoError(t, err)
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", secondRepo).Status,
+		"the old repository's missing parent is not evidence about the replacement")
 }

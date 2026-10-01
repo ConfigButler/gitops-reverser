@@ -223,3 +223,37 @@ func TestBranchWorker_SetParentBranchInvalidatesTheBase(t *testing.T) {
 	assert.Equal(t, "release", f.worker.ParentBranch())
 	assert.False(t, f.worker.baseTrusted(), "the checkout holds the old parent")
 }
+
+// TestBranchWorker_AParentChangeRebuildsRetainedWrites: writes retained during the push cooldown
+// were planned against the old parent, and an invalidated base does not reach them. The change is
+// taken by the event loop, which refetches and replays before the next commit or push, so the
+// branch starts on the new parent, or is not created at all when the new parent is missing.
+func TestBranchWorker_AParentChangeRebuildsRetainedWrites(t *testing.T) {
+	for _, parent := range []string{"release", "missing"} {
+		t.Run(parent, func(t *testing.T) {
+			f := newNewBranchFixture(t, map[string]string{cmFile("cm1"): cmDocument("cm1")})
+			release := f.pushToRelease("RELEASE.md", "release\n")
+			f.warmOnParent()
+			loop := newBranchWorkerEventLoop(f.worker, 0)
+			defer loop.stopTimers()
+
+			loop.lastPushAt = time.Now()
+			liveWrite(loop, "cm1")
+			require.Len(t, loop.pendingWrites, 1)
+			require.True(t, loop.pendingWrites[0].CommitSHA.IsZero(), "a no-op is retained during the cooldown")
+
+			require.True(t, f.worker.SetParentBranch(parent))
+			liveWrite(loop, "cm2")
+			loop.pushPending()
+
+			tip, exists := f.featureOnRemote()
+			if parent == "missing" {
+				assert.False(t, exists, "a missing configured parent prevents branch creation")
+				assert.NotEmpty(t, loop.pendingWrites, "and the retained work is kept")
+				return
+			}
+			require.True(t, exists)
+			assert.Equal(t, release, f.commitParent(tip), "the first push uses the configured parent")
+		})
+	}
+}

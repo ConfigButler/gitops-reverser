@@ -242,6 +242,10 @@ type BranchWorker struct {
 	// does not carry is created from. Empty means the remote's default branch. It is set by the
 	// reconcile and read by the event loop, hence atomic.
 	parentBranchName atomic.Pointer[string]
+	// parentChangedState is raised by SetParentBranch and consumed by the event loop: writes it
+	// retains were planned against the old parent, and invalidating base trust alone does not
+	// reach them (ensureBaseForCycle ignores trust while writes are retained).
+	parentChangedState atomic.Bool
 
 	// firsts surfaces the first successful commit and push at default verbosity.
 	firsts branchWorkerLogFirsts
@@ -1407,6 +1411,9 @@ func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 // The case only arises with retained work. With nothing retained, commitPendingWrites' own guard
 // resets for us, and it can do that safely because there is nothing to lose.
 func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
+	// Taken first, so a change that found nothing retained does not linger: with nothing retained
+	// the invalidated base makes the next cycle fetch the new parent anyway.
+	parentChanged := l.w.parentChangedState.Swap(false)
 	if len(l.pendingWrites) == 0 {
 		// Nothing is retained, so there is nothing a stale replay could strand. A replay only
 		// ever marks itself required while writes are retained, but clear it here too so the flag
@@ -1415,14 +1422,15 @@ func (l *branchWorkerEventLoop) recoverRetainedWrites() error {
 		return nil
 	}
 	dirty, needsReplay := l.w.worktreeDirty(), l.w.replayRequired()
-	if !dirty && !needsReplay {
+	if !dirty && !needsReplay && !parentChanged {
 		return nil
 	}
 
 	l.w.Log.Info("Rebuilding retained writes onto the remote tip",
 		"pendingWrites", len(l.pendingWrites),
 		"worktreeDirty", dirty,
-		"replayRequired", needsReplay)
+		"replayRequired", needsReplay,
+		"parentBranchChanged", parentChanged)
 	// fetchReasonRecovery, the same series the no-retained-writes case records in
 	// ensureBaseForCycle: this is one event, and which half of it an operator sees must not depend
 	// on whether a push happened to be in cooldown at the time.
@@ -2367,6 +2375,7 @@ func (w *BranchWorker) SetParentBranch(name string) bool {
 	}
 	w.parentBranchName.Store(&name)
 	w.invalidateBase("parent branch changed")
+	w.parentChangedState.Store(true)
 	return true
 }
 
