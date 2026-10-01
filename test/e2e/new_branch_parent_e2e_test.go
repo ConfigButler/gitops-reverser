@@ -181,6 +181,7 @@ spec:
 		By("status.remote names the parent the write branch would be created from")
 		Eventually(func(g Gomega) {
 			g.Expect(gitTargetRemoteField(g, destName, testNs, "commit")).To(BeEmpty(), "the write branch is absent")
+			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.state")).To(Equal("Found"))
 			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.branch")).To(Equal(parent),
 				"with spec.parentBranch omitted this is the default branch the remote resolved")
 			g.Expect(gitTargetRemoteField(g, destName, testNs, "parent.commit")).To(Equal(hashA))

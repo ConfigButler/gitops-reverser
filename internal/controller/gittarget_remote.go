@@ -213,12 +213,13 @@ func remoteStatusIsNews(published, next *configbutleraiv1alpha3.GitTargetRemoteS
 }
 
 // parentStatusOf is the parent stanza of status.remote: present only while the observation found
-// the write branch absent and named a parent to create it from.
+// the write branch absent, which is when it says what the branch would be created from.
 func parentStatusOf(observed git.RemoteObservation) *configbutleraiv1alpha3.GitTargetParentStatus {
-	if observed.Commit != "" || observed.ParentBranch == "" {
+	if observed.Commit != "" || observed.ParentState == "" {
 		return nil
 	}
 	return &configbutleraiv1alpha3.GitTargetParentStatus{
+		State:  configbutleraiv1alpha3.GitTargetParentState(observed.ParentState),
 		Branch: observed.ParentBranch,
 		Commit: observed.ParentCommit,
 	}

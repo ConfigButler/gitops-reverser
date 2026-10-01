@@ -228,14 +228,18 @@ func TestParentBranchReadiness_IgnoresAnotherRepository(t *testing.T) {
 // TestParentStatusOf: status.remote.parent is present only while the write branch is absent and
 // a parent was named, and a moved parent is news even when the write branch is still absent.
 func TestParentStatusOf(t *testing.T) {
-	absent := git.RemoteObservation{ParentBranch: "main", ParentCommit: "aaaa"}
-	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{Branch: "main", Commit: "aaaa"},
-		parentStatusOf(absent))
-	assert.Nil(t, parentStatusOf(git.RemoteObservation{Commit: "bbbb", ParentBranch: "main"}),
+	absent := git.RemoteObservation{ParentState: git.ParentFound, ParentBranch: "main", ParentCommit: "aaaa"}
+	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{
+		State: configbutleraiv1alpha3.GitTargetParentFound, Branch: "main", Commit: "aaaa",
+	}, parentStatusOf(absent))
+	assert.Nil(t, parentStatusOf(git.RemoteObservation{Commit: "bbbb"}),
 		"an existing write branch does not follow its parent")
-	assert.Nil(t, parentStatusOf(git.RemoteObservation{}), "an empty repository has no parent")
-	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{Branch: "release"},
-		parentStatusOf(git.RemoteObservation{ParentBranch: "release", MissingParent: "release"}),
+	assert.Nil(t, parentStatusOf(git.RemoteObservation{}), "an observation that names no parent state")
+	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{State: configbutleraiv1alpha3.GitTargetParentUnborn},
+		parentStatusOf(git.RemoteObservation{ParentState: git.ParentUnborn}), "an empty repository")
+	assert.Equal(t, &configbutleraiv1alpha3.GitTargetParentStatus{
+		State: configbutleraiv1alpha3.GitTargetParentMissing, Branch: "release",
+	}, parentStatusOf(git.RemoteObservation{ParentState: git.ParentMissing, ParentBranch: "release"}),
 		"a missing parent is named with no commit")
 
 	at := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))

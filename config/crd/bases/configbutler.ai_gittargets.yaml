@@ -708,16 +708,25 @@ spec:
                       branch:
                         description: |-
                           Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
-                          that is omitted.
+                          that is omitted. Empty when State is Unborn.
                         type: string
                       commit:
                         description: |-
                           Commit is the commit hash the parent branch is at on the remote: the commit the write
-                          branch's first commit would build on. EMPTY means the parent branch is not on the remote;
-                          the GitTarget then reports ParentBranchNotFound.
+                          branch's first commit would build on. Set only when State is Found.
+                        type: string
+                      state:
+                        description: |-
+                          State is what the write branch would be created from: Found (the parent's tip), Missing
+                          (spec.parentBranch is not on the remote; nothing is written) or Unborn (an empty repository
+                          and no parent configured; the first commit has no history).
+                        enum:
+                        - Found
+                        - Missing
+                        - Unborn
                         type: string
                     required:
-                    - branch
+                    - state
                     type: object
                   verifiedBy:
                     description: |-

@@ -777,9 +777,9 @@ spec:
 - `parentBranch` is immutable, including adding or removing it: delete and recreate the target to
   change it, which loses nothing because the destination is unchanged. It is only read, so it does
   not need to be in `allowedBranches`.
-- While the write branch is absent, `status.remote.parent` shows the parent and the commit the
-  first commit would build on. With `parentBranch` omitted, that is how you see which default branch
-  the remote resolved.
+- While the write branch is absent, `status.remote.parent` shows the parent, whether it was
+  `Found`, `Missing` or `Unborn`, and the commit the first commit would build on. With
+  `parentBranch` omitted, that is how you see which default branch the remote resolved.
 - All `GitTarget` objects on one `GitProvider` and branch must name the same parent branch; omitted
   counts as its own value. The later-created one reports `TargetConflict`.
 
@@ -899,8 +899,9 @@ status:
     lastVerifiedAt: "2026-09-23T10:14:02Z"
     verifiedBy: Push                    # Push | Fetch
     parent:                             # only while the branch is not on the remote
+      state: Found                      # Found | Missing | Unborn
       branch: main                      # spec.parentBranch, or the remote's default branch
-      commit: 9a1e07c3d2...             # empty = the parent is not on the remote either
+      commit: 9a1e07c3d2...             # set only when Found
 ```
 
 - `commit` is where the branch is. Empty means the branch is not on the remote at all, which is
@@ -912,8 +913,11 @@ status:
   commit is Reverser's own work. `Fetch` means it went and looked, and this is what was there.
   A `Fetch` beside a commit none of your publications produced is how a **foreign push** to the
   branch is read off `kubectl`.
-- `parent` appears only while the branch is not on the remote: it names what the branch would be
-  created from and where that was, observed together with the branch's absence. See
+- `parent` appears only while the branch is not on the remote: it says what the branch would be
+  created from, observed together with the branch's absence. `state` is `Found` (the first commit
+  builds on `commit`, the parent's tip), `Missing` (`spec.parentBranch` is not on the remote
+  either; the target reports `ParentBranchNotFound` and writes nothing) or `Unborn` (an empty
+  repository and no parent configured; the first commit starts the branch with no history). See
   [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
 
 `kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.

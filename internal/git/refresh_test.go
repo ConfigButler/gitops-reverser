@@ -680,7 +680,8 @@ func TestRefresh_ReportsAMissingConfiguredParent(t *testing.T) {
 	assert.Zero(t, fetchCount(t, reader, h.worker, fetchReasonRefresh))
 	require.NotEmpty(t, h.reported)
 	last := h.reported[len(h.reported)-1]
-	assert.Equal(t, "release", last.MissingParent)
+	assert.Equal(t, ParentMissing, last.ParentState)
+	assert.Equal(t, "release", last.ParentBranch)
 	assert.Empty(t, last.Commit)
 }
 
@@ -694,6 +695,7 @@ func TestRefresh_ObservesTheParentOfAnAbsentBranch(t *testing.T) {
 	require.NotEmpty(t, h.reported)
 	last := h.reported[len(h.reported)-1]
 	assert.Empty(t, last.Commit)
+	assert.Equal(t, ParentFound, last.ParentState)
 	assert.Equal(t, "main", last.ParentBranch, "an omitted parent is the branch the remote's HEAD names")
 	assert.Equal(t, revParseMain(t, h.repoDir), last.ParentCommit)
 }

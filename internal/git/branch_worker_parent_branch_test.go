@@ -130,7 +130,7 @@ func TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists(t *testi
 	assert.False(t, onRemote, "no orphan branch")
 	observed, known := f.worker.LastRemoteObservation()
 	require.True(t, known)
-	assert.Equal(t, "release", observed.MissingParent)
+	assert.Equal(t, ParentMissing, observed.ParentState)
 
 	r1 := f.pushToRelease("RELEASE.md", "now it exists\n")
 	liveWrite(loop, "cm2")
@@ -139,7 +139,7 @@ func TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists(t *testi
 	require.True(t, onRemote, "it recovers once the parent exists")
 	assert.Equal(t, r1, f.commitParent(tip))
 	observed, _ = f.worker.LastRemoteObservation()
-	assert.Empty(t, observed.MissingParent)
+	assert.Empty(t, observed.ParentState, "the write branch exists, so no parent is reported")
 }
 
 // TestBranchWorker_ParentBranchEqualToTheWriteBranch: legal when the branch exists, and then it is
@@ -169,7 +169,8 @@ func TestBranchWorker_ParentBranchEqualToTheWriteBranch(t *testing.T) {
 		_, onRemote := f.featureOnRemote()
 		assert.False(t, onRemote)
 		observed, _ := f.worker.LastRemoteObservation()
-		assert.Equal(t, "feature", observed.MissingParent)
+		assert.Equal(t, ParentMissing, observed.ParentState)
+		assert.Equal(t, "feature", observed.ParentBranch)
 	})
 
 	t.Run("an empty repository", func(t *testing.T) {
@@ -276,8 +277,19 @@ func TestBranchWorker_ObservesTheParentOfAnAbsentBranch(t *testing.T) {
 		o := observed(f)
 		assert.Equal(t, ObservedByFetch, o.By)
 		assert.Empty(t, o.Commit)
+		assert.Equal(t, ParentFound, o.ParentState)
 		assert.Equal(t, "main", o.ParentBranch)
 		assert.Equal(t, hashA.String(), o.ParentCommit)
+	})
+
+	t.Run("an empty repository is unborn", func(t *testing.T) {
+		worker, _, _ := setupCommitPushSplitWorkerOnEmptyRemote(t)
+		require.NoError(t, worker.ensureRepositoryInitialized(worker.ctx))
+		o, known := worker.LastRemoteObservation()
+		require.True(t, known)
+		assert.Equal(t, ParentUnborn, o.ParentState)
+		assert.Empty(t, o.ParentBranch)
+		assert.Empty(t, o.ParentCommit)
 	})
 
 	t.Run("a push that leaves the branch absent confirms the parent", func(t *testing.T) {
@@ -310,13 +322,13 @@ func TestBranchWorker_ObservesTheParentOfAnAbsentBranch(t *testing.T) {
 		o := observed(f)
 		assert.Equal(t, "release", o.ParentBranch)
 		assert.Empty(t, o.ParentCommit, "the parent is not on the remote")
-		assert.Equal(t, "release", o.MissingParent)
+		assert.Equal(t, ParentMissing, o.ParentState)
 
 		r1 := f.pushToRelease("RELEASE.md", "release\n")
 		require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 		o = observed(f)
 		assert.Equal(t, "release", o.ParentBranch)
 		assert.Equal(t, r1.String(), o.ParentCommit)
-		assert.Empty(t, o.MissingParent)
+		assert.Equal(t, ParentFound, o.ParentState)
 	})
 }

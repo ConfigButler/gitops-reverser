@@ -830,7 +830,8 @@ func (r *GitTargetReconciler) parentBranchReadiness(
 		return ok
 	}
 	observed, seen := r.observeRemote(target, providerNS)
-	if !seen || observed.MissingParent != target.Spec.ParentBranch || differentRepository(observed.Repo, repo) {
+	if !seen || observed.ParentState != git.ParentMissing || observed.ParentBranch != target.Spec.ParentBranch ||
+		differentRepository(observed.Repo, repo) {
 		return ok
 	}
 	return conditionValue{

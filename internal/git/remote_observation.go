@@ -50,15 +50,28 @@ type RemoteObservation struct {
 	// It is zero for a worker that has no identity of its own: the CLI, and tests that never reach
 	// a remote. A comparison against an unknown identity proves nothing, so it is not made.
 	Repo RepoIdentity
-	// MissingParent names the configured parent branch when the remote carries neither it nor the
-	// branch, so the branch cannot be created. Empty otherwise, including for an omitted parent.
-	MissingParent string
-	// ParentBranch and ParentCommit are the parent an absent branch would be created from, and
-	// where it was, observed together with the branch's absence. Both are empty while the branch
-	// exists, and for an empty repository. ParentCommit is empty when the parent is missing.
+	// ParentState is what the remote offers an absent branch to be created from, observed
+	// together with its absence. Empty while the branch exists.
+	ParentState ParentState
+	// ParentBranch and ParentCommit name that parent and where it is. ParentCommit is empty
+	// unless ParentState is ParentFound; ParentBranch is empty for ParentUnborn.
 	ParentBranch string
 	ParentCommit string
 }
+
+// ParentState is what a branch the remote does not carry would be created from.
+type ParentState string
+
+const (
+	// ParentFound means the parent branch exists, and the branch's first commit builds on its tip.
+	ParentFound ParentState = "Found"
+	// ParentMissing means the configured parent branch is not on the remote either, so the branch
+	// cannot be created and nothing is written until one of them exists.
+	ParentMissing ParentState = "Missing"
+	// ParentUnborn means the repository offers no branch to start from (it is empty) and none was
+	// configured, so the first commit starts the branch with no history.
+	ParentUnborn ParentState = "Unborn"
+)
 
 // Age is how long ago the observation was made, against now.
 func (o RemoteObservation) Age(now time.Time) time.Duration { return now.Sub(o.At) }

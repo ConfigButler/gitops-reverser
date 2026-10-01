@@ -2784,25 +2784,34 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 // accepted — because both prove the same kind of fact. An error path must NOT call it: a push
 // that died mid-upload or an advertisement that never arrived observed nothing, and recording a
 // guess there is how a stale revision reaches status.
+//
+// An empty revision is a branch the remote does not carry, observed without a parent to name: an
+// empty repository, which leaves the first commit unborn.
 func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) {
+	if revision == "" {
+		w.recordAbsentBranch("", "", by)
+		return
+	}
 	w.publishObservation(RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo})
 }
 
 // recordMissingParent records that the write branch is absent and its configured parent is too.
 func (w *BranchWorker) recordMissingParent(parent string, by ObservationSource) {
 	w.publishObservation(RemoteObservation{
-		At: time.Now(), By: by, Repo: w.repo, MissingParent: parent, ParentBranch: parent,
+		At: time.Now(), By: by, Repo: w.repo, ParentState: ParentMissing, ParentBranch: parent,
 	})
 }
 
 // recordAbsentBranch records that the write branch is absent, and where the parent it would be
 // created from is. An empty parent is an empty repository, which has none.
 func (w *BranchWorker) recordAbsentBranch(parentBranch, parentCommit string, by ObservationSource) {
+	state := ParentFound
 	if parentBranch == "" {
-		parentCommit = ""
+		state, parentCommit = ParentUnborn, ""
 	}
 	w.publishObservation(RemoteObservation{
-		At: time.Now(), By: by, Repo: w.repo, ParentBranch: parentBranch, ParentCommit: parentCommit,
+		At: time.Now(), By: by, Repo: w.repo,
+		ParentState: state, ParentBranch: parentBranch, ParentCommit: parentCommit,
 	})
 }
 
