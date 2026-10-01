@@ -492,24 +492,26 @@ type GitTargetParentState string
 const (
 	// GitTargetParentFound means the parent branch exists; the first commit builds on its tip.
 	GitTargetParentFound GitTargetParentState = "Found"
-	// GitTargetParentMissing means spec.parentBranch is not on the remote either, so the write branch
-	// cannot be created; the GitTarget reports ParentBranchNotFound.
+	// GitTargetParentMissing means the parent is not on the remote either, so the write branch
+	// cannot be created; the GitTarget reports ParentBranchNotFound. The parent is spec.parentBranch,
+	// or, when that is omitted, the default branch of a repository that is not empty but whose HEAD
+	// names no branch it carries.
 	GitTargetParentMissing GitTargetParentState = "Missing"
-	// GitTargetParentUnborn means the repository is empty and no parent is configured, so the first
-	// commit starts the write branch with no history.
+	// GitTargetParentUnborn means the repository is empty, with no refs at all (tags included), and
+	// no parent is configured, so the first commit starts the write branch with no history.
 	GitTargetParentUnborn GitTargetParentState = "Unborn"
 )
 
 // GitTargetParentStatus is the parent branch of a write branch that does not exist yet.
 type GitTargetParentStatus struct {
 	// State is what the write branch would be created from: Found (the parent's tip), Missing
-	// (spec.parentBranch is not on the remote; nothing is written) or Unborn (an empty repository
-	// and no parent configured; the first commit has no history).
+	// (the parent is not on the remote; nothing is written) or Unborn (an empty repository, with no
+	// refs at all, and no parent configured; the first commit has no history).
 	// +required
 	State GitTargetParentState `json:"state"`
 
 	// Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
-	// that is omitted. Empty when State is Unborn.
+	// that is omitted. Empty when State is Unborn, and when the remote names no default branch.
 	// +optional
 	Branch string `json:"branch,omitempty"`
 

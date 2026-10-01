@@ -708,7 +708,7 @@ spec:
                       branch:
                         description: |-
                           Branch is the parent branch: spec.parentBranch, or the branch the remote's HEAD names when
-                          that is omitted. Empty when State is Unborn.
+                          that is omitted. Empty when State is Unborn, and when the remote names no default branch.
                         type: string
                       commit:
                         description: |-
@@ -718,8 +718,8 @@ spec:
                       state:
                         description: |-
                           State is what the write branch would be created from: Found (the parent's tip), Missing
-                          (spec.parentBranch is not on the remote; nothing is written) or Unborn (an empty repository
-                          and no parent configured; the first commit has no history).
+                          (the parent is not on the remote; nothing is written) or Unborn (an empty repository, with no
+                          refs at all, and no parent configured; the first commit has no history).
                         enum:
                         - Found
                         - Missing

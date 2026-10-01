@@ -104,6 +104,22 @@ type RemoteMovedError struct {
 	Missing bool
 }
 
+// RepositoryNotEmptyError reports a push planned against an empty repository that is no longer
+// empty: the cycle's root is the zero hash, the write branch is not advertised, and the
+// advertisement carries other refs. Creating the branch now would make an orphan beside them, so
+// the push is refused and the worker replays onto what discovery finds.
+//
+// It is its own type rather than a RemoteMovedError, whose Branch and Advertised mean "the root,
+// compared": filling them with another branch's hash would make them lie.
+type RepositoryNotEmptyError struct {
+	// Refs is how many hash refs the advertisement carried.
+	Refs int
+}
+
+func (e *RepositoryNotEmptyError) Error() string {
+	return fmt.Sprintf("the repository is no longer empty: the advertisement carries %d refs", e.Refs)
+}
+
 func (e *RemoteMovedError) Error() string {
 	if e.Missing {
 		// Unchanged from the untyped error this replaces: it is the string in the logs operators
@@ -204,6 +220,13 @@ func validatePushState(
 		return pushPlan{settled: PushUpToDate, head: remoteHash}, nil
 	}
 
+	if rootHash.IsZero() && !found {
+		if n := countHashRefs(refs); n > 0 {
+			logger.Info("Planned against an empty repository that has gained refs", "branch", branchName, "refs", n)
+			return pushPlan{}, &RepositoryNotEmptyError{Refs: n}
+		}
+	}
+
 	if err := remoteMovedSinceBase(branch, rootBranch, rootHash, refs); err != nil {
 		logger.Info("Remote branch not in expected state", "branch", branchName, "root", rootBranch.Short())
 		return pushPlan{}, err
@@ -220,6 +243,17 @@ func validatePushState(
 	// Old stays zero for a new branch, so the server also refuses it if somebody creates it after
 	// this advertisement.
 	return pushPlan{old: oldHash, new: localHash}, nil
+}
+
+// countHashRefs counts the advertised hash refs other than HEAD; see advertisesNoRefs.
+func countHashRefs(refs map[plumbing.ReferenceName]plumbing.Hash) int {
+	n := 0
+	for name := range refs {
+		if name != plumbing.HEAD {
+			n++
+		}
+	}
+	return n
 }
 
 // nothingToPublish reports, for a branch the remote does not carry, that there is nothing to

@@ -135,7 +135,7 @@ func TestEnsureEventStream_AParentBranchChangeKeepsTheWorker(t *testing.T) {
 }
 
 // TestParentBranchReadiness: a fetch that found neither the write branch nor its configured parent
-// stalls the GitTarget as ParentBranchNotFound. An omitted parent never does.
+// stalls the GitTarget as ParentBranchNotFound, for that parent only.
 func TestParentBranchReadiness(t *testing.T) {
 	r, workers := startParentBranchWorkers(t)
 	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
@@ -169,6 +169,34 @@ func TestParentBranchReadiness(t *testing.T) {
 		"the observation is about another parent")
 	target.Spec.ParentBranch = ""
 	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status)
+}
+
+// TestParentBranchReadiness_AnOmittedParentCanStall: with spec.parentBranch omitted, a remote that
+// is not empty but whose default branch does not resolve stalls the target too, with a message
+// that names what to fix. An observation made under a configured parent says nothing about it.
+func TestParentBranchReadiness_AnOmittedParentCanStall(t *testing.T) {
+	r, workers := startParentBranchWorkers(t)
+	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
+	target := parentBranchTarget("apps", "edits", "apps", "", time.Now())
+	_, err := r.ensureEventStream(context.Background(), target, "shop", repo, logr.Discard())
+	require.NoError(t, err)
+	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
+
+	worker.RecordUnresolvedDefaultBranchForTest("master")
+	got := r.parentBranchReadiness(target, "shop", repo)
+	assert.Equal(t, metav1.ConditionFalse, got.Status)
+	assert.Equal(t, GitTargetReasonParentBranchNotFound, got.Reason)
+	assert.Contains(t, got.Message, "HEAD -> 'master'")
+	assert.Contains(t, got.Message, "spec.parentBranch")
+
+	worker.RecordUnresolvedDefaultBranchForTest("")
+	got = r.parentBranchReadiness(target, "shop", repo)
+	assert.Equal(t, GitTargetReasonParentBranchNotFound, got.Reason)
+	assert.Contains(t, got.Message, "no default branch")
+
+	worker.RecordMissingParentForTest("release")
+	assert.Equal(t, metav1.ConditionTrue, r.parentBranchReadiness(target, "shop", repo).Status,
+		"an observation made under a configured parent is about another configuration")
 }
 
 func TestReadyReasonIs(t *testing.T) {

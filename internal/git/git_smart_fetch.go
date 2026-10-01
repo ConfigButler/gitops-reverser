@@ -21,7 +21,8 @@ import (
 // Return values (example with target="refs/heads/feature"):
 // - "refs/heads/feature", nil: Target found on remote, fetched, ready to checkout.
 // - "refs/heads/main", nil:    Target missing on remote, fell back to default branch.
-// - "", nil:                   No valid branches found (empty repo).
+// - "", nil:                   The repository is empty (see advertisesNoRefs).
+// - "", ErrDefaultBranchUnresolved: Not empty, and no default branch to fall back to.
 func SmartFetch(
 	ctx context.Context,
 	repo *git.Repository,
@@ -36,6 +37,59 @@ func SmartFetch(
 // never reported for an omitted parent: that falls back to the remote's default branch, and to
 // an unborn branch in an empty repository.
 var ErrParentBranchNotFound = errors.New("parent branch not found on the remote")
+
+// ErrDefaultBranchUnresolved reports a repository that is not empty but whose default branch does
+// not resolve to a branch it carries, while no parent is configured and the target branch is
+// absent. Starting the target branch there would make an orphan, so it is refused exactly like a
+// missing configured parent. DefaultBranchUnresolvedError names what HEAD points at.
+var ErrDefaultBranchUnresolved = errors.New("the remote's default branch does not resolve to a branch")
+
+// DefaultBranchUnresolvedError is ErrDefaultBranchUnresolved with the evidence: the branch the
+// remote's HEAD names, or empty when the advertisement carries no symbolic HEAD at all.
+//
+// The resolution itself follows go-git. Remote.List rewrites a hash-only HEAD (a server without
+// the symref capability, or a detached HEAD) into a symbolic one before returning: to master when
+// master has that hash, otherwise to the alphabetically first branch that has it. So a HEAD this
+// error reports is one even that heuristic could not place.
+type DefaultBranchUnresolvedError struct {
+	// Head is the short name of the branch HEAD points at; empty when there is no symbolic HEAD.
+	Head string
+}
+
+func (e *DefaultBranchUnresolvedError) Error() string {
+	if e.Head == "" {
+		return "the remote has no default branch"
+	}
+	return fmt.Sprintf("the remote's default branch (HEAD -> %s) does not exist", e.Head)
+}
+
+// Is makes the error match ErrDefaultBranchUnresolved.
+func (e *DefaultBranchUnresolvedError) Is(target error) bool {
+	return target == ErrDefaultBranchUnresolved
+}
+
+// advertisesNoRefs reports an empty repository: an advertisement with no hash refs at all, no
+// branch, no tag, nothing else. A symbolic HEAD pointing at an unborn branch does not count, and a
+// repository with only tags is not empty. This is the one definition discovery, publication and
+// the observation share.
+func advertisesNoRefs(refs []*plumbing.Reference) bool {
+	for _, ref := range refs {
+		if ref.Type() == plumbing.HashReference && ref.Name() != plumbing.HEAD {
+			return false
+		}
+	}
+	return true
+}
+
+// symbolicHeadTarget is the short name of the branch the advertisement's HEAD points at, or empty.
+func symbolicHeadTarget(refs []*plumbing.Reference) string {
+	for _, ref := range refs {
+		if ref.Name() == plumbing.HEAD && ref.Type() == plumbing.SymbolicReference {
+			return ref.Target().Short()
+		}
+	}
+	return ""
+}
 
 // SmartFetchFrom is SmartFetch with an explicit parent: the branch to fall back to when the target
 // branch is absent. Empty means the remote's default branch. A configured parent that is absent is
@@ -107,12 +161,18 @@ func SmartFetchFrom(
 }
 
 // fallbackBranch is the branch to fall back on, and to fetch as the safety net: the configured
-// parent, or the remote's default branch when none is configured. A configured parent the remote
-// does not carry is an error only while the target is absent too.
+// parent, or the remote's default branch when none is configured. A parent the remote does not
+// carry is an error only while the target is absent too: a configured one is
+// ErrParentBranchNotFound, and an unresolved default branch in a repository that is not empty is
+// ErrDefaultBranchUnresolved, because an unborn start there would be an orphan beside the refs it
+// ignored.
 func fallbackBranch(
 	refs []*plumbing.Reference, parent, headFull, headShort string, targetExists bool,
 ) (string, string, error) {
 	if parent == "" {
+		if headFull == "" && !targetExists && !advertisesNoRefs(refs) {
+			return "", "", &DefaultBranchUnresolvedError{Head: symbolicHeadTarget(refs)}
+		}
 		return headFull, headShort, nil
 	}
 	full, short := configuredParent(refs, parent)

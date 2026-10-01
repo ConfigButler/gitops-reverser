@@ -770,8 +770,14 @@ spec:
 
 - An explicit parent must exist when the write branch is created. Otherwise the target reports
   `Ready=False` with reason `ParentBranchNotFound`, writes nothing, and recovers once the branch is
-  pushed. An omitted parent never fails this way, and in an empty repository the first commit
-  starts a branch with no history.
+  pushed.
+- An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
+  refs at all, tags included) the first commit starts a branch with no history. A repository that
+  is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and
+  writes nothing until `HEAD` is fixed or `parentBranch` is set; that never starts an orphan.
+- A detached `HEAD`, or a server that does not say what `HEAD` points at, resolves the way go-git
+  resolves it: to `master` when it is at `HEAD`'s commit, otherwise to the alphabetically first
+  branch that is. Set `parentBranch` when you need certainty rather than that guess.
 - Once the write branch exists, it is used as it is: new commits on the parent do not reach it.
   Delete the write branch after its changes are merged, and the next edit starts a fresh one.
 - `parentBranch` is immutable, including adding or removing it: delete and recreate the target to
@@ -915,9 +921,9 @@ status:
   branch is read off `kubectl`.
 - `parent` appears only while the branch is not on the remote: it says what the branch would be
   created from, observed together with the branch's absence. `state` is `Found` (the first commit
-  builds on `commit`, the parent's tip), `Missing` (`spec.parentBranch` is not on the remote
-  either; the target reports `ParentBranchNotFound` and writes nothing) or `Unborn` (an empty
-  repository and no parent configured; the first commit starts the branch with no history). See
+  builds on `commit`, the parent's tip), `Missing` (the parent is not on the remote either; the
+  target reports `ParentBranchNotFound` and writes nothing) or `Unborn` (an empty repository, with
+  no refs at all, and no parent configured; the first commit starts the branch with no history). See
   [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
 
 `kubectl get gittarget -o wide` shows `lastVerifiedAt` as an age, in the `Verified` column.

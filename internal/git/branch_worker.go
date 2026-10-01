@@ -2252,6 +2252,13 @@ func (w *BranchWorker) remoteMovedDuringPush(
 		moved.Branch == plumbing.NewBranchReferenceName(w.Branch) {
 		return true
 	}
+	// An empty repository gained refs since the cycle was planned on it. The replay's fetch
+	// resolves the new default branch, or refuses, and the rebuild re-plans from the retained
+	// writes instead of reusing the orphan commits.
+	var notEmpty *RepositoryNotEmptyError
+	if errors.As(pushErr, &notEmpty) {
+		return true
+	}
 
 	remoteHash, known := advertisedRootHash(pushErr, rootBranch)
 	if !known {
@@ -2609,8 +2616,12 @@ func (w *BranchWorker) noteFetchParent(parent parentConfig, err error) {
 		w.baseParentGen.Store(parent.gen)
 		return
 	}
-	if errors.Is(err, ErrParentBranchNotFound) {
-		w.recordMissingParent(parent.name, ObservedByFetch)
+	var unresolved *DefaultBranchUnresolvedError
+	switch {
+	case errors.As(err, &unresolved):
+		w.recordMissingParent(parent.name, unresolved.Head)
+	case errors.Is(err, ErrParentBranchNotFound):
+		w.recordMissingParent(parent.name, parent.name)
 	}
 }
 
@@ -2990,10 +3001,14 @@ func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSo
 	w.publishObservation(RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo})
 }
 
-// recordMissingParent records that the write branch is absent and its configured parent is too.
-func (w *BranchWorker) recordMissingParent(parent string, by ObservationSource) {
+// recordMissingParent records that the write branch is absent and so is the parent it would be
+// created from. requested is spec.parentBranch as the observing operation read it (empty for the
+// remote's default branch); branch is the parent that is missing: the configured one, or the
+// branch an unresolved HEAD names. Only a look at the remote can prove it, so it is by Fetch.
+func (w *BranchWorker) recordMissingParent(requested, branch string) {
 	w.publishObservation(RemoteObservation{
-		At: time.Now(), By: by, Repo: w.repo, ParentState: ParentMissing, ParentBranch: parent,
+		At: time.Now(), By: ObservedByFetch, Repo: w.repo,
+		ParentState: ParentMissing, ParentRequested: requested, ParentBranch: branch,
 	})
 }
 
@@ -3177,7 +3192,14 @@ func (w *BranchWorker) SeedRemoteObservationForTest(revision string, at time.Tim
 // RecordMissingParentForTest records the observation a fetch makes when neither the write branch
 // nor its configured parent exists, for tests in another package.
 func (w *BranchWorker) RecordMissingParentForTest(parent string) {
-	w.recordMissingParent(parent, ObservedByFetch)
+	w.recordMissingParent(parent, parent)
+}
+
+// RecordUnresolvedDefaultBranchForTest records the observation a fetch makes when the write branch
+// is absent, no parent is configured, and the remote's HEAD names head, which it does not carry
+// (empty: no HEAD at all), for tests in another package.
+func (w *BranchWorker) RecordUnresolvedDefaultBranchForTest(head string) {
+	w.recordMissingParent("", head)
 }
 
 // BaseTrustedForTest exposes the flag to tests in another package.

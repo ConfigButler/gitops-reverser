@@ -813,34 +813,51 @@ func gitTargetReadinessGates(
 }
 
 // parentBranchReadiness reports whether the write branch can be created: False when the last
-// look at the remote found neither the write branch nor the configured spec.parentBranch.
+// look at the remote found neither the write branch nor the parent it would be created from. That
+// parent is the configured spec.parentBranch, or, when it is omitted, the remote's default branch:
+// a repository that is not empty but whose HEAD names no branch it carries refuses as well, because
+// starting there would make an orphan.
 //
 // It is read from the branch worker's remote observation, so it costs no round trip and holds
-// with periodic refresh disabled: every fetch on the write path records the same observation.
-// An omitted parent is never missing; it falls back to the remote's default branch. An
-// observation proved against another repository than the one the GitProvider names now (a
-// repoint) says nothing about this one.
+// with periodic refresh disabled: every fetch on the write path records the same observation. The
+// observation counts only when it was made under the parent configured now, and only for the
+// repository the GitProvider names now (a repoint proves nothing about the new one).
 func (r *GitTargetReconciler) parentBranchReadiness(
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	repo git.RepoIdentity,
 ) conditionValue {
 	ok := conditionValue{Status: metav1.ConditionTrue, Reason: GitTargetReasonOK}
-	if target.Spec.ParentBranch == "" {
-		return ok
-	}
 	observed, seen := r.observeRemote(target, providerNS)
-	if !seen || observed.ParentState != git.ParentMissing || observed.ParentBranch != target.Spec.ParentBranch ||
-		differentRepository(observed.Repo, repo) {
+	if !seen || observed.ParentState != git.ParentMissing ||
+		observed.ParentRequested != target.Spec.ParentBranch || differentRepository(observed.Repo, repo) {
 		return ok
 	}
 	return conditionValue{
-		Status: metav1.ConditionFalse,
-		Reason: GitTargetReasonParentBranchNotFound,
-		Message: fmt.Sprintf(
+		Status:  metav1.ConditionFalse,
+		Reason:  GitTargetReasonParentBranchNotFound,
+		Message: parentBranchNotFoundMessage(target, observed.ParentBranch),
+	}
+}
+
+// parentBranchNotFoundMessage says which parent is missing and what fixes it.
+func parentBranchNotFoundMessage(target *configbutleraiv1alpha3.GitTarget, missing string) string {
+	switch {
+	case target.Spec.ParentBranch != "":
+		return fmt.Sprintf(
 			"Branch '%s' does not exist on the remote, and neither does its parent branch '%s' to create "+
 				"it from; nothing is written until one of them exists",
-			target.Spec.Branch, target.Spec.ParentBranch),
+			target.Spec.Branch, target.Spec.ParentBranch)
+	case missing != "":
+		return fmt.Sprintf(
+			"Branch '%s' does not exist on the remote, and the remote's default branch (HEAD -> '%s') does "+
+				"not exist either; fix the remote's HEAD or set spec.parentBranch. Nothing is written until then",
+			target.Spec.Branch, missing)
+	default:
+		return fmt.Sprintf(
+			"Branch '%s' does not exist on the remote, and the remote has no default branch to create it "+
+				"from; set the remote's HEAD or spec.parentBranch. Nothing is written until then",
+			target.Spec.Branch)
 	}
 }
 

@@ -258,7 +258,12 @@ func (w *BranchWorker) recordAdvertisement(advertisement remoteAdvertisement, pa
 	}
 	if advertisement.parent.IsZero() {
 		if parentBranch != "" {
-			w.recordMissingParent(parentBranch, ObservedByFetch)
+			w.recordMissingParent(parentBranch, parentBranch)
+			return true
+		}
+		if !advertisement.empty {
+			// Not empty, and its HEAD resolves to no branch: as missing as a configured parent.
+			w.recordMissingParent("", advertisement.parentBranch)
 			return true
 		}
 		w.recordAbsentBranch("", "", ObservedByFetch) // an empty repository: no parent at all
@@ -377,6 +382,8 @@ type remoteAdvertisement struct {
 	parent plumbing.Hash
 	// parentBranch is that parent's short name; empty when the remote's HEAD names no branch.
 	parentBranch string
+	// empty records an advertisement with no hash refs at all: see advertisesNoRefs.
+	empty bool
 }
 
 // advertiseRemoteBranch asks the remote where a branch and its parent are, and transfers nothing
@@ -396,6 +403,7 @@ func advertiseRemoteBranch(
 	if err != nil {
 		return remoteAdvertisement{}, err
 	}
+	empty := advertisesNoRefs(refs)
 	hashes := map[plumbing.ReferenceName]plumbing.Hash{}
 	var defaultBranch plumbing.ReferenceName
 	for _, ref := range refs {
@@ -410,7 +418,7 @@ func advertiseRemoteBranch(
 		defaultBranch = plumbing.NewBranchReferenceName(parentBranch)
 	}
 	return remoteAdvertisement{
-		branch: hashes[branch], parent: hashes[defaultBranch], parentBranch: defaultBranch.Short(),
+		branch: hashes[branch], parent: hashes[defaultBranch], parentBranch: defaultBranch.Short(), empty: empty,
 	}, nil
 }
 
