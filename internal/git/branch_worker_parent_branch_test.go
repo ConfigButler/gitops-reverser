@@ -11,9 +11,11 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +33,10 @@ func (f *newBranchFixture) pushToRelease(file, content string) plumbing.Hash {
 
 func (f *newBranchFixture) commitParent(tip plumbing.Hash) plumbing.Hash {
 	f.t.Helper()
-	commit, err := f.server.CommitObject(tip)
+	// Opened afresh: a handle opened before the pushes can miss a packfile they added.
+	server, err := gogit.PlainOpen(strings.TrimPrefix(f.remote, "file://"))
+	require.NoError(f.t, err)
+	commit, err := server.CommitObject(tip)
 	require.NoError(f.t, err)
 	require.Len(f.t, commit.ParentHashes, 1)
 	return commit.ParentHashes[0]

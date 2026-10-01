@@ -290,8 +290,9 @@ func (m *WorkerManager) RemoteForBranch(key BranchKey) (RemoteObservation, bool)
 //
 // parentBranch is the GitTarget's spec.parentBranch. It is immutable on a GitTarget, so a live
 // worker sees a different one only when every target on its branch was replaced before the worker
-// sweep ran. That is not a replacement: the worker keeps its clone, and SetParentBranch drops its
-// base trust and rebuilds any retained writes on the new parent.
+// sweep ran. That is not a replacement: the worker keeps its clone, and SetParentBranch raises the
+// parent generation, so nothing planned under the old parent is pushed and retained writes are
+// rebuilt on the new one.
 //
 // Worker creation/start is protected by the manager lock.
 func (m *WorkerManager) EnsureWorker(

@@ -147,7 +147,7 @@ func PrepareBranchFrom(
 	}
 
 	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
-	pullReport, err := syncToRemoteFrom(ctx, repo, targetBranch, parentBranch, auth)
+	pullReport, err := syncToRemoteFn(ctx, repo, targetBranch, parentBranch, auth)
 	if err != nil {
 		return nil, err
 	}
