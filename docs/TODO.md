@@ -14,19 +14,20 @@ finding is fixed in #407: the controller no longer fails a request the worker ho
   (`docs/design/commit-timing-surface.md`) says a suspended target is a failure. An attached window
   that changed nothing resolves `AlreadyPresent` the same way. Decide: fail the save, or change the
   table.
-- [ ] **A `CommitEmpty` save is recorded while the render-fidelity gate is closed.** Found by reading;
-  reproduce first. `recordCommitRequest` never calls `normalWritesAllowed`, so a save whose events the
+- [ ] **The worker records a `CommitEmpty` save while the render-fidelity gate is closed.** Found by
+  reading; reproduce first. `recordCommitRequest` never calls `normalWritesAllowed`, so a save whose events the
   gate dropped records "no writes were seen". The attached-window path fails the request instead.
 
 **Before the next release** (docs only):
 
 - [ ] `docs/UPGRADING.md`, the v1alpha3 window entry:
-  - step 1: GitOps-managed GitTargets need their Flux or Argo source suspended (or the field removed
-    there) until step 4, or the string `commit.window` is re-applied and breaks LIST;
+  - step 1: tell readers to suspend the Flux or Argo source of a GitOps-managed GitTarget (or remove
+    the field there) until step 4; otherwise that tool re-applies the string `commit.window` and
+    breaks LIST;
   - the Was/Is table needs a row for the chart value `quickstart.gitTarget.commit.window`, now an
     object;
-  - "a removed `closeDelay` is not a hazard" is too strong: it is pruned silently for programmatic
-    clients (see `duration_fields_admission_test.go`).
+  - "a removed `closeDelay` is not a hazard" is too strong: the API server prunes it silently for
+    programmatic clients (see `duration_fields_admission_test.go`).
 - [ ] Descriptions that still say a save "closes the window now": the CommitRequest godoc and CRD
   description, `docs/configuration.md` (lines 14, 32, 123), and the GitTarget `Commit` godoc, which
   also omits the 1m `maxDuration` default. `docs/spec/commitrequest-design.md:126` still says

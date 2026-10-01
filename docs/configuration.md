@@ -909,7 +909,7 @@ target has written anything:
 ```yaml
 status:
   remote:
-    commit: 4f2c1ab9e0...               # empty = the branch is not on the remote
+    commit: ""                          # empty = the branch is not on the remote (yet)
     lastVerifiedAt: "2026-09-23T10:14:02Z"
     verifiedBy: Push                    # Push | Fetch
     parent:                             # only while the branch is not on the remote

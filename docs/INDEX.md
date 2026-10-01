@@ -124,7 +124,7 @@ decided), **design, decided** (decision made, not built), **partly built**, **bu
 **deferred** (parked, kept as a decision record). The label is the first thing in the page,
 so you never have to read a proposal to find out it already shipped.
 
-### Open — 27 pages
+### Open (27 pages)
 
 | Doc | Open question |
 |---|---|
@@ -156,7 +156,7 @@ so you never have to read a proposal to find out it already shipped.
 | [`sensitive-resource-diagnostics-follow-up.md`](design/sensitive-resource-diagnostics-follow-up.md) | deferred diagnostics |
 | [`e2e-git-server-choice.md`](design/e2e-git-server-choice.md) | stay on Gitea or move to Forgejo — the `_csrf` pin is fixable in place on both, so the migration is now a preference call, not a fix; also why we adopt no SDK either way |
 
-### Built, and kept here anyway — 6 pages
+### Built, and kept here anyway (6 pages)
 
 These have shipped. They stay in `design/` under the exception above, because Go source
 cites them by path as the rationale for what the code does, and `finished/` declares

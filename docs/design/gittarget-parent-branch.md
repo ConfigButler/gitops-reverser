@@ -173,5 +173,3 @@ meantime is [`gittarget-parent-observation.md`](gittarget-parent-observation.md)
 ## Open questions
 
 1. Should each `GitProvider.status.branches` entry show its write branch's parent?
-2. ~~With the parent omitted, when is the default branch re-resolved after the remote's `HEAD`
-   changes?~~ Settled: at the next discovery (a refresh, or any fetch). See "The contract as built".
