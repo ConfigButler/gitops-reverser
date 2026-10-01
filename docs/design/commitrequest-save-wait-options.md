@@ -247,6 +247,11 @@ indistinguishable from one that never happened.
 
 ## The timer model
 
+> **Superseded** by [`commit-timing-surface.md`](commit-timing-surface.md), which keeps the idea
+> below (one job per field) and gives the fields their final names: `window.attachTimeout` is the
+> give-up bound, and `window.maxDuration` and `window.idleTimeout` bound the collection from the
+> attach. `waitFor` keeps only the named write.
+
 Give each field one job, rather than reinterpreting `closeDelay` as a ceiling (R6):
 
 - `waitFor.timeoutSeconds` is the give-up bound, anchored at receipt. This is where audit-fact

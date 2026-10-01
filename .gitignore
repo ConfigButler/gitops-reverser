@@ -62,3 +62,4 @@ loadtest
 .agents/*
 /external-sources/
 /docs/local-only/*
+hack/release-notes/node_modules

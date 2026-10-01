@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * expire finished CommitRequests and name the placement fallback the built-in path ([#400](https://github.com/ConfigButler/gitops-reverser/issues/400))
 * **api:** rules[].operations is removed. A rule that listed a subset now also mirrors updates and removals; set spec.prune.mode: Never on the GitTarget before upgrading to keep documents on removal. See UPGRADING.md.
 * **api:** kubectl get -o wide no longer prints PROVIDERREADY, CLUSTERPROVIDERREADY (GitTarget) or GITTARGETREADY (WatchRule, ClusterWatchRule).
+* `CommitRequest.spec.closeDelaySeconds` is renamed to `spec.closeDelay`, a Go duration string (`"2s"`, at most `"5m"`). The old field is pruned on write, not refused. See UPGRADING.md. ([#388](https://github.com/ConfigButler/gitops-reverser/issues/388))
+* `GitTarget.spec.commit.window` is validated at admission as a Go duration string of at most `"24h"`; unit-less or out-of-range values are refused. ([#388](https://github.com/ConfigButler/gitops-reverser/issues/388))
+* the `--base-trust-max-age` flag is removed; a Deployment that sets it by hand fails to start. The periodic Git refresh (`--git-refresh-interval`, default `10m`) replaces it. ([#388](https://github.com/ConfigButler/gitops-reverser/issues/388))
 
 ### Features
 
@@ -22,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * expire finished CommitRequests and name the placement fallback the built-in path ([#400](https://github.com/ConfigButler/gitops-reverser/issues/400)) ([cd0c94c](https://github.com/ConfigButler/gitops-reverser/commit/cd0c94c823721888642d0227ac011f0b3aedf2b5))
 * key a branch worker to its repository, and give a repository its own status surface ([#396](https://github.com/ConfigButler/gitops-reverser/issues/396)) ([71eb515](https://github.com/ConfigButler/gitops-reverser/commit/71eb515273590f4d75d1118a7eb881fece673a0d))
 * report a folder somebody else broke, instead of discovering it on the next write ([#391](https://github.com/ConfigButler/gitops-reverser/issues/391)) ([ae4c823](https://github.com/ConfigButler/gitops-reverser/commit/ae4c82391ce67c6ade1806fb1aaf4fdb08d1ca6c))
+* refresh an idle target from Git, and make every API duration a Go duration string ([#388](https://github.com/ConfigButler/gitops-reverser/issues/388)) ([a087901](https://github.com/ConfigButler/gitops-reverser/commit/a0879014c8a036fe4a7843e0cee636496c45001d))
 
 ## [0.49.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.49.0...v0.49.1) (2026-09-22)
 

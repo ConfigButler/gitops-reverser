@@ -1,3 +1,5 @@
+# Two checks on what a pull request will become once squash-merged. The first is the title.
+#
 # PR titles become the squash-merge commit subject (the repository squash-merges with
 # COMMIT_OR_PR_TITLE), and release-please reads those subjects to decide the version bump and
 # to write the changelog. A title that is not a Conventional Commit is therefore not a style
@@ -47,3 +49,42 @@ jobs:
             echo '`fix(webhook)!: reject unsigned requests`. Edit the title and this check re-runs.'
           } | tee -a "$GITHUB_STEP_SUMMARY"
           exit 1
+
+  # The squash commit's BODY matters as much as its title. The repository squash-merges with
+  # COMMIT_MESSAGES, so the body is every commit message on the branch (or, for a single commit,
+  # that commit's whole message, title included), and release-please parses the whole of it. A body the parser cannot read drops the commit from the changelog and the
+  # version bump without a word; that is how #388 went missing from 0.50.0. This rebuilds the
+  # message GitHub will write and parses it with the parser release-please uses.
+  #
+  # Commit messages are untrusted text: they reach the parser through a file, never through an
+  # expression in the script.
+  squash-message:
+    name: Squash message parses
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the parser
+        working-directory: hack/release-notes
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Self-test the check
+        run: hack/release-notes/test.sh
+
+      - name: Parse the squash message
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # squash-message.sh owns GitHub's rule: one commit keeps its own message, several get
+          # the PR title over the bulleted commit messages.
+          hack/release-notes/squash-message.sh "$BASE_SHA" "$HEAD_SHA" "$PR_TITLE" > "$RUNNER_TEMP/squash-message.txt"
+          node hack/release-notes/check.mjs < "$RUNNER_TEMP/squash-message.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"

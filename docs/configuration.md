@@ -1876,9 +1876,10 @@ The important fields are:
 
 - `spec.gitTargetRef.name`: target whose open window should be finalized
 - `spec.message`: optional literal commit message, preserved verbatim
-- `spec.closeDelay`: a Go duration string, at most `"5m"`, offsetting the deadline from the
-  worker's first receipt, including time waiting for a matching window; repeated registration keeps
-  the original deadline. Defaults to `"2s"`
+- `spec.closeDelay`: a Go duration string, at most `"5m"`. The request waits this long from the
+  worker's first receipt for a matching window, and a window it claims keeps collecting this long
+  from the claim, so a request created before its writes still gets the whole delay after them.
+  Repeated registration keeps the original waiting deadline. Defaults to `"2s"`
 
 Example:
 
@@ -1919,6 +1920,14 @@ loaded or distant cluster may want `"4s"` to `"5s"`.
 Do not size the delay against `--author-attribution-grace`. When that grace expires with no fact
 the write still ships, as a window that names no actor, and a request naming a submitter can never
 claim it: the outcome is `WindowMismatch` no matter how long the request waits.
+
+The delay applies to each phase separately: once waiting for the window, and again collecting
+after the claim. A save that creates its request before making its writes needs a delay that covers
+both the gap before its first write and the span from its first write to its last. With `"2s"`,
+writes arriving 1 and 4 seconds after the request still split: the window is claimed at 1s and
+finalized at 3s. The target's `commit.window` also still applies, so a silence longer than it
+between two writes closes the window early. Twice the delay bounds the finalize; the push after it
+can add its cooldown and any retries.
 
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
 undershooting resolves the request `Ready=True` with reason `NoWindowInGrace` while the edit

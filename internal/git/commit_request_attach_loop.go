@@ -77,9 +77,10 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 	if _, exists := l.pendingCRs[id]; exists {
 		return // idempotent re-send: keep the first finalize deadline.
 	}
-	// Anchor the grace at receipt (≈ the attribution moment), not at object
-	// creation: under a delayed ingestion pipeline this lets delaySeconds cover only
-	// the inter-stream spread instead of the absolute latency.
+	// Anchor the wait at receipt (≈ the attribution moment), not at object
+	// creation: under a delayed ingestion pipeline this lets closeDelay cover only
+	// the inter-stream spread instead of the absolute latency. attachToOpenWindow
+	// restarts it at the claim.
 	l.pendingCRs[id] = &pendingCommitRequest{
 		id:                 id,
 		author:             req.Author,
@@ -88,6 +89,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,
 		finalizeAt:         time.Now().Add(req.CloseDelay),
+		closeDelay:         req.CloseDelay,
 	}
 	l.w.Log.Info("CommitRequest registered with worker",
 		"request", id.Namespace+"/"+id.Name,
@@ -168,16 +170,29 @@ func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	}
 }
 
-// attachToOpenWindow binds a request's message to the currently-open window.
+// attachToOpenWindow binds a request's message to the currently-open window, and restarts its
+// deadline at the claim: the window then collects for the full closeDelay, however much of it the
+// request spent waiting. When the window was already open at receipt the claim IS the receipt,
+// so the deadline is the one first stamped.
+//
+// A request whose wait has already run out is attached WITHOUT a restart. The deadline timer and a
+// matching event can be ready on the same loop wake, and this pass runs before
+// processDueCommitRequests, so restarting here would hand an expired request a second full delay
+// depending on which of the two the select picked. Left alone, it is finalized in this same pass,
+// carrying its message, which is also what an explicit "0s" relies on.
 func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 	l.openWindow.pendingMessage = pcr.message
 	id := pcr.id
 	l.openWindow.pendingCR = &id
 	pcr.attached = true
+	if now := time.Now(); pcr.finalizeAt.After(now) {
+		pcr.finalizeAt = now.Add(pcr.closeDelay)
+	}
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,
 		"author", pcr.author,
-		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName)
+		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
+		"closeDelay", pcr.closeDelay.String())
 }
 
 // processDueCommitRequests finalizes the windows of attached requests whose grace

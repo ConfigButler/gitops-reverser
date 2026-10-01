@@ -1,0 +1,9 @@
+{
+  "name": "release-notes-check",
+  "private": true,
+  "description": "Proves a squash-merge message parses under the Conventional Commits parser release-please uses",
+  "type": "module",
+  "dependencies": {
+    "@conventional-commits/parser": "0.4.1"
+  }
+}

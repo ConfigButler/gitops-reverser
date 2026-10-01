@@ -62,12 +62,13 @@ const (
 	commitRequestPollInterval = 2 * time.Second
 
 	// commitRequestResolveTimeout bounds the attach-then-poll wait, measured from
-	// object creation: it must cover the maximum collect-grace (closeDelay ≤ 5m,
-	// anchored at attribution) and the push cooldown plus retries. Authorship is now
+	// object creation: it must cover the longest a request can take (closeDelay ≤ 5m
+	// waiting for a window from receipt, then closeDelay again collecting from the
+	// claim) and the push cooldown plus retries. Authorship is now
 	// settled synchronously at first sight (no attribution wait), so the former
 	// +60s attribution component is gone. Past it, a request the worker never resolved
 	// (e.g. a vanished worker) fails closed instead of polling forever.
-	commitRequestResolveTimeout = 300*time.Second + 120*time.Second
+	commitRequestResolveTimeout = 2*300*time.Second + 120*time.Second
 
 	// defaultCloseDelay mirrors the +kubebuilder:default on
 	// CommitRequest.spec.closeDelay. The API server fills the field in, so nil

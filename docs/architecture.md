@@ -1363,8 +1363,9 @@ immediately. That is not a failure:
 1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
    `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
 2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
-   finalize at `receipt + closeDelay`. The worker binds it to an open window only when the author
-   state and GitTarget match. It **never finalizes another author's window**; a window carries at most one request.
+   wait for a window at `receipt + closeDelay`. The worker binds it to an open window only when the author
+   state and GitTarget match, and restarts the deadline at `claim + closeDelay`, so time spent waiting
+   never shortens the collection. It **never finalizes another author's window**; a window carries at most one request.
 3. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes an
    open window, the worker always schedules a push, so a window closed by an otherwise no-op resync is not
    stranded.

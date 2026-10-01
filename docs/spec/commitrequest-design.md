@@ -25,7 +25,10 @@ window, but never to a named actor’s window. A request with a named submitter 
 actor’s named window. Therefore one user’s request never finalizes another user’s work.
 
 On its first receipt, the worker sets the deadline to receipt plus `closeDelay`. Repeated reconciles
-are idempotent and keep that first deadline. Time spent waiting for a matching window consumes the delay.
+are idempotent and keep that first deadline. When the request claims a window, the worker restarts the
+deadline at the claim plus `closeDelay`: time spent waiting for a matching window does not shorten the
+collection, so a request created before its writes still collects for the whole delay after them. A
+request that claims a window already open at receipt keeps the deadline it was first given.
 
 The default is `"2s"` rather than `"0s"` because the write a request exists to publish reaches the
 worker strictly after the request does: a watch event is held until its audit fact arrives, so a

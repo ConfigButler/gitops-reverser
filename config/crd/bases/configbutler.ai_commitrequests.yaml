@@ -77,10 +77,12 @@ spec:
               closeDelay:
                 default: 2s
                 description: |-
-                  CloseDelay sets the finalize deadline from the worker's first receipt, as a Go duration
-                  string ("2s", "750ms", "1m"). Time waiting for a matching window consumes this delay;
-                  repeated receipt keeps the deadline. Normal flush triggers can close an attached window
-                  early, carrying its message. A request claims at most one open window and cannot rename a
+                  CloseDelay is how long the request waits for a matching window from the worker's first
+                  receipt, and how long a window it claims keeps collecting from the claim, as a Go duration
+                  string ("2s", "750ms", "1m"). Time spent waiting does not shorten the collection, so a
+                  request created before its writes still gets the whole delay after them; repeated receipt
+                  keeps the waiting deadline. Normal flush triggers can close an attached window early,
+                  carrying its message. A request claims at most one open window and cannot rename a
                   finalized commit. At most "5m".
                   Defaults to "2s", which covers the time a write spends waiting for its audit fact before
                   the commit window opens; an explicit "0s" requests immediate finalization and will usually
