@@ -1598,10 +1598,13 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	windowTarget := targetNamespace + "/" + targetName
 	pendingCR := l.openWindow.pendingCR
 	effectiveMessage := l.openWindow.pendingMessage
-	if !l.w.normalWritesAllowed(targetName, targetNamespace) {
+	// The render-fidelity gate drops the whole window, request or not: its events were planned
+	// against a render nobody has checked. Suspension is read from the write built below, because
+	// a suspended target still scans. See write_gate.go.
+	if err := l.w.targetWriteRefusal(targetName, targetNamespace, false); err != nil {
 		l.w.Log.V(1).Info("Discarding open window while render fidelity is not established",
 			"reason", string(reason), "gitTarget", targetNamespace+"/"+targetName)
-		l.dropOpenWindow(pendingCR, errors.New("render fidelity gate is closed"))
+		l.dropOpenWindow(pendingCR, err)
 		return false
 	}
 
@@ -1635,6 +1638,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		return false
 	}
 	pendingWrite.CommitMessage = effectiveMessage
+	pendingCR = l.failRequestOnRefusedTarget(pendingCR, pendingWrite.Target())
 	// Carry the attached CommitRequest onto the write so its result follows the
 	// data: it is resolved Committed once this write is pushed (§6.5).
 	pendingWrite.CommitRequest = pendingCR
@@ -1705,6 +1709,23 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		"events", len(events),
 		"pendingWrites", len(l.pendingWrites))
 	return true
+}
+
+// failRequestOnRefusedTarget fails the request attached to a window whose write was planned for a
+// target that may not be written, and returns the request the write still carries: none, then.
+// The write itself still runs, so a suspended target's scan stays fresh, but it commits nothing,
+// and the push would report that as AlreadyPresent. See write_gate.go.
+func (l *branchWorkerEventLoop) failRequestOnRefusedTarget(
+	pendingCR *commitRequestID, target ResolvedTargetMetadata,
+) *commitRequestID {
+	if pendingCR == nil {
+		return nil
+	}
+	if err := l.w.targetWriteRefusal(target.Name, target.Namespace, target.Suspend); err != nil {
+		l.resolveCommitRequest(*pendingCR, FinalizeResult{Err: err})
+		return nil
+	}
+	return pendingCR
 }
 
 // dropOpenWindow discards a window whose finalize failed, resolving any attached

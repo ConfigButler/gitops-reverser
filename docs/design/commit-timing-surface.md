@@ -186,7 +186,7 @@ With `CommitEmpty`, a save records its message even when nothing it collected ch
 | Eligible writes already matched Git | no commit, `AlreadyPresent` | empty commit, `AlreadyPresent` |
 | No eligible window before `attachTimeout` | no commit, `NoWindow` | empty commit, `NoWindow` |
 | Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
-| Commit or push failed, or the target is suspended | the failure | the failure |
+| Commit or push failed, or the target is suspended or its render fidelity not established | the failure | the failure |
 
 The cause stays in the `Ready` reason, and `status.commit` with `Pushed=True` says a commit was
 recorded. A caller reads both: a hash proves the message is in Git, and `NoWindow` says the save saw

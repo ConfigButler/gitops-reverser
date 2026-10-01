@@ -826,6 +826,10 @@ commit seconds later. That is deliberate: a local commit that is never pushed wo
 operator's checkout and surface later, out of order, when you resume. Suspend is a valve on new
 work, not an undo.
 
+A `CommitRequest` that ends on a suspended target fails with `FinalizeFailed` and the reason, rather
+than resolving `Ready=True` with nothing written. One whose commit was already made locally when you
+set `suspend` is pushed with it and resolves normally.
+
 Clearing `suspend` resumes from the cluster's current state on the next resync. The writes
 suppressed while it was set are not replayed, so what lands is what the cluster holds then, not a
 backlog of the values it passed through.
@@ -2068,7 +2072,7 @@ reason, without changing Git.
 | The writes already matched Git | no commit, `AlreadyPresent` | empty commit, `AlreadyPresent` |
 | No eligible window before `attachTimeout` | no commit, `NoWindow` | empty commit, `NoWindow` |
 | Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
-| The target is suspended | no commit, the cause | no commit, the cause |
+| The target is suspended, or its render fidelity is not established | `FinalizeFailed`, the cause | `FinalizeFailed`, the cause |
 | The commit, the empty commit, or the push failed | `FinalizeFailed` | `FinalizeFailed` |
 
 The `Ready` reason keeps the cause, and `status.commit` with `Pushed=True` says the empty commit
