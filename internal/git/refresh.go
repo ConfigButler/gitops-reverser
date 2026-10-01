@@ -224,7 +224,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 	// the compare-and-swap on the next push.
 	if advertised.IsZero() {
 		w.Log.V(1).Info("Refresh found no such branch on the remote", "branch", w.Branch)
-		return l.followParent(advertisement.parent)
+		return l.followParent(advertisement)
 	}
 
 	// Everything below compares the advertisement against the local checkout, so a missing one is
@@ -285,8 +285,15 @@ func (w *BranchWorker) recordAdvertisement(advertisement remoteAdvertisement, pa
 // followParent brings the checkout of an absent write branch onto its parent's advertised tip.
 // It costs nothing beyond the advertisement already read when the parent has not moved, and it
 // writes nothing either way.
-func (l *branchWorkerEventLoop) followParent(parent plumbing.Hash) error {
+//
+// "Moved" includes a parent that is now a different branch: with spec.parentBranch omitted the
+// parent is the remote's default branch as last discovered, and a remote whose HEAD switched from
+// main to trunk at the same commit has moved as surely as one whose main got a new commit. One
+// fetch follows it, so the next publication validates trunk, and pushes and refreshes stop
+// reporting different parents.
+func (l *branchWorkerEventLoop) followParent(advertisement remoteAdvertisement) error {
 	w := l.w
+	parent := advertisement.parent
 	// An empty repository has no parent to follow.
 	if parent.IsZero() {
 		return nil
@@ -298,13 +305,28 @@ func (l *branchWorkerEventLoop) followParent(parent plumbing.Hash) error {
 	if err != nil {
 		return fmt.Errorf("open repository: %w", err)
 	}
-	if w.baseTrusted() && parent == localHead(repo) {
+	if w.baseTrusted() && parent == localHead(repo) && advertisement.parentBranch == w.checkoutParentBranch(repo) {
 		w.Log.V(1).Info("Refresh confirmed the parent branch has not moved", "branch", w.Branch)
 		return nil
 	}
 	w.Log.Info("Refresh found the parent branch elsewhere; resetting onto it",
 		"branch", w.Branch, "parent", parent.String())
 	return w.syncWithRemote(w.ctx, fetchReasonRefresh)
+}
+
+// checkoutParentBranch is the short name of the branch the checkout of an absent write branch is
+// rooted on: the parent the local write branch was created from, or the branch HEAD is on.
+func (w *BranchWorker) checkoutParentBranch(repo *gogit.Repository) string {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+	if w.newBranchParent != "" {
+		return w.newBranchParent.Short()
+	}
+	branch, _, err := GetCurrentBranch(repo)
+	if err != nil {
+		return ""
+	}
+	return branch.Short()
 }
 
 // rescanLayoutForTarget re-reads the target's folder, publishes what its shape resolves to, and

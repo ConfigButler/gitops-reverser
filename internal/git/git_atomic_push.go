@@ -372,6 +372,12 @@ func performPush(
 //
 // The returned PushOutcome is an observation of the remote, made on the connection the push was
 // opening anyway. An error means nothing was observed; see PushOutcome for what each kind proves.
+// afterPushValidation runs between the advertisement check and the upload. Nil in production; a test
+// changes the remote here to make the server, not our client, refuse the upload.
+//
+//nolint:gochecknoglobals // a test seam, like pushAtomicFn
+var afterPushValidation func()
+
 func PushAtomic(
 	ctx context.Context,
 	repo *git.Repository,
@@ -404,6 +410,9 @@ func PushAtomic(
 		return PushOutcome{}, fmt.Errorf("failed to get current branch: %w", err)
 	}
 
+	if afterPushValidation != nil {
+		afterPushValidation()
+	}
 	if err := performPush(ctx, session, repo, rootHash, plan.new, plan.old, branch, logger); err != nil {
 		return PushOutcome{}, err
 	}

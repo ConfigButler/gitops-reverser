@@ -2309,6 +2309,9 @@ func (w *BranchWorker) remoteMovedDuringPush(
 	}
 
 	remoteHash, known := advertisedRootHash(pushErr, rootBranch)
+	if !known && rootBranch != plumbing.NewBranchReferenceName(w.Branch) {
+		return w.newBranchMovedDuringPush(rootBranch, rootHash, auth)
+	}
 	if !known {
 		var fetchErr error
 		w.recordFetch(fetchReasonPushFailureProbe)
@@ -2319,6 +2322,29 @@ func (w *BranchWorker) remoteMovedDuringPush(
 		}
 	}
 	return remoteHash != rootHash
+}
+
+// newBranchMovedDuringPush is the fallback for a push that was creating the write branch and failed
+// without an advertisement to read: a dropped connection, or the server refusing an upload whose
+// Old was zero because somebody created the branch after our advertisement. Probing the root alone
+// would find the parent unmoved and conclude nothing happened, and the work would never replay. So
+// it reads both refs from one advertisement, and a write branch that is now there is contention,
+// exactly like the typed rejection naming it. It runs only on this exceptional path.
+func (w *BranchWorker) newBranchMovedDuringPush(
+	rootBranch plumbing.ReferenceName, rootHash plumbing.Hash, auth []gitclient.Option,
+) bool {
+	advertisement, err := advertiseRemoteBranchFn(w.repo.URL, plumbing.NewBranchReferenceName(w.Branch),
+		rootBranch.Short(), auth)
+	if err != nil {
+		w.invalidateBase("remote-state probe failed")
+		return false
+	}
+	if !advertisement.branch.IsZero() {
+		w.Log.Info("The write branch was created by somebody else during our push; replaying onto it",
+			"branch", w.Branch)
+		return true
+	}
+	return advertisement.parent != rootHash
 }
 
 // advertisedRootHash reads the remote's own answer out of a failed push, when the push got one.

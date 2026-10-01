@@ -428,6 +428,25 @@ func ledgerOperations() []ledgerOp {
 				f.loop.runParentProbe()
 			},
 		},
+		{
+			// R6: somebody creates the write branch between our advertisement and our upload, with
+			// the parent unmoved. The server refuses the upload; one advertisement reads both refs
+			// and finds the branch; the replay fetches it, rebuilds, and pushes onto it. It costs
+			// more than row 6, which is refused at the advertisement, before any upload.
+			name:   "16. standby, the write branch created during our upload",
+			slug:   "refused-upload",
+			seeded: true,
+			branch: "feature",
+			prime:  func(f *ledgerFixture) { require.NoError(f.t, f.worker.ensureRepositoryInitialized(f.worker.ctx)) },
+			run: func(f *ledgerFixture) {
+				afterPushValidation = func() {
+					afterPushValidation = nil
+					simulateClientCommitOnDisk(f.t, f.repoDir, "feature", "THEIRS.md", "theirs\n")
+				}
+				defer func() { afterPushValidation = nil }()
+				f.publish("first")
+			},
+		},
 	}
 }
 

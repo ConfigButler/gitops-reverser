@@ -129,9 +129,11 @@ branch)` tuple. Every write to that branch goes through it. Two words, lowercase
 
 **Parent branch.** The branch a write branch is created from, and compared against while the write
 branch does not exist on the remote: `spec.parentBranch`, or the remote's default branch when that
-is omitted. Always with its noun: "parent" alone already names a parent resource. Not "base", which
-names a kustomize read-only base and base trust, and not "source", which names the source cluster.
-Once the write branch exists, the parent is not followed.
+is omitted. Say "parent branch"; a bare "parent" is fine where the subject is already a branch, such
+as the `status.remote.parent` stanza or a sentence that has just named the parent branch. Use the
+full term wherever a parent *resource* could be meant. Not "base", which names a kustomize read-only
+base and base trust, and not "source", which names the source cluster. Once the write branch exists,
+the parent branch is not followed.
 
 **Commit window.** The interval a branch worker batches one author's writes to one target over before
 it commits. Only a write opens one; nothing else does. It closes on its `idleTimeout` of silence or

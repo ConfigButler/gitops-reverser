@@ -33,3 +33,4 @@ operation                                                   conn  fetch-open    
 13. standby, a live write that changes nothing                 1  0             0             1 -/<1K       0           
 14. standby, the first write after the parent moved            6  2 -/<1K       1 <1K/<1K     2 -/<1K       1 <4K/<1K   
 15. parent probe while the parent is missing                   1  1 -/<1K       0             0             0           
+16. standby, the write branch created during our upload        8  3 -/<4K       1 <1K/<1K     2 -/<1K       2 <4K/<1K   

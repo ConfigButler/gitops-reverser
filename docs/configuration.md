@@ -783,6 +783,9 @@ spec:
 - A detached `HEAD`, or a server that does not say what `HEAD` points at, resolves the way go-git
   resolves it: to `master` when it is at `HEAD`'s commit, otherwise to the alphabetically first
   branch that is. Set `parentBranch` when you need certainty rather than that guess.
+- When the remote's `HEAD` switches to another branch, the next discovery (a refresh, or any fetch)
+  follows it. A push cannot see `HEAD`, so with periodic refresh off a write branch can still start
+  from the previous default branch until then.
 - Once the write branch exists, it is used as it is: new commits on the parent do not reach it.
   Delete the write branch after its changes are merged, and the next edit starts a fresh one.
 - `parentBranch` is immutable, including adding or removing it: delete and recreate the target to

@@ -264,3 +264,84 @@ func TestBranchWorker_ADetachedRemoteHeadFollowsGoGitsResolution(t *testing.T) {
 		})
 	}
 }
+
+// noOpWrite sends a live write that changes nothing: the delete of an object Git never had.
+func noOpWrite(loop *branchWorkerEventLoop) {
+	deleted := configMapTargetEvent("never-written", "alice", newBranchTarget)
+	deleted.Operation = "DELETE"
+	deleted.Object = nil
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{deleted}, CommitMode: CommitModePerEvent}})
+}
+
+// §4.7 R5. With spec.parentBranch omitted the parent is the default branch as last discovered. A
+// refresh that sees HEAD switch from main to trunk at the same commit follows it with one fetch, so
+// the next publication validates trunk and pushes report the same parent the refresh did. Without
+// a refresher the worker keeps main until its next discovery, which the push advertisement cannot
+// be: it carries no HEAD.
+func TestBranchWorker_ADefaultBranchSwitchIsFollowedAtTheNextDiscovery(t *testing.T) {
+	seed := func(repoDir string) {
+		simulateClientCommitOnDisk(t, repoDir, "main", "README.md", "main\n")
+		gitIn(t, repoDir, "branch", "trunk", "main")
+	}
+
+	t.Run("a refresh follows it", func(t *testing.T) {
+		reader, err := telemetry.InitTestExporter()
+		require.NoError(t, err)
+		f := newRealServerNewBranch(t, "default-switch-refresh", seed)
+		require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
+		require.Equal(t, "main", f.observed().ParentBranch)
+
+		gitIn(t, f.repoDir, "symbolic-ref", "HEAD", "refs/heads/trunk")
+		refreshes := fetchCount(t, reader, f.worker, fetchReasonRefresh)
+		f.loop.handleRefreshRequest(&RefreshRequest{Target: refreshTarget(), MaxAge: time.Nanosecond})
+		assert.Equal(
+			t,
+			refreshes+1,
+			fetchCount(t, reader, f.worker, fetchReasonRefresh),
+			"one fetch follows the switch",
+		)
+		assert.Equal(t, "trunk", f.observed().ParentBranch)
+
+		noOpWrite(f.loop)
+		assert.Equal(t, "trunk", f.observed().ParentBranch, "the next no-op push agrees with the refresh")
+		assert.Equal(t, ObservedByPush, f.observed().By)
+	})
+
+	t.Run("without a refresher it waits for the next discovery", func(t *testing.T) {
+		f := newRealServerNewBranch(t, "default-switch-no-refresh", seed)
+		require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
+
+		gitIn(t, f.repoDir, "symbolic-ref", "HEAD", "refs/heads/trunk")
+		noOpWrite(f.loop)
+		assert.Equal(t, "main", f.observed().ParentBranch, "publication cannot see HEAD")
+	})
+}
+
+// §4.7 R6. The write branch is created by somebody else after our advertisement, with the parent
+// unmoved. The server refuses our upload (Old was zero) as an untyped error, and probing the parent
+// alone would find it unmoved and conclude nothing happened. The fallback reads both refs, sees the
+// write branch, and replays onto their commit.
+func TestBranchWorker_AWriteBranchCreatedDuringOurUploadIsReplayedOnto(t *testing.T) {
+	f := newRealServerNewBranch(t, "refused-upload", func(repoDir string) {
+		simulateClientCommitOnDisk(t, repoDir, "main", "README.md", "main\n")
+	})
+	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
+
+	var theirs plumbing.Hash
+	afterPushValidation = func() {
+		afterPushValidation = nil
+		theirs = simulateClientCommitOnDisk(t, f.repoDir, "feature", "THEIRS.md", "theirs\n")
+	}
+	t.Cleanup(func() { afterPushValidation = nil })
+	roots := pushRoots(t, nil)
+
+	liveWrite(f.loop, "cm1")
+
+	require.False(t, theirs.IsZero(), "the branch was created between the advertisement and the upload")
+	require.Len(t, *roots, 2, "the refused upload, then the replay")
+	tip := f.ref("feature")
+	require.NotEqual(t, theirs, tip, "our commit was published")
+	gitIn(t, f.repoDir, "merge-base", "--is-ancestor", theirs.String(), tip.String())
+	assert.Contains(t, gitIn(t, f.repoDir, "ls-tree", "-r", "--name-only", "feature"), cmFile("cm1"))
+	assert.Empty(t, f.loop.pendingWrites)
+}
