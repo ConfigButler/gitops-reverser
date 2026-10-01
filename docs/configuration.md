@@ -769,8 +769,13 @@ spec:
 ```
 
 - An explicit parent must exist when the write branch is created. Otherwise the target reports
-  `Ready=False` with reason `ParentBranchNotFound`, writes nothing, and recovers once the branch is
-  pushed.
+  `Ready=False` with reason `ParentBranchNotFound` and writes nothing.
+- It recovers on its own once the parent is pushed, with no edit to the cluster and with periodic
+  refresh on or off. The branch worker looks for the parent with one ref advertisement after 10s,
+  then after twice as long each time, up to every 5 minutes, shared by every target on the branch.
+  When the parent is back it publishes the writes it held and asks for a fresh snapshot of the ones
+  it had to drop; until those are published the target reports `Ready=False` with reason
+  `RecoveringParentBranch`.
 - An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
   refs at all, tags included) the first commit starts a branch with no history. A repository that
   is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and

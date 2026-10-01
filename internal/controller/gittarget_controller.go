@@ -144,6 +144,10 @@ type GitTargetReconciler struct {
 	// value is usable.
 	reconcileRequests reconcileRequestTracker
 
+	// snapshotRequests remembers which of a branch worker's snapshot requests were acted on, so a
+	// missing parent's recovery forces one recheck per request rather than one per reconcile.
+	snapshotRequests snapshotRequestTracker
+
 	// remotePublications is what each GitTarget last wrote to status.remote: when, and about which
 	// repository. It is internal by design; see remotePublicationLedger.
 	remotePublications remotePublicationLedger
@@ -185,8 +189,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	st := beginStatus(r.Client, r.Recorder, &target)
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 	// Writes are dropped while the parent is missing, so its return is recovered the way a refused
-	// folder is: by a recheck that re-derives what the cluster holds.
-	parentWasMissing := readyReasonIs(target.Status.Conditions, GitTargetReasonParentBranchNotFound)
+	// folder is: by a recheck that re-derives what the cluster holds. The branch worker decides
+	// when, and asks; this acts once per request.
+	parentRecheck, recoveringParent := r.parentRecovery(&target, target.Namespace)
 
 	providerNS := target.Namespace
 	// One read of the GitProvider for everything below it; see getGitProvider.
@@ -272,7 +277,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// A standing reconcile request forces the same re-check a refused Git path does: the watch
 	// plane re-anchors the target's streams, which is what makes it re-read the folder rather than
 	// wait for the periodic pass. Taken once per distinct annotation value.
-	forceRecheck := gitPathWasRefused || parentWasMissing || r.reconcileRequests.take(
+	forceRecheck := gitPathWasRefused || parentRecheck || r.reconcileRequests.take(
 		types.NewResourceReference(target.Name, target.Namespace), reconcileRequestedAt(&target))
 	observed := r.observeDataPlane(&target, sourceProvider, forceRecheck, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
@@ -285,6 +290,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	convergeAsSuspended(rd, &target)
 	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
 		refs.gitProvider, refs.clusterProvider, refs.sourceCluster)
+	parentRecoveryReadiness(rd, recoveringParent)
 	st.applyReadiness(rd)
 
 	if err := st.commit(ctx); err != nil {
@@ -1459,6 +1465,7 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// condition gauge is released on the same terms and for a sharper reason: a condition series
 	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
+	r.snapshotRequests.forget(gitDest)
 	// Same terms: the publication ledger is this reconciler's memory of what the object's status
 	// said, and an entry that outlives the object is a rate limit held against a name that may be
 	// recreated tomorrow with nothing published.

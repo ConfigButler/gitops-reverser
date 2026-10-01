@@ -27,13 +27,15 @@ import (
 // initial snapshot clones main at A and trusts it before B is pushed. A cold worker would fetch on
 // its first write and land on B without exercising the check at all.
 //
-// What fixed it is read off the fetch counter: the moved parent must be recovered by a
-// `contention` fetch (the rejected push), with no `refresh` fetch in between. That takes the
-// periodic refresher out of the proof without redeploying the controller with it disabled, which
-// would disturb every other spec on the leg.
+// The spec asserts ancestry and content, not which fetch found B: with periodic refresh on, a
+// refresh can legitimately find B before the publication does. That publication alone finds a
+// moved parent, with no refresher at all, is proved deterministically by the worker tests
+// TestBranchWorker_LiveWriteOnAbsentBranchStartsFromTheParentsCurrentTip and
+// TestBranchWorker_NewBranchIsNotPublishedOnAnUncheckedParent.
 //
 // It runs twice: once with spec.parentBranch omitted (the remote's default branch, main), and once
-// naming `release`, which the GitProvider does not allow writing to because it is only read.
+// naming `release`, which the GitProvider does not allow writing to because it is only read. A
+// third context names a parent that does not exist yet, and recovers once it is pushed.
 var _ = Describe("New write branch starts from its parent", Label("manager"), func() {
 	Context("with spec.parentBranch omitted", Ordered, func() {
 		describeNewWriteBranchSpec("", "main", "parent-branch")
@@ -41,15 +43,158 @@ var _ = Describe("New write branch starts from its parent", Label("manager"), fu
 	Context("with spec.parentBranch naming release", Ordered, func() {
 		describeNewWriteBranchSpec("release", "release", "parent-release")
 	})
+	Context("with spec.parentBranch naming a branch that does not exist yet", Ordered, func() {
+		describeMissingParentRecoverySpec()
+	})
 })
+
+const parentBranchSelectorLabel = "e2e.configbutler.ai/parent-branch"
+
+// applyParentConfigMap applies a ConfigMap the parent-branch specs' WatchRule selects.
+func applyParentConfigMap(namespace, name string) {
+	GinkgoHelper()
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    %s: "yes"
+data:
+  key: %s
+`, name, namespace, parentBranchSelectorLabel, name)
+	out, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "apply ConfigMap %q: %s", name, out)
+}
+
+// applyParentSpecProvider declares the GitProvider the parent-branch specs write through, allowing
+// main and the write branch only: a parent other than main is read, never written.
+func applyParentSpecProvider(namespace, providerName string, repo *RepoArtifacts, writeBranch string) {
+	GinkgoHelper()
+	provider := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: GitProvider
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  url: %s
+  allowedBranches: ["main", %q]
+  secretRef:
+    name: %s
+`, providerName, namespace, repo.RepoURLHTTP, writeBranch, repo.GitSecretHTTP)
+	out, err := kubectlRunWithStdin(namespace, provider, "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "apply GitProvider: %s", out)
+	verifyResourceStatus("gitprovider", providerName, namespace, "True", "Succeeded", "")
+}
+
+// applyParentSpecWatchRule declares the WatchRule that selects the specs' labelled ConfigMaps.
+func applyParentSpecWatchRule(namespace, ruleName, destName string) {
+	GinkgoHelper()
+	rule := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  gitTargetRef:
+    name: %s
+  rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    objectSelector:
+      matchLabels:
+        %s: "yes"
+`, ruleName, namespace, destName, parentBranchSelectorLabel)
+	out, err := kubectlRunWithStdin(namespace, rule, "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "apply WatchRule: %s", out)
+}
+
+// describeMissingParentRecoverySpec: a configured parent that does not exist refuses, writes
+// nothing and creates no branch. Once the parent is pushed, the target recovers with no further
+// cluster edit: the branch worker finds the parent on its own probe, asks for a fresh snapshot,
+// and the edit made while the parent was missing lands on the parent's tip.
+func describeMissingParentRecoverySpec() {
+	const (
+		providerName = "missing-parent-provider"
+		destName     = "missing-parent-dest"
+		ruleName     = "missing-parent-rule"
+		gitPath      = "apps/missing-parent"
+	)
+	var (
+		testNs      string
+		repo        *RepoArtifacts
+		writeBranch string
+	)
+
+	BeforeAll(func() {
+		testNs = testNamespaceFor("manager-missing-parent")
+		_, _ = kubectlRun("create", "namespace", testNs)
+		writeBranch = fmt.Sprintf("reverser-e2e-%d", GinkgoRandomSeed())
+		repo = SetupRepo(resolveE2EContext(), testNs, fmt.Sprintf("e2e-missing-parent-%d", GinkgoRandomSeed()))
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		applySOPSAgeKeyToNamespace(testNs)
+		applyParentSpecProvider(testNs, providerName, repo, writeBranch)
+	})
+
+	AfterAll(func() {
+		cleanupWatchRule(ruleName, testNs)
+		cleanupGitTarget(destName, testNs)
+		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+		cleanupNamespace(testNs)
+	})
+
+	It("refuses while the parent is missing, then recovers on its own once it is pushed", func() {
+		commitFilesToBranchFromOutside(repo, testNs, "main", "e2e: seed main", map[string]string{
+			"README.md": "main is not the parent here\n",
+		})
+		createGitTargetWithParentBranch(destName, testNs, providerName, gitPath, writeBranch, "release")
+		applyParentSpecWatchRule(testNs, ruleName, destName)
+
+		By("an edit made while release does not exist is not written")
+		applyParentConfigMap(testNs, "made-while-missing")
+		Eventually(func(g Gomega) {
+			g.Expect(readyReasonOf(g, destName, testNs)).To(Equal("ParentBranchNotFound"))
+		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		Expect(remoteBranchHeadOf(Default, repo.CheckoutDir, writeBranch)).To(BeEmpty(), "no orphan branch")
+
+		By("release is pushed from outside; nothing in the cluster changes after this")
+		releaseTip := commitFilesToBranchFromOutside(repo, testNs, "release", "e2e: release appears",
+			map[string]string{"RELEASE.md": "release\n"})
+
+		By("the write branch is created on release's tip, carrying the edit made while it was missing")
+		editPath := path.Join(gitPath, testNs, "configmaps", "made-while-missing.yaml")
+		Eventually(func(g Gomega) {
+			tip := remoteBranchHeadOf(g, repo.CheckoutDir, writeBranch)
+			g.Expect(tip).NotTo(BeEmpty(), "the recovery creates the write branch")
+			_, fetchErr := gitRun(repo.CheckoutDir, "fetch", "origin", writeBranch)
+			g.Expect(fetchErr).NotTo(HaveOccurred())
+			first, revErr := gitRun(repo.CheckoutDir, "rev-list", "--max-parents=1", "--reverse",
+				"origin/release.."+tip)
+			g.Expect(revErr).NotTo(HaveOccurred())
+			commits := strings.Fields(first)
+			g.Expect(commits).NotTo(BeEmpty())
+			parentOfFirst, revErr := gitRun(repo.CheckoutDir, "rev-parse", commits[0]+"^")
+			g.Expect(revErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(parentOfFirst)).To(Equal(releaseTip),
+				"the branch's first commit sits on release's tip")
+			_, showErr := gitRun(repo.CheckoutDir, "cat-file", "-e", tip+":"+editPath)
+			g.Expect(showErr).NotTo(HaveOccurred(), "the edit made while release was missing is on the branch")
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			g.Expect(readyReasonOf(g, destName, testNs)).NotTo(
+				BeElementOf("ParentBranchNotFound", "RecoveringParentBranch"))
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+	})
+}
 
 func describeNewWriteBranchSpec(parentBranch, parent, slug string) {
 	const (
-		providerName  = "parent-provider"
-		destName      = "parent-dest"
-		ruleName      = "parent-rule"
-		gitPath       = "apps/parent"
-		selectorLabel = "e2e.configbutler.ai/parent-branch"
+		providerName = "parent-provider"
+		destName     = "parent-dest"
+		ruleName     = "parent-rule"
+		gitPath      = "apps/parent"
 	)
 	var (
 		testNs      string
@@ -59,18 +204,7 @@ func describeNewWriteBranchSpec(parentBranch, parent, slug string) {
 
 	applyConfigMap := func(name string) {
 		GinkgoHelper()
-		manifest := fmt.Sprintf(`apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: %s
-  namespace: %s
-  labels:
-    %s: "yes"
-data:
-  key: %s
-`, name, testNs, selectorLabel, name)
-		out, err := kubectlRunWithStdin(testNs, manifest, "apply", "-f", "-")
-		Expect(err).NotTo(HaveOccurred(), "apply ConfigMap %q: %s", name, out)
+		applyParentConfigMap(testNs, name)
 	}
 
 	// mirroredDocument is the document the controller writes for applyConfigMap(name).
@@ -84,18 +218,12 @@ metadata:
   namespace: %s
 data:
   key: %s
-`, selectorLabel, name, testNs, name)
+`, parentBranchSelectorLabel, name, testNs, name)
 	}
 
 	branchSeries := func(metric, extra string) string {
 		return fmt.Sprintf(`sum(%s{provider_namespace=%q,branch=%q%s}) or vector(0)`,
 			metric, testNs, writeBranch, extra)
-	}
-	fetches := func(reason string) float64 {
-		GinkgoHelper()
-		v, err := queryPrometheus(branchSeries("gitopsreverser_git_fetches_total", fmt.Sprintf(",reason=%q", reason)))
-		Expect(err).NotTo(HaveOccurred())
-		return v
 	}
 	pushes := func() float64 {
 		GinkgoHelper()
@@ -115,20 +243,7 @@ data:
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
 		applySOPSAgeKeyToNamespace(testNs)
 
-		provider := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: GitProvider
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  url: %s
-  allowedBranches: ["main", %q]
-  secretRef:
-    name: %s
-`, providerName, testNs, repo.RepoURLHTTP, writeBranch, repo.GitSecretHTTP)
-		out, err := kubectlRunWithStdin(testNs, provider, "apply", "-f", "-")
-		Expect(err).NotTo(HaveOccurred(), "apply GitProvider: %s", out)
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
+		applyParentSpecProvider(testNs, providerName, repo, writeBranch)
 	})
 
 	AfterAll(func() {
@@ -152,23 +267,7 @@ spec:
 
 		By("creating a GitTarget on an absent write branch, and a WatchRule that selects nothing yet")
 		createGitTargetWithParentBranch(destName, testNs, providerName, gitPath, writeBranch, parentBranch)
-		rule := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: WatchRule
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  gitTargetRef:
-    name: %s
-  rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    objectSelector:
-      matchLabels:
-        %s: "yes"
-`, ruleName, testNs, destName, selectorLabel)
-		out, err := kubectlRunWithStdin(testNs, rule, "apply", "-f", "-")
-		Expect(err).NotTo(HaveOccurred(), "apply WatchRule: %s", out)
+		applyParentSpecWatchRule(testNs, ruleName, destName)
 		verifyResourceStatus("watchrule", ruleName, testNs, "True", "Succeeded", "")
 		waitForWatchRuleStreamsRunning(ruleName, testNs)
 
@@ -205,7 +304,6 @@ spec:
 			"a write that commits nothing must not create the write branch")
 
 		By(parent + " moves to B from outside, touching the target's folder")
-		contentionBefore, refreshBefore := fetches("contention"), fetches("refresh")
 		hashB := commitFilesToBranchFromOutside(repo, testNs, parent, "e2e: B moves the parent", map[string]string{
 			path.Join(gitPath, "NOTES.md"): "added on the parent at B\n",
 		})
@@ -229,13 +327,6 @@ spec:
 				g.Expect(showErr).NotTo(HaveOccurred(), "%s must be on the new branch", file)
 			}
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
-
-		By("and the publication check, not the refresher, is what found B")
-		waitForMetricWithTimeout(branchSeries("gitopsreverser_git_fetches_total", `,reason="contention"`),
-			func(v float64) bool { return v > contentionBefore },
-			"the rejected push reset onto the moved parent", time.Minute)
-		Expect(fetches("refresh")).To(Equal(refreshBefore),
-			"no refresh fetch may stand in for the publication check")
 	})
 }
 

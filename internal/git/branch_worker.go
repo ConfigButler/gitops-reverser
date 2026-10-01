@@ -62,6 +62,8 @@ var (
 	// just before admission.
 	//nolint:gochecknoglobals
 	beforePushAdmission func()
+	//nolint:gochecknoglobals
+	advertiseRemoteBranchFn = advertiseRemoteBranch
 )
 
 // BranchWorker processes events for a single (GitProvider, Branch) combination.
@@ -321,6 +323,18 @@ type BranchWorker struct {
 	// crOwners is the manager's table of which worker holds each request. See commitRequestOwners.
 	// Set by the WorkerManager before Start; nil for a worker built on its own.
 	crOwners *commitRequestOwners
+
+	// clock is the time source of the parent-recovery schedule; nil is time.Now. See now().
+	clock func() time.Time
+	// parentRecoveryOpen, parentRecoveryFound and parentProbeHold mirror the event loop's
+	// recovery latch for readers outside it. See parent_recovery.go.
+	parentRecoveryOpen  atomic.Bool
+	parentRecoveryFound atomic.Bool
+	parentProbeHold     atomic.Pointer[parentProbeHold]
+	// snapshotRequests counts, per GitTarget, the snapshots the worker has asked for. See
+	// SnapshotRequestSeq.
+	snapshotRequestsMu sync.Mutex
+	snapshotRequests   map[itypes.ResourceReference]uint64
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -1102,6 +1116,10 @@ type branchWorkerEventLoop struct {
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
 	// its window's timers close it.
 	attachTimer *time.Timer
+
+	// recovery is the obligation to write what a missing parent branch held back, and the probe
+	// that drives it. See parent_recovery.go.
+	recovery parentRecovery
 }
 
 // commitWindowDefaults are a GitTarget's commit window timers when it declares none.
@@ -1147,6 +1165,9 @@ func (l *branchWorkerEventLoop) run() {
 		case <-refusalC:
 			l.refusalTimer = nil
 			l.flushPendingRefusalTouch()
+		case <-l.recoveryTimerC():
+			l.recovery.timer = nil
+			l.runParentProbe()
 		}
 		// After every wake: bind any waiting CommitRequest to an open window,
 		// resolve any whose attach deadline has passed, and re-arm the deadline timer.
@@ -1362,6 +1383,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping atomic request",
 			"events", len(request.Events))
+		l.noteParentUnavailable(err, atomicScope(request))
 		return
 	}
 
@@ -1389,6 +1411,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 			l.w.recordCommitFailure(commitFailureKindAtomic, commitFailureError)
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
 		}
+		l.noteParentUnavailable(err, atomicScope(request))
 		return
 	}
 
@@ -1590,7 +1613,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
 		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping open window",
 			"reason", string(reason), "windowTarget", windowTarget)
-		l.dropOpenWindow(pendingCR, err)
+		l.dropFailedWindow(err, pendingCR, err, windowScopes(targetNamespace, targetName, events))
 		return false
 	}
 
@@ -1639,7 +1662,8 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 				"windowTarget", windowTarget,
 				"events", len(events))
 		}
-		l.dropOpenWindow(pendingCR, fmt.Errorf("commit failed: %w", err))
+		l.dropFailedWindow(err, pendingCR, fmt.Errorf("commit failed: %w", err),
+			windowScopes(targetNamespace, targetName, events))
 		return false
 	}
 
@@ -1679,6 +1703,15 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 
 // dropOpenWindow discards a window whose finalize failed, resolving any attached
 // CommitRequest as Failed so the controller does not poll forever.
+// dropFailedWindow drops a window whose write failed with err, and when the parent branch is what
+// failed it, remembers the scopes the dropped writes belong to so they are recovered.
+func (l *branchWorkerEventLoop) dropFailedWindow(
+	err error, pendingCR *commitRequestID, cause error, scopes []recoveryScope,
+) {
+	l.noteParentUnavailable(err, scopes...)
+	l.dropOpenWindow(pendingCR, cause)
+}
+
 func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause error) {
 	l.openWindow = nil
 	l.windowBytes = 0
@@ -1725,6 +1758,11 @@ func (l *branchWorkerEventLoop) pushPending() {
 		l.stopPushTimer()
 		return
 	}
+	if l.w.awaitingParentProbe() {
+		// The parent is known missing and the probe is not due: it publishes these when it is.
+		l.stopPushTimer()
+		return
+	}
 
 	// A reset may have discarded the local commits behind these writes while the replay that
 	// rebuilds them did not finish. Pushing now would find the branch already at the remote tip,
@@ -1734,10 +1772,12 @@ func (l *branchWorkerEventLoop) pushPending() {
 		l.w.Log.Error(err, "Cannot publish until the retained writes are rebuilt; keeping them",
 			"pendingWrites", len(l.pendingWrites))
 		l.stopPushTimer()
+		l.noteParentUnavailable(err)
 		return
 	}
 
 	if err := l.w.pushPendingCommits(l.pendingWrites); err != nil {
+		l.noteParentUnavailable(err)
 		l.w.Log.Error(err, "Push failed; pending writes retained for retry",
 			"pendingWrites", len(l.pendingWrites))
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
@@ -1755,6 +1795,7 @@ func (l *branchWorkerEventLoop) pushPending() {
 	l.pendingWritesBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
+	l.noteRecoveryPublished()
 }
 
 // resolvePushedCommitRequests settles every CommitRequest carried by a just-pushed write, now
@@ -1825,6 +1866,10 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopPushTimer()
 	l.stopAttachTimer()
 	l.stopRefusalTimer()
+	if l.recovery.timer != nil {
+		l.recovery.timer.Stop()
+		l.recovery.timer = nil
+	}
 }
 
 func (l *branchWorkerEventLoop) stopRefusalTimer() {
@@ -1937,6 +1982,9 @@ func (w *BranchWorker) ensureBaseForCycle(
 	w.restampParentGenIfIndependent()
 	if w.baseTrusted() && !w.worktreeDirty() {
 		return nil
+	}
+	if w.awaitingParentProbe() {
+		return errAwaitingParentProbe
 	}
 
 	// Resolve credentials only on the branch that touches the remote. A cycle planning on a

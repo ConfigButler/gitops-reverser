@@ -180,7 +180,8 @@ func TestBranchWorker_AnEmptyRepositoryThatGainsOnlyATagWaits(t *testing.T) {
 	assert.Empty(t, o.ParentRequested)
 
 	main := branchOnDisk(t, f.repoDir, "main", "a branch at last\n")
-	f.loop.pushPending()
+	pastProbeDeadline(f.worker)
+	f.loop.runParentProbe()
 	tip := f.ref("feature")
 	require.False(t, tip.IsZero())
 	assert.Equal(t, []plumbing.Hash{main}, f.parentOf(tip))
@@ -229,6 +230,7 @@ func TestBranchWorker_ADanglingRemoteHeadIsMissingNotUnborn(t *testing.T) {
 
 	// §4.3 test 3: repairing HEAD is enough.
 	gitIn(t, f.repoDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	pastProbeDeadline(f.worker)
 	liveWrite(f.loop, "cm2")
 	tip := f.ref("feature")
 	require.False(t, tip.IsZero())

@@ -199,12 +199,55 @@ func TestParentBranchReadiness_AnOmittedParentCanStall(t *testing.T) {
 		"an observation made under a configured parent is about another configuration")
 }
 
-func TestReadyReasonIs(t *testing.T) {
-	conditions := []metav1.Condition{{Type: ConditionTypeReady, Status: metav1.ConditionFalse,
-		Reason: GitTargetReasonParentBranchNotFound}}
-	assert.True(t, readyReasonIs(conditions, GitTargetReasonParentBranchNotFound))
-	assert.False(t, readyReasonIs(conditions, GitTargetReasonTargetConflict))
-	assert.False(t, readyReasonIs(nil, GitTargetReasonParentBranchNotFound))
+// TestParentRecovery_ASnapshotRequestForcesOneRecheck: the controller acts on the branch worker's
+// snapshot requests, not on the Ready reason. A request forces exactly one recheck; requests made
+// entirely between two reconciles are still acted on; an unchanged sequence forces nothing.
+func TestParentRecovery_ASnapshotRequestForcesOneRecheck(t *testing.T) {
+	r, workers := startParentBranchWorkers(t)
+	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
+	target := parentBranchTarget("apps", "edits", "apps", "release", time.Now())
+	_, err := r.ensureEventStream(context.Background(), target, "shop", repo, logr.Discard())
+	require.NoError(t, err)
+	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
+	ref := types.NewResourceReference(target.Name, target.Namespace)
+
+	recheck, _ := r.parentRecovery(target, "shop")
+	assert.False(t, recheck, "nothing asked")
+
+	worker.BumpSnapshotRequestForTest(ref)
+	recheck, _ = r.parentRecovery(target, "shop")
+	assert.True(t, recheck)
+	recheck, _ = r.parentRecovery(target, "shop")
+	assert.False(t, recheck, "exactly one recheck per request")
+
+	worker.BumpSnapshotRequestForTest(ref)
+	worker.BumpSnapshotRequestForTest(ref) // a whole episode between two reconciles
+	recheck, _ = r.parentRecovery(target, "shop")
+	assert.True(t, recheck, "still acted on")
+
+	for range 10 {
+		recheck, _ = r.parentRecovery(target, "shop")
+		assert.False(t, recheck)
+	}
+
+	r.snapshotRequests.forget(ref)
+	recheck, _ = r.parentRecovery(target, "shop")
+	assert.True(t, recheck, "a forgotten target acts on the standing request again")
+}
+
+func TestParentRecoveryReadiness_IsProgressNotAStall(t *testing.T) {
+	rd := newGitTargetReadiness()
+	parentRecoveryReadiness(rd, true)
+	trio := rd.trio()
+	assert.Equal(t, metav1.ConditionFalse, trio.Ready.Status)
+	assert.Equal(t, GitTargetReasonRecoveringParentBranch, trio.Ready.Reason)
+	assert.Equal(t, metav1.ConditionTrue, trio.Reconciling.Status)
+	assert.NotEqual(t, metav1.ConditionTrue, trio.Stalled.Status)
+	assert.Equal(t, RequeueStreamSettleInterval, gitTargetRequeue(rd), "it keeps the not-Ready requeue")
+
+	rd = newGitTargetReadiness()
+	parentRecoveryReadiness(rd, false)
+	assert.True(t, rd.converged())
 }
 
 // TestCheckForConflicts_ParentBranchAppliesToInvalidPaths: a target whose path its writer will

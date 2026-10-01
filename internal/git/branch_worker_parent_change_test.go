@@ -73,6 +73,12 @@ func pushRoots(t *testing.T, hook func()) *[]plumbing.ReferenceName {
 	return &roots
 }
 
+// pastProbeDeadline moves the worker's clock past any parent-probe deadline, so a test can stand in
+// for the time a held-back parent waits before it is looked for again.
+func pastProbeDeadline(w *BranchWorker) {
+	w.clock = func() time.Time { return time.Now().Add(time.Hour) }
+}
+
 // observations collects every observation the worker reports.
 func observations(f *newBranchFixture) *[]RemoteObservation {
 	var seen []RemoteObservation
@@ -222,9 +228,10 @@ func TestBranchWorker_AParentChangeToAMissingParentKeepsTheWork(t *testing.T) {
 		require.NotEmpty(t, loop.pendingWrites, "the work is retained")
 
 		release := f.pushToRelease("RELEASE.md", "now it exists\n")
-		loop.pushPending()
+		pastProbeDeadline(f.worker)
+		loop.runParentProbe()
 		tip, onRemote := f.featureOnRemote()
-		require.True(t, onRemote)
+		require.True(t, onRemote, "the probe published the retained work")
 		assert.Equal(t, release, f.commitParent(tip))
 	})
 
@@ -247,7 +254,8 @@ func TestBranchWorker_AParentChangeToAMissingParentKeepsTheWork(t *testing.T) {
 
 		beforePushAdmission = nil
 		release := f.pushToRelease("RELEASE.md", "now it exists\n")
-		loop.pushPending()
+		pastProbeDeadline(f.worker)
+		loop.runParentProbe()
 		tip, onRemote := f.featureOnRemote()
 		require.True(t, onRemote)
 		assert.Equal(t, release, f.commitParent(tip))

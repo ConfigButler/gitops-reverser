@@ -94,6 +94,10 @@ func resyncHealKey(req *ResyncRequest) healKey {
 // on that flag, so on a target holding work a bare invalidation reached nothing at all and the
 // snapshot judged a tree nobody had read. That is the exact hazard this function exists to close.
 func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
+	// A parent known to be missing is not fetched again before its probe is due.
+	if l.w.awaitingParentProbe() {
+		return errAwaitingParentProbe
+	}
 	// The invalidation is skipped when RefreshRemote already fetched a moment ago, which would
 	// otherwise make a forced recheck pay twice.
 	if req.RefreshRemote {
@@ -159,6 +163,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		closedWindow = l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 	}
 	if err := l.prepareBaseForResync(req); err != nil {
+		l.noteParentUnavailable(err, resyncScope(req))
 		req.reply(ResyncResult{Err: err})
 		return
 	}
@@ -186,6 +191,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 				refusalObservationForDesired(req.Desired, refused), req.refusalCollection())
 		}
 		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
+		l.noteParentUnavailable(err, resyncScope(req))
 		req.reply(ResyncResult{Err: err})
 		return
 	}
@@ -206,6 +212,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		l.pendingWrites = append(l.pendingWrites, *pendingWrite)
 		l.pendingWritesBytes += pendingWrite.ByteSize
 	}
+	l.noteResyncApplied(req.GitTargetNamespace, req.GitTargetName, req.refusalCollection(), committed)
 	// Schedule a push whenever this request CLOSED a live window — that window's
 	// commit is now in pendingWrites and must reach the remote — or the resync itself
 	// committed. Any finalize that closes a window must schedule its push, or the

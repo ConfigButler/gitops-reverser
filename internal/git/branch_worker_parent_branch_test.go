@@ -141,6 +141,7 @@ func TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists(t *testi
 	assert.Equal(t, ParentMissing, observed.ParentState)
 
 	r1 := f.pushToRelease("RELEASE.md", "now it exists\n")
+	pastProbeDeadline(f.worker) // until then a known-missing parent is not fetched again
 	liveWrite(loop, "cm2")
 
 	tip, onRemote := f.featureOnRemote()

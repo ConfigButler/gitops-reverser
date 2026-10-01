@@ -94,6 +94,15 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	// do no work at all, two lines below.
 	observed, known := w.LastRemoteObservation()
 
+	// While work is held back by a missing parent, the refresher shares the worker's one probe
+	// deadline: a tick before it costs nothing, and a tick after it is the probe.
+	if l.recovery.active {
+		if l.probeDue() {
+			l.runParentProbe()
+		}
+		return
+	}
+
 	// 3. Not idle, so not the target this exists for. A reset here would destroy retained
 	// commits, and the worktree may hold a partial write — which is also why this is the one exit
 	// that does not re-read the folder: a layout resolved from a half-written tree is worse than
@@ -191,7 +200,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 	// declared but never published to, and one whose GitProvider was recreated against a
 	// different repository.
 	parentBranch := w.ParentBranch()
-	advertisement, err := advertiseRemoteBranch(
+	advertisement, err := advertiseRemoteBranchFn(
 		w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), parentBranch, auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
