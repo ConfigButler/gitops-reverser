@@ -326,3 +326,23 @@ func TestWriteGate_AWindowMismatchIsStillAMismatch(t *testing.T) {
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeWindowMismatch, res.Outcome)
 }
+
+// TestWriteGate_AWindowReadsTheRenderGateOnce pins that the attached-request check after the write
+// is built asks suspension only. The render gate moves concurrently and the finalize already read
+// it for this window; reading it again could fail the request while the write it rode commits.
+func TestWriteGate_AWindowReadsTheRenderGateOnce(t *testing.T) {
+	worker, _, loop := seededLoop(t)
+	closeRenderGate(worker) // closed after the finalize's own read, as far as this check can tell
+	id := commitRequestID{Namespace: "default", Name: crName, UID: "uid-" + crName}
+	target := ResolvedTargetMetadata{Name: crTarget, Namespace: "default"}
+
+	assert.Equal(t, &id, loop.failRequestOnRefusedTarget(&id, target), "the request rides its write")
+	_, resolved := worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
+	assert.False(t, resolved)
+
+	target.Suspend = true
+	assert.Nil(t, loop.failRequestOnRefusedTarget(&id, target), "a suspended write carries no request")
+	res, resolved := worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
+	require.True(t, resolved)
+	require.ErrorIs(t, res.Err, errTargetSuspended)
+}

@@ -1712,20 +1712,21 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 }
 
 // failRequestOnRefusedTarget fails the request attached to a window whose write was planned for a
-// target that may not be written, and returns the request the write still carries: none, then.
-// The write itself still runs, so a suspended target's scan stays fresh, but it commits nothing,
-// and the push would report that as AlreadyPresent. See write_gate.go.
+// suspended target, and returns the request the write still carries: none, then. The write itself
+// still runs, so the target's scan stays fresh, but it commits nothing, and the push would report
+// that as AlreadyPresent. See write_gate.go.
+//
+// Only suspension is asked here. The render-fidelity gate is shared and moves concurrently, and
+// finalizeOpenWindowWithReason already read it once for this window: a second read could fail the
+// request while the write it rode still commits.
 func (l *branchWorkerEventLoop) failRequestOnRefusedTarget(
 	pendingCR *commitRequestID, target ResolvedTargetMetadata,
 ) *commitRequestID {
-	if pendingCR == nil {
-		return nil
+	if pendingCR == nil || !target.Suspend {
+		return pendingCR
 	}
-	if err := l.w.targetWriteRefusal(target.Name, target.Namespace, target.Suspend); err != nil {
-		l.resolveCommitRequest(*pendingCR, FinalizeResult{Err: err})
-		return nil
-	}
-	return pendingCR
+	l.resolveCommitRequest(*pendingCR, FinalizeResult{Err: errTargetSuspended})
+	return nil
 }
 
 // dropOpenWindow discards a window whose finalize failed, resolving any attached
