@@ -1,10 +1,10 @@
 # GitTarget parent branch: keep a target on standby until a write needs a branch
 
-> **design**: built in #407, with #408's `spec.parentBranch` folded in. This page records the
-> contract as built and the reasoning behind it. Open work:
-> [`gittarget-parent-hardening.md`](gittarget-parent-hardening.md) (before #407 merges), then
+> **design**: built in #407, with #408's `spec.parentBranch` folded in and the hardening pass
+> ([`gittarget-parent-hardening.md`](gittarget-parent-hardening.md), done) applied. This page
+> records the contract as built and the reasoning behind it. Deferred:
 > [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
-> [`gittarget-parent-observation.md`](gittarget-parent-observation.md) (deferred).
+> [`gittarget-parent-observation.md`](gittarget-parent-observation.md).
 > Related: [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../definitions.md`](../definitions.md), and `architecture.md` (Ground rules; "A branch that does
 > not exist yet").
@@ -56,7 +56,27 @@ check is what protects the first write.
 | yes | any | work on the write branch; the parent is not followed |
 | no | yes | compare against the parent; create the write branch from its tip, checked at publication |
 | no | no, **set** | refuse: `Ready=False`, `Stalled=True`, reason `ParentBranchNotFound`; nothing written, no orphan branch |
-| no | no, omitted, empty repository | unborn `HEAD`; the first commit is a root commit on the write branch |
+| no | no, omitted, not empty (`HEAD` resolves to no branch, or only tags) | refuse the same way: `ParentBranchNotFound`, with a message to fix `HEAD` or set the field |
+| no | no, omitted, empty repository (no refs at all) | unborn `HEAD`; the first commit is a root commit on the write branch |
+
+- **Recovery from a missing parent** is an obligation on the branch worker, not an observation. It
+  latches when a cycle fails on the parent and clears only when the work is published: retained
+  writes when they are pushed, and dropped writes per `(GitTarget, collection)` when a resync of
+  that scope is pushed or settles as a no-op. The worker probes with one advertisement after 10s,
+  doubling to 5m, shared by every target on it; before a deadline nothing spends a connection on
+  the parent, and reconciles never probe. Once found, it retries the retained writes and raises
+  a per-target snapshot request, which the controller turns into one recheck. Meanwhile the target
+  reports `RecoveringParentBranch`.
+- **A parent change on a live worker** takes effect at a push admission boundary: every operation
+  reads one `{name, generation}` snapshot, trust is scoped to the generation, and a push is admitted
+  only when its root was chosen under the current one. A push already admitted is not recalled.
+- **Default-branch resolution follows go-git**, which rewrites a hash-only `HEAD` before
+  `Remote.List` returns (to `master` when it matches, else the alphabetically first branch at that
+  hash). With the parent omitted, the parent is the default branch as last discovered; a refresh
+  that sees `HEAD` switch follows it with one fetch, and a push, which cannot see `HEAD`, does not.
+- **Cost.** Unchanged remotes keep the ledger's rows 1–12. The new rows: a standby no-op live write
+  is 1 connection, the first write after the parent moved is 6 (row 6), the parent probe is 1 with
+  no fetch, and a write branch created during our upload is 8.
 
 - **Immutable**, including adding or removing it, like `branch` and `path`. It decides what history
   a new write branch gets. Delete and recreate the `GitTarget` to change it.
@@ -153,6 +173,5 @@ meantime is [`gittarget-parent-observation.md`](gittarget-parent-observation.md)
 ## Open questions
 
 1. Should each `GitProvider.status.branches` entry show its write branch's parent?
-2. With the parent omitted, when is the default branch re-resolved after the remote's `HEAD`
-   changes? The push session does not advertise `HEAD`. The hardening pass settles this as "the
-   default branch resolved at the last discovery" (its §4.7, R5).
+2. ~~With the parent omitted, when is the default branch re-resolved after the remote's `HEAD`
+   changes?~~ Settled: at the next discovery (a refresh, or any fetch). See "The contract as built".

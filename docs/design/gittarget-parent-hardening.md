@@ -1,7 +1,21 @@
 # GitTarget parent branch: hardening pass before #407 merges
 
-> **Plan**: open, nothing built. Dated 2026-10-01. It comes from a three-way review of #407 and two
-> rounds of second opinions; §7 records the design choices those rounds settled.
+> **Plan**: done, 2026-10-01; the shipped contract is in
+> [`gittarget-parent-branch.md`](gittarget-parent-branch.md). It came from a three-way review of
+> #407 and two rounds of second opinions; §7 records the design choices those rounds settled.
+>
+> **Where the build departed from the plan.**
+>
+> - `SetParentBranch` no longer calls `invalidateBase` (§4.1 step 1 kept it as a belt). The
+>   generation already makes the old checkout untrusted, and the belt cost an existing write
+>   branch a fetch per change, which §4.1 test 6 forbids.
+> - The replay a refused admission triggers is counted as a `recovery` fetch.
+> - Canonical git advertises neither a `HEAD` that resolves to nothing nor its symref, so against
+>   it the dangling name (§4.3 test 1's `master`) never reaches the client: the observation's
+>   branch is empty and the message says the remote has no default branch.
+> - Once the probe has found the parent it stops reading advertisements: later deadlines retry the
+>   retained writes and re-request the snapshots still owed. A failure caused by the parent arms
+>   the latch again.
 >
 > **The merge boundary.** #407 merges when this pass is done: the existing parent-branch feature
 > behaves correctly under races and recovery, and stays as cheap as it is today. New policy

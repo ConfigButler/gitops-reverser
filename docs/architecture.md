@@ -1253,9 +1253,15 @@ parent. Periodic refresh, ten minutes by default, follows the
 parent from the same advertisement and updates the idle view independently of the publication
 check. The push records the parent and the commit it started from as its root, and treats a moved
 parent like a moved branch: fetch, reset, replay, check again. A branch somebody else created in the
-meantime is a moved remote too, so the replay builds on their commit instead of overwriting it.
-Proved end to end by the e2e spec "New write branch starts from its parent", whose recovery is
-attributed to the publication path rather than the refresher.
+meantime is a moved remote too, so the replay builds on their commit instead of overwriting it; that
+holds when the server refuses our upload too, because the fallback reads both refs from one
+advertisement. A cycle planned on an empty repository that has since gained refs is refused at the
+advertisement (`RepositoryNotEmptyError`) and replayed, never pushed as an orphan. A parent that is
+missing, or a default branch that does not resolve, is a recovery obligation on the worker: it
+probes on its own backoff and publishes what it held back once the parent exists (see
+`docs/design/gittarget-parent-branch.md`). Proved end to end by the e2e spec "New write branch
+starts from its parent"; that publication alone finds a moved parent is proved by worker tests
+with no refresher.
 
 **When the cycle fetches at all.** Only the first commit of a cycle may fetch, and only when the base
 is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans
