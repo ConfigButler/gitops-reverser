@@ -155,6 +155,11 @@ type BranchWorker struct {
 	// block on the lock, and send after Stop had finished draining, into a queue with no loop left
 	// to read it — and still answer "accepted".
 	stoppingState bool
+	// exitedState is set once the event loop has returned, for whatever reason, and the worker
+	// has settled every CommitRequest it knew. From then on nothing can act on a request, so a
+	// withdraw is answered at once instead of being queued for a loop that is gone. Guarded by
+	// pendingResyncsMu, like stoppingState.
+	exitedState bool
 
 	// lastObservation is what this worker last PROVED about the target branch on the remote, and
 	// when. See RemoteObservation: it replaces a fetch-only trio (branchExists, lastCommitSHA,
@@ -299,6 +304,14 @@ type BranchWorker struct {
 	// crPhases holds where each unresolved CommitRequest stands, for the controller to report
 	// while it waits. Guarded by crOutcomesMu; the event loop is the only writer.
 	crPhases map[commitRequestID]CommitRequestPhase
+	// crQueuedAttaches counts, per request, the attaches on the FIFO that the loop has not handled
+	// yet. An outcome is not collected while any are queued: the outcome is what turns a late attach
+	// into a no-op, so collecting it first would let that attach register a withdrawn request
+	// again, however long the outcome had been kept. Guarded by crOutcomesMu.
+	crQueuedAttaches map[commitRequestID]int
+	// crOwners is the manager's table of which worker holds each request. See commitRequestOwners.
+	// Set by the WorkerManager before Start; nil for a worker built on its own.
+	crOwners *commitRequestOwners
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -486,6 +499,7 @@ func (w *BranchWorker) Start(parentCtx context.Context) error {
 	go func() {
 		defer w.wg.Done()
 		w.processEvents()
+		w.settleCommitRequestsAfterExit()
 	}()
 
 	return nil
@@ -530,18 +544,25 @@ func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
 }
 
 // EnqueueWithdraw asks the loop to cancel a CommitRequest it has not acted on. It never blocks: a
-// full queue or a stopping worker drops it, and the controller sends it again on its next poll.
+// full queue or a stopping worker drops it, and the controller sends it again on its next poll. A
+// worker whose loop has exited answers at once, because nothing is left that could act on it.
 func (w *BranchWorker) EnqueueWithdraw(req *AttachCommitRequest) {
 	if req == nil {
 		return
 	}
-	w.inflightItems.Add(1)
 	w.pendingResyncsMu.Lock()
-	defer w.pendingResyncsMu.Unlock()
-	if w.stoppingLocked() {
-		w.inflightItems.Add(-1)
+	if w.exitedState {
+		w.pendingResyncsMu.Unlock()
+		w.answerWithdrawAfterExit(req.id())
 		return
 	}
+	defer w.pendingResyncsMu.Unlock()
+	if w.stoppingLocked() {
+		// Still draining: its last push may yet carry the request, so only the exited worker can
+		// answer. The controller asks again on its next poll.
+		return
+	}
+	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Withdraw: req}:
 	default:
@@ -576,7 +597,18 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
+	id := req.id()
+	if !w.crOwners.claim(id, w) {
+		// The router routes to the owner, so only a request that moved workers between two polls
+		// gets here. The owner answers for it; registering it twice could commit it twice.
+		w.pendingResyncsMu.Unlock()
+		w.inflightItems.Add(-1)
+		w.Log.Info("CommitRequest attach refused: another branch worker holds the request",
+			"request", req.Namespace+"/"+req.Name)
+		return
+	}
 	w.markResyncTailForTargetLocked(req.GitTargetNamespace, req.GitTargetName)
+	w.countQueuedAttach(id)
 	select {
 	case w.eventQueue <- WorkItem{Attach: req}:
 		w.pendingResyncsMu.Unlock()
@@ -590,6 +622,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		// time, so an enqueue is visible to the next scrape whether or not the
 		// loop has woken to notice it.
 	default:
+		w.uncountQueuedAttach(id)
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropAttach)
@@ -1389,15 +1422,22 @@ func (l *branchWorkerEventLoop) failUnpushedCommitRequests() {
 	}
 }
 
-// drainUnhandledQueueItems clears items the exiting loop will never handle. Each was counted into
-// inflightItems at enqueue and decremented only after handling, so without this the final depth
-// would stay non-zero forever: the loop has stopped, so nothing republishes a corrected value. A
-// buffered CommitRequest attach is dropped; the controller re-sends on its next poll.
-func (l *branchWorkerEventLoop) drainUnhandledQueueItems() {
+// drainUnhandledQueueItems clears items the exiting loop will never handle. See drainQueue.
+func (l *branchWorkerEventLoop) drainUnhandledQueueItems() { l.w.drainQueue() }
+
+// drainQueue clears items no loop will handle. Each was counted into inflightItems at enqueue and
+// decremented only after handling, so without this the final depth would stay non-zero forever:
+// the loop has stopped, so nothing republishes a corrected value. A buffered CommitRequest attach
+// is dropped, and the request given back unless the worker knows it otherwise; the controller
+// re-sends on its next poll, to whichever worker holds it then.
+func (w *BranchWorker) drainQueue() {
 	for {
 		select {
-		case <-l.w.eventQueue:
-			l.w.inflightItems.Add(-1)
+		case item := <-w.eventQueue:
+			if item.Attach != nil {
+				w.uncountQueuedAttach(item.Attach.id())
+			}
+			w.inflightItems.Add(-1)
 		default:
 			return
 		}

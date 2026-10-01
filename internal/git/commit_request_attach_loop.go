@@ -29,9 +29,14 @@ import (
 
 // commitRequestOutcomeTTL bounds how long a resolved CommitRequest outcome is
 // retained for the controller to poll before it is GC'd. It comfortably exceeds
-// the controller's poll cadence, and a withdrawn request's tombstone must outlive
-// any attach the controller could still have in flight.
+// the controller's poll cadence. It is not what keeps a withdrawn request withdrawn:
+// an outcome is never collected while an attach for it is still queued (crQueuedAttaches),
+// and the controller sends no attach once it has started withdrawing.
 const commitRequestOutcomeTTL = 15 * time.Minute
+
+// ErrBranchWorkerStopped is the outcome of a request whose branch worker stopped before it could
+// finish it. Once the loop has exited nothing can publish the request, so this answer is final.
+var ErrBranchWorkerStopped = errors.New("the GitTarget's branch worker stopped before it finished the CommitRequest")
 
 // recordCommitRequestOutcome stores a resolved outcome and GCs stale entries. The
 // event loop is the only caller, but it takes the mutex because the controller
@@ -39,16 +44,100 @@ const commitRequestOutcomeTTL = 15 * time.Minute
 func (w *BranchWorker) recordCommitRequestOutcome(id commitRequestID, result FinalizeResult) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
+	w.recordCommitRequestOutcomeLocked(id, result)
+}
+
+// recordCommitRequestOutcomeLocked is recordCommitRequestOutcome for a caller holding crOutcomesMu.
+func (w *BranchWorker) recordCommitRequestOutcomeLocked(id commitRequestID, result FinalizeResult) {
 	if w.crOutcomes == nil {
 		w.crOutcomes = map[commitRequestID]commitRequestOutcomeEntry{}
 	}
 	now := time.Now()
 	w.crOutcomes[id] = commitRequestOutcomeEntry{result: result, resolvedAt: now}
 	for k, entry := range w.crOutcomes {
-		if now.Sub(entry.resolvedAt) > commitRequestOutcomeTTL {
+		if now.Sub(entry.resolvedAt) > commitRequestOutcomeTTL && w.crQueuedAttaches[k] == 0 {
 			delete(w.crOutcomes, k)
+			w.crOwners.release(k, w)
 		}
 	}
+}
+
+// countQueuedAttach records an attach entering the FIFO. The caller holds pendingResyncsMu, so the
+// count is raised before the loop can receive the item.
+func (w *BranchWorker) countQueuedAttach(id commitRequestID) {
+	w.crOutcomesMu.Lock()
+	defer w.crOutcomesMu.Unlock()
+	if w.crQueuedAttaches == nil {
+		w.crQueuedAttaches = map[commitRequestID]int{}
+	}
+	w.crQueuedAttaches[id]++
+}
+
+// uncountQueuedAttach records an attach leaving the FIFO: handled by the loop, dropped on a full
+// queue, or drained by an exiting worker. A request the worker then knows nothing else about is
+// given back, so the controller's next poll finds the worker its GitTarget names.
+func (w *BranchWorker) uncountQueuedAttach(id commitRequestID) {
+	w.crOutcomesMu.Lock()
+	defer w.crOutcomesMu.Unlock()
+	if n := w.crQueuedAttaches[id]; n > 1 {
+		w.crQueuedAttaches[id] = n - 1
+		return
+	}
+	delete(w.crQueuedAttaches, id)
+	_, resolved := w.crOutcomes[id]
+	_, registered := w.crPhases[id]
+	if !resolved && !registered {
+		w.crOwners.release(id, w)
+	}
+}
+
+// settleCommitRequestsAfterExit runs once the event loop has returned: after a shutdown, after a
+// retirement, or when the loop never started because its GitProvider could not be read. Either way
+// nothing will act on a request again, and every request the worker knew must get an answer
+// rather than wait for one that cannot come.
+//
+//   - A request the worker held (attached, or committed) fails with ErrBranchWorkerStopped. A clean
+//     shutdown has already settled those through its last push; this catches what it could not.
+//   - A request it never acted on is given back. The old loop can no longer commit it, so the
+//     controller is free to send it to the worker the GitTarget names now, or to withdraw it.
+//
+// From then on a withdraw is answered at once (answerWithdrawAfterExit).
+func (w *BranchWorker) settleCommitRequestsAfterExit() {
+	w.pendingResyncsMu.Lock()
+	w.stoppingState = true
+	w.pendingResyncsMu.Unlock()
+
+	// A loop that never ran left its queue as the producers filled it.
+	w.drainQueue()
+
+	w.crOutcomesMu.Lock()
+	for id, phase := range w.crPhases {
+		if phase.Held() {
+			w.recordCommitRequestOutcomeLocked(id, FinalizeResult{Branch: w.Branch, Err: ErrBranchWorkerStopped})
+		} else {
+			w.crOwners.release(id, w)
+		}
+		delete(w.crPhases, id)
+	}
+	w.crOutcomesMu.Unlock()
+
+	w.pendingResyncsMu.Lock()
+	w.exitedState = true
+	w.pendingResyncsMu.Unlock()
+}
+
+// answerWithdrawAfterExit resolves a withdraw sent to a worker whose loop has exited. Nothing can
+// act on the request any more, so it is withdrawn for good, unless it already has an outcome.
+func (w *BranchWorker) answerWithdrawAfterExit(id commitRequestID) {
+	w.crOutcomesMu.Lock()
+	defer w.crOutcomesMu.Unlock()
+	if _, resolved := w.crOutcomes[id]; resolved {
+		return
+	}
+	w.recordCommitRequestOutcomeLocked(id, FinalizeResult{
+		Branch: w.Branch,
+		Err:    errors.Join(ErrCommitRequestWithdrawn, ErrBranchWorkerStopped),
+	})
 }
 
 // LookupCommitRequestOutcome returns a resolved CommitRequest outcome, or ok=false
@@ -96,6 +185,9 @@ func (w *BranchWorker) hasCommitRequestOutcome(id commitRequestID) bool {
 // an idempotent re-send restarts nothing and closes nothing.
 func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitRequest) {
 	id := req.id()
+	// Uncounted only once the request is registered or resolved, so the worker never looks as if it
+	// had forgotten a request it is in the middle of taking.
+	defer l.w.uncountQueuedAttach(id)
 	if l.w.hasCommitRequestOutcome(id) {
 		return // already resolved: a late idempotent re-send.
 	}

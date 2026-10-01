@@ -95,7 +95,11 @@ type WorkerManager struct {
 	// the scrape goroutine. Take it BEFORE mu, never the other way round.
 	lifecycleMu sync.Mutex
 	workers     map[BranchKey]*BranchWorker
-	ctx         context.Context
+	// commitRequests records which worker holds each CommitRequest. It outlives the map above on
+	// purpose: a retired worker leaves the map before it stops, and keeps answering for the
+	// requests it held. See commitRequestOwners.
+	commitRequests *commitRequestOwners
+	ctx            context.Context
 	// mapper is the GVK->GVR resolver injected into every worker so store scans build a
 	// resource-identity inventory. It is set once at startup (SetMapper) before any
 	// worker is created; a nil mapper keeps workers structure-only. It is the LOCAL cluster's
@@ -168,6 +172,7 @@ func NewWorkerManager(
 		limits:             limits.withDefaults(),
 		sensitiveResources: sensitiveResources,
 		workers:            make(map[BranchKey]*BranchWorker),
+		commitRequests:     &commitRequestOwners{},
 		remotes:            make(map[BranchKey]RemoteObservation),
 		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
@@ -358,6 +363,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
 		worker.scanAcceptance = m.scanAcceptance
 		worker.renderFidelityGate = m.renderFidelityGate
+		worker.crOwners = m.commitRequests
 
 		if err := worker.Start(m.ctx); err != nil {
 			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
@@ -465,6 +471,14 @@ func (m *WorkerManager) GetWorkerForTarget(
 
 	worker, exists := m.workers[key]
 	return worker, exists
+}
+
+// CommitRequestOwner returns the worker that holds a CommitRequest: the one that accepted its
+// attach and has not given it back. It is found whatever has happened to the request's GitTarget
+// since, including a worker retired and still finishing its last push, so a caller that finds no
+// owner knows that no worker can still commit the request.
+func (m *WorkerManager) CommitRequestOwner(namespace, name, uid string) (*BranchWorker, bool) {
+	return m.commitRequests.owner(commitRequestID{Namespace: namespace, Name: name, UID: uid})
 }
 
 // afterOrphanSelection runs between choosing the workers to retire and retiring them. It is nil in

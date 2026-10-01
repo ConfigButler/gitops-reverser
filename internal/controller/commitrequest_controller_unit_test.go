@@ -37,11 +37,13 @@ type fakeFinalizer struct {
 
 	calls []git.AttachCommitRequest
 
-	// The withdraw reply. The zero value is "not answered yet", so a test that never reaches the
-	// fail-closed path needs none of it.
+	// The withdraw reply. Left unset, the withdraw answers like the router does before it cancels
+	// anything: with the worker's outcome, or its phase while unresolved. withdrawPending makes an
+	// unset reply mean "not answered yet" instead.
 	withdrawResult   git.FinalizeResult
 	withdrawResolved bool
 	withdrawErr      error
+	withdrawPending  bool
 	withdrawCalls    []git.AttachCommitRequest
 }
 
@@ -49,7 +51,10 @@ func (f *fakeFinalizer) WithdrawCommitRequest(
 	_ context.Context, attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
 	f.withdrawCalls = append(f.withdrawCalls, attach)
-	return f.withdrawResult, f.withdrawResolved, f.withdrawErr
+	if f.withdrawPending || f.withdrawResolved || f.withdrawErr != nil || f.withdrawResult.Phase != "" {
+		return f.withdrawResult, f.withdrawResolved, f.withdrawErr
+	}
+	return f.result, f.resolved, f.err
 }
 
 func (f *fakeFinalizer) ServiceCommitRequest(
@@ -79,18 +84,27 @@ func attributedAlice() *fakeAuthorLookup {
 	return &fakeAuthorLookup{author: queue.CommandAuthor{Author: "alice"}, found: true}
 }
 
+// newCommitRequest builds a request created just now, inside its safety window, as the API server
+// would stamp it. pastTheBound ages one beyond it.
 func newCommitRequest(name string) *configv1alpha3.CommitRequest {
 	return &configv1alpha3.CommitRequest{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "default",
-			UID:       types.UID("uid-" + name),
+			Name:              name,
+			Namespace:         "default",
+			UID:               types.UID("uid-" + name),
+			CreationTimestamp: metav1.Now(),
 		},
 		Spec: configv1alpha3.CommitRequestSpec{
 			GitTargetRef: meta.LocalObjectReference{Name: "team-a-config"},
 			Message:      "save: " + name,
 		},
 	}
+}
+
+// pastTheBound ages a request beyond its safety window, where the controller only withdraws.
+func pastTheBound(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest {
+	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(cr.Spec).resolveTimeout()))
+	return cr
 }
 
 // withReadyCommitted stamps a terminal Committed CommitRequest (Ready=True).
@@ -441,8 +455,7 @@ func TestCommitRequestReconcile_ServiceErrorPolls(t *testing.T) {
 // Past the safety window a request the worker never acted on is withdrawn, and fails closed once
 // the worker confirms the withdraw.
 func TestCommitRequestReconcile_ResolveTimeoutFailsClosed(t *testing.T) {
-	// Zero CreationTimestamp: far past the resolve bound.
-	cr := newCommitRequest("save-stuck")
+	cr := pastTheBound(newCommitRequest("save-stuck"))
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
 		result:           git.FinalizeResult{Phase: git.PhaseWaitingForWindow},
@@ -454,6 +467,7 @@ func TestCommitRequestReconcile_ResolveTimeoutFailsClosed(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-stuck")
 
 	require.Len(t, f.withdrawCalls, 1, "the request is withdrawn before it is failed")
+	assert.Empty(t, f.calls, "past the bound no attach is sent: it would queue behind the withdraw")
 	got := fetchCommitRequest(t, c, "save-stuck")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, crReasonFinalizeFailed)
 	stalled := requireCondition(t, got, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)
@@ -465,7 +479,7 @@ func TestCommitRequestReconcile_ResolveTimeoutFailsClosed(t *testing.T) {
 func TestCommitRequestReconcile_AHeldRequestOutlivesTheBound(t *testing.T) {
 	for _, phase := range []git.CommitRequestPhase{git.PhaseCollectingWindow, git.PhaseWaitingForPush} {
 		t.Run(string(phase), func(t *testing.T) {
-			cr := newCommitRequest("save-held") // zero CreationTimestamp: far past the bound
+			cr := pastTheBound(newCommitRequest("save-held"))
 			c := newCommitRequestClient(t, nil, cr)
 			f := &fakeFinalizer{result: git.FinalizeResult{Phase: phase}}
 			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
@@ -473,7 +487,8 @@ func TestCommitRequestReconcile_AHeldRequestOutlivesTheBound(t *testing.T) {
 			res := reconcileCommitRequest(t, r, "save-held")
 
 			assert.Equal(t, commitRequestPollInterval, res.RequeueAfter)
-			assert.Empty(t, f.withdrawCalls, "a held request is not withdrawn")
+			assert.Empty(t, f.calls, "past the bound no attach is sent")
+			assert.Len(t, f.withdrawCalls, 1, "the withdraw finds the request held and changes nothing")
 			got := fetchCommitRequest(t, c, "save-held")
 			assert.False(t, commitRequestIsTerminal(&got))
 
@@ -495,9 +510,13 @@ func TestCommitRequestReconcile_AnUnansweredWithdrawKeepsPolling(t *testing.T) {
 		"the worker now holds it": {Phase: git.PhaseCollectingWindow},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cr := newCommitRequest("save-race")
+			cr := pastTheBound(newCommitRequest("save-race"))
 			c := newCommitRequestClient(t, nil, cr)
-			f := &fakeFinalizer{result: git.FinalizeResult{Phase: git.PhaseWaitingForWindow}, withdrawResult: reply}
+			f := &fakeFinalizer{
+				result:          git.FinalizeResult{Phase: git.PhaseWaitingForWindow},
+				withdrawResult:  reply,
+				withdrawPending: true,
+			}
 			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
 			res := reconcileCommitRequest(t, r, "save-race")
@@ -512,7 +531,7 @@ func TestCommitRequestReconcile_AnUnansweredWithdrawKeepsPolling(t *testing.T) {
 // A worker that resolved the request on its own just before the withdraw wins: its real outcome is
 // what the request reports.
 func TestCommitRequestReconcile_AWithdrawThatLostTheRaceReportsTheRealOutcome(t *testing.T) {
-	cr := newCommitRequest("save-late")
+	cr := pastTheBound(newCommitRequest("save-late"))
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
 		withdrawResult:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
@@ -529,7 +548,7 @@ func TestCommitRequestReconcile_AWithdrawThatLostTheRaceReportsTheRealOutcome(t 
 
 // A GitTarget that never started a branch worker is named as the cause.
 func TestCommitRequestReconcile_NoWorkerIsNamedWhenItFailsClosed(t *testing.T) {
-	cr := newCommitRequest("save-no-worker")
+	cr := pastTheBound(newCommitRequest("save-no-worker"))
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
 		result: git.FinalizeResult{Phase: git.PhaseWaitingForWorker},

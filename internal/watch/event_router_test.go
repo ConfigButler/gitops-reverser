@@ -58,7 +58,7 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 	_, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("missing", "team-a"))
 	require.Error(t, err)
 	assert.False(t, resolved)
-	assert.Contains(t, err.Error(), "get GitTarget")
+	require.ErrorIs(t, err, errGitTargetGone)
 }
 
 func TestGitTargetEventStreamRegistry(t *testing.T) {
@@ -454,6 +454,61 @@ func TestWithdrawCommitRequest_ALiveWorkerCancelsAWaitingRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resolved, "a re-sent attach finds the withdrawn outcome")
 	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+}
+
+// TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers: a worker is shared by every
+// GitTarget on its branch, so it outlives a deleted one. The withdraw must reach that worker, and
+// must never report success while the request is still registered there.
+func TestWithdrawCommitRequest_ADeletedGitTargetsWorkerStillAnswers(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	provider := &configv1alpha3.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
+		Spec:       configv1alpha3.GitProviderSpec{URL: "file:///tmp/does-not-need-to-exist"},
+	}
+	gitTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
+		Spec: configv1alpha3.GitTargetSpec{
+			GitProviderRef: meta.LocalObjectReference{Name: "team-a-provider"},
+			Branch:         "main",
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
+	workerManager := git.NewWorkerManager(
+		client, logr.Discard(), git.BranchWorkerLimits{}, types.SensitiveResourcePolicy{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = workerManager.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond) // allow the manager to record its context
+	require.NoError(t, workerManager.EnsureWorker(
+		ctx, "team-a-provider", "team-a", "main", git.RepoIdentity{URL: "file:///tmp/does-not-need-to-exist"}, ""))
+	worker, ok := workerManager.GetWorkerForTarget("team-a-provider", "team-a", "main")
+	require.True(t, ok)
+
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+	attach := saveAttach("team-a-config", "team-a")
+	attach.AttachTimeout = time.Hour
+	_, _, err := router.ServiceCommitRequest(context.Background(), attach)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID) == git.PhaseWaitingForWindow
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.NoError(t, client.Delete(context.Background(), gitTarget))
+
+	var result git.FinalizeResult
+	require.Eventually(t, func() bool {
+		var resolved bool
+		result, resolved, err = router.WithdrawCommitRequest(context.Background(), attach)
+		require.NoError(t, err)
+		if resolved {
+			require.Empty(t, worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID),
+				"the withdraw reported success while the worker still held the registration")
+		}
+		return resolved
+	}, 5*time.Second, 50*time.Millisecond)
+	require.ErrorIs(t, result.Err, git.ErrCommitRequestWithdrawn)
+	assert.Equal(t, "main", result.Branch, "the worker answered, not the missing GitTarget")
 }
 
 // TestDrainScopedResync_QueueFullIsDrainedNotOrphaned guards the ordering invariant behind

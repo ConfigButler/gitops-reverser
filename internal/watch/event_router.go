@@ -59,7 +59,7 @@ func NewEventRouter(
 }
 
 // ServiceCommitRequest is the controller's attach-then-poll seam (§6.4.3): it
-// resolves the GitTarget's branch worker, registers the CommitRequest attach
+// resolves the worker that holds the request, or else the GitTarget's branch worker, registers the CommitRequest attach
 // idempotently on that worker's FIFO event queue (attach it to the author's window
 // with its message and timers), and returns the request's current
 // outcome. resolved=false means the worker has not finished — the controller
@@ -77,24 +77,14 @@ func (r *EventRouter) ServiceCommitRequest(
 	ctx context.Context,
 	attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
-	var gitTarget configv1alpha3.GitTarget
-	if err := r.Client.Get(ctx, client.ObjectKey{
-		Name:      attach.GitTargetName,
-		Namespace: attach.GitTargetNamespace,
-	}, &gitTarget); err != nil {
-		return git.FinalizeResult{}, false, fmt.Errorf("get GitTarget %s/%s: %w",
-			attach.GitTargetNamespace, attach.GitTargetName, err)
+	worker, branch, err := r.commitRequestWorker(ctx, attach)
+	if err != nil {
+		return git.FinalizeResult{}, false, err
 	}
-
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.GitProviderRef.Name,
-		gitTarget.Namespace, // provider is in the same namespace as the target
-		gitTarget.Spec.Branch,
-	)
-	if !exists {
+	if worker == nil {
 		r.Log.V(1).Info("ServiceCommitRequest: no branch worker for the GitTarget yet; will retry",
 			"gitTarget", attach.GitTargetNamespace+"/"+attach.GitTargetName)
-		return git.FinalizeResult{Branch: gitTarget.Spec.Branch, Phase: git.PhaseWaitingForWorker}, false, nil
+		return git.FinalizeResult{Branch: branch, Phase: git.PhaseWaitingForWorker}, false, nil
 	}
 
 	// Idempotent register (the worker keys by request identity and keeps the first
@@ -113,37 +103,28 @@ func (r *EventRouter) ServiceCommitRequest(
 // not acted on, and reports the worker's answer, so the controller never fails a request the worker
 // could still commit.
 //
-//   - No worker for the GitTarget: nothing holds the request and nothing can commit it, so it
-//     resolves at once as withdrawn. The controller stops sending attaches, so a worker that starts
-//     later never sees it.
-//   - A worker: the withdraw rides the FIFO behind every attach already sent, and is a no-op for a
-//     request the worker holds. Until it is handled, resolved=false and Phase says where the
-//     request stands; a held phase means the controller keeps waiting.
+//   - The worker that holds the request answers for it, even when its GitTarget is gone or the
+//     worker is being retired. The withdraw rides its FIFO behind every attach already sent, and
+//     is a no-op for a request it holds. Until it is handled, resolved=false and Phase says where
+//     the request stands; a held phase means the controller keeps waiting.
+//   - Nothing holds it, and the GitTarget is gone or names no worker: nothing can commit the
+//     request, so it resolves at once as withdrawn. The controller sends no attach after it starts
+//     withdrawing, so a worker that starts later never sees it.
 func (r *EventRouter) WithdrawCommitRequest(
 	ctx context.Context,
 	attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
-	var gitTarget configv1alpha3.GitTarget
-	if err := r.Client.Get(ctx, client.ObjectKey{
-		Name:      attach.GitTargetName,
-		Namespace: attach.GitTargetNamespace,
-	}, &gitTarget); err != nil {
-		if apierrors.IsNotFound(err) {
-			// A deleted GitTarget has no worker left to hold the request.
-			return git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn}, true, nil
-		}
-		return git.FinalizeResult{}, false, fmt.Errorf("get GitTarget %s/%s: %w",
-			attach.GitTargetNamespace, attach.GitTargetName, err)
+	worker, branch, err := r.commitRequestWorker(ctx, attach)
+	if errors.Is(err, errGitTargetGone) {
+		// No worker holds the request, and its GitTarget can never start one.
+		return git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn}, true, nil
 	}
-
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.GitProviderRef.Name,
-		gitTarget.Namespace,
-		gitTarget.Spec.Branch,
-	)
-	if !exists {
+	if err != nil {
+		return git.FinalizeResult{}, false, err
+	}
+	if worker == nil {
 		return git.FinalizeResult{
-			Branch: gitTarget.Spec.Branch,
+			Branch: branch,
 			Phase:  git.PhaseWaitingForWorker,
 			Err:    git.ErrCommitRequestWithdrawn,
 		}, true, nil
@@ -152,11 +133,53 @@ func (r *EventRouter) WithdrawCommitRequest(
 	if result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID); resolved {
 		return result, true, nil
 	}
+	phase := worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
+	if phase.Held() {
+		return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
+	}
 	worker.EnqueueWithdraw(&attach)
-	return git.FinalizeResult{
-		Branch: gitTarget.Spec.Branch,
-		Phase:  worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID),
-	}, false, nil
+	// A worker whose loop has exited answers the withdraw at once.
+	if result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID); resolved {
+		return result, true, nil
+	}
+	return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
+}
+
+// commitRequestWorker finds the worker to ask about a CommitRequest, and the branch it serves.
+//
+// The worker that holds the request comes first, whatever its GitTarget says now: a shared worker
+// outlives a deleted target, and a retired one finishes its last push after the manager stopped
+// listing it. Only a request no worker holds falls back to the GitTarget's current worker, which is
+// nil while that worker has not started. A GitTarget that is gone is errGitTargetGone.
+func (r *EventRouter) commitRequestWorker(
+	ctx context.Context,
+	attach git.AttachCommitRequest,
+) (*git.BranchWorker, string, error) {
+	if owner, ok := r.WorkerManager.CommitRequestOwner(attach.Namespace, attach.Name, attach.UID); ok {
+		return owner, owner.Branch, nil
+	}
+
+	var gitTarget configv1alpha3.GitTarget
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Name:      attach.GitTargetName,
+		Namespace: attach.GitTargetNamespace,
+	}, &gitTarget); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, "", fmt.Errorf("%w: %s/%s", errGitTargetGone, attach.GitTargetNamespace, attach.GitTargetName)
+		}
+		return nil, "", fmt.Errorf("get GitTarget %s/%s: %w",
+			attach.GitTargetNamespace, attach.GitTargetName, err)
+	}
+
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		gitTarget.Spec.GitProviderRef.Name,
+		gitTarget.Namespace, // provider is in the same namespace as the target
+		gitTarget.Spec.Branch,
+	)
+	if !exists {
+		return nil, gitTarget.Spec.Branch, nil
+	}
+	return worker, gitTarget.Spec.Branch, nil
 }
 
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or

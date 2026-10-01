@@ -256,9 +256,32 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		MaxDuration:        window.maxDuration,
 		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
 	}
+	if time.Since(commitRequest.CreationTimestamp.Time) >= window.resolveTimeout() {
+		// Past the bound the controller only withdraws: an attach sent now would sit behind the
+		// withdraw on the worker's FIFO and could register the request after it was cancelled.
+		return r.withdrawCommitRequest(ctx, log, req, commitRequest, attribution, attach)
+	}
+	return r.attachCommitRequest(ctx, log, req, commitRequest, attribution, attach)
+}
+
+// attachCommitRequest sends the attach and reports the outcome once the worker has one. Until then
+// it records the worker's phase and polls; a service error is a not-yet-serviceable worker, so it
+// polls on the same terms.
+func (r *CommitRequestReconciler) attachCommitRequest(
+	ctx context.Context,
+	log logr.Logger,
+	req ctrl.Request,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	attach git.AttachCommitRequest,
+) (ctrl.Result, error) {
 	result, resolved, serviceErr := r.Finalizer.ServiceCommitRequest(ctx, attach)
 	if serviceErr != nil || !resolved {
-		return r.awaitAttachOutcome(ctx, log, req, commitRequest, attribution, window, attach, result.Phase, serviceErr)
+		if serviceErr != nil {
+			log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
+				"name", req.NamespacedName, "err", serviceErr.Error())
+		}
+		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase)
 	}
 
 	if result.Err != nil {
@@ -270,54 +293,48 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// awaitAttachOutcome handles an attach that has not produced an outcome yet. It keeps polling
-// while the worker holds the request, or while the request is inside its safety window. Past the
-// window it withdraws the request and fails it only on the worker's answer, so a request reported
-// failed can never be committed afterwards. A service error is a not-yet-serviceable worker, so it
-// polls on the same terms.
-func (r *CommitRequestReconciler) awaitAttachOutcome(
+// withdrawCommitRequest handles a request past its safety window. A request the worker holds keeps
+// polling with no bound of its own: only the worker can say how it ends. Any other request is
+// withdrawn, and fails only on the worker's answer, so a request reported failed can never be
+// committed afterwards. A withdraw that cannot be serviced yet polls on the same terms.
+func (r *CommitRequestReconciler) withdrawCommitRequest(
 	ctx context.Context,
 	log logr.Logger,
 	req ctrl.Request,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
-	window requestWindow,
 	attach git.AttachCommitRequest,
-	phase git.CommitRequestPhase,
-	serviceErr error,
 ) (ctrl.Result, error) {
-	if serviceErr != nil {
-		log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
-			"name", req.NamespacedName, "err", serviceErr.Error())
-	}
-
-	if phase.Held() || time.Since(commitRequest.CreationTimestamp.Time) < window.resolveTimeout() {
-		return r.pollCommitRequest(ctx, commitRequest, attribution, phase)
-	}
-
 	result, resolved, withdrawErr := r.Finalizer.WithdrawCommitRequest(ctx, attach)
 	if withdrawErr != nil || !resolved {
 		if withdrawErr != nil {
 			log.V(1).Info("CommitRequest withdraw not yet serviceable; will retry",
 				"name", req.NamespacedName, "err", withdrawErr.Error())
 		}
-		// Not answered yet, or the worker holds the request after all: keep polling.
+		// Not answered yet, or the worker holds the request: keep polling.
 		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase)
 	}
 
-	// The worker resolved it, by the withdraw or on its own just before; a GitTarget that was read
-	// carries its branch, and only then is its identity known.
+	if !errors.Is(result.Err, git.ErrCommitRequestWithdrawn) {
+		// The worker resolved it on its own before the withdraw: report that outcome, as the
+		// attach path would have.
+		r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution,
+			resolvedCommitRequestTarget(commitRequest))
+		return ctrl.Result{}, nil
+	}
+
+	// Withdrawn. A worker's answer, or a GitTarget that was read, carries the branch, and only
+	// then is the request's identity known.
 	target := commitRequestTarget{}
 	if result.Branch != "" {
 		target = resolvedCommitRequestTarget(commitRequest)
 	}
-	if !errors.Is(result.Err, git.ErrCommitRequestWithdrawn) {
-		r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution, target)
-		return ctrl.Result{}, nil
-	}
 
 	message := resolveTimeoutMessage
-	if result.Phase == git.PhaseWaitingForWorker || phase == git.PhaseWaitingForWorker {
+	switch {
+	case errors.Is(result.Err, git.ErrBranchWorkerStopped):
+		message = git.ErrBranchWorkerStopped.Error()
+	case result.Phase == git.PhaseWaitingForWorker:
 		message = noWorkerTimeoutMessage
 	}
 	log.Info("CommitRequest was not acted on within the safety window; withdrawn and failed closed",

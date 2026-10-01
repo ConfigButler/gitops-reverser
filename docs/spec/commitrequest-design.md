@@ -110,6 +110,15 @@ worker, which cancels it for good, and fails with `FinalizeFailed`; a GitTarget 
 is named in the message. The withdraw rides the worker's queue behind every attach, and is a no-op for a
 request the worker holds, so the controller's failure and the worker's answer cannot disagree.
 
+The withdraw goes to the worker that accepted the request's attach, not to whichever worker the GitTarget
+names now: a worker shared by several GitTargets outlives a deleted one, and a retired worker finishes its
+last push after the manager stopped listing it. Only a request no worker holds falls back to the GitTarget,
+and only then does "no GitTarget" or "no worker" mean that nothing can commit it. Once the controller starts
+withdrawing it sends no further attach, and the worker keeps a request's outcome while any attach for it is
+still queued, so a late attach can never register a withdrawn request again. A worker whose loop has exited,
+including one that never started because its GitProvider could not be read, gives back every request it
+never acted on and answers a withdraw at once.
+
 **`Committed` and `AlreadyPresent` are decided by the push, including the no-commit one.**
 (`WindowMismatch` is decided locally, at the deadline: no window was attached, so there is nothing
 for a push to say. So is `NoWindow` under `Resolve`. Under `CommitEmpty` a `NoWindow` request records
