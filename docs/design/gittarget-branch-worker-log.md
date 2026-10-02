@@ -1,7 +1,7 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, written 2026-10-02 against `main` at `0daa3711` (#412 merged).
-> Steps 1 to 3c are built; step 3 was split into 3a, 3b and 3c after review. Steps 4 to 7 remain.
+> Steps 1 to 4 are built; step 3 was split into 3a, 3b and 3c after review. Steps 5 to 7 remain.
 > It replaces the narrow fixes first considered for gaps 3, 4 and 5 in
 > [`gittarget-state-of-affairs.md`](gittarget-state-of-affairs.md#known-gaps-ranked-by-what-a-user-would-hit)
 > with one refactor of the write path that closes gap 4 structurally and gives gaps 3 and 5 one
@@ -149,15 +149,17 @@ snapshot-request sequence and the controller's snapshot-request tracker are gone
 recovery tests now pin that writes decided across one or two outages are kept and published, and
 that a failure leaving nothing in the log opens no obligation.
 
-### Step 4: a refused replay drops only its own entry
+### Step 4: a refused replay drops only its own entry (built)
 
-`fix(git)`.
-
-`executePendingWrites` aborts the whole replay at the first error, so one retained write that is
-now refused blocks every write behind it indefinitely. During a replay, a refusal settles only its
-entry: the refusal is reported, its save fails, and the entry leaves the log. A non-refusal error
-still aborts the attempt and keeps everything for the retry. After step 1 this is a small change in
-the one replay path.
+`fix(git)`. A replay used to abort at its first error, so one retained write that the moved remote
+now refused blocked every write behind it indefinitely. `replayPendingWrites` now undoes a refused
+write on its own, goes on, and stamps the entry with its refusal; a replay that completes holds the
+others, and `checkoutApplied` counts only those. The loop takes stamped entries out of the log after
+either replay (the loop's rebuild in `materializePrefix`, the push cycle's after a rejection) and
+settles each as a refusal at first commit is settled: the refusal is reported, its save fails. Any
+other failure still abandons the replay and keeps everything, refused write included, for the
+retry. A committed resync is marked answered, so a replay that refuses it later reports the refusal
+on the target instead of answering its caller twice. Pinned by `replay_refusal_test.go`.
 
 ### Step 5: show a publication that keeps failing (gap 5)
 

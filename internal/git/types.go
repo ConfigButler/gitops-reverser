@@ -391,6 +391,10 @@ type PendingWrite struct {
 	// the loop could not commit yet (the remote was unreachable) waits in the log with it unset;
 	// such writes always form the log's tail. Loop-goroutine only.
 	materialized bool
+	// replayRefusal is the refusal the last completed replay met for this write: the tree the write
+	// was replayed onto refuses it, so the replay skipped it and the checkout does not hold it. The
+	// loop settles it out of the log (settleReplayRefusals). Stamped by replayPendingWrites.
+	replayRefusal error
 	// seq numbers the loop's decisions, so a decision can be found in the log after writes before
 	// or after it were dropped or added. Loop-goroutine only.
 	seq uint64

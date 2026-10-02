@@ -1681,11 +1681,18 @@ func (l *branchWorkerEventLoop) pushPending() {
 		return
 	}
 
-	if err := l.w.pushPendingCommits(l.pendingWrites); err != nil {
+	err = l.w.pushPendingCommits(l.pendingWrites)
+	// A rejected push replays the writes onto the moved remote, and the new tree can refuse some of
+	// them. Those were not pushed and never will be, whatever the push did with the rest: they leave
+	// the log now, and are settled once the log describes the push's outcome, because settling one
+	// can decide more work.
+	refused := l.takeReplayRefusals()
+	if err != nil {
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
 		// design specifies lastPushAt only advances on a successful push. A
 		// CommitRequest riding a retained write stays unresolved while we retry.
 		l.publicationFailed(err, "Push failed; pending writes retained for retry")
+		l.settleReplayRefusals(refused)
 		return
 	}
 
@@ -1699,6 +1706,7 @@ func (l *branchWorkerEventLoop) pushPending() {
 	l.stopPushTimer()
 	l.closeRecoveryIfDone()
 	l.notePublicationSettled()
+	l.settleReplayRefusals(refused)
 }
 
 // publicationFailed keeps the writes for the next attempt, which it schedules: see retry.go.
@@ -2145,8 +2153,11 @@ func (w *BranchWorker) replayOntoRemote(
 	if err == nil {
 		err = w.tightenPendingPruneModes(w.ctx, pendingWrites)
 	}
+	held := 0
 	if err == nil {
-		_, err = w.executePendingWrites(w.ctx, repo, pendingWrites)
+		// A write the new tree refuses is skipped and stamped, not a failure of the replay: see
+		// replayPendingWrites. The checkout holds the others, and the loop settles the skipped one.
+		held, err = w.replayPendingWrites(w.ctx, repo, pendingWrites)
 	}
 	if err != nil {
 		w.invalidateBase("rebuild before replay failed")
@@ -2155,7 +2166,7 @@ func (w *BranchWorker) replayOntoRemote(
 	w.pushCycleRootBranch = rootBranch
 	w.pushCycleRootHash = rootHash
 	w.pushCycleRootGen = w.baseParentGen.Load()
-	w.checkoutApplied.Store(int64(len(pendingWrites)))
+	w.checkoutApplied.Store(int64(held))
 	return nil
 }
 
@@ -2685,7 +2696,8 @@ func (w *BranchWorker) publishCommitsForPush(pendingWrites []PendingWrite) {
 	}
 	counts := map[commitLabels]int64{}
 	for _, pendingWrite := range pendingWrites {
-		if !pendingWrite.createdCommit() {
+		// A write the last replay refused was not pushed: the loop settles it as a refusal.
+		if !pendingWrite.createdCommit() || pendingWrite.replayRefusal != nil {
 			continue
 		}
 		counts[commitLabels{

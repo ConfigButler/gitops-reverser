@@ -165,6 +165,8 @@ func (l *branchWorkerEventLoop) materialize() error {
 			l.settleUnreachable(err)
 			return err
 		}
+		// Read again: a rebuild settles the writes the new tree refuses out of the prefix.
+		i = l.materializedPrefix()
 		if i == len(l.pendingWrites) {
 			return nil
 		}
@@ -226,7 +228,11 @@ func (l *branchWorkerEventLoop) materializePrefix(refetch string) error {
 			"worktreeDirty", l.w.worktreeDirty(),
 			"committedWrites", l.w.checkoutApplied.Load())
 	}
-	return l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites[:m], reason)
+	if err := l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites[:m], reason); err != nil {
+		return err
+	}
+	l.settleReplayRefusals(l.takeReplayRefusals())
+	return nil
 }
 
 // materializedPrefix is how many writes at the head of the log have been committed before. Writes
@@ -265,6 +271,31 @@ func (l *branchWorkerEventLoop) removeAt(i int) PendingWrite {
 	l.pendingWrites = append(l.pendingWrites[:i], l.pendingWrites[i+1:]...)
 	l.pendingWritesBytes -= pendingWrite.ByteSize
 	return pendingWrite
+}
+
+// takeReplayRefusals takes out of the log every write the last completed replay refused, and returns
+// them in log order. The checkout holds none of them (replayPendingWrites), so after this it is
+// again the projection of the log's committed prefix.
+func (l *branchWorkerEventLoop) takeReplayRefusals() []PendingWrite {
+	var refused []PendingWrite
+	for i := 0; i < len(l.pendingWrites); {
+		if l.pendingWrites[i].replayRefusal == nil {
+			i++
+			continue
+		}
+		refused = append(refused, l.removeAt(i))
+	}
+	return refused
+}
+
+// settleReplayRefusals settles writes a replay refused, the way a refusal at first commit is settled:
+// the refusal is reported, a request riding the write fails, and the write is gone. Taking them out
+// of the log is a separate step (takeReplayRefusals), because the push path must do it before it
+// resolves the writes it published, and settling one can decide more work.
+func (l *branchWorkerEventLoop) settleReplayRefusals(refused []PendingWrite) {
+	for _, pendingWrite := range refused {
+		l.settleDropped(pendingWrite, pendingWrite.replayRefusal)
+	}
 }
 
 // settleCommitted acts on a write whose commit was made. A resync answers its caller with what it
@@ -309,6 +340,11 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 		"pendingWrites", len(l.pendingWrites))
 	if !answered {
 		answerResync(req, ResyncResult{Stats: *stats})
+		if committed {
+			// Its caller has its answer, so a replay that later refuses it reports the refusal
+			// the way a live write's is, and does not answer again.
+			l.pendingWrites[i].origin.answered = true
+		}
 	}
 }
 
@@ -324,7 +360,11 @@ func answerResync(req *ResyncRequest, result ResyncResult) {
 // riding it fails, and a refusal is surfaced as GitPathAccepted=False instead of being logged as a
 // write fault (a resync's refusal reaches its caller, which classifies it).
 func (l *branchWorkerEventLoop) settleFailed(i int, err error) {
-	pendingWrite := l.removeAt(i)
+	l.settleDropped(l.removeAt(i), err)
+}
+
+// settleDropped settles a write already taken out of the log whose commit failed for good.
+func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err error) {
 	switch {
 	case pendingWrite.origin.resync != nil && !pendingWrite.origin.answered:
 		req := pendingWrite.origin.resync
@@ -348,7 +388,8 @@ func (l *branchWorkerEventLoop) settleFailed(i int, err error) {
 			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
 				refusalObservationForDesired(req.Desired, refused), collection)
 		}
-		l.w.Log.Error(err, "Held-back resync commit failed; dropping it", "resources", len(req.Desired))
+		l.w.Log.Error(err, "Resync commit failed after its caller was answered; dropping it",
+			"resources", len(req.Desired))
 	case pendingWrite.origin.refusal != nil:
 		l.w.Log.Error(err, "The empty commit for a refused write failed",
 			"gitTarget", pendingWrite.origin.refusal.key.target.String())
