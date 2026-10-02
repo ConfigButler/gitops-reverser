@@ -1,8 +1,8 @@
 # Branch worker events, durable execution, and recovery
 
-A single failed push on a quiet branch can leave a `CommitRequest` in `WaitingForPush`
-indefinitely, even after Git recovers. Repair that liveness gap first: schedule publication retries
-and bound Git operations while keeping the branch worker as the owner of its checkout.
+A single failed push on a quiet branch used to leave a `CommitRequest` in `WaitingForPush`
+indefinitely, even after Git recovered. #412 repairs the retry half of that liveness gap. Bounding
+Git operations is the next step, with the branch worker still the owner of its checkout.
 
 The longer-term direction is recoverable execution of accepted writes, save commands, window
 decisions, deadlines, and publication outcomes. This document owns the worker's event semantics,
@@ -11,8 +11,8 @@ current failure analysis, and immediate implementation scope. The
 journal storage, acknowledgments, publication recovery, retention, and the persistence/HA rollout.
 The broader ownership contract is in [the architecture](../architecture.md#git-write-architecture).
 
-Status: design proposal against the code after merged PRs #407 and #411. Current-behavior sections
-describe that implementation. Event names and the transition boundary are proposals. This
+Status: design proposal against the code after #407, #411 and #412 (publication retry, built).
+Current-behavior sections describe that implementation. Event names and the transition boundary are proposals. This
 document changes no runtime behavior and does not establish an outage or exactly-once guarantee.
 
 ## Next implementation: restore publication progress
@@ -20,10 +20,10 @@ document changes no runtime behavior and does not establish an outage or exactly
 Ship retry scheduling and Git operation deadlines before the journal work. Neither fix depends
 on choosing a storage backend, changing the save contract, or implementing HA.
 
-1. Give retained publication work a bounded failure backoff that runs without another source
-   edit. Coordinate it with parent recovery and the successful-push cooldown so arrivals cannot
-   bypass the backoff or multiply the remote probe budget. Stop scheduling when the obligation
-   settles; a canceled worker must not rearm it.
+1. **Built in #412.** Retained publication work has a bounded failure backoff (10s, doubling to
+   5m) on the push timer, in [publication_retry.go](../../internal/git/publication_retry.go).
+   Commits before the deadline do not push; a success resets it; a missing parent stays with
+   parent recovery's probe; a stopped worker's timers are stopped with it.
 2. Carry cancellation through ref listing and fetch, and impose operation deadlines across the
    push cycle. Bound the cycle's total occupancy as well as its individual calls. Repeated
    contention retries must not repeatedly reset the whole budget. Keep timed-out work pending;
@@ -37,7 +37,8 @@ on choosing a storage backend, changing the save contract, or implementing HA.
 
 The completion test is a save whose first push fails, followed by silence and remote recovery:
 without another resource edit, its commit reaches Git and the same request reaches its terminal
-status with the published SHA. Also prove that a request can safely outlive the controller's
+status with the published SHA. `TestPublicationRetry_AHeldCommitRequestIsCommittedWithoutAnotherWrite`
+covers that on the real event loop. Still to prove that a request can safely outlive the controller's
 safety window while retries continue, and that a stalled remote call returns control within the
 operation budget. Use a controllable remote for those failures and a fake clock for retry timing.
 
@@ -143,34 +144,37 @@ not an archive of every mutation.
 
 These gaps are visible in the current code. Making the queue durable addresses only some of them.
 
-### A failed push can strand a save in `WaitingForPush`
+### A failed push stranded a save in `WaitingForPush` (fixed in #412)
 
-`pushPending` retains failed writes but stops the push timer without arming a general retry.
-If no more writes arrive, a quiet branch can remain unpublished indefinitely. Ordinary refresh
-skips a branch with retained work, so periodic `GitTarget` reconciliation does not repair this.
+Before #412, `pushPending` retained failed writes but stopped the push timer without arming a
+retry. If no more writes arrived, a quiet branch stayed unpublished indefinitely, and ordinary
+refresh skips a branch with retained work, so periodic `GitTarget` reconciliation did not repair it.
+The failure now schedules its own retry. The rest of this section records why the fix had to be
+on the worker.
 
-For an attached save that committed locally, this leaves `WaitingForPush` with no time limit.
+For an attached save that committed locally, this left `WaitingForPush` with no time limit.
 After its safety window, `withdrawCommitRequest` in the
 [controller](../../internal/controller/commitrequest_controller.go) sends withdrawal and continues
 polling when the worker still holds the request. `handleWithdrawCommitRequest` in the
 [attach loop](../../internal/git/commit_request_attach_loop.go) leaves attached or committed
-requests unchanged. Neither path retries the push. The API continues to show `Ready=False`,
+requests unchanged. Neither path retries the push. The API showed `Ready=False`,
 `Reconciling=True`, `Stalled=False`, and `Pushed=Unknown`, with reason `WaitingForPush`.
 
 That withdrawal rule protects against reporting failure and then publishing the save later.
 `TestCommitRequestReconcile_AHeldRequestOutlivesTheBound` explicitly preserves it. The defect is
-that the live worker can retain responsibility without scheduling progress. Restore retries;
-do not turn this into a controller-only timeout that can give a false terminal result.
+that the live worker retained responsibility without scheduling progress. The fix restores
+retries rather than adding a controller-only timeout that could give a false terminal result.
 
-Continued writes can cause the opposite problem. Only successful pushes advance `lastPushAt`.
-Once the successful-push cooldown has elapsed, later commits can repeatedly attempt the same
-unavailable remote. The [push-cooldown design](push-cooldown.md#7-options) records this gap.
+Continued writes caused the opposite problem: only successful pushes advance `lastPushAt`, so
+once the cooldown had elapsed every later commit attempted the same unavailable remote. The retry
+deadline now governs those commits too ([push-cooldown design](push-cooldown.md#7-options),
+option C).
 
-[Parent recovery](../../internal/git/parent_recovery.go) already models a useful alternative: an
-obligation remains open and schedules its next attempt. Its probe starts at 10 seconds and backs
-off to five minutes, sharing the budget across targets on the worker. General publication failure
-needs the same liveness property, with scheduling coordinated so the two paths cannot multiply
-remote attempts.
+The retry follows [parent recovery](../../internal/git/parent_recovery.go), which already kept an
+obligation open and scheduled its next attempt (10 seconds, backing off to five minutes, shared
+across targets on the worker). A failure caused by a missing parent stays on that schedule, so
+the two paths cannot multiply remote attempts. A publication that keeps failing is still visible
+only in logs and `gitopsreverser_git_pushes_total{outcome="failed"}`, not in `GitTarget` status.
 
 ### Slow Git operations stop the whole branch loop
 
@@ -375,13 +379,14 @@ The current worker has five timer sources:
 | Deadline | Existing purpose |
 |---|---|
 | Commit window | Close on idle timeout or maximum duration |
-| Push cooldown | Space successful publication cycles |
+| Push timer | Space successful publication cycles, or retry a failed one on its backoff |
 | Attach timeout | Settle a save still waiting for an eligible window |
 | Refusal action | Recheck consent before an eligible empty commit |
 | Parent recovery | Probe and service retained work or owed snapshots |
 
-Add a general publication retry obligation. Keep successful-push cooldown and failure backoff
-distinct, while giving the branch one policy for when it may spend its next remote attempt.
+The publication retry (#412) shares the push timer with the success cooldown, and keeps its own
+backoff, so the branch has one policy for when it may spend its next remote attempt. A durable
+design must persist that retry deadline like any other.
 
 An illustrative deadline protocol is:
 

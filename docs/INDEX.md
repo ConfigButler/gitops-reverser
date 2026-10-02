@@ -124,11 +124,12 @@ decided), **design, decided** (decision made, not built), **partly built**, **bu
 **deferred** (parked, kept as a decision record). The label is the first thing in the page,
 so you never have to read a proposal to find out it already shipped.
 
-### Open (28 pages)
+### Open (29 pages)
 
 | Doc | Open question |
 |---|---|
-| [`branch-worker-event-model.md`](design/branch-worker-event-model.md) | **proposal against merged #407 and #411.** Lead with the quiet-branch `WaitingForPush` failure and the retry/deadline fix. Worker ownership, FIFO inputs, save and deadline semantics, and the transition boundary for later durability. Journal storage and rollout belong to the HA plan. |
+| [`branch-worker-event-model.md`](design/branch-worker-event-model.md) | **proposal; its first fix is built in #412.** The quiet-branch `WaitingForPush` failure (a failed push now retries on its own backoff) and the Git operation deadlines still to do. Worker ownership, FIFO inputs, save and deadline semantics, and the transition boundary for later durability. Journal storage and rollout belong to the HA plan. |
+| [`gittarget-state-of-affairs.md`](design/gittarget-state-of-affairs.md) | **snapshot, 2026-10-02.** What is built for `GitTarget` and the branch worker, which page owns which decision, the known gaps ranked by user impact (verified in code), and the recommended order. Read it first to find the right page on this topic. |
 | [`gittarget-parent-branch.md`](design/gittarget-parent-branch.md) | **merged in #407.** `spec.parentBranch`: a target stays on standby until a write needs a branch, then creates its write branch from the parent's tip as checked at publication. The contract as built, the defect it started from, prior art and naming. Open: parent per `GitProvider.status.branches` entry. |
 | [`gittarget-parent-hardening.md`](design/gittarget-parent-hardening.md) | **done in #407.** Parent changes on a live worker, an empty repository gaining a ref, an unresolved default branch, recovery that cannot strand work, and the refused upload, without adding a pull to the fast path; plus the two recovery fixes from the review at `93120caf`. Records the merge boundary and the next separate PRs. |
 | [`gittarget-parent-empty-repository.md`](design/gittarget-parent-empty-repository.md) | **deferred.** An empty repository's default branch: the server reports it over protocol v2 but go-git discards it (upstream fix first); then a separate policy decision on which branch the first commit may create. Assuming `main` was considered and rejected. |
@@ -200,7 +201,8 @@ whole edit-through-the-API workstream started, and still holds the branch/sessio
 grouping strategies nothing else covers.
 [`ha-gittarget-distribution-plan.md`](future/ha-gittarget-distribution-plan.md) owns the durable
 journal, publication recovery, outage retention, and persistence/HA rollout. The branch worker
-event model owns execution semantics and the immediate retry/deadline fix.
+event model owns execution semantics and the Git operation-deadline fix; its publication retry
+shipped in #412.
 [`least-privilege-remaining-work.md`](future/least-privilege-remaining-work.md) has
 three open RBAC items.
 [`config-surface-for-a-structured-repository.md`](future/config-surface-for-a-structured-repository.md)

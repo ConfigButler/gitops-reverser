@@ -4,8 +4,8 @@ Status: **proposed** (not started)
 
 This is the owning document for the durable journal, publication recovery, retention, and the
 persistence/HA rollout. The [branch worker event model](../design/branch-worker-event-model.md)
-owns worker transitions, deadline semantics, and the immediate retry and operation-timeout fix.
-That fix can ship independently of this plan.
+owns worker transitions, deadline semantics, the publication retry (built in #412), and the
+operation-timeout fix, which can ship independently of this plan.
 
 ## Scope and definition of done
 
@@ -289,9 +289,10 @@ healthy outage backlog from a worker that has stopped making progress.
 
 ## Implementation phases
 
-The event model owns the immediate retry/deadline fix and extraction of deterministic worker
-transitions. These phases own persistence and HA after that boundary is available. Each phase
-needs its own failure tests; adding leadership must not be the first recovery test of the journal.
+The event model owns the operation-deadline fix (its publication retry shipped in #412) and
+extraction of deterministic worker transitions. These phases own persistence and HA after that
+boundary is available. Each phase needs its own failure tests; adding leadership must not be the
+first recovery test of the journal.
 
 ### HA-0: Specify and expose branch ownership
 
