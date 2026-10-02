@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.50.0...v0.51.0) (2026-10-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **commit:** one commit window surface for targets and saves ([#404](https://github.com/ConfigButler/gitops-reverser/issues/404))
+
+### Features
+
+* **api:** add GitTarget spec.parentBranch, and create a new write branch on its parent's current tip ([#407](https://github.com/ConfigButler/gitops-reverser/issues/407)) ([2de6dc8](https://github.com/ConfigButler/gitops-reverser/commit/2de6dc814dd40c6603359df4a20ca139dd216d4e))
+* **commit:** act on the 0.50 field report — closeDelay restarts at claim, [#388](https://github.com/ConfigButler/gitops-reverser/issues/388) back in the changelog ([#403](https://github.com/ConfigButler/gitops-reverser/issues/403)) ([860d959](https://github.com/ConfigButler/gitops-reverser/commit/860d959b669b5663dbd8c31b5b722d9b00b8b0f5))
+* **commit:** one commit window surface for targets and saves ([#404](https://github.com/ConfigButler/gitops-reverser/issues/404)) ([7f090ea](https://github.com/ConfigButler/gitops-reverser/commit/7f090ea0997b9ceb8e1013db8f2f58bce12670ad))
+
+
+### Bug Fixes
+
+* **commit:** fail a CommitRequest on a target that may not be written ([#411](https://github.com/ConfigButler/gitops-reverser/issues/411)) ([230d602](https://github.com/ConfigButler/gitops-reverser/commit/230d602a68882103eda547dbdf32273d5b7d78e5))
+* **git:** retry a failed publication on its own schedule, and close the 0.51 docs gaps ([#412](https://github.com/ConfigButler/gitops-reverser/issues/412)) ([0daa371](https://github.com/ConfigButler/gitops-reverser/commit/0daa371119366f500f49ce069364334b6eb657dd))
+
 ## [0.50.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.49.1...v0.50.0) (2026-09-29)
 
 
