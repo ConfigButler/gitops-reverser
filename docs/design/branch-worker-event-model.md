@@ -25,10 +25,10 @@ materializer for the checkout, and one retry deadline.
 Complete retry scheduling and add Git operation deadlines before the journal work. Neither fix
 depends on choosing a storage backend, changing the save contract, or implementing HA.
 
-1. **Built in #412.** Retained publication work has a bounded failure backoff (10s, doubling to
-   5m) on the push timer, in [publication_retry.go](../../internal/git/publication_retry.go).
+1. **Built in #412, one schedule since #413.** Retained publication work has a bounded failure
+   backoff (10s, doubling to 5m) on its own timer, in [retry.go](../../internal/git/retry.go).
    Commits before the deadline do not push; a success resets it. While parent recovery is open
-   its probe deadline is the retry, and new commits wait for it too, including after the parent
+   the same deadline is its probe, and new commits wait for it too, including after the parent
    returns. A stopped worker's timers are stopped with it.
 2. Carry cancellation through ref listing and fetch, and impose operation deadlines across the
    push cycle. Bound the cycle's total occupancy as well as its individual calls. Repeated
@@ -403,15 +403,15 @@ The current worker has five timer sources:
 | Deadline | Existing purpose |
 |---|---|
 | Commit window | Close on idle timeout or maximum duration |
-| Push timer | Space successful publication cycles, or retry a failed one on its backoff |
+| Push timer | Space successful publication cycles |
+| Retry | Retry a failed publication on its backoff, or probe for a missing parent |
 | Attach timeout | Settle a save still waiting for an eligible window |
 | Refusal action | Recheck consent before an eligible empty commit |
-| Parent recovery | Probe and service retained work or owed snapshots |
 
-The publication retry (#412) shares the push timer with the success cooldown and keeps its own
-backoff. Parent recovery has a separate timer, and owns the retry while its obligation is open.
-A durable design must persist both deadlines and that ownership rule. This scheduling does not
-limit the fetches other handlers can initiate.
+The retry schedule has its own timer; the push timer is only the success cooldown. Parent
+recovery has no timer of its own since #413: while its obligation is open, the retry deadline is
+its probe. A durable design must persist that one deadline and what it is for. This scheduling
+does not limit the fetches other handlers can initiate.
 
 An illustrative deadline protocol is:
 

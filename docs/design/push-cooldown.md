@@ -1,7 +1,7 @@
 # The push cooldown: what it still buys, and what removing it would cost
 
 > **design**: open. Option C (§7), the failure backoff, is built in
-> [`publication_retry.go`](../../internal/git/publication_retry.go); the success cooldown is
+> [`retry.go`](../../internal/git/retry.go), now one schedule with parent recovery's probe; the success cooldown is
 > unchanged. Option D needs measurement; option E remains rejected without that evidence.
 > Index: [`../INDEX.md`](../INDEX.md). Reviewed against #412 on 2026-10-02.
 > Related: [`../api-first-publication.md`](../api-first-publication.md),
@@ -29,7 +29,7 @@ its extra publication cost; that needs the measurements in §9.
 
 ```go
 if len(l.pendingWrites) == 0 { return }
-if l.awaitingPublicationRetry() { return }               // a failed publication has its own deadline
+if l.awaitingRetry() { return }                          // a failed attempt has its own deadline
 if l.lastPushAt.IsZero() { l.pushPending(); return }      // never pushed: go now
 if time.Since(l.lastPushAt) >= PushCooldown { l.pushPending(); return }
 if l.pushTimer == nil { l.pushTimer = time.NewTimer(...) } // otherwise wait out the remainder
@@ -148,7 +148,7 @@ has five timer sources: window, push, attach, refusal action, and parent recover
 
 | Item | Why it is not the cooldown's |
 | --- | --- |
-| `publicationRetry`, `pushTimer`, and `stopPushTimer` | Failed publication still needs a scheduled attempt |
+| The retry schedule (`retry.go`) | A failed publication still needs a scheduled attempt |
 | `pendingWrites` retention | A push can fail or be rejected; the writes must survive to be replayed |
 | `baseTrusted` | The head-of-cycle fetch decision, unrelated to push cadence |
 | `checkoutApplied` | A write that failed part-way, or a reset that discarded local commits, unrelated to push cadence |
@@ -162,7 +162,7 @@ flowchart TD
     end
 
     subgraph FAILURE["Owned by push failure - would remain"]
-        PT["publicationRetry + pushTimer + stopPushTimer"]
+        PT["retry schedule"]
         PW["pendingWrites retention"]
         BT["baseTrusted"]
         CA["checkoutApplied"]

@@ -75,7 +75,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 	assert.Equal(t, PhaseWaitingForPush, f.worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
 	require.Len(t, loop.pendingWrites, 2, "the window is decided and kept in the log")
 	assert.False(t, loop.pendingWrites[1].materialized)
-	require.True(t, loop.publicationRetry.pending(), "the failure armed the publication retry")
+	require.True(t, loop.retry.pending(), "the failure armed the publication retry")
 	require.Equal(t, int32(1), syncs.Load(), "the window tried the rebuild once")
 
 	// Another window during the outage is decided without spending a connection on the rebuild.
@@ -89,7 +89,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 
 	// The remote comes back and the retry fires.
 	restoreSyncs()
-	firePushTimer(loop)
+	fireRetry(loop)
 
 	res, resolved := outcome(t, f.worker)
 	require.True(t, resolved)
@@ -104,7 +104,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 		assert.Contains(t, names, name)
 	}
 	assert.Empty(t, loop.pendingWrites)
-	assert.False(t, loop.publicationRetry.pending())
+	assert.False(t, loop.retry.pending())
 }
 
 // A delete decided during an outage is committed on a tree the worker fetched later, so it is planned
@@ -143,7 +143,7 @@ func TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy(t *testing.T) {
 	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
 
 	restoreSyncs()
-	firePushTimer(loop)
+	fireRetry(loop)
 
 	require.Empty(t, loop.pendingWrites)
 	assert.Contains(t, remoteFileNames(t, f.repoDir), "keep-me",

@@ -81,7 +81,7 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 	if l.materializing {
 		return true // the pass already running commits it, in order
 	}
-	if l.publicationRetry.pending() && pendingWrite.Kind != PendingWriteResync &&
+	if l.retry.pending() && pendingWrite.Kind != PendingWriteResync &&
 		!l.materializeIsLocal() && !l.w.awaitingParentProbe() {
 		return true
 	}
@@ -90,11 +90,11 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 	l.deciding = 0
 	if err != nil {
 		l.noteParentUnavailable(err)
-		if len(l.pendingWrites) > 0 && !l.publicationRetry.pending() {
-			l.notePublicationFailed()
+		if (len(l.pendingWrites) > 0 || l.recovery.active) && !l.retry.pending() {
+			l.scheduleRetry()
 		}
 		l.w.Log.Error(err, "Cannot commit the decided writes yet; they wait in the log for the retry",
-			"pendingWrites", len(l.pendingWrites), "retryAt", l.publicationRetry.nextAttempt)
+			"pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
 	}
 	return l.inLog(pendingWrite.seq)
 }

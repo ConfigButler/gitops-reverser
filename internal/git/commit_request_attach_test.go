@@ -570,7 +570,7 @@ func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	assert.Nil(t, loop.openWindow, "the window closed on its own timers")
 	require.Len(t, loop.pendingWrites, 1, "the decided window waits in the log")
 	assert.False(t, loop.pendingWrites[0].materialized, "nothing could commit it yet")
-	assert.True(t, loop.publicationRetry.pending(), "the publication retry owns the next attempt")
+	assert.True(t, loop.retry.pending(), "the publication retry owns the next attempt")
 }
 
 // TestFinalizeOpenWindow_ReturnsCommittedFlag verifies the boolean contract of

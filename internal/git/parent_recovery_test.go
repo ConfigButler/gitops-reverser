@@ -108,7 +108,7 @@ func TestParentRecovery_RetainedWritesLandAfterAFailedFirstAttempt(t *testing.T)
 
 			release := simulateClientCommitOnDisk(t, f.repoDir, "release", "RELEASE.md", "back\n")
 			failNextSync(t)
-			clock.advance(parentProbeMaxBackoff)
+			clock.advance(retryMaxBackoff)
 			deadline()
 
 			assert.True(t, f.ref("feature").IsZero(), "the first attempt failed")
@@ -117,7 +117,7 @@ func TestParentRecovery_RetainedWritesLandAfterAFailedFirstAttempt(t *testing.T)
 			require.True(t, open, "the obligation outlives a failed attempt")
 			assert.True(t, found)
 
-			clock.advance(parentProbeMaxBackoff)
+			clock.advance(retryMaxBackoff)
 			deadline()
 
 			tip := f.ref("feature")
@@ -174,7 +174,7 @@ func TestParentRecovery_DroppedWritesClearPerScopeWhenPublished(t *testing.T) {
 	assert.Len(t, loop.recovery.scopes, 2)
 
 	f.pushToRelease("RELEASE.md", "release\n")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	loop.runParentProbe()
 	assert.Equal(t, uint64(1), f.worker.SnapshotRequestSeq(a))
 	assert.Equal(t, uint64(1), f.worker.SnapshotRequestSeq(b))
@@ -188,7 +188,7 @@ func TestParentRecovery_DroppedWritesClearPerScopeWhenPublished(t *testing.T) {
 	failNextSync(t)
 	require.Error(t, resync(b, collectionB, "b1"))
 
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	loop.runParentProbe() // publishes A's commit, and asks for B again
 
 	assert.Empty(t, loop.pendingWrites)
@@ -285,7 +285,7 @@ func TestParentRecovery_ASecondOutageKeepsTheWorkDroppedInIt(t *testing.T) {
 
 	write("cm1") // dropped: release does not exist
 	gitIn(t, f.repoDir, "branch", "release", "main")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.loop.runParentProbe()
 	seq := f.worker.SnapshotRequestSeq(refreshTarget())
 	require.Equal(t, uint64(1), seq)
@@ -307,7 +307,7 @@ func TestParentRecovery_ASecondOutageKeepsTheWorkDroppedInIt(t *testing.T) {
 	require.Len(t, f.loop.pendingWrites, 1, "cm2 was dropped; only the snapshot is retained")
 
 	gitIn(t, f.repoDir, "branch", "release", "main")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.loop.runParentProbe()
 
 	require.False(t, f.ref("feature").IsZero(), "the snapshot was published")
@@ -329,7 +329,7 @@ func TestParentRecovery_ARepairedRemoteHeadAsksForTheSnapshot(t *testing.T) {
 	assert.True(t, f.ref("feature").IsZero())
 
 	gitIn(t, f.repoDir, "symbolic-ref", "HEAD", "refs/heads/main")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.loop.runParentProbe()
 
 	assert.Equal(t, uint64(1), f.worker.SnapshotRequestSeq(refreshTarget()))
@@ -396,7 +396,7 @@ func TestParentRecovery_AHeldCommitRequestIsCommittedAfterALongRecovery(t *testi
 	assert.True(t, phase().Held())
 
 	release := simulateClientCommitOnDisk(t, f.repoDir, "release", "RELEASE.md", "back\n")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.worker.EnqueueRefresh(&RefreshRequest{Target: refreshTarget(), MaxAge: time.Nanosecond})
 
 	require.Eventually(t, func() bool {
@@ -432,7 +432,7 @@ func TestParentRecovery_AFailedEmptySaveOwesNothing(t *testing.T) {
 	require.Empty(t, f.loop.recovery.scopes)
 
 	gitIn(t, f.repoDir, "branch", "release", "main")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.loop.runParentProbe()
 
 	open, found := f.worker.ParentRecovery()

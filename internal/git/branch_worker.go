@@ -1081,12 +1081,11 @@ type branchWorkerEventLoop struct {
 
 	lastPushAt  time.Time
 	commitTimer *time.Timer
-	// pushTimer fires the next push: when the success cooldown ends, or when a failed
-	// publication's retry is due (publicationRetry).
+	// pushTimer fires the next push when the success cooldown ends.
 	pushTimer *time.Timer
-	// publicationRetry is the schedule of a failed publication's next attempt. See
-	// publication_retry.go.
-	publicationRetry publicationRetry
+	// retry is the one schedule of the next attempt at work a failed attempt left owed. See
+	// retry.go.
+	retry retrySchedule
 
 	// deferredHeals holds heal resyncs (periodic re-anchors, removed-type sweeps) parked while a
 	// commit window is open, so a heal never force-finalizes (steals) that window — including a
@@ -1173,9 +1172,9 @@ func (l *branchWorkerEventLoop) run() {
 		case <-refusalC:
 			l.refusalTimer = nil
 			l.flushPendingRefusalTouch()
-		case <-l.recoveryTimerC():
-			l.recovery.timer = nil
-			l.runParentProbe()
+		case <-l.retryTimerC():
+			l.retry.timer = nil
+			l.runRetry()
 		}
 		// After every wake: bind any waiting CommitRequest to an open window,
 		// resolve any whose attach deadline has passed, and re-arm the deadline timer.
@@ -1606,7 +1605,7 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	if len(l.pendingWrites) == 0 || l.materializing {
 		return
 	}
-	if l.awaitingPublicationRetry() {
+	if l.awaitingRetry() {
 		return
 	}
 	if l.lastPushAt.IsZero() {
@@ -1623,21 +1622,20 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	}
 }
 
-// pushPending publishes any retained pending writes that already exist as local
-// commits. On success, pendingWrites is cleared and lastPushAt advances. On
-// failure (transient or after exhausting replay retries), pendingWrites stays
-// in place, safe but unpublished, and the push timer is armed for the next
-// attempt (publication_retry.go), so the work lands without another commit.
-func (l *branchWorkerEventLoop) pushPending() {
+// pushPending materializes the log and publishes it, and reports whether nothing is left to
+// publish. On success, pendingWrites is cleared and lastPushAt advances. On failure (transient or
+// after exhausting replay retries), pendingWrites stays in place, safe but unpublished, and the
+// next attempt is scheduled (retry.go), so the work lands without another commit.
+func (l *branchWorkerEventLoop) pushPending() bool {
 	if len(l.pendingWrites) == 0 {
 		l.stopPushTimer()
 		l.notePublicationSettled()
-		return
+		return true
 	}
 	if l.w.awaitingParentProbe() {
 		// The parent is known missing and the probe is not due: it publishes these when it is.
 		l.stopPushTimer()
-		return
+		return false
 	}
 
 	// Commit any decided write that is not committed yet, and rebuild when a reset discarded the
@@ -1645,31 +1643,22 @@ func (l *branchWorkerEventLoop) pushPending() {
 	// tip, report success without sending anything, and settle work that exists nowhere. Keep the
 	// writes rather than publish a lie if that fails.
 	if err := l.materialize(); err != nil {
-		l.stopPushTimer()
-		l.noteParentUnavailable(err)
-		l.notePublicationFailed()
-		l.w.Log.Error(err, "Cannot publish until the retained writes are committed; keeping them",
-			"pendingWrites", len(l.pendingWrites), "retryAt", l.publicationRetry.nextAttempt)
-		return
+		l.publicationFailed(err, "Cannot publish until the retained writes are committed; keeping them")
+		return false
 	}
 	if len(l.pendingWrites) == 0 {
 		// Every decided write failed to commit, so there is nothing left to publish.
 		l.stopPushTimer()
 		l.notePublicationSettled()
-		l.closeRecoveryIfDone()
-		return
+		return true
 	}
 
 	if err := l.w.pushPendingCommits(l.pendingWrites); err != nil {
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
 		// design specifies lastPushAt only advances on a successful push. A
 		// CommitRequest riding a retained write stays unresolved while we retry.
-		l.stopPushTimer()
-		l.noteParentUnavailable(err)
-		l.notePublicationFailed()
-		l.w.Log.Error(err, "Push failed; pending writes retained for retry",
-			"pendingWrites", len(l.pendingWrites), "retryAt", l.publicationRetry.nextAttempt)
-		return
+		l.publicationFailed(err, "Push failed; pending writes retained for retry")
+		return false
 	}
 
 	// The writes are now on the remote: resolve every CommitRequest riding one with
@@ -1680,8 +1669,25 @@ func (l *branchWorkerEventLoop) pushPending() {
 	l.pendingWritesBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
-	l.notePublicationSettled()
 	l.noteRecoveryPublished()
+	l.notePublicationSettled()
+	return true
+}
+
+// publicationFailed keeps the writes for the next attempt, which it schedules: see retry.go.
+func (l *branchWorkerEventLoop) publicationFailed(err error, message string) {
+	l.stopPushTimer()
+	l.noteParentUnavailable(err)
+	l.scheduleRetry()
+	l.w.Log.Error(err, message, "pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
+}
+
+// notePublicationSettled closes the retry once nothing is owed: every write is published and parent
+// recovery, if it was open, has closed too.
+func (l *branchWorkerEventLoop) notePublicationSettled() {
+	if len(l.pendingWrites) == 0 && !l.recovery.active {
+		l.clearRetry()
+	}
 }
 
 // resolvePushedCommitRequests settles every CommitRequest carried by a just-pushed write, now
@@ -1752,9 +1758,9 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopPushTimer()
 	l.stopAttachTimer()
 	l.stopRefusalTimer()
-	if l.recovery.timer != nil {
-		l.recovery.timer.Stop()
-		l.recovery.timer = nil
+	if l.retry.timer != nil {
+		l.retry.timer.Stop()
+		l.retry.timer = nil
 	}
 }
 

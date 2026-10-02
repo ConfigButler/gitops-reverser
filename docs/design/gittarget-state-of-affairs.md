@@ -26,7 +26,7 @@ The release PR body includes #411. #412 remains a separate open fix PR at this s
 
 | Capability | Code | Pinned by |
 |---|---|---|
-| Failed publication retries without new writes, with 10s to 5m backoff; while parent recovery is open, its deadline paces the retry | [`publication_retry.go`](../../internal/git/publication_retry.go) | `TestPublicationRetry_*` (6) |
+| Failed publication retries without new writes, with 10s to 5m backoff; one schedule, which is parent recovery's probe while that is open | [`retry.go`](../../internal/git/retry.go) | `TestPublicationRetry_*` (6) |
 | One commit window per branch worker, with idle and maximum-duration timers; a save's timers replace the target's for the window it attaches to | [`open_window.go`](../../internal/git/open_window.go), [`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go) | `TestCommitEmpty_*`, `TestAttach_*` |
 | `whenNothingToCommit: CommitEmpty` records a save's message in an empty commit; outcomes `Committed` and `AlreadyPresent` are decided by the push | [`branch_worker.go`](../../internal/git/branch_worker.go) (`resolvePushedCommitRequests`) | `TestCommitEmpty_*` |
 | The controller never fails a save the worker holds; past its safety window it only asks the worker to withdraw it | [`commitrequest_controller.go`](../../internal/controller/commitrequest_controller.go) | `TestParentRecovery_AHeldCommitRequestIsCommittedAfterALongRecovery` |

@@ -33,16 +33,10 @@ import (
 //     collection because a ConfigMap snapshot of target A proves nothing about a Deployment of A,
 //     or about target B on the same worker.
 //
-// The worker probes for the parent itself, on the event loop, with one advertisement per deadline:
-// 10s, doubling, capped at 5m, shared by every target on the worker. Until the parent is found,
-// nothing else may spend a connection on it: a refresh tick before the deadline is a no-op, and a
-// live write or resync fails at once without a fetch. Reconciles never probe.
-
-const (
-	parentProbeInitialBackoff = 10 * time.Second
-	parentProbeMaxBackoff     = 5 * time.Minute
-	parentProbeBackoffFactor  = 2
-)
+// The worker probes for the parent itself, on the event loop, with one advertisement per deadline of
+// its one retry schedule (retry.go), shared by every target on the worker. Until the parent is
+// found, nothing else may spend a connection on it: a refresh tick before the deadline is a no-op,
+// and a live write or resync fails at once without a fetch. Reconciles never probe.
 
 // errAwaitingParentProbe is the answer to a cycle that would fetch for a parent already known to be
 // missing, before the next probe is due. It is a missing parent as far as every caller is
@@ -76,10 +70,6 @@ type parentRecovery struct {
 	scopes map[recoveryScope]struct{}
 	// awaitingPush are scopes a resync has re-derived into a commit that is not pushed yet.
 	awaitingPush map[recoveryScope]struct{}
-
-	backoff     time.Duration
-	nextProbeAt time.Time
-	timer       *time.Timer
 }
 
 // now is the loop's clock, injectable so the probe schedule can be tested without sleeping.
@@ -91,7 +81,9 @@ func (w *BranchWorker) now() time.Time {
 }
 
 // noteParentUnavailable latches the obligation when err was caused by the parent, and remembers
-// the scopes whose writes were dropped for it. Any other error is not this obligation's concern, and
+// the scopes whose writes were dropped for it. It does not schedule the next attempt: whoever
+// observed the failure does, once (scheduleRetry), and a new latch starts that schedule over so the
+// first probe is one initial backoff away. Any other error is not this obligation's concern, and
 // neither is a failure that left nothing owed: a save whose empty record failed is settled with its
 // request, and an obligation with nothing to publish would never close.
 func (l *branchWorkerEventLoop) noteParentUnavailable(err error, scopes ...recoveryScope) {
@@ -102,15 +94,10 @@ func (l *branchWorkerEventLoop) noteParentUnavailable(err error, scopes ...recov
 	if !r.active && len(scopes) == 0 && len(l.pendingWrites) == 0 {
 		return
 	}
-	switch {
-	case !r.active:
+	if !r.active {
 		r.active = true
-		r.backoff = parentProbeInitialBackoff
-		r.nextProbeAt = l.w.now().Add(r.backoff)
 		r.gen = l.w.parentSnapshot().gen
-	case r.found:
-		// Found, then lost again on the attempt that followed: wait a whole backoff before asking.
-		r.nextProbeAt = l.w.now().Add(r.backoff)
+		l.clearRetry()
 	}
 	r.found = false
 	for _, scope := range scopes {
@@ -122,7 +109,6 @@ func (l *branchWorkerEventLoop) noteParentUnavailable(err error, scopes ...recov
 		// was dropped, so publishing it proves nothing about this write. The scope needs a new one.
 		delete(r.awaitingPush, scope)
 	}
-	l.armRecoveryTimer()
 	l.publishRecovery()
 	l.closeRecoveryIfDone()
 }
@@ -210,29 +196,27 @@ func (l *branchWorkerEventLoop) closeRecoveryIfDone() {
 	if !r.active || len(l.pendingWrites) > 0 || len(r.scopes) > 0 {
 		return
 	}
-	if r.timer != nil {
-		r.timer.Stop()
-	}
 	*r = parentRecovery{}
-	l.publishRecovery()
+	l.clearRetry()
 }
 
 // probeDue reports whether the next background look at the remote may be spent now.
 func (l *branchWorkerEventLoop) probeDue() bool {
 	r := &l.recovery
-	return r.active && (!l.w.now().Before(r.nextProbeAt) || r.gen != l.w.parentSnapshot().gen)
+	return r.active && (!l.w.now().Before(l.retry.due) || r.gen != l.w.parentSnapshot().gen)
 }
 
-// runParentProbe is the deadline: while the parent is missing it spends one advertisement; once it
-// is found it retries the retained writes and asks again for the snapshots still owed. Whatever
-// remains open is scheduled for the next deadline.
+// runParentProbe is the attempt while the obligation is open: while the parent is missing it spends
+// one advertisement; once it is found it publishes the retained writes and asks again for the
+// snapshots still owed. Whatever remains open is scheduled for the next deadline.
 func (l *branchWorkerEventLoop) runParentProbe() {
 	r := &l.recovery
 	if !r.active {
 		return
 	}
 	if gen := l.w.parentSnapshot().gen; gen != r.gen {
-		r.gen, r.found, r.backoff = gen, false, parentProbeInitialBackoff
+		r.gen, r.found = gen, false
+		l.retry.backoff = 0
 	}
 	if !r.found {
 		missing, err := l.probeParent()
@@ -240,27 +224,27 @@ func (l *branchWorkerEventLoop) runParentProbe() {
 			if err != nil {
 				l.w.Log.V(1).Info("Parent branch probe failed", "branch", l.w.Branch, "error", err.Error())
 			}
-			l.scheduleNextProbe()
+			l.scheduleRetry()
 			return
 		}
 		r.found = true
-		r.backoff = parentProbeInitialBackoff
+		l.retry.backoff = 0
 		l.publishRecovery()
 		l.w.Log.Info("The parent branch is on the remote again; recovering held-back work",
 			"branch", l.w.Branch, "parentBranch", l.w.ParentBranch(),
 			"pendingWrites", len(l.pendingWrites), "scopes", len(r.scopes))
 	}
-	if len(l.pendingWrites) > 0 {
-		l.pushPending()
+	// A publication that fails schedules the next attempt itself.
+	if len(l.pendingWrites) > 0 && !l.pushPending() {
+		return
 	}
-	if r.active && r.found {
-		for target := range l.recoveryTargets() {
-			l.w.bumpSnapshotRequest(target)
-		}
+	if !r.active {
+		return
 	}
-	if r.active {
-		l.scheduleNextProbe()
+	for target := range l.recoveryTargets() {
+		l.w.bumpSnapshotRequest(target)
 	}
+	l.scheduleRetry()
 }
 
 // recoveryTargets are the GitTargets owed a snapshot.
@@ -272,16 +256,6 @@ func (l *branchWorkerEventLoop) recoveryTargets() map[itypes.ResourceReference]s
 		}
 	}
 	return targets
-}
-
-// scheduleNextProbe doubles the backoff and moves the deadline that far on: the first deadline is
-// parentProbeInitialBackoff after the latch, the next twice that after it, up to the cap.
-func (l *branchWorkerEventLoop) scheduleNextProbe() {
-	r := &l.recovery
-	r.backoff = min(parentProbeBackoffFactor*r.backoff, parentProbeMaxBackoff)
-	r.nextProbeAt = l.w.now().Add(r.backoff)
-	l.armRecoveryTimer()
-	l.publishRecovery()
 }
 
 // probeParent reads one advertisement and records what it says. It reports whether the parent is
@@ -309,25 +283,6 @@ func (l *branchWorkerEventLoop) probeParent() (bool, error) {
 	return w.recordAdvertisement(advertisement, parent.name), nil
 }
 
-func (l *branchWorkerEventLoop) armRecoveryTimer() {
-	r := &l.recovery
-	if r.timer != nil {
-		r.timer.Stop()
-		r.timer = nil
-	}
-	if !r.active {
-		return
-	}
-	r.timer = time.NewTimer(max(r.nextProbeAt.Sub(l.w.now()), 0))
-}
-
-func (l *branchWorkerEventLoop) recoveryTimerC() <-chan time.Time {
-	if l.recovery.timer == nil {
-		return nil
-	}
-	return l.recovery.timer.C
-}
-
 // publishRecovery mirrors the latch for the readers outside the loop: the controller, and the
 // fetch gate the write path consults.
 func (l *branchWorkerEventLoop) publishRecovery() {
@@ -335,7 +290,7 @@ func (l *branchWorkerEventLoop) publishRecovery() {
 	l.w.parentRecoveryOpen.Store(r.active)
 	l.w.parentRecoveryFound.Store(r.active && r.found)
 	if r.active && !r.found {
-		l.w.parentProbeHold.Store(&parentProbeHold{until: r.nextProbeAt, gen: r.gen})
+		l.w.parentProbeHold.Store(&parentProbeHold{until: l.retry.due, gen: r.gen})
 	} else {
 		l.w.parentProbeHold.Store(nil)
 	}

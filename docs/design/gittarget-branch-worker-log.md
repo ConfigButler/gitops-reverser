@@ -1,7 +1,7 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, written 2026-10-02 against `main` at `0daa3711` (#412 merged).
-> Steps 1, 1b, 2 and 3a are built; step 3 was split into 3a, 3b and 3c after review.
+> Steps 1, 1b, 2, 3a and 3b are built; step 3 was split into 3a, 3b and 3c after review.
 > It replaces the narrow fixes first considered for gaps 3, 4 and 5 in
 > [`gittarget-state-of-affairs.md`](gittarget-state-of-affairs.md#known-gaps-ranked-by-what-a-user-would-hit)
 > with one refactor of the write path that closes gap 4 structurally and gives gaps 3 and 5 one
@@ -114,13 +114,17 @@ Still split: the log is loop state, while `checkoutApplied` lives on the worker 
 effect functions (commit, replay, reset, push) and resets outside the loop (path bootstrap) update
 it. A resync whose remote cannot be reached still answers its caller and leaves the log, until 3c.
 
-### Step 3b: one retry schedule
+### Step 3b: one retry schedule (built)
 
-`refactor(git)`. Merge `publicationRetry` and parent recovery's probe schedule into one deadline.
-When it fires with a missing parent it probes with one advertisement (ledger row 15 unchanged);
-otherwise it materializes and publishes. A parent change still makes it due at once. Deletes
-`publication_retry.go`, `deferToRecovery`, `parentProbeHold` and its checks, and the separate probe
-timer. No retention change.
+`refactor(git)`, no retention change; ledger unchanged. One deadline,
+[`retry.go`](../../internal/git/retry.go), replaces `publicationRetry` and parent recovery's
+`backoff`, `nextProbeAt` and timer. When it fires with parent recovery open it probes with one
+advertisement; otherwise it materializes and publishes. Whoever observes a failed attempt schedules
+the next one, once; a new parent latch starts the schedule over, so the first probe is one initial
+backoff away, as before. The push timer is only the success cooldown again. `publication_retry.go`,
+`deferToRecovery` and the hand-off between the two clocks are gone. `parentProbeHold` stays: it is
+how the worker-side base check, outside the loop, knows not to fetch for a parent the probe has not
+found yet.
 
 ### Step 3c: missing-parent retention and owed snapshots
 
@@ -193,9 +197,9 @@ the effective-point comment in `write_gate.go`, [`architecture.md`](../architect
 | The fetch that cleaned a partly failed write | step 1b |
 | `dropFailedWindow` and the network-failure drop branches | step 2 |
 | The second write lifecycle (`l.commit`, `retain`, the commit guard), `pcr.committed`, `rebuildPendingWrites`, executor re-entry | step 3a |
+| `publication_retry.go`, `deferToRecovery`, parent recovery's own backoff and timer | step 3b |
 
-Still to remove: `publication_retry.go`, `deferToRecovery`, `parentProbeHold` (3b); parent
-recovery's `scopes` and `awaitingPush` (3c).
+Still to remove: parent recovery's `scopes` and `awaitingPush` (3c).
 
 ## What stays
 
