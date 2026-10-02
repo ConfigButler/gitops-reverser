@@ -55,7 +55,7 @@ func TestPush_DeletedRemoteBranchIsTreatedAsMovement(t *testing.T) {
 	giveRemoteADefaultBranchBesidesMain(t, f.repoDir)
 	f.publish("prime")
 
-	f.commit(false, "after-the-delete")
+	f.commit("after-the-delete")
 	gitInRepo(t, f.repoDir, "update-ref", "-d", "refs/heads/main")
 
 	// Push once, without the replay, to read the error the remote produces.
@@ -128,10 +128,10 @@ func TestPush_DeletedRemoteBranchDoesNotStrandRetainedWrites(t *testing.T) {
 	// Drop trust so the next cycle fetches, which leaves refs/remotes/origin/main exactly at the
 	// remote tip the cycle then roots on. That equality is the stranding condition.
 	f.worker.invalidateBase("test: force the cycle to fetch first")
-	f.commit(false, "written-after-the-fetch")
+	f.commit("written-after-the-fetch")
 	f.push()
 	f.worker.invalidateBase("test: force the cycle to fetch first")
-	f.commit(false, "written-after-the-delete")
+	f.commit("written-after-the-delete")
 
 	gitInRepo(t, f.repoDir, "update-ref", "-d", "refs/heads/main")
 

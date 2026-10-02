@@ -487,7 +487,7 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, obser
 
 	// An empty commit is only empty on a clean worktree: the refused write that brought us here can
 	// have left staged changes behind, and they would otherwise ride along in it.
-	if err := l.recoverRetainedWrites(); err != nil {
+	if err := l.materialize(""); err != nil {
 		l.w.Log.Error(err, "Cannot recover the worktree for the empty commit for a refused write",
 			"gitTarget", target.String())
 		return
@@ -497,13 +497,12 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, obser
 	// stamps CommitSHA back into the slice it is given, and the retained write is what the push
 	// counts from.
 	batch := []PendingWrite{*pendingWrite}
-	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
+	if err := l.commit(batch); err != nil {
 		l.w.Log.Error(err, "The empty commit for a refused write failed",
 			"gitTarget", target.String())
 		return
 	}
-	l.pendingWrites = append(l.pendingWrites, batch...)
-	l.pendingWritesBytes += batch[0].ByteSize
+	l.retain(batch[0])
 	// Recorded once the commit exists, beside the rate-limit stamp and for the same reason: a
 	// build or commit failure has produced no trigger, so it must leave the next observation of
 	// the same refusal free to make one.

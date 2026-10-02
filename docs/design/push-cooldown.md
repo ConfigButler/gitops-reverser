@@ -151,9 +151,8 @@ has five timer sources: window, push, attach, refusal action, and parent recover
 | `publicationRetry`, `pushTimer`, and `stopPushTimer` | Failed publication still needs a scheduled attempt |
 | `pendingWrites` retention | A push can fail or be rejected; the writes must survive to be replayed |
 | `baseTrusted` | The head-of-cycle fetch decision, unrelated to push cadence |
-| `worktreeDirty` | A write that failed part-way, unrelated to push cadence |
-| `replayRequired` | A reset that discarded local commits, unrelated to push cadence |
-| `recoverRetainedWrites`, `refreshRemoteAndRebuildPendingWrites`, the whole replay path | Contention recovery |
+| `checkoutApplied` | A write that failed part-way, or a reset that discarded local commits, unrelated to push cadence |
+| `materialize`, `refreshRemoteAndRebuildPendingWrites`, the whole replay path | Contention recovery |
 
 ```mermaid
 flowchart TD
@@ -166,9 +165,8 @@ flowchart TD
         PT["publicationRetry + pushTimer + stopPushTimer"]
         PW["pendingWrites retention"]
         BT["baseTrusted"]
-        WD["worktreeDirty"]
-        RR["replayRequired"]
-        RE["reset, replay, recover"]
+        CA["checkoutApplied"]
+        RE["materialize: reset and replay"]
     end
 
     style COOLDOWN fill:#e8f5e9,stroke:#43a047

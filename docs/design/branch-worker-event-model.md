@@ -538,8 +538,8 @@ inspected production replay producer uses `Heal=false`.
 
 [Refresh handling](../../internal/git/refresh.go) normally skips a busy checkout. During parent
 recovery it can service a due probe and publish retained work. Disabling periodic refresh does
-not disable commit windows or worker recovery. Keep `baseTrusted`, `worktreeDirty`, and
-`replayRequired` separate: a clean checkout can still have lost the commits behind retained work.
+not disable commit windows or worker recovery. Keep `baseTrusted` and `checkoutApplied` separate:
+a clean checkout can still have lost the commits behind retained work.
 
 The detailed design records continue to own adjacent policy:
 

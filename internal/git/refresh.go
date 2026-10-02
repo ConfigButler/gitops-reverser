@@ -107,7 +107,7 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	// commits, and the worktree may hold a partial write — which is also why this is the one exit
 	// that does not re-read the folder: a layout resolved from a half-written tree is worse than
 	// a slightly old one. A target mid-cycle is writing, and a write publishes its own layout.
-	if len(l.pendingWrites) > 0 || l.openWindow != nil || w.worktreeDirty() || w.replayRequired() {
+	if len(l.pendingWrites) > 0 || l.openWindow != nil || w.worktreeDirty() {
 		w.Log.V(1).Info("Skipping refresh: this branch is mid-cycle",
 			"branch", w.Branch, "gitTarget", req.Target.String())
 		return

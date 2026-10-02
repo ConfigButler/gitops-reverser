@@ -128,7 +128,7 @@ func TestBranchWorker_SecretEncryptionFailureDoesNotWritePlaintext(t *testing.T)
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	err = worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false)
+	err = worker.commitPendingWrites([]PendingWrite{*pendingWrite})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption is required")
 
@@ -183,7 +183,7 @@ func TestBranchWorker_SecretWritesSOPSPath(t *testing.T) {
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	sopsPath := filepath.Join(worker.repoPath(), "default", "secrets", "test-secret.sops.yaml")
 	assert.FileExists(t, sopsPath)
@@ -237,7 +237,7 @@ func TestBranchWorker_DeleteSecretRemovesSOPSPath(t *testing.T) {
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	localRepoPath := worker.repoPath()
 	_, statErr := os.Stat(filepath.Join(localRepoPath, "v1", "secrets", "default", "test-secret.yaml"))
@@ -284,7 +284,7 @@ func TestBranchWorker_DoesNotBootstrapRootSOPSConfig(t *testing.T) {
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	_, statErr := os.Stat(filepath.Join(worker.repoPath(), sopsConfigFileName))
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
@@ -315,7 +315,7 @@ func TestBranchWorker_DoesNotCreateBootstrapOnlyCommit(t *testing.T) {
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	repo, err := gogit.PlainOpen(worker.repoPath())
 	require.NoError(t, err)

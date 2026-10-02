@@ -28,7 +28,7 @@ import (
 func TestPushAtomic_RejectionCarriesAdvertisedHash(t *testing.T) {
 	f := newLedgerFixture(t, "adv-rejection", true)
 
-	f.commit(false, "mine")
+	f.commit("mine")
 	f.contend("OUTSIDE.md", "from-another-writer\n")
 	contendingHash := plumbing.NewHash(revParseMain(t, f.repoDir))
 
@@ -52,7 +52,7 @@ func TestPushAtomic_RejectionCarriesAdvertisedHash(t *testing.T) {
 // carried an advertisement must not spend a SmartFetch learning the same number again.
 func TestRunPushCycle_MovedRemote_DoesNotRefetchTheHash(t *testing.T) {
 	f := newLedgerFixture(t, "adv-no-refetch", true)
-	f.commit(false, "mine")
+	f.commit("mine")
 	f.contend("OUTSIDE.md", "from-another-writer\n")
 
 	fetchCalls := 0
@@ -80,7 +80,7 @@ func TestRunPushCycle_MovedRemote_DoesNotRefetchTheHash(t *testing.T) {
 // transient fault.
 func TestRunPushCycle_PushWithoutAdvertisement_FallsBackToFetch(t *testing.T) {
 	f := newLedgerFixture(t, "adv-fallback", true)
-	f.commit(false, "mine")
+	f.commit("mine")
 
 	// A connection that died: no advertisement, so no typed error.
 	originalPush := pushAtomicFn

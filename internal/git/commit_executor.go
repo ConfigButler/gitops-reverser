@@ -51,6 +51,13 @@ func (w *BranchWorker) executePendingWrites(
 	return commitsCreated, nil
 }
 
+// retained reports whether the loop keeps this write once it is committed: every write does except
+// a resync that changed nothing, which is neither retained nor pushed (see Committed). The checkout
+// counts the same writes (checkoutApplied), so the two can never disagree.
+func (p PendingWrite) retained() bool {
+	return p.Kind != PendingWriteResync || p.Committed == nil || *p.Committed
+}
+
 func (p PendingWrite) path() string {
 	if targetPath := p.Target().Path; targetPath != "" {
 		return targetPath

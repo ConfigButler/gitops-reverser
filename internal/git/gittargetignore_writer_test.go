@@ -45,7 +45,7 @@ func TestWriter_IgnoreShadowsManagedPath(t *testing.T) {
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
 
-	err = worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false)
+	err = worker.commitPendingWrites([]PendingWrite{*pendingWrite})
 	assert.Contains(t, refusalIssueKinds(t, err), manifestanalyzer.IssueIgnoreShadowsManaged)
 }
 
@@ -65,7 +65,7 @@ func TestWriter_ForeignFileRefused(t *testing.T) {
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
 
-	err = worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false)
+	err = worker.commitPendingWrites([]PendingWrite{*pendingWrite})
 	assert.Contains(t, refusalIssueKinds(t, err), manifestanalyzer.IssueForeignFile)
 }
 
@@ -87,7 +87,7 @@ func TestWriter_IgnoredForeignFileAllowsWrite(t *testing.T) {
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
 
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 }
 
 // TestWriter_BenignPassengerAllowsWrite proves the live writer accepts a folder whose only
@@ -107,5 +107,5 @@ func TestCommitPendingWrites_BenignPassengerAllowsWrite(t *testing.T) {
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
 
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 }

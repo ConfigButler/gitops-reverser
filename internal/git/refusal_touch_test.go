@@ -174,7 +174,7 @@ func TestRefusalTouch_LandsAnEmptyCommitOnTheRemote(t *testing.T) {
 	require.NoError(t, err)
 
 	batch := []PendingWrite{*write}
-	require.NoError(t, f.worker.commitPendingWrites(batch, false))
+	require.NoError(t, f.worker.commitPendingWrites(batch))
 	f.pending = append(f.pending, batch...)
 	f.push()
 
@@ -357,7 +357,7 @@ func TestRefusalTouch_ReplayKeepsAcceptedWritesAndTheEmptyDiff(t *testing.T) {
 	f.publish("prime")
 
 	// An ordinary accepted write, committed and retained but not yet pushed.
-	f.commit(false, "accepted")
+	f.commit("accepted")
 	require.Len(t, f.pending, 1)
 
 	// The refusal's empty commit joins the same retained batch, exactly as the event loop would
@@ -366,7 +366,7 @@ func TestRefusalTouch_ReplayKeepsAcceptedWritesAndTheEmptyDiff(t *testing.T) {
 		f.worker.ctx, itypes.NewResourceReference("target-a", "default"), "unsupported folder content")
 	require.NoError(t, err)
 	batch := []PendingWrite{*touch}
-	require.NoError(t, f.worker.commitPendingWrites(batch, true))
+	require.NoError(t, f.worker.commitPendingWrites(batch))
 	f.pending = append(f.pending, batch...)
 
 	// Somebody else moves the branch before our push, so the compare-and-swap rejects it and the

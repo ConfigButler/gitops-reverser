@@ -77,9 +77,8 @@ func resyncHealKey(req *ResyncRequest) healKey {
 	}
 }
 
-// prepareBaseForResync gets the worktree into a state the snapshot may honestly be judged against,
-// which is three things in order: the RefreshRemote prelude when one was asked for, the fetch a
-// resync keeps regardless, and recovery from a worktree a failed write left dirty.
+// prepareBaseForResync gets the worktree to the remote tip, with any retained writes replayed on
+// it, so the snapshot is judged against the newest remote tree.
 //
 // A resync keeps fetching, deliberately, even now that a publication does not. The rest of the
 // write path is safe without one because it always reaches the push, whose advertisement catches a
@@ -89,52 +88,14 @@ func resyncHealKey(req *ResyncRequest) healKey {
 // cluster" against a tree nobody had checked, and nothing downstream would ever contradict it. The
 // round trip this design removes is the PUBLICATION one, and a resync is not a publication.
 //
-// It has to be invalidateAndRefresh rather than a bare invalidateBase. commitPendingWrites is
-// called with hasPendingCommits set from the retained slice, and ensureBaseForCycle returns early
-// on that flag, so on a target holding work a bare invalidation reached nothing at all and the
-// snapshot judged a tree nobody had read. That is the exact hazard this function exists to close.
+// That fetch also serves a forced recheck (ResyncRequest.RefreshRemote), whose trigger is often
+// "I changed Git; look again": every resync already looks.
 func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
-	// A parent known to be missing is not fetched again before its probe is due.
-	if l.w.awaitingParentProbe() {
-		return errAwaitingParentProbe
-	}
-	// The invalidation is skipped when RefreshRemote already fetched a moment ago, which would
-	// otherwise make a forced recheck pay twice.
-	if req.RefreshRemote {
-		if err := l.refreshRemoteForResync(req); err != nil {
-			return err
-		}
-	} else if err := l.invalidateAndRefresh("resync snapshot", fetchReasonForcedRecheck); err != nil {
-		l.w.Log.Error(err, "Failed to refresh the remote before resync", "resources", len(req.Desired))
-		return err
-	}
-
-	// The refresh above already reset and replayed when anything was retained, so this is a no-op
-	// on that path; it still covers a dirty tree with nothing to replay.
-	if err := l.recoverRetainedWrites(); err != nil {
-		l.w.Log.Error(err, "Failed to recover a dirty worktree before resync", "resources", len(req.Desired))
-		return err
-	}
-
-	return nil
-}
-
-// refreshRemoteForResync runs the RefreshRemote prelude, branching on whether writes are retained:
-// a replay keeps them, a plain sync is enough without them.
-func (l *branchWorkerEventLoop) refreshRemoteForResync(req *ResyncRequest) error {
-	if len(l.pendingWrites) > 0 {
-		if err := l.w.refreshRemoteAndRebuildPendingWrites(
-			l.w.ctx, l.pendingWrites, fetchReasonForcedRecheck); err != nil {
-			l.w.Log.Error(err, "Failed to refresh remote before resync and replay pending writes",
-				"resources", len(req.Desired),
-				"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
-				"pendingWrites", len(l.pendingWrites))
-			return fmt.Errorf("refresh remote before resync: %w", err)
-		}
-		return nil
-	}
-	if err := l.w.syncWithRemote(l.w.ctx, fetchReasonForcedRecheck); err != nil {
-		l.w.Log.Error(err, "Failed to refresh remote before resync", "resources", len(req.Desired))
+	if err := l.materialize(fetchReasonForcedRecheck); err != nil {
+		l.w.Log.Error(err, "Failed to refresh the remote before resync",
+			"resources", len(req.Desired),
+			"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
+			"pendingWrites", len(l.pendingWrites))
 		return fmt.Errorf("refresh remote before resync: %w", err)
 	}
 	return nil
@@ -178,7 +139,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	}
 	pendingWrite.Committed = &committed
 
-	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
+	if err := l.commit([]PendingWrite{*pendingWrite}); err != nil {
 		// A refusal reaches the caller on ResyncResult.Err, where the watch layer classifies it
 		// and blocks the collection. spec.onRefusal needs it HERE too, and this is the path that
 		// matters: a per-type reconcile evaluates the same objects a live write would, so it is
@@ -209,8 +170,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	// resync (e.g. the empty initial snapshot before any rule selects a resource)
 	// retains nothing of its own.
 	if committed {
-		l.pendingWrites = append(l.pendingWrites, *pendingWrite)
-		l.pendingWritesBytes += pendingWrite.ByteSize
+		l.retain(*pendingWrite)
 	}
 	l.noteResyncApplied(req.GitTargetNamespace, req.GitTargetName, req.refusalCollection(), committed)
 	// Schedule a push whenever this request CLOSED a live window — that window's

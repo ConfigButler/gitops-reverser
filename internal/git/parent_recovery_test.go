@@ -229,7 +229,7 @@ func TestParentRecovery_ProbeBudgetIsPerWorker(t *testing.T) {
 				require.Len(t, f.loop.pendingWrites, 1)
 				gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release")
 				f.loop.pushPending() // the push that finds the parent gone
-				require.True(t, f.worker.replayRequired(), "the retained writes wait for a rebuild")
+				require.False(t, f.loop.checkoutCurrent(), "the retained writes wait for a rebuild")
 			} else {
 				f.worker.SetParentBranch("missing")
 				liveWrite(f.loop, "first") // the one fetch that finds the parent missing

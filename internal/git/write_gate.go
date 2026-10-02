@@ -27,9 +27,9 @@ import (
 // commit made before a gate closed is still pushed: reading them at push time would strand it in
 // the checkout, to resurface out of order when the gate opens.
 //
-// They are deliberately not the checkout's three flags (baseTrusted, worktreeDirty,
-// replayRequired). Those say whether the worker can commit on its checkout; these say whether the
-// target may be written at all, and no reset or replay changes the answer.
+// They are deliberately not the checkout's state (baseTrusted, checkoutApplied). That says whether
+// the worker can commit on its checkout; these say whether the target may be written at all, and
+// no reset or replay changes the answer.
 
 var (
 	// errTargetSuspended is a request's failure on a suspended GitTarget, which writes nothing.

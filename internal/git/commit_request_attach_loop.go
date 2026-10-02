@@ -400,19 +400,18 @@ func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (
 	}
 	// An empty commit is only empty on a clean worktree: a failed write's staged leftovers would
 	// otherwise ride along in it.
-	if err := l.recoverRetainedWrites(); err != nil {
+	if err := l.materialize(""); err != nil {
 		l.w.Log.Error(err, "Cannot recover the worktree for the empty commit recording a CommitRequest",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
 	batch := []PendingWrite{*pendingWrite}
-	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
+	if err := l.commit(batch); err != nil {
 		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
-	l.pendingWrites = append(l.pendingWrites, batch...)
-	l.pendingWritesBytes += batch[0].ByteSize
+	l.retain(batch[0])
 	pcr.committed = true
 	l.w.setCommitRequestPhase(pcr.id, PhaseWaitingForPush)
 	l.maybeSchedulePush()
