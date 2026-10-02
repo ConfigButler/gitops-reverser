@@ -18,6 +18,10 @@ exactly-once guarantee.
 
 ## Next implementation: restore publication progress
 
+The remaining items (2 to 4) and the rebuild gap below are planned as one write-path refactor in
+[`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md): a log of decided writes, one
+materializer for the checkout, and one retry deadline.
+
 Complete retry scheduling and add Git operation deadlines before the journal work. Neither fix
 depends on choosing a storage backend, changing the save contract, or implementing HA.
 

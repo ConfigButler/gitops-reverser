@@ -51,6 +51,7 @@ The release PR body includes #411. #412 remains a separate open fix PR at this s
 | [`gittarget-red-status-plan.md`](gittarget-red-status-plan.md) | partly built | Why a target is red, and what the message must say | Step 5 (the operator section) shipped and the page does not say so. The step 1 cross-package reason-agreement test was not found. Open question 2 (refusal state across a restart) is still open: `GitPathAccepted` lives in watch-manager memory. |
 | [`gittarget-configuration-freshness.md`](gittarget-configuration-freshness.md) | deferred | Whether a target's running watch plan matches its configuration | Deferred with explicit pick-up triggers; neither trigger has fired. |
 | [`gittarget-api-wave.md`](gittarget-api-wave.md) | effectively done | The `GitTarget` field boundaries | Every step shipped, was dropped, or was declined. A candidate for `docs/finished/`. |
+| [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md) | plan | The write path as a log with one materializer: closes gaps 3 to 5 | Supersedes the narrow fixes first considered for those gaps. Decisions settled 2026-10-02. |
 | [`branch-worker-event-model.md`](branch-worker-event-model.md) | proposal; retry built in #412 | Worker execution semantics: the FIFO inputs, deadlines, saves, the transition boundary, and the operation-deadline fix still to do | Leads with the liveness fix, names both unbounded network calls, and hands the journal to the HA plan. |
 | [`push-cooldown.md`](push-cooldown.md) | partly built | Success cooldown versus failure backoff | §7 option C is built in #412, including the parent-recovery handoff. Success-cooldown changes still need measurement. |
 | [`../spec/commitrequest-design.md`](../spec/commitrequest-design.md) | spec | The save lifecycle | Current as of #412. |
@@ -111,7 +112,8 @@ Fixed behavior is marked separately from gaps that remain at `3708b529`.
     refresh follows it with one fetch. This is a documented choice, not a defect.
 
 Gaps 1 to 5 are liveness and visibility defects in the current worker and need no persistence;
-1 and 2 are fixed. Gaps 6 and 7 are the durable-execution
+1 and 2 are fixed. Gaps 3 to 5 are planned together in
+[`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md). Gaps 6 and 7 are the durable-execution
 problem. Gaps 8 to 12 are separate, smaller decisions.
 
 ## Review of `branch-worker-event-model.md`
@@ -134,19 +136,19 @@ six e2e legs passed at `3708b529`; the handoff fix in gap 2 landed after that ru
 
 ### Next, after the release
 
-1. **Operation deadlines (gap 3).** Pass the worker context to `List` and `Fetch` and give each
-   remote operation a bounded deadline. Measure first how go-git's HTTP and SSH transports behave
-   today, against a server that stalls.
-2. **Rebuild recovery and publication visibility (gaps 4 and 5)**: decide what a failed rebuild
-   owes a dropped window and expose a publication failure with its retry deadline. These improve
-   the current worker without waiting for a journal or a broad transition refactor.
-3. **The transition boundary**: extract the event model's explicit transitions and test them
-   from recorded state. Agree the save contract the HA plan asks for: final-state convergence,
-   or preserved save outcomes too. Start the journal only after both decisions.
-4. **Cheap, independent items**: open the go-git unborn-`HEAD` issue and PR; parent observation
+1. **The write path as a log (gaps 3, 4 and 5)**, planned in
+   [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md): one log of decided writes,
+   one materializer for the checkout, and one retry deadline. A failed rebuild then cannot drop a
+   window (gap 4), a publication failure has one state to project (gap 5), and Git deadlines
+   (gap 3) wrap two call sites. It is the write-path half of the transition boundary.
+2. **The rest of the transition boundary**: record the remaining FIFO inputs (attach, withdraw,
+   refresh) as transitions and test them from recorded state. Agree the save contract the HA plan
+   asks for: final-state convergence, or preserved save outcomes too. Start the journal only after
+   both decisions.
+3. **Cheap, independent items**: open the go-git unborn-`HEAD` issue and PR; parent observation
    step 1 (availability after the write branch exists, no extra connections); the red-status
    reason-agreement test.
-5. **Housekeeping**: move the hardening plan and the API-wave page to `docs/finished/`, and mark
+4. **Housekeeping**: move the hardening plan and the API-wave page to `docs/finished/`, and mark
    red-status step 5 as shipped.
 
 ### Leave deferred
