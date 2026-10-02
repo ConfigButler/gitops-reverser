@@ -8,29 +8,15 @@ PR #404 is merged; these need fix PRs against main, in this order. (Its CommitRe
 finding is fixed in #407: the controller no longer fails a request the worker holds.)
 
 The two `CommitEmpty` findings (a suspended target reporting `Ready=True` with no commit, and a
-record made while the render-fidelity gate was closed) are fixed in `fix/branch-worker-write-gates`:
+record made while the render-fidelity gate was closed) are fixed in #411:
 a request on a target that may not be written fails, whatever path ends it
 (`internal/git/write_gate.go`).
 
-**Next:** retry progress on quiet branches. A failed push stops the push timer and the retained work
-waits for another commit (`pushPending` in `internal/git/branch_worker.go`); parent recovery drives
-itself, and general publication recovery needs the same guarantee
-([`docs/design/push-cooldown.md`](design/push-cooldown.md) §7 option C).
-
-**Before the next release** (docs only):
-
-- [ ] `docs/UPGRADING.md`, the v1alpha3 window entry:
-  - step 1: tell readers to suspend the Flux or Argo source of a GitOps-managed GitTarget (or remove
-    the field there) until step 4; otherwise that tool re-applies the string `commit.window` and
-    breaks LIST;
-  - the Was/Is table needs a row for the chart value `quickstart.gitTarget.commit.window`, now an
-    object;
-  - "a removed `closeDelay` is not a hazard" is too strong: the API server prunes it silently for
-    programmatic clients (see `duration_fields_admission_test.go`).
-- [ ] Descriptions that still say a save "closes the window now": the CommitRequest godoc and CRD
-  description, `docs/configuration.md` (lines 14, 32, 123), and the GitTarget `Commit` godoc, which
-  also omits the 1m `maxDuration` default. `docs/spec/commitrequest-design.md:126` still says
-  `NoOpenWindow` and "close deadline".
+Retry progress on quiet branches is fixed: a failed publication schedules its own bounded retry
+(`internal/git/publication_retry.go`, [`push-cooldown.md`](design/push-cooldown.md) §7 option C).
+Still open: when a rebuild's fetch fails, the open window is dropped, and unless the cause was a
+missing parent nothing records the dropped scope or asks for a snapshot, so those writes wait for
+the next resync.
 
 **Later, non-blocking:**
 

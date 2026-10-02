@@ -199,7 +199,7 @@ kinds:
     title: "`CommitRequest` (namespaced): save now"
     fields:
       - path: gitTargetRef
-        doc: The target whose open window to close
+        doc: The target whose commit window the request attaches to
       - path: message
         default: the target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it

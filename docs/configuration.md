@@ -11,7 +11,8 @@ The short version:
 - `WatchRule` defines which namespaced resources should produce Git writes, and in which source
   namespaces
 - `ClusterWatchRule` does the same for cluster-scoped resources
-- `CommitRequest` optionally asks the operator to close the current commit window now
+- `CommitRequest` optionally saves: it closes its author's commit window on its own timers, with
+  its own message if it has one
 
 The chart's optional `quickstart` values are a convenience layer that creates starter
 instances of those same resources.
@@ -29,7 +30,8 @@ The usual flow is:
 1. Create a `GitProvider` for repository access and commit behavior.
 2. Create a `GitTarget` that points at the Git provider, source cluster, branch, and repository path.
 3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
-4. Create a `CommitRequest` only when you want to flush an open window before the normal timer.
+4. Create a `CommitRequest` only when you want a save: your writes in one commit, on the request's
+   timers rather than the target's, and optionally with your message.
 
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
@@ -121,7 +123,7 @@ The same shape as a `WatchRule`, for cluster-scoped types. It selects no namespa
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitTargetRef` | **required** | The target whose open window to close |
+| `gitTargetRef` | **required** | The target whose commit window the request attaches to |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `window.attach` | `CurrentOrNext` | Which window to attach to: the author's current or next one, or only the next. See [the request window](#the-request-window-specwindow) |
 | `window.attachTimeout` | `2s` | How long to wait for a window to attach to |
