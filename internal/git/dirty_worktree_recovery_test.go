@@ -234,3 +234,43 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 		})
 	}
 }
+
+// TestDirtyWorktree_AFailedWriteIsUndoneWithoutAFetch pins the local undo. A batch whose second
+// write fails after the first has committed and staged its file used to leave the worktree dirty,
+// and the next commit then fetched and reset from the remote to clear it. The checkout is the
+// projection of the retained writes, so the commit the batch started on is all the cleanup needs:
+// the failed batch leaves no commit, no file and no doubt behind, and the next commit costs no
+// round trip.
+func TestDirtyWorktree_AFailedWriteIsUndoneWithoutAFetch(t *testing.T) {
+	f := newLedgerFixture(t, "failed-write-undone-locally", true)
+	f.publish("prime")
+
+	repo, err := gogit.PlainOpen(f.worker.repoPath())
+	require.NoError(t, err)
+	start := localHead(repo)
+
+	committed, err := f.worker.buildGroupedPendingWrite(f.worker.ctx,
+		[]Event{configMapEvent("committed-then-undone", "alice", "team-a")})
+	require.NoError(t, err)
+	secret := configMapEvent("unencrypted", "alice", "team-a")
+	secret.Identifier.Resource = "secrets"
+	secret.Object.SetKind("Secret")
+	failing, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{secret})
+	require.NoError(t, err)
+
+	err = f.worker.commitPendingWrites([]PendingWrite{*committed, *failing})
+	require.ErrorContains(t, err, "secret encryption is required")
+
+	assert.False(t, f.worker.worktreeDirty(), "the failed batch was undone locally")
+	assert.True(t, f.worker.baseTrusted(), "the checkout is back where the trusted base left it")
+	assert.Equal(t, start, localHead(repo), "the first write's commit is undone with the batch")
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+	status, err := worktree.Status()
+	require.NoError(t, err)
+	assert.True(t, status.IsClean(), "no leftover of the failed batch survives: %s", status)
+
+	before := f.mark()
+	f.commit("after-the-failure")
+	assert.Zero(t, f.mark().since(before).connections(), "the next commit plans on the checkout as it is")
+}

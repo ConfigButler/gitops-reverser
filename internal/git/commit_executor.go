@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -23,6 +24,13 @@ func (w *BranchWorker) executePendingWrites(
 		return 0, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
+	// Where the batch starts, so a write that fails part-way can be undone locally: see
+	// restoreWorktree. An unborn branch has no commit to return to, and falls back to a reset.
+	var start plumbing.Hash
+	if head, err := repo.Head(); err == nil {
+		start = head.Hash()
+	}
+
 	commitsCreated := 0
 
 	// Index over the slice so the per-write commit hash is written back onto the
@@ -33,10 +41,13 @@ func (w *BranchWorker) executePendingWrites(
 		created, hash, source, err := w.executePendingWrite(ctx, repo, worktree, pendingWrites[i])
 		if err != nil {
 			// A write can fail after it has staged part of its change, so the worktree may now
-			// hold content nobody asked for. Only a reset clears this: a later successful push
-			// says where the remote is and says nothing about these leftovers, and a cycle that
-			// planned on top of them would commit them under an unrelated author.
-			w.markWorktreeDirty("execute pending write failed")
+			// hold content nobody asked for, and a cycle that planned on top of it would commit it
+			// under an unrelated author. Returning to where the batch started clears it without a
+			// round trip; only if that fails is the worktree left for a reset from the remote.
+			if restoreErr := restoreWorktree(repo, start); restoreErr != nil {
+				w.Log.V(1).Info("Could not undo a failed write locally", "error", restoreErr.Error())
+				w.markWorktreeDirty("execute pending write failed")
+			}
 			return commitsCreated, err
 		}
 		pendingWrites[i].CommitSHA = hash
@@ -49,6 +60,24 @@ func (w *BranchWorker) executePendingWrites(
 	}
 
 	return commitsCreated, nil
+}
+
+// restoreWorktree undoes a batch that failed part-way: the branch goes back to the commit the batch
+// started on, discarding any commits it made, and the worktree back to that commit's tree, leftovers
+// included (discardWorktreeLeftovers). The checkout then holds exactly what it held before the
+// batch, which is what checkoutApplied still says, so nothing has to be fetched.
+func restoreWorktree(repo *gogit.Repository, start plumbing.Hash) error {
+	if start.IsZero() {
+		return errors.New("the branch had no commit to return to")
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("get worktree: %w", err)
+	}
+	if err := worktree.Reset(&gogit.ResetOptions{Commit: start, Mode: gogit.HardReset}); err != nil {
+		return fmt.Errorf("reset to %s: %w", start, err)
+	}
+	return discardWorktreeLeftovers(repo)
 }
 
 // retained reports whether the loop keeps this write once it is committed: every write does except

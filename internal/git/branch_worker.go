@@ -2089,7 +2089,11 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite) error {
 
 	commitsCreated, err := w.executePendingWrites(w.ctx, repo, pendingWrites)
 	if err != nil {
-		w.invalidateBase("execute pending writes failed")
+		// A failed write undone locally left the checkout where it was, base included; one that
+		// could not be undone has left a worktree nobody has verified.
+		if w.worktreeDirty() {
+			w.invalidateBase("execute pending writes failed")
+		}
 		return fmt.Errorf("execute pending writes: %w", err)
 	}
 	for i := range pendingWrites {
