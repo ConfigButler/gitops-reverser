@@ -389,8 +389,10 @@ After a push or retained-write recovery fails, the worker keeps the work and sch
 attempt itself: 10s after the first failure, doubling to at most 5m, whether or not anything else
 arrives. Commits made before that deadline accumulate locally rather than each trying the remote
 again, and a successful push resets the schedule. A failure caused by a missing parent branch is
-retried on parent recovery's probe schedule instead, so the two never both spend a connection. A
-branch with nothing pending stays silent.
+retried on parent recovery's probe schedule instead, and so is any failure while that recovery is
+open, including after the parent returns: new commits wait for its deadline too. The backoff does
+not rate-limit fetches needed by a new window or snapshot. A branch with nothing pending stays
+silent.
 
 The byte threshold forces finalization but does not free retained writes during a remote outage.
 It is not a hard memory ceiling. The separate branch queue has `1000` slots by default and drops

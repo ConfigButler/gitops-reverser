@@ -166,7 +166,9 @@ The gates are read when the commit is made, as `suspend` already was for every w
 made before a gate closed is pushed rather than kept back, because a commit that never left the
 operator's checkout would surface later, out of order.
 
-A failed push schedules its own retry (10s, doubling to 5m), so a request riding the retained write
-stays `WaitingForPush` only until a retry succeeds, with or without further commits on the branch.
+A failed push schedules its own retry (10s, doubling to 5m), with parent recovery owning attempts
+while its obligation remains active. A request riding the retained write stays `WaitingForPush`
+until publication resolves it or worker shutdown fails it. An unavailable remote can leave it
+pending indefinitely, but retries no longer depend on another commit arriving.
 
 The complete status vocabulary is in the [status conditions guide](status-conditions-guide.md).

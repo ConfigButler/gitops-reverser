@@ -2,8 +2,8 @@
 
 > **design**: open. Option C (§7), the failure backoff, is built in
 > [`publication_retry.go`](../../internal/git/publication_retry.go); the success cooldown is
-> unchanged and options D and E remain open. Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-09-21.
+> unchanged. Option D needs measurement; option E remains rejected without that evidence.
+> Index: [`../INDEX.md`](../INDEX.md). Reviewed against #412 on 2026-10-02.
 > Related: [`../api-first-publication.md`](../api-first-publication.md),
 > [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../spec/commit-window-refactor.md`](../spec/commit-window-refactor.md)
@@ -12,17 +12,16 @@
 into one commit, which is most of what the cooldown was invented to do. Is the cooldown still
 earning its place, and would removing it simplify the worker?
 
-**The short answer.** For a single author writing a single target it is provably inert at the
-defaults, so the instinct that it is redundant has a real basis. But that is the *quiet* case. The
-moment a second identity touches the branch the commit window stops spacing commits entirely (§3)
-and the cooldown becomes the only thing batching. On a multi-user cluster with attribution enabled,
-which is what this product is for, that is the normal case rather than the exception.
+**The short answer.** For a single author writing a single target, ordinary timer closures at the
+defaults already space commits enough to avoid the success cooldown. Identity changes (§3), saves
+with shorter timers, and buffer-limit closures can produce commits sooner. The cooldown batches
+those commits when they arrive within five seconds of a successful push.
 
-Removing it would also delete about thirty lines and two fields and **none** of the state that makes
-this worker complicated, because that state exists for push *failure*, not for push cadence.
+Removing the success wait would remove `lastPushAt` and its scheduling branch. The shared push
+timer and retained-write recovery would remain because publication retries now use them too.
 
-So the clear win is not removal. It is that the worker has a timer on the path that mostly does not
-need one and **no timer on the path that does**.
+Option C is built in #412. The remaining decision is whether changing the success cooldown earns
+its extra publication cost; that needs the measurements in §9.
 
 ## 1. What it is today
 
@@ -30,18 +29,22 @@ need one and **no timer on the path that does**.
 
 ```go
 if len(l.pendingWrites) == 0 { return }
+if l.awaitingPublicationRetry() { return }               // a failed publication has its own deadline
 if l.lastPushAt.IsZero() { l.pushPending(); return }      // never pushed: go now
 if time.Since(l.lastPushAt) >= PushCooldown { l.pushPending(); return }
 if l.pushTimer == nil { l.pushTimer = time.NewTimer(...) } // otherwise wait out the remainder
 ```
 
 `lastPushAt` advances **only on a successful push**, so the cooldown paces successful publication
-and does not pace retries.
+and does not pace retries. The publication backoff does that separately. Parent recovery owns
+its attempts while active, and new commits wait for its deadline; see the
+[worker event model](branch-worker-event-model.md).
 
-## 2. The finding: at the defaults it never batches a single identity
+## 2. Ordinary timer closures already space a single identity
 
 `DefaultCommitWindow` and `PushCooldown` are both `5s`. The window is a rolling **silence** timer
-per `(author, GitTarget)`. That makes the cooldown unreachable for one author writing one target:
+per `(author, GitTarget)`. With no save or other early closure, a new window opens only after the
+previous synchronous push returns, so its silence deadline already falls outside the cooldown:
 
 ```mermaid
 sequenceDiagram
@@ -66,8 +69,9 @@ The next commit for the same identity cannot finalize until at least `window` af
 one, and the cooldown is measured from the push that followed that previous commit. When
 `window >= cooldown`, the cooldown has always expired before there is anything to hold.
 
-**So the general rule is:** the cooldown only does work when the commit window is *shorter* than
-it, or when several identities share the branch. At the shipped defaults those are equal.
+Shorter window timers, early closures, and several identities on a branch can all make the
+cooldown engage. Equal default durations alone do not establish that every single-author workload
+avoids it.
 
 ## 3. Where it does still work, and it is the normal case
 
@@ -111,7 +115,7 @@ which is why that log line exists).
 | --- | --- |
 | An author or target change | The identity boundary finalizes the open window on arrival of the next event |
 | Several `GitTarget`s on one branch | One window, so every switch between them is an identity change |
-| `commit.window: 0s` | Every event commits on arrival |
+| `commit.window.idleTimeout: 0s` | Every event commits on arrival |
 | Atomic writes | They bypass the window by contract |
 | Resync snapshots | They finalize and commit outside the window |
 
@@ -124,7 +128,7 @@ worker behaves. Once the mechanism is right, the multi-identity case is not an e
 cluster with attribution enabled, the configuration this product is built for, produces one commit
 per identity change, which is close to one commit per event.
 
-## 4. What removing it would actually simplify
+## 4. What removing the success cooldown would simplify
 
 This is the part worth being precise about, because the hope ("it would clean up a lot of state")
 is half right.
@@ -133,17 +137,18 @@ is half right.
 
 | Item | Size |
 | --- | --- |
-| `lastPushAt`, `pushTimer` fields | 2 fields |
-| `maybeSchedulePush` collapses to "push if anything is retained" | ~12 lines to ~4 |
-| `stopPushTimer` and its select arm in the event loop | ~14 lines |
+| `lastPushAt` field | 1 field |
+| Successful-push wait in `maybeSchedulePush` | The elapsed-time check and cooldown scheduling |
 | `PushCooldown` constant and its documentation | 1 constant, several doc paragraphs |
 
-Roughly **thirty lines and two fields**, plus one fewer timer in a loop that has three.
+The failure backoff shares `pushTimer`, so its stop helper and select arm remain. The worker still
+has five timer sources: window, push, attach, refusal action, and parent recovery.
 
 **Stays exactly as it is:**
 
 | Item | Why it is not the cooldown's |
 | --- | --- |
+| `publicationRetry`, `pushTimer`, and `stopPushTimer` | Failed publication still needs a scheduled attempt |
 | `pendingWrites` retention | A push can fail or be rejected; the writes must survive to be replayed |
 | `baseTrusted` | The head-of-cycle fetch decision, unrelated to push cadence |
 | `worktreeDirty` | A write that failed part-way, unrelated to push cadence |
@@ -154,11 +159,11 @@ Roughly **thirty lines and two fields**, plus one fewer timer in a loop that has
 flowchart TD
     subgraph COOLDOWN["Owned by the cooldown - would be deleted"]
         LPA["lastPushAt"]
-        PT["pushTimer + stopPushTimer"]
         MSP["the wait branch in maybeSchedulePush"]
     end
 
     subgraph FAILURE["Owned by push failure - would remain"]
+        PT["publicationRetry + pushTimer + stopPushTimer"]
         PW["pendingWrites retention"]
         BT["baseTrusted"]
         WD["worktreeDirty"]
@@ -186,30 +191,28 @@ That cuts both ways, and neither direction is decisive:
   only reached on failure is code whose bugs are found later. The five defects PR #382 fixed were
   all in paths the cooldown makes routine.
 
-A concrete symptom of how routine it is: **36 of the 45 test references to the cooldown are
-`loop.lastPushAt = time.Now()`**, used purely as a lever to hold the push back so a test can inspect
-retained state. Remove the cooldown and those tests need a different lever. That is a real
-migration cost and also evidence of how central the state is.
+Tests use `loop.lastPushAt = time.Now()` to hold the push back so they can inspect retained state.
+Removing the cooldown requires another way to reach that state without changing the failure path
+each test exercises.
 
-## 6. Backpressure already coalesces, which weakens the storm argument
+## 6. Serialization limits concurrency, but does not batch queued commits
 
 The branch worker is a single goroutine, and Git operations run synchronously on it. While a push
-is in flight, arriving events sit in the queue. When it returns, they are processed, become
-commits, and **one** push covers all of them.
+is in flight, arriving events sit in the queue. After it returns, each dequeued item runs its
+handler, which can finalize a window and call `maybeSchedulePush` before the next item is read.
 
-So "push immediately" is not the same as "push per event". Under sustained load the worker
-self-limits to one push per push-duration, and the coalescing the cooldown was invented for arrives
-for free from the serialization. The cooldown's distinctive contribution is limited to a **slow
-trickle** across identities: arrivals frequent enough to commit often, but slow enough that each
-push completes before the next commit appears.
+Without the success wait, queued alternating identities or zero-window writes can therefore each
+cause a push. Serialization limits concurrent Git work to one operation; it does not automatically
+combine queued commits into one publication. The cooldown can batch both a slow trickle and a
+backlog that drains after a slow push.
 
 ## 7. Options
 
 | Option | What it is | Complexity | Verdict |
 | --- | --- | --- | --- |
-| **A. Keep it** | Status quo | Unchanged | Honest default. It is inert where it is inert and useful where it is not |
-| **B. Delete it** | Push after every commit; rely on serialization to batch | **-30 lines, -2 fields, -1 timer** | **Riskiest.** §3 means this is one push per identity change on a multi-user branch |
-| **C. Add a failure backoff, keep the cooldown** | A bounded backoff after a **failed** push or recovery, cleared when nothing is retained | **+1 timer**, but it guards a real gap | **Recommended, and independent of the rest** |
+| **A. Keep the success cooldown** | Preserve successful-push spacing | Unchanged | Current default alongside C |
+| **B. Delete the success cooldown** | Push after every commit unless failure backoff applies | Removes `lastPushAt` and the success wait; keeps the timer | §3 can become one push per identity change |
+| **C. Add a failure backoff, keep the cooldown** | Schedule failed publications independently of new writes | Reuses `pushTimer`; adds backoff state | Built in #412, including the parent-recovery handoff |
 | **D. Add the backoff AND shorten or drop the success cooldown** | C, plus reducing the `5s` wait once §9 has priced it | Depends on the outcome | The measured follow-up to C |
 | **E. Make it conditional or configurable** | Engage only when more than one identity is active, or expose it on `GitProvider` | **+complexity, +API surface** | Rejected unless D measurably fails |
 
@@ -221,15 +224,12 @@ half of that: the cooldown is inert only while one identity is writing, and it i
 soon as two are. Dropping the success wait is therefore a **measured** decision, not an obvious one,
 and it belongs in option D behind the numbers §9 asks for.
 
-What survives the correction intact is the second half, and it is worth doing on its own. Today the
-worker has a timer on success and **none on failure**.
-[`../api-first-publication.md`](../api-first-publication.md) and the PR #382 review both record the
-gap: `pushPending` stops its timer on failure and arms no replacement, so a branch that goes quiet
-after a failed push retains its work indefinitely and a flat `recovery` counter cannot prove
-progress. The mirror-image problem is that because `lastPushAt` advances only on success, an expired
-cooldown does not space failed attempts, so continued arrivals against a down remote provoke a
-failed push per commit. One bounded backoff answers both, and it neither needs nor blocks any
-decision about the success cooldown:
+Before #412, `pushPending` stopped its timer on failure and armed no replacement outside parent
+recovery. A quiet branch retained its work indefinitely, while continued arrivals could provoke
+a failed push per commit because `lastPushAt` advances only on success. #412 adds the independent
+failure backoff. Its ordinary publication path follows this lifecycle; while parent recovery is
+open, recovery's deadline takes the backoff's place. The worker event model records the fetches
+outside that schedule:
 
 ```mermaid
 stateDiagram-v2
@@ -260,12 +260,12 @@ Ordered by how much they should worry you.
 2. **Hosted Git rate limits.** With serialization the bound is one push per push-duration, which on
    a fast remote is several per second sustained. GitHub's secondary rate limits are real and are
    not documented as a fixed number, so this needs observation rather than arithmetic.
-3. **`commit.window: 0s` becomes a push per event.** Today the cooldown is the only thing standing
-   between that setting and one publication per watch event. Anyone who set `0s` for prompt commits
-   did not necessarily ask for prompt *pushes*.
+3. **`commit.window.idleTimeout: 0s` becomes a push per event.** On a healthy remote the cooldown
+   spaces publications even with that setting. Anyone who set `0s` for prompt commits did not
+   necessarily ask for prompt *pushes*.
 4. **Losing a well-exercised path.** §5. The retained-write machinery stays; its production
    exposure shrinks; its bug-discovery rate shrinks with it.
-5. **Test migration.** 36 tests use `lastPushAt` to reach retained state. They need a replacement
+5. **Test migration.** Tests use `lastPushAt` to reach retained state. They need a replacement
    lever, and a careless one (for example, stubbing `pushAtomicFn` to fail) changes what is being
    tested.
 6. **A latency expectation somebody may already rely on.** Removing the cooldown makes publication
@@ -278,33 +278,28 @@ The ledger built in PR #382 answers most of this, and turns the argument into nu
 
 | # | Operation to add to the ledger | What it settles |
 | --- | --- | --- |
-| 1 | One author, one target, a burst at default window, driven through the **event loop** | Confirms §2: the cooldown never engages, so B and C cost nothing here |
+| 1 | One author, one target, a burst at default window, with no early closure | Confirms §2 for ordinary timer closures |
 | 2 | Two authors alternating on one branch | Prices the identity-boundary case that §3 claims is the real one |
 | 3 | Three `GitTarget`s on one branch, edited together | The multi-tenant bill for option B |
-| 4 | `commit.window: 0s`, ten events | Risk 3, as a number |
-| 5 | A failing remote with continued arrivals | Shows today's per-commit failed push, and what a backoff changes |
+| 4 | `commit.window.idleTimeout: 0s`, ten events | Risk 3, as a number |
+| 5 | A failing remote with continued arrivals, including parent recovery | Confirms retry pacing, including across the parent-recovery handoff |
 
-Rows 1 to 4 need an event-loop-driven fixture rather than today's direct `commit()` calls, because
-what is under test is the *scheduling*, not the request count of one cycle. That fixture does not
-exist yet and is most of the work in answering this question.
+Rows 1 to 4 need connection counts driven through the event loop because scheduling determines
+how many publication cycles occur. Extend the existing event-loop fixtures, including #412's
+held-request retry test, to measure those workloads.
 
 ## 10. Recommendation
 
-1. **Do not change it as part of PR #382.** That branch is green and reviewed; this alters
-   publication cadence and deserves its own change and its own e2e run.
-2. **Take option C on its own.** Add a bounded failure backoff. It closes a documented gap with no
-   upside, it needs no measurement to justify, and it does not depend on any decision about the
-   success cooldown.
-3. **Build the event-loop ledger rows in §9 next.** Nothing currently measures scheduling, only the
-   cost of one cycle, so the multi-identity question cannot be answered today. Row 2 is the
-   important one: it prices the case §3 says is normal.
+1. **Keep the success cooldown while evaluating its cost.** Changing publication cadence needs
+   a separate change and its own validation.
+2. **Option C is complete.** #412 built the failure backoff and, after review, the
+   parent-recovery handoff: new commits respect retry pacing after a missing parent returns.
+3. **Build the event-loop ledger rows in §9 before changing the success wait.** Retry tests prove
+   progress, but the ledger still needs the cost of these scheduled workloads. Row 2 prices the
+   multi-identity case.
 4. **Only then consider option D.** If the numbers show the multi-identity case is rare in practice
    or the amplification is small, shortening or dropping the success cooldown becomes defensible.
    If they show what §3 predicts, keep it and the question is settled with evidence.
 
-The honest summary, after §3's correction: the cooldown is redundant only while one identity is
-writing, and load-bearing as soon as two are. It is also not the source of this worker's
-complexity, so removing it was never the simplification it looked like: the saving is thirty lines
-against the retained-write machinery that stays either way. The unambiguous finding is
-narrower and more useful: **the worker times the wrong event.** Adding the missing failure timer is
-worth doing whatever happens to the cooldown.
+Removing the success wait keeps the retry timer and retained-write machinery. Its benefit must
+therefore come from measured save latency, weighed against the additional publications.

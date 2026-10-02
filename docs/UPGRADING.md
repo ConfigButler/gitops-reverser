@@ -50,6 +50,14 @@ then collects for the `2s` default. In order:
 
 1. **Remove the old field while the old schema is still served**, noting each value:
 
+   If GitOps manages the `GitTarget`, first pause the reconciler that applies it: the Flux
+   `Kustomization` or `HelmRelease`, or automated sync on the Argo CD `Application`. Keep that
+   pause in the managing configuration too if another controller would undo it. Suspending only
+   a Flux `GitRepository` leaves the applying reconciler able to use its existing artifact.
+   Alternatively, remove the field from the Git source and wait for that revision to apply.
+   Keep the old string out of the cluster until step 4; restoring it before the CRD upgrade
+   recreates the listing failure.
+
    ```bash
    kubectl get gittargets -A -o json \
      | jq -r '.items[] | select(.spec.commit.window != null)
@@ -60,16 +68,14 @@ then collects for the `2s` default. In order:
 
    The running controller uses its `5s` default meanwhile.
 
-   If Flux or Argo CD applies the `GitTarget`, suspend that source first, or remove the field in
-   its Git source, and keep it that way until step 4. Otherwise it re-applies the string
-   `commit.window`, and once the new CRD is served that object breaks listing again.
 2. **Clear finished requests** rather than carrying them across: `kubectl delete commitrequests -A
    --all` once in-flight saves have resolved.
 3. **Upgrade** the chart: new CRDs and new controller together.
 4. **Restore the timing** on the targets noted in step 1, as `commit.window.idleTimeout`. A value
    over `1m` also needs `commit.window.maxDuration` raised to at least that value (at most `24h`),
    or admission refuses it. Update anything that creates `CommitRequest`s to set `window` instead of
-   `closeDelay`.
+   `closeDelay`. Update the Git-managed manifests or chart values before resuming their
+   reconciler, then confirm the restored object has the new `window` block.
 
 A GitOps source that still carries `window: "5s"` is refused at apply once the new CRD is in place;
 update it in step 4 along with the rest.

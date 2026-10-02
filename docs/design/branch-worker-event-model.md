@@ -12,18 +12,20 @@ journal storage, acknowledgments, publication recovery, retention, and the persi
 The broader ownership contract is in [the architecture](../architecture.md#git-write-architecture).
 
 Status: design proposal against the code after #407, #411 and #412 (publication retry, built).
-Current-behavior sections describe that implementation. Event names and the transition boundary are proposals. This
-document changes no runtime behavior and does not establish an outage or exactly-once guarantee.
+Current-behavior sections describe that implementation. Event names and the transition boundary
+are proposals. This document changes no runtime behavior and does not establish an outage or
+exactly-once guarantee.
 
 ## Next implementation: restore publication progress
 
-Ship retry scheduling and Git operation deadlines before the journal work. Neither fix depends
-on choosing a storage backend, changing the save contract, or implementing HA.
+Complete retry scheduling and add Git operation deadlines before the journal work. Neither fix
+depends on choosing a storage backend, changing the save contract, or implementing HA.
 
 1. **Built in #412.** Retained publication work has a bounded failure backoff (10s, doubling to
    5m) on the push timer, in [publication_retry.go](../../internal/git/publication_retry.go).
-   Commits before the deadline do not push; a success resets it; a missing parent stays with
-   parent recovery's probe; a stopped worker's timers are stopped with it.
+   Commits before the deadline do not push; a success resets it. While parent recovery is open
+   its probe deadline is the retry, and new commits wait for it too, including after the parent
+   returns. A stopped worker's timers are stopped with it.
 2. Carry cancellation through ref listing and fetch, and impose operation deadlines across the
    push cycle. Bound the cycle's total occupancy as well as its individual calls. Repeated
    contention retries must not repeatedly reset the whole budget. Keep timed-out work pending;
@@ -37,10 +39,11 @@ on choosing a storage backend, changing the save contract, or implementing HA.
 
 The completion test is a save whose first push fails, followed by silence and remote recovery:
 without another resource edit, its commit reaches Git and the same request reaches its terminal
-status with the published SHA. `TestPublicationRetry_AHeldCommitRequestIsCommittedWithoutAnotherWrite`
-covers that on the real event loop. Still to prove that a request can safely outlive the controller's
-safety window while retries continue, and that a stalled remote call returns control within the
-operation budget. Use a controllable remote for those failures and a fake clock for retry timing.
+status with the published SHA.
+`TestPublicationRetry_AHeldCommitRequestIsCommittedWithoutAnotherWrite` covers that on the event
+loop. Still to prove that a request can safely outlive the controller's safety window while
+retries continue, and that a stalled remote call returns control within the operation budget.
+Use a controllable remote for those failures and a fake clock for retry timing.
 
 This change improves progress within a running worker. Restart durability follows the separate
 journal plan. An indefinitely unavailable remote can still leave a save pending; the immediate
@@ -167,14 +170,30 @@ retries rather than adding a controller-only timeout that could give a false ter
 
 Continued writes caused the opposite problem: only successful pushes advance `lastPushAt`, so
 once the cooldown had elapsed every later commit attempted the same unavailable remote. The retry
-deadline now governs those commits too ([push-cooldown design](push-cooldown.md#7-options),
+deadline now governs those commits ([push-cooldown design](push-cooldown.md#7-options),
 option C).
 
 The retry follows [parent recovery](../../internal/git/parent_recovery.go), which already kept an
 obligation open and scheduled its next attempt (10 seconds, backing off to five minutes, shared
-across targets on the worker). A failure caused by a missing parent stays on that schedule, so
-the two paths cannot multiply remote attempts. A publication that keeps failing is still visible
-only in logs and `gitopsreverser_git_pushes_total{outcome="failed"}`, not in `GitTarget` status.
+across targets on the worker). While the parent is missing, that schedule suppresses early
+attempts. After the parent returns, the recovery obligation stays open until the work publishes,
+but its missing-parent hold is removed. A publication that fails while the obligation is open
+therefore defers to recovery's next probe deadline: new commits wait for it, and recovery's timer
+makes the attempt. Review of #412 found the handoff gap (each new commit retried at once);
+`TestPublicationRetry_AFailureAfterTheParentReturnsWaitsForRecovery` pins the fix.
+
+The backoff schedules publication attempts, not every Git connection. A new window can still
+fetch to rebuild retained writes before reaching `maybeSchedulePush`; if the rebuild fails, the
+window is dropped and its attached save fails. Except for a missing parent, no dropped-scope
+recovery requests a replacement snapshot. This existing gap belongs beside the deadline work,
+before the durable-journal refactor.
+
+There is no worker publication-failure condition or retry deadline in `GitTarget` status. A
+push-specific refusal, such as branch protection with working read access, can leave a save in
+`WaitingForPush` without explaining the cause. Push-cycle failures appear in logs and
+`gitopsreverser_git_pushes_total{outcome="failed"}`. A rebuild that fails before entering the push
+cycle is not counted by that metric. Provider connectivity or credential failures can separately
+surface through `GitProviderReady`, and parent recovery already has status.
 
 ### Slow Git operations stop the whole branch loop
 
@@ -384,9 +403,10 @@ The current worker has five timer sources:
 | Refusal action | Recheck consent before an eligible empty commit |
 | Parent recovery | Probe and service retained work or owed snapshots |
 
-The publication retry (#412) shares the push timer with the success cooldown, and keeps its own
-backoff, so the branch has one policy for when it may spend its next remote attempt. A durable
-design must persist that retry deadline like any other.
+The publication retry (#412) shares the push timer with the success cooldown and keeps its own
+backoff. Parent recovery has a separate timer, and owns the retry while its obligation is open.
+A durable design must persist both deadlines and that ownership rule. This scheduling does not
+limit the fetches other handlers can initiate.
 
 An illustrative deadline protocol is:
 
@@ -482,6 +502,8 @@ Journal crashes, retention, encryption, and HA failure tests belong to the
 | Save's first push fails, then the branch goes quiet | Retry publishes and resolves the same request without another edit |
 | Held save outlives the controller's safety window | Withdrawal cannot falsely fail it; recovery remains scheduled |
 | Push fails under continuous arrivals | Arrivals cannot bypass the retry budget |
+| Parent returns, but publication still fails | New commits respect the recovery deadline while the obligation remains open |
+| Retained-write rebuild fails before a new window commits | Recovery accounts for the dropped window and its attached save |
 | Ref listing, fetch, or push stalls | Operation and cycle deadlines return control to the worker |
 | Worker is canceled during a failed attempt | No retry is rearmed and no abandoned task retains checkout access |
 | Timer moves or fires twice | Stale and duplicate firings do not close another window |

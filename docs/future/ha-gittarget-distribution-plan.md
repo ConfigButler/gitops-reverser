@@ -32,6 +32,11 @@ an indeterminate publication result. Existing coalescing still applies, and rebu
 work onto a moved remote can change its SHA or leave no diff. This is not a promise of one commit
 per Kubernetes mutation or exactly-once publication under arbitrary history loss.
 
+The phases and acceptance criteria below assume the stronger save contract. Agree on that scope
+before HA-1. A convergence-only first release needs narrower phases and explicit save limitations;
+it cannot claim the save-recovery criteria in this plan. Recovering pending work and terminal
+receipts does not require retaining every historical transition forever.
+
 A Git outage is recoverable within the configured storage budget if the remote eventually
 returns. The journal must survive the advertised storage failures, and Kubernetes must become
 available for source recovery and status projection. A single Redis or Valkey Pod is insufficient
@@ -116,11 +121,19 @@ multiple GitProvider objects can name the same repository and branch. The
 canonical remote identity should normalize the resolved Git URL and be hashed
 for key and Lease names. It must be exposed in logs, metrics, and target status.
 
+URL normalization alone cannot prove that SSH and HTTPS URLs, redirects, or host aliases name the
+same repository. HA-0 must define the supported identity and alias rules and document any aliases
+it cannot unify. Strip credential material before deriving or exposing the identity.
+
 Every GitTarget maps to exactly one branch write shard. Targets sharing a remote
 branch use one journal and one worker, even when they have different paths.
 Overlapping paths must remain a reconciliation-time and writer-time refusal. Retain provider and
 target incarnations alongside the shard key; sharing a destination must not silently combine
 incompatible policy or reroute old work to a replacement object with the same name.
+
+Before combining providers, define credential selection and compatibility for branch permissions,
+parent choice, and signing policy. Refuse incompatible bindings explicitly. A shared destination
+does not authorize one provider's work to use another provider's permissions.
 
 ### Journal record
 
