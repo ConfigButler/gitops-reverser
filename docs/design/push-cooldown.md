@@ -1,6 +1,8 @@
 # The push cooldown: what it still buys, and what removing it would cost
 
-> **design**: open, nothing built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: open. Option C (§7), the failure backoff, is built in
+> [`publication_retry.go`](../../internal/git/publication_retry.go); the success cooldown is
+> unchanged and options D and E remain open. Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-09-21.
 > Related: [`../api-first-publication.md`](../api-first-publication.md),
 > [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
