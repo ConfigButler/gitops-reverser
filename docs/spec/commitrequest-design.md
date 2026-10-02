@@ -135,9 +135,9 @@ nothing to add, and `Committed` when the replay produced a commit after all.
 resolved in that interval, and the controller keeps re-sending its attach every couple of seconds
 until it reads an outcome. The worker marks such a request committed rather than forgetting it, so
 the re-send is recognized as the same request: it cannot register afresh and expire into
-`NoOpenWindow` while its commit waits out the push cooldown, and it cannot claim the next
-same-author window and stamp its message on somebody else's commit. Its close deadline is spent and
-no longer arms anything.
+`NoWindow` while its commit waits out the push cooldown, and it cannot claim the next same-author
+window and stamp its message on somebody else's commit. Its attach deadline is spent and no longer
+arms anything.
 
 **A worker that stops while still holding the write fails the request**, because the controller
 does not time out a request the worker holds, and "the worker stopped before the commit reached the
@@ -166,7 +166,9 @@ The gates are read when the commit is made, as `suspend` already was for every w
 made before a gate closed is pushed rather than kept back, because a commit that never left the
 operator's checkout would surface later, out of order.
 
-A failed push is retried when a later commit on the branch schedules the next one. A branch that then
-goes quiet holds the work, and its requests stay `WaitingForPush`, until something else commits.
+A failed push schedules its own retry (10s, doubling to 5m), with parent recovery owning attempts
+while its obligation remains active. A request riding the retained write stays `WaitingForPush`
+until publication resolves it or worker shutdown fails it. An unavailable remote can leave it
+pending indefinitely, but retries no longer depend on another commit arriving.
 
 The complete status vocabulary is in the [status conditions guide](status-conditions-guide.md).

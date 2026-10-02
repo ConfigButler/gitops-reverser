@@ -50,9 +50,10 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          CommitRequest is a one-shot "save" signal: creating one finalizes the open
-          commit window for the referenced GitTarget instead of waiting for the
-          silence timer. The resulting commit hash is reported back in status.
+          CommitRequest is a one-shot "save" signal. It attaches to its author's current or next
+          commit window on the referenced GitTarget, closes that window on its own timers instead of the
+          target's, and gives the resulting commit its message. The commit hash is reported in status
+          once the commit is on the remote.
         properties:
           apiVersion:
             description: |-
@@ -76,7 +77,7 @@ spec:
             properties:
               gitTargetRef:
                 description: |-
-                  GitTargetRef names the GitTarget whose open commit window to finalize.
+                  GitTargetRef names the GitTarget whose commit window this request attaches to.
                   The GitTarget must be in the same namespace as this CommitRequest.
                 properties:
                   name:

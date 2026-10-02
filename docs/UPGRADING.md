@@ -7,6 +7,15 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A save on a target that may not be written fails
+
+A `CommitRequest` on a suspended `GitTarget`, or on one whose render fidelity is not established,
+resolves `Ready=False` with `FinalizeFailed` and the reason, whatever `whenNothingToCommit` says.
+It used to resolve `Ready=True` (`NoWindow` or `AlreadyPresent`) with nothing written, or record an
+empty commit under `CommitEmpty`. Automation that waits for a save's `Ready` condition now sees the
+failure; unsuspend the target, or wait for `RenderMatchesLive=True`, and create the request again.
+A commit made before the target was suspended is still pushed, and its request resolves with it.
+
 ## Commit windows get a `window` block on both kinds; `closeDelay` is gone
 
 **Breaking.** Two fields change shape, and the rules around them are new.
@@ -15,6 +24,7 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 |---|---|
 | `GitTarget.spec.commit.window: "5s"` | `GitTarget.spec.commit.window.idleTimeout: "5s"`, plus `maxDuration` (default `1m`) |
 | `CommitRequest.spec.closeDelay: "2s"` | `CommitRequest.spec.window.attachTimeout: "2s"` and `window.maxDuration: "2s"` |
+| chart value `quickstart.gitTarget.commit.window: "5s"` | `quickstart.gitTarget.commit.window.idleTimeout: "5s"` and `.maxDuration: "1m"` |
 | Ready reason `NoWindowInGrace` | `NoWindow` |
 | progress reason `WaitingForCloseDelay` | `Progressing`, then the worker's phase: `WaitingForWorker` (the GitTarget has no branch worker yet), `WaitingForWindow`, `CollectingWindow`, `WaitingForPush` |
 
@@ -33,10 +43,20 @@ What behaves differently:
 
 **The upgrade procedure.** The one hazard is a stored `GitTarget` whose `commit.window` is still a
 string: once the new CRD is served, that object cannot be decoded, and a single one breaks listing
-every `GitTarget`. A removed `closeDelay` is not a hazard: `kubectl apply` refuses it by name, and a
-stored one is dropped. In order:
+every `GitTarget`. A removed `closeDelay` cannot break listing, but it is not always refused:
+`kubectl apply` refuses it by name, while a client that does not validate fields strictly (a
+controller, or a script using a typed or dynamic client) has it pruned silently, and its request
+then collects for the `2s` default. In order:
 
 1. **Remove the old field while the old schema is still served**, noting each value:
+
+   If GitOps manages the `GitTarget`, first pause the reconciler that applies it: the Flux
+   `Kustomization` or `HelmRelease`, or automated sync on the Argo CD `Application`. Keep that
+   pause in the managing configuration too if another controller would undo it. Suspending only
+   a Flux `GitRepository` leaves the applying reconciler able to use its existing artifact.
+   Alternatively, remove the field from the Git source and wait for that revision to apply.
+   Keep the old string out of the cluster until step 4; restoring it before the CRD upgrade
+   recreates the listing failure.
 
    ```bash
    kubectl get gittargets -A -o json \
@@ -47,13 +67,15 @@ stored one is dropped. In order:
    ```
 
    The running controller uses its `5s` default meanwhile.
+
 2. **Clear finished requests** rather than carrying them across: `kubectl delete commitrequests -A
    --all` once in-flight saves have resolved.
 3. **Upgrade** the chart: new CRDs and new controller together.
 4. **Restore the timing** on the targets noted in step 1, as `commit.window.idleTimeout`. A value
    over `1m` also needs `commit.window.maxDuration` raised to at least that value (at most `24h`),
    or admission refuses it. Update anything that creates `CommitRequest`s to set `window` instead of
-   `closeDelay`.
+   `closeDelay`. Update the Git-managed manifests or chart values before resuming their
+   reconciler, then confirm the restored object has the new `window` block.
 
 A GitOps source that still carries `window: "5s"` is refused at apply once the new CRD is in place;
 update it in step 4 along with the rest.

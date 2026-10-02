@@ -247,8 +247,8 @@ type GitTargetSpec struct {
 	// the identity talking to the remote and stay on GitProvider. Migration: docs/UPGRADING.md.
 
 	// Commit configures how this target's writes are batched into commits, and how those commits
-	// are phrased. Omitted, writes coalesce over a 5s rolling silence window and use the built-in
-	// message templates.
+	// are phrased. Omitted, writes coalesce over a 5s rolling silence window, a window closes at
+	// most 1m after it opened, and commits use the built-in message templates.
 	// +optional
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 

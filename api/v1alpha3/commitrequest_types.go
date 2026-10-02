@@ -23,7 +23,7 @@ import (
 // +kubebuilder:validation:XValidation:rule="self.gitTargetRef == oldSelf.gitTargetRef && has(self.message) == has(oldSelf.message) && (!has(self.message) || self.message == oldSelf.message) && has(self.window) == has(oldSelf.window) && has(self.whenNothingToCommit) == has(oldSelf.whenNothingToCommit) && (!has(self.whenNothingToCommit) || self.whenNothingToCommit == oldSelf.whenNothingToCommit)",message="CommitRequest spec is immutable after creation"
 // +kubebuilder:validation:XValidation:rule="!has(self.whenNothingToCommit) || self.whenNothingToCommit != 'CommitEmpty' || has(self.message)",message="whenNothingToCommit: CommitEmpty requires spec.message, because a message is all an empty commit records"
 type CommitRequestSpec struct {
-	// GitTargetRef names the GitTarget whose open commit window to finalize.
+	// GitTargetRef names the GitTarget whose commit window this request attaches to.
 	// The GitTarget must be in the same namespace as this CommitRequest.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="spec.gitTargetRef.name must not be empty"
@@ -192,9 +192,10 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// CommitRequest is a one-shot "save" signal: creating one finalizes the open
-// commit window for the referenced GitTarget instead of waiting for the
-// silence timer. The resulting commit hash is reported back in status.
+// CommitRequest is a one-shot "save" signal. It attaches to its author's current or next
+// commit window on the referenced GitTarget, closes that window on its own timers instead of the
+// target's, and gives the resulting commit its message. The commit hash is reported in status
+// once the commit is on the remote.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 

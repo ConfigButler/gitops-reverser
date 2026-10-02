@@ -385,12 +385,14 @@ request-rate limiter. A contention cycle attempts up to three pushes without a d
 between them, fetching and rebuilding when the remote moved. Different branch workers can
 publish independently.
 
-After a push or retained-write recovery fails, `pushPending` stops its timer and keeps the work.
-There is currently no dedicated retry timer. Later work that schedules publication can retry it;
-a quiet branch has no bounded retry time. A `CommitRequest` poll alone does not schedule another
-push. Conversely, continued arrivals after an expired cooldown can provoke frequent failed
-attempts. An independent, bounded failure backoff would address both cases while preserving
-silence when there is no pending work.
+After a push or retained-write recovery fails, the worker keeps the work and schedules the next
+attempt itself: 10s after the first failure, doubling to at most 5m, whether or not anything else
+arrives. Commits made before that deadline accumulate locally rather than each trying the remote
+again, and a successful push resets the schedule. A failure caused by a missing parent branch is
+retried on parent recovery's probe schedule instead, and so is any failure while that recovery is
+open, including after the parent returns: new commits wait for its deadline too. The backoff does
+not rate-limit fetches needed by a new window or snapshot. A branch with nothing pending stays
+silent.
 
 The byte threshold forces finalization but does not free retained writes during a remote outage.
 It is not a hard memory ceiling. The separate branch queue has `1000` slots by default and drops

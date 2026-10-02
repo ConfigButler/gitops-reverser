@@ -1085,7 +1085,12 @@ type branchWorkerEventLoop struct {
 
 	lastPushAt  time.Time
 	commitTimer *time.Timer
-	pushTimer   *time.Timer
+	// pushTimer fires the next push: when the success cooldown ends, or when a failed
+	// publication's retry is due (publicationRetry).
+	pushTimer *time.Timer
+	// publicationRetry is the schedule of a failed publication's next attempt. See
+	// publication_retry.go.
+	publicationRetry publicationRetry
 
 	// deferredHeals holds heal resyncs (periodic re-anchors, removed-type sweeps) parked while a
 	// commit window is open, so a heal never force-finalizes (steals) that window — including a
@@ -1768,9 +1773,14 @@ func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause
 // cooldown has elapsed (or has never fired), and otherwise schedules a
 // one-shot pushTimer to fire when the cooldown expires. While the cooldown
 // is active, additional commits accumulate locally; when the timer fires,
-// all pending commits go to the remote in a single push.
+// all pending commits go to the remote in a single push. After a failed
+// publication the retry's deadline governs instead, so new commits do not
+// each spend a push on a remote that just refused one.
 func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	if len(l.pendingWrites) == 0 {
+		return
+	}
+	if l.awaitingPublicationRetry() {
 		return
 	}
 	if l.lastPushAt.IsZero() {
@@ -1790,16 +1800,12 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 // pushPending publishes any retained pending writes that already exist as local
 // commits. On success, pendingWrites is cleared and lastPushAt advances. On
 // failure (transient or after exhausting replay retries), pendingWrites stays
-// in place, safe but unpublished.
-//
-// Nothing schedules its own retry: the push timer is stopped on failure and no replacement is
-// armed, so the work moves again only when the next commit calls maybeSchedulePush. On a branch
-// that then goes quiet, it waits indefinitely. That gap predates the conditional fetch and is not
-// fixed here; docs/design/push-cooldown.md §7 option C is the bounded failure backoff that closes
-// it, and says why it is a change of its own.
+// in place, safe but unpublished, and the push timer is armed for the next
+// attempt (publication_retry.go), so the work lands without another commit.
 func (l *branchWorkerEventLoop) pushPending() {
 	if len(l.pendingWrites) == 0 {
 		l.stopPushTimer()
+		l.notePublicationSettled()
 		return
 	}
 	if l.w.awaitingParentProbe() {
@@ -1813,21 +1819,23 @@ func (l *branchWorkerEventLoop) pushPending() {
 	// report success without sending anything, and settle work that exists nowhere. Rebuild first,
 	// and keep the writes rather than publish a lie if that fails.
 	if err := l.recoverRetainedWrites(); err != nil {
-		l.w.Log.Error(err, "Cannot publish until the retained writes are rebuilt; keeping them",
-			"pendingWrites", len(l.pendingWrites))
 		l.stopPushTimer()
 		l.noteParentUnavailable(err)
+		l.notePublicationFailed()
+		l.w.Log.Error(err, "Cannot publish until the retained writes are rebuilt; keeping them",
+			"pendingWrites", len(l.pendingWrites), "retryAt", l.publicationRetry.nextAttempt)
 		return
 	}
 
 	if err := l.w.pushPendingCommits(l.pendingWrites); err != nil {
-		l.noteParentUnavailable(err)
-		l.w.Log.Error(err, "Push failed; pending writes retained for retry",
-			"pendingWrites", len(l.pendingWrites))
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
 		// design specifies lastPushAt only advances on a successful push. A
 		// CommitRequest riding a retained write stays unresolved while we retry.
 		l.stopPushTimer()
+		l.noteParentUnavailable(err)
+		l.notePublicationFailed()
+		l.w.Log.Error(err, "Push failed; pending writes retained for retry",
+			"pendingWrites", len(l.pendingWrites), "retryAt", l.publicationRetry.nextAttempt)
 		return
 	}
 
@@ -1839,6 +1847,7 @@ func (l *branchWorkerEventLoop) pushPending() {
 	l.pendingWritesBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
+	l.notePublicationSettled()
 	l.noteRecoveryPublished()
 }
 
