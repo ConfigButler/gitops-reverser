@@ -22,10 +22,11 @@ import (
 //     runs so the target's scan stays fresh.
 //
 // A WindowMismatch is not asked: that request was refused by another author's window, which is
-// what it reports. Neither is a request whose commit already exists locally. The gates are read
-// when the commit is made, as ResolvedTargetMetadata.Suspend already defined for suspension, and a
-// commit made before a gate closed is still pushed: reading them at push time would strand it in
-// the checkout, to resurface out of order when the gate opens.
+// what it reports. Neither is a request whose write is already decided. The gates are read when the
+// write is decided (the window closes), which is normally when it is committed, as
+// ResolvedTargetMetadata.Suspend already defined for suspension. A write decided before a gate
+// closed is still committed and pushed, even when an unreachable remote delays its commit: reading
+// the gates later would strand it in the worker, to resurface out of order when the gate opens.
 //
 // They are deliberately not the checkout's state (baseTrusted, checkoutApplied). That says whether
 // the worker can commit on its checkout; these say whether the target may be written at all, and

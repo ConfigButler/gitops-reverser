@@ -80,11 +80,14 @@ Fixed behavior is marked separately from gaps that remain at `3708b529`.
    no deadline; nothing in `internal/git` sets a timeout. A stalled server can block the whole
    branch loop, and every target on that worker with it. Whether go-git's transports apply a
    default timeout was not established here.
-4. **A failed rebuild drops the open window.** When retained writes need a replay and its fetch
-   fails, `recoverRetainedWrites` returns an error and the finalize drops the window
-   (`dropFailedWindow`). Only a missing parent records the dropped scope and asks for a snapshot,
-   so under any other failure those writes wait for the next resync. While the rebuild keeps
-   failing, every new window spends a fetch on it.
+4. **Fixed on #413: a failed rebuild dropped the open window.** When retained writes needed a replay
+   and its fetch failed, the finalize dropped the window and failed its save; only a missing parent
+   asked for a snapshot, and every new window spent a fetch on the rebuild. A closed window is now a
+   decided write: it waits in the log for the publication retry, its save stays `WaitingForPush`,
+   and a window decided while the retry is pending spends no connection. Pinned by
+   `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry`. A missing parent still drops
+   the window to a snapshot until step 3 of
+   [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md) bounds the log.
 5. **Publication failures have no dedicated status.** The normal retry delay starts at 10s and
    reaches a 5m cap after repeated failures. A save riding retained work stays in `WaitingForPush`.
    The worker exposes no publication-failure condition or retry deadline on `GitTarget`.

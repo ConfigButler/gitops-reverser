@@ -387,10 +387,12 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	}
 }
 
-// recordCommitRequest commits a request's message with an untouched tree, for a request that ran
-// out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason no record was
-// made is returned, including a write gate (an empty commit is a write too), so the request fails
-// instead of reporting a save it did not make.
+// recordCommitRequest decides an empty commit recording a request's message, for a request that ran
+// out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason no record can
+// be made is returned, including a write gate (an empty commit is a write too), so the request fails
+// instead of reporting a save it did not make. Once decided, the request rides the record write
+// like an attached request rides its window: a remote that cannot be reached holds it, and only a
+// failure of the commit itself fails it.
 func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (bool, error) {
 	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
 	if err != nil {
@@ -398,23 +400,11 @@ func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
-	// An empty commit is only empty on a clean worktree: a failed write's staged leftovers would
-	// otherwise ride along in it.
-	if err := l.materialize(""); err != nil {
-		l.w.Log.Error(err, "Cannot recover the worktree for the empty commit recording a CommitRequest",
-			"request", pcr.id.Namespace+"/"+pcr.id.Name)
-		return false, fmt.Errorf("record the message in an empty commit: %w", err)
+	// A record whose commit fails for good resolves the request itself, so either way the request
+	// is no longer the caller's to resolve.
+	if l.decide(*pendingWrite) {
+		l.maybeSchedulePush()
 	}
-	batch := []PendingWrite{*pendingWrite}
-	if err := l.commit(batch); err != nil {
-		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
-			"request", pcr.id.Namespace+"/"+pcr.id.Name)
-		return false, fmt.Errorf("record the message in an empty commit: %w", err)
-	}
-	l.retain(batch[0])
-	pcr.committed = true
-	l.w.setCommitRequestPhase(pcr.id, PhaseWaitingForPush)
-	l.maybeSchedulePush()
 	return true, nil
 }
 

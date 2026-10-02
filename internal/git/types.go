@@ -387,6 +387,14 @@ type PendingWrite struct {
 	// render failed at commit time. Zero means "not stamped", so messageSource() recomputes.
 	committedMessageSource messageResolution
 
+	// materialized is set once the loop has committed this write at least once. A decided write
+	// the loop could not commit yet (the remote was unreachable) waits in the log with it unset;
+	// such writes always form the log's tail. Loop-goroutine only.
+	materialized bool
+	// seq numbers the loop's decisions, so a decision can be found in the log after writes before
+	// or after it were dropped or added. Loop-goroutine only.
+	seq uint64
+
 	// CommitSHA is the hash of the commit this write created, captured in
 	// executePendingWrite and refreshed when the write is re-executed on a
 	// rebase-replay (so it is never a stale pre-rebase hash). Zero when the write

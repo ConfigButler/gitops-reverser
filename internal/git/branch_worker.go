@@ -1121,6 +1121,9 @@ type branchWorkerEventLoop struct {
 	// recovery is the obligation to write what a missing parent branch held back, and the probe
 	// that drives it. See parent_recovery.go.
 	recovery parentRecovery
+
+	// decisions numbers the writes decide adds to the log. See PendingWrite.seq.
+	decisions uint64
 }
 
 // commitWindowDefaults are a GitTarget's commit window timers when it declares none.
@@ -1490,23 +1493,53 @@ func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 	l.commitTimer.Reset(delay)
 }
 
-// materialize makes the checkout the projection of the retained writes, the log: the remote tip
-// they were planned on plus one commit for each, in order. It is the only place the loop resets
-// and replays, and every commit and push the loop makes runs it first, so nothing can commit on
-// top of a failed write's leftovers or push writes whose commits a reset discarded.
+// materialize makes the checkout the projection of the log: the remote tip the writes were planned
+// on plus one commit for each, in order. It is the only place the loop resets and replays, and
+// every commit and push the loop makes runs it first, so nothing can commit on top of a failed
+// write's leftovers or push writes whose commits a reset discarded.
 //
-// The checkout is behind the log when a write failed part-way, when a reset discarded the commits
-// behind the retained writes and the replay that rebuilds them did not finish, or when the
-// writes' root was chosen under an older parent configuration. A parent change is read from the
-// generations, not taken from a flag: a rebuild that fails leaves them apart, so the next attempt
-// rebuilds again.
+// It works in two halves. The materialized prefix, the writes committed before, is rebuilt when the
+// checkout is behind it: a write failed part-way and could not be undone, a reset discarded their
+// commits and the replay did not finish, or their root was chosen under an older parent
+// configuration. Then each decided write not committed yet is committed in order. Failing to
+// commit one is terminal for that write alone, as a failed commit always was (dropDecidedWrite);
+// failing to reach the remote is not, and leaves every decided write in the log for the retry.
 //
 // refetch, when set, is the fetch series of a caller that needs the remote tip whatever the
-// checkout holds: a resync judges its snapshot against the newest remote tree. With nothing
-// retained and no refetch there is nothing to project: commitPendingWrites' own base check fetches
-// when the base is untrusted or the worktree dirty, which it can do safely because nothing is lost.
+// checkout holds: a resync judges its snapshot against the newest remote tree.
+//
+// It reads the log afresh on every pass, because dropping a write can report a refusal whose
+// empty commit runs materialize again from inside this one.
 func (l *branchWorkerEventLoop) materialize(refetch string) error {
-	if refetch == "" && l.checkoutCurrent() {
+	for {
+		if err := l.materializePrefix(refetch); err != nil {
+			l.dropDecidedWritesForParent(err)
+			return err
+		}
+		refetch = ""
+		i := l.materializedPrefix()
+		if i == len(l.pendingWrites) {
+			return nil
+		}
+		err := l.w.commitPendingWrites(l.pendingWrites[i : i+1])
+		if err == nil {
+			l.pendingWrites[i].materialized = true
+			continue
+		}
+		if !errors.Is(err, errWriteFailed) {
+			l.dropDecidedWritesForParent(err)
+			return err
+		}
+		l.dropDecidedWrite(i, err)
+	}
+}
+
+// materializePrefix rebuilds the writes committed before when the checkout is behind them. With none
+// committed, there is nothing to project: commitPendingWrites' own base check fetches when the base
+// is untrusted or the worktree dirty, which it can do safely because nothing is lost.
+func (l *branchWorkerEventLoop) materializePrefix(refetch string) error {
+	m := l.materializedPrefix()
+	if refetch == "" && (m == 0 || l.w.checkoutHolds(m) && !l.w.rootParentStale()) {
 		return nil
 	}
 	// The rebuild fetches, and a parent known to be missing is not fetched again before its probe
@@ -1515,7 +1548,7 @@ func (l *branchWorkerEventLoop) materialize(refetch string) error {
 	if l.w.awaitingParentProbe() {
 		return errAwaitingParentProbe
 	}
-	if len(l.pendingWrites) == 0 {
+	if m == 0 {
 		// Nothing to replay, so fetch and reset directly. Leaving it to ensureBaseForCycle would
 		// work, but that call records `publication`, and a resync is not one.
 		return l.w.syncWithRemote(l.w.ctx, refetch)
@@ -1527,28 +1560,61 @@ func (l *branchWorkerEventLoop) materialize(refetch string) error {
 		// to be in cooldown at the time.
 		reason = fetchReasonRecovery
 		l.w.Log.Info("Rebuilding retained writes onto the remote tip",
-			"pendingWrites", len(l.pendingWrites),
+			"pendingWrites", m,
 			"worktreeDirty", l.w.worktreeDirty(),
 			"committedWrites", l.w.checkoutApplied.Load())
 	}
-	return l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites, reason)
+	return l.w.refreshRemoteAndRebuildPendingWrites(l.w.ctx, l.pendingWrites[:m], reason)
 }
 
-// checkoutCurrent reports whether the checkout is the projection of the retained writes, so the
-// loop may commit on it or push it as it stands.
-func (l *branchWorkerEventLoop) checkoutCurrent() bool {
-	if len(l.pendingWrites) == 0 {
-		return true
+// materializedPrefix is how many writes at the head of the log have been committed before. Writes
+// not committed yet are always the tail: they are decided in order and committed in order.
+func (l *branchWorkerEventLoop) materializedPrefix() int {
+	for i := range l.pendingWrites {
+		if !l.pendingWrites[i].materialized {
+			return i
+		}
 	}
-	return l.w.checkoutHolds(len(l.pendingWrites)) && !l.w.rootParentStale()
+	return len(l.pendingWrites)
 }
+
+// materializeIsLocal reports whether committing a decided write now needs no connection: the
+// checkout already holds the writes before it, on a base the worker can vouch for.
+func (l *branchWorkerEventLoop) materializeIsLocal() bool {
+	if m := l.materializedPrefix(); m > 0 {
+		return l.w.checkoutHolds(m) && !l.w.rootParentStale()
+	}
+	return l.w.baseTrusted() && !l.w.worktreeDirty()
+}
+
+// checkoutCurrent reports whether the checkout is the projection of the whole log, so the loop may
+// commit on it or push it as it stands.
+func (l *branchWorkerEventLoop) checkoutCurrent() bool {
+	m := l.materializedPrefix()
+	if m < len(l.pendingWrites) {
+		return false
+	}
+	return m == 0 || l.w.checkoutHolds(m) && !l.w.rootParentStale()
+}
+
+// errWriteFailed marks a failure of the write itself, as opposed to reaching the remote or reading
+// the GitProvider: the plan was refused or could not be applied. It is terminal for the write, while
+// any other commit failure leaves a decided write in the log for the retry. Match it with errors.Is.
+var errWriteFailed = errors.New("the write failed")
+
+// writeFailedError carries errWriteFailed without changing the message of the error it wraps.
+type writeFailedError struct{ err error }
+
+func (e writeFailedError) Error() string        { return e.err.Error() }
+func (e writeFailedError) Unwrap() error        { return e.err }
+func (e writeFailedError) Is(target error) bool { return target == errWriteFailed }
 
 // errCheckoutBehindLog refuses a commit on a checkout that is not the projection of the retained
 // writes. materialize makes it current; a commit path that skipped it fails here instead of
 // committing a failed write's leftovers, or committing on top of commits a reset discarded.
 var errCheckoutBehindLog = errors.New("the checkout does not hold the retained writes; materialize first")
 
-// commit commits writes on the log's projection. Every commit the loop makes goes through here.
+// commit commits writes on the log's projection, for the paths that commit without deciding first.
 func (l *branchWorkerEventLoop) commit(batch []PendingWrite) error {
 	if !l.checkoutCurrent() {
 		return errCheckoutBehindLog
@@ -1556,10 +1622,117 @@ func (l *branchWorkerEventLoop) commit(batch []PendingWrite) error {
 	return l.w.commitPendingWrites(batch)
 }
 
-// retain adds a committed write to the log.
+// retain adds a write the loop has already committed to the log.
 func (l *branchWorkerEventLoop) retain(pendingWrite PendingWrite) {
+	pendingWrite.materialized = true
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)
 	l.pendingWritesBytes += pendingWrite.ByteSize
+}
+
+// decide adds a write the loop has decided to make to the log, and commits it when it can.
+//
+// Deciding is not committing. The write gates and building the write have already passed, so the
+// decision stands: a remote that cannot be reached when the commit would be made leaves it in the
+// log, and the publication retry commits and pushes it. A request riding it is held from here on,
+// so the controller never fails a save whose write can still land. While a retry is pending, a
+// decision that would need a connection to commit waits for that retry instead of spending one.
+//
+// It reports whether the write is still in the log afterwards, which is false only when committing
+// it failed for good.
+func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
+	l.decisions++
+	pendingWrite.seq = l.decisions
+	l.pendingWrites = append(l.pendingWrites, pendingWrite)
+	l.pendingWritesBytes += pendingWrite.ByteSize
+	if id := pendingWrite.CommitRequest; id != nil {
+		l.w.setCommitRequestPhase(*id, PhaseWaitingForPush)
+		// Marked rather than forgotten: see pendingCommitRequest.committed.
+		if pcr := l.pendingCRs[*id]; pcr != nil {
+			pcr.committed = true
+		}
+	}
+	if l.publicationRetry.pending() && !l.materializeIsLocal() && !l.w.awaitingParentProbe() {
+		return true
+	}
+	if err := l.materialize(""); err != nil {
+		l.noteParentUnavailable(err)
+		if !l.publicationRetry.pending() {
+			l.notePublicationFailed()
+		}
+		l.w.Log.Error(err, "Cannot commit a decided write yet; it waits in the log for the retry",
+			"pendingWrites", len(l.pendingWrites), "retryAt", l.publicationRetry.nextAttempt)
+	}
+	for i := range l.pendingWrites {
+		if l.pendingWrites[i].seq == pendingWrite.seq {
+			return true
+		}
+	}
+	return false
+}
+
+// dropDecidedWrite removes a decided write whose commit failed. That is terminal for the write, as
+// it always was: the plan was refused, or the write cannot be made, and retrying the same broken
+// state helps nobody. A refusal is surfaced as GitPathAccepted=False instead of being logged as a
+// write fault, and the request riding the write fails.
+func (l *branchWorkerEventLoop) dropDecidedWrite(i int, err error) {
+	pendingWrite := l.pendingWrites[i]
+	l.pendingWrites = append(l.pendingWrites[:i], l.pendingWrites[i+1:]...)
+	l.pendingWritesBytes -= pendingWrite.ByteSize
+
+	if pendingWrite.Kind == PendingWriteRequestRecord {
+		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
+			"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName)
+		l.failDecidedRequest(pendingWrite, fmt.Errorf("record the message in an empty commit: %w", err))
+		return
+	}
+	name, namespace := pendingWrite.windowTarget()
+	collection := sourceCollectionForEvents(pendingWrite.Events)
+	if isRefusal, refused := l.w.reportPathRefusal(err, name, namespace, collection); isRefusal {
+		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
+		l.touchBranchForRefusal(name, namespace, err.Error(), refused,
+			refusalObservationForEvents(pendingWrite.Events, refused), collection)
+	} else {
+		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
+		l.w.Log.Error(err, "Commit failed; dropping the window",
+			"windowTarget", namespace+"/"+name, "events", len(pendingWrite.Events))
+	}
+	l.noteParentUnavailable(err, windowScopes(namespace, name, pendingWrite.Events)...)
+	l.failDecidedRequest(pendingWrite, fmt.Errorf("commit failed: %w", err))
+}
+
+// dropDecidedWritesForParent drops every decided write not committed yet when the parent branch is
+// what failed them, and remembers their scopes, so parent recovery asks for snapshots that
+// re-derive them. A parent can stay missing for days, and snapshots are what bound memory there.
+func (l *branchWorkerEventLoop) dropDecidedWritesForParent(err error) {
+	if !isParentUnavailable(err) {
+		return
+	}
+	for i := l.materializedPrefix(); i < len(l.pendingWrites); {
+		l.recoverDecidedWriteForParent(i, err)
+	}
+}
+
+// recoverDecidedWriteForParent drops one decided write for a missing parent: see
+// dropDecidedWritesForParent.
+func (l *branchWorkerEventLoop) recoverDecidedWriteForParent(i int, err error) {
+	pendingWrite := l.pendingWrites[i]
+	l.pendingWrites = append(l.pendingWrites[:i], l.pendingWrites[i+1:]...)
+	l.pendingWritesBytes -= pendingWrite.ByteSize
+	if pendingWrite.Kind == PendingWriteRequestRecord {
+		l.failDecidedRequest(pendingWrite, fmt.Errorf("record the message in an empty commit: %w", err))
+		return
+	}
+	l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
+	name, namespace := pendingWrite.windowTarget()
+	l.noteParentUnavailable(err, windowScopes(namespace, name, pendingWrite.Events)...)
+	l.failDecidedRequest(pendingWrite, err)
+}
+
+// failDecidedRequest fails the request a dropped write carried.
+func (l *branchWorkerEventLoop) failDecidedRequest(pendingWrite PendingWrite, cause error) {
+	if pendingWrite.CommitRequest != nil {
+		l.resolveCommitRequest(*pendingWrite.CommitRequest, FinalizeResult{Branch: l.w.Branch, Err: cause})
+	}
 }
 
 // finalizeOpenWindow closes the live event window using the generated
@@ -1572,9 +1745,9 @@ func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
 // finalizeOpenWindowWithReason closes the live event window into one retained pending write and
 // creates the local commit. The attached CommitRequest message overrides the live template.
 //
-// On failure the window is DROPPED rather than retried: the repo is unreachable or the events are
-// unrecoverable, and retrying the same broken state every cycle helps nobody. An attached
-// CommitRequest is then resolved Failed.
+// The closed window is a decided write (decide): a remote that cannot be reached leaves it in the
+// log for the publication retry, and its CommitRequest held. Only a failure of the write itself
+// drops it, and resolves that request Failed (dropDecidedWrite).
 func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) bool {
 	if l.openWindow == nil {
 		return false
@@ -1610,14 +1783,6 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		"messageOverride", effectiveMessage != "",
 		"attachedCR", pendingCR != nil)
 
-	if err := l.materialize(""); err != nil {
-		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
-		l.w.Log.Error(err, "Failed to recover a dirty worktree; dropping open window",
-			"reason", string(reason), "windowTarget", windowTarget)
-		l.dropFailedWindow(err, pendingCR, err, windowScopes(targetNamespace, targetName, events))
-		return false
-	}
-
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
 		l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
@@ -1636,56 +1801,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 	}
 	l.carryRequestOnWrite(pendingWrite, pendingCR)
 
-	// Commit on a single-element batch so executePendingWrites threads the resulting
-	// commit hash back onto batch[0]; the retained write then carries the real SHA
-	// into the push (and the rebase-replay refreshes it).
-	batch := []PendingWrite{*pendingWrite}
-	if err := l.commit(batch); err != nil {
-		// A refused write plan (acceptance gate or write-boundary precondition) committed
-		// nothing and needs a human to fix the Git path, so it is surfaced as
-		// GitPathAccepted=False instead of being logged as a transient write fault. The
-		// window is dropped either way — the events are already lost to the failed flush,
-		// and the next resync re-derives them.
-		if isRefusal, refused := l.w.reportPathRefusal(
-			err, targetName, targetNamespace, sourceCollectionForEvents(events)); isRefusal {
-			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureRefused)
-			l.touchBranchForRefusal(targetName, targetNamespace, err.Error(), refused,
-				refusalObservationForEvents(events, refused), sourceCollectionForEvents(events))
-		} else {
-			l.w.recordCommitFailure(commitFailureKindWindow, commitFailureError)
-			l.w.Log.Error(err, "Commit failed; dropping open window",
-				"reason", string(reason),
-				"windowAuthor", windowAuthor,
-				"windowTarget", windowTarget,
-				"events", len(events))
-		}
-		l.dropFailedWindow(err, pendingCR, fmt.Errorf("commit failed: %w", err),
-			windowScopes(targetNamespace, targetName, events))
-		return false
-	}
-
-	l.retain(batch[0])
 	l.openWindow = nil
 	l.windowBytes = 0
-
-	if pendingCR != nil {
-		l.w.setCommitRequestPhase(*pendingCR, PhaseWaitingForPush)
-		// Resolution moves to the push success path either way (§6.5), including for a no-diff
-		// window. It is no longer window-pending — it now rides the retained write.
-		//
-		// A no-diff window used to resolve AlreadyPresent right here, on the strength of the
-		// local plan finding nothing to change. That was only safe while every cycle fetched
-		// first. It is not safe now: the plan may have run against a tree the remote has moved
-		// past, and the replay after the rejection can produce a real commit for a request that
-		// has already told its caller there was nothing to do. "Already present" is a claim
-		// about the REMOTE, so only the remote can settle it, and the push is where it speaks.
-		//
-		// It is MARKED rather than forgotten. Dropping it here left the worker unable to tell a
-		// re-sent attach for this very request from a new one, which resolved it NoOpenWindow
-		// during the push cooldown — the one window where it is neither pending nor resolved.
-		if pcr := l.pendingCRs[*pendingCR]; pcr != nil {
-			pcr.committed = true
-		}
+	if !l.decide(*pendingWrite) {
+		return false
 	}
 
 	l.w.Log.Info("Open commit window finalized",
@@ -1735,17 +1854,8 @@ func (l *branchWorkerEventLoop) gateBuiltWindow(
 	return pendingCR, true
 }
 
-// dropOpenWindow discards a window whose finalize failed, resolving any attached
-// CommitRequest as Failed so the controller does not poll forever.
-// dropFailedWindow drops a window whose write failed with err, and when the parent branch is what
-// failed it, remembers the scopes the dropped writes belong to so they are recovered.
-func (l *branchWorkerEventLoop) dropFailedWindow(
-	err error, pendingCR *commitRequestID, cause error, scopes []recoveryScope,
-) {
-	l.noteParentUnavailable(err, scopes...)
-	l.dropOpenWindow(pendingCR, cause)
-}
-
+// dropOpenWindow discards a window whose finalize failed before it was decided, resolving any
+// attached CommitRequest as Failed so the controller does not poll forever.
 func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause error) {
 	l.openWindow = nil
 	l.windowBytes = 0
@@ -1799,16 +1909,23 @@ func (l *branchWorkerEventLoop) pushPending() {
 		return
 	}
 
-	// A reset may have discarded the local commits behind these writes while the replay that
-	// rebuilds them did not finish. Pushing now would find the branch already at the remote tip,
-	// report success without sending anything, and settle work that exists nowhere. Rebuild first,
-	// and keep the writes rather than publish a lie if that fails.
+	// Commit any decided write that is not committed yet, and rebuild when a reset discarded the
+	// local commits behind the others: pushing then would find the branch already at the remote
+	// tip, report success without sending anything, and settle work that exists nowhere. Keep the
+	// writes rather than publish a lie if that fails.
 	if err := l.materialize(""); err != nil {
 		l.stopPushTimer()
 		l.noteParentUnavailable(err)
 		l.notePublicationFailed()
-		l.w.Log.Error(err, "Cannot publish until the retained writes are rebuilt; keeping them",
+		l.w.Log.Error(err, "Cannot publish until the retained writes are committed; keeping them",
 			"pendingWrites", len(l.pendingWrites), "retryAt", l.publicationRetry.nextAttempt)
+		return
+	}
+	if len(l.pendingWrites) == 0 {
+		// Every decided write failed to commit, so there is nothing left to publish.
+		l.stopPushTimer()
+		l.notePublicationSettled()
+		l.closeRecoveryIfDone()
 		return
 	}
 
@@ -2094,7 +2211,7 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite) error {
 		if w.worktreeDirty() {
 			w.invalidateBase("execute pending writes failed")
 		}
-		return fmt.Errorf("execute pending writes: %w", err)
+		return writeFailedError{fmt.Errorf("execute pending writes: %w", err)}
 	}
 	for i := range pendingWrites {
 		if pendingWrites[i].retained() {
@@ -2900,7 +3017,8 @@ func (w *BranchWorker) providerAttrs(extra ...attribute.KeyValue) []attribute.Ke
 }
 
 // recordCommitFailure counts one window or request that died between routing and pushing: its
-// events are lost until the next resync re-derives them.
+// events are lost until the next resync re-derives them. An unreachable remote is not one: the
+// decided write waits in the log for the publication retry.
 //
 // `refused` and `error` need different people. A refusal is a Git path a human has to fix and will
 // not clear on its own; an error may be transient.

@@ -62,6 +62,17 @@ func (w *BranchWorker) executePendingWrites(
 	return commitsCreated, nil
 }
 
+// windowTarget is the GitTarget a window's write belongs to: the target its events were routed
+// to, as the window recorded it when it opened.
+func (p PendingWrite) windowTarget() (string, string) {
+	for i := range p.Events {
+		if p.Events[i].GitTargetName != "" {
+			return p.Events[i].GitTargetName, p.Events[i].GitTargetNamespace
+		}
+	}
+	return p.GitTargetName, p.GitTargetNamespace
+}
+
 // restoreWorktree undoes a batch that failed part-way: the branch goes back to the commit the batch
 // started on, discarding any commits it made, and the worktree back to that commit's tree, leftovers
 // included (discardWorktreeLeftovers). The checkout then holds exactly what it held before the

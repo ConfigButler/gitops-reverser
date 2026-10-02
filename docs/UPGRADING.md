@@ -7,6 +7,16 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A save survives a remote that cannot be reached
+
+A `CommitRequest` whose window closes while the remote cannot be reached stays `WaitingForPush` and
+resolves `Committed` once the remote is back, with its own message and author. It used to resolve
+`Ready=False` with `FinalizeFailed`, and the window's changes waited for the next resync. The window
+is kept as well when no request rides it, so `gitopsreverser_git_commit_failures_total` no longer
+counts an unreachable remote. Automation that treated `FinalizeFailed` as "the remote is down, try
+again" now sees the request wait instead. A save on a target whose parent branch is missing still
+fails, as before.
+
 ## A save on a target that may not be written fails
 
 A `CommitRequest` on a suspended `GitTarget`, or on one whose render fidelity is not established,

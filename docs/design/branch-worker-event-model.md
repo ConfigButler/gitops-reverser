@@ -186,11 +186,12 @@ therefore defers to recovery's next probe deadline: new commits wait for it, and
 makes the attempt. Review of #412 found the handoff gap (each new commit retried at once);
 `TestPublicationRetry_AFailureAfterTheParentReturnsWaitsForRecovery` pins the fix.
 
-The backoff schedules publication attempts, not every Git connection. A new window can still
-fetch to rebuild retained writes before reaching `maybeSchedulePush`; if the rebuild fails, the
-window is dropped and its attached save fails. Except for a missing parent, no dropped-scope
-recovery requests a replacement snapshot. This existing gap belongs beside the deadline work,
-before the durable-journal refactor.
+The backoff schedules publication attempts, not every Git connection. A new window used to fetch
+to rebuild retained writes before reaching `maybeSchedulePush`, and a failed rebuild dropped the
+window and failed its save. A closed window is now a decided write in the log
+([`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md), step 2): an unreachable remote
+leaves it for the publication retry with its save held, and while that retry is pending a new
+decision spends no connection. Only a failure of the write itself, or a missing parent, drops it.
 
 There is no worker publication-failure condition or retry deadline in `GitTarget` status. A
 push-specific refusal, such as branch protection with working read access, can leave a save in

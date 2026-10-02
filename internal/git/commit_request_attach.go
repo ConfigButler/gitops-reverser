@@ -58,7 +58,7 @@ const (
 	PhaseWaitingForWindow CommitRequestPhase = "WaitingForWindow"
 	// PhaseCollectingWindow is an attached request collecting writes until the window's timers close it.
 	PhaseCollectingWindow CommitRequestPhase = "CollectingWindow"
-	// PhaseWaitingForPush is a request committed locally and not yet confirmed by the remote.
+	// PhaseWaitingForPush is a request whose write is decided and not yet confirmed by the remote.
 	PhaseWaitingForPush CommitRequestPhase = "WaitingForPush"
 )
 
@@ -172,9 +172,10 @@ type pendingCommitRequest struct {
 	commitEmpty bool
 	// attached is true once this request's message is bound to the open window.
 	attached bool
-	// committed is true once the window this request attached to has been finalized into a local
-	// commit. The request now rides that retained write and only the push can settle it, which is
-	// why it is `committed` and not `published`: the work exists locally and is nowhere else yet.
+	// committed is true once the window this request attached to has been finalized into a decided
+	// write in the log: committed locally, or waiting for the publication retry to commit it. The
+	// request now rides that write and only the push can settle it, which is why it is `committed`
+	// and not `published`: the work exists in the worker and is nowhere else yet.
 	//
 	// The flag exists because the request must stay IDENTIFIABLE while it waits. The controller
 	// re-sends its attach every couple of seconds until it reads an outcome, and forgetting the
