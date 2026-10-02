@@ -1,6 +1,7 @@
 # Branch worker write path as a log with one materializer
 
-> **Plan**, written 2026-10-02 against `main` at `0daa3711` (#412 merged). Nothing in it is built.
+> **Plan, partly built on #413**, written 2026-10-02 against `main` at `0daa3711` (#412 merged).
+> Steps 1, 1b, 2 and 3a are built; step 3 was split into 3a, 3b and 3c after review.
 > It replaces the narrow fixes first considered for gaps 3, 4 and 5 in
 > [`gittarget-state-of-affairs.md`](gittarget-state-of-affairs.md#known-gaps-ranked-by-what-a-user-would-hit)
 > with one refactor of the write path that closes gap 4 structurally and gives gaps 3 and 5 one
@@ -11,10 +12,11 @@
 
 ## Goal
 
-Less code and fewer concepts. The worker already holds most of an event-sourced write path, under
-other names; several helpers exist only to recreate the parts that are not named. This plan makes
-those parts explicit and deletes the helpers. A step that does not shrink production code halts
-the work, and is reported before anything merges.
+Fewer independent states and fewer execution paths. The worker already holds most of an
+event-sourced write path, under other names; several helpers exist only to recreate the parts that
+are not named. This plan makes those parts explicit and deletes the helpers. The finished change is
+judged by the old machinery actually removed. Temporary growth is fine when
+the deletions it enables are concrete, and comments are not trimmed to meet a number.
 
 ## What the worker already has
 
@@ -58,78 +60,81 @@ both in memory.
 
 Each step is one commit. Its red tests are written first.
 
-### Step 1: one materializer for the checkout
+### Step 1: one materializer for the checkout (built)
 
-`refactor(git)`, no behavior change.
+`refactor(git)`, no behavior change; ledger byte-identical.
 
-- Add `checkout{root, rootGen, applied}`, `materialize(freshBase bool)` and `checkout.invalidate()`.
-- Route the six commit paths (finalize, atomic, resync, request record, refusal touch, push) and the
-  push's contention replay through `materialize`.
-- Delete `recoverRetainedWrites`, `invalidateAndRefresh`, `refreshRemoteAndRebuildPendingWrites`,
-  `replayOntoRemote`, `rebuildPendingWrites`, `prepareBaseForResync`, `refreshRemoteForResync`,
-  and the `hasPendingCommits` parameter of `ensureBaseForCycle` and `commitPendingWrites`.
-- Fold `replayRequiredState`, `rootParentStale()` and `pushCycleRoot*` into `checkout`;
-  `worktreeDirtyState` becomes `applied` unknown.
-- Delete `TestEveryLoopCommitPathRecoversADirtyWorktree`: only `materialize` can commit, so the
-  invariant is structural. Rewrite the dirty-worktree, replay-failure and reset-cleanliness tests
-  against `checkout`.
+`checkoutApplied` counts the retained writes the checkout holds on top of its root. Unknown is a
+dirty worktree, which only a reset clears and a push never does; a reset sets it to zero, so with
+writes retained it says their commits must be replayed. It replaced `worktreeDirtyState`,
+`replayRequiredState` and the `hasPendingCommits` parameter. One `materialize` replaced
+`recoverRetainedWrites` and its six call sites, `invalidateAndRefresh`, and `refreshRemoteForResync`.
+`ResyncRequest.RefreshRemote` went with it: every resync already fetches.
 
-Gate: `git-roundtrip-ledger.golden` byte-identical, every existing behavioral test green.
+### Step 1b: clean a partly failed write locally (built)
 
-### Step 2: a decided window survives a failed materialization (gap 4)
+`perf(git)`. A batch that fails part-way is reset to the commit it started on, locally, with its
+leftovers discarded and base trust kept. Only a failed local undo leaves the worktree dirty for a
+reset from the remote, so `fetches_total{reason="recovery"}` drops.
 
-`fix(git)`.
+### Step 2: a decided window survives a failed materialization (gap 4, built)
 
-- Finalize, atomic, request record and refusal touch call `decide`, then `materialize`. A network
-  failure leaves the entry in the log; the retry deadline materializes and publishes it.
-- An attached save moves to `WaitingForPush` at decision time. The worker holds it, so the
-  controller never fails it while its write can still land
-  ([`commitrequest-design.md`](../spec/commitrequest-design.md#lifecycle-and-outcomes)).
-- Delete `dropFailedWindow`, the network-failure drop branches, and `pcr.committed` (derived from
-  the log).
-- An error building or executing a never-materialized entry stays terminal for that entry, as
-  today. Gate decisions on the normal path are unchanged.
+`fix(git)`. A closed window enters the log before it is committed, and its save is
+`WaitingForPush` from then on. An unreachable remote leaves it for the publication retry; while that
+retry is pending, a decision that would need a connection waits for it. Only a failure of the write
+itself is terminal. Pinned by `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry` and
+`TestAttach_AnUnreachableRemoteHoldsTheRequest`.
 
-Red tests: a window whose rebuild fails is committed by the retry with its own author and message,
-and its save resolves `Committed`; a new window during the failure spends no fetch.
+### Step 3a: one write path (built)
 
-### Step 3: one retry schedule, and owed snapshots in the log
+`refactor(git)`. Review of step 2 found two defects and a structural gap: two write lifecycles
+(`decide → materialize` for windows and saves, `materialize → commit → retain` for the rest),
+`pcr.committed` reused to mean "decided", and an executor that re-entered itself through refusal
+handling. This step closes them, in [`branch_log.go`](../../internal/git/branch_log.go):
 
-`refactor(git)`.
+- Every write kind (window, atomic batch, resync, a save's empty record, a refusal's empty commit)
+  is decided into the log and committed by `materialize`. `l.commit`, `retain` and the commit guard
+  are gone, with the separate resync, atomic and refusal-touch commit paths.
+- One place classifies an attempt: `settleCommitted`, `settleFailed` (terminal for that write), or
+  `settleUnreachable` (kept for the retry). A write's origin (the resync caller, the atomic request,
+  the refusal a touch answers) rides with it so its outcome can be settled there.
+- `materialize` is never re-entered. A refusal's empty commit decided while a refused write is being
+  settled is appended to the log, and the running pass commits it in order. No push starts inside a
+  pass.
+- A write committed later than its own decision re-reads its prune policy, as a replay does
+  (`TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy`, a review finding).
+- Parent recovery never opens an obligation with nothing owed
+  (`TestParentRecovery_AFailedEmptySaveOwesNothing`, a review finding).
+- `pcr.committed` is gone: `attached` means bound to a write, a window's or a save's own record.
+- `rebuildPendingWrites` folded into `replayOntoRemote`. Two replay functions remain on purpose:
+  `replayOntoRemote` is the core the push cycle calls under its lock, and
+  `refreshRemoteAndRebuildPendingWrites` is the locked entry the loop calls.
 
-- Merge `publicationRetry` and parent recovery's probe schedule into `retry`. When it fires with a
-  missing parent it probes with one advertisement (ledger row 15 unchanged); otherwise it
-  materializes and publishes. A parent change still makes it due at once.
-- Delete `publication_retry.go`, `deferToRecovery`, `parentProbeHold` and its four checks (one
-  check remains, in `materialize`), and the separate probe timer.
-- Owed snapshots become log entries. An `owedSnapshot{scope}` replaces discarded work in one case
-  only: byte-budget overflow of entries with no attached save. It settles when a resync covering
-  its scope, decided after it, is published; log order replaces `awaitingPush`.
-  `bumpSnapshotRequest` fires when the retry succeeds while owed entries remain.
-- A resync is a log entry like any other (see [Resyncs in the log](#resyncs-in-the-log)). A newer
-  resync of the same scope replaces an older one that is not yet published, the log's form of the
-  coalescing the FIFO already does at enqueue.
-- Delete `scopes`, `awaitingPush`, `noteResyncApplied`, `noteRecoveryPublished`,
-  `recoveryTargets` and `closeRecoveryIfDone`.
-- **Behavior change:** writes decided while the parent is missing stay in the log, bounded by
-  `branchBufferMaxBytes`, instead of being dropped to a snapshot. A save on such a target waits in
-  `WaitingForPush` instead of failing. `UPGRADING.md` records it.
-- `ParentRecovery()` and the `RecoveringParentBranch` status keep their meaning, derived from
-  `retry.cause` and the log.
-- Rewrite the `TestParentRecovery_*` and `TestPublicationRetry_*` tests against observable
-  behavior. The per-worker probe budget, a second outage, and a held save after a long recovery
-  stay pinned.
+Still split: the log is loop state, while `checkoutApplied` lives on the worker because the Git
+effect functions (commit, replay, reset, push) and resets outside the loop (path bootstrap) update
+it. A resync whose remote cannot be reached still answers its caller and leaves the log, until 3c.
 
-### Step 1b: clean a partly failed write locally
+### Step 3b: one retry schedule
 
-`perf(git)`.
+`refactor(git)`. Merge `publicationRetry` and parent recovery's probe schedule into one deadline.
+When it fires with a missing parent it probes with one advertisement (ledger row 15 unchanged);
+otherwise it materializes and publishes. A parent change still makes it due at once. Deletes
+`publication_retry.go`, `deferToRecovery`, `parentProbeHold` and its checks, and the separate probe
+timer. No retention change.
 
-A write that fails part-way leaves staged changes behind. Today that marks the worktree dirty, and
-the next commit fetches and resets to the remote tip to discard them. After step 1, `HEAD` is by
-construction `root` plus `log[:applied]`, so a local hard reset to `HEAD` discards the same
-leftovers without a remote round trip. Only a failed local reset falls back to the fetch.
-`fetches_total{reason="recovery"}` drops accordingly, and
-[`interpreting-metrics.md`](../interpreting-metrics.md) says so.
+### Step 3c: missing-parent retention and owed snapshots
+
+`fix(git)`. Writes decided while the parent is missing stay in the log instead of being dropped to a
+snapshot, resyncs stay in the log when the remote cannot be reached
+([Resyncs in the log](#resyncs-in-the-log)), and owed snapshots become log entries that replace
+`scopes` and `awaitingPush`. Two decisions come first:
+
+- **Admission.** Protecting every save-bearing entry from eviction cannot also guarantee a bounded
+  log under unlimited arrivals. Either admission stops accepting work past a limit (backpressure on
+  the watch producers and the save controller), or something with a save can be evicted.
+- **Snapshot replacement.** "Same scope and not yet published" is not enough to let a newer resync
+  replace an older one: the replacement must keep the writes decided between them and the save
+  boundaries they carry.
 
 ### Step 4: a refused replay drops only its own entry
 
@@ -178,14 +183,19 @@ the effective-point comment in `write_gate.go`, [`architecture.md`](../architect
 `UPGRADING.md`. The PR body carries the argument; this page is updated to "built" or moved to
 `docs/finished/`.
 
-## Size estimate
+## What is gone so far
 
-| | Lines |
+| Removed | By |
 |---|---|
-| Production code removed | about 550: the rebuild variants, three flags, `publication_retry.go`, half of `parent_recovery.go`, the drop paths |
-| Production code added | about 300: `log`, `checkout`, `materialize`, `retry` |
-| Net production code | about -200 to -300 |
-| Test churn | about 1,500 lines across five files, rewritten against behavior instead of flags |
+| `worktreeDirtyState`, `replayRequiredState`, the `hasPendingCommits` parameter | step 1 (one count) |
+| `recoverRetainedWrites` and its six call sites, `invalidateAndRefresh`, `refreshRemoteForResync`, `prepareBaseForResync` | steps 1 and 3a |
+| `ResyncRequest.RefreshRemote`, end to end | step 1 |
+| The fetch that cleaned a partly failed write | step 1b |
+| `dropFailedWindow` and the network-failure drop branches | step 2 |
+| The second write lifecycle (`l.commit`, `retain`, the commit guard), `pcr.committed`, `rebuildPendingWrites`, executor re-entry | step 3a |
+
+Still to remove: `publication_retry.go`, `deferToRecovery`, `parentProbeHold` (3b); parent
+recovery's `scopes` and `awaitingPush` (3c).
 
 ## What stays
 

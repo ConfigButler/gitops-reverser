@@ -485,29 +485,14 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, obser
 		return
 	}
 
-	// An empty commit is only empty on a clean worktree: the refused write that brought us here can
-	// have left staged changes behind, and they would otherwise ride along in it.
-	if err := l.materialize(""); err != nil {
-		l.w.Log.Error(err, "Cannot recover the worktree for the empty commit for a refused write",
-			"gitTarget", target.String())
-		return
+	// Decided like every other write, and recorded once its commit exists (settleCommitted): a build
+	// or commit failure has produced no trigger, so it must leave the next observation of the same
+	// refusal free to make one. Deciding it while a refused write is being settled appends it to the
+	// log for the running pass, behind the writes decided before it.
+	pendingWrite.origin.refusal = &refusalTouchOrigin{key: key, observation: observation}
+	if l.decide(*pendingWrite) {
+		l.maybeSchedulePush()
 	}
-
-	// Single-element batch for the same reason every other commit site uses one: the executor
-	// stamps CommitSHA back into the slice it is given, and the retained write is what the push
-	// counts from.
-	batch := []PendingWrite{*pendingWrite}
-	if err := l.commit(batch); err != nil {
-		l.w.Log.Error(err, "The empty commit for a refused write failed",
-			"gitTarget", target.String())
-		return
-	}
-	l.retain(batch[0])
-	// Recorded once the commit exists, beside the rate-limit stamp and for the same reason: a
-	// build or commit failure has produced no trigger, so it must leave the next observation of
-	// the same refusal free to make one.
-	l.w.recordRefusalObservation(key, observation)
-	l.maybeSchedulePush()
 }
 
 // refusalIsAWriteBoundary reports whether this refusal is one where the FOLDER is accepted and

@@ -91,12 +91,17 @@ func (w *BranchWorker) now() time.Time {
 }
 
 // noteParentUnavailable latches the obligation when err was caused by the parent, and remembers
-// the scopes whose writes were dropped for it. Any other error is not this obligation's concern.
+// the scopes whose writes were dropped for it. Any other error is not this obligation's concern, and
+// neither is a failure that left nothing owed: a save whose empty record failed is settled with its
+// request, and an obligation with nothing to publish would never close.
 func (l *branchWorkerEventLoop) noteParentUnavailable(err error, scopes ...recoveryScope) {
 	if !isParentUnavailable(err) {
 		return
 	}
 	r := &l.recovery
+	if !r.active && len(scopes) == 0 && len(l.pendingWrites) == 0 {
+		return
+	}
 	switch {
 	case !r.active:
 		r.active = true
@@ -119,6 +124,7 @@ func (l *branchWorkerEventLoop) noteParentUnavailable(err error, scopes ...recov
 	}
 	l.armRecoveryTimer()
 	l.publishRecovery()
+	l.closeRecoveryIfDone()
 }
 
 // windowScopes are the scopes of a dropped live window: one per collection its events came from.

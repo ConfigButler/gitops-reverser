@@ -268,7 +268,7 @@ func (l *branchWorkerEventLoop) serviceCommitRequests() {
 
 // waiting reports whether a request is still looking for a window it may attach to at now.
 func (p *pendingCommitRequest) waiting(now time.Time) bool {
-	return !p.attached && !p.committed && p.attachDeadline.After(now)
+	return !p.attached && p.attachDeadline.After(now)
 }
 
 // noteForeignWindow records, on every waiting request, that a window it cannot attach to is open.
@@ -357,7 +357,7 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	now := time.Now()
 	for id, pcr := range l.pendingCRs {
-		if pcr.attached || pcr.committed || pcr.attachDeadline.After(now) {
+		if pcr.attached || pcr.attachDeadline.After(now) {
 			continue
 		}
 		// Which of the two refusals this is depends on whether anything was open that this
@@ -457,7 +457,7 @@ func (l *branchWorkerEventLoop) handleWithdrawCommitRequest(req *AttachCommitReq
 	if l.w.hasCommitRequestOutcome(id) {
 		return // already resolved, or already withdrawn.
 	}
-	if pcr, ok := l.pendingCRs[id]; ok && (pcr.attached || pcr.committed) {
+	if pcr, ok := l.pendingCRs[id]; ok && pcr.attached {
 		l.w.Log.Info("CommitRequest withdraw ignored: the worker already holds it",
 			"request", id.Namespace+"/"+id.Name)
 		return
@@ -487,7 +487,7 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 func (l *branchWorkerEventLoop) rearmAttachTimer() {
 	var earliest time.Time
 	for _, pcr := range l.pendingCRs {
-		if pcr.attached || pcr.committed {
+		if pcr.attached {
 			continue
 		}
 		if earliest.IsZero() || pcr.attachDeadline.Before(earliest) {

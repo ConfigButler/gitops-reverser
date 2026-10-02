@@ -19,6 +19,9 @@ import (
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // failSyncs makes every sync to the remote fail as an unreachable remote would, until restored,
@@ -102,4 +105,47 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 	}
 	assert.Empty(t, loop.pendingWrites)
 	assert.False(t, loop.publicationRetry.pending())
+}
+
+// A delete decided during an outage is committed on a tree the worker fetched later, so it is planned
+// under the prune policy in force then, as a replay is. Found in review of #413: the deferred write
+// skipped the re-read, and a target tightened to Never still lost the file.
+func TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy(t *testing.T) {
+	f := newLedgerFixture(t, "decided-write-tightened-prune", true)
+	f.createLedgerTarget("team-a", nil)
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	defer loop.stopTimers()
+	write := func(event Event) {
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+		require.True(t, loop.finalizeOpenWindow())
+	}
+
+	write(configMapTargetEvent("keep-me", "alice", ledgerTargetName))
+	loop.pushPending()
+	require.Contains(t, remoteFileNames(t, f.repoDir), "keep-me")
+
+	// A retained write and a checkout to rebuild, while the remote is unreachable: the delete is
+	// decided and waits.
+	write(configMapTargetEvent("retained", "alice", ledgerTargetName))
+	f.worker.markWorktreeDirty("a write failed part-way and could not be undone")
+	_, restoreSyncs := failSyncs(t)
+	deleted := configMapTargetEvent("keep-me", "alice", ledgerTargetName)
+	deleted.Operation = "DELETE"
+	write(deleted)
+	require.Len(t, loop.pendingWrites, 2)
+	require.False(t, loop.pendingWrites[1].materialized)
+
+	// The operator stops pruning before the remote comes back.
+	target := &configv1alpha3.GitTarget{}
+	key := client.ObjectKey{Name: ledgerTargetName, Namespace: "default"}
+	require.NoError(t, f.worker.Client.Get(f.worker.ctx, key, target))
+	target.Spec.Prune = &configv1alpha3.PrunePolicy{Mode: configv1alpha3.PruneNever}
+	require.NoError(t, f.worker.Client.Update(f.worker.ctx, target))
+
+	restoreSyncs()
+	firePushTimer(loop)
+
+	require.Empty(t, loop.pendingWrites)
+	assert.Contains(t, remoteFileNames(t, f.repoDir), "keep-me",
+		"the deferred delete is planned under the policy in force when it is committed")
 }

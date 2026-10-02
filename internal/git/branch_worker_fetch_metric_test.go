@@ -347,7 +347,7 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 
 	forcedBefore := fetchCount(t, reader, f.worker, fetchReasonForcedRecheck)
 	f.worker.markWorktreeDirty("a write failed part-way")
-	require.NoError(t, loop.materialize(""))
+	require.NoError(t, loop.materialize())
 
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonRecovery),
 		"a recovery is a recovery whether or not a push happened to be in cooldown")
@@ -360,7 +360,7 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 // resync guarantee, and it is worth pinning separately because the fetch is not where you would
 // look for it.
 //
-// prepareBaseForResync owns the fetch on this path. With nothing retained, materialize
+// The resync's own materialize pass owns the fetch on this path. With nothing retained, it
 // calls syncWithRemote directly, which drops base trust first, rather than leaving the reset to the
 // commit that follows, which is what makes the reason `forced_recheck` instead of `publication`:
 // the fetch belongs to the snapshot that asked for it, not to a live publication. Ledger row 10

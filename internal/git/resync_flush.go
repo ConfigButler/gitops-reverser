@@ -77,37 +77,21 @@ func resyncHealKey(req *ResyncRequest) healKey {
 	}
 }
 
-// prepareBaseForResync gets the worktree to the remote tip, with any retained writes replayed on
-// it, so the snapshot is judged against the newest remote tree.
-//
-// A resync keeps fetching, deliberately, even now that a publication does not. The rest of the
-// write path is safe without one because it always reaches the push, whose advertisement catches a
-// base that turned out to be stale. A resync does not: applyResync retains its write only
-// `if committed` and schedules a push only `if committed || closedWindow`, so a resync that finds
-// nothing to change never opens a connection at all. It would conclude "Git already matches the
-// cluster" against a tree nobody had checked, and nothing downstream would ever contradict it. The
-// round trip this design removes is the PUBLICATION one, and a resync is not a publication.
-//
-// That fetch also serves a forced GitTarget recheck, whose trigger is often "I changed Git; look
-// again": every resync already looks, so a recheck needs nothing of its own.
-func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
-	if err := l.materialize(fetchReasonForcedRecheck); err != nil {
-		l.w.Log.Error(err, "Failed to refresh the remote before resync",
-			"resources", len(req.Desired),
-			"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
-			"pendingWrites", len(l.pendingWrites))
-		return fmt.Errorf("refresh remote before resync: %w", err)
-	}
-	return nil
-}
-
 // applyResync applies one revision-pinned resync in order on the worker goroutine. It mirrors the
 // atomic-commit path: for a non-heal resync any open live window is finalized first so arrival order
 // is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
-// resync is committed as one local commit, retained for the normal cooldown-driven push, and the
-// caller is replied to with the plan's change counts. A build or commit failure replies with the
-// error and commits nothing — the gatherer already guaranteed the snapshot is complete, so a failure
-// here is a write fault, never a partial-snapshot drop.
+// resync is then decided like every other write, and its caller answered when its commit is made
+// or fails (settleResyncApplied, settleFailed, settleUnreachable). A build or commit failure answers
+// with the error and commits nothing: the gatherer already guaranteed the snapshot is complete, so
+// a failure here is a write fault, never a partial-snapshot drop.
+//
+// A resync keeps fetching, deliberately, even now that a publication does not. The rest of the
+// write path is safe without one because it always reaches the push, whose advertisement catches a
+// base that turned out to be stale. A resync does not: a resync that finds nothing to change is
+// neither retained nor pushed, so it would conclude "Git already matches the cluster" against a
+// tree nobody had checked, and nothing downstream would ever contradict it. The round trip this
+// design removes is the PUBLICATION one, and a resync is not a publication. That fetch also serves
+// a forced GitTarget recheck, whose trigger is often "I changed Git; look again".
 func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	l.w.Log.Info("Handling resync request",
 		"resources", len(req.Desired),
@@ -123,76 +107,23 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	if !req.Heal {
 		closedWindow = l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 	}
-	if err := l.prepareBaseForResync(req); err != nil {
-		l.noteParentUnavailable(err, resyncScope(req))
-		req.reply(ResyncResult{Err: err})
-		return
-	}
 
-	stats := &ResyncStats{}
 	committed := false
-	pendingWrite, err := l.w.buildResyncPendingWrite(l.w.ctx, req, stats)
+	pendingWrite, err := l.w.buildResyncPendingWrite(l.w.ctx, req, &ResyncStats{})
 	if err != nil {
 		l.w.Log.Error(err, "Failed to build resync pending write", "resources", len(req.Desired))
 		req.reply(ResyncResult{Err: err})
-		return
+	} else {
+		pendingWrite.Committed = &committed
+		pendingWrite.origin.resync = req
+		l.decide(*pendingWrite)
 	}
-	pendingWrite.Committed = &committed
-
-	if err := l.commit([]PendingWrite{*pendingWrite}); err != nil {
-		// A refusal reaches the caller on ResyncResult.Err, where the watch layer classifies it
-		// and blocks the collection. spec.onRefusal needs it HERE too, and this is the path that
-		// matters: a per-type reconcile evaluates the same objects a live write would, so it is
-		// normally what discovers a write-boundary refusal first. Hooking only the live-event path
-		// left the action almost unreachable, because by the time an edit arrives the collection this
-		// refusal blocks is already blocked.
-		var refused *manifestanalyzer.AcceptanceRefusedError
-		if errors.As(err, &refused) {
-			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
-				refusalObservationForDesired(req.Desired, refused), req.refusalCollection())
-		}
-		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
-		l.noteParentUnavailable(err, resyncScope(req))
-		req.reply(ResyncResult{Err: err})
-		return
-	}
-
-	// The plan was accepted, so the refusal standing over THIS SCOPE is over: the observation the
-	// last empty commit covered is forgotten and any commit still queued for it is cancelled. This
-	// is the recovery path the dedupe depends on — a per-type reconcile runs after the reconciler
-	// reverts the edit, and it is what makes the NEXT refusal, including a re-made byte-identical
-	// one, a new trigger rather than a repeat. Scoped to the collection this request evaluated, because
-	// a ConfigMap resync succeeding is no evidence about a Deployment that is still refused.
-	l.refusalRecovered(
-		itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace), req.refusalCollection())
-
-	// Only retain the resync's own pending write when it actually committed. A no-op
-	// resync (e.g. the empty initial snapshot before any rule selects a resource)
-	// retains nothing of its own.
-	if committed {
-		l.retain(*pendingWrite)
-	}
-	l.noteResyncApplied(req.GitTargetNamespace, req.GitTargetName, req.refusalCollection(), committed)
-	// Schedule a push whenever this request CLOSED a live window — that window's
-	// commit is now in pendingWrites and must reach the remote — or the resync itself
-	// committed. Any finalize that closes a window must schedule its push, or the
-	// window's commit is stranded: committed locally but never pushed (the
-	// stranded-write fix in the CommitRequest window contract).
-	// maybeSchedulePush no-ops when nothing is pending, so a pure no-op resync that
-	// closed no window stays a no-op and does not disturb the push cooldown.
+	// Schedule a push whenever this request CLOSED a live window, whose write must reach the
+	// remote, or the resync itself committed. A pure no-op resync that closed no window stays a
+	// no-op and does not disturb the push cooldown.
 	if committed || closedWindow {
 		l.maybeSchedulePush()
 	}
-	l.w.Log.Info("Resync request applied",
-		"committed", committed,
-		"closedWindow", closedWindow,
-		"created", stats.Created,
-		"updated", stats.Updated,
-		"deleted", stats.Deleted,
-		"skipped", stats.Skipped,
-		"placementSkipped", stats.PlacementSkipped,
-		"pendingWrites", len(l.pendingWrites))
-	req.reply(ResyncResult{Stats: *stats})
 }
 
 // buildResyncPendingWrite resolves the GitTarget's write metadata (path, encryption,

@@ -420,7 +420,10 @@ func ledgerOperations() []ledgerOp {
 				require.NoError(f.t, err)
 				err = f.worker.commitPendingWrites([]PendingWrite{*pendingWrite})
 				require.ErrorIs(f.t, err, ErrParentBranchNotFound)
-				f.loop.noteParentUnavailable(err)
+				// The dropped write's scope, as the loop records it: an obligation needs something
+				// owed, or it closes at once.
+				held := []Event{configMapEvent("held", "alice", "team-a")}
+				f.loop.noteParentUnavailable(err, windowScopes("default", "team-a", held)...)
 			},
 			run: func(f *ledgerFixture) {
 				f.worker.clock = func() time.Time { return time.Now().Add(time.Hour) }

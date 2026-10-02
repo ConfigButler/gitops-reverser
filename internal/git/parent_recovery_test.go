@@ -410,3 +410,31 @@ func TestParentRecovery_AHeldCommitRequestIsCommittedAfterALongRecovery(t *testi
 	assert.Equal(t, res.Commit, tip.String())
 	assert.Equal(t, []plumbing.Hash{release}, f.parentOf(tip))
 }
+
+// A save whose empty record fails for a missing parent is settled with its request and leaves
+// nothing owed, so it must not open an obligation that nothing can close. Found in review of #413:
+// the probe found the parent, published nothing, and kept the target RecoveringParentBranch.
+func TestParentRecovery_AFailedEmptySaveOwesNothing(t *testing.T) {
+	f := newRealServerNewBranch(t, "parent-recovery-empty-save", seedMain(t))
+	clock := useTestClock(f.worker)
+	f.worker.SetParentBranch("release")
+
+	req := attachReq("alice", 0)
+	req.GitTargetName = newBranchTarget
+	req.CommitEmpty = true
+	req.Message = "empty save"
+	serviceAttach(f.loop, req)
+
+	res, resolved := outcome(t, f.worker)
+	require.True(t, resolved)
+	require.Error(t, res.Err)
+	require.Empty(t, f.loop.pendingWrites)
+	require.Empty(t, f.loop.recovery.scopes)
+
+	gitIn(t, f.repoDir, "branch", "release", "main")
+	clock.advance(parentProbeMaxBackoff)
+	f.loop.runParentProbe()
+
+	open, found := f.worker.ParentRecovery()
+	assert.False(t, open, "nothing is owed, so nothing is recovering; found=%v", found)
+}

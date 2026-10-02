@@ -394,6 +394,8 @@ type PendingWrite struct {
 	// seq numbers the loop's decisions, so a decision can be found in the log after writes before
 	// or after it were dropped or added. Loop-goroutine only.
 	seq uint64
+	// origin is what the write's outcome is settled against. See writeOrigin.
+	origin writeOrigin
 
 	// CommitSHA is the hash of the commit this write created, captured in
 	// executePendingWrite and refreshed when the write is re-executed on a
