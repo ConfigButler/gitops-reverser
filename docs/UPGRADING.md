@@ -14,8 +14,17 @@ resolves `Committed` once the remote is back, with its own message and author. I
 `Ready=False` with `FinalizeFailed`, and the window's changes waited for the next resync. The window
 is kept as well when no request rides it, so `gitopsreverser_git_commit_failures_total` no longer
 counts an unreachable remote. Automation that treated `FinalizeFailed` as "the remote is down, try
-again" now sees the request wait instead. A save on a target whose parent branch is missing still
-fails, as before.
+again" now sees the request wait instead.
+
+A configured `spec.parentBranch` that the remote does not carry holds writes back the same way:
+they are kept and published once the parent exists, with their own authors and messages, instead of
+being dropped and re-derived from a snapshot of the cluster. A save on such a target waits too.
+
+The kept work is bounded at admission. While an outage has filled a branch's retained-byte budget
+(`controllerManager.branchBufferMaxSize`), the worker refuses new writes, saves and resyncs the way a
+full queue does, so `gitopsreverser_watch_events_total{outcome="route_failed"}` and
+`gitopsreverser_git_queue_drops_total` rise during such an outage; the watch delivers a refused event
+again when it reconnects. See [Interpreting metrics](interpreting-metrics.md).
 
 ## A save on a target that may not be written fails
 

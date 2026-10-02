@@ -34,7 +34,7 @@ The release PR body includes #411. #412 remains a separate open fix PR at this s
 | Standby: an absent write branch is created from the parent's tip as advertised on the push session; a no-op write leaves it absent | [`git_atomic_push.go`](../../internal/git/git_atomic_push.go), [`branch_worker.go`](../../internal/git/branch_worker.go) | 20 `TestBranchWorker_*Parent*` tests, `test/e2e/new_branch_parent_e2e_test.go` (3 contexts) |
 | A parent change on a live worker takes effect at the push admission boundary (`{name, gen}` snapshot) | [`branch_worker.go`](../../internal/git/branch_worker.go) | `TestBranchWorker_AParentChange*` (8) |
 | An empty repository that gains a ref is never orphaned; a dangling `HEAD` is `Missing` and only a repository with no refs is `Unborn` | [`git_atomic_push.go`](../../internal/git/git_atomic_push.go), [`git_smart_fetch.go`](../../internal/git/git_smart_fetch.go) | `TestBranchWorker_AnEmptyRepositoryThatGains*`, `TestBranchWorker_ADanglingRemoteHeadIsMissingNotUnborn` |
-| Parent recovery is an obligation, not an observation: retained writes plus per-`(target, collection)` dropped scopes, one probe per worker (10s doubling to 5m) | [`parent_recovery.go`](../../internal/git/parent_recovery.go), [`gittarget_parent_recovery.go`](../../internal/controller/gittarget_parent_recovery.go) | `TestParentRecovery_*` (8), the missing-parent e2e context |
+| Parent recovery is an obligation, not an observation: writes decided while the parent is missing are kept in the log and published when it returns, one probe per worker on the one retry schedule (10s doubling to 5m) | [`parent_recovery.go`](../../internal/git/parent_recovery.go), [`gittarget_parent_recovery.go`](../../internal/controller/gittarget_parent_recovery.go) | `TestParentRecovery_*` (9), the missing-parent e2e context |
 | Cost gate: connections per operation, including the four new standby and probe rows | [`git-roundtrip-ledger.golden`](../../internal/git/testdata/git-roundtrip-ledger.golden) rows 13 to 16 | `TestGitRoundTripLedger` |
 | Idle refresh observes without writing content and skips a branch mid-cycle; during parent recovery it can service a due probe and publish retained writes | [`refresh.go`](../../internal/git/refresh.go) | `TestRefresh_*` (25) |
 | `status.remote.parent` (`Found`, `Missing`, `Unborn`) while the write branch is absent; `ParentBranchNotFound` (stalled) and `RecoveringParentBranch` (reconciling) | [`gittarget_types.go`](../../api/v1alpha3/gittarget_types.go), [`gittarget_controller.go`](../../internal/controller/gittarget_controller.go) | `internal/controller/gittarget_parent_branch_test.go` |
@@ -85,9 +85,9 @@ Fixed behavior is marked separately from gaps that remain at `3708b529`.
    asked for a snapshot, and every new window spent a fetch on the rebuild. A closed window is now a
    decided write: it waits in the log for the publication retry, its save stays `WaitingForPush`,
    and a window decided while the retry is pending spends no connection. Pinned by
-   `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry`. A missing parent still drops
-   the window to a snapshot until step 3 of
-   [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md) bounds the log.
+   `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry`. A missing parent holds writes
+   back the same way, and admission backpressure bounds the log
+   ([`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md), step 3c).
 5. **Publication failures have no dedicated status.** The normal retry delay starts at 10s and
    reaches a 5m cap after repeated failures. A save riding retained work stays in `WaitingForPush`.
    The worker exposes no publication-failure condition or retry deadline on `GitTarget`.

@@ -48,6 +48,9 @@ type writeOrigin struct {
 	resync  *ResyncRequest
 	atomic  *WriteRequest
 	refusal *refusalTouchOrigin
+	// answered records that the resync's caller was answered already: the remote held it back,
+	// and it is applied later with nobody waiting.
+	answered bool
 }
 
 // refusalTouchOrigin is the refusal an empty commit answers, recorded once the commit exists.
@@ -56,12 +59,36 @@ type refusalTouchOrigin struct {
 	observation string
 }
 
+// errAdmissionClosed answers a resync refused at admission. It is ErrFinalizeQueueFull to every
+// caller: the work was not accepted, and the producer that sent it keeps it.
+var errAdmissionClosed = fmt.Errorf(
+	"%w: the branch holds its retained-byte budget while the remote cannot be reached", ErrFinalizeQueueFull)
+
+// syncAdmission closes admission while the log holds the retained-byte budget and a failed attempt
+// is waiting for its retry, and opens it otherwise. Run once per loop iteration.
+//
+// Keeping decided writes through an outage makes the log grow for as long as the outage lasts, and
+// nothing in it may be evicted: a decided write can carry a save, and dropping a write without one
+// would need a snapshot to re-derive it. So the bound is at admission instead. A refused live write
+// is not lost: the watch keeps its cursor and delivers it again, exactly as for a full queue; a save
+// is sent again by the controller; a refused resync's collection is gathered again. A healthy branch
+// never closes: its log drains at the next push, so the budget only matters while the remote
+// refuses. The bound is the budget, plus the window being collected, plus whatever the FIFO already
+// holds.
+func (l *branchWorkerEventLoop) syncAdmission() {
+	budget := l.w.branchBufferMaxBytes
+	l.w.admissionClosed.Store(budget > 0 && l.retry.pending() && l.pendingWritesBytes >= budget)
+}
+
+// admitWork reports whether new work may enter the queue. Callers hold pendingResyncsMu.
+func (w *BranchWorker) admitWork() bool { return !w.admissionClosed.Load() }
+
 // decide adds a write the loop has decided to make to the log, and commits it when it can.
 //
 // Deciding is not committing. A remote that cannot be reached when the commit would be made leaves
 // the write in the log, and the publication retry commits and pushes it. A request riding it is
-// held from here on, so the controller never fails a save whose write can still land. While a retry
-// is pending, a decision that would need a connection to commit waits for that retry instead of
+// held from here on, so the controller never fails a save whose write can still land. Until a pending
+// retry is due, a decision that would need a connection to commit waits for that retry instead of
 // spending one; a resync is the exception, because its caller is waiting to hear what it found.
 //
 // It reports whether the write is still in the log afterwards, which is false only when its
@@ -81,7 +108,7 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 	if l.materializing {
 		return true // the pass already running commits it, in order
 	}
-	if l.retry.pending() && pendingWrite.Kind != PendingWriteResync &&
+	if l.awaitingRetry() && pendingWrite.Kind != PendingWriteResync &&
 		!l.materializeIsLocal() && !l.w.awaitingParentProbe() {
 		return true
 	}
@@ -250,6 +277,7 @@ func (l *branchWorkerEventLoop) settleCommitted(i int) {
 // settleResyncApplied answers a resync whose plan was accepted.
 func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 	req := l.pendingWrites[i].origin.resync
+	answered := l.pendingWrites[i].origin.answered
 	stats := l.pendingWrites[i].ResyncStats
 	committed := l.pendingWrites[i].retained()
 	if !committed {
@@ -263,7 +291,6 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 	// because a ConfigMap resync succeeding is no evidence about a Deployment that is still refused.
 	l.refusalRecovered(
 		itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace), req.refusalCollection())
-	l.noteResyncApplied(req.GitTargetNamespace, req.GitTargetName, req.refusalCollection(), committed)
 	l.w.Log.Info("Resync request applied",
 		"committed", committed,
 		"created", stats.Created,
@@ -272,7 +299,16 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 		"skipped", stats.Skipped,
 		"placementSkipped", stats.PlacementSkipped,
 		"pendingWrites", len(l.pendingWrites))
-	req.reply(ResyncResult{Stats: *stats})
+	if !answered {
+		answerResync(req, ResyncResult{Stats: *stats})
+	}
+}
+
+// answerResync answers a resync's caller. A resync the remote held back was answered then
+// (writeOrigin.answered), and is applied later with nobody waiting: its outcome is then reported the
+// way a live write's is.
+func answerResync(req *ResyncRequest, result ResyncResult) {
+	req.reply(result)
 }
 
 // settleFailed acts on a write whose commit failed for good: the plan was refused, or the write
@@ -282,7 +318,7 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 func (l *branchWorkerEventLoop) settleFailed(i int, err error) {
 	pendingWrite := l.removeAt(i)
 	switch {
-	case pendingWrite.origin.resync != nil:
+	case pendingWrite.origin.resync != nil && !pendingWrite.origin.answered:
 		req := pendingWrite.origin.resync
 		// A refusal reaches the caller on ResyncResult.Err, where the watch layer classifies it
 		// and blocks the collection. spec.onRefusal needs it here too, and this is the path that
@@ -294,8 +330,17 @@ func (l *branchWorkerEventLoop) settleFailed(i int, err error) {
 				refusalObservationForDesired(req.Desired, refused), req.refusalCollection())
 		}
 		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
-		l.noteParentUnavailable(err, resyncScope(req))
-		req.reply(ResyncResult{Err: err})
+		answerResync(req, ResyncResult{Err: err})
+	case pendingWrite.origin.resync != nil:
+		// Nobody is waiting any more: report it as a live write's refusal is reported.
+		req := pendingWrite.origin.resync
+		collection := req.refusalCollection()
+		if isRefusal, refused := l.w.reportPathRefusal(err, req.GitTargetName, req.GitTargetNamespace,
+			collection); isRefusal {
+			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
+				refusalObservationForDesired(req.Desired, refused), collection)
+		}
+		l.w.Log.Error(err, "Held-back resync commit failed; dropping it", "resources", len(req.Desired))
 	case pendingWrite.origin.refusal != nil:
 		l.w.Log.Error(err, "The empty commit for a refused write failed",
 			"gitTarget", pendingWrite.origin.refusal.key.target.String())
@@ -310,8 +355,7 @@ func (l *branchWorkerEventLoop) settleFailed(i int, err error) {
 
 // settleFailedChange settles a window or an atomic batch whose commit failed for good.
 func (l *branchWorkerEventLoop) settleFailedChange(pendingWrite PendingWrite, err error) {
-	kind, name, namespace, scopes := l.changeIdentity(pendingWrite)
-	collection := scopes[0].collection
+	kind, name, namespace, collection := changeIdentity(pendingWrite)
 	if isRefusal, refused := l.w.reportPathRefusal(err, name, namespace, collection); isRefusal {
 		l.w.recordCommitFailure(kind, commitFailureRefused)
 		l.touchBranchForRefusal(name, namespace, err.Error(), refused,
@@ -321,58 +365,35 @@ func (l *branchWorkerEventLoop) settleFailedChange(pendingWrite PendingWrite, er
 		l.w.Log.Error(err, "Commit failed; dropping the write",
 			"kind", kind, "gitTarget", namespace+"/"+name, "events", len(pendingWrite.Events))
 	}
-	l.noteParentUnavailable(err, scopes...)
 	l.failDecidedRequest(pendingWrite, fmt.Errorf("commit failed: %w", err))
 }
 
-// changeIdentity is a window's or an atomic batch's metric kind, GitTarget, and the scopes its
-// events came from: at least one, the batch's own collection for an atomic batch.
-func (l *branchWorkerEventLoop) changeIdentity(pendingWrite PendingWrite) (string, string, string, []recoveryScope) {
+// changeIdentity is a window's or an atomic batch's metric kind, GitTarget, and source collection.
+func changeIdentity(pendingWrite PendingWrite) (string, string, string, itypes.CollectionKey) {
 	if request := pendingWrite.origin.atomic; request != nil {
 		name, namespace := atomicRefusalTarget(request)
-		return commitFailureKindAtomic, name, namespace, []recoveryScope{atomicScope(request)}
+		return commitFailureKindAtomic, name, namespace, request.sourceCollection()
 	}
 	name, namespace := pendingWrite.windowTarget()
-	scopes := windowScopes(namespace, name, pendingWrite.Events)
-	if len(scopes) == 0 {
-		scopes = []recoveryScope{{target: itypes.NewResourceReference(name, namespace)}}
-	}
-	return commitFailureKindWindow, name, namespace, scopes
+	return commitFailureKindWindow, name, namespace, sourceCollectionForEvents(pendingWrite.Events)
 }
 
 // settleUnreachable acts on the decided writes not committed yet when the remote could not be
-// reached. They stay in the log for the publication retry, with two exceptions. A resync answers
-// its caller now, because its caller is waiting to hear what it found, and leaves: its collection's
-// next snapshot supersedes it. And while a missing parent branch is the cause, every one of them
-// leaves and its scopes are remembered, so parent recovery asks for snapshots that re-derive them:
-// a parent can stay missing for days, and snapshots are what bound memory there.
+// reached, or the parent branch a new write branch is created from is missing: they all stay in the
+// log for the retry, and admission backpressure bounds the log however long that lasts. A resync's
+// caller is answered now with the error, because it is waiting to hear what the resync found and
+// that cannot be known yet; the resync itself stays, in its place, and is applied with the rest.
 func (l *branchWorkerEventLoop) settleUnreachable(err error) {
-	parentMissing := isParentUnavailable(err)
-	for i := l.materializedPrefix(); i < len(l.pendingWrites); {
-		pendingWrite := l.pendingWrites[i]
-		if pendingWrite.origin.resync == nil && !parentMissing {
-			i++
+	for i := l.materializedPrefix(); i < len(l.pendingWrites); i++ {
+		origin := &l.pendingWrites[i].origin
+		if origin.resync == nil || origin.answered {
 			continue
 		}
-		l.removeAt(i)
-		switch {
-		case pendingWrite.origin.resync != nil:
-			req := pendingWrite.origin.resync
-			l.w.Log.Error(err, "Failed to refresh the remote before resync",
-				"resources", len(req.Desired), "gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName)
-			l.noteParentUnavailable(err, resyncScope(req))
-			req.reply(ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
-		case pendingWrite.origin.refusal != nil:
-			l.w.Log.Error(err, "Cannot make the empty commit for a refused write",
-				"gitTarget", pendingWrite.origin.refusal.key.target.String())
-		case pendingWrite.Kind == PendingWriteRequestRecord:
-			l.failDecidedRequest(pendingWrite, fmt.Errorf("record the message in an empty commit: %w", err))
-		default:
-			kind, _, _, scopes := l.changeIdentity(pendingWrite)
-			l.w.recordCommitFailure(kind, commitFailureError)
-			l.noteParentUnavailable(err, scopes...)
-			l.failDecidedRequest(pendingWrite, err)
-		}
+		req := origin.resync
+		l.w.Log.Error(err, "Cannot refresh the remote before resync; it waits in the log",
+			"resources", len(req.Desired), "gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName)
+		answerResync(req, ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
+		origin.answered = true
 	}
 }
 

@@ -191,7 +191,8 @@ to rebuild retained writes before reaching `maybeSchedulePush`, and a failed reb
 window and failed its save. A closed window is now a decided write in the log
 ([`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md), step 2): an unreachable remote
 leaves it for the publication retry with its save held, and while that retry is pending a new
-decision spends no connection. Only a failure of the write itself, or a missing parent, drops it.
+decision spends no connection. Only a failure of the write itself drops it; a missing parent holds
+it back like any other remote failure, and admission backpressure bounds the log.
 
 There is no worker publication-failure condition or retry deadline in `GitTarget` status. A
 push-specific refusal, such as branch protection with working read access, can leave a save in

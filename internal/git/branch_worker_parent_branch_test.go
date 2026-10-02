@@ -122,8 +122,8 @@ func TestBranchWorker_NewBranchStartsFromTheConfiguredParent(t *testing.T) {
 }
 
 // TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists: a configured parent the
-// remote does not carry refuses the write, starts no orphan branch, and is reported; once it is
-// pushed the next write creates the branch on it.
+// remote does not carry holds the write back, starts no orphan branch, and is reported; once it is
+// pushed the next write creates the branch on it, carrying the held write first.
 func TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists(t *testing.T) {
 	f := newNewBranchFixture(t, nil)
 	f.worker.SetParentBranch("release")
@@ -132,7 +132,8 @@ func TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists(t *testi
 
 	liveWrite(loop, "cm1")
 
-	assert.Empty(t, loop.pendingWrites, "nothing was committed")
+	require.Len(t, loop.pendingWrites, 1, "the write is kept")
+	assert.False(t, loop.pendingWrites[0].materialized, "but nothing was committed")
 	assert.True(t, loop.lastPushAt.IsZero(), "and nothing was pushed")
 	_, onRemote := f.featureOnRemote()
 	assert.False(t, onRemote, "no orphan branch")
@@ -146,7 +147,7 @@ func TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists(t *testi
 
 	tip, onRemote := f.featureOnRemote()
 	require.True(t, onRemote, "it recovers once the parent exists")
-	assert.Equal(t, r1, f.commitParent(tip))
+	assert.Equal(t, r1, f.commitParent(f.commitParent(tip)), "the held cm1, then cm2, on the parent's tip")
 	observed, _ = f.worker.LastRemoteObservation()
 	assert.Empty(t, observed.ParentState, "the write branch exists, so no parent is reported")
 }

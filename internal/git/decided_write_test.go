@@ -149,3 +149,51 @@ func TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy(t *testing.T) {
 	assert.Contains(t, remoteFileNames(t, f.repoDir), "keep-me",
 		"the deferred delete is planned under the policy in force when it is committed")
 }
+
+// Writes are kept through an outage, so the log is bounded at admission instead: past the
+// retained-byte budget, while a failed attempt waits for its retry, new writes, saves and resyncs are
+// refused the way a full queue refuses them, and their producers keep them. A healthy branch never
+// closes, and admission reopens once the log is published.
+func TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage(t *testing.T) {
+	f := newLedgerFixture(t, "decided-write-admission", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+	f.worker.branchBufferMaxBytes = 1 // any retained write fills it
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+	write := func(name string) {
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+			Events:     []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
+			CommitMode: CommitModePerEvent,
+		}})
+		loop.finalizeOpenWindow()   // the budget usually closed it on arrival already
+		loop.syncUnpushedWorkFlag() // what every loop iteration does
+	}
+
+	write("over-budget-but-healthy")
+	assert.True(t, f.worker.Enqueue(configMapTargetEvent("admitted", "alice", ledgerTargetName)),
+		"a healthy branch drains at the next push, so it never closes")
+	<-f.worker.eventQueue
+	f.worker.inflightItems.Add(-1)
+
+	f.worker.markWorktreeDirty("a write failed part-way and could not be undone")
+	_, restoreSyncs := failSyncs(t)
+	write("during-the-outage")
+	require.True(t, loop.retry.pending())
+
+	assert.False(t, f.worker.Enqueue(configMapTargetEvent("refused", "alice", ledgerTargetName)),
+		"the watch keeps its cursor and delivers it again")
+	result := make(chan ResyncResult, 1)
+	assert.False(t, f.worker.EnqueueResync(&ResyncRequest{
+		GitTargetName: ledgerTargetName, GitTargetNamespace: "default", Result: result,
+	}))
+	require.ErrorIs(t, (<-result).Err, ErrFinalizeQueueFull)
+
+	restoreSyncs()
+	fireRetry(loop)
+	loop.syncUnpushedWorkFlag()
+	require.Empty(t, loop.pendingWrites)
+	assert.True(t, f.worker.Enqueue(configMapTargetEvent("after", "alice", ledgerTargetName)),
+		"published, so admission reopens")
+}

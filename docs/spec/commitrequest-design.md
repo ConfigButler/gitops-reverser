@@ -172,8 +172,9 @@ rebuild of the checkout that needs a fetch) or at its push. The worker retries o
 request riding the write stays `WaitingForPush` until publication resolves it or worker shutdown
 fails it. An unavailable remote can leave it pending indefinitely, but retries no longer depend on
 another commit arriving. Only a failure of the write itself fails the request: a refused plan, or a
-write that cannot be made. A missing parent branch is the exception for now: a window decided while
-the parent is missing is dropped and re-derived from a snapshot once the parent returns, and a
-request riding it fails.
+write that cannot be made. A missing parent branch is a remote that cannot take the write yet, and
+holds the request the same way. While an outage has filled the branch's retained-byte budget, a new
+request is refused at admission and the controller sends it again; past its safety window, it fails
+with `FinalizeFailed`, because the worker never accepted it.
 
 The complete status vocabulary is in the [status conditions guide](status-conditions-guide.md).

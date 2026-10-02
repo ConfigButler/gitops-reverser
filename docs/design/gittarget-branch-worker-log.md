@@ -1,7 +1,7 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, written 2026-10-02 against `main` at `0daa3711` (#412 merged).
-> Steps 1, 1b, 2, 3a and 3b are built; step 3 was split into 3a, 3b and 3c after review.
+> Steps 1 to 3c are built; step 3 was split into 3a, 3b and 3c after review. Steps 4 to 7 remain.
 > It replaces the narrow fixes first considered for gaps 3, 4 and 5 in
 > [`gittarget-state-of-affairs.md`](gittarget-state-of-affairs.md#known-gaps-ranked-by-what-a-user-would-hit)
 > with one refactor of the write path that closes gap 4 structurally and gives gaps 3 and 5 one
@@ -126,19 +126,28 @@ backoff away, as before. The push timer is only the success cooldown again. `pub
 how the worker-side base check, outside the loop, knows not to fetch for a parent the probe has not
 found yet.
 
-### Step 3c: missing-parent retention and owed snapshots
+### Step 3c: missing-parent retention, and admission backpressure (built)
 
-`fix(git)`. Writes decided while the parent is missing stay in the log instead of being dropped to a
-snapshot, resyncs stay in the log when the remote cannot be reached
-([Resyncs in the log](#resyncs-in-the-log)), and owed snapshots become log entries that replace
-`scopes` and `awaitingPush`. Two decisions come first:
+`fix(git)`. Writes, saves and resyncs decided while the parent is missing stay in the log, like any
+other a remote failure holds back, and are published when the probe finds the parent. A resync the
+remote holds back answers its caller with the error at once, because its caller is waiting to hear
+what it found, and stays in its place in the log; when it is applied later, its outcome is reported
+the way a live write's is. Two decisions, settled 2026-10-02:
 
-- **Admission.** Protecting every save-bearing entry from eviction cannot also guarantee a bounded
-  log under unlimited arrivals. Either admission stops accepting work past a limit (backpressure on
-  the watch producers and the save controller), or something with a save can be evicted.
-- **Snapshot replacement.** "Same scope and not yet published" is not enough to let a newer resync
-  replace an older one: the replacement must keep the writes decided between them and the save
-  boundaries they carry.
+- **Admission backpressure.** Nothing decided is evicted. While the log holds the retained-byte
+  budget and a failed attempt waits for its retry, the worker refuses new writes, saves and resyncs
+  at enqueue, through the existing queue-full contract: the watch records its cursor only after a
+  write is accepted, so the reconnect delivers a refused event again; the controller sends a refused
+  save again; a refused resync's collection is gathered again. A healthy branch never closes. The
+  bound is the budget, plus the window being collected, plus what the FIFO already holds.
+- **No snapshot replacement.** Resyncs replay in arrival order, so the writes decided between two of
+  them and every save boundary are kept trivially. The admission budget bounds their memory; the FIFO
+  still coalesces resyncs that are only queued.
+
+With nothing dropped, nothing is owed a snapshot: parent recovery's `scopes`, `awaitingPush`, the
+snapshot-request sequence and the controller's snapshot-request tracker are gone. The parent
+recovery tests now pin that writes decided across one or two outages are kept and published, and
+that a failure leaving nothing in the log opens no obligation.
 
 ### Step 4: a refused replay drops only its own entry
 
@@ -198,8 +207,7 @@ the effective-point comment in `write_gate.go`, [`architecture.md`](../architect
 | `dropFailedWindow` and the network-failure drop branches | step 2 |
 | The second write lifecycle (`l.commit`, `retain`, the commit guard), `pcr.committed`, `rebuildPendingWrites`, executor re-entry | step 3a |
 | `publication_retry.go`, `deferToRecovery`, parent recovery's own backoff and timer | step 3b |
-
-Still to remove: parent recovery's `scopes` and `awaitingPush` (3c).
+| Parent recovery's `scopes`, `awaitingPush`, `noteResyncApplied`, `recoveryTargets`, the snapshot-request sequence, the controller's snapshot-request tracker, and the per-scope drop paths | step 3c |
 
 ## What stays
 

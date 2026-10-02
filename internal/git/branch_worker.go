@@ -321,17 +321,16 @@ type BranchWorker struct {
 	// Set by the WorkerManager before Start; nil for a worker built on its own.
 	crOwners *commitRequestOwners
 
-	// clock is the time source of the parent-recovery schedule; nil is time.Now. See now().
+	// clock is the time source of the retry schedule; nil is time.Now. See now().
 	clock func() time.Time
 	// parentRecoveryOpen, parentRecoveryFound and parentProbeHold mirror the event loop's
 	// recovery latch for readers outside it. See parent_recovery.go.
 	parentRecoveryOpen  atomic.Bool
 	parentRecoveryFound atomic.Bool
 	parentProbeHold     atomic.Pointer[parentProbeHold]
-	// snapshotRequests counts, per GitTarget, the snapshots the worker has asked for. See
-	// SnapshotRequestSeq.
-	snapshotRequestsMu sync.Mutex
-	snapshotRequests   map[itypes.ResourceReference]uint64
+	// admissionClosed refuses new writes, saves and resyncs at enqueue while the loop holds its
+	// retained-byte budget and the remote cannot be reached. See admitWork.
+	admissionClosed atomic.Bool
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -617,6 +616,14 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
+	if !w.admitWork() {
+		w.pendingResyncsMu.Unlock()
+		w.inflightItems.Add(-1)
+		w.recordQueueDrop(queueDropAttach)
+		w.Log.V(1).Info("CommitRequest attach refused while the branch holds its retained-byte budget "+
+			"(the controller re-sends)", "request", req.Namespace+"/"+req.Name)
+		return
+	}
 	id := req.id()
 	if !w.crOwners.claim(id, w) {
 		// The router routes to the owner, so only a request that moved workers between two polls
@@ -674,6 +681,14 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		// Answered rather than dropped in silence: the caller is waiting on this channel, and the
 		// shutdown drain does not answer what it throws away.
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
+		return false
+	}
+	if !w.admitWork() {
+		w.pendingResyncsMu.Unlock()
+		w.recordQueueDrop(queueDropResync)
+		w.Log.V(1).Info("Resync refused while the branch holds its retained-byte budget",
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+		request.reply(ResyncResult{Err: errAdmissionClosed})
 		return false
 	}
 	if w.pendingResyncs == nil {
@@ -857,6 +872,14 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.Log.V(1).Info("Worker is stopping, request refused; the producer keeps it to redeliver",
 			"events", len(request.Events),
 			"gitTarget", request.GitTargetName)
+		return false
+	}
+	if !w.admitWork() {
+		w.pendingResyncsMu.Unlock()
+		w.inflightItems.Add(-1)
+		w.recordQueueDrop(queueDropWrite)
+		w.Log.V(1).Info("Write refused while the branch holds its retained-byte budget; "+
+			"the producer keeps it to redeliver", "events", len(request.Events), "gitTarget", request.GitTargetName)
 		return false
 	}
 	w.markResyncTailForWriteLocked(request)
@@ -1204,6 +1227,7 @@ func (l *branchWorkerEventLoop) releaseHandledItem() {
 
 func (l *branchWorkerEventLoop) syncUnpushedWorkFlag() {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
+	l.syncAdmission()
 }
 
 func (l *branchWorkerEventLoop) timerChannels() (
@@ -1622,20 +1646,19 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	}
 }
 
-// pushPending materializes the log and publishes it, and reports whether nothing is left to
-// publish. On success, pendingWrites is cleared and lastPushAt advances. On failure (transient or
+// pushPending materializes the log and publishes it. On success, pendingWrites is cleared and lastPushAt advances. On failure (transient or
 // after exhausting replay retries), pendingWrites stays in place, safe but unpublished, and the
 // next attempt is scheduled (retry.go), so the work lands without another commit.
-func (l *branchWorkerEventLoop) pushPending() bool {
+func (l *branchWorkerEventLoop) pushPending() {
 	if len(l.pendingWrites) == 0 {
 		l.stopPushTimer()
 		l.notePublicationSettled()
-		return true
+		return
 	}
 	if l.w.awaitingParentProbe() {
 		// The parent is known missing and the probe is not due: it publishes these when it is.
 		l.stopPushTimer()
-		return false
+		return
 	}
 
 	// Commit any decided write that is not committed yet, and rebuild when a reset discarded the
@@ -1644,13 +1667,13 @@ func (l *branchWorkerEventLoop) pushPending() bool {
 	// writes rather than publish a lie if that fails.
 	if err := l.materialize(); err != nil {
 		l.publicationFailed(err, "Cannot publish until the retained writes are committed; keeping them")
-		return false
+		return
 	}
 	if len(l.pendingWrites) == 0 {
 		// Every decided write failed to commit, so there is nothing left to publish.
 		l.stopPushTimer()
 		l.notePublicationSettled()
-		return true
+		return
 	}
 
 	if err := l.w.pushPendingCommits(l.pendingWrites); err != nil {
@@ -1658,7 +1681,7 @@ func (l *branchWorkerEventLoop) pushPending() bool {
 		// design specifies lastPushAt only advances on a successful push. A
 		// CommitRequest riding a retained write stays unresolved while we retry.
 		l.publicationFailed(err, "Push failed; pending writes retained for retry")
-		return false
+		return
 	}
 
 	// The writes are now on the remote: resolve every CommitRequest riding one with
@@ -1669,9 +1692,8 @@ func (l *branchWorkerEventLoop) pushPending() bool {
 	l.pendingWritesBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
-	l.noteRecoveryPublished()
+	l.closeRecoveryIfDone()
 	l.notePublicationSettled()
-	return true
 }
 
 // publicationFailed keeps the writes for the next attempt, which it schedules: see retry.go.

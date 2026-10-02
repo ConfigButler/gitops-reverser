@@ -228,13 +228,15 @@ func TestBranchWorker_ADanglingRemoteHeadIsMissingNotUnborn(t *testing.T) {
 	assert.True(t, f.ref("feature").IsZero(), "no orphan")
 	assert.True(t, f.loop.lastPushAt.IsZero(), "nothing was pushed")
 
-	// §4.3 test 3: repairing HEAD is enough.
+	// §4.3 test 3: repairing HEAD is enough, and the held write lands first.
 	gitIn(t, f.repoDir, "symbolic-ref", "HEAD", "refs/heads/main")
 	pastProbeDeadline(f.worker)
 	liveWrite(f.loop, "cm2")
 	tip := f.ref("feature")
 	require.False(t, tip.IsZero())
-	assert.Equal(t, []plumbing.Hash{f.ref("main")}, f.parentOf(tip))
+	held := f.parentOf(tip)
+	require.Len(t, held, 1)
+	assert.Equal(t, []plumbing.Hash{f.ref("main")}, f.parentOf(held[0]))
 }
 
 // §4.3 test 2. A detached HEAD is resolved the way go-git resolves it, which this pins: master when

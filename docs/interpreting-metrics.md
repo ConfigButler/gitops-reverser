@@ -336,6 +336,15 @@ red trains people to ignore it. Four classes:
 `route_failed` and a queue drop **overlap**: a full worker queue is one of the ways a route fails, so
 one dropped event increments both. They are two views of one event, and summing them double-counts.
 
+**Backpressure during an outage looks like loss and is not.** A branch worker keeps every decided
+write while its remote cannot be reached, and bounds that at admission: once its retained writes
+fill the retained-byte budget while a failed publication waits for its retry, it refuses new writes,
+saves and resyncs the way a full queue does, and both series rise. The watch does not advance its
+cursor past a refused event, so the reconnect delivers it again; only a cursor that expires during a
+long outage turns it into a relist, whose snapshot converges the folder without that event's own
+commit. Read these increments beside `git_pushes_total{outcome="failed"}` with no successes: that is
+an outage holding work back, not work thrown away. A healthy branch never refuses for this reason.
+
 `placement_refusals_total` and `git_documents_total{outcome="refused"}` **overlap the same way**: a
 resource the writer declines to place increments both, so the loss class holds two views of one
 refusal rather than two refusals. Read them for different questions — `placement_refusals_total`

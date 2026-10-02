@@ -418,12 +418,9 @@ func ledgerOperations() []ledgerOp {
 				pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx,
 					[]Event{configMapEvent("held", "alice", "team-a")})
 				require.NoError(f.t, err)
-				err = f.worker.commitPendingWrites([]PendingWrite{*pendingWrite})
-				require.ErrorIs(f.t, err, ErrParentBranchNotFound)
-				// The dropped write's scope, as the loop records it: an obligation needs something
-				// owed, or it closes at once.
-				held := []Event{configMapEvent("held", "alice", "team-a")}
-				f.loop.noteParentUnavailable(err, windowScopes("default", "team-a", held)...)
+				// The fetch that finds the parent missing; the write is held in the log for it.
+				require.True(f.t, f.loop.decide(*pendingWrite))
+				require.True(f.t, f.loop.recovery.active)
 			},
 			run: func(f *ledgerFixture) {
 				f.worker.clock = func() time.Time { return time.Now().Add(time.Hour) }
