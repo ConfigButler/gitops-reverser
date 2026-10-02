@@ -58,8 +58,9 @@ type CommitRequestSpec struct {
 	// because attachTimeout ran out with no eligible window, or because the window it attached to
 	// closed, for any reason, without changing Git. Resolve finishes without a commit; CommitEmpty
 	// records spec.message in an empty commit, and the Ready reason still says which of the two
-	// happened. A window that belonged to another author never falls back to an empty commit, and
-	// neither does a suspended GitTarget. Defaults to Resolve.
+	// happened. A window that belonged to another author never falls back to an empty commit. A
+	// request on a GitTarget that may not be written (suspended, or render fidelity not established)
+	// fails with that reason under either value. Defaults to Resolve.
 	// +optional
 	// +kubebuilder:validation:Enum=Resolve;CommitEmpty
 	// +kubebuilder:default=Resolve

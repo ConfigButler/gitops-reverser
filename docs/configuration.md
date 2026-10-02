@@ -826,6 +826,11 @@ commit seconds later. That is deliberate: a local commit that is never pushed wo
 operator's checkout and surface later, out of order, when you resume. Suspend is a valve on new
 work, not an undo.
 
+A `CommitRequest` that ends on a suspended target fails with `FinalizeFailed` and the reason, rather
+than resolving `Ready=True` with nothing written. The exception is `WindowMismatch`: a request that
+only saw another author's window still reports that. One whose commit was already made locally when
+you set `suspend` is pushed with it and resolves normally.
+
 Clearing `suspend` resumes from the cluster's current state on the next resync. The writes
 suppressed while it was set are not replayed, so what lands is what the cluster holds then, not a
 backlog of the values it passed through.
@@ -2068,8 +2073,9 @@ reason, without changing Git.
 | The writes already matched Git | no commit, `AlreadyPresent` | empty commit, `AlreadyPresent` |
 | No eligible window before `attachTimeout` | no commit, `NoWindow` | empty commit, `NoWindow` |
 | Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
-| The target is suspended | no commit, the cause | no commit, the cause |
-| The commit, the empty commit, or the push failed | `FinalizeFailed` | `FinalizeFailed` |
+| The target is suspended, or its render fidelity is not established | `FinalizeFailed`, the cause | `FinalizeFailed`, the cause |
+| The commit or the empty commit failed | `FinalizeFailed` | `FinalizeFailed` |
+| The push failed | `WaitingForPush` until a push lands; `FinalizeFailed` if the worker stops first | the same |
 
 The `Ready` reason keeps the cause, and `status.commit` with `Pushed=True` says the empty commit
 reached the remote. A hash proves the message is in Git; `NoWindow` says the request saw no writes,

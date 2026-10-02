@@ -100,7 +100,7 @@ object is visible.
 | No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindow` or `WindowMismatch` |
 | Nothing to commit, with `whenNothingToCommit: CommitEmpty` | `Ready=True`, `Pushed=True`, reason `NoWindow` or `AlreadyPresent`; `status.commit` is the empty commit |
 | Window produced no diff, and the remote agreed | `Ready=True`, `Pushed=False`, reason `AlreadyPresent` |
-| Finalize or push error | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
+| Finalize or push error, or a target that may not be written | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
 
 `Reconciling=True` is the normal in-progress state, with the phase the worker reports as its reason:
 `Progressing`, `WaitingForWorker`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. Once the
@@ -142,5 +142,31 @@ no longer arms anything.
 **A worker that stops while still holding the write fails the request**, because the controller
 does not time out a request the worker holds, and "the worker stopped before the commit reached the
 remote" says what happened.
+
+### When the target may not be written
+
+Two gates stop a GitTarget being written at all: `spec.suspend`, and a render-fidelity check that
+has not passed. One branch worker serves every GitTarget on its branch, and each gate applies per
+GitTarget, so a sibling target's save is unaffected. A third condition, a failed push, is not a gate
+but a retry:
+
+| Path | Suspended | Render fidelity not established | Push fails |
+|---|---|---|---|
+| Live window, no request | The window still scans, writes nothing | Writes dropped on arrival, and the window dropped at close; the next resync re-derives them | The commit is kept and published by a later push |
+| Window a request is attached to | The request fails; the window still scans | The request fails | The request stays `WaitingForPush` |
+| Request no window reached, `Resolve` or `CommitEmpty` | The request fails; no empty commit | The request fails; no empty commit | `CommitEmpty`: the record is kept, `WaitingForPush` |
+| A gate closes after the request's local commit | The commit is pushed and the request resolves with it | Same | Same, once a push lands |
+
+A request fails with `FinalizeFailed` and the gate as its message, under either
+`whenNothingToCommit`: `NoWindow` would say the save saw no writes, and a target that drops or
+suppresses its writes cannot say that. `WindowMismatch` is the exception, because another author's
+window refused that request and its reason says so.
+
+The gates are read when the commit is made, as `suspend` already was for every write. A local commit
+made before a gate closed is pushed rather than kept back, because a commit that never left the
+operator's checkout would surface later, out of order.
+
+A failed push is retried when a later commit on the branch schedules the next one. A branch that then
+goes quiet holds the work, and its requests stay `WaitingForPush`, until something else commits.
 
 The complete status vocabulary is in the [status conditions guide](status-conditions-guide.md).

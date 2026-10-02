@@ -7,16 +7,15 @@ This file is meant to track the smaller current backlog, not historical notes.
 PR #404 is merged; these need fix PRs against main, in this order. (Its CommitRequest timeout
 finding is fixed in #407: the controller no longer fails a request the worker holds.)
 
-**Next, in one fix PR:**
+The two `CommitEmpty` findings (a suspended target reporting `Ready=True` with no commit, and a
+record made while the render-fidelity gate was closed) are fixed in `fix/branch-worker-write-gates`:
+a request on a target that may not be written fails, whatever path ends it
+(`internal/git/write_gate.go`).
 
-- [ ] **A suspended target makes a `CommitEmpty` save report Ready=True with no commit.**
-  `recordCommitRequest` returns `false, nil` on `errTargetSuspended`; the design table
-  (`docs/design/commit-timing-surface.md`) says a suspended target is a failure. An attached window
-  that changed nothing resolves `AlreadyPresent` the same way. Decide: fail the save, or change the
-  table.
-- [ ] **The worker records a `CommitEmpty` save while the render-fidelity gate is closed.** Found by
-  reading; reproduce first. `recordCommitRequest` never calls `normalWritesAllowed`, so a save whose events the
-  gate dropped records "no writes were seen". The attached-window path fails the request instead.
+**Next:** retry progress on quiet branches. A failed push stops the push timer and the retained work
+waits for another commit (`pushPending` in `internal/git/branch_worker.go`); parent recovery drives
+itself, and general publication recovery needs the same guarantee
+([`docs/design/push-cooldown.md`](design/push-cooldown.md) §7 option C).
 
 **Before the next release** (docs only):
 

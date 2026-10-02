@@ -363,6 +363,14 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 		// Which of the two refusals this is depends on whether anything was open that this
 		// request could not have: see pendingCommitRequest.expiryOutcome.
 		outcome := pcr.expiryOutcome()
+		if outcome == FinalizeNoOpenWindow {
+			// NoWindow says the save saw no writes. On a target that refuses them that is not the
+			// cause, and with CommitEmpty the record would say so in Git: see write_gate.go.
+			if err := l.w.requestWriteRefusal(l.w.ctx, pcr); err != nil {
+				l.resolveCommitRequest(id, FinalizeResult{Err: err})
+				continue
+			}
+		}
 		if outcome == FinalizeNoOpenWindow && pcr.commitEmpty {
 			recorded, err := l.recordCommitRequest(pcr)
 			if err != nil {
@@ -379,19 +387,12 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	}
 }
 
-// errTargetSuspended declines a request record for a suspended target, which writes nothing.
-var errTargetSuspended = errors.New("the GitTarget is suspended")
-
 // recordCommitRequest commits a request's message with an untouched tree, for a request that ran
-// out of time to attach and asked for whenNothingToCommit: CommitEmpty. A suspended target records
-// nothing and is not an error: the request then resolves exactly as it would have without asking.
-// Any other reason no record was made is returned, so the request fails instead of reporting a
-// save it did not make.
+// out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason no record was
+// made is returned, including a write gate (an empty commit is a write too), so the request fails
+// instead of reporting a save it did not make.
 func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (bool, error) {
 	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
-	if errors.Is(err, errTargetSuspended) {
-		return false, nil // an empty commit is a write too
-	}
 	if err != nil {
 		l.w.Log.Error(err, "Cannot build the empty commit recording a CommitRequest",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
@@ -419,8 +420,8 @@ func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (
 }
 
 // buildRequestRecordWrite assembles the record commit's write, phrased and signed like every other
-// commit the target makes and authored by the request's submitter. A suspended target gets none,
-// reported as errTargetSuspended.
+// commit the target makes and authored by the request's submitter. A target that refuses writes
+// gets none, and the refusal is returned (see write_gate.go).
 func (w *BranchWorker) buildRequestRecordWrite(
 	ctx context.Context,
 	pcr *pendingCommitRequest,
@@ -429,8 +430,8 @@ func (w *BranchWorker) buildRequestRecordWrite(
 	if err != nil {
 		return nil, err
 	}
-	if metadata.Suspend {
-		return nil, errTargetSuspended
+	if err := w.targetWriteRefusal(pcr.gitTargetName, pcr.gitTargetNamespace, metadata.Suspend); err != nil {
+		return nil, err
 	}
 	provider, err := w.getGitProvider(ctx)
 	if err != nil {

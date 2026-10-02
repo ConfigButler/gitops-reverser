@@ -62,7 +62,7 @@ The targeted worker, controller, and router tests passed under `-race`.
 
 ### After merge
 
-The immediate next fix PR remains the two `CommitEmpty` findings from #404 in
+The two `CommitEmpty` findings from #404 are fixed by the write-gate PR; see
 [`../TODO.md`](../TODO.md#follow-ups-from-404-commit-window-surface).
 For the next GitTarget feature PR, take only step 1 of the parent-observation plan: retain parent
 availability and its timestamp after the write branch exists, using existing advertisements.
