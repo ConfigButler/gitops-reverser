@@ -686,7 +686,6 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		// for a newer snapshot. Swap in the newer request; the loop reads whatever
 		// is current when the marker comes up.
 		superseded := pending.request
-		request.RefreshRemote = request.RefreshRemote || superseded.RefreshRemote
 		pending.request = request
 		w.pendingResyncsMu.Unlock()
 		// The superseded request's caller is waiting on its reply channel. Answer

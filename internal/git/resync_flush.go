@@ -88,8 +88,8 @@ func resyncHealKey(req *ResyncRequest) healKey {
 // cluster" against a tree nobody had checked, and nothing downstream would ever contradict it. The
 // round trip this design removes is the PUBLICATION one, and a resync is not a publication.
 //
-// That fetch also serves a forced recheck (ResyncRequest.RefreshRemote), whose trigger is often
-// "I changed Git; look again": every resync already looks.
+// That fetch also serves a forced GitTarget recheck, whose trigger is often "I changed Git; look
+// again": every resync already looks, so a recheck needs nothing of its own.
 func (l *branchWorkerEventLoop) prepareBaseForResync(req *ResyncRequest) error {
 	if err := l.materialize(fetchReasonForcedRecheck); err != nil {
 		l.w.Log.Error(err, "Failed to refresh the remote before resync",

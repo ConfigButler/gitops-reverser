@@ -165,10 +165,6 @@ type targetWatchStream struct {
 	key targetWatchKey
 	// gate is shared with the runningTargetWatch that stops this stream; see producerGate.
 	gate *producerGate
-	// refreshRemote asks the worker to inspect the remote tip before applying this stream's
-	// replay. It is set on forced GitTarget rechecks, where a human may have fixed or broken the
-	// folder directly in Git and the local checkout is the stale thing being tested.
-	refreshRemote bool
 	// revision is the incarnation of this stream's COLLECTION, issued by the render-fidelity gate
 	// when the stream was started. It is captured at start, not read when a replay result is
 	// ready: a cancelled stream that read the current revision on its way out would report its
@@ -288,7 +284,7 @@ func (m *Manager) replaceGitTargetWatches(
 	collections := collectionsForWatchKeys(keys)
 	m.resetTargetStreamStates(table.GitDest, collections, starting)
 	revisions, fidelityChanged := m.reconcileTargetRenderFidelity(table.GitDest, collections, starting)
-	started := m.startTargetWatchStreams(ctx, set, keysByCollection(keys), revisions, starting, force)
+	started := m.startTargetWatchStreams(ctx, set, keysByCollection(keys), revisions, starting)
 
 	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(collections, revisions))
 	if fidelityChanged {
@@ -335,7 +331,6 @@ func (m *Manager) startTargetWatchStreams(
 	byCollection map[types.CollectionKey]targetWatchKey,
 	revisions map[types.CollectionKey]uint64,
 	starting []types.CollectionKey,
-	refreshRemote bool,
 ) []startingTargetWatch {
 	out := make([]startingTargetWatch, 0, len(starting))
 	for _, collection := range starting {
@@ -349,10 +344,9 @@ func (m *Manager) startTargetWatchStreams(
 		out = append(out, startingTargetWatch{
 			ctx: streamCtx,
 			stream: targetWatchStream{
-				key:           watchKey,
-				gate:          gate,
-				refreshRemote: refreshRemote,
-				revision:      revisions[collection],
+				key:      watchKey,
+				gate:     gate,
+				revision: revisions[collection],
 			},
 		})
 	}
@@ -969,7 +963,7 @@ func (m *Manager) enqueueReplayResync(
 	if !stream.gate.enqueue(ctx, func() {
 		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
 			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), desired, resourceVersion,
-			false, stream.refreshRemote)
+			false)
 	}) {
 		return nil
 	}
