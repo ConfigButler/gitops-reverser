@@ -51,6 +51,13 @@ func seedMain(t *testing.T) func(string) {
 	}
 }
 
+func seedMainAndRelease(t *testing.T) func(string) {
+	return func(repoDir string) {
+		simulateClientCommitOnDisk(t, repoDir, "main", "README.md", "main\n")
+		gitIn(t, repoDir, "branch", "release", "main")
+	}
+}
+
 // The gap this closes: after one failed push, a branch that receives nothing else used to keep its
 // work indefinitely. The retry is armed by the failure itself.
 func TestPublicationRetry_AQuietBranchPublishesAfterAFailedPush(t *testing.T) {
@@ -137,10 +144,7 @@ func TestPublicationRetry_BackoffDoublesToTheCapAndResets(t *testing.T) {
 // it on the worker's probe schedule. A second schedule here would spend the connections that one
 // exists to save.
 func TestPublicationRetry_ParentRecoveryOwnsAMissingParent(t *testing.T) {
-	f := newRealServerNewBranch(t, "retry-parent", func(repoDir string) {
-		simulateClientCommitOnDisk(t, repoDir, "main", "README.md", "main\n")
-		gitIn(t, repoDir, "branch", "release", "main")
-	})
+	f := newRealServerNewBranch(t, "retry-parent", seedMainAndRelease(t))
 	useTestClock(f.worker)
 	f.worker.SetParentBranch("release")
 	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
@@ -153,8 +157,41 @@ func TestPublicationRetry_ParentRecoveryOwnsAMissingParent(t *testing.T) {
 	require.Len(t, f.loop.pendingWrites, 1)
 	open, _ := f.worker.ParentRecovery()
 	require.True(t, open, "parent recovery holds the work")
-	assert.False(t, f.loop.publicationRetry.pending(), "and the publication retry stays out of it")
-	assert.Nil(t, f.loop.pushTimer)
+	assert.True(t, f.loop.publicationRetry.deferToRecovery, "the publication retry defers to it")
+	assert.Nil(t, f.loop.pushTimer, "and arms no timer of its own")
+}
+
+// Once the parent is back, recovery's missing-parent hold is gone but its obligation stays open
+// until the work publishes. A publication that fails then must not be retried by every new commit:
+// the commits wait for recovery's next deadline. Found in review of #412; it failed on main too.
+func TestPublicationRetry_AFailureAfterTheParentReturnsWaitsForRecovery(t *testing.T) {
+	f := newRealServerNewBranch(t, "retry-parent-found", seedMainAndRelease(t))
+	clock := useTestClock(f.worker)
+	f.worker.SetParentBranch("release")
+	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
+	f.loop.lastPushAt = time.Now()
+	liveWrite(f.loop, "cm1")
+	gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release")
+	f.loop.pushPending()
+	require.True(t, f.loop.recovery.active)
+	require.False(t, f.loop.recovery.found)
+
+	gitIn(t, f.repoDir, "branch", "release", "main") // the parent returns
+	attempts := failNextPushes(t, 100)
+	clock.advance(parentProbeInitialBackoff)
+	f.loop.lastPushAt = time.Time{}
+	f.loop.runParentProbe()
+	require.True(t, f.loop.recovery.found)
+	require.Equal(t, int32(1), attempts.Load(), "recovery's attempt failed")
+	require.True(t, clock.Now().Before(f.loop.recovery.nextProbeAt))
+
+	liveWrite(f.loop, "cm2")
+	liveWrite(f.loop, "cm3")
+	assert.Equal(t, int32(1), attempts.Load(), "commits before recovery's deadline do not retry")
+
+	clock.advance(parentProbeMaxBackoff)
+	f.loop.runParentProbe()
+	assert.Equal(t, int32(2), attempts.Load(), "recovery's next deadline does")
 }
 
 // The user-facing half, on the real event loop: a CommitRequest riding a write whose push failed is

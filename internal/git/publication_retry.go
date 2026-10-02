@@ -17,10 +17,11 @@ import "time"
 // the push timer is armed for it whether or not anything else arrives. Until then new commits
 // accumulate locally instead of pushing. A successful push, or nothing left to push, closes it.
 //
-// A failure caused by a missing parent is not retried here. Parent recovery owns that work, with
-// its own probe schedule shared across the worker's targets (parent_recovery.go); retrying it on a
-// second schedule would spend connections that schedule exists to save. The same holds for any
-// failure while that obligation is open: its deadline retries the retained writes.
+// A failure while parent recovery is open is not retried here. Recovery owns that work, with its
+// own probe schedule shared across the worker's targets (parent_recovery.go); retrying it on a
+// second schedule would spend connections that schedule exists to save. Its deadline still paces
+// new commits, though: once the parent is found, recovery's missing-parent hold is gone, so
+// without deferring to its deadline every new commit would retry the failing push at once.
 
 //nolint:gochecknoglobals // vars, not consts, so a test can run the real loop on a short schedule.
 var (
@@ -35,18 +36,21 @@ const publicationRetryBackoffFactor = 2
 type publicationRetry struct {
 	backoff     time.Duration
 	nextAttempt time.Time
+	// deferToRecovery marks a failure while parent recovery was open: the next attempt is
+	// recovery's next probe deadline, and recovery's timer, not the push timer, drives it.
+	deferToRecovery bool
 }
 
 // pending reports whether a failed publication is waiting for its next attempt.
 func (r publicationRetry) pending() bool {
-	return !r.nextAttempt.IsZero()
+	return !r.nextAttempt.IsZero() || r.deferToRecovery
 }
 
-// notePublicationFailed schedules the next attempt after a failed push or rebuild, unless parent
-// recovery owns the retry.
+// notePublicationFailed schedules the next attempt after a failed push or rebuild. While parent
+// recovery is open the attempt is recovery's, and new commits wait for its deadline.
 func (l *branchWorkerEventLoop) notePublicationFailed() {
 	if l.recovery.active {
-		l.publicationRetry = publicationRetry{}
+		l.publicationRetry = publicationRetry{deferToRecovery: true}
 		return
 	}
 	r := &l.publicationRetry
@@ -68,6 +72,13 @@ func (l *branchWorkerEventLoop) notePublicationSettled() {
 // new commit must not push early. It makes sure the attempt is still scheduled.
 func (l *branchWorkerEventLoop) awaitingPublicationRetry() bool {
 	r := l.publicationRetry
+	if r.deferToRecovery {
+		if !l.recovery.active {
+			l.publicationRetry = publicationRetry{}
+			return false
+		}
+		return l.w.now().Before(l.recovery.nextProbeAt)
+	}
 	if !r.pending() || !l.w.now().Before(r.nextAttempt) {
 		return false
 	}
