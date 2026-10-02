@@ -1,14 +1,19 @@
-# High Availability and Durable Delivery Plan
+# High availability and durable delivery plan
 
 Status: **proposed** (not started)
 
-## Scope and Definition of Done
+This is the owning document for the durable journal, publication recovery, retention, and the
+persistence/HA rollout. The [branch worker event model](../design/branch-worker-event-model.md)
+owns worker transitions, deadline semantics, and the immediate retry and operation-timeout fix.
+That fix can ship independently of this plan.
+
+## Scope and definition of done
 
 This plan updates the previous HA proposal for the current watch-first
 architecture. Kubernetes WATCH is the source of mirrored object state. Audit is
 optional attribution only; it is not a source of object state or a write queue.
 
-The first release is active/passive HA, not active/active scheduling:
+The first HA release uses active/passive ownership:
 
 - Run at least two controller Pods.
 - One elected Pod owns controllers, target watches, and Git branch workers.
@@ -17,15 +22,22 @@ The first release is active/passive HA, not active/active scheduling:
 - Losing one controller Pod must not silently drop a Kubernetes-to-Git state
   change. The replacement may replay a change or create a no-op Git attempt.
 
-The durability contract is eventual state convergence: after recovery, Git
-matches the watched Kubernetes state. It is not a promise of one Git commit for
-every Kubernetes mutation, nor an exactly-once event history.
+The baseline durability contract is eventual state convergence: after recovery, Git matches the
+watched Kubernetes state. The proposed extension preserves accepted save obligations, including
+window membership, attribution, messages, deadlines, and outcomes. The event model defines those
+execution semantics; this plan owns how their records survive failure.
 
-This contract assumes the Kubernetes API, Git remote, and durable queue remain
-available. A single Redis or Valkey Pod is therefore not sufficient for an
-installation that also needs to survive loss of any one dependency Pod.
+Before implementing the extension, agree on retention, target replacement, and the response to
+an indeterminate publication result. Existing coalescing still applies, and rebuilding unpublished
+work onto a moved remote can change its SHA or leave no diff. This is not a promise of one commit
+per Kubernetes mutation or exactly-once publication under arbitrary history loss.
 
-## Current State
+A Git outage is recoverable within the configured storage budget if the remote eventually
+returns. The journal must survive the advertised storage failures, and Kubernetes must become
+available for source recovery and status projection. A single Redis or Valkey Pod is insufficient
+when the installation must also survive loss of that dependency Pod.
+
+## Current state
 
 The repository has useful foundations, but it is not HA today.
 
@@ -53,7 +65,7 @@ The repository has useful foundations, but it is not HA today.
 - The chart has a PDB and preferred Pod anti-affinity, but these only improve
   placement; they do not make the data path durable or coordinate writers.
 
-## Target Architecture: HA v1
+## Target architecture: HA v1
 
 HA v1 retains one active data-plane owner for the whole release. This is the
 smallest design that satisfies loss of one controller Pod without introducing
@@ -82,9 +94,12 @@ Controller-runtime leader election owns the active/passive transition. The
 leader lock must use a release-scoped Kubernetes Lease in the release namespace.
 On lock loss, the old owner stops reading new durable work and cancels its
 watches. A stalled old owner may still finish an already-started push; the
-remote compare-and-swap rejects it if a newer owner has moved the ref.
+remote compare-and-swap rejects it if a newer owner has moved the ref. It cannot reject an old
+owner solely because its lease expired while the ref stayed unchanged. Require an ownership
+epoch for journal transitions, reject stale writers there, and recover already-started pushes
+through the publication protocol below. A stronger Git fence needs server-side enforcement.
 
-## Durable Write Journal
+## Durable write journal
 
 Redis or Valkey becomes mandatory in HA mode. Add a versioned durable journal
 under a branch-write-shard key, with Redis Streams used for delivery and
@@ -103,53 +118,87 @@ for key and Lease names. It must be exposed in logs, metrics, and target status.
 
 Every GitTarget maps to exactly one branch write shard. Targets sharing a remote
 branch use one journal and one worker, even when they have different paths.
-Overlapping paths must remain a reconciliation-time and writer-time refusal.
+Overlapping paths must remain a reconciliation-time and writer-time refusal. Retain provider and
+target incarnations alongside the shard key; sharing a destination must not silently combine
+incompatible policy or reroute old work to a replacement object with the same name.
 
 ### Journal record
 
-Introduce a versioned record that includes:
+Give every record a payload schema version, branch identity, stable record identity, and branch
+sequence. Version decision behavior as well as data layout so an upgrade can interpret pending
+work. Carry the originating command or operation ID for deduplication. Include target and provider
+incarnations where identity affects routing or policy. Branch sequence is execution order;
+source metadata records provenance.
 
-- target UID, namespace, and name;
-- source cluster, GVR, namespace scope, resource identity, operation, and
-  resource version;
-- a deterministic idempotency key;
-- the sanitized object or delete/field-patch payload;
-- author attribution when available;
-- the resolved branch-shard identity and target path;
-- a kind for live event, snapshot member, snapshot start, or snapshot complete.
+Retain the inputs, decisions, and results needed to reconstruct the workflow:
 
-The object payload must be encrypted before it is written to Redis when it
-contains a sensitive resource. Today plaintext sensitive content is only
-transient in the Pod before the Git writer encrypts it. A durable queue changes
-that boundary. Queue encryption needs a Kubernetes Secret-backed key, rotation
-plan, TLS in transit, and tests proving plaintext secret fields are absent from
-Redis values.
+- Resource observations: sanitized object or field patch, resource UID and delete identity,
+  source cluster incarnation, GVR and namespace scope, `resourceVersion`, target UID, path,
+  operation, and resolved attribution.
+- Snapshots: snapshot ID, start marker, members, completion marker, collection, and resource
+  version. Preserve supersession decisions that affect execution or producer receipts.
+- Saves: request UID, target UID, attribution decision, message, attachment and timing policies,
+  first registration, and each withdrawal's answer.
+- Windows: stable window ID, included input references or materialized coalesced content, save
+  membership, closing reason, and captured planning policy.
+- Operations: stable batch and attempt IDs, repository identity, intended base, resulting commit
+  mapping, and observations that support success, failure, or uncertainty.
+- Deadlines: purpose, owner, absolute due time, generation, and accepted firing or cancellation.
+- Outcomes: per-request terminal result, pending status projection, and projection receipt.
 
-### Atomic handoff and acknowledgement
+This extends the earlier resource-only journal proposal. Use explicit data records instead of
+serializing `WorkItem` or `PendingWrite`: their live interfaces, process pointers, and channels
+have no meaning in another process. Keep reconstructable references to credentials and signers.
+Historical policy references also need retained contents; a Kubernetes `resourceVersion` alone
+cannot retrieve an arbitrary old configuration.
 
-For each watched GVR and scope, persist the journal record and its resume cursor
-in one idempotent Redis operation. A Lua script or transaction must make a
-successful enqueue and cursor advancement inseparable. The key layout must also
-work in Redis Cluster, including its same-hash-slot constraints.
+Encrypt sensitive resource payloads before writing them to the journal. Queue encryption needs
+a Kubernetes Secret-backed key, a rotation and retention policy, TLS in transit, and tests that
+plaintext secret fields are absent from Redis values. Keep private credentials out of records.
 
-The source watch may advance only after this durable handoff succeeds:
+### Atomic handoff and acknowledgment
 
-1. WATCH receives an event.
-2. The active leader derives a journal record.
-3. It atomically records the event and the new cursor.
-4. The branch worker consumes the record and may create local commits.
-5. It acknowledges the record only after the corresponding state reaches the
-   remote Git branch successfully.
+For each watched GVR and scope, persist the journal record and its resume cursor in one
+idempotent Redis operation. A transaction or Lua script must make successful admission and cursor
+advancement inseparable. The layout must work with Redis Cluster's same-hash-slot constraints.
+Every supported producer needs an explicit acceptance result, including save commands.
 
-If the leader dies before step 3, the cursor is not advanced and the watch
-replays. If it dies after step 3 but before step 5, the consumer group reclaims
-the unacknowledged record. If it dies after the remote push but before the
-acknowledgement, replay is harmless because the write is idempotent against the
-current remote tree.
+Separate three durable milestones:
 
-The worker must not rely on its local clone for recovery. A new owner fetches
-the remote branch, replays retained journal records, and lets the existing
-PushAtomic conflict/rebuild behavior settle external changes.
+| Milestone | What it proves |
+|---|---|
+| Accepted | Input is recoverable; its source cursor may advance |
+| Processed | Decisions and remaining obligations are recoverable |
+| Completed | Publication or an explicit terminal outcome is proved |
+
+Persist the consumed input position, resulting decisions, and new effect obligations together.
+Otherwise a crash can consume a command but lose its push, or create an obligation twice.
+Stable effect identities permit redelivery. A durable outbox holds external operations and
+status updates still requiring execution; writing it does not prove those operations succeeded.
+
+A complete path is:
+
+1. WATCH receives an observation, or the controller submits a save command.
+2. Admission durably records it and any source cursor in one idempotent operation.
+3. The worker commits its processing position, decisions, and effects together.
+4. The executor performs outstanding work and records the result, using the publication
+   recovery protocol when the remote outcome is uncertain.
+5. A completed input can be acknowledged while the outcome and any unfinished status projection
+   remain recoverable. Terminal refusal and no-commit outcomes also need receipts.
+
+A crash before step 2 cannot advance the durable cursor. After step 2, the consumer can reclaim
+accepted work. A lost admission acknowledgment returns the same record on retry. A crash after
+step 3 resumes the recorded effects without deciding window membership again. A crash after Git
+accepted the push requires publication recovery before repeating an operation or reporting success.
+
+Status projection progresses independently after completion. Retain checkpoints, payload
+references, pending effects, and receipts needed by every unfinished step. Acknowledging delivery
+or deleting a `CommitRequest` must not remove the only deduplication evidence while commands can
+still be redelivered. Receipt collection needs a stated projection and redelivery boundary.
+
+The local clone remains disposable. Recovery reconstructs the recorded workflow, uses the
+remote as the Git base, and only replans unfinished publication. Raw resource redelivery alone
+cannot restore the same window boundaries or attached saves.
 
 ### Snapshot and replay delivery
 
@@ -165,7 +214,84 @@ superseded snapshot remains replayable; a new leader can also enqueue a fresh
 complete replay after the retained journal tail. HTTP 410 Gone continues to mean
 fresh replay, never loss of the old journal tail.
 
-## Implementation Phases
+Tie every member and completion marker to a snapshot ID and its exact scope. An incomplete
+snapshot cannot authorize deletion; an explicitly complete empty one can authorize a scoped
+sweep. Preserve ordering fences where live writes, overlapping snapshots, or saves prevent
+replacement of an earlier queue position. Persist supersession and deferred-heal state when
+needed to reproduce the worker's decisions. A successful local resync reply does not acknowledge
+remote publication.
+
+## Publication recovery
+
+Git and the journal cannot participate in one ordinary storage transaction. There is always a
+boundary between the remote ref update and recording its result. Treat a lost response as an
+uncertain outcome, because a timeout can follow a successful server-side update.
+
+The failure sequence is:
+
+1. The worker durably records an intent to publish a batch.
+2. Git accepts the push.
+3. The worker dies before recording publication evidence.
+4. Recovery finds an outstanding intent and must determine whether it already happened.
+
+Neither a durable outbox nor an in-memory deduplication map resolves step 4. The earlier plan
+relied on idempotent writes against the current tree for convergence. That does not preserve
+empty commits, save boundaries, or the original request SHA.
+Replaying several already-published intermediate states can also create redundant history even
+when the final tree converges.
+
+Use stable batch, attempt, and request identities. Before pushing, persist the intended commit
+mapping and enough recoverable evidence to recognize that attempt. Candidate evidence includes
+retained immutable Git artifacts or an agreed operation marker in Git. A marker changes the
+repository contract and needs its own design; choosing it is not implicit in this proposal.
+Local artifacts identify what was attempted. Publication evidence must come from the remote or
+a durable record of its acknowledgment.
+
+On recovery, seek evidence that the intended commits were published, allowing later commits above
+them. If a competing update forces a rebuild, record a new attempt and its refreshed mapping.
+Only publish the request outcome once evidence supports that outcome. Equal tree content alone
+cannot prove that a particular message or empty save was recorded.
+
+Shallow history, branch deletion, force pushes, and unreachable objects can remove the evidence.
+Define how long evidence is retained and what happens when the outcome remains indeterminate.
+Do not promise exactly-once publication until the protocol handles those cases within a stated
+failure model. The existing remote compare-and-swap protects ref updates; it does not atomically
+acknowledge the journal or prove a request's historical execution.
+
+## Surviving hours without Git
+
+State an outage budget in workload and storage terms. A useful first estimate is admitted bytes
+per second multiplied by outage duration, plus snapshot, index, encryption, and retention costs.
+Recovery also needs enough publication throughput to drain the backlog while new work arrives.
+
+Use the atomic admission and cursor handoff defined above. Enforce byte quotas and a retention
+policy from the first durable implementation. Stop accepting
+new payloads when the durable store cannot honor its contract. This does not guarantee recovery
+of every later Kubernetes mutation: a prolonged ingestion stop can outlast watch history.
+
+Give recovery and lifecycle work a way to run under saturation, with its causal ordering intact.
+Reserved capacity must not let a withdrawal overtake an already accepted attach. Bound the active
+in-memory working set independently of journal size; keeping every persisted payload in
+`pendingWrites` would preserve the current memory problem.
+
+Snapshot compaction must respect save boundaries. Replacing a request-bearing batch with the
+latest object state loses its message, attribution, and publication obligation. Define explicitly
+which ordinary writes can coalesce, and preserve references needed by retained windows.
+
+The store's persistence, replication, retention, and eviction settings are part of the guarantee.
+Naming Redis Streams as the delivery mechanism does not establish the storage failure model.
+Sensitive resource payloads must be encrypted before persistence; queue key rotation must retain
+access to accepted work for its recovery lifetime.
+
+Report durable backlog bytes, oldest pending work, outstanding saves, current retry deadline,
+publication uncertainty, and status-projection lag. These proposed measurements distinguish a
+healthy outage backlog from a worker that has stopped making progress.
+
+## Implementation phases
+
+The event model owns the immediate retry/deadline fix and extraction of deterministic worker
+transitions. These phases own persistence and HA after that boundary is available. Each phase
+needs its own failure tests; adding leadership must not be the first recovery test of the journal.
 
 ### HA-0: Specify and expose branch ownership
 
@@ -184,21 +310,45 @@ Before changing delivery:
 
 Add a journal package beside the existing Redis store:
 
-- publish idempotent work records;
-- create consumer groups, claim abandoned pending records, and acknowledge only
-  remote-successful work;
-- encode and encrypt sensitive payloads;
-- atomically couple cursor advancement to durable publication;
-- route both live events and snapshot/replay markers through the journal.
+- publish idempotent records with explicit admission receipts;
+- atomically couple watch cursor advancement to durable admission;
+- persist worker decisions and effect obligations with their processing position;
+- route live observations, snapshots, saves, withdrawals, deadlines, and results through the
+  recoverable boundary;
+- encode and encrypt sensitive payloads, enforce quotas, and page retained payloads to bound memory;
+- create consumer groups, reclaim abandoned work, and preserve terminal receipts and pending
+  status projections when acknowledging completed delivery.
 
-Refactor EventRouter so it publishes durable work instead of directly calling a
-local GitTargetEventStream. Refactor BranchWorker so a durable consumer, rather
-than its process-local FIFO, owns the acknowledgement lifecycle. The commit
-window may remain in memory because unacknowledged records reconstruct it after
-failover; local commits must be treated as disposable.
+Refactor EventRouter and the worker adapters to use this boundary. The open window can remain
+an in-memory working view only if recorded decisions or a checkpoint reconstruct its membership,
+save attachment, and deadlines. An unacknowledged list of raw resource events is insufficient.
+Local commits remain disposable except for artifacts explicitly retained by the publication
+recovery protocol.
 
-Ship and exercise this phase with one active Pod first. It removes the existing
-crash-loss window independently of multi-Pod scheduling.
+Persist schema and decision-behavior versions from the first journal implementation. Test
+checkpoint positions, compaction, and compatible readers against pending effects and receipts.
+Make target replacement and worker retirement explicit transfer or terminal decisions.
+
+Exit criterion: a replacement process with an empty checkout restores pending windows and saves,
+overdue deadlines, and unprojected outcomes. Lost acknowledgments find the original records;
+a crash after recording a deadline or effect still allows it to run. Ship and exercise this
+phase with one active Pod before adding leader failover.
+
+### HA-1a: Prove publication recovery and outage capacity
+
+Implement the chosen evidence protocol before claiming preserved save outcomes across restart.
+Inject crashes before pushing, after Git accepts the push, after recording the result, and
+before status projection. Exercise both changed trees and empty commits. Reconstructing a
+historical result must cause no external action.
+
+Size an outage workload to the stated duration and admission rate. Restart during it, fill the
+quota, recover Git, and keep new traffic arriving while the backlog drains. Measure memory,
+journal growth, remote attempts, and time to settle saves. Sleeping for hours at low volume
+would establish little about capacity.
+
+Exit criterion: the workload fits its storage and memory budgets and preserves the agreed save
+contract. Record an explicit outcome for cases whose publication remains indeterminate within
+the supported failure model. Keep that limitation visible before enabling HA.
 
 ### HA-2: Enable active/passive controller failover
 
@@ -214,12 +364,17 @@ durations rather than relying on undocumented defaults.
   unacknowledged records for the next leader.
 - On startup, claim pending records, rebuild workers from remote Git, then
   establish watches from their durable cursors or fresh replay.
-- Persist CommitRequest terminal results in Kubernetes status. A failover must
-  not depend on an in-memory outcome map to decide whether a command completed.
+- Enforce journal ownership epochs and reject stale writers at the durable transition boundary.
+- Project recorded `CommitRequest` outcomes into Kubernetes status by UID. Recover the terminal
+  receipt and any pending projection after failover, without deciding the save outcome again.
+
+Exit criterion: failover and supported rolling upgrades preserve the single-active contract,
+including already-started pushes, overdue timers, and unprojected outcomes. Readers must remain
+compatible with retained schema and behavior versions.
 
 ### HA-3: Release the supported Helm mode
 
-Only after HA-1 and HA-2 pass end-to-end fault tests:
+Only after HA-1, HA-1a, and HA-2 pass end-to-end fault tests:
 
 - remove the replica-count rejection;
 - reject HA configuration without a Redis endpoint, queue-encryption key, and
@@ -230,39 +385,50 @@ Only after HA-1 and HA-2 pass end-to-end fault tests:
   maxSurge one, and a PDB with minAvailable one;
 - make hostname anti-affinity and topology spread required for the HA profile;
   offer a zone-spread profile where clusters have multiple zones;
-- document a supported Redis or Valkey durability topology. It must survive the
-  failure model being advertised, not merely pass a ping.
+- document a supported Redis or Valkey topology that survives the advertised storage failures.
 
 The existing PDB can remain for single-Pod installs, but it must not be described
 as HA by itself.
 
 ### HA-4: Fault-injection acceptance suite
 
-Add e2e tests for each durable boundary:
+Add fault tests for each durable boundary before enabling the supported HA mode:
 
-- kill the active Pod before durable publication;
-- kill it after publication and cursor advancement, before local commit;
-- kill it after local commit, before remote push;
-- kill it after remote push, before journal acknowledgement;
-- force a slow push and leader handoff to exercise a stale writer;
-- force remote branch movement and verify replay plus PushAtomic;
-- force expired watch cursors and verify replay plus mark-and-sweep;
-- roll the deployment with queued, replay, delete, and sensitive-resource work.
+| Scenario | Required observation |
+|---|---|
+| Crash before durable admission | No durable cursor skips an absent record |
+| Crash after admission or a lost admission acknowledgment | Same accepted record returns in branch order |
+| Crash after local commit, before push | Unpublished work and its save remain recoverable |
+| Crash with an attached save | Same author decision, window membership, and deadlines return |
+| Restart with overdue deadlines and queued writes | The defined processing-time ordering is preserved |
+| Crash after push, before recording success | Publication is recovered or explicitly indeterminate |
+| Status API fails after publication | Same outcome is projected later without another commit |
+| Empty save is redelivered | Original result is recovered; missing evidence remains explicit |
+| Snapshot lacks a complete marker | No sweep runs |
+| Watch cursor expires | Fresh replay preserves the old journal tail and scoped deletion rules |
+| Journal quota fills during an outage | Admission stops explicitly; recovery retains capacity |
+| Target or provider is recreated | Old work cannot bind to the replacement by name |
+| Old owner completes an in-flight push | Replacement recovers the outcome and rejects stale journal transitions |
+| Remote branch moves | Compare-and-swap and recorded rebuild attempts preserve the pending work |
+| Upgrade or compaction leaves pending work | State, payloads, receipts, and compatible readers remain available |
+| Sensitive-resource backlog crosses key rotation | Accepted work remains decryptable without plaintext storage |
 
-Every case must assert final remote Git state, no lost deletion, no divergent
-ref, no permanently pending journal record, and a healthy replacement leader.
-Run the normal repository validation sequence after implementation: task fmt,
-task generate where needed, task vet, task lint, task test, and task test-e2e.
+Assert final Git state and deletion handling where the scenario establishes publication, and
+explicit uncertainty where evidence is missing. No case may invent a success or silently discard
+an accepted save. Exercise the actual storage persistence failure model, including lost
+acknowledgments, as well as process interruption. Run the normal repository validation sequence
+after implementation: `task fmt`, `task generate` where needed, `task vet`, `task lint`, `task test`,
+and `task test-e2e`.
 
-## Optional Follow-on: Active/Active Branch Shards
+## Optional follow-on: active/active branch shards
 
 Do not make this a prerequisite for HA v1. It improves throughput and isolation,
 but creates a second distributed-systems problem.
 
 When needed, assign each BranchWriteShard its own Kubernetes Lease. Any Pod may
 publish durable records, but only the shard-Lease holder consumes that shard and
-pushes its Git branch. The lease is coordination, not the final Git fence; the
-remote compare-and-swap remains mandatory.
+pushes its Git branch. The lease coordinates ownership; remote compare-and-swap remains mandatory
+with the publication-recovery limits described above.
 
 Tracking and watching can remain leader-owned initially. Distributing target
 watches or GVR scopes should happen only after the snapshot markers, replay
@@ -270,16 +436,17 @@ watermarks, deduplication, and completeness state are proven durable. A target
 with several watched scopes must never sweep Git state until every required
 scope has completed its authoritative replay.
 
-## Acceptance Criteria for Supported HA
+## Acceptance criteria for supported HA
 
 - A two-Pod controller deployment survives loss of the active Pod without
   silently skipping Kubernetes state.
 - No durable cursor can advance past work that is absent from the journal.
-- No journal record is acknowledged before its state is recoverable from remote
-  Git.
+- No completed delivery is acknowledged without recoverable publication evidence or an explicit
+  terminal outcome; pending status projection and required deduplication receipts remain durable.
 - A stale or partitioned owner cannot overwrite a newer Git ref.
-- Replays, queue claims, and post-push-before-ack crashes converge without
-  divergent commits.
+- Replays and queue claims preserve accepted save obligations. Post-push-before-ack crashes use
+  the publication protocol; missing evidence produces explicit uncertainty rather than an
+  unsupported success or duplicate-publication guarantee.
 - Sensitive resource content is never stored as plaintext in the durable queue.
 - The chart prevents unsupported HA configurations and documents dependencies
   that must themselves be highly available.

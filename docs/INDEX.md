@@ -124,11 +124,12 @@ decided), **design, decided** (decision made, not built), **partly built**, **bu
 **deferred** (parked, kept as a decision record). The label is the first thing in the page,
 so you never have to read a proposal to find out it already shipped.
 
-### Open (27 pages)
+### Open (28 pages)
 
 | Doc | Open question |
 |---|---|
-| [`gittarget-parent-branch.md`](design/gittarget-parent-branch.md) | **built in #407, not merged yet.** `spec.parentBranch`: a target stays on standby until a write needs a branch, then creates its write branch from the parent's tip as checked at publication. The contract as built, the defect it started from, prior art and naming. Open: parent per `GitProvider.status.branches` entry. |
+| [`branch-worker-event-model.md`](design/branch-worker-event-model.md) | **proposal against merged #407 and #411.** Lead with the quiet-branch `WaitingForPush` failure and the retry/deadline fix. Worker ownership, FIFO inputs, save and deadline semantics, and the transition boundary for later durability. Journal storage and rollout belong to the HA plan. |
+| [`gittarget-parent-branch.md`](design/gittarget-parent-branch.md) | **merged in #407.** `spec.parentBranch`: a target stays on standby until a write needs a branch, then creates its write branch from the parent's tip as checked at publication. The contract as built, the defect it started from, prior art and naming. Open: parent per `GitProvider.status.branches` entry. |
 | [`gittarget-parent-hardening.md`](design/gittarget-parent-hardening.md) | **done in #407.** Parent changes on a live worker, an empty repository gaining a ref, an unresolved default branch, recovery that cannot strand work, and the refused upload, without adding a pull to the fast path; plus the two recovery fixes from the review at `93120caf`. Records the merge boundary and the next separate PRs. |
 | [`gittarget-parent-empty-repository.md`](design/gittarget-parent-empty-repository.md) | **deferred.** An empty repository's default branch: the server reports it over protocol v2 but go-git discards it (upstream fix first); then a separate policy decision on which branch the first commit may create. Assuming `main` was considered and rejected. |
 | [`gittarget-parent-observation.md`](design/gittarget-parent-observation.md) | **deferred.** Keep the parent visible after the write branch exists: availability first, ancestry only after measuring how often a shallow checkout can answer it. Informational; authorizes no branch mutation. |
@@ -197,8 +198,9 @@ than install manifests. What changed is that they are now checked.
 [`idea-application-editing.md`](future/idea-application-editing.md) is where the
 whole edit-through-the-API workstream started, and still holds the branch/session
 grouping strategies nothing else covers.
-[`ha-gittarget-distribution-plan.md`](future/ha-gittarget-distribution-plan.md) is
-the HA plan `architecture.md` cites three times (and the reason Redis is required).
+[`ha-gittarget-distribution-plan.md`](future/ha-gittarget-distribution-plan.md) owns the durable
+journal, publication recovery, outage retention, and persistence/HA rollout. The branch worker
+event model owns execution semantics and the immediate retry/deadline fix.
 [`least-privilege-remaining-work.md`](future/least-privilege-remaining-work.md) has
 three open RBAC items.
 [`config-surface-for-a-structured-repository.md`](future/config-surface-for-a-structured-repository.md)

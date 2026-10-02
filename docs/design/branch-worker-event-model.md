@@ -1,69 +1,86 @@
-# Branch worker events and recovery
+# Branch worker events, durable execution, and recovery
 
-This review maps everything that can influence a branch worker: queued requests, timer deadlines,
-lifecycle signals, operation results, and configuration read outside the queue. It brings the
-`GitTarget` design records together around one question: how can the worker remain driven by
-events while preserving order and making progress when Git cannot accept a push?
+A single failed push on a quiet branch can leave a `CommitRequest` in `WaitingForPush`
+indefinitely, even after Git recovers. Repair that liveness gap first: schedule publication retries
+and bound Git operations while keeping the branch worker as the owner of its checkout.
 
-The recommended direction is to keep one owner of the checkout and make its inputs and recovery
-obligations explicit. A failed push must preserve pending work. Whether it should block new work,
-how much work can accumulate, and what event retries publication are separate decisions.
+The longer-term direction is recoverable execution of accepted writes, save commands, window
+decisions, deadlines, and publication outcomes. This document owns the worker's event semantics,
+current failure analysis, and immediate implementation scope. The
+[HA and durable delivery plan](../future/ha-gittarget-distribution-plan.md) is the sole owner of
+journal storage, acknowledgments, publication recovery, retention, and the persistence/HA rollout.
+The broader ownership contract is in [the architecture](../architecture.md#git-write-architecture).
 
-Status: review and proposals, based on the code following #407 and the
-`fix/branch-worker-write-gates` changes. The write-gate section identifies that branch's behavior
-separately. This document adds no implementation. Its findings come from reading source and design
-records; no tests or validation commands were run for this review.
+Status: design proposal against the code after merged PRs #407 and #411. Current-behavior sections
+describe that implementation. Event names and the transition boundary are proposals. This
+document changes no runtime behavior and does not establish an outage or exactly-once guarantee.
 
-## The ownership rule
+## Next implementation: restore publication progress
 
-One worker serves `(GitProvider namespace, GitProvider name, write branch)`. Several `GitTarget`s
-can share it. The provider's UID and URL identify the repository incarnation; replacing that
-identity replaces the worker and its checkout.
+Ship retry scheduling and Git operation deadlines before the journal work. Neither fix depends
+on choosing a storage backend, changing the save contract, or implementing HA.
+
+1. Give retained publication work a bounded failure backoff that runs without another source
+   edit. Coordinate it with parent recovery and the successful-push cooldown so arrivals cannot
+   bypass the backoff or multiply the remote probe budget. Stop scheduling when the obligation
+   settles; a canceled worker must not rearm it.
+2. Carry cancellation through ref listing and fetch, and impose operation deadlines across the
+   push cycle. Bound the cycle's total occupancy as well as its individual calls. Repeated
+   contention retries must not repeatedly reset the whole budget. Keep timed-out work pending;
+   a lost push response can mean the remote already accepted it.
+3. Preserve held-save semantics. The worker must resolve publication or establish that the save
+   cannot publish before it reports a terminal failure. A controller timeout alone cannot prove
+   that. Keep `WaitingForPush` while a recoverable publication obligation remains.
+4. Use an injectable clock and scheduler to test silence, continuous arrivals, cancellation, and
+   stale firings. Keep one owner of the checkout while testing the transport cancellation path.
+   Returning from a timeout wrapper while a goroutine still mutates the checkout is unsafe.
+
+The completion test is a save whose first push fails, followed by silence and remote recovery:
+without another resource edit, its commit reaches Git and the same request reaches its terminal
+status with the published SHA. Also prove that a request can safely outlive the controller's
+safety window while retries continue, and that a stalled remote call returns control within the
+operation budget. Use a controllable remote for those failures and a fake clock for retry timing.
+
+This change improves progress within a running worker. Restart durability follows the separate
+journal plan. An indefinitely unavailable remote can still leave a save pending; the immediate
+fix promises an active recovery schedule, not a time by which an unavailable server must accept it.
+
+## Why the branch worker remains the right owner
+
+One worker currently serves `(GitProvider namespace, GitProvider name, write branch)`. Several
+`GitTarget`s can share it. The provider's UID and URL identify the repository incarnation;
+replacing that identity replaces the worker and its checkout.
 
 The event loop owns the open window, pending writes, deferred snapshots, request attachment, and
-parent recovery. Git operations run synchronously on that loop in the active controller paths.
-Publication order therefore follows the same owner that created and retained the commits.
+parent recovery. One owner can decide whether a write joins a window, whether a save attaches,
+and which commits a push publishes. Sequential file edits also protect resources that share a
+YAML file. Splitting those decisions among controllers would require coordinating the same state
+across more places.
 
-The proposed rule for further work is:
+This is a single-writer event loop, close to the
+[Singular Update Queue pattern](https://martinfowler.com/articles/patterns-of-distributed-systems/singular-update-queue.html).
+It has an actor-like ownership boundary, with exceptions for shared configuration and setters
+described below. Serialization is useful independently of persistence.
 
-> Every change to the worker's execution state has an identifiable input event or is the result of
-> an operation started while handling one. The worker alone applies that change to its checkout,
-> retained work, and publication state.
+The proposed ownership rule is:
 
-Here, an event includes a command, a deadline becoming due, and shutdown. It is broader than the
-`git.Event` struct, which carries a mirrored resource change. Results of synchronous Git calls are
-currently handled within the initiating event; they have no separate completion message.
+> The worker decides each transition from explicit inputs and recorded observations. Its state
+> and outstanding obligations are recoverable before the corresponding external work starts.
 
-This rule describes the intended ownership boundary. The current implementation also reads shared
-state and accepts direct setters. Those inputs are listed below so that an event-only design does
-not quietly depend on an undocumented exception.
+Git operations can initially remain synchronous on this owner. Separating decision logic from
+effects does not require another goroutine or a workflow service. A later asynchronous executor
+would need immutable work, attempt identities, and completion messages. It must never mutate the
+same checkout concurrently with the worker.
 
-```mermaid
-flowchart TD
-    W[Watch delivery and replay] --> Q[Per-branch FIFO]
-    C[CommitRequest controller] --> Q
-    R[GitTarget refresh request] --> Q
-    Q --> L[Branch worker event loop]
-    T[Window, push, attach, refusal, recovery deadlines] --> L
-    S[Start and cancellation] --> L
-    X[Parent setter and shared configuration] -. observed outside FIFO order .-> L
-    L --> G[Checkout, commit, fetch, push]
-    G -->|synchronous result| L
-    L --> O[Observations, request outcomes, snapshot requests]
-    O --> P[Controllers and watch plane]
-    P -->|later requests| Q
-```
-
-The implementation map starts at [BranchWorker](../../internal/git/branch_worker.go),
-[WorkItem and request types](../../internal/git/types.go), and
-[WorkerManager](../../internal/git/worker_manager.go). The broader ownership contract is in
-[the architecture](../architecture.md#git-write-architecture).
+The implementation starts at [BranchWorker](../../internal/git/branch_worker.go),
+[work and event types](../../internal/git/types.go), and
+[WorkerManager](../../internal/git/worker_manager.go).
 
 ## Inputs on the FIFO
 
 `WorkItem` has five alternatives: `Request`, `Attach`, `Withdraw`, `Resync`, and `Refresh`.
-`Request` has two commit modes, giving the six rows below. These are the alternatives the
-dispatcher recognizes; the struct itself does not enforce that exactly one field is set.
+`Request` has two commit modes, producing the six dispatcher paths below. The struct itself does
+not enforce that exactly one alternative is set.
 
 | Input | Producer or entry point | Loop handler |
 |---|---|---|
@@ -74,428 +91,440 @@ dispatcher recognizes; the struct itself does not enforce that exactly one field
 | Complete scoped snapshot | Watch replay through `EnqueueResync` | `handleResyncRequest` |
 | Observe remote and folder | `GitTarget` reconcile through `EnqueueRefresh` | `handleRefreshRequest` |
 
-### Resource writes
+This inventory is the starting point for extracting explicit transitions. The atomic handler is
+supported, but this review found no non-test producer. `Refresh` normally observes an idle branch;
+during parent recovery its handler can service a due probe and publish retained work.
 
-The active live producer is
-[GitTargetEventStream](../../internal/reconcile/git_target_event_stream.go). It forwards sanitized
-objects, identity-only deletes, and field patches such as a translated scale update. Attribution
-travels with the event. Audit facts supply identity; they do not independently supply mirrored
-object state to the worker.
+Timer channels, shutdown, synchronous Git results, and shared configuration are additional inputs
+outside this FIFO. A refactor must account for them as well as these six paths. Snapshot replies
+currently describe local application, so they are not remote-publication receipts.
 
-Watch bookmarks, watch errors, and reconnect decisions stay in the watch plane. They can change
-which writes or replay snapshots arrive, but they are not additional branch-worker message kinds.
-Likewise, an admission request does not directly ask this worker to mirror its object.
+## Architectural names and replay guarantees
 
-A live event joins the one window for its author and target. An identity change closes the previous
-window before opening another. Repeated writes to one path coalesce inside that window. New windows
-are offered to waiting saves before a zero-duration deadline or buffer threshold can close them.
+The proposed direction is an **event-sourced state machine per branch, with durable execution of
+external operations**. These terms describe separate properties:
 
-Atomic requests close the current window, drain deferred heals at that boundary, and create a
-separate retained write. They bypass window collection but use the same publication lifecycle.
-The API and handler remain in the tree; this review found no non-test caller of `EnqueueRequest`.
-Treat atomic requests as a supported worker path, not evidence of a second active ingestion source.
-
-### Snapshots
-
-The current producer in [target_watch.go](../../internal/watch/target_watch.go) supplies a complete
-snapshot from watch initialization or replay. Watch recovery and forced target rechecks can produce
-another replay. The worker receives the resulting snapshot; it does not independently list cluster
-objects or interpret the original reconcile trigger.
-
-`ResyncRequest` carries the desired objects, their collection resource version, target, scope, and
-reply channel. Scope includes the collection identity used for coalescing; the served API version
-is data. The deletion boundary must match the population gathered. An empty desired set can
-authorize a sweep inside that boundary.
-
-The worker also supports whole-target snapshots and `Heal=true`. A heal waits while any live window
-is open, including a sibling target's window, and runs at an idle boundary. The inspected production
-replay call passes `Heal=false`; do not infer an active periodic heal producer from older comments
-or tests of this supported path.
-
-[Resync handling](../../internal/git/resync_flush.go) refreshes the base before judging a snapshot.
-A no-op snapshot may never push, so it needs its own remote evidence. Retained writes are replayed
-when that refresh resets the checkout. `RefreshRemote` marks a forced recheck and avoids paying
-for a second refresh in the same preparation step.
-
-Snapshots also establish render fidelity. They must be able to evaluate the target while its gate
-holds ordinary live writes back. A suspended target still scans its folder and suppresses the write.
-A common guard at the top of the dispatcher would therefore need to distinguish observation and
-recovery from permission to create a new content commit.
-
-The reply describes local application. A changed snapshot joins pending writes for publication;
-its successful reply alone does not prove a push. A no-op snapshot retains no write of its own.
-The handler may attempt an immediate push before replying, but callers cannot treat the reply as
-a publication acknowledgment.
-
-### Saves and withdrawal
-
-[The event router](../../internal/watch/event_router.go) registers saves on the FIFO and polls the
-worker's outcome. It routes an already-owned request back to its owner even when that worker has
-been removed from the manager's active map.
-
-An attach carries request identity, target, author information, message, attach mode, and deadlines.
-`CurrentOrNext` can claim a matching window. `Next` closes an eligible existing window before waiting
-for a later one. Registration is idempotent; another controller poll does not restart the deadlines.
-Only resource writes open a live window. Competing saves attach in registration order. An expired
-wait cannot claim a newly opened window, and processing a due timer does not preempt a Git call.
-
-At expiry, a request can resolve without a commit or create an empty record when `CommitEmpty`
-allows it. A foreign-window mismatch does not create that record. An attached request follows its
-retained write through replay and resolves against remote publication, including a remote-confirmed
-no-op. The details belong to [the commit-window contract](commit-timing-surface.md) and
-[the attach loop](../../internal/git/commit_request_attach_loop.go).
-
-A withdrawal cancels only a request the worker has not acted on. A request collecting a window or
-waiting for a push remains held. The controller cannot independently fail it while the worker can
-still publish it. An exited worker can answer withdrawal directly because its loop can no longer
-act; that is a lifecycle exception to FIFO handling.
-
-### Refresh
-
-[Refresh handling](../../internal/git/refresh.go) observes the branch and scans the named target's
-folder. It creates no new mirrored content. Fresh observations can avoid a connection; an idle
-checkout that has moved may be fetched and reset. Targets sharing a branch share the remote
-observation, while each target's folder scan still has its own meaning.
-
-An ordinary refresh skips a branch with an open window, retained writes, a dirty worktree, or an
-unfinished replay. It cannot reset such a checkout as if it were idle. During active parent
-recovery, however, a refresh can service a due recovery probe, and that handler may publish already
-retained work. Calling every refresh path strictly read-only would miss that distinction.
-
-The controller supplies these requests through its existing reconcile schedule.
-`--git-refresh-interval=0` disables that periodic refresh input. It does not disable window timers,
-push cooldowns, or parent recovery.
-
-## Ordering and admission
-
-The FIFO orders accepted queue items. It does not establish a global order between independent
-watches, controller delivery, and timer channels. The loop selects among ready inputs; a deadline
-is eligible to run after it expires, but cannot interrupt an in-progress handler.
-
-Snapshot coalescing preserves a more specific rule. A newer snapshot can replace a queued snapshot
-for the same target and scope while no relevant work has crossed its queue position. Live writes,
-overlapping snapshots, and attaches can fence that replacement. The replacement keeps the marker's
-position and preserves a requested remote refresh. The old caller receives `ErrResyncSuperseded`.
-It must not interpret that reply as its own snapshot having been applied.
-
-Deferred heals have a separate coalescing list after dequeue. They wait for an idle window boundary,
-and a newer heal for the same target and scope replaces the older one. This is another reason to
-describe ordering in terms of the request contract, rather than assuming every item executes fully
-at its original FIFO position.
-
-Queue admission is nonblocking and bounded by item count, with a default of 1,000 items per worker.
-
-| Input refused by a full or stopping queue | Caller behavior |
+| Term | Property |
 |---|---|
-| Live event | `Enqueue` returns false; the watch path keeps its cursor and reconnects for redelivery |
-| Atomic request | Drop is logged and counted; `EnqueueRequest` exposes no acceptance result |
-| Snapshot | False return and an error reply; the producer must not claim successful admission |
-| Attach or withdrawal | Controller polling sends it again; an exited worker can settle withdrawal |
-| Refresh | Dropped; a later reconcile can request another |
+| Single-writer event loop | One owner orders state changes |
+| Durable queue | Accepted messages survive the stated storage failures |
+| Event sourcing | An ordered history of facts reconstructs execution state |
+| Durable execution | Pending operations and deadlines resume after failure |
+| Status projection | Recorded outcomes produce the Kubernetes status view |
 
-Successful admission means an item entered in-memory processing. It is not a durable receipt or a
-promise that the event will become a commit. Handler refusal, process loss, and shutdown still
-matter. The durable queue and cursor-acknowledgment work in [the backlog](../TODO.md) remains open.
+[Event sourcing](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)
+requires an authoritative history of transitions. Saving today's `WorkItem` queue only preserves
+requests to execute. It leaves decisions and results to be derived again. A queue that discards
+acknowledged messages also needs a durable checkpoint and retained history to reconstruct state.
 
-## Deadlines and lifecycle events
+[Durable workflow execution](https://docs.temporal.io/workflow-execution) is the relevant model for
+resuming outstanding work, including timers and external calls. The recommendation here concerns
+those semantics; adopting Temporal or another workflow engine is a separate infrastructure choice.
 
-Five timer sources wake the loop. Identity switches and memory thresholds are additional decisions
-inside a write handler, not independently queued inputs.
+The word replay currently covers several different operations:
 
-| Deadline | What makes it due | Effect |
-|---|---|---|
-| Commit window | Earlier of idle timeout and maximum duration | Close the window and schedule publication |
-| Push cooldown | Remainder of 5 seconds since the last successful push | Attempt publication of retained writes |
-| Attach timeout | Earliest waiting save's deadline | Service waiting saves, including an allowed empty record |
-| Refusal action | Earliest deferred refusal action | Recheck consent and create an eligible empty commit |
-| Parent recovery | Recovery deadline, with backoff | Probe, retry retained work, or request owed snapshots |
-
-Window settings are captured when the window opens; an attached save supplies its own timing.
-Editing target settings does not move an already-running window's deadlines. After ordinary loop
-wakes, the worker services saves, drains eligible deferred heals, and updates retained-work
-visibility. A queue item can therefore cause follow-on work beyond its primary handler.
-
-Start creates the loop after checking that its provider can be read. Startup failure exits and
-settles known requests. Stop closes admission under the enqueue lock, cancels the worker context,
-and waits for exit. The shutdown handler attempts to finalize the open window, apply deferred heals,
-and publish pending work. It then fails requests still awaiting publication and discards unhandled
-queue items. This is best effort; cancellation and remote failure can prevent publication.
-
-The manager retires workers on repository replacement or when no target needs them. Its periodic
-orphan sweep is a lifecycle producer outside the branch loop. An already-held request remains bound
-to its original worker during retirement.
-
-## State that currently enters outside the FIFO
-
-These inputs prevent a literal claim that the queue payloads completely determine worker behavior.
-
-| Input | Current boundary | Consequence for an event-only design |
-|---|---|---|
-| Parent configuration | `SetParentBranch` stores an atomic name and generation | Preserve the push admission rule when choosing where a change becomes effective |
-| Render fidelity | Watch plane updates a shared `RenderFidelityGate` | Specify which gate revision each write decision observes |
-| Target write policy | Handlers resolve target metadata from the Kubernetes client | Specify when suspension, placement, messages, encryption, and prune policy are captured |
-| Provider and Secrets | Read for credentials, signing, and connection policy | Credential changes can affect a later attempt without a distinct queue item |
-| Type resolution | Injected mapper and source-cluster resolver | Planning observes discovery state outside the request payload |
-| Lifecycle | Manager start, stop, replacement, and cleanup | Admission and cancellation already act outside FIFO order |
-| Bootstrap helper | Exported `EnsurePathBootstrapped` locks and stages the checkout directly | No production caller found; review this escape hatch before declaring exclusive loop access |
-
-`SetParentBranch` is especially important. A target's `parentBranch` is immutable, but replacing the
-targets on a still-live shared worker can change its parent. A configuration update before push
-admission invalidates a plan based on the old generation. An admitted push is not recalled.
-The setter itself does not enqueue a wake; handlers and recovery checks observe the new generation.
-
-Putting that setter behind the same FIFO would change its timing. An update arriving while a
-handler performs Git work could wait until after that handler's push. A refactor must either retain
-the current admission check or explicitly decide a different configuration-activation contract.
-A renamed message alone does not preserve the existing race guarantees.
-
-The same question applies to suspension and render fidelity. The current write-gate branch checks
-them at commit decisions, and allows a commit already made locally to reach the remote. It gives
-no promise to recall that commit when a gate closes later. Replay also has its own policy reads,
-including tightening retained prune permissions; configuration is not frozen uniformly across the
-entire pipeline.
-
-Recommended review boundary: retain existing behavior while naming each observation and its
-effective point. Consider versioned configuration or gate-change events only after the ordering
-contract is explicit. Avoid copying Secrets or adding public configuration revisions merely to
-make every input look like a self-contained queue message.
-
-## Internal results and outputs
-
-Several important transitions are produced by handlers rather than received as `WorkItem`s.
-
-| Result | Worker action |
+| Replay goal | Current guarantee |
 |---|---|
-| Local commit succeeds | Retain the write and its commit identity until publication |
-| Partial write or replay fails | Mark the checkout dirty or replay incomplete; recover before another commit |
-| Advertisement or rejected upload reveals a moved remote | Fetch, reset, and replay retained writes within the bounded push cycle |
-| Push proves publication or a no-op | Settle carried requests and clear the published batch |
-| Missing or unresolved parent prevents work | Retain a recovery obligation and remember affected dropped scopes |
-| Write plan is refused | Report the refusal; optionally schedule an authorized refusal action |
+| Reapply retained writes after the remote branch moves | Supported while that work survives in memory |
+| Recover current Kubernetes state after a watch gap | Snapshots can converge state; intermediate history can disappear |
+| Restart with the same save attachments, deadlines, and outcomes | Incomplete; execution state is volatile |
+| Reproduce identical Git commits and SHAs | Unsupported; parents and commit timestamps can change |
 
-The checkout's `baseTrusted`, `worktreeDirty`, and `replayRequired` flags answer different questions.
-A clean checkout at the remote tip can still have lost the local commits behind retained writes.
-It must not settle those writes merely because pushing that tip reports success.
+Historical replay reconstructs decisions using recorded observations and results. Resuming an
+unfinished push contacts Git again and records a new result. Replaying a historical success must
+not send another push or recreate an empty commit.
 
-The [write-gate branch](../../internal/git/write_gate.go) addresses a separate question:
-whether a target may receive a new write. It makes a refused save fail instead of reporting a
-successful empty save that was never made. That work is not a replacement for checkout recovery.
+An unconditional promise to replay everything forever would also require unlimited history,
+compatible readers, and retained dependencies. Define a recovery boundary: a durable checkpoint
+plus its journal tail, with a stated retention and failure policy. Kubernetes watch history is
+not an archive of every mutation.
 
-[Refusal actions](../../internal/git/refusal_touch.go) are also distinct from `CommitEmpty` saves.
-`onRefusal: PushEmptyCommit` authorizes an empty commit for an eligible write-boundary refusal to
-prompt the GitOps reconciler to reapply. Consent and suspension are checked again when a delayed
-action runs. The interval is one minute per target, and pending observations are tracked per target
-and collection. A successful resync clears only the refusal scopes it covers.
+## Problems in the current implementation
 
-Outputs leave through request outcomes, snapshot replies, remote observations, and reporting hooks
-for placement, path acceptance, and render fidelity. The watch plane and controllers own their
-status projections. A branch observation says where the remote was proved; it does not prove that
-every target folder was scanned or published.
+These gaps are visible in the current code. Making the queue durable addresses only some of them.
 
-Parent recovery also publishes a per-target snapshot-request sequence. The controller observes a
-new sequence and forces a watch recheck, whose replay sends a snapshot back through the FIFO.
-The worker never substitutes a cached dropped event for a fresh cluster snapshot.
+### A failed push can strand a save in `WaitingForPush`
 
-## What happens when Git cannot accept a push
+`pushPending` retains failed writes but stops the push timer without arming a general retry.
+If no more writes arrive, a quiet branch can remain unpublished indefinitely. Ordinary refresh
+skips a branch with retained work, so periodic `GitTarget` reconciliation does not repair this.
 
-There are three different failure modes behind the impression that the worker chokes.
+For an attached save that committed locally, this leaves `WaitingForPush` with no time limit.
+After its safety window, `withdrawCommitRequest` in the
+[controller](../../internal/controller/commitrequest_controller.go) sends withdrawal and continues
+polling when the worker still holds the request. `handleWithdrawCommitRequest` in the
+[attach loop](../../internal/git/commit_request_attach_loop.go) leaves attached or committed
+requests unchanged. Neither path retries the push. The API continues to show `Ready=False`,
+`Reconciling=True`, `Stalled=False`, and `Pushed=Unknown`, with reason `WaitingForPush`.
 
-### A Git operation has not returned
+That withdrawal rule protects against reporting failure and then publishing the save later.
+`TestCommitRequestReconcile_AHeldRequestOutlivesTheBound` explicitly preserves it. The defect is
+that the live worker can retain responsibility without scheduling progress. Restore retries;
+do not turn this into a controller-only timeout that can give a false terminal result.
 
-Network and repository operations occupy the loop synchronously. While one runs, that branch cannot
-handle queued saves, snapshots, deadlines, or subsequent live writes. Producers continue admitting
-items until the FIFO fills. Every target on that branch shares the delay; other branch loops have
-their own execution, although manager lifecycle operations can still serialize replacement.
+Continued writes can cause the opposite problem. Only successful pushes advance `lastPushAt`.
+Once the successful-push cooldown has elapsed, later commits can repeatedly attempt the same
+unavailable remote. The [push-cooldown design](push-cooldown.md#7-options) records this gap.
 
-This follows from the chosen owner model. Before adding concurrency, review operation deadlines
-and cancellation end to end. For example, `advertiseRemoteBranch` reaches `listRemoteRefs`, which
-calls `remote.List` without the worker context. This review does not establish a universal maximum
-duration for all transports. A timer on the loop cannot interrupt a call that has not returned.
+[Parent recovery](../../internal/git/parent_recovery.go) already models a useful alternative: an
+obligation remains open and schedules its next attempt. Its probe starts at 10 seconds and backs
+off to five minutes, sharing the budget across targets on the worker. General publication failure
+needs the same liveness property, with scheduling coordinated so the two paths cannot multiply
+remote attempts.
 
-### The push returned a failure
+### Slow Git operations stop the whole branch loop
 
-The loop can resume handling inputs, but the retained batch remains unpublished. Ordinary push or
-replay failure stops the push timer without arming a general retry. If the branch then becomes
-quiet, work can wait indefinitely. Normal refresh deliberately skips retained work, so enabling
-periodic refresh does not repair this case.
+Git calls run synchronously. While one is running, the branch cannot handle queued saves,
+withdrawals, snapshots, deadlines, or later writes. Every target on that worker shares the delay.
+Producers continue admitting work until the FIFO fills.
 
-Continued writes can cause the opposite problem. Since only success advances `lastPushAt`, an
-expired cooldown does not space failed attempts. Later commits may repeatedly retry the same
-unavailable remote. This gap is recorded in
-[the push-cooldown design](push-cooldown.md#7-options), and is independent of whether the success
-cooldown remains useful.
+The gap covers both remote observation and fetch. In
+[smart fetch](../../internal/git/git_smart_fetch.go), `listRemoteRefs` calls `remote.List` and
+`SmartFetchFrom` calls `repo.Fetch` without passing the worker context to either network call.
+The `ctx` parameter on `SmartFetchFrom` does not make those operations cancelable by the worker.
+The separate connection check in [git.go](../../internal/git/git.go) also uses `remote.List`.
 
-These two outcomes are scheduling policy. Neither is required by serialization. A due retry is a
-valid event for the same loop and can make progress without a new cluster edit.
+The [atomic push](../../internal/git/git_atomic_push.go) does pass context through handshake,
+advertisement, and upload, but `internal/git` sets no operation deadline. Worker shutdown
+cancellation is not an elapsed-time budget. These code findings do not establish that every
+transport lacks its own timeout; they establish that the worker has no end-to-end bound.
+A timer on the event loop cannot interrupt a call that has not returned.
 
-### Publication stays unavailable while new work arrives
+### Admission is volatile, and retained memory has no outage bound
 
-The FIFO has a count limit. The default 8 MiB branch buffer threshold closes a live window early,
-but moving those events into `pendingWrites` does not free the data needed for replay. Failed pushes
-retain that data. The threshold is therefore not a hard bound on memory during a sustained outage;
-queued payloads and deferred snapshots also consume memory outside that counter.
+Successful enqueue means an item entered process memory. The watch path can advance its resume
+cursor before the write reaches Git. A crash between those steps can make a replacement resume
+past work that existed only in RAM. The local checkout is disposable.
 
-The available choices have different product costs:
+The FIFO defaults to 1,000 items. The default 8 MiB branch buffer threshold closes a window early,
+but closing moves its data into `pendingWrites`. Failed pushes retain that data. Queued payloads
+and deferred snapshots also consume memory, so neither setting bounds total outage retention.
 
-| Choice | Benefit | Cost or unresolved contract |
+Queue-full handling differs by input. Live writes return a refusal to the watch producer, which
+keeps its cursor and reconnects. Attaches and withdrawals can be resent. Refreshes can be retried
+by a later reconcile. The supported atomic enqueue API logs a dropped request without returning
+an acceptance result. A durable admission contract needs explicit receipts for every supported
+producer. See the [durable queue backlog](../TODO.md).
+
+### Saves lose execution identity across a restart
+
+The worker remembers registration order, attachment, calculated deadlines, and outcomes in memory.
+Repeated delivery is idempotent within that lifetime. An attached request follows its retained
+write through conflict replay, including the refreshed commit SHA. Those are useful foundations.
+
+The gap is a push that succeeds before its result reaches Kubernetes status. A crash loses the
+worker's receipt, and a resent request can create another empty commit. This is explicitly
+documented in [the commit-window contract](commit-timing-surface.md). The outcome cache can also
+collect entries older than 15 minutes when no attach is queued. Collection is not tied to a
+durable receipt proving that status was written.
+
+Authorship has a separate lifetime. The
+[admission author store](../../internal/queue/command_author_store.go) retains records for an hour;
+the `CommitRequest` object cannot reconstruct the authenticated submitter by itself. Recovering a
+previously accepted save must preserve its resolved attribution, including an unresolved result.
+Re-running the lookup later can produce a different decision.
+
+### Queue payloads do not determine every decision
+
+The loop selects among FIFO items and timer channels. It also calls `time.Now`, reads live target
+and provider configuration, consults a shared fidelity gate, and observes remote Git responses.
+Replaying the same resource messages tomorrow can therefore produce different windows or saves.
+
+Some replay inputs are already retained: `PendingWrite` includes events, commit configuration,
+resolved target planning data, and the attached request identity. However, its signer interface,
+process pointers, and the reply channels in request types are implementation objects. Persisting
+these Go structs directly would not define a portable journal format.
+
+### Arrival order does not establish a save barrier
+
+One FIFO orders the inputs accepted by that worker. Independent watches and the `CommitRequest`
+controller have no global source ordering. A user's save can arrive before an earlier resource
+mutation reaches the worker. Overlapping watches can also deliver duplicate observations.
+
+Journaling arrival order makes it reproducible. It does not prove that a save includes everything
+the user changed before submitting it. Keep the existing attachment contract unless a separate
+barrier or per-stream watermark design can establish that stronger claim. A timestamp or a
+`resourceVersion` from one collection does not supply a universal barrier.
+
+## Proposed recovery contract
+
+Make durable acceptance the point at which the system owes a recoverable answer:
+
+> Once work is durably accepted, a restart preserves its ordering and save obligations.
+> Publication resumes when Git becomes available, within configured storage limits and subject
+> to the recorded write-policy decisions. Status can be rebuilt from durable outcomes.
+
+An accepted item may still be refused by policy or resolve without a commit. Record that outcome
+instead of silently losing the item. A transient publication failure keeps the obligation open.
+Define explicit behavior for target deletion, repository replacement, and administrator
+cancellation; never reroute accepted work to a new object merely because its name matches.
+
+This contract preserves the product's existing coalescing. It does not require one commit per
+Kubernetes mutation. Preserve the chosen window boundaries, messages, and request membership;
+replanning unpublished work onto a moved remote may still change its SHA or find no remaining diff.
+
+The first implementation can scope recovery to pending work and retained terminal receipts.
+Rebuilding arbitrary old execution states requires a longer archive and compatible code. Keep
+that historical audit requirement separate from the ability to survive a controller restart.
+
+## Commands, facts, and effects
+
+Represent intent, decisions, and external work separately so recovery knows what remains to do.
+
+| Category | Example | Meaning |
 |---|---|---|
-| Keep current admission and retention | Preserves retained write detail within the process | Memory can grow during a prolonged outage |
-| Refuse more writes at a retained-work limit | Bounds worker retention | Requires reliable redelivery and a separate path for control and recovery |
-| Collapse blocked work into a fresh snapshot | Bounds retained history | Loses intermediate attribution, messages, and save boundaries |
-| Persist an ordered journal | Allows bounded memory and restart recovery | Needs durable acknowledgment, quotas, replay, and ownership design |
-| Run publication separately | Could improve control responsiveness | Requires immutable publication batches and explicit completion ordering |
+| Command | `SaveRequested` | A caller asks to attach a save |
+| Fact | `SaveAttached` | The worker bound that request to a particular window |
+| Effect intent | `PublishBatch` | A recorded obligation to attempt a push |
+| Effect result | `PublicationConfirmed` | Evidence that a particular attempt published its work |
+| Projection obligation | `ProjectSaveOutcome` | Kubernetes status still needs the recorded result |
 
-A newer snapshot cannot silently replace a save-bearing batch: final state equality does not retain
-the same history or prove that the requested commit was published. Durable queuing and HA are
-already related backlog items. Raising queue limits does not settle either contract.
+These names are illustrative. Use a versioned journal schema when choosing the implementation.
+Facts describe decisions already made; a duplicate command must find its previous decision.
 
-## Parent recovery is the existing model for an obligation
+```mermaid
+flowchart TD
+    I[Watch observations and save commands] --> A[Durable admission]
+    A --> J[Branch journal and checkpoint]
+    J --> W[Branch state machine]
+    W -->|Persist decisions and effect intents| J
+    J -->|Outstanding Git work| G[Serialized Git executor]
+    G -->|Recorded observations and results| J
+    J -->|Outstanding deadlines| T[Deadline scheduler]
+    T -->|Accepted deadline firings| J
+    J -->|Durable outcomes| P[Status projector]
+    P --> K[Kubernetes status]
+```
 
-[Parent recovery](../../internal/git/parent_recovery.go) already provides a useful example of
-event-driven progress. A missing configured parent or an unresolved default branch can prevent a
-write branch from being created. The worker remembers both retained writes and dropped scopes that
-still need a snapshot.
+The diagram describes ownership and persistence boundaries. Components may share a process and
+goroutine. The state machine applies recorded facts without reading the clock, calling Kubernetes,
+or contacting Git. Decision handling can request those observations as effects, then continue
+when their results have been recorded.
 
-The recovery deadline starts at 10 seconds and doubles up to 5 minutes. Targets sharing the worker
-share one probe budget. Before a due probe, ordinary arrivals cannot repeatedly fetch the missing
-parent. Once the branch can be based, recovery retries retained work and asks for snapshots still
-owed. It keeps scheduling while the obligation remains.
+A transition must leave its next obligation recoverable. The HA plan defines the
+[atomic processing and acknowledgment boundary](../future/ha-gittarget-distribution-plan.md#atomic-handoff-and-acknowledgment)
+that preserves this across a crash. Redelivery must find the prior decision or resume unfinished
+work. Recording a push intent alone does not prove remote success.
 
-Seeing the parent again does not complete recovery. A changed snapshot must be published, or a
-fresh no-op snapshot must settle its scope. A second outage invalidates publication credit from a
-snapshot that predates newly dropped work. Otherwise publishing the older snapshot could falsely
-clear the newer obligation.
+### Inputs that the durable boundary must preserve
 
-This establishes a useful requirement for general publication recovery: pending work needs an
-identified next opportunity to run, even when no external event arrives. Reusing the concept does
-not require merging every kind of recovery into one flag. A missing parent, a failed push, and a
-scope awaiting a fresh snapshot have different completion conditions.
+The worker needs resource observations with attribution, save identity and timing policy, chosen
+window membership, policy decisions, and operation results. The HA plan owns the concrete
+[journal records](../future/ha-gittarget-distribution-plan.md#journal-record) that retain these.
+Live interfaces, process pointers, and reply channels remain adapters outside that format.
 
-## Decisions carried from the GitTarget records
+Snapshot replacement has execution semantics of its own. Live writes, overlapping snapshots,
+and save attachments can fence replacement of an earlier queue position. Deferred heals wait
+behind an open window. Preserve those decisions when persisting the
+[snapshot protocol](../future/ha-gittarget-distribution-plan.md#snapshot-and-replay-delivery).
+[Resync handling](../../internal/git/resync_flush.go) still reports local application separately
+from publication.
 
-The records below remain the detailed sources. This section carries their constraints into the
-event review and distinguishes implemented behavior from open work.
+## CommitRequest is a workflow with a status projection
 
-### Parent branch contract and hardening
+A `CommitRequest` changes window selection, timing, commit messages, and possibly whether an empty
+commit exists. Its lifecycle belongs in the same branch history as resource work.
 
-[The parent-branch contract](gittarget-parent-branch.md) and
-[the completed hardening record](gittarget-parent-hardening.md) establish:
+The current attach loop and controller already preserve several rules:
 
-- An existing write branch receives subsequent commits on its own history. Its parent is followed
-  only while the write branch is absent.
-- Standby and ordinary no-op writes create no remote branch. An explicitly requested empty commit
-  is a separate authorized write.
-- First publication checks the selected parent's tip using the push advertisement. The server's
-  compare-and-swap protects creation or update of the write branch. The parent can still move after
-  the advertisement; no parent lock is promised.
-- A trusted checkout gets no unconditional fetch before publication. Contention and invalid state
-  trigger bounded fetch, reset, and replay.
-- Omitted parent means the remote default branch as last discovered. A push advertisement cannot
-  rediscover a default-branch switch; discovery, refresh, or a probe does that.
-- An explicit missing parent blocks creation, even when it equals the write branch. An omitted
-  parent permits a root commit only when the remote is empty. Tags count as refs; a nonempty remote
-  with an unresolved default branch must not be treated as empty.
-- Targets sharing a worker must agree on the configured parent. Omitted and explicitly named
-  parents are distinct configuration values even when they currently resolve to the same branch.
-- Recovery must survive another transient failure after the parent returns and another outage
-  while an older snapshot awaits publication. Retained replay must respect the probe budget too.
+- Only resource writes open live windows. Saves attach to an eligible author and target.
+- Competing saves attach in registration order; repeated delivery does not restart their wait.
+- `Next` closes an eligible current window before waiting for a later one.
+- A save waiting for publication remains held. Controller timeout initiates withdrawal, and the
+  worker decides whether withdrawal is still possible.
+- A request's published SHA belongs to its own retained write, which may be below the branch tip.
 
-Open work includes showing the parent in each `GitProvider.status.branches` entry. Resetting,
-deleting, or force-pushing a surviving write branch after a PR merge remains a separate policy
-decision. A parent observation cannot authorize any of those mutations.
+Retain those rules in a durable lifecycle. One illustrative successful path is:
 
-### Parent observations
+```text
+SaveRequested(request UID, target UID, attribution, message, timing policy)
+SaveRegistered(request UID, sequence, registration time, attach deadline)
+SaveAttached(request UID, window ID)
+WindowClosed(window ID, included inputs, reason)
+PublicationPlanned(batch ID, window ID, request UID)
+PublicationConfirmed(batch ID, attempt ID, per-write commit mapping)
+SaveResolved(request UID, outcome, branch, commit)
+```
 
-[The observation proposal](gittarget-parent-observation.md) is deferred. Its first step keeps parent
-availability and its own timestamp visible after the write branch exists. It reuses existing
-advertisements, adds no connections, and changes neither readiness nor publication permission.
+Refusal, withdrawal, and no-window expiry have their own terminal facts. `CommitEmpty` is a
+publication obligation even though its tree matches the parent. A foreign-window mismatch keeps
+its existing no-commit meaning. A remote-confirmed no-op and a local plan with no diff remain
+different observations.
 
-Ancestry is a later step, dependent on measuring the pinned go-git shallow-object behavior. Compare
-advertised remote tips; unpublished local `HEAD` is not an alternative input. Equal tips and proved
-ancestry can yield `SameTip`, `WriteAhead`, or `ParentAhead`; incomplete evidence yields `Unknown`.
-Negative ancestry claims require stronger evidence. No extra history fetch or deepening is budgeted.
+Write terminal facts before projecting status. If a status update fails, retry the same projection
+by request UID. Do not attach the request again or calculate a new outcome. The status writer must
+reject a replacement object with the same name and must not overwrite a later outcome with an
+older phase update.
 
-Exact fields, unresolved-default representation, and local work limits remain open. Any cached
-comparison must belong to the repository identity and exact observed tips. A successful write push
-cannot advance the parent's timestamp without evidence about that parent.
+Keep the durable receipt until projection and the supported redelivery period are accounted for.
+Deleting the API object must not erase the only deduplication evidence while old commands can
+still return. Whether longer receipt retention is needed is a storage-policy decision.
 
-### Empty repositories
+Notifications can replace routine outcome polling once this receipt exists. Periodic reconcile
+can still repair a missed notification by reading the same durable result. Status is a view of
+the workflow; an inability to update it must not restart the Git operation.
 
-[The empty-repository record](gittarget-parent-empty-repository.md) separates protocol evidence
-from bootstrap policy. It records an experiment against go-git `v6.0.0-alpha.5` in which unborn
-`HEAD` information was discarded, plus a proposed upstream fix. That recorded dependency finding
-was not reverified against upstream during this review.
+## Deadlines are recoverable events
 
-Recovering the advertised default name is the first proposed step. Choosing what the first commit
-may create is a later compatibility decision: keep today's write-branch bootstrap, refuse until
-the advertised default exists, or explicitly authorize bootstrapping it. Guessing `main` is rejected.
-Protocol and host behavior still needing verification must stay unknown in status.
+Keep timers as wakeup mechanisms and persist the deadlines that give those wakeups meaning.
+Recording every periodic tick would add history without explaining a decision. Record meaningful
+scheduling, cancellation, and accepted firings instead.
 
-### Status and configuration freshness
+The current worker has five timer sources:
 
-[The red-status plan](gittarget-red-status-plan.md) keeps the writer responsible for proving a
-refusal and the controllers responsible for publishing it. Message changes and scoped recovery
-already matter; a sibling scope's success cannot clear another scope's failure. Notifications are
-best effort, with periodic reconcile as the fallback.
+| Deadline | Existing purpose |
+|---|---|
+| Commit window | Close on idle timeout or maximum duration |
+| Push cooldown | Space successful publication cycles |
+| Attach timeout | Settle a save still waiting for an eligible window |
+| Refusal action | Recheck consent before an eligible empty commit |
+| Parent recovery | Probe and service retained work or owed snapshots |
 
-The remaining work is a complete reason/status contract and the decision about retaining refusals
-across restart. Shared queue saturation and background failures need attributable evidence before
-being projected onto one target. A healthy target can coexist with a broken selecting rule.
-Suspension is an intentional stop to new writes while observation remains useful.
+Add a general publication retry obligation. Keep successful-push cooldown and failure backoff
+distinct, while giving the branch one policy for when it may spend its next remote attempt.
 
-[Configuration freshness](gittarget-configuration-freshness.md) remains deferred. A watch plan being
-applied is distinct from a branch's pending writes being published. Any future plan marker belongs
-to the watch owner and must describe only inputs that owner applied. Provider credentials do not
-belong in that marker merely because a worker reads them.
+An illustrative deadline protocol is:
 
-Open decisions include the input set, observed-input revisions, one marker versus two, the meaning
-of pending during normal coalescing, readiness effects, and compatibility across canonicalization
-changes. Revisit when operator incidents or multi-rule waits show a concrete need; a new branch
-event model does not itself justify new public freshness fields.
+```text
+DeadlineScheduled(timer ID, purpose, owner ID, generation, dueAt)
+DeadlineCanceled(timer ID, generation)
+DeadlineFired(timer ID, generation, acceptedAt)
+```
 
-### Earlier API work and adjacent backlog
+The generation makes an old firing harmless after an idle deadline moves or a window closes.
+Persist first registration and window times so restart cannot grant a fresh full timeout.
+Record whichever firing or input the sequencer accepts first; wall-clock timestamps alone do not
+establish that ordering.
 
-[The API-wave record](gittarget-api-wave.md) preserves the separation between target policy and
-provider connection settings, plus suspension and explicit recheck semantics. Its opening status
-is older than its step 8, which closes the remaining riders. Do not turn that historical checklist
-into new worker requirements. Asserted save authorship and resolution-change Events were declined.
+Recovery first reconstructs recorded decisions without applying today's clock to historical
+inputs. It then makes outstanding overdue deadlines eligible. Define how those deadlines compete
+with admitted but unprocessed messages: processing-time window semantics and original source-time
+semantics can choose different contents. Preserve the existing processing-time contract initially
+and test the restart boundary explicitly.
 
-The backlog still records save details: expiry order for simultaneous empty records, full author
-identity, and record-message templates. It also records worker observability, cross-provider writes
-to the same repository, and a durable queue for restart recovery and HA.
+A durable scheduler must recover a scheduled deadline even if no in-memory timer was created
+before the crash. Conversely, a delivered firing must be harmless when the corresponding
+transition was already committed. Missed retries during downtime should produce one eligible
+attempt, followed by the normal backoff, rather than a burst of historical retry attempts.
 
-[Push notifications and reconcile triggers](push-notification-and-reconcile-trigger.md) contain
-additional unchosen inbound and outbound designs. There is no branch-worker Git webhook input in
-the inventory above. A future remote-change notification should request observation through the
-owner; it must not become another writer of the checkout. The older options are not approval to
-hold pushes for an external reconciler or to infer that a remote commit has reached the cluster.
+Not every input advances a phase. Duplicates and stale firings can be no-ops; a failed push records
+an obligation and a next opportunity. The liveness rule is that every unresolved obligation has
+an identified event that can service it, including when the branch receives no more writes.
 
-## Decisions to make before another implementation branch
+## Configuration and observations need explicit effective points
 
-The first decision is how strictly to apply the event rule to configuration. The current owner
-model is clear for the checkout, but a fully queued configuration model would need explicit
-activation and admission semantics. Keep the parent-generation race contract visible while
-reviewing that choice.
+Record the inputs that explain decisions without freezing every dependency forever. The current
+worker already mixes captured planning policy with checks made at later boundaries.
 
-For failed publication, the smallest proposed change is a bounded retry deadline owned by this
-same loop, while preserving the successful-push cooldown. It should run only while work is owed,
-space attempts under continued arrivals, and stop when that obligation is settled. Its interaction
-with the existing parent deadline needs one scheduling decision so two timers cannot multiply the
-remote probe budget. Delay values, reset rules, and failure classification are still design work.
+| Input | Current behavior | Required design decision |
+|---|---|---|
+| Parent configuration | Atomic name and generation outside the FIFO | Preserve the push-admission cutover |
+| Target planning policy | Much of it retained in `ResolvedTargetMetadata` | Capture a stable policy snapshot or resolvable version |
+| Prune permission | Replay can tighten retained permissions | Record that tightening before the new attempt |
+| Render fidelity | Shared gate read at write decisions | Identify the observed gate state and scope |
+| Credentials and signing | Provider and Secret reads | Separate current access from retained authoring intent |
+| Type resolution | Shared mapper and source-cluster registry | Record planning inputs needed for recovery |
+| Remote Git | Advertisements, fetches, push results | Tie observations to repository and attempt |
 
-Keep synchronous checkout ownership for now. Before considering asynchronous publication, establish
-where a slow call blocks and which cancellation or timeout guarantee is missing. If a separate
-publisher later becomes necessary, it needs an immutable batch and a completion event carrying
-worker incarnation, attempt identity, and published evidence. Letting it share a mutable checkout
-would remove the ordering guarantee this design depends on.
+A configuration version reference works only while its contents remain recoverable. Kubernetes
+`resourceVersion` alone does not retain the corresponding historical object. Keep the necessary
+non-secret policy data or provide a versioned store with an explicit retention contract.
 
-Treat sustained-outage storage as its own decision. Define whether the product preserves every
-accepted attributed change, final state only, or explicit save boundaries before choosing a hard
-admission limit, snapshot compaction, or a journal. Recovery and lifecycle inputs must still have a
-way to run when data admission is constrained.
+`SetParentBranch` currently changes the generation before push admission. Moving the setter onto
+the FIFO could postpone its effect until after a synchronous handler pushes. An event refactor
+must retain that admission check or explicitly change the activation contract. Naming a new
+message does not preserve the race guarantee by itself.
 
-For each proposed event, review five things: who produces it, what ordering it needs, which state
-it may change, what constitutes completion, and who supplies the next event after failure. Apply
-that review to remote failure followed by silence, failure under continuous arrivals, parent loss
-and recovery, gate changes during a window, replacement with a held save, and saturated admission.
-These are future review and validation cases, not work executed by this document.
+The [write gates](../../internal/git/write_gate.go) apply suspension and render fidelity when a
+commit is decided. A commit already created locally can still publish after a gate closes.
+Delayed [refusal actions](../../internal/git/refusal_touch.go) recheck consent and suspension.
+Preserve those distinct effective points and record their decisions. Applying current gates
+while reconstructing a previously completed decision would rewrite its history.
+
+Fresh execution may use rotated credentials or discover that a permission has been revoked.
+Record the result of that new attempt. Historical replay consumes the old result without
+reconnecting or trying to recover the old credential. Exact Git bytes additionally depend on
+parents, timestamps, encryption output, and signatures; the proposed workflow guarantee does not
+require regenerating identical bytes from resource messages alone.
+
+## Prepare the transition boundary for later durability
+
+After the immediate liveness fix, extract explicit commands, observations, facts, and effect
+intents around the FIFO inventory and the inputs outside it. Keep the Git executor synchronous
+initially. Capture first registration, window membership, policy decisions, and operation results.
+Make reply channels and live clients adapters outside the serializable state.
+
+Test a transition from recorded state and input, then replay its facts without network calls.
+Duplicate commands and stale deadline generations should reproduce the existing answer or be
+no-ops. Compare behavior with the existing attach, gate, parent, resync, and conflict tests.
+The exit criterion is that the same retained history reconstructs the same workflow state and
+outstanding effects without reading mutable dependencies.
+
+The HA plan owns the next steps: persist that boundary in single-active mode, prove
+[publication recovery](../future/ha-gittarget-distribution-plan.md#publication-recovery), validate
+[hours of outage](../future/ha-gittarget-distribution-plan.md#surviving-hours-without-git), and then
+add failover. The proposed stronger save contract remains a decision for that plan. Agree on
+retained outcomes and ambiguous-publication behavior before claiming restart durability.
+
+## Validation scenarios
+
+These are worker implementation acceptance cases, not tests executed by this documentation change.
+Journal crashes, retention, encryption, and HA failure tests belong to the
+[durable-delivery acceptance suite](../future/ha-gittarget-distribution-plan.md#ha-4-fault-injection-acceptance-suite).
+
+| Scenario | Required observation |
+|---|---|
+| Save's first push fails, then the branch goes quiet | Retry publishes and resolves the same request without another edit |
+| Held save outlives the controller's safety window | Withdrawal cannot falsely fail it; recovery remains scheduled |
+| Push fails under continuous arrivals | Arrivals cannot bypass the retry budget |
+| Ref listing, fetch, or push stalls | Operation and cycle deadlines return control to the worker |
+| Worker is canceled during a failed attempt | No retry is rearmed and no abandoned task retains checkout access |
+| Timer moves or fires twice | Stale and duplicate firings do not close another window |
+| Recorded decisions are replayed | Identical state returns without external effects |
+| Fresh snapshot follows an accepted save | Coalescing preserves the save's membership and obligation |
+| Parent disappears again during recovery | Earlier snapshot publication cannot clear newly owed work |
+| Policy changes during a window or push | Its specified effective point remains unchanged |
+| Resource update and save arrive on independent paths | Only the documented attachment ordering is claimed |
+
+Use fake clocks and recorded effects for transition tests, and a controllable remote for Git
+operation deadlines. Full implementation validation follows [`AGENTS.md`](../../AGENTS.md).
+
+## Existing contracts to preserve
+
+The live producer is
+[GitTargetEventStream](../../internal/reconcile/git_target_event_stream.go); audit supplies
+attribution and never independently supplies mirrored object state.
+
+The [event router](../../internal/watch/event_router.go) binds an already-held request to its
+original worker during retirement. Today shutdown is best effort: it tries to finalize and push,
+then fails unresolved requests and discards unhandled work. Durable worker retirement needs an
+explicit transfer or terminal decision before that responsibility can be released.
+
+Snapshots establish render fidelity even while ordinary live writes are refused. Suspension
+suppresses writes while allowing observation. A single dispatcher-level write gate would block
+the recovery that can reopen a target. `Heal=true` snapshots defer behind any open window; the
+inspected production replay producer uses `Heal=false`.
+
+[Refresh handling](../../internal/git/refresh.go) normally skips a busy checkout. During parent
+recovery it can service a due probe and publish retained work. Disabling periodic refresh does
+not disable commit windows or worker recovery. Keep `baseTrusted`, `worktreeDirty`, and
+`replayRequired` separate: a clean checkout can still have lost the commits behind retained work.
+
+The detailed design records continue to own adjacent policy:
+
+- [Parent contract](gittarget-parent-branch.md) and [hardening](gittarget-parent-hardening.md):
+  parent advertisement checks, empty-repository boundaries, bounded replay, and recovery
+  obligations remain intact. Git compare-and-swap protects the write branch and does not lock
+  the parent after its advertisement.
+- [Parent observation](gittarget-parent-observation.md): deferred status work that adds no remote
+  connections or publication permission. Incomplete ancestry evidence remains `Unknown`.
+- [Empty repositories](gittarget-parent-empty-repository.md): default-branch protocol discovery
+  and authorization to bootstrap it remain separate decisions.
+- [Target status](gittarget-red-status-plan.md): the writer proves refusals and controllers
+  project them. A sibling scope's success cannot clear another scope's refusal.
+- [Configuration freshness](gittarget-configuration-freshness.md): watch-plan application and
+  publication are separate observations. This design does not require new public freshness fields.
+- [API boundaries](gittarget-api-wave.md) and
+  [push notifications](push-notification-and-reconcile-trigger.md): a remote-change notification
+  requests work through the owner. It does not become another checkout writer or prove that Git
+  changes reached the source cluster.
