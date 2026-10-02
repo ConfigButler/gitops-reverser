@@ -1150,6 +1150,9 @@ type branchWorkerEventLoop struct {
 	deciding uint64
 	// materializing is set while materialize runs, so it is never re-entered. See branch_log.go.
 	materializing bool
+	// followUps records that a write was decided while a pass ran, so whoever started the pass
+	// schedules its push once the pass ends.
+	followUps bool
 }
 
 // commitWindowDefaults are a GitTarget's commit window timers when it declares none.
@@ -1665,7 +1668,9 @@ func (l *branchWorkerEventLoop) pushPending() {
 	// local commits behind the others: pushing then would find the branch already at the remote
 	// tip, report success without sending anything, and settle work that exists nowhere. Keep the
 	// writes rather than publish a lie if that fails.
-	if err := l.materialize(); err != nil {
+	err := l.materialize()
+	l.followUps = false // whatever this pass decided is pushed below, with the rest
+	if err != nil {
 		l.publicationFailed(err, "Cannot publish until the retained writes are committed; keeping them")
 		return
 	}

@@ -106,7 +106,8 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 		}
 	}
 	if l.materializing {
-		return true // the pass already running commits it, in order
+		l.followUps = true
+		return true // the pass already running commits it, in order; its starter pushes it
 	}
 	if l.awaitingRetry() && pendingWrite.Kind != PendingWriteResync &&
 		!l.materializeIsLocal() && !l.w.awaitingParentProbe() {
@@ -115,6 +116,13 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 	l.deciding = pendingWrite.seq
 	err := l.materialize()
 	l.deciding = 0
+	if l.followUps {
+		// Settling this write decided more (a refusal's empty commit) that its own caller knows
+		// nothing about, and nothing is pushed from inside a pass: schedule the push now that the
+		// pass is done, so none of it is left in the checkout.
+		l.followUps = false
+		l.maybeSchedulePush()
+	}
 	if err != nil {
 		l.noteParentUnavailable(err)
 		if (len(l.pendingWrites) > 0 || l.recovery.active) && !l.retry.pending() {
