@@ -258,6 +258,14 @@ var _ = Describe("WatchRule Controller", func() {
 				g.Expect(ready).NotTo(BeNil())
 				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(ready.Reason).To(Equal(ReasonProgressing))
+				// Ready alone does not prove the write saw the settled GitTarget: with no streams
+				// running in envtest it is False/Progressing either way. GitTargetReady is the
+				// condition that mirrors the GitTarget, and the reconciler reads it through a cache
+				// that can still hold the GitTarget without conditions (Unknown), which flaked in CI.
+				mirrored := apimeta.FindStatusCondition(updatedRule.Status.Conditions, ConditionTypeGitTargetReady)
+				g.Expect(mirrored).NotTo(BeNil())
+				g.Expect(mirrored.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(mirrored.Reason).To(Equal(ReasonProgressing))
 			}, "10s", "200ms").Should(Succeed())
 
 			By("Verifying WatchRule is reconciling until the GitTarget and streams are ready")
