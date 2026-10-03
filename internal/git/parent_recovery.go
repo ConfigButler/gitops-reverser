@@ -139,6 +139,7 @@ func (l *branchWorkerEventLoop) probeParent() (bool, error) {
 	}
 	parent := w.parentSnapshot()
 	advertisement, err := advertiseRemoteBranchFn(
+		w.ctx,
 		w.repo.URL,
 		plumbing.NewBranchReferenceName(w.Branch),
 		parent.name,

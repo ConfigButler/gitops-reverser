@@ -7,6 +7,22 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A Git server that stops answering no longer holds a branch
+
+Every call to a Git server has a deadline: two minutes for one advertisement, fetch or push
+session, and five minutes for a whole push cycle, contention retries included. A server that accepts
+a connection and then stops answering used to hold the branch worker, and every `GitTarget` on that
+branch, indefinitely: no saves, withdrawals or later writes were handled, and over SSH even a
+shutdown waited for the connection to die. The same bound applies to the `GitProvider` controller's
+connectivity check.
+
+A call that runs out of time fails like any other unreachable remote. The writes stay in the log, a
+save stays `WaitingForPush`, and the retry schedule attempts them again; the error names
+`context deadline exceeded`. A push whose reply was lost after the server took it is recognized on
+the next look at the remote, when the branch is still at the commits it sent, and published as is,
+so a save's empty commit does not land twice. When another writer has pushed on top in the
+meantime, the writes are replayed as for any other contention.
+
 ## A save survives a remote that cannot be reached
 
 A `CommitRequest` whose window closes while the remote cannot be reached stays `WaitingForPush` and

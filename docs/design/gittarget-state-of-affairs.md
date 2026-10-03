@@ -71,15 +71,15 @@ While intake is paused, producers should wait for branch capacity. While publica
 off, accepted resyncs should answer with the known failure and retain their write intent without
 spending another connection. The existing single retry schedule remains the recovery driver.
 
-### 4. Git network calls have no explicit operation budget
+### 4. Git network calls had no operation budget (fixed in step 6)
 
-`listRemoteRefs` and `CheckRepo` use ref listing without the caller's context; `SmartFetchFrom`
-uses fetch without it. Push receives a worker context with no operation deadline. A stalled
-transport can block the synchronous loop, including its retry, withdrawal, and shutdown handling.
-
-Step 6 must measure HTTP and SSH cancellation and bound both calls and the whole publication
-attempt. A wrapper goroutine that returns while Git still owns the checkout is unsafe. Implement
-this before calling the pause/resume path complete.
+Ref listing and fetch ran without the caller's context, and push ran under a worker context with
+no deadline. Measurement showed worse: go-git's SSH transport ignores the context past the dial.
+Step 6 bounds every call (two minutes) and the whole push cycle (five minutes), closes an SSH
+connection when its call's context ends, and settles a push whose reply was lost by finding the
+remote at the commits it sent. The
+[step 6 section](gittarget-branch-worker-log.md#step-6-deadlines-on-git-network-calls-built) has the
+measurement and the limits left.
 
 ### 5. Publication and saturation have no coherent operator state
 
@@ -118,13 +118,13 @@ should repair the acceptance boundary, not replace the log or introduce a generi
 ## Recommended order
 
 1. **Step 5a (built):** fix producer deduplication after rejected admission and test cursor resume.
-2. **Step 6:** bound network calls and test stalls and lost push responses.
+2. **Step 6 (built):** bound network calls and test stalls and lost push responses.
 3. **Step 5b:** complete capacity accounting and per-worker pause/resume, including producer waits.
 4. **Step 5c:** expose publication failure, intake pause, and recovery through status and metrics.
 5. **Step 7:** update runtime documentation after each behavior lands and validate the final branch.
 
 The [implementation prompt](gittarget-branch-worker-log.md#prompt-for-the-next-implementation)
-now starts at step 6. The full acceptance matrix lives beside it. Use the
+now starts at step 5b. The full acceptance matrix lives beside it. Use the
 repository's high-risk validation rule for Git/write-stream implementation changes; this review
 itself is documentation-only.
 

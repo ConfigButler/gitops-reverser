@@ -1,6 +1,6 @@
 # Event pipeline overview: from a watch event to a Git commit
 
-> **Snapshot, 2026-10-03, at #413 step 5a (`f9cd5e2b`).** A picture-first tour of how a change
+> **Snapshot, 2026-10-03, at #413 step 6.** A picture-first tour of how a change
 > in the cluster becomes a commit today, with the replay paths drawn out and an honest list of
 > what is still missing. It describes behavior that exists. The plan that changes it is
 > [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md); the longer-term event model
@@ -335,6 +335,11 @@ sequenceDiagram
 The refused entry is taken out before the pushed saves resolve and settled after the log is
 cleared, because settling it can decide new work.
 
+Every Git call in this sequence is bounded: two minutes per advertisement, fetch, or push session,
+and five minutes for the whole cycle. When a push fails without a rejection (a deadline, a dropped
+connection), the cycle probes the remote. If the branch is at the commits it sent, the push landed
+and only the reply was lost, so the cycle settles as published instead of replaying them.
+
 ## 6. Retry and admission
 
 One retry deadline covers everything the worker still owes: 10 seconds, doubling to 5 minutes.
@@ -454,12 +459,14 @@ This is the honest list. Each item names who plans to close it, or says nobody d
 
 ### Bounded work
 
-- **Git calls have no deadline.** Ref listing and fetch do not receive the worker's context, and
-  nothing bounds a push cycle. A remote that accepts a connection and then stalls freezes the
-  whole loop for every target on that branch: no saves, no withdrawals, no timers. Owner: step 6,
-  next.
-- **A lost push reply is not recovered by evidence.** The entries stay in the log and are pushed
-  again; a save's empty commit can be duplicated. Owner: step 6.
+- **Git call budgets are fixed.** Since step 6 every call to a Git server ends within two minutes
+  and a push cycle within five, over HTTP and SSH alike. The values are not configurable, so a
+  depth-1 fetch that needs longer fails every attempt. Local work inside a cycle has no bound of
+  its own. Owner: nobody yet; a flag waits for a measured need.
+- **A lost push reply is settled by evidence only in the simple case.** When the remote is still at
+  the commits a failed push sent, step 6 publishes them as they are. When another writer pushed on
+  top in the meantime, the writes replay and a save's empty commit lands twice. Exactly-once is not
+  promised. Owner: HA plan.
 
 ### Bounded memory and pause/resume
 

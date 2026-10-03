@@ -2033,13 +2033,20 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 
 // runPushCycle is the push itself: try, and on a rejection caused by a moved remote, sync, rebuild
 // the pending writes on the new head, and try again. The caller owns repoMu and the measurement.
+//
+// The whole cycle runs under one deadline, gitPublishTimeout, on top of each call's own bound
+// (network_bound.go): three contention attempts, each with a fetch and a replay, must not each
+// start a fresh budget while the loop, and every target on the branch, waits.
 func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
-	provider, err := w.getGitProvider(w.ctx)
+	ctx, cancel := context.WithTimeout(w.ctx, gitPublishTimeout)
+	defer cancel()
+
+	provider, err := w.getGitProvider(ctx)
 	if err != nil {
 		return fmt.Errorf("get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
+	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
 	if err != nil {
 		return fmt.Errorf("resolve auth: %w", err)
 	}
@@ -2071,50 +2078,19 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 			w.Log.Info("Parent branch changed since this cycle was planned; rebuilding before the push",
 				"branch", w.Branch, "parentBranch", w.ParentBranch())
 			w.recordFetch(fetchReasonRecovery)
-			if err := w.replayOntoRemote(repo, pendingWrites, auth); err != nil {
+			if err := w.replayOntoRemote(ctx, repo, pendingWrites, auth); err != nil {
 				return err
 			}
 			continue
 		}
 
-		outcome, err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
+		outcome, err := pushAtomicFn(ctx, repo, rootHash, rootBranch, auth)
 		if err == nil {
-			// A push that returns without an error is an OBSERVATION of the remote, on the
-			// connection it was opening anyway: the server took the ref update, the advertisement
-			// already showed the branch at our head, or it did not carry the branch at all. All
-			// three say where the branch is, so all three take trust — including the push that
-			// CREATED the branch, which the old branchExists guard (written by fetches alone)
-			// wrongly excluded.
-			//
-			// This must NOT clear worktreeDirty. An earlier write can have failed part-way
-			// through executePendingWrites and left staged changes behind while this write was
-			// retained; a successful push says where the remote is, and nothing about that.
-			w.setBaseTrusted(true)
-			// The half a fetch-only record could not carry: on an active branch the push is the
-			// event that MOVES the revision.
-			w.recordPushObservation(outcome, rootBranch, rootHash)
-			w.endPushCycle(outcome.Kind)
-			w.firsts.push.Do(func() {
-				w.Log.Info("First push to remote completed",
-					"branch", w.Branch,
-					// String(), never the raw URL: spec.url takes userinfo, and this line is at
-					// default verbosity.
-					"repository", w.repo.String(),
-					"commits", len(pendingWrites))
-			})
+			w.notePushSucceeded(outcome, rootBranch, rootHash, len(pendingWrites))
 			return nil
 		}
 		lastErr = err
-		// A rejection is a moved remote; any other push error may have died mid-upload. Either
-		// way the remote state is no longer something we can claim to know.
-		w.invalidateBase("push failed or was rejected")
-
-		if !w.remoteMovedDuringPush(repo, err, rootBranch, rootHash, auth) {
-			return err
-		}
-		w.recordPushRetry(pushRetryRemoteMoved)
-		w.recordFetch(fetchReasonContention)
-		if err := w.replayOntoRemote(repo, pendingWrites, auth); err != nil {
+		if retry, err := w.afterFailedPush(ctx, repo, pendingWrites, err, rootBranch, rootHash, auth); !retry {
 			return err
 		}
 	}
@@ -2125,16 +2101,84 @@ func (w *BranchWorker) runPushCycle(pendingWrites []PendingWrite) error {
 	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)
 }
 
+// afterFailedPush decides what one failed push attempt means: the remote moved, and the writes are
+// replayed onto it for another attempt (retry); the push landed although its answer was lost, and
+// the cycle is done (nil); or anything else, which ends the cycle with the push's error. The caller
+// owns repoMu.
+func (w *BranchWorker) afterFailedPush(
+	ctx context.Context,
+	repo *gogit.Repository,
+	pendingWrites []PendingWrite,
+	pushErr error,
+	rootBranch plumbing.ReferenceName,
+	rootHash plumbing.Hash,
+	auth []gitclient.Option,
+) (bool, error) {
+	// A rejection is a moved remote; any other push error may have died mid-upload. Either
+	// way the remote state is no longer something we can claim to know.
+	w.invalidateBase("push failed or was rejected")
+
+	moved, landed := w.remoteMovedDuringPush(ctx, repo, pushErr, rootBranch, rootHash, auth)
+	if landed != nil {
+		// The push reached the remote and only its answer was lost (a deadline, a dropped
+		// connection): the branch is at the commits we sent. Replaying them would plan the same
+		// writes onto a tree that already holds them, and a save's empty commit would land twice.
+		w.Log.Info("A push whose reply was lost had landed; the remote holds our commits",
+			"branch", w.Branch, "head", landed.Head.String(), "err", pushErr.Error())
+		w.notePushSucceeded(*landed, rootBranch, rootHash, len(pendingWrites))
+		return false, nil
+	}
+	if !moved {
+		return false, pushErr
+	}
+	w.recordPushRetry(pushRetryRemoteMoved)
+	w.recordFetch(fetchReasonContention)
+	if err := w.replayOntoRemote(ctx, repo, pendingWrites, auth); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// notePushSucceeded records a push the remote took, or already had. The caller owns repoMu.
+func (w *BranchWorker) notePushSucceeded(
+	outcome PushOutcome, rootBranch plumbing.ReferenceName, rootHash plumbing.Hash, commits int,
+) {
+	// A push that returns without an error is an OBSERVATION of the remote, on the
+	// connection it was opening anyway: the server took the ref update, the advertisement
+	// already showed the branch at our head, or it did not carry the branch at all. All
+	// three say where the branch is, so all three take trust — including the push that
+	// CREATED the branch, which the old branchExists guard (written by fetches alone)
+	// wrongly excluded.
+	//
+	// This must NOT clear worktreeDirty. An earlier write can have failed part-way
+	// through executePendingWrites and left staged changes behind while this write was
+	// retained; a successful push says where the remote is, and nothing about that.
+	w.setBaseTrusted(true)
+	// The half a fetch-only record could not carry: on an active branch the push is the
+	// event that MOVES the revision.
+	w.recordPushObservation(outcome, rootBranch, rootHash)
+	w.endPushCycle(outcome.Kind)
+	w.firsts.push.Do(func() {
+		w.Log.Info("First push to remote completed",
+			"branch", w.Branch,
+			// String(), never the raw URL: spec.url takes userinfo, and this line is at
+			// default verbosity.
+			"repository", w.repo.String(),
+			"commits", commits)
+	})
+}
+
 // replayOntoRemote syncs to the remote, rebuilds the pending writes on what it found, and makes
 // that the cycle's root. The caller owns repoMu and has recorded the fetch.
 func (w *BranchWorker) replayOntoRemote(
+	ctx context.Context,
 	repo *gogit.Repository,
 	pendingWrites []PendingWrite,
 	auth []gitclient.Option,
 ) error {
 	// Marked BEFORE the reset: see markCheckoutReset.
 	w.markCheckoutReset()
-	pullReport, err := w.syncToRemote(w.ctx, repo, auth)
+	pullReport, err := w.syncToRemote(ctx, repo, auth)
 	if err != nil {
 		w.invalidateBase("sync before replay failed")
 		return fmt.Errorf("sync remote before replay: %w", err)
@@ -2146,13 +2190,13 @@ func (w *BranchWorker) replayOntoRemote(
 	// before that happens, so an operator who tightened it in the meantime is obeyed.
 	rootBranch, rootHash, err := w.ensureWriteBranch(repo)
 	if err == nil {
-		err = w.tightenPendingPruneModes(w.ctx, pendingWrites)
+		err = w.tightenPendingPruneModes(ctx, pendingWrites)
 	}
 	held := 0
 	if err == nil {
 		// A write the new tree refuses is skipped and stamped, not a failure of the replay: see
 		// replayPendingWrites. The checkout holds the others, and the loop settles the skipped one.
-		held, err = w.replayPendingWrites(w.ctx, repo, pendingWrites)
+		held, err = w.replayPendingWrites(ctx, repo, pendingWrites)
 	}
 	if err != nil {
 		w.invalidateBase("rebuild before replay failed")
@@ -2212,52 +2256,72 @@ func (w *BranchWorker) rootParentStale() bool {
 
 // remoteMovedDuringPush reports whether a failed push was contention — the remote branch no
 // longer sitting at the hash our commits were based on — which is the only push failure a replay
-// can fix.
+// can fix. When it finds the remote at the commits the push sent, it reports the push as landed
+// instead: the failure lost only the answer.
 //
 // It prefers the rejection's own advertisement and reaches the network only when the push
-// produced none: a dropped connection, an auth failure, a server-side refusal. That fallback is a
-// whole SmartFetch, which is why it is the exception rather than the path.
+// produced none: a dropped connection, a deadline, an auth failure, a server-side refusal. That
+// fallback is a whole SmartFetch, which is why it is the exception rather than the path. It is
+// also the only path that can find a landed push: a rejection's advertisement was compared
+// against our head already, and an advertisement at our head is never a rejection.
 //
 // A fetch that itself fails is reported as "not moved". The caller surfaces the original push
 // error either way, and replaying onto a tree nobody has read would be guessing at contention
 // rather than observing it.
 func (w *BranchWorker) remoteMovedDuringPush(
+	ctx context.Context,
 	repo *gogit.Repository,
 	pushErr error,
 	rootBranch plumbing.ReferenceName,
 	rootHash plumbing.Hash,
 	auth []gitclient.Option,
-) bool {
+) (bool, *PushOutcome) {
 	// A push that creates the write branch is rooted on its parent, so a rejection naming the
 	// write branch itself is not about the root: somebody created the branch since we based our
 	// work. That is contention all the same, and the replay builds on their commit.
 	var moved *RemoteMovedError
 	if errors.As(pushErr, &moved) && moved.Branch != rootBranch &&
 		moved.Branch == plumbing.NewBranchReferenceName(w.Branch) {
-		return true
+		return true, nil
 	}
 	// An empty repository gained refs since the cycle was planned on it. The replay's fetch
 	// resolves the new default branch, or refuses, and the rebuild re-plans from the retained
 	// writes instead of reusing the orphan commits.
 	var notEmpty *RepositoryNotEmptyError
 	if errors.As(pushErr, &notEmpty) {
-		return true
+		return true, nil
 	}
 
 	remoteHash, known := advertisedRootHash(pushErr, rootBranch)
-	if !known && rootBranch != plumbing.NewBranchReferenceName(w.Branch) {
-		return w.newBranchMovedDuringPush(rootBranch, rootHash, auth)
+	if known {
+		return remoteHash != rootHash, nil
 	}
-	if !known {
-		var fetchErr error
-		w.recordFetch(fetchReasonPushFailureProbe)
-		remoteHash, fetchErr = fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
-		if fetchErr != nil {
-			w.invalidateBase("remote-state fetch failed")
-			return false
-		}
+	if rootBranch != plumbing.NewBranchReferenceName(w.Branch) {
+		return w.newBranchMovedDuringPush(ctx, repo, rootBranch, rootHash, auth)
 	}
-	return remoteHash != rootHash
+	w.recordFetch(fetchReasonPushFailureProbe)
+	remoteHash, fetchErr := fetchRemoteBranchHashFn(ctx, repo, rootBranch, auth)
+	if fetchErr != nil {
+		w.invalidateBase("remote-state fetch failed")
+		return false, nil
+	}
+	if landed := landedPush(repo, remoteHash, rootHash); landed != nil {
+		return false, landed
+	}
+	return remoteHash != rootHash, nil
+}
+
+// landedPush reports a push that reached the remote although its caller saw it fail: the branch
+// is now at our local head, and that head is not the root the cycle started from (a cycle with
+// nothing to send has nothing to have landed). Only the exact head counts. A remote that moved on
+// past our commits would also hold them, but proving that needs ancestry a depth-1 fetch does not
+// carry, so that case replays, as any other contention does.
+func landedPush(repo *gogit.Repository, remoteHash, rootHash plumbing.Hash) *PushOutcome {
+	head := localHead(repo)
+	if head.IsZero() || head == rootHash || remoteHash != head {
+		return nil
+	}
+	return &PushOutcome{Kind: PushAccepted, Head: head}
 }
 
 // newBranchMovedDuringPush is the fallback for a push that was creating the write branch and failed
@@ -2265,22 +2329,30 @@ func (w *BranchWorker) remoteMovedDuringPush(
 // Old was zero because somebody created the branch after our advertisement. Probing the root alone
 // would find the parent unmoved and conclude nothing happened, and the work would never replay. So
 // it reads both refs from one advertisement, and a write branch that is now there is contention,
-// exactly like the typed rejection naming it. It runs only on this exceptional path.
+// exactly like the typed rejection naming it — unless it is there at our own head, which is our
+// push having landed. It runs only on this exceptional path.
 func (w *BranchWorker) newBranchMovedDuringPush(
-	rootBranch plumbing.ReferenceName, rootHash plumbing.Hash, auth []gitclient.Option,
-) bool {
-	advertisement, err := advertiseRemoteBranchFn(w.repo.URL, plumbing.NewBranchReferenceName(w.Branch),
+	ctx context.Context,
+	repo *gogit.Repository,
+	rootBranch plumbing.ReferenceName,
+	rootHash plumbing.Hash,
+	auth []gitclient.Option,
+) (bool, *PushOutcome) {
+	advertisement, err := advertiseRemoteBranchFn(ctx, w.repo.URL, plumbing.NewBranchReferenceName(w.Branch),
 		rootBranch.Short(), auth)
 	if err != nil {
 		w.invalidateBase("remote-state probe failed")
-		return false
+		return false, nil
 	}
 	if !advertisement.branch.IsZero() {
+		if landed := landedPush(repo, advertisement.branch, rootHash); landed != nil {
+			return false, landed
+		}
 		w.Log.Info("The write branch was created by somebody else during our push; replaying onto it",
 			"branch", w.Branch)
-		return true
+		return true, nil
 	}
-	return advertisement.parent != rootHash
+	return advertisement.parent != rootHash, nil
 }
 
 // advertisedRootHash reads the remote's own answer out of a failed push, when the push got one.
@@ -2346,7 +2418,7 @@ func (w *BranchWorker) refreshRemoteAndRebuildPendingWrites(
 	}
 
 	w.recordFetch(reason)
-	return w.replayOntoRemote(repo, pendingWrites, auth)
+	return w.replayOntoRemote(ctx, repo, pendingWrites, auth)
 }
 
 // tightenPendingPruneModes lowers every retained write's captured prune mode before replay.

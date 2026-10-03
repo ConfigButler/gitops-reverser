@@ -201,7 +201,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 	// different repository.
 	parentBranch := w.ParentBranch()
 	advertisement, err := advertiseRemoteBranchFn(
-		w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), parentBranch, auth)
+		ctx, w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), parentBranch, auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
 	}
@@ -424,13 +424,14 @@ type remoteAdvertisement struct {
 // means the advertisement did not carry the branch, which includes an empty repository — an
 // observation rather than an error: a branch does not exist without a commit.
 func advertiseRemoteBranch(
+	ctx context.Context,
 	remoteURL string,
 	branch plumbing.ReferenceName,
 	parentBranch string,
 	auth []gitclient.Option,
 ) (remoteAdvertisement, error) {
 	remote := gogit.NewRemote(nil, &config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
-	refs, err := listRemoteRefs(remote, auth)
+	refs, err := listRemoteRefs(ctx, remote, auth)
 	if err != nil {
 		return remoteAdvertisement{}, err
 	}

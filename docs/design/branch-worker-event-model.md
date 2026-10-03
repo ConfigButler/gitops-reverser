@@ -11,7 +11,8 @@ current failure analysis, and immediate implementation scope. The
 journal storage, acknowledgments, publication recovery, retention, and the persistence/HA rollout.
 The broader ownership contract is in [the architecture](../architecture.md#git-write-architecture).
 
-Status: design proposal, aligned 2026-10-03 with branch-worker steps 1 to 4 at `373bf8d7`.
+Status: design proposal, aligned 2026-10-03 with branch-worker steps 1 to 4 at `373bf8d7`. Steps
+5a and 6 have since landed: the watch's admission boundary and the Git call deadlines.
 The [log plan](gittarget-branch-worker-log.md) owns the latest source review and remaining
 admission, pause/resume, status, and operation-deadline steps. Event names and the transition boundary
 are proposals. This document changes no runtime behavior and does not establish an outage or

@@ -1,9 +1,9 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
-> Steps 1 to 4 and 5a are built; step 3 was split into 3a, 3b, and 3c after review. Steps 5b, 5c,
-> 6, and 7 remain. Implement 6 next, then 5b and 5c, so stalled Git calls cannot defeat the
-> recovery state machine.
+> Steps 1 to 4, 5a, and 6 are built; step 3 was split into 3a, 3b, and 3c after review. Steps 5b,
+> 5c, and 7 remain, in that order. Git calls are bounded now, so the pause/resume state machine of
+> 5b cannot be defeated by a stalled call.
 > The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
 > the remaining defects. This is the write-path part of the "transition boundary" in
 > [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability),
@@ -147,7 +147,8 @@ Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. 
 - **Watch recovery currently polls.** `runTargetWatch` reconnects after its fixed two-second
   backoff. It has no wait for the worker to reopen admission. Queue saturation becomes repeated
   work and a generic watch error, rather than a publication-pause explanation.
-- **Git calls remain unbounded and failure status is incomplete.** Steps 6 and 5c address these.
+- **Git calls were unbounded** (fixed in step 6). **Failure status is incomplete**; step 5c
+  addresses it.
 
 These are follow-up requirements, not runtime fixes made by this documentation revision.
 
@@ -341,23 +342,58 @@ Remaining limits, for 5b:
   work, and next retry. Check existing telemetry first. Update
   [`interpreting-metrics.md`](../interpreting-metrics.md) and `UPGRADING.md` when implemented.
 
-### Step 6: deadlines on Git network calls
+### Step 6: deadlines on Git network calls (built)
 
-`fix(git)`.
+`fix(git)`. Measured first, against go-git v6.0.0-alpha.5 with a 300 ms context and servers that
+accept a connection and then stall at one protocol phase:
 
-- Measure first how go-git v6's HTTP and SSH transports behave against a server that accepts a
-  connection and then stalls.
-- Pass the context through `listRemoteRefs`, `CheckRepo` and `SmartFetchFrom`. Bound each call,
-  and put one deadline over the whole of `publish()` so contention retries do not reset the
-  budget. Centralize that budget at the materialization and publication boundaries; check the
-  other ref-list and fetch callers for the same cancellation contract.
-- The loop calls Git synchronously, so a deadline only cancels the call and no goroutine outlives
-  it on the checkout. A transport that ignores the context gets a connection-level timeout, never
-  a wrapper goroutine.
-- A timed-out push is an uncertain outcome: the entries stay in the log and the projection is
-  invalidated. Before replaying, inspect the remote for the attempted commits where evidence is
-  available, including an empty save. A read or equal tree alone cannot prove that save succeeded.
-  Test a server that accepts the push but loses the response; do not promise exactly-once recovery.
+| Phase that stalls | HTTP, go-git's context API | HTTP, our code before | SSH, any API |
+|---|---|---|---|
+| Advertisement (`info/refs`, ls-refs) | Returns at the deadline | Hung: `Remote.List` takes no context | Hung |
+| Fetch transfer (`upload-pack`) | Returns at the deadline | Hung: `Repository.Fetch` takes no context | Hung |
+| Push (`receive-pack`) | Returns at the deadline | Returned, but the worker's context never expires | Hung |
+
+SSH uses the context only to dial: the SSH handshake (`gossh.NewClientConn`) and every read of the
+git protocol ignore it, so a server that never sends its banner, and one that completes the
+handshake and then says nothing, both hung past an expired context. That also meant worker shutdown
+waited on a stalled SSH call. The measurement and its explanation live with the code, in
+[`network_bound.go`](../../internal/git/network_bound.go).
+
+What changed:
+
+- **Context-taking API everywhere.** `listRemoteRefs`, the fetch inside `SmartFetchFrom`,
+  `CheckRepo`, and `advertiseRemoteBranch` use `ListContext`/`FetchContext` and take a context; the
+  advertisement's three callers (refresh, the parent probe, the push-failure probe) pass theirs.
+- **A connection-level bound for SSH.** Each call adds a dialer whose connection closes when the
+  call's context ends (`context.AfterFunc`). Closing the socket fails the blocked read on the calling
+  goroutine; nothing runs the operation elsewhere, so nothing outlives it with the checkout. go-git
+  cancels the context it hands the dialer once the dial returns, so the dialer captures the call's
+  own context instead.
+- **Two budgets.** `gitCallTimeout` (2 minutes) bounds each advertisement, fetch, or push session,
+  inside the library functions, so the `GitProvider` controller's connectivity check is bounded
+  too. `gitPublishTimeout` (5 minutes) is one deadline over the whole push cycle, contention retries
+  and their replays included. Both are package variables, not flags; a flag waits for a measured
+  need.
+- **A lost push reply is settled by evidence.** A push that fails without a typed rejection already
+  kept its local commits and probed the remote. When the probe finds the branch at our local head,
+  the push landed and only its answer was lost: the cycle settles as published instead of replaying,
+  which would have planned the writes onto a tree that holds them and landed a save's empty commit
+  twice. Only the exact head counts. A remote that moved on past our commits replays as any other
+  contention does, because proving ancestry needs history a depth-1 fetch does not carry.
+
+Pinned by [`network_bound_test.go`](../../internal/git/network_bound_test.go): every call above
+returns at its bound over HTTP and over both SSH stalls, an SSH stall ends on cancellation, one
+deadline covers the whole push cycle, and a push whose reply is swallowed after the server applied
+it lands exactly once (reproduced red without the evidence check: it pushed again and the remote
+ended at a replayed commit).
+
+Remaining limits:
+
+- Exactly-once is not promised. A lost reply followed by another writer's push replays our writes,
+  and an empty save then lands twice.
+- The bounds are fixed. A depth-1 fetch that needs more than two minutes fails every attempt.
+- Local work inside a cycle (planning, replay, Kubernetes reads for prune policy) counts against
+  the cycle's budget but has no bound of its own.
 
 ### Step 7: documentation
 
@@ -446,24 +482,25 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 | One replay entry is refused | Only that entry settles; later work can publish |
 | Capacity stays full during withdrawal and shutdown | Controls progress in order; held saves never falsely time out |
 | A snapshot exceeds the entire payload budget | Explicit capacity state, no retry storm or partial sweep |
-| Remote stalls, or accepts a push and loses its reply | Deadline returns control; publication evidence governs save outcomes |
+| Remote stalls, or accepts a push and loses its reply | Built (6): deadline returns control; publication evidence governs save outcomes |
 
 ## Prompt for the next implementation
 
 ```text
-Continue the branch-worker log plan at step 6: deadlines on Git network calls. Read this
-plan, retry.go, branch_log.go, and the remote helpers (listRemoteRefs, CheckRepo,
-SmartFetchFrom, the push path) first.
+Continue the branch-worker log plan at step 5b: pause and resume under capacity pressure.
+Read this plan (recovery contract, step 5a's producer inventory and limits), branch_log.go
+(syncAdmission, decide), branch_worker.go (enqueue paths), retry.go, and target_watch.go
+(runTargetWatch's reconnect loop) first.
 
-Measure before changing anything: how go-git v6's HTTP and SSH transports behave against a
-server that accepts a connection and then stalls, and whether each honors a context. Record
-the measurement in the plan. Then bound each call and put one deadline over publish(); a
-timed-out push keeps its entries and invalidates the projection. Test against
-startRealGitServer, including a server that accepts the push and loses the reply.
+Make the admission budget count what it claims to bound: give empty records and refusal
+touches a nonzero charge, count queued payloads, deferred heals, and registered saves, and
+latch admission closed until the accepted backlog settles. Stop resyncs fetching during retry
+backoff. Replace the producers' 2-second polling with a wakeup when intake reopens, keeping
+FIFO causality and lifecycle work moving while intake is closed. Decide the oversized-snapshot
+path explicitly.
 
-Keep the log, save boundaries, FIFO ordering, the ledger rows, and parent recovery's probe
-budget. Do not start 5b or 5c. Mark only step 6 built. Run the AGENTS.md gates; report the
-measurement, the fix, validation, and remaining limits.
+Keep the log, save boundaries, the ledger rows, and the step 6 bounds. Do not start 5c.
+Mark only 5b built. Run the AGENTS.md gates; report what changed, validation, and limits.
 ```
 
 ## Out of scope
