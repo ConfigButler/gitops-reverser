@@ -58,7 +58,7 @@ const (
 	PhaseWaitingForWindow CommitRequestPhase = "WaitingForWindow"
 	// PhaseCollectingWindow is an attached request collecting writes until the window's timers close it.
 	PhaseCollectingWindow CommitRequestPhase = "CollectingWindow"
-	// PhaseWaitingForPush is a request committed locally and not yet confirmed by the remote.
+	// PhaseWaitingForPush is a request whose write is decided and not yet confirmed by the remote.
 	PhaseWaitingForPush CommitRequestPhase = "WaitingForPush"
 )
 
@@ -170,19 +170,17 @@ type pendingCommitRequest struct {
 	// commitEmpty records the message in an empty commit when the request ends with nothing to
 	// commit. Never for a WindowMismatch: that would claim more than happened.
 	commitEmpty bool
-	// attached is true once this request's message is bound to the open window.
-	attached bool
-	// committed is true once the window this request attached to has been finalized into a local
-	// commit. The request now rides that retained write and only the push can settle it, which is
-	// why it is `committed` and not `published`: the work exists locally and is nowhere else yet.
+	// attached is true once this request is bound to a write: its message to the open window, or
+	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
+	// set while the write waits in the log for the push.
 	//
-	// The flag exists because the request must stay IDENTIFIABLE while it waits. The controller
+	// It stays set because the request must stay IDENTIFIABLE while it waits. The controller
 	// re-sends its attach every couple of seconds until it reads an outcome, and forgetting the
 	// request at finalize made that re-send look like a brand-new one: it would register again,
 	// expire against its fresh deadline, and report NoOpenWindow for work that was sitting in
-	// pendingWrites waiting for the push cooldown — or, worse, attach to the next same-author window
+	// the log waiting for the push cooldown, or, worse, attach to the next same-author window
 	// and stamp this request's message onto a commit somebody else authored.
-	committed bool
+	attached bool
 	// sawForeignWindow is set when a window was open during this request's wait that it could
 	// not attach to, because the window belonged to a different author or GitTarget.
 	//

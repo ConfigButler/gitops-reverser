@@ -141,6 +141,33 @@ func TestRefusalTouch_ASecondRefusedEditEarnsItsOwnCommit(t *testing.T) {
 		"a genuinely different refused edit must still move the branch")
 }
 
+// TestRefusalTouch_AResyncsRefusalIsPushedByTheLoopItself: a refusal a resync discovers decides its
+// empty commit while the resync's outcome is being settled, inside the commit pass. Nothing may push
+// from inside a pass, so the pass's starter has to schedule it once the pass ends. Found by the
+// refusal e2e on #413: the commit was made and never left the checkout. The fixture's refuseResync
+// pushes by hand, which is how the unit tests missed it.
+func TestRefusalTouch_AResyncsRefusalIsPushedByTheLoopItself(t *testing.T) {
+	f := standingRefusalFixture(t, "standing-refusal-pushed")
+	l := newBranchWorkerEventLoop(f.worker, time.Hour)
+	t.Cleanup(l.stopTimers)
+	before := remoteCommits(t, f)
+
+	event := overridesDeploymentEvent("ghcr.io/example/podinfo:9.9.9", 3)
+	scope := deploymentResyncScope()
+	result := make(chan ResyncResult, 1)
+	l.applyResync(&ResyncRequest{
+		GitTargetName: ledgerTargetName, GitTargetNamespace: "default", Scope: &scope,
+		ResourceVersion: "1",
+		Desired:         []manifestanalyzer.DesiredResource{{Resource: event.Identifier, Object: event.Object}},
+		Result:          result,
+	})
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, (<-result).Err, &refused)
+
+	assert.Empty(t, l.pendingWrites, "the empty commit was published")
+	assert.Equal(t, 1, remoteCommits(t, f)-before, "with no push started by hand")
+}
+
 // TestRefusalObservation_IsContentAddressedAndOrderIndependent pins the digest itself: same
 // objects and issues, same observation, whatever order they arrive in.
 func TestRefusalObservation_IsContentAddressedAndOrderIndependent(t *testing.T) {

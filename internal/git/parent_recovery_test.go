@@ -2,10 +2,10 @@
 
 package git
 
-// Work a missing parent branch held back is an obligation, not an observation: it stays open until
-// the work is published, so a transient failure after the parent reappears cannot strand it, and
-// it is driven by the worker on its own deadline, whatever the refresh configuration. These pin
-// the obligation, its per-scope bookkeeping, and the probe budget.
+// Work decided while the parent branch is missing is an obligation, not an observation: it stays in
+// the log until it is published, so a transient failure after the parent reappears cannot strand it,
+// and it is driven by the worker on its own deadline, whatever the refresh configuration. These pin
+// the obligation, that nothing decided meanwhile is dropped, and the probe budget.
 
 import (
 	"context"
@@ -108,7 +108,7 @@ func TestParentRecovery_RetainedWritesLandAfterAFailedFirstAttempt(t *testing.T)
 
 			release := simulateClientCommitOnDisk(t, f.repoDir, "release", "RELEASE.md", "back\n")
 			failNextSync(t)
-			clock.advance(parentProbeMaxBackoff)
+			clock.advance(retryMaxBackoff)
 			deadline()
 
 			assert.True(t, f.ref("feature").IsZero(), "the first attempt failed")
@@ -117,7 +117,7 @@ func TestParentRecovery_RetainedWritesLandAfterAFailedFirstAttempt(t *testing.T)
 			require.True(t, open, "the obligation outlives a failed attempt")
 			assert.True(t, found)
 
-			clock.advance(parentProbeMaxBackoff)
+			clock.advance(retryMaxBackoff)
 			deadline()
 
 			tip := f.ref("feature")
@@ -134,72 +134,52 @@ func refreshTarget() itypes.ResourceReference {
 	return itypes.NewResourceReference(newBranchTarget, "default")
 }
 
-// Test 2. Writes dropped for two targets on one worker. Each scope clears only when a resync of it
-// is published; a resync that committed but is not pushed yet does not clear it, and a target
-// whose resync failed is asked again on the next deadline.
-func TestParentRecovery_DroppedWritesClearPerScopeWhenPublished(t *testing.T) {
-	f := newNewBranchFixture(t, nil)
+// Test 2. Writes for two targets on one worker, decided while the parent is missing, wait in the log
+// with their authors and collections, and so does a resync decided meanwhile, whose caller is told
+// it could not be applied yet. The probe that finds the parent publishes all of it, and nothing is
+// owed after that: no snapshot has to re-derive anything.
+func TestParentRecovery_WritesDecidedWhileTheParentIsMissingAreKept(t *testing.T) {
+	f := newRealServerNewBranch(t, "recovery-kept-writes", seedMain(t))
 	clock := useTestClock(f.worker)
 	createPlainGitTarget(t, f.worker, "other-target", "other")
 	f.worker.SetParentBranch("release")
-	loop := newBranchWorkerEventLoop(f.worker, 0)
-	defer loop.stopTimers()
+	loop := f.loop
 
-	a := itypes.NewResourceReference(newBranchTarget, "default")
-	b := itypes.NewResourceReference("other-target", "default")
-	collectionA := itypes.CollectionKey{Resource: "configmaps", Namespace: "default"}
-	collectionB := itypes.CollectionKey{Resource: "configmaps", Namespace: "default", LabelSelector: "team=b"}
-	write := func(target string, collection itypes.CollectionKey, name string) {
+	write := func(target, name string) {
 		event := configMapTargetEvent(name, "alice", target)
-		event.SourceCollection = collection
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
 	}
-	resync := func(target itypes.ResourceReference, collection itypes.CollectionKey, name string) error {
-		scope := ResyncScope{Collection: collection}
-		req := &ResyncRequest{
-			Desired:            []manifestanalyzer.DesiredResource{desiredCM(name, "blue")},
-			ResourceVersion:    "1",
-			GitTargetName:      target.Name,
-			GitTargetNamespace: target.Namespace,
-			Scope:              &scope,
-			Result:             make(chan ResyncResult, 1),
-		}
-		loop.applyResync(req)
-		return (<-req.Result).Err
-	}
-
-	write(newBranchTarget, collectionA, "a1")
-	write("other-target", collectionB, "b1")
-	assert.Empty(t, loop.pendingWrites, "both were dropped")
-	assert.Len(t, loop.recovery.scopes, 2)
-
-	f.pushToRelease("RELEASE.md", "release\n")
-	clock.advance(parentProbeMaxBackoff)
-	loop.runParentProbe()
-	assert.Equal(t, uint64(1), f.worker.SnapshotRequestSeq(a))
-	assert.Equal(t, uint64(1), f.worker.SnapshotRequestSeq(b))
-
-	loop.lastPushAt = time.Now() // cooldown: A's resync commits, and its push waits
-	require.NoError(t, resync(a, collectionA, "a1"))
-	require.Len(t, loop.pendingWrites, 1)
-	assert.Contains(t, loop.recovery.scopes, recoveryScope{target: a, collection: collectionA},
-		"a resync that is not pushed yet does not clear its scope")
-
-	failNextSync(t)
-	require.Error(t, resync(b, collectionB, "b1"))
-
-	clock.advance(parentProbeMaxBackoff)
-	loop.runParentProbe() // publishes A's commit, and asks for B again
-
-	assert.Empty(t, loop.pendingWrites)
-	assert.NotContains(t, loop.recovery.scopes, recoveryScope{target: a, collection: collectionA}, "published")
-	assert.Equal(t, uint64(1), f.worker.SnapshotRequestSeq(a), "A is not asked again")
-	assert.Equal(t, uint64(2), f.worker.SnapshotRequestSeq(b), "B is")
-
-	require.NoError(t, resync(b, collectionB, "b1"))
-	loop.pushPending()
+	write(newBranchTarget, "a1")
+	write("other-target", "b1")
+	require.Len(t, loop.pendingWrites, 2, "both are kept")
 	open, _ := f.worker.ParentRecovery()
-	assert.False(t, open, "every scope is published")
+	require.True(t, open)
+
+	req := &ResyncRequest{
+		Desired:            []manifestanalyzer.DesiredResource{desiredCM("a1", "a1"), desiredCM("a2", "blue")},
+		ResourceVersion:    "1",
+		GitTargetName:      newBranchTarget,
+		GitTargetNamespace: "default",
+		Scope: &ResyncScope{
+			Collection: itypes.CollectionKey{Resource: "configmaps", Namespace: "default"},
+		},
+		Result: make(chan ResyncResult, 1),
+	}
+	loop.applyResync(req)
+	require.ErrorIs(t, (<-req.Result).Err, ErrParentBranchNotFound, "its caller hears it could not be applied yet")
+	require.Len(t, loop.pendingWrites, 3, "and the resync waits in its place")
+
+	gitIn(t, f.repoDir, "branch", "release", "main")
+	clock.advance(retryMaxBackoff)
+	loop.runParentProbe()
+
+	assert.Empty(t, loop.pendingWrites, "all of it was published")
+	open, _ = f.worker.ParentRecovery()
+	assert.False(t, open, "and nothing is owed")
+	names := gitIn(t, f.repoDir, "ls-tree", "-r", "--name-only", "refs/heads/feature")
+	for _, name := range []string{"a1", "b1", "a2"} {
+		assert.Contains(t, names, name)
+	}
 }
 
 // Test 4. However many targets share the worker, and however often refreshes tick and live writes
@@ -207,7 +187,7 @@ func TestParentRecovery_DroppedWritesClearPerScopeWhenPublished(t *testing.T) {
 // schedule, and never fetched. That holds with work retained too: there, every write first wants to
 // rebuild the retained writes, which is a fetch the deadline must hold back as well.
 func TestParentRecovery_ProbeBudgetIsPerWorker(t *testing.T) {
-	for name, retained := range map[string]bool{"dropped writes": false, "retained writes": true} {
+	for name, retained := range map[string]bool{"decided writes": false, "retained writes": true} {
 		t.Run(name, func(t *testing.T) {
 			reader, err := telemetry.InitTestExporter()
 			require.NoError(t, err)
@@ -229,7 +209,7 @@ func TestParentRecovery_ProbeBudgetIsPerWorker(t *testing.T) {
 				require.Len(t, f.loop.pendingWrites, 1)
 				gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release")
 				f.loop.pushPending() // the push that finds the parent gone
-				require.True(t, f.worker.replayRequired(), "the retained writes wait for a rebuild")
+				require.False(t, f.loop.checkoutCurrent(), "the retained writes wait for a rebuild")
 			} else {
 				f.worker.SetParentBranch("missing")
 				liveWrite(f.loop, "first") // the one fetch that finds the parent missing
@@ -267,58 +247,48 @@ func TestParentRecovery_ProbeBudgetIsPerWorker(t *testing.T) {
 	}
 }
 
-// A second outage while a recovery snapshot waits for its push. The write dropped during it was
-// made after that snapshot was taken, so publishing the snapshot must not settle its scope: the
-// worker asks for another one, and the obligation stays open until that is published.
-func TestParentRecovery_ASecondOutageKeepsTheWorkDroppedInIt(t *testing.T) {
+// A second outage while the first outage's writes still wait to be published. The write decided
+// during it is kept with them, and the obligation stays open until all of it is published.
+func TestParentRecovery_ASecondOutageKeepsItsWritesToo(t *testing.T) {
 	f := newRealServerNewBranch(t, "recovery-second-outage", func(dir string) {
 		simulateClientCommitOnDisk(t, dir, "main", "README.md", "main\n")
 	})
 	clock := useTestClock(f.worker)
 	f.worker.SetParentBranch("release")
-	collection := itypes.CollectionKey{Resource: "configmaps", Namespace: "default"}
-	write := func(name string) {
-		event := configMapTargetEvent(name, "alice", newBranchTarget)
-		event.SourceCollection = collection
-		f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
-	}
 
-	write("cm1") // dropped: release does not exist
+	liveWrite(f.loop, "cm1") // kept: release does not exist
 	gitIn(t, f.repoDir, "branch", "release", "main")
-	clock.advance(parentProbeMaxBackoff)
-	f.loop.runParentProbe()
-	seq := f.worker.SnapshotRequestSeq(refreshTarget())
-	require.Equal(t, uint64(1), seq)
-
-	f.loop.lastPushAt = time.Now() // the snapshot commits, and its push waits for the cooldown
-	req := &ResyncRequest{
-		Desired:         []manifestanalyzer.DesiredResource{desiredCM("cm1", "blue")},
-		ResourceVersion: "1", GitTargetName: newBranchTarget, GitTargetNamespace: "default",
-		Scope:  &ResyncScope{Collection: collection},
-		Result: make(chan ResyncResult, 1),
-	}
-	f.loop.applyResync(req)
-	require.NoError(t, (<-req.Result).Err)
-	require.Len(t, f.loop.recovery.awaitingPush, 1)
+	failNextPushes(t, 1)
+	clock.advance(retryMaxBackoff)
+	f.loop.runParentProbe() // finds the parent; the push fails
+	require.True(t, f.ref("feature").IsZero())
+	require.Len(t, f.loop.pendingWrites, 1)
 
 	gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release") // the second outage
-	f.loop.pushPending()
-	write("cm2") // dropped during it
-	require.Len(t, f.loop.pendingWrites, 1, "cm2 was dropped; only the snapshot is retained")
+	liveWrite(f.loop, "cm2")
+	require.Len(t, f.loop.pendingWrites, 2, "the write decided during it is kept with the first")
+	clock.advance(retryMaxBackoff)
+	f.loop.runParentProbe() // the push finds the parent gone again
+	require.Len(t, f.loop.pendingWrites, 2)
+	open, found := f.worker.ParentRecovery()
+	require.True(t, open)
+	require.False(t, found)
 
 	gitIn(t, f.repoDir, "branch", "release", "main")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.loop.runParentProbe()
 
-	require.False(t, f.ref("feature").IsZero(), "the snapshot was published")
-	open, _ := f.worker.ParentRecovery()
-	assert.True(t, open, "cm2 still needs a snapshot")
-	assert.Greater(t, f.worker.SnapshotRequestSeq(refreshTarget()), seq, "and the worker asks for one")
+	assert.Empty(t, f.loop.pendingWrites)
+	files := gitIn(t, f.repoDir, "ls-tree", "-r", "--name-only", "refs/heads/feature")
+	assert.Contains(t, files, "cm1")
+	assert.Contains(t, files, "cm2")
+	open, _ = f.worker.ParentRecovery()
+	assert.False(t, open)
 }
 
 // Test 5. An unresolved default branch, once repaired, recovers through the same path: the probe
-// finds it and asks for the snapshot the dropped write needs.
-func TestParentRecovery_ARepairedRemoteHeadAsksForTheSnapshot(t *testing.T) {
+// finds it and publishes the write kept meanwhile.
+func TestParentRecovery_ARepairedRemoteHeadPublishesTheKeptWrite(t *testing.T) {
 	f := newRealServerNewBranch(t, "recovery-dangling-head", func(repoDir string) {
 		simulateClientCommitOnDisk(t, repoDir, "main", "README.md", "main\n")
 		gitIn(t, repoDir, "symbolic-ref", "HEAD", "refs/heads/master")
@@ -327,15 +297,15 @@ func TestParentRecovery_ARepairedRemoteHeadAsksForTheSnapshot(t *testing.T) {
 
 	liveWrite(f.loop, "cm1")
 	assert.True(t, f.ref("feature").IsZero())
+	require.Len(t, f.loop.pendingWrites, 1, "kept")
 
 	gitIn(t, f.repoDir, "symbolic-ref", "HEAD", "refs/heads/main")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.loop.runParentProbe()
 
-	assert.Equal(t, uint64(1), f.worker.SnapshotRequestSeq(refreshTarget()))
-	open, found := f.worker.ParentRecovery()
-	assert.True(t, open, "open until the snapshot is published")
-	assert.True(t, found)
+	assert.False(t, f.ref("feature").IsZero(), "published")
+	open, _ := f.worker.ParentRecovery()
+	assert.False(t, open)
 }
 
 func TestParentRecovery_AParentChangeMakesTheProbeDue(t *testing.T) {
@@ -396,7 +366,7 @@ func TestParentRecovery_AHeldCommitRequestIsCommittedAfterALongRecovery(t *testi
 	assert.True(t, phase().Held())
 
 	release := simulateClientCommitOnDisk(t, f.repoDir, "release", "RELEASE.md", "back\n")
-	clock.advance(parentProbeMaxBackoff)
+	clock.advance(retryMaxBackoff)
 	f.worker.EnqueueRefresh(&RefreshRequest{Target: refreshTarget(), MaxAge: time.Nanosecond})
 
 	require.Eventually(t, func() bool {
@@ -409,4 +379,47 @@ func TestParentRecovery_AHeldCommitRequestIsCommittedAfterALongRecovery(t *testi
 	tip := f.ref("feature")
 	assert.Equal(t, res.Commit, tip.String())
 	assert.Equal(t, []plumbing.Hash{release}, f.parentOf(tip))
+}
+
+// A save that reached no window and asked for its message to be recorded waits for a missing parent
+// like any other decided write, and is committed once the parent exists.
+func TestParentRecovery_AnEmptySaveWaitsForTheParent(t *testing.T) {
+	f := newRealServerNewBranch(t, "parent-recovery-empty-save", seedMain(t))
+	clock := useTestClock(f.worker)
+	f.worker.SetParentBranch("release")
+
+	req := attachReq("alice", 0)
+	req.GitTargetName = newBranchTarget
+	req.CommitEmpty = true
+	req.Message = "empty save"
+	serviceAttach(f.loop, req)
+
+	_, resolved := outcome(t, f.worker)
+	require.False(t, resolved, "held, not failed")
+	require.Len(t, f.loop.pendingWrites, 1)
+
+	gitIn(t, f.repoDir, "branch", "release", "main")
+	clock.advance(retryMaxBackoff)
+	f.loop.runParentProbe()
+
+	res, resolved := outcome(t, f.worker)
+	require.True(t, resolved)
+	require.NoError(t, res.Err)
+	assert.NotEmpty(t, res.Commit, "the message is recorded in Git")
+	open, _ := f.worker.ParentRecovery()
+	assert.False(t, open)
+}
+
+// An obligation with nothing to publish would never close, so a parent failure that left nothing in
+// the log opens none. Found in review of #413, when a failed empty save left the target
+// RecoveringParentBranch with nothing owed.
+func TestParentRecovery_NothingOwedOpensNoObligation(t *testing.T) {
+	w := &BranchWorker{}
+	loop := newBranchWorkerEventLoop(w, time.Second)
+	defer loop.stopTimers()
+
+	loop.noteParentUnavailable(ErrParentBranchNotFound)
+
+	open, _ := w.ParentRecovery()
+	assert.False(t, open)
 }

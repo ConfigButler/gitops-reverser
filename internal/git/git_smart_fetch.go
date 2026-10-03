@@ -109,7 +109,7 @@ func SmartFetchFrom(
 	}
 
 	// 1. Audit: List refs
-	refs, err := listRemoteRefs(remote, auth)
+	refs, err := listRemoteRefs(ctx, remote, auth)
 	if err != nil {
 		return "", err
 	}
@@ -141,16 +141,8 @@ func SmartFetchFrom(
 
 	// 4. Execute: Fetch
 	if len(refSpecs) > 0 {
-		err = repo.Fetch(&git.FetchOptions{
-			RemoteName:    remoteName,
-			ClientOptions: auth,
-			RefSpecs:      refSpecs,
-			Depth:         1,
-			Force:         true,
-			Prune:         true,
-		})
-		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-			return "", fmt.Errorf("smart fetch failed: %w", err)
+		if err := fetchBounded(ctx, repo, remoteName, refSpecs, auth); err != nil {
+			return "", err
 		}
 	}
 
@@ -193,15 +185,41 @@ func configuredParent(refs []*plumbing.Reference, parent string) (string, string
 	return "", ""
 }
 
-func listRemoteRefs(remote *git.Remote, auth []gitclient.Option) ([]*plumbing.Reference, error) {
-	refs, err := remote.List(&git.ListOptions{ClientOptions: auth})
+// listRemoteRefs reads the remote's advertisement, bounded by gitCallTimeout: see network_bound.go.
+func listRemoteRefs(
+	ctx context.Context, remote *git.Remote, auth []gitclient.Option,
+) ([]*plumbing.Reference, error) {
+	ctx, cancel := boundGitCall(ctx)
+	defer cancel()
+	refs, err := remote.ListContext(ctx, &git.ListOptions{ClientOptions: boundToContext(ctx, auth)})
 	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
 		return nil, nil // Valid state, not an error
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to list remote refs: %w", err)
+		return nil, fmt.Errorf("failed to list remote refs: %w", boundedCallError(ctx, err))
 	}
 	return refs, nil
+}
+
+// fetchBounded is SmartFetch's transfer, bounded by gitCallTimeout: see network_bound.go.
+func fetchBounded(
+	ctx context.Context, repo *git.Repository, remoteName string, refSpecs []config.RefSpec,
+	auth []gitclient.Option,
+) error {
+	ctx, cancel := boundGitCall(ctx)
+	defer cancel()
+	err := repo.FetchContext(ctx, &git.FetchOptions{
+		RemoteName:    remoteName,
+		ClientOptions: boundToContext(ctx, auth),
+		RefSpecs:      refSpecs,
+		Depth:         1,
+		Force:         true,
+		Prune:         true,
+	})
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return fmt.Errorf("smart fetch failed: %w", boundedCallError(ctx, err))
+	}
+	return nil
 }
 
 // analyzeRemoteRefs scans the reference list to find the default branch and check if the target exists.

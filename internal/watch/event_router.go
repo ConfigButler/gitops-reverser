@@ -240,7 +240,6 @@ func (r *EventRouter) resolveWorkerForGitDest(
 // than the gather deletes managed documents outside it. heal marks a drift-correcting resync the
 // worker defers while a commit window is open. enqueued is false when the worker's queue was full
 // and dropped the request (its failure is still delivered on resultCh for the drain to record).
-// refreshRemote asks the worker to fetch the latest remote tip before it inspects the folder.
 // resourceVersion is the LIST's collection version the desired set is pinned to.
 func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
@@ -250,7 +249,6 @@ func (r *EventRouter) enqueueScopedResync(
 	desired []manifestanalyzer.DesiredResource,
 	resourceVersion string,
 	heal bool,
-	refreshRemote bool,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
 	if err != nil {
@@ -265,7 +263,6 @@ func (r *EventRouter) enqueueScopedResync(
 		Scope:              &scope,
 		SourceCollection:   sourceCollection,
 		Heal:               heal,
-		RefreshRemote:      refreshRemote,
 		Result:             resultCh,
 	})
 	return resultCh, enqueued, nil

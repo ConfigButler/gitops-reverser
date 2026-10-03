@@ -84,7 +84,9 @@ controllerManager:
   branchWorkerQueueDepth: 1000
   # Maximum in-memory event buffer per branch worker, as a Kubernetes resource quantity.
   # Bounds the open commit window plus the writes retained for replay until a push
-  # succeeds; tripping it finalizes the window early, ignoring the commit cadence.
+  # succeeds; tripping it finalizes the window early, ignoring the commit cadence. While the
+  # remote cannot be reached, retained writes that reach it close the worker to new writes,
+  # saves and resyncs until they are published; the watch delivers a refused event again.
   branchBufferMaxSize: 8Mi
   # How long a CommitRequest is kept once it finishes, as a duration. Every save leaves one object
   # behind, so without this they accumulate for as long as the namespace lives. The controller

@@ -177,7 +177,7 @@ nodeSelector:
 | `controllerManager.additionalSensitiveResources` | Extra Secret-shaped resource types encrypted as `resource` or `group/resource` | `[]` |
 | `controllerManager.insecureAllowGitHTTP` | Permit credentials with `http://` GitProvider URLs for trusted in-cluster development Git servers | `false` |
 | `controllerManager.branchWorkerQueueDepth` | Event queue depth per branch worker. A full queue drops the write (`git_queue_drops_total`) instead of stalling the watch path, so the live attributed commit is lost even though convergence heals the mirror. Costs queue depth × payload of pod memory, which `branchBufferMaxSize` does **not** cover | `1000` |
-| `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds | `8Mi` |
+| `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds. While the remote cannot be reached, retained writes that reach it close the worker to new writes, saves and resyncs until they are published; the watch delivers a refused event again | `8Mi` |
 | `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |

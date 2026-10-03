@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -18,9 +19,9 @@ func dedupGVR() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 }
 
-// callSkip drives skipUnchangedLiveUpdate for one object identity, with a sanitized
-// content marker (empty for delete, where the writer leaves Object nil).
-func callSkip(m *Manager, gitDest types.ResourceReference, uid, content, op string) bool {
+// dedupEvent builds one live event for an object identity, with a sanitized content marker
+// (empty for delete, where the writer leaves Object nil).
+func dedupEvent(uid, content, op string) (*unstructured.Unstructured, *git.Event) {
 	u := &unstructured.Unstructured{Object: map[string]interface{}{
 		"metadata": map[string]interface{}{"uid": uid},
 	}}
@@ -36,10 +37,26 @@ func callSkip(m *Manager, gitDest types.ResourceReference, uid, content, op stri
 			"spec":       map[string]interface{}{"marker": content},
 		}}
 	}
-	return m.skipUnchangedLiveUpdate(gitDest, dedupGVR(), u, event, op)
+	return u, event
 }
 
-func TestSkipUnchangedLiveUpdate(t *testing.T) {
+// checkContent runs only the check, as a route does before the worker has answered.
+func checkContent(m *Manager, gitDest types.ResourceReference, uid, content, op string) (liveContentCheck, bool) {
+	u, event := dedupEvent(uid, content, op)
+	return m.checkLiveContent(gitDest, dedupGVR(), u, event, op)
+}
+
+// callSkip drives one event through the check and, when it routes, the acceptance of a worker
+// that took it.
+func callSkip(m *Manager, gitDest types.ResourceReference, uid, content, op string) bool {
+	check, unchanged := checkContent(m, gitDest, uid, content, op)
+	if !unchanged {
+		m.acceptLiveContent(check)
+	}
+	return unchanged
+}
+
+func TestLiveContentDedup(t *testing.T) {
 	m := &Manager{}
 	dest := types.NewResourceReference("gt", "ns")
 
@@ -65,7 +82,7 @@ func TestSkipUnchangedLiveUpdate(t *testing.T) {
 
 // A first-seen UPDATE (no prior CREATE in this session) routes: we cannot prove it is a
 // no-op without a baseline, so we fail open.
-func TestSkipUnchangedLiveUpdate_FirstSeenUpdateRoutes(t *testing.T) {
+func TestLiveContentDedup_FirstSeenUpdateRoutes(t *testing.T) {
 	m := &Manager{}
 	dest := types.NewResourceReference("gt", "ns")
 	assert.False(t, callSkip(m, dest, "uid-x", "A", string(types.OperationUpdate)),
@@ -74,7 +91,7 @@ func TestSkipUnchangedLiveUpdate_FirstSeenUpdateRoutes(t *testing.T) {
 
 // The same object mirrored to two GitTargets dedups independently: a no-op for one
 // stream must not suppress routing to the other.
-func TestSkipUnchangedLiveUpdate_PerGitTargetIsolation(t *testing.T) {
+func TestLiveContentDedup_PerGitTargetIsolation(t *testing.T) {
 	m := &Manager{}
 	destA := types.NewResourceReference("gt-a", "ns")
 	destB := types.NewResourceReference("gt-b", "ns")
@@ -83,4 +100,72 @@ func TestSkipUnchangedLiveUpdate_PerGitTargetIsolation(t *testing.T) {
 	assert.False(t, callSkip(m, destA, "uid-1", "A", create))
 	// destB has never seen this object: its CREATE still routes.
 	assert.False(t, callSkip(m, destB, "uid-1", "A", create), "a different GitTarget dedups independently")
+}
+
+// Only an accepted event becomes the baseline. A check whose event the worker then refused
+// leaves the cache as it was, so the same content offered again is still a change.
+func TestLiveContentDedup_ARefusedEventIsNotABaseline(t *testing.T) {
+	m := &Manager{}
+	dest := types.NewResourceReference("gt", "ns")
+	update := string(types.OperationUpdate)
+
+	assert.False(t, callSkip(m, dest, "uid-1", "A", string(types.OperationCreate)))
+	_, unchanged := checkContent(m, dest, "uid-1", "B", update)
+	require.False(t, unchanged, "B is a change against the accepted A")
+	// The worker refused B: no acceptance is recorded.
+
+	assert.False(t, callSkip(m, dest, "uid-1", "B", update),
+		"B offered again after its refusal must route; it was never accepted")
+	assert.True(t, callSkip(m, dest, "uid-1", "B", update), "once accepted, B dedups")
+}
+
+// A refused DELETE leaves the baseline in place. That is safe because a DELETE never dedups, so
+// its redelivery routes regardless.
+func TestLiveContentDedup_ARefusedDeleteKeepsTheBaseline(t *testing.T) {
+	m := &Manager{}
+	dest := types.NewResourceReference("gt", "ns")
+
+	assert.False(t, callSkip(m, dest, "uid-1", "A", string(types.OperationCreate)))
+	_, unchanged := checkContent(m, dest, "uid-1", "", string(types.OperationDelete))
+	require.False(t, unchanged, "a DELETE always routes")
+	assert.True(t, callSkip(m, dest, "uid-1", "A", string(types.OperationUpdate)),
+		"the refused DELETE did not clear the accepted baseline")
+	assert.False(t, callSkip(m, dest, "uid-1", "", string(types.OperationDelete)),
+		"the redelivered DELETE still routes")
+}
+
+// A cluster-wide and a namespaced stream deliver the same object independently. When both check
+// against the same baseline and then accept different versions, which one the worker took last
+// is unknown here, so the later acceptance must not leave the earlier one's hash behind. B was
+// accepted first and A after it, so the worker may hold A last: a redelivered B must route.
+func TestLiveContentDedup_OverlappingStreamsNeverKeepABaselineTheWorkerMayNotHold(t *testing.T) {
+	m := &Manager{}
+	dest := types.NewResourceReference("gt", "ns")
+	update := string(types.OperationUpdate)
+	require.False(t, callSkip(m, dest, "uid-1", "base", string(types.OperationCreate)))
+
+	fromA, unchangedA := checkContent(m, dest, "uid-1", "A", update)
+	fromB, unchangedB := checkContent(m, dest, "uid-1", "B", update)
+	require.False(t, unchangedA)
+	require.False(t, unchangedB)
+	m.acceptLiveContent(fromB)
+	m.acceptLiveContent(fromA)
+
+	assert.False(t, callSkip(m, dest, "uid-1", "B", update),
+		"B must route: the worker's last accepted version may be A")
+}
+
+// The common overlap is the same object at the same version from both streams. Their acceptances
+// agree, so the baseline stays and the next no-op UPDATE is still suppressed.
+func TestLiveContentDedup_OverlappingStreamsThatAgreeKeepTheBaseline(t *testing.T) {
+	m := &Manager{}
+	dest := types.NewResourceReference("gt", "ns")
+	update := string(types.OperationUpdate)
+
+	fromA, _ := checkContent(m, dest, "uid-1", "A", string(types.OperationCreate))
+	fromB, _ := checkContent(m, dest, "uid-1", "A", string(types.OperationCreate))
+	m.acceptLiveContent(fromA)
+	m.acceptLiveContent(fromB)
+
+	assert.True(t, callSkip(m, dest, "uid-1", "A", update), "both streams accepted A; a no-op UPDATE dedups")
 }

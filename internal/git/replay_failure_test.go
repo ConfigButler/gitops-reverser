@@ -176,7 +176,7 @@ func remoteFileNames(t *testing.T, repoDir string) string {
 // to completion BEFORE `executePendingWrites` starts, caching one read per target — so failing
 // those reads always aborts before the first write, whatever the batch size. There is no seam that
 // fails between two writes, and adding one to production code to reach a state the flag already
-// covers by construction is not worth it: `replayRequired` is per-worker, not per-write, so a
+// covers by construction is not worth it: `checkoutApplied` counts whole replays, so a
 // partly-rebuilt batch cannot be settled either. This test pins the batch behaviour that IS
 // reachable, and the comment records why the other shape is not.
 func TestReplayFailure_HoldsAWholeBatchNotJustItsFirstWrite(t *testing.T) {
@@ -236,7 +236,7 @@ func TestReplayFailure_RecoveryRunsBeforeEveryCommitPathToo(t *testing.T) {
 	restoreAPI := failGitTargetReads(t, f.worker, errors.New("etcdserver: request timed out"))
 	require.Error(t, f.worker.refreshRemoteAndRebuildPendingWrites(
 		f.worker.ctx, loop.pendingWrites, fetchReasonForcedRecheck))
-	require.True(t, f.worker.replayRequired())
+	require.False(t, loop.checkoutCurrent())
 	restoreAPI()
 
 	// A second write arrives. Finalizing it recovers first, so both writes are real commits again.
@@ -245,7 +245,7 @@ func TestReplayFailure_RecoveryRunsBeforeEveryCommitPathToo(t *testing.T) {
 		CommitMode: CommitModePerEvent,
 	}})
 	require.True(t, loop.finalizeOpenWindow())
-	assert.False(t, f.worker.replayRequired(), "the commit path rebuilt the stranded write")
+	assert.True(t, loop.checkoutCurrent(), "the commit path rebuilt the stranded write")
 
 	loop.pushPending()
 	names := remoteFileNames(t, f.repoDir)
@@ -352,7 +352,7 @@ func TestReplayFailure_AResetThatDiesHalfwayIsAlsoHeld(t *testing.T) {
 
 	require.False(t, f.worker.worktreeDirty(),
 		"no write failed, so the dirty flag is false and cannot describe this")
-	require.True(t, f.worker.replayRequired(),
+	require.False(t, loop.checkoutCurrent(),
 		"but the commits behind the retained writes are gone, and that must be recorded")
 
 	// Without the flag, this push finds the branch already at the remote tip, sends nothing,

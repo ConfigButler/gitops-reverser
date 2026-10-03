@@ -387,6 +387,20 @@ type PendingWrite struct {
 	// render failed at commit time. Zero means "not stamped", so messageSource() recomputes.
 	committedMessageSource messageResolution
 
+	// materialized is set once the loop has committed this write at least once. A decided write
+	// the loop could not commit yet (the remote was unreachable) waits in the log with it unset;
+	// such writes always form the log's tail. Loop-goroutine only.
+	materialized bool
+	// replayRefusal is the refusal the last completed replay met for this write: the tree the write
+	// was replayed onto refuses it, so the replay skipped it and the checkout does not hold it. The
+	// loop settles it out of the log (settleReplayRefusals). Stamped by replayPendingWrites.
+	replayRefusal error
+	// seq numbers the loop's decisions, so a decision can be found in the log after writes before
+	// or after it were dropped or added. Loop-goroutine only.
+	seq uint64
+	// origin is what the write's outcome is settled against. See writeOrigin.
+	origin writeOrigin
+
 	// CommitSHA is the hash of the commit this write created, captured in
 	// executePendingWrite and refreshed when the write is re-executed on a
 	// rebase-replay (so it is never a stale pre-rebase hash). Zero when the write
@@ -498,10 +512,6 @@ type ResyncRequest struct {
 	// for idle recurs on every silence timeout, so it never starves. A first-sync backfill is NOT
 	// a heal: it must establish initial state promptly.
 	Heal bool
-	// RefreshRemote asks the worker to fetch/reset to the remote tip before evaluating the
-	// acceptance gate. Forced GitTarget rechecks use it because their trigger is often "I changed
-	// Git; look again", and the local checkout may still hold the refused revision.
-	RefreshRemote bool
 	// SourceCollection names the target-watch collection that gathered this snapshot. Zero for a
 	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing
 	// filters the queue on it. See source_collection.go.

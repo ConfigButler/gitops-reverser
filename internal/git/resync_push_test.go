@@ -63,8 +63,7 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	superseded := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
 		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "1",
-		RefreshRemote: true,
-		Result:        superseded,
+		Result: superseded,
 	}))
 
 	// The queue now has no free slot, yet a second request for the SAME scope is
@@ -89,7 +88,6 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	require.NotNil(t, item.Resync)
 	current := w.takePendingResync(item.Resync)
 	assert.Equal(t, "2", current.ResourceVersion, "the marker runs the newest request for its scope")
-	assert.True(t, current.RefreshRemote, "coalescing must preserve a pending remote refresh")
 
 	// The key is cleared, so the next resync for that scope queues a fresh marker.
 	require.True(t, w.EnqueueResync(&ResyncRequest{

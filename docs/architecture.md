@@ -65,11 +65,12 @@ Every write to that branch goes through the worker's single event loop and commi
 fetch and hard-reset before the first commit of every publication cycle. It no longer does: the push
 session reads the remote's ref advertisement on a connection the cycle was making anyway, and a cycle
 that commits nothing still reaches it, so a base the worker can vouch for needs no fetch to plan
-against. Two flags on the worker carry that claim, and they are separate on purpose: `baseTrusted`
-is dropped by anything that can no longer prove where the remote is, while `worktreeDirty` records
-that a write failed part-way and is cleared **only by a reset** (a third, `replayRequired`, marks
-retained writes whose local commits a reset discarded before the replay could rebuild them).
-Collapsing them would let one kind of doubt clear another. Either flag makes the next cycle fetch. The
+against. Two pieces of state on the worker carry that claim, and they are separate on purpose:
+`baseTrusted` is dropped by anything that can no longer prove where the remote is, while
+`checkoutApplied` counts how many retained writes the checkout holds on top of its root. A write
+that failed part-way sets it to unknown, which **only a reset** clears; a reset sets it to zero,
+which with writes retained says their local commits are gone and must be replayed. Collapsing the
+two would let one kind of doubt clear another. Either one makes the next cycle fetch. The
 failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
 is caught by the compare-and-swap on the next push. For a new write branch, the worker checks the
 parent's advertised tip before sending the push. A moved parent triggers fetch, reset, and replay.
@@ -1267,12 +1268,12 @@ with no refresher.
 is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans
 straight onto its own last push. Once writes are retained the guard flips off entirely, because a
 reset would destroy the local commits those writes already produced. Anything that needs a fresh
-tree with work in hand therefore resets **and replays**
-([`refreshRemoteAndRebuildPendingWrites`](../internal/git/branch_worker.go)) rather than resetting
-alone, re-planning the retained writes onto the new tip. Three things reach it: a forced recheck
-calls it directly, while a worktree a failed write left dirty and the snapshot a resync judges
-against go through `invalidateAndRefresh`, which drops base trust first because nothing has asked
-the remote anything yet.
+tree with work in hand therefore resets **and replays** rather than resetting alone, re-planning the
+retained writes onto the new tip. One function on the event loop does that,
+[`materialize`](../internal/git/branch_worker.go): every commit and push the loop makes runs it
+first, and the loop's commit refuses a checkout that is not the projection of the retained writes.
+A worktree a failed write left dirty, retained writes whose commits a reset discarded, a parent
+change, and the snapshot a resync judges against all reach it.
 
 **What a reset has to leave behind, now that it is the only cleanup.** A hard reset restores tracked
 files and stops there, so a document a failed write created, and the placement directory it created

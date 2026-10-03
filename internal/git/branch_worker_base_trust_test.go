@@ -109,7 +109,7 @@ func TestBaseTrust_AResetAlwaysClearsTheDirtyFlag(t *testing.T) {
 // grant trust.
 func TestBaseTrust_FetchingTheRemoteHashDoesNotGrantTrust(t *testing.T) {
 	f := newLedgerFixture(t, "trust-hash-fetch", true)
-	f.commit(false, "mine")
+	f.commit("mine")
 	f.contend("OUTSIDE.md", "from-another-writer\n")
 
 	repo, err := gogit.PlainOpen(f.worker.repoPath())
@@ -131,7 +131,7 @@ func TestBaseTrust_FetchingTheRemoteHashDoesNotGrantTrust(t *testing.T) {
 // died mid-upload leaves the remote in a state nobody observed.
 func TestBaseTrust_LostOnEveryPushFailure(t *testing.T) {
 	f := newLedgerFixture(t, "trust-push-fail", true)
-	f.commit(false, "mine")
+	f.commit("mine")
 
 	originalPush := pushAtomicFn
 	pushAtomicFn = func(
@@ -163,7 +163,7 @@ func TestBaseTrust_SuccessfulPushDoesNotLaunderADirtyWorktree(t *testing.T) {
 	f := newLedgerFixture(t, "trust-dirty-survives-push", true)
 
 	// 1. Write A commits and is retained.
-	f.commit(false, "write-a")
+	f.commit("write-a")
 
 	// 2. Write B fails part-way through executePendingWrites. Its window is dropped; A stays.
 	f.worker.markWorktreeDirty("write B failed part-way")
@@ -194,7 +194,7 @@ func TestBaseTrust_LostWhenSomebodySaysTheRemoteMoved(t *testing.T) {
 	}
 	defer func() { syncToRemoteFn = original }()
 
-	f.commit(false, "retained")
+	f.commit("retained")
 
 	f.worker.baseTrustedState.Store(true)
 	err := f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending, fetchReasonForcedRecheck)

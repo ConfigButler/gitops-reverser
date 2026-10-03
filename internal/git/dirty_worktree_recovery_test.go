@@ -7,8 +7,9 @@ package git
 // The head-of-cycle fetch used to launder the worktree as a side effect (§5). Now that a trusted,
 // clean base skips it, the cleanup has to be deliberate — and commitPendingWrites cannot perform
 // it once work is retained, because a reset is exactly what would destroy the local commits those
-// writes already produced. recoverRetainedWrites resets and REPLAYS instead, which is why it lives
-// on the event loop, and why every loop path that reaches commitPendingWrites has to call it.
+// writes already produced. The loop's materialize resets and REPLAYS instead, and its commit
+// refuses a checkout that is not the projection of the retained writes, so a path that skipped
+// materialize fails rather than committing leftovers.
 //
 // See docs/design/push-notification-and-reconcile-trigger.md §1.5.
 
@@ -134,10 +135,9 @@ func TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers(t *testing.T) {
 // TestEveryLoopCommitPathRecoversADirtyWorktree enumerates the loop's commit entry points against
 // one dirty fixture.
 //
-// It is written as a table on purpose. recoverRetainedWrites has to be called by every path that
-// reaches commitPendingWrites, and nothing in the type system says so — a new entry point added
-// later would silently commit leftovers. Adding its row here is the cheapest way to make that
-// omission fail loudly.
+// It is written as a table on purpose. The commit guard turns a path that skips materialize into a
+// failed write rather than a laundered one, but only this table proves each path RECOVERS: a new
+// entry point that forgot to materialize would fail every write while the worktree is dirty.
 func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -233,4 +233,44 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 				"a recovery resets, and a reset clears the flag")
 		})
 	}
+}
+
+// TestDirtyWorktree_AFailedWriteIsUndoneWithoutAFetch pins the local undo. A batch whose second
+// write fails after the first has committed and staged its file used to leave the worktree dirty,
+// and the next commit then fetched and reset from the remote to clear it. The checkout is the
+// projection of the retained writes, so the commit the batch started on is all the cleanup needs:
+// the failed batch leaves no commit, no file and no doubt behind, and the next commit costs no
+// round trip.
+func TestDirtyWorktree_AFailedWriteIsUndoneWithoutAFetch(t *testing.T) {
+	f := newLedgerFixture(t, "failed-write-undone-locally", true)
+	f.publish("prime")
+
+	repo, err := gogit.PlainOpen(f.worker.repoPath())
+	require.NoError(t, err)
+	start := localHead(repo)
+
+	committed, err := f.worker.buildGroupedPendingWrite(f.worker.ctx,
+		[]Event{configMapEvent("committed-then-undone", "alice", "team-a")})
+	require.NoError(t, err)
+	secret := configMapEvent("unencrypted", "alice", "team-a")
+	secret.Identifier.Resource = "secrets"
+	secret.Object.SetKind("Secret")
+	failing, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{secret})
+	require.NoError(t, err)
+
+	err = f.worker.commitPendingWrites([]PendingWrite{*committed, *failing})
+	require.ErrorContains(t, err, "secret encryption is required")
+
+	assert.False(t, f.worker.worktreeDirty(), "the failed batch was undone locally")
+	assert.True(t, f.worker.baseTrusted(), "the checkout is back where the trusted base left it")
+	assert.Equal(t, start, localHead(repo), "the first write's commit is undone with the batch")
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+	status, err := worktree.Status()
+	require.NoError(t, err)
+	assert.True(t, status.IsClean(), "no leftover of the failed batch survives: %s", status)
+
+	before := f.mark()
+	f.commit("after-the-failure")
+	assert.Zero(t, f.mark().since(before).connections(), "the next commit plans on the checkout as it is")
 }

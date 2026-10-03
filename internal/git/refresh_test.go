@@ -168,7 +168,7 @@ func TestRefresh_AMovedBranchFetchesAndResets(t *testing.T) {
 // A reset here would destroy the local commits behind retained writes.
 func TestRefresh_SkipsABranchMidCycle(t *testing.T) {
 	h := newRefreshHarness(t, "refresh-mid-cycle")
-	h.commit(false, "retained")
+	h.commit("retained")
 	h.loop.pendingWrites = h.pending
 
 	h.reported = nil

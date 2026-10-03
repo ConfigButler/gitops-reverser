@@ -199,40 +199,20 @@ func TestParentBranchReadiness_AnOmittedParentCanStall(t *testing.T) {
 		"an observation made under a configured parent is about another configuration")
 }
 
-// TestParentRecovery_ASnapshotRequestForcesOneRecheck: the controller acts on the branch worker's
-// snapshot requests, not on the Ready reason. A request forces exactly one recheck; requests made
-// entirely between two reconciles are still acted on; an unchanged sequence forces nothing.
-func TestParentRecovery_ASnapshotRequestForcesOneRecheck(t *testing.T) {
-	r, workers := startParentBranchWorkers(t)
-	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
+// TestParentRecovering_ReadsTheWorkerOnly: the reconciler reports recovery from the branch worker's
+// memory and nothing else. No worker manager, no worker, or a worker that owes nothing is not
+// recovering.
+func TestParentRecovering_ReadsTheWorkerOnly(t *testing.T) {
 	target := parentBranchTarget("apps", "edits", "apps", "release", time.Now())
+	assert.False(t, (&GitTargetReconciler{}).parentRecovering(target, "shop"), "no worker manager")
+
+	r, _ := startParentBranchWorkers(t)
+	assert.False(t, r.parentRecovering(target, "shop"), "no worker for the target yet")
+
+	repo := git.RepoIdentity{ProviderUID: "uid-1", URL: "https://example.invalid/repo.git"}
 	_, err := r.ensureEventStream(context.Background(), target, "shop", repo, logr.Discard())
 	require.NoError(t, err)
-	worker, _ := workers.GetWorkerForTarget("repo1", "shop", "edits")
-	ref := types.NewResourceReference(target.Name, target.Namespace)
-
-	recheck, _ := r.parentRecovery(target, "shop")
-	assert.False(t, recheck, "nothing asked")
-
-	worker.BumpSnapshotRequestForTest(ref)
-	recheck, _ = r.parentRecovery(target, "shop")
-	assert.True(t, recheck)
-	recheck, _ = r.parentRecovery(target, "shop")
-	assert.False(t, recheck, "exactly one recheck per request")
-
-	worker.BumpSnapshotRequestForTest(ref)
-	worker.BumpSnapshotRequestForTest(ref) // a whole episode between two reconciles
-	recheck, _ = r.parentRecovery(target, "shop")
-	assert.True(t, recheck, "still acted on")
-
-	for range 10 {
-		recheck, _ = r.parentRecovery(target, "shop")
-		assert.False(t, recheck)
-	}
-
-	r.snapshotRequests.forget(ref)
-	recheck, _ = r.parentRecovery(target, "shop")
-	assert.True(t, recheck, "a forgotten target acts on the standing request again")
+	assert.False(t, r.parentRecovering(target, "shop"), "a worker that owes nothing")
 }
 
 func TestParentRecoveryReadiness_IsProgressNotAStall(t *testing.T) {

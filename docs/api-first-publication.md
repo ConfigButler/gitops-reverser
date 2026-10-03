@@ -248,24 +248,24 @@ explains why these policies help with field authority without providing a concur
 
 ### Three separate recovery questions
 
-The worker needs three pieces of state because a successful push cannot answer every question
+The worker needs two pieces of state because a successful push cannot answer every question
 about its local checkout.
 
 | State | Meaning | Recovery consequence |
 | --- | --- | --- |
 | `baseTrusted` | The last observed base remains usable for optimistic planning | Fetch if untrusted and no writes are retained |
-| `worktreeDirty` | A failed write may have left partial filesystem or index changes | Reset; replay retained writes if present |
-| `replayRequired` | A reset discarded retained commits and their rebuild is incomplete | Block publication until the retained writes are rebuilt |
+| `checkoutApplied` unknown | A failed write may have left partial filesystem or index changes | Reset; replay retained writes if present |
+| `checkoutApplied` below the retained writes | A reset discarded retained commits and their rebuild is incomplete | Block commits and publication until the retained writes are rebuilt |
 
 “Trusted” does not mean the remote cannot have changed since the last observation. Detecting
 that change is the compare-and-swap's job. Similarly, a clean checkout can still be missing the
 commits represented by retained writes.
 
 The recovery rule is to fetch, reset, and replay before proceeding with retained work whose local
-representation is unsafe. `replayRequired` is set **before** the reset rather than after it,
+representation is unsafe. The count drops to zero **before** the reset rather than after it,
 because a reset can move the branch reference and then fail while rewriting the worktree: the
 commits behind the retained writes are already unreachable at that point, and a flag set only on
-the success path would miss exactly that case. The cost of setting it too eagerly is one fetch on
+the success path would miss exactly that case. The cost of dropping it too eagerly is one fetch on
 the next cycle.
 
 A fourth piece of state is not a flag: the trust above, like everything else the worker holds, is

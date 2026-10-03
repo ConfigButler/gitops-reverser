@@ -59,6 +59,10 @@ type adoSimulator struct {
 	// round trips to the Git host can be measured rather than guessed. See
 	// git_request_ledger_test.go and docs/design/push-notification-and-reconcile-trigger.md §1.6.
 	ledger *gitRequestLedger
+
+	// around, when set, serves each request in place of the backend and decides whether and how
+	// to call it: a test holds a request open, or lets the backend apply it and swallows the reply.
+	around atomic.Pointer[func(w http.ResponseWriter, r *http.Request, backend http.Handler)]
 }
 
 // gitHTTPBackend locates canonical git's CGI server, skipping the test when it is unavailable.
@@ -157,6 +161,10 @@ func startGitHTTPServer(tb testing.TB, projectRoot, repoDir string, enforceMulti
 			r.ContentLength = int64(len(raw))
 		}
 
+		if around := sim.around.Load(); around != nil {
+			(*around)(w, r, backend)
+			return
+		}
 		backend.ServeHTTP(w, r)
 	})
 

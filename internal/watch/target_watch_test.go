@@ -1122,7 +1122,7 @@ func TestRouteLiveTargetWatchEvent_ACancelledStreamStopsEnqueuing(t *testing.T) 
 	)
 
 	require.NoError(t, err)
-	assert.Equal(t, "12", rv, "the cursor still advances; only the enqueue is dropped")
+	assert.Empty(t, rv, "an event that was never enqueued must not advance the cursor")
 	assert.Empty(t, enqueuer.events)
 }
 

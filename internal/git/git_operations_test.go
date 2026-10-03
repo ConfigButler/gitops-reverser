@@ -339,7 +339,7 @@ func TestBranchWorker_FirstCommitOnEmptyRepo(t *testing.T) {
 	require.NoError(t, err)
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// Verify repository state
@@ -443,7 +443,7 @@ func TestBranchWorker_BranchCreationAndPush(t *testing.T) {
 	require.NoError(t, err)
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// Verify local branch exists
@@ -468,7 +468,7 @@ func TestBranchWorker_ConflictResolution(t *testing.T) {
 	event := createTestEvent(t, "some-resource")
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	// Simulate another client creating conflicting commit in remote after our local commit exists.
 	simulateClientCommitOnDisk(t, "file://"+serverPath, "main", "README.md", "This is our conflicting readme")
@@ -527,7 +527,7 @@ func TestBranchWorker_ConcurrentOperations(t *testing.T) {
 				results <- err
 				return
 			}
-			if err := worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false); err != nil {
+			if err := worker.commitPendingWrites([]PendingWrite{*pendingWrite}); err != nil {
 				results <- err
 				return
 			}
@@ -689,7 +689,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	event := createTestEvent(t, "resource1")
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
@@ -714,7 +714,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	event = createTestEvent(t, "resource2")
 	pendingWrite, err = worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
@@ -775,7 +775,7 @@ func TestPullBranch_DanglingHead(t *testing.T) {
 	event := createTestEvent(t, "resilient-change")
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// 7. Verify Persistence
@@ -832,7 +832,7 @@ func TestPullBranch_DanglingHead_NewOrphan(t *testing.T) {
 	event := createTestEvent(t, "orphan-resource")
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// 5. Verify Topology on Server
@@ -883,7 +883,7 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 	event := createTestEvent(t, "resource1")
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	simulateSimpleMerge(t, remoteURL, "feature", "main")
@@ -892,7 +892,7 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 	event = createTestEvent(t, "resource2")
 	pendingWrite, err = worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
@@ -989,7 +989,7 @@ spec:
 	require.NoError(t, err)
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	repo, err = git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
@@ -1031,7 +1031,7 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	event := createTestEvent(t, "resource1")
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)

@@ -201,9 +201,9 @@ boundary, the commit, the push. Background:
 | `git_pushes_total` | counter | `provider_namespace`, `provider_name`, `branch`, `outcome` | One per push cycle: `pushed` or `failed`. |
 | `git_push_retries_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
 | `git_push_duration_seconds` | histogram | `provider_namespace`, `provider_name`, `branch` | One cycle end to end, retries included. |
-| `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, and only on the intervals where the branch had actually moved). See the note below. |
+| `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty that could not be undone locally) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, and only on the intervals where the branch had actually moved). See the note below. |
 | `git_queue_drops_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work a full queue threw away. `kind` is `write` / `attach` / `resync` / `refresh`. Every increment is lost work — except `refresh`, which the next reconcile asks for again; a standing rate there means the branch's status and placement stop being topped up. |
-| `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. |
+| `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. An unreachable remote does not count: a decided window waits for the publication retry instead. |
 | `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `atomic_before_apply` / `shutdown`; `timer_source` is `target` or `commit_request`. See [tuning commit windows](#tuning-commit-windows). |
 | `git_commit_window_duration_seconds` | histogram | `gittarget_namespace`, `gittarget_name` | How long each window collected: from the write that opened it to the start of its finalize. Its count equals `git_commit_windows_total` summed over `close_reason` and `timer_source`. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
@@ -255,6 +255,12 @@ report rather than a cost. **`recovery` covers a dirty worktree whichever way it
 the plain reset when nothing is retained, and the reset-and-replay when something is. Which of the
 two happens depends only on whether a push was in cooldown at the time, so splitting them would
 hide half of every recovery from the series you are meant to read this way.
+
+A write that fails part-way no longer reaches this series at all in the common case: the worker
+undoes the failed batch locally, back to the commit it started on, and the next commit plans on the
+checkout without a fetch. Only a failed write that cannot be undone locally leaves the worktree
+dirty and costs a `recovery` fetch, so a `recovery` fetch now points at a reset that went wrong, a
+parent change, or a replay that did not finish.
 
 `contention` tracks `git_push_retries_total` one-for-one, because both
 count a confirmed moved remote. `push_failure_probe` moving on its own is pushes failing for a
@@ -329,6 +335,15 @@ red trains people to ignore it. Four classes:
 
 `route_failed` and a queue drop **overlap**: a full worker queue is one of the ways a route fails, so
 one dropped event increments both. They are two views of one event, and summing them double-counts.
+
+**Backpressure during an outage looks like loss and is not.** A branch worker keeps every decided
+write while its remote cannot be reached, and bounds that at admission: once its retained writes
+fill the retained-byte budget while a failed publication waits for its retry, it refuses new writes,
+saves and resyncs the way a full queue does, and both series rise. The watch does not advance its
+cursor past a refused event, so the reconnect delivers it again; only a cursor that expires during a
+long outage turns it into a relist, whose snapshot converges the folder without that event's own
+commit. Read these increments beside `git_pushes_total{outcome="failed"}` with no successes: that is
+an outage holding work back, not work thrown away. A healthy branch never refuses for this reason.
 
 `placement_refusals_total` and `git_documents_total{outcome="refused"}` **overlap the same way**: a
 resource the writer declines to place increments both, so the loss class holds two views of one

@@ -268,7 +268,7 @@ func (l *branchWorkerEventLoop) serviceCommitRequests() {
 
 // waiting reports whether a request is still looking for a window it may attach to at now.
 func (p *pendingCommitRequest) waiting(now time.Time) bool {
-	return !p.attached && !p.committed && p.attachDeadline.After(now)
+	return !p.attached && p.attachDeadline.After(now)
 }
 
 // noteForeignWindow records, on every waiting request, that a window it cannot attach to is open.
@@ -357,7 +357,7 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	now := time.Now()
 	for id, pcr := range l.pendingCRs {
-		if pcr.attached || pcr.committed || pcr.attachDeadline.After(now) {
+		if pcr.attached || pcr.attachDeadline.After(now) {
 			continue
 		}
 		// Which of the two refusals this is depends on whether anything was open that this
@@ -387,10 +387,12 @@ func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	}
 }
 
-// recordCommitRequest commits a request's message with an untouched tree, for a request that ran
-// out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason no record was
-// made is returned, including a write gate (an empty commit is a write too), so the request fails
-// instead of reporting a save it did not make.
+// recordCommitRequest decides an empty commit recording a request's message, for a request that ran
+// out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason no record can
+// be made is returned, including a write gate (an empty commit is a write too), so the request fails
+// instead of reporting a save it did not make. Once decided, the request rides the record write
+// like an attached request rides its window: a remote that cannot be reached holds it, and only a
+// failure of the commit itself fails it.
 func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (bool, error) {
 	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
 	if err != nil {
@@ -398,24 +400,11 @@ func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
-	// An empty commit is only empty on a clean worktree: a failed write's staged leftovers would
-	// otherwise ride along in it.
-	if err := l.recoverRetainedWrites(); err != nil {
-		l.w.Log.Error(err, "Cannot recover the worktree for the empty commit recording a CommitRequest",
-			"request", pcr.id.Namespace+"/"+pcr.id.Name)
-		return false, fmt.Errorf("record the message in an empty commit: %w", err)
+	// A record whose commit fails for good resolves the request itself, so either way the request
+	// is no longer the caller's to resolve.
+	if l.decide(*pendingWrite) {
+		l.maybeSchedulePush()
 	}
-	batch := []PendingWrite{*pendingWrite}
-	if err := l.w.commitPendingWrites(batch, len(l.pendingWrites) > 0); err != nil {
-		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
-			"request", pcr.id.Namespace+"/"+pcr.id.Name)
-		return false, fmt.Errorf("record the message in an empty commit: %w", err)
-	}
-	l.pendingWrites = append(l.pendingWrites, batch...)
-	l.pendingWritesBytes += batch[0].ByteSize
-	pcr.committed = true
-	l.w.setCommitRequestPhase(pcr.id, PhaseWaitingForPush)
-	l.maybeSchedulePush()
 	return true, nil
 }
 
@@ -468,7 +457,7 @@ func (l *branchWorkerEventLoop) handleWithdrawCommitRequest(req *AttachCommitReq
 	if l.w.hasCommitRequestOutcome(id) {
 		return // already resolved, or already withdrawn.
 	}
-	if pcr, ok := l.pendingCRs[id]; ok && (pcr.attached || pcr.committed) {
+	if pcr, ok := l.pendingCRs[id]; ok && pcr.attached {
 		l.w.Log.Info("CommitRequest withdraw ignored: the worker already holds it",
 			"request", id.Namespace+"/"+id.Name)
 		return
@@ -498,7 +487,7 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 func (l *branchWorkerEventLoop) rearmAttachTimer() {
 	var earliest time.Time
 	for _, pcr := range l.pendingCRs {
-		if pcr.attached || pcr.committed {
+		if pcr.attached {
 			continue
 		}
 		if earliest.IsZero() || pcr.attachDeadline.Before(earliest) {

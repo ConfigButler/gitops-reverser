@@ -522,9 +522,11 @@ func TestAttach_IdempotentReSendKeepsFirstDeadline(t *testing.T) {
 	assert.Equal(t, firstDeadline, loop.pendingCRs[id].attachDeadline, "the first deadline must be kept")
 }
 
-// TestAttach_FinalizeFailureResolvesFailed verifies that when the attached
-// window's commit fails (unreachable remote) the request resolves with an error.
-func TestAttach_FinalizeFailureResolvesFailed(t *testing.T) {
+// TestAttach_AnUnreachableRemoteHoldsTheRequest pins gap 4's contract for a save. A window whose
+// commit cannot be made because the remote cannot be reached is a decided write, not a failed
+// one: it stays in the log for the publication retry, and the request riding it is held in
+// WaitingForPush, because its write can still land. It used to be dropped and the request failed.
+func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -562,10 +564,13 @@ func TestAttach_FinalizeFailureResolvesFailed(t *testing.T) {
 
 	serviceAttach(loop, attachReq("alice", 0))
 
-	res, ok := outcome(t, worker)
-	require.True(t, ok)
-	require.Error(t, res.Err, "an unreachable remote must resolve the request with an error")
-	assert.Nil(t, loop.openWindow, "a failed finalize still drops the broken window")
+	_, resolved := outcome(t, worker)
+	assert.False(t, resolved, "a request whose write can still land is not failed")
+	assert.Equal(t, PhaseWaitingForPush, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	assert.Nil(t, loop.openWindow, "the window closed on its own timers")
+	require.Len(t, loop.pendingWrites, 1, "the decided window waits in the log")
+	assert.False(t, loop.pendingWrites[0].materialized, "nothing could commit it yet")
+	assert.True(t, loop.retry.pending(), "the publication retry owns the next attempt")
 }
 
 // TestFinalizeOpenWindow_ReturnsCommittedFlag verifies the boolean contract of
