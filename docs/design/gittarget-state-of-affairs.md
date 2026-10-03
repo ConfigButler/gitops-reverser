@@ -28,23 +28,22 @@ in the [future HA plan](../future/ha-gittarget-distribution-plan.md).
 | Replay refusal settles only the affected entry | `branch_log.go`, `branch_worker.go` | [`replay_refusal_test.go`](../../internal/git/replay_refusal_test.go) |
 | Save outcomes follow remote publication; the controller cannot time out a held save | [`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go), [`commitrequest_controller.go`](../../internal/controller/commitrequest_controller.go) | Held-request retry and controller safety-bound tests |
 | Parent selection and compare-and-swap remain publication guards | [`git_atomic_push.go`](../../internal/git/git_atomic_push.go) | Parent-change tests and `TestGitRoundTripLedger` |
-| New watch streams start with a fresh replay; reconnects may resume a cursor | [`target_watch.go`](../../internal/watch/target_watch.go) | `runTargetWatch`, `targetWatchReplayAndStream` |
+| New watch streams start with a fresh replay; reconnects resume a cursor only after the stream's own replay completed | [`target_watch.go`](../../internal/watch/target_watch.go) | `runTargetWatch`, `TestRunTargetWatch_ResumesOnlyAfterItsOwnReplayCompleted` |
+| A live event changes the dedup baseline and the cursor only once the worker accepted it | [`target_watch.go`](../../internal/watch/target_watch.go) | `refused_admission_test.go`, `live_content_dedup_test.go` |
 
 This is an in-memory execution log. It does not yet reconstruct windows, timers, or outcomes after
 process loss, and `PendingWrite` contains live interfaces and process references.
 
 ## Review findings and remaining gaps
 
-### 1. A refused UPDATE can be skipped on reconnect
+### 1. A refused UPDATE could be skipped on reconnect (fixed in step 5a)
 
-`routeLiveTargetWatchEvent` calls `skipUnchangedLiveUpdate` before routing to the worker. That helper
-stores the sanitized-content hash immediately. If enqueue fails, the watch keeps its cursor, but
-resuming the same UPDATE sees the stored hash, treats it as unchanged, and can advance the cursor
-without delivering the write. The existing worker admission test proves refusal, not redelivery.
-
-Step 5a must commit the dedup baseline only after successful acceptance and pin the entire
-producer/cursor path, including overlapping streams. Until then the claim that every refused
-live event is redelivered is too strong.
+`routeLiveTargetWatchEvent` stored the sanitized-content hash before routing, so a refused UPDATE
+redelivered by the cursor resume was skipped as unchanged and the cursor advanced past it. Step 5a
+records the baseline only after the worker accepts the event, records no cursor for an event a
+stopping stream never enqueued, and resumes a stream from a cursor only after its own replay
+completed. The [step 5a section](gittarget-branch-worker-log.md#step-5a-make-refused-admission-safe-built)
+lists the producer inventory and the limits left for 5b.
 
 ### 2. The retention threshold is not a total memory bound
 
@@ -118,14 +117,14 @@ should repair the acceptance boundary, not replace the log or introduce a generi
 
 ## Recommended order
 
-1. **Step 5a:** fix producer deduplication after rejected admission and test cursor resume.
+1. **Step 5a (built):** fix producer deduplication after rejected admission and test cursor resume.
 2. **Step 6:** bound network calls and test stalls and lost push responses.
 3. **Step 5b:** complete capacity accounting and per-worker pause/resume, including producer waits.
 4. **Step 5c:** expose publication failure, intake pause, and recovery through status and metrics.
 5. **Step 7:** update runtime documentation after each behavior lands and validate the final branch.
 
 The [implementation prompt](gittarget-branch-worker-log.md#prompt-for-the-next-implementation)
-starts with the smallest correctness fix. The full acceptance matrix lives beside it. Use the
+now starts at step 6. The full acceptance matrix lives beside it. Use the
 repository's high-risk validation rule for Git/write-stream implementation changes; this review
 itself is documentation-only.
 

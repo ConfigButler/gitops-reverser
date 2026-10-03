@@ -97,14 +97,16 @@ not enforce that exactly one alternative is set.
 | Input | Producer or entry point | Loop handler |
 |---|---|---|
 | Live resource write | Watch stream through `Enqueue`; `CommitModePerEvent` | `handleLiveEvents` |
-| Atomic resource batch | `EnqueueRequest`; `CommitModeAtomic` | `handleAtomicRequest` |
+| Atomic resource batch | Unit tests only, through the unexported `enqueueRequest`; `CommitModeAtomic` | `handleAtomicRequest` |
 | Attach a save | `CommitRequest` controller through the event router | `handleAttachCommitRequest` |
 | Withdraw a save | `CommitRequest` controller through the event router | `handleWithdrawCommitRequest` |
 | Complete scoped snapshot | Watch replay through `EnqueueResync` | `handleResyncRequest` |
 | Observe remote and folder | `GitTarget` reconcile through `EnqueueRefresh` | `handleRefreshRequest` |
 
 This inventory is the starting point for extracting explicit transitions. The atomic handler is
-supported, but this review found no non-test producer. `Refresh` normally observes an idle branch;
+supported, but it has no non-test producer; step 5a of the
+[log plan](gittarget-branch-worker-log.md#step-5a-make-refused-admission-safe-built) removed the
+unused exported `EnqueueRequest`. `Refresh` normally observes an idle branch;
 during parent recovery its handler can service a due probe and publish retained work.
 
 Timer channels, shutdown, synchronous Git results, and shared configuration are additional inputs

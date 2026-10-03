@@ -557,11 +557,6 @@ func (w *BranchWorker) Enqueue(event Event) bool {
 	})
 }
 
-// EnqueueRequest adds a write request to this worker's queue.
-func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
-	w.enqueueRequest(request)
-}
-
 // EnqueueWithdraw asks the loop to cancel a CommitRequest it has not acted on. It never blocks: a
 // full queue or a stopping worker drops it, and the controller sends it again on its next poll. A
 // worker whose loop has exited answers at once, because nothing is left that could act on it.

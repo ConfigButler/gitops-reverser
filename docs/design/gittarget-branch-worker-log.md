@@ -1,9 +1,9 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
-> Steps 1 to 4 are built; step 3 was split into 3a, 3b, and 3c after review. Steps 5 to 7 remain.
-> Step 5 now includes admission correctness and explicit pause/resume behavior. Implement 5a,
-> then 6, then 5b and 5c, so stalled Git calls cannot defeat the recovery state machine.
+> Steps 1 to 4 and 5a are built; step 3 was split into 3a, 3b, and 3c after review. Steps 5b, 5c,
+> 6, and 7 remain. Implement 6 next, then 5b and 5c, so stalled Git calls cannot defeat the
+> recovery state machine.
 > The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
 > the remaining defects. This is the write-path part of the "transition boundary" in
 > [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability),
@@ -132,11 +132,9 @@ writes, intermediate history, or the identity of an empty save already published
 
 Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. It also finds:
 
-- **Deduplication precedes acceptance.** `skipUnchangedLiveUpdate` stores the content hash before
-  enqueue. A refused UPDATE can therefore be skipped on cursor resume, which then advances the
-  cursor. The current step 3c test checks the worker's boolean response, not this producer path.
-  Make content deduplication commit on successful admission; check overlapping streams and
-  cancellation so a failed attempt cannot overwrite a later accepted baseline.
+- **Deduplication preceded acceptance** (fixed in step 5a). `skipUnchangedLiveUpdate` stored the
+  content hash before enqueue, so a refused UPDATE was skipped on cursor resume, which then
+  advanced the cursor.
 - **The byte budget is incomplete.** `syncAdmission` uses `pendingWritesBytes` and a pending retry.
   `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at zero. Repeated empty
   saves can grow the log without reaching the byte threshold. The FIFO limits item count, while
@@ -259,12 +257,52 @@ other failure still abandons the replay and keeps everything, refused write incl
 retry. A committed resync is marked answered, so a replay that refuses it later reports the refusal
 on the target instead of answering its caller twice. Pinned by `replay_refusal_test.go`.
 
-### Step 5a: make refused admission safe (next)
+### Step 5a: make refused admission safe (built)
 
-`fix(watch)`. Separate the deduplication check from recording an accepted observation. Pin the
-route-failure/cursor-resume case through the producer, including overlapping streams, before
-claiming that enqueue refusal preserves redelivery. Inventory every supported producer's
-acceptance result; the atomic `EnqueueRequest` API currently hides its enqueue boolean.
+`fix(watch)`. A live event changes the watch's state only once the branch worker accepted it.
+
+- **Deduplication records only accepted content.** `checkLiveContent` reads the per-object content
+  hash before routing; `acceptLiveContent` records it after the worker's `Enqueue` returned true.
+  A refused UPDATE therefore stays a change when the cursor resume redelivers it. The record is a
+  compare-and-swap from the entry the check saw: when an overlapping stream (a cluster-wide and a
+  namespaced stream deliver the same object) accepted a different version in between, the entry is
+  cleared, because which version the worker took last is unknown. No baseline routes the next
+  UPDATE; a wrong baseline would skip one.
+- **An event a stopping stream never enqueued records no cursor.** The shutdown arm returned the
+  event's resourceVersion, and the cursor moved past an event the worker never saw.
+- **A stream resumes from a cursor only after its own replay completed.** `runTargetWatch` used to
+  resume after the first session ended, however it ended. When the worker refused that session's
+  snapshot (admission backpressure) or the watch failed mid-replay, the reconnect resumed from a
+  previous stream's cursor (possibly one the shutdown arm had advanced) and skipped this stream's
+  snapshot, its sweep, and its render-fidelity report.
+- **`EnqueueRequest` is gone.** It hid its enqueue boolean, and nothing outside `internal/git` tests
+  called it; those tests use the unexported `enqueueRequest`.
+
+Pinned by `refused_admission_test.go` (route + cursor through the producer, cancellation, and
+resume-after-own-replay; each was reproduced red against the old behavior) and the overlap cases
+in `live_content_dedup_test.go`.
+
+Producer inventory, after this step:
+
+| Producer | Worker API | Refusal reaches | Redelivery |
+|---|---|---|---|
+| Live watch event | `Enqueue` → bool | `routeLiveTargetWatchEvent` error; session ends, cursor not advanced | Cursor resume redelivers the frame |
+| Watch replay / LIST fallback snapshot | `EnqueueResync` → bool, plus the reply | `enqueueReplayResync` error; no cursor, stream not marked replayed | The reconnect replays again |
+| CommitRequest attach / withdraw | `EnqueueAttach`, `EnqueueWithdraw`, fire-and-forget | Nothing synchronous | The controller re-sends on its next poll |
+| Refresh | `EnqueueRefresh`, fire-and-forget | Nothing synchronous | The next `GitTarget` reconcile asks again |
+
+Remaining limits, for 5b:
+
+- Refusal still ends the watch session, and the reconnect retries after the fixed two-second
+  backoff. A refused snapshot is now gathered again on every attempt until the worker accepts one,
+  where before it resumed from a cursor it had not earned. That is correct, and it costs one LIST
+  or replay per attempt while intake is closed. 5b's wait for capacity removes the polling.
+- When two overlapping streams accept different versions, the cleared entry lets the next
+  `/status`-only UPDATE through once. It is harmless to content, and it can split an open window
+  on the author flip, as any unattributed event can. Two streams can still hand the worker two
+  versions out of order; deduplication neither causes nor repairs that.
+- The cache is in memory. A restart starts every stream with a replay, so a lost cache only routes
+  extra UPDATEs.
 
 ### Step 5b: pause and resume under capacity pressure
 
@@ -397,7 +435,7 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 
 | Scenario | Required observation |
 |---|---|
-| UPDATE refused, then replayed from the unchanged cursor | It is enqueued; dedup cannot skip it or advance the cursor past it |
+| UPDATE refused, then replayed from the unchanged cursor | Built (5a): it is enqueued; dedup cannot skip it or advance the cursor past it |
 | Push outage under continuous events and empty saves | Byte/count budgets stop intake; accepted entries and saves remain intact |
 | Saturation across two targets on one branch and a second branch | Shared targets show the pause; the second branch continues |
 | Paused producers, with no new Kubernetes edits | One due retry recovers; producers wake without Pod restart |
@@ -413,20 +451,19 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 ## Prompt for the next implementation
 
 ```text
-Continue the branch-worker log plan from steps 1–4 at 373bf8d7. Implement step 5a only:
-make watch content deduplication depend on successful worker admission. Read this plan,
-target_watch.go, git_target_event_stream.go, and existing producer/dedup tests first.
+Continue the branch-worker log plan at step 6: deadlines on Git network calls. Read this
+plan, retry.go, branch_log.go, and the remote helpers (listRemoteRefs, CheckRepo,
+SmartFetchFrom, the push path) first.
 
-Reproduce a Modified event rejected by the worker, followed by cursor resume delivering
-the same UID, resourceVersion, and content. Prove it is offered to the worker again and
-the cursor cannot advance past an unaccepted change. Cover acceptance, cancellation,
-and overlapping streams; keep status-only no-op suppression for accepted content.
-Inspect every producer's acceptance response and record any remaining gap in the plan.
+Measure before changing anything: how go-git v6's HTTP and SSH transports behave against a
+server that accepts a connection and then stalls, and whether each honors a context. Record
+the measurement in the plan. Then bound each call and put one deadline over publish(); a
+timed-out push keeps its entries and invalidates the projection. Test against
+startRealGitServer, including a server that accepts the push and loses the reply.
 
-Keep this change focused. Preserve the log, save boundaries, FIFO ordering, and prune
-policy. Do not add Redis, HA, snapshot replacement, or cooldown changes. Mark only the
-completed step built. Run the AGENTS.md implementation gates, including Docker availability
-and sequential e2e. Report the reproduced failure, fix, validation, and remaining limits.
+Keep the log, save boundaries, FIFO ordering, the ledger rows, and parent recovery's probe
+budget. Do not start 5b or 5c. Mark only step 6 built. Run the AGENTS.md gates; report the
+measurement, the fix, validation, and remaining limits.
 ```
 
 ## Out of scope
