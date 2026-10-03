@@ -1,46 +1,67 @@
 # Branch worker write path as a log with one materializer
 
-> **Plan, partly built on #413**, written 2026-10-02 against `main` at `0daa3711` (#412 merged).
-> Steps 1 to 4 are built; step 3 was split into 3a, 3b and 3c after review. Steps 5 to 7 remain.
-> It replaces the narrow fixes first considered for gaps 3, 4 and 5 in
-> [`gittarget-state-of-affairs.md`](gittarget-state-of-affairs.md#known-gaps-ranked-by-what-a-user-would-hit)
-> with one refactor of the write path that closes gap 4 structurally and gives gaps 3 and 5 one
-> place to act. It is the "transition boundary" step of
+> **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
+> Steps 1 to 4 are built; step 3 was split into 3a, 3b, and 3c after review. Steps 5 to 7 remain.
+> Step 5 now includes admission correctness and explicit pause/resume behavior. Implement 5a,
+> then 6, then 5b and 5c, so stalled Git calls cannot defeat the recovery state machine.
+> The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
+> the remaining defects. This is the write-path part of the "transition boundary" in
 > [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability),
 > limited to the write path. Persistence stays with the
 > [HA plan](../future/ha-gittarget-distribution-plan.md). Ships as one PR, one commit per step below.
+
+## Decision: pause intake, keep recovery running
+
+When a Git outage fills the branch's capacity, pause new payload admission for that branch.
+Keep its worker alive: retain accepted work, service lifecycle commands, and retry on the existing
+backoff. Resume intake after the accepted backlog settles. Other branch workers keep running;
+targets sharing the affected worker share its publication failure.
+
+Backpressure protects memory. It cannot turn `kube-apiserver` into an indefinitely retained queue,
+stop Kubernetes mutations, or preserve every mutation during an outage. A recoverable watch cursor
+can redeliver unaccepted events; an expired cursor requires a fresh snapshot. That snapshot recovers
+current state under the target's prune policy, with no reconstruction of missed intermediate
+versions, authors, or save membership. With the default `prune.mode: onEvent`, a missed delete
+cannot be inferred from absence alone; `always` permits a complete scoped snapshot to sweep it.
+
+The near-term design is an in-memory log with explicit recovery. Restarting a Pod discards that
+log and its save receipts, so restart is not the recovery mechanism. A durable Redis/Valkey journal
+remains future work. Even that journal needs a capacity limit and an explicit admission-stop state.
 
 ## Goal
 
 Fewer independent states and fewer execution paths. The worker already holds most of an
 event-sourced write path, under other names; several helpers exist only to recreate the parts that
 are not named. This plan makes those parts explicit and deletes the helpers. The finished change is
-judged by the old machinery actually removed. Temporary growth is fine when
+judged by the old machinery removed. Temporary growth is fine when
 the deletions it enables are concrete, and comments are not trimmed to meet a number.
 
-## What the worker already has
+## Starting point before step 1
 
-| Event-sourcing role | Present today as | Helpers that compensate for it not being explicit |
+This table records the original machinery; the built steps below describe what replaced it.
+
+| Event-sourcing role | Original representation | Helpers that compensated for it not being explicit |
 |---|---|---|
 | Log of decided writes | `pendingWrites`: each entry keeps its events, message, author, policy snapshot and attached save | A decision enters the log only after its local commit succeeds, so a failed commit discards the decision: `dropFailedWindow`, five drop branches, and parent recovery's dropped `scopes`, which re-derive lost decisions through snapshots |
 | Projection of the log | The checkout: a root commit plus one commit per entry, which replay already rebuilds from the log | Three flags guess whether the projection is still valid (`worktreeDirty`, `replayRequired`, `rootParentStale()`); six `recoverRetainedWrites` call sites consult them, and `TestEveryLoopCommitPathRecoversADirtyWorktree` exists to catch a seventh that forgets; five functions rebuild the projection in slightly different ways |
 | Deadline for an open obligation | Two clocks: `publicationRetry` and parent recovery's probe timer | `deferToRecovery`, the `parentProbeHold` atomic consulted in four places, `awaitingPush` |
 | Outcomes | Saves resolve on push | `pcr.committed`, a flag that mirrors "this save rides an entry in the log" |
 
-Gap 4 follows directly from the first row: `finalizeOpenWindowWithReason` runs the rebuild before
-it builds the window, and a failed rebuild drops a window whose events, author, message and save
-are all still intact.
+The original window-loss defect followed from the first row: `finalizeOpenWindowWithReason` ran
+the rebuild before building the window, so a failed rebuild dropped a window whose events, author,
+message, and save were still intact. Step 2 fixes it.
 
 ## Target shape
 
 Three pieces of loop-owned state:
 
 - **`log`**: decided entries that are not yet published. Entry kinds are the existing
-  `PendingWrite` kinds (window, atomic, resync, request record, refusal touch) plus one new kind,
-  `owedSnapshot{scope}`, a placeholder for work that had to be discarded.
+  `PendingWrite` kinds (window, atomic, resync, request record, refusal touch). Accepted entries
+  survive saturation. There is no `owedSnapshot` entry replacing discarded accepted work.
 - **`checkout`**: `{root, rootGen, applied}`. The checkout equals `root` plus the commits of
   `log[:applied]`; `applied` unknown means the projection must be rebuilt.
-- **`retry`**: the single obligation deadline, `{backoff, due, cause, since, lastErr}`.
+- **`retry`**: the single obligation deadline. Built fields are `backoff`, `due`, and its timer;
+  cause, first-failure time, and last error are proposed diagnostic state in step 5.
 
 Three operations:
 
@@ -55,6 +76,82 @@ Three operations:
 
 The log and the retry deadline are the state the HA plan's journal would persist. This plan keeps
 both in memory.
+
+## Recovery contract
+
+These are proposed operational states derived from the log, retry schedule, and admission state.
+Do not add a second authoritative phase field or another retry timer.
+
+| State | New payloads | Work the worker still performs | Exit |
+|---|---|---|---|
+| Running | Accept within capacity | Normal decisions, materialization, and publication | Retryable failure or capacity pressure |
+| Retrying | Accept within remaining capacity | Local decisions; Git recovery only when due | Publication succeeds, or capacity fills |
+| Paused | Refuse new writes, resyncs, and new saves | Already accepted FIFO work, window closure, lifecycle commands, due recovery | Accepted backlog settles |
+| Recovering | Keep intake paused during the attempt | Probe if needed, materialize retained entries, publish | Failure returns to Paused; settled backlog reopens intake |
+
+`Recovering` is the due attempt while paused. A successful advertisement or fetch alone does not
+reopen admission: read access does not prove that a branch-protected remote accepts pushes. A
+completed publication, or explicit terminal settlement of all accepted obligations, does. Keep
+admission closed across partial replay progress and a transient drop below the high-water mark.
+Include already admitted FIFO payloads, the open window, and deferred work when deciding whether
+that backlog has settled. A healthy FIFO that briefly fills waits for capacity; it must not wait
+for a retry deadline that does not exist.
+
+The worker continues consuming accepted FIFO items into decisions, so controls behind them can
+run. It does not discard those items or move withdrawals ahead of their attaches. Bound that
+accepted set at enqueue; stopping intake after transferring it into the log is too late to make
+a strict memory promise. Check due recovery between items so a busy FIFO cannot starve it.
+
+The scope is the existing `(GitProvider namespace, name, branch)` worker. Do not stop the manager,
+its status controllers, admission endpoints, or unrelated workers. Worker retirement and Pod
+termination keep their explicit shutdown behavior; they cannot be described as pause/resume.
+
+### Resume and the three meanings of replay
+
+1. Replay **accepted decisions** from the retained log onto the remote when the checkout requires
+   rebuilding. Preserve order, messages, attribution, and save boundaries. A terminal refusal
+   settles only its entry, as step 4 establishes.
+2. Resume **unaccepted observations** from the last safely admitted watch cursor after intake
+   reopens. While paused, close the affected sessions and wait for branch capacity, with a
+   cancellation-safe wakeup and a bounded fallback recheck. Do not reconnect and collect rejected
+   snapshots every two seconds. A stale wakeup rechecks capacity before doing work.
+3. If the cursor expired, gather a **fresh complete scoped snapshot** through the existing replay
+   path, after retained work. An incomplete snapshot never authorizes a sweep. Live work from that
+   session follows its snapshot. Existing scope, coalescing fences, and prune policy still apply.
+
+Watch catch-up is a separate observation from Git publication recovery. Admission can reopen while
+a scope is still replaying; the existing stream/readiness state must continue showing that scope
+as unproven. A published old backlog does not prove the cluster is current. Record cursor expiry
+and the history limitation; do not turn a fresh snapshot into a receipt for a missed save.
+
+If a process restarts, `runTargetWatch` starts a fresh replay even with a stored cursor. This can
+repair current object content, subject to write gates and pruning. It cannot restore lost decided
+writes, intermediate history, or the identity of an empty save already published before the crash.
+
+### Review findings that gate the next implementation
+
+Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. It also finds:
+
+- **Deduplication precedes acceptance.** `skipUnchangedLiveUpdate` stores the content hash before
+  enqueue. A refused UPDATE can therefore be skipped on cursor resume, which then advances the
+  cursor. The current step 3c test checks the worker's boolean response, not this producer path.
+  Make content deduplication commit on successful admission; check overlapping streams and
+  cancellation so a failed attempt cannot overwrite a later accepted baseline.
+- **The byte budget is incomplete.** `syncAdmission` uses `pendingWritesBytes` and a pending retry.
+  `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at zero. Repeated empty
+  saves can grow the log without reaching the byte threshold. The FIFO limits item count, while
+  individual snapshots and batches can be large. Add accounting for entries and payloads before
+  describing retention as bounded; include registered saves and deferred snapshots.
+- **Retry pacing has an exception.** `decide` lets resyncs materialize during a pending retry.
+  Without the missing-parent hold, those resyncs can spend fetches before the retry deadline.
+  A deferred resync can answer its caller with the known retryable failure and remain retained;
+  the answer must not require a fresh failing connection.
+- **Watch recovery currently polls.** `runTargetWatch` reconnects after its fixed two-second
+  backoff. It has no wait for the worker to reopen admission. Queue saturation becomes repeated
+  work and a generic watch error, rather than a publication-pause explanation.
+- **Git calls remain unbounded and failure status is incomplete.** Steps 6 and 5c address these.
+
+These are follow-up requirements, not runtime fixes made by this documentation revision.
 
 ## Steps
 
@@ -77,7 +174,7 @@ writes retained it says their commits must be replayed. It replaced `worktreeDir
 leftovers discarded and base trust kept. Only a failed local undo leaves the worktree dirty for a
 reset from the remote, so `fetches_total{reason="recovery"}` drops.
 
-### Step 2: a decided window survives a failed materialization (gap 4, built)
+### Step 2: a decided window survives a failed materialization (built)
 
 `fix(git)`. A closed window enters the log before it is committed, and its save is
 `WaitingForPush` from then on. An unreachable remote leaves it for the publication retry; while that
@@ -134,14 +231,15 @@ remote holds back answers its caller with the error at once, because its caller 
 what it found, and stays in its place in the log; when it is applied later, its outcome is reported
 the way a live write's is. Two decisions, settled 2026-10-02:
 
-- **Admission backpressure.** Nothing decided is evicted. While the log holds the retained-byte
+- **Admission backpressure.** Nothing decided is evicted for capacity. While the log holds the retained-byte
   budget and a failed attempt waits for its retry, the worker refuses new writes, saves and resyncs
-  at enqueue, through the existing queue-full contract: the watch records its cursor only after a
-  write is accepted, so the reconnect delivers a refused event again; the controller sends a refused
-  save again; a refused resync's collection is gathered again. A healthy branch never closes. The
-  bound is the budget, plus the window being collected, plus what the FIFO already holds.
+  at enqueue, through the existing queue-full contract. The intended producer behavior is cursor
+  resume for a refused event, controller retry for a save, and recollection for a resync. The review
+  above identifies the deduplication hole and the watch-history limit on that intent. A healthy
+  branch does not close this admission gate. Its threshold excludes the open window, queued
+  payloads, deferred snapshots, and zero-byte entries; it is not a process memory ceiling.
 - **No snapshot replacement.** Resyncs replay in arrival order, so the writes decided between two of
-  them and every save boundary are kept trivially. The admission budget bounds their memory; the FIFO
+  them and every save boundary are kept. The admission threshold limits payload growth; the FIFO
   still coalesces resyncs that are only queued.
 
 With nothing dropped, nothing is owed a snapshot: parent recovery's `scopes`, `awaitingPush`, the
@@ -161,20 +259,51 @@ other failure still abandons the replay and keeps everything, refused write incl
 retry. A committed resync is marked answered, so a replay that refuses it later reports the refusal
 on the target instead of answering its caller twice. Pinned by `replay_refusal_test.go`.
 
-### Step 5: show a publication that keeps failing (gap 5)
+### Step 5a: make refused admission safe (next)
 
-`feat(status)`.
+`fix(watch)`. Separate the deduplication check from recording an accepted observation. Pin the
+route-failure/cursor-resume case through the producer, including overlapping streams, before
+claiming that enqueue refusal preserves redelivery. Inventory every supported producer's
+acceptance result; the atomic `EnqueueRequest` API currently hides its enqueue boolean.
 
-- Each `GitTarget` on the worker reports `Reconciling=True` with the failure message, through the
-  readiness path `RecoveringParentBranch` uses, under an existing reason. The message republishes
-  only when the error changes; the start of the failure is recorded once; no per-attempt
-  timestamp is written. One worker state feeds every target, so no target's status can clear
-  another's.
-- A held `CommitRequest`'s `WaitingForPush` message carries the same error.
-- Count materialization failures, so a failed rebuild is no longer invisible to metrics. Update
-  [`interpreting-metrics.md`](../interpreting-metrics.md) and `UPGRADING.md`.
+### Step 5b: pause and resume under capacity pressure
 
-### Step 6: deadlines on Git network calls (gap 3)
+`fix(git)`. Implement the recovery contract after step 6 bounds synchronous Git work.
+
+- Use byte and count admission budgets covering queued payloads, open/decided work, deferred
+  resyncs, and pending saves. Give empty records a nonzero charge. State measured overhead and
+  any bounded overshoot; do not advertise the existing 8 MiB threshold as a heap limit.
+- Decide the oversized-item path explicitly: reject before acceptance with a capacity diagnostic
+  and keep the scope unproven until capacity/configuration changes. Never spin on a snapshot that
+  can never fit, partially apply it, or invent permission to sweep. Chunked snapshots remain a
+  separate extension if required by measured workloads.
+- Keep a small bounded allowance for lifecycle work, with existing FIFO causality intact.
+  Outcome reads and duplicate attaches must not allocate a second obligation. Test eventual
+  withdrawal progress while intake is closed.
+- Pause affected producers and wake them after backlog settlement. Retain accepted work and the
+  existing retry schedule. All recovery Git I/O, including a resync's fetch, respects that schedule.
+  Preserve ordinary healthy-path refresh and pre-resync fetch costs.
+
+### Step 5c: project publication and intake state
+
+`feat(status)`. One immutable worker observation supplies every target's status and held save.
+
+- With only a retryable publication problem, report `Ready=False`, `Reconciling=True`, and
+  `Stalled=False`. Use the existing `Progressing` reason initially; say whether intake is paused,
+  what failed, and that retained work remains scheduled. Preserve more specific parent status and
+  independent terminal validation/refusal conditions. Intentional producer pause is not a generic
+  terminal `WatchError`.
+- Keep the first-failure time stable. Update the diagnostic only when the error or operational
+  state changes. Expose next retry time in diagnostics/metrics without a status write every tick.
+  A sibling target's success cannot clear the shared publication failure, and publication success
+  cannot clear an unrelated scope refusal or unfinished watch replay.
+- A held save remains `WaitingForPush` with the same cause. An unaccepted save stays under the
+  controller's existing safety bound and can fail only after withdrawal proves it is not held.
+- Count materialization failures and report retained bytes/count, admission pause, oldest pending
+  work, and next retry. Check existing telemetry first. Update
+  [`interpreting-metrics.md`](../interpreting-metrics.md) and `UPGRADING.md` when implemented.
+
+### Step 6: deadlines on Git network calls
 
 `fix(git)`.
 
@@ -182,16 +311,19 @@ on the target instead of answering its caller twice. Pinned by `replay_refusal_t
   connection and then stalls.
 - Pass the context through `listRemoteRefs`, `CheckRepo` and `SmartFetchFrom`. Bound each call,
   and put one deadline over the whole of `publish()` so contention retries do not reset the
-  budget. After step 1 that is two call sites, not every handler.
+  budget. Centralize that budget at the materialization and publication boundaries; check the
+  other ref-list and fetch callers for the same cancellation contract.
 - The loop calls Git synchronously, so a deadline only cancels the call and no goroutine outlives
   it on the checkout. A transport that ignores the context gets a connection-level timeout, never
   a wrapper goroutine.
 - A timed-out push is an uncertain outcome: the entries stay in the log and the projection is
-  invalidated.
+  invalidated. Before replaying, inspect the remote for the attempted commits where evidence is
+  available, including an empty save. A read or equal tree alone cannot prove that save succeeded.
+  Test a server that accepts the push but loses the response; do not promise exactly-once recovery.
 
 ### Step 7: documentation
 
-Update the event model's "Next implementation" and "Problems" sections, gaps 3 to 5 in the
+Update the event model's "Next implementation" and "Problems" sections, the remaining findings in the
 state-of-affairs page, the gate table in
 [`commitrequest-design.md`](../spec/commitrequest-design.md#when-the-target-may-not-be-written),
 the effective-point comment in `write_gate.go`, [`architecture.md`](../architecture.md), and
@@ -251,11 +383,51 @@ separate jobs, and only one of them can wait:
 
 Settled 2026-10-02:
 
-1. **Resyncs stay in the log**, as described in [Resyncs in the log](#resyncs-in-the-log). An owed
-   snapshot is needed only for byte-budget overflow.
+1. **Resyncs stay in the log**, as described in [Resyncs in the log](#resyncs-in-the-log). Capacity
+   closes admission; it never replaces accepted entries with an owed snapshot.
 2. **A partly failed write is cleaned locally** (step 1b).
-3. **Push before local e2e.** Commits are pushed once lint and unit tests pass, on a new branch;
-   CI runs e2e, and the PR is not ready until e2e is green.
+3. **Follow repository validation and push rules.** This changes the Git write and watch paths,
+   so the high-risk exception in `AGENTS.md` requires a local e2e pass before an implementation
+   push. Documentation-only changes use `task lint-docs`.
+
+Updated 2026-10-03: pause/resume is per worker, accepted work stays in memory, and watch catch-up
+has a weaker guarantee than replaying accepted decisions. Redis remains deferred.
+
+## Acceptance scenarios for the remaining steps
+
+| Scenario | Required observation |
+|---|---|
+| UPDATE refused, then replayed from the unchanged cursor | It is enqueued; dedup cannot skip it or advance the cursor past it |
+| Push outage under continuous events and empty saves | Byte/count budgets stop intake; accepted entries and saves remain intact |
+| Saturation across two targets on one branch and a second branch | Shared targets show the pause; the second branch continues |
+| Paused producers, with no new Kubernetes edits | One due retry recovers; producers wake without Pod restart |
+| Resync arrives during backoff | No early Git fetch; caller receives the failure and accepted intent remains |
+| Read access returns but pushes are still rejected | Admission stays paused and backoff continues |
+| Cursor expires during pause | Fresh scoped snapshot follows accepted work; no missing-history claim |
+| DELETE history expires under each prune mode | Only permitted deletions occur; retained stale objects remain observable |
+| One replay entry is refused | Only that entry settles; later work can publish |
+| Capacity stays full during withdrawal and shutdown | Controls progress in order; held saves never falsely time out |
+| A snapshot exceeds the entire payload budget | Explicit capacity state, no retry storm or partial sweep |
+| Remote stalls, or accepts a push and loses its reply | Deadline returns control; publication evidence governs save outcomes |
+
+## Prompt for the next implementation
+
+```text
+Continue the branch-worker log plan from steps 1–4 at 373bf8d7. Implement step 5a only:
+make watch content deduplication depend on successful worker admission. Read this plan,
+target_watch.go, git_target_event_stream.go, and existing producer/dedup tests first.
+
+Reproduce a Modified event rejected by the worker, followed by cursor resume delivering
+the same UID, resourceVersion, and content. Prove it is offered to the worker again and
+the cursor cannot advance past an unaccepted change. Cover acceptance, cancellation,
+and overlapping streams; keep status-only no-op suppression for accepted content.
+Inspect every producer's acceptance response and record any remaining gap in the plan.
+
+Keep this change focused. Preserve the log, save boundaries, FIFO ordering, and prune
+policy. Do not add Redis, HA, snapshot replacement, or cooldown changes. Mark only the
+completed step built. Run the AGENTS.md implementation gates, including Docker availability
+and sequential e2e. Report the reproduced failure, fix, validation, and remaining limits.
+```
 
 ## Out of scope
 

@@ -11,19 +11,22 @@ current failure analysis, and immediate implementation scope. The
 journal storage, acknowledgments, publication recovery, retention, and the persistence/HA rollout.
 The broader ownership contract is in [the architecture](../architecture.md#git-write-architecture).
 
-Status: design proposal against the code after #407, #411 and #412 (publication retry, built).
-Current-behavior sections describe that implementation. Event names and the transition boundary
+Status: design proposal, aligned 2026-10-03 with branch-worker steps 1 to 4 at `373bf8d7`.
+The [log plan](gittarget-branch-worker-log.md) owns the latest source review and remaining
+admission, pause/resume, status, and operation-deadline steps. Event names and the transition boundary
 are proposals. This document changes no runtime behavior and does not establish an outage or
 exactly-once guarantee.
 
 ## Next implementation: restore publication progress
 
-The remaining items (2 to 4) and the rebuild gap below are planned as one write-path refactor in
+The remaining items and the now-fixed rebuild gap are covered by the write-path refactor in
 [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md): a log of decided writes, one
 materializer for the checkout, and one retry deadline.
 
-Complete retry scheduling and add Git operation deadlines before the journal work. Neither fix
-depends on choosing a storage backend, changing the save contract, or implementing HA.
+Complete admission correctness, Git operation deadlines, and explicit pause/resume before journal
+work. Use the log plan's order: 5a, 6, 5b, 5c, then documentation closure. None depends on choosing
+a storage backend or implementing HA. Pause intake for a saturated branch while keeping its
+recovery loop alive; process restart cannot preserve the current in-memory obligations.
 
 1. **Built in #412, one schedule since #413.** Retained publication work has a bounded failure
    backoff (10s, doubling to 5m) on its own timer, in [retry.go](../../internal/git/retry.go).
@@ -45,8 +48,9 @@ The completion test is a save whose first push fails, followed by silence and re
 without another resource edit, its commit reaches Git and the same request reaches its terminal
 status with the published SHA.
 `TestPublicationRetry_AHeldCommitRequestIsCommittedWithoutAnotherWrite` covers that on the event
-loop. Still to prove that a request can safely outlive the controller's safety window while
-retries continue, and that a stalled remote call returns control within the operation budget.
+loop. `TestCommitRequestReconcile_AHeldRequestOutlivesTheBound` covers the controller's safety
+window. The remaining proof is that a stalled remote call returns control within the operation
+budget.
 Use a controllable remote for those failures and a fake clock for retry timing.
 
 This change improves progress within a running worker. Restart durability follows the separate
@@ -190,9 +194,10 @@ The backoff schedules publication attempts, not every Git connection. A new wind
 to rebuild retained writes before reaching `maybeSchedulePush`, and a failed rebuild dropped the
 window and failed its save. A closed window is now a decided write in the log
 ([`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md), step 2): an unreachable remote
-leaves it for the publication retry with its save held, and while that retry is pending a new
-decision spends no connection. Only a failure of the write itself drops it; a missing parent holds
-it back like any other remote failure, and admission backpressure bounds the log.
+leaves it for the publication retry with its save held. Ordinary decisions needing a connection
+wait; resyncs remain an exception that can fetch early. Only a failure of the write itself drops
+an entry; a missing parent holds it back like another remote failure. Admission currently limits
+retained payload bytes, with incomplete count and memory accounting recorded in the log plan.
 
 There is no worker publication-failure condition or retry deadline in `GitTarget` status. A
 push-specific refusal, such as branch protection with working read access, can leave a save in
@@ -222,15 +227,20 @@ A timer on the event loop cannot interrupt a call that has not returned.
 ### Admission is volatile, and retained memory has no outage bound
 
 Successful enqueue means an item entered process memory. The watch path can advance its resume
-cursor before the write reaches Git. A crash between those steps can make a replacement resume
-past work that existed only in RAM. The local checkout is disposable.
+cursor before the write reaches Git. A crash loses that accepted execution state. A new stream
+starts with a fresh replay, which can repair current content under its write/prune policy, but
+cannot restore lost save decisions or intermediate history. The local checkout is disposable.
 
-The FIFO defaults to 1,000 items. The default 8 MiB branch buffer threshold closes a window early,
-but closing moves its data into `pendingWrites`. Failed pushes retain that data. Queued payloads
-and deferred snapshots also consume memory, so neither setting bounds total outage retention.
+The FIFO defaults to 1,000 items. The default 8 MiB branch buffer threshold closes a window early
+and, since step 3c, closes new admission when retained bytes reach it during retry. Empty save
+records have zero byte charge; queued payloads and deferred snapshots also consume memory. Neither
+setting bounds total outage retention. Step 5b adds byte/count accounting and explicit pause/resume.
 
 Queue-full handling differs by input. Live writes return a refusal to the watch producer, which
-keeps its cursor and reconnects. Attaches and withdrawals can be resent. Refreshes can be retried
+keeps its cursor and reconnects. However, live content deduplication currently records the hash
+before enqueue, so a refused UPDATE can be skipped on that resume; step 5a fixes the acceptance
+boundary. An expired cursor requires a fresh scoped snapshot, with missed history and deletions
+limited by prune policy. Attaches and withdrawals can be resent. Refreshes can be retried
 by a later reconcile. The supported atomic enqueue API logs a dropped request without returning
 an acceptance result. A durable admission contract needs explicit receipts for every supported
 producer. See the [durable queue backlog](../TODO.md).
@@ -509,13 +519,15 @@ Journal crashes, retention, encryption, and HA failure tests belong to the
 | Held save outlives the controller's safety window | Withdrawal cannot falsely fail it; recovery remains scheduled |
 | Push fails under continuous arrivals | Arrivals cannot bypass the retry budget |
 | Parent returns, but publication still fails | New commits respect the recovery deadline while the obligation remains open |
-| Retained-write rebuild fails before a new window commits | Recovery accounts for the dropped window and its attached save |
+| Retained-write rebuild fails before a new window commits | Decided window and attached save stay in the log for retry |
+| Intake fills during publication failure | Accepted work stays; producers pause while the retry loop remains active |
+| Rejected UPDATE is redelivered from the same cursor | Dedup does not suppress work that never entered the worker |
 | Ref listing, fetch, or push stalls | Operation and cycle deadlines return control to the worker |
 | Worker is canceled during a failed attempt | No retry is rearmed and no abandoned task retains checkout access |
 | Timer moves or fires twice | Stale and duplicate firings do not close another window |
 | Recorded decisions are replayed | Identical state returns without external effects |
 | Fresh snapshot follows an accepted save | Coalescing preserves the save's membership and obligation |
-| Parent disappears again during recovery | Earlier snapshot publication cannot clear newly owed work |
+| Parent disappears again during recovery | Earlier publication cannot clear newer retained obligations |
 | Policy changes during a window or push | Its specified effective point remains unchanged |
 | Resource update and save arrive on independent paths | Only the documented attachment ordering is claimed |
 
