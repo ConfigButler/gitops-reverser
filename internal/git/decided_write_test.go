@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,11 +20,13 @@ import (
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // failSyncs makes every sync to the remote fail as an unreachable remote would, until restored,
@@ -275,4 +279,71 @@ func TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry(t *testing.T) {
 	restoreSyncs()
 	fireRetry(loop)
 	assert.Empty(t, loop.pendingWrites, "the retry applies and publishes everything it kept")
+}
+
+// Two decided writes to one object replay as the decisions they are, even when the moved remote
+// already holds the second one's content. Each write is judged against the tree the one before it
+// left, so the first reverts what the remote holds and the second applies it again: the final tree
+// is right, and the history carries both writes with their own authors and saves. Collapsing them
+// would need each write judged against the writes after it, which a save riding the first would
+// then lose its commit to. Edits inside one window do collapse, before anything is decided.
+func TestDecidedWrite_SameObjectEditsReplayAsDecidedOntoARemoteHoldingTheLast(t *testing.T) {
+	f := newLedgerFixture(t, "decided-write-same-object", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+	loop := newBranchWorkerEventLoop(f.worker, 0)
+	t.Cleanup(loop.stopTimers)
+	loop.lastPushAt = time.Now() // the cooldown holds both writes back
+
+	edit := func(value string) []byte {
+		event := configMapTargetEvent("settings", "alice", ledgerTargetName)
+		event.Object.Object["data"] = map[string]any{"value": value}
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}, CommitMode: CommitModePerEvent}})
+		path := filepath.Join(f.worker.repoPath(), "team-a",
+			generateFilePath(event.Identifier, itypes.SensitiveResourcePolicy{}))
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		return content
+	}
+	first := edit("1")
+	save := attachReq("alice", time.Hour)
+	save.GitTargetName = ledgerTargetName
+	save.MaxDuration = 0 // the save's window closes on the write it attaches to
+	save.Message = "set value to 2"
+	loop.handleQueueItem(WorkItem{Attach: save})
+	second := edit("2")
+	require.Len(t, loop.pendingWrites, 2, "two decided writes wait for the push")
+
+	gitPath := filepath.ToSlash(filepath.Join("team-a", generateFilePath(
+		configMapTargetEvent("settings", "alice", ledgerTargetName).Identifier, itypes.SensitiveResourcePolicy{})))
+	external := simulateClientCommitOnDisk(t, f.repoDir, "main", gitPath, string(second))
+
+	loop.pushPending()
+	loop.endWake(0)
+
+	require.Empty(t, loop.pendingWrites, "the replayed writes are published")
+	repo, err := gogit.PlainOpen(f.repoDir)
+	require.NoError(t, err)
+	head, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	replayed := commitsAfterHash(t, repo, head.Hash(), external)
+	require.Len(t, replayed, 2, "both decisions are commits: a revert, then the reapply")
+	assert.Equal(t, string(first), fileAt(t, replayed[0], gitPath), "the first write reverts the remote's value")
+	assert.Equal(t, string(second), fileAt(t, replayed[1], gitPath), "the second applies it again")
+	assert.Equal(t, "set value to 2", replayed[1].Message)
+
+	outcome, ok := f.worker.LookupCommitRequestOutcome(save.Namespace, save.Name, save.UID)
+	require.True(t, ok)
+	assert.Equal(t, FinalizeCommitted, outcome.Outcome, "the save resolves on its own write's commit")
+	assert.Equal(t, replayed[1].Hash.String(), outcome.Commit)
+}
+
+// fileAt is the content of path in commit's tree.
+func fileAt(t *testing.T, commit *object.Commit, path string) string {
+	t.Helper()
+	file, err := commit.File(path)
+	require.NoError(t, err)
+	content, err := file.Contents()
+	require.NoError(t, err)
+	return content
 }

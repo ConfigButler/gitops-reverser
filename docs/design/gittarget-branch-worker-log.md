@@ -110,7 +110,12 @@ termination keep their explicit shutdown behavior; they cannot be described as p
 
 1. Replay **accepted decisions** from the retained log onto the remote when the checkout requires
    rebuilding. Preserve order, messages, attribution, and save boundaries. A terminal refusal
-   settles only its entry, as step 4 establishes.
+   settles only its entry, as step 4 establishes. Each decision is judged against the tree the one
+   before it left, so commit count and SHAs can change, and a decision that changes nothing there
+   makes no commit. Two decisions to one object onto a remote that already holds the second one's
+   content replay as a revert and a reapply: the final tree is right, and each decision keeps its
+   commit and its save. This is accepted as is; collapsing it would cost a save on the first
+   decision its commit (`TestDecidedWrite_SameObjectEditsReplayAsDecidedOntoARemoteHoldingTheLast`).
 2. Resume **unaccepted observations** from the last safely admitted watch cursor after intake
    reopens. While paused, close the affected sessions and wait for branch capacity, with a
    cancellation-safe wakeup and a bounded fallback recheck. Do not reconnect and collect rejected
