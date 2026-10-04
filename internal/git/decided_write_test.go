@@ -168,8 +168,8 @@ func TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage(t *testing.T) {
 			Events:     []Event{configMapTargetEvent(name, "alice", ledgerTargetName)},
 			CommitMode: CommitModePerEvent,
 		}})
-		loop.finalizeOpenWindow()   // the budget usually closed it on arrival already
-		loop.syncUnpushedWorkFlag() // what every loop iteration does
+		loop.finalizeOpenWindow() // the budget usually closed it on arrival already
+		loop.publishLoopState(0)  // what every loop iteration does
 	}
 
 	write("over-budget-but-healthy")
@@ -193,7 +193,7 @@ func TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage(t *testing.T) {
 
 	restoreSyncs()
 	fireRetry(loop)
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	require.Empty(t, loop.pendingWrites)
 	assert.True(t, f.worker.Enqueue(configMapTargetEvent("after", "alice", ledgerTargetName)),
 		"published, so admission reopens")
@@ -224,8 +224,7 @@ func TestDecidedWrite_EmptySavesCountAgainstTheBudgetDuringAnOutage(t *testing.T
 		select {
 		case item := <-f.worker.eventQueue:
 			loop.handleQueueItem(item)
-			loop.serviceCommitRequests()
-			loop.releaseHandledItem()
+			loop.endWake(0)
 		default:
 			refused++ // the controller sends it again
 		}
@@ -256,6 +255,7 @@ func TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry(t *testing.T) {
 		req := &ResyncRequest{GitTargetName: ledgerTargetName, GitTargetNamespace: "default",
 			Result: make(chan ResyncResult, 1)}
 		loop.handleResyncRequest(req)
+		loop.endWake(0)
 		return (<-req.Result).Err
 	}
 

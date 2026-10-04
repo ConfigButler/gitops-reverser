@@ -17,7 +17,8 @@ import (
 // the writes decided meanwhile have landed: the first attempt after it can fail transiently, the
 // refresher skips a branch that holds work, and with --git-refresh-interval=0 there is no refresher
 // at all. So the worker latches an obligation the moment an attempt fails on the parent, and clears
-// it only when the log is published.
+// it only when nothing is owed any more: the log was published, or every write in it settled
+// without needing a push (endOutage).
 //
 // The obligation is the log itself. A write decided while the parent is missing stays in the log
 // like any other a remote failure holds back (branch_log.go), and admission backpressure bounds the
@@ -77,15 +78,6 @@ func (l *branchWorkerEventLoop) noteParentUnavailable(err error) {
 		l.clearRetry()
 	}
 	r.found = false
-	l.publishRecovery()
-}
-
-// closeRecoveryIfDone clears the latch once the log is published.
-func (l *branchWorkerEventLoop) closeRecoveryIfDone() {
-	if !l.recovery.active || len(l.pendingWrites) > 0 {
-		return
-	}
-	l.recovery = parentRecovery{}
 	l.publishRecovery()
 }
 

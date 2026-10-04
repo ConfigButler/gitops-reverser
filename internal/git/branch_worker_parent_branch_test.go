@@ -381,7 +381,8 @@ func TestBranchWorker_ObservesTheParentOfAnAbsentBranch(t *testing.T) {
 		assert.Equal(t, ParentMissing, o.ParentState)
 
 		r1 := f.pushToRelease("RELEASE.md", "release\n")
-		require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
+		// The worker holds the write, so the bootstrap path would read its own clone: fetch directly.
+		require.NoError(t, f.worker.syncWithRemote(f.worker.ctx, fetchReasonForcedRecheck))
 		o = observed(f)
 		assert.Equal(t, "release", o.ParentBranch)
 		assert.Equal(t, r1.String(), o.ParentCommit)

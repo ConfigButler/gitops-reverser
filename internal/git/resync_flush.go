@@ -77,11 +77,12 @@ func resyncHealKey(req *ResyncRequest) healKey {
 	}
 }
 
-// applyResync applies one revision-pinned resync in order on the worker goroutine. It mirrors the
+// applyResync decides one revision-pinned resync in order on the worker goroutine. It mirrors the
 // atomic-commit path: for a non-heal resync any open live window is finalized first so arrival order
 // is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
 // resync is then decided like every other write, and its caller answered when its commit is made
-// or fails (settleResyncApplied, settleFailed, settleUnreachable). A build or commit failure answers
+// or fails (settleResyncApplied, settleFailed, settleUnreachable). A resync that commits nothing
+// leaves the log at once, so it never schedules a push. A build or commit failure answers
 // with the error and commits nothing: the gatherer already guaranteed the snapshot is complete, so
 // a failure here is a write fault, never a partial-snapshot drop.
 //
@@ -103,27 +104,19 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		"pendingWrites", len(l.pendingWrites))
 	// A heal must never finalize a window (it only ever runs at idle); only a non-heal resync
 	// force-finalizes the open window to preserve arrival order before its mark-and-sweep.
-	closedWindow := false
 	if !req.Heal {
-		closedWindow = l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
+		l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 	}
 
-	committed := false
 	pendingWrite, err := l.w.buildResyncPendingWrite(l.w.ctx, req, &ResyncStats{})
 	if err != nil {
 		l.w.Log.Error(err, "Failed to build resync pending write", "resources", len(req.Desired))
 		req.reply(ResyncResult{Err: err})
-	} else {
-		pendingWrite.Committed = &committed
-		pendingWrite.origin.resync = req
-		l.decide(*pendingWrite)
+		return
 	}
-	// Schedule a push whenever this request CLOSED a live window, whose write must reach the
-	// remote, or the resync itself committed. A pure no-op resync that closed no window stays a
-	// no-op and does not disturb the push cooldown.
-	if committed || closedWindow {
-		l.maybeSchedulePush()
-	}
+	pendingWrite.Committed = new(bool)
+	pendingWrite.origin.resync = req
+	l.decide(*pendingWrite)
 }
 
 // buildResyncPendingWrite resolves the GitTarget's write metadata (path, encryption,

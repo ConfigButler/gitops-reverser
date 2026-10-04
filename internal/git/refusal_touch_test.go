@@ -254,6 +254,7 @@ func TestRefusalTouch_TrailingCommitRechecksConsent(t *testing.T) {
 	// the way the loop calls it.
 	loop.stopRefusalTimer()
 	loop.flushPendingRefusalTouch()
+	loop.endWake(0)
 
 	assert.Empty(t, loop.refusalPending,
 		"a target set back to Ignore must not get the commit queued under the old setting")
@@ -489,6 +490,7 @@ func TestRefusalTouch_OneTargetDoesNotDropAnothersPendingCommit(t *testing.T) {
 	// bravo's consent is withdrawn; alpha's is not, and alpha must survive it.
 	loop.stopRefusalTimer()
 	loop.flushPendingRefusalTouch()
+	loop.endWake(0)
 
 	assert.Empty(t, loop.refusalPending, "every due entry is consumed exactly once")
 	limitedAlpha, _ := w.refusalRateLimited(alpha)

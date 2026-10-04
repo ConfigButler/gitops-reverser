@@ -1091,7 +1091,7 @@ func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *te
 	}})
 	require.Len(t, loop.pendingWrites, 2,
 		"deferred event commits during cooldown are retained as local commits, not lost")
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:             []Event{configMapEvent("snapshot-only", "reconciler", "")},
@@ -1170,7 +1170,7 @@ func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 
 	result := <-req.Result
 	require.NoError(t, result.Err)
@@ -1206,7 +1206,7 @@ func TestResync_WorkerNoopDoesNotRetainOrPush(t *testing.T) {
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 
 	result := <-req.Result
 	require.NoError(t, result.Err)
@@ -1239,7 +1239,7 @@ func TestResync_WorkerEmptyDesiredSweepsManagedResource(t *testing.T) {
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 
 	result := <-req.Result
 	require.NoError(t, result.Err)

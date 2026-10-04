@@ -331,7 +331,7 @@ func ledgerOperations() []ledgerOp {
 				// handleQueueItem commits AND pushes: applyResync ends in maybeSchedulePush,
 				// and a worker that has not pushed before has no cooldown to wait out. So this
 				// one call is the whole resync cycle, which is what the row is meant to cost.
-				loop.handleQueueItem(WorkItem{Resync: req})
+				loop.handleQueueItem(resyncItem(req))
 				result := <-req.Result
 				require.NoError(f.t, result.Err)
 				require.Equal(f.t, 1, result.Stats.Created, "the resync must have written something")
@@ -419,7 +419,9 @@ func ledgerOperations() []ledgerOp {
 					[]Event{configMapEvent("held", "alice", "team-a")})
 				require.NoError(f.t, err)
 				// The fetch that finds the parent missing; the write is held in the log for it.
-				require.True(f.t, f.loop.decide(*pendingWrite))
+				f.loop.decide(*pendingWrite)
+				f.loop.endWake(0)
+				require.Len(f.t, f.loop.pendingWrites, 1)
 				require.True(f.t, f.loop.recovery.active)
 			},
 			run: func(f *ledgerFixture) {

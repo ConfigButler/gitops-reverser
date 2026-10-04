@@ -166,7 +166,7 @@ func TestReplayRefusal_AResyncAnsweredEarlierIsReportedNotAnsweredAgain(t *testi
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 	result := <-req.Result
 	require.NoError(t, result.Err)
 	require.Equal(t, 1, result.Stats.Created)

@@ -34,18 +34,18 @@ func TestPublication_ReportsAnOutageFromItsStart(t *testing.T) {
 	require.False(t, report.Since.IsZero())
 
 	fireRetry(loop)
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	require.True(t, loop.retry.pending())
 	assert.Equal(t, report.Since, f.worker.Publication().Since, "a later failure keeps the outage's start")
 
 	f.worker.branchBufferMaxBytes = 1
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	assert.True(t, f.worker.Publication().IntakePaused)
 	assert.Contains(t, f.worker.Publication().Message(), "intake of new changes is paused")
 
 	restoreSyncs()
 	fireRetry(loop)
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	assert.Equal(t, PublicationStatus{}, f.worker.Publication(), "a landed publication clears the report")
 }
 
@@ -57,16 +57,16 @@ func TestPublication_NotifiesOnlyWhenTheReportChanges(t *testing.T) {
 	f.worker.publicationReporter = func() { notified++ }
 
 	fireRetry(loop)
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	assert.Zero(t, notified, "the same failure again is no news")
 
 	f.worker.branchBufferMaxBytes = 1
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	assert.Equal(t, 1, notified, "the pause is")
 
 	restoreSyncs()
 	fireRetry(loop)
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	assert.Equal(t, 2, notified, "and so is the recovery")
 }
 
@@ -109,13 +109,13 @@ func TestPublication_MetricsDescribeTheBacklog(t *testing.T) {
 	assert.Equal(t, loop.retry.due.Unix(), nextRetry)
 
 	f.worker.branchBufferMaxBytes = 1
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	paused, _ = gauge(telemetry.GaugeGitIntakePaused)
 	assert.Equal(t, int64(1), paused)
 
 	restoreSyncs()
 	fireRetry(loop)
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 	kept, _ = gauge(telemetry.GaugeGitRetainedWrites)
 	assert.Zero(t, kept)
 	_, ok = gauge(telemetry.GaugeGitOldestRetainedWrite)

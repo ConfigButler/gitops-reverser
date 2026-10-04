@@ -166,6 +166,7 @@ func TestParentRecovery_WritesDecidedWhileTheParentIsMissingAreKept(t *testing.T
 		Result: make(chan ResyncResult, 1),
 	}
 	loop.applyResync(req)
+	loop.endWake(0)
 	require.ErrorIs(t, (<-req.Result).Err, ErrParentBranchNotFound, "its caller hears it could not be applied yet")
 	require.Len(t, loop.pendingWrites, 3, "and the resync waits in its place")
 
@@ -422,4 +423,31 @@ func TestParentRecovery_NothingOwedOpensNoObligation(t *testing.T) {
 
 	open, _ := w.ParentRecovery()
 	assert.False(t, open)
+}
+
+// Recovery ends when nothing is owed, not only when a push lands. A resync held while the parent
+// was missing can find nothing to change once it is back, and leave the log empty without a push:
+// recovery and its retry then stayed open, and intake stayed paused for good.
+func TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit(t *testing.T) {
+	f := newRealServerNewBranch(t, "recovery-noop-resync", seedMain(t))
+	clock := useTestClock(f.worker)
+	f.worker.SetParentBranch("release")
+	req := &ResyncRequest{GitTargetName: newBranchTarget, GitTargetNamespace: "default",
+		Result: make(chan ResyncResult, 1)}
+	f.loop.handleQueueItem(resyncItem(req))
+	require.ErrorIs(t, (<-req.Result).Err, ErrParentBranchNotFound)
+	require.Len(t, f.loop.pendingWrites, 1)
+	require.True(t, f.loop.recovery.active)
+	f.worker.branchBufferMaxBytes = 1
+	f.loop.publishLoopState(0)
+	require.NotNil(t, f.worker.IntakePaused())
+
+	gitIn(t, f.repoDir, "branch", "release", "main")
+	clock.advance(retryMaxBackoff)
+	fireRetry(f.loop)
+
+	require.Empty(t, f.loop.pendingWrites, "the resync had nothing to change")
+	assert.False(t, f.loop.recovery.active, "nothing is owed, so there is nothing to recover")
+	assert.False(t, f.loop.retry.pending(), "or to retry")
+	assert.Nil(t, f.worker.IntakePaused(), "and intake reopens")
 }

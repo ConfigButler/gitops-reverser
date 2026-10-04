@@ -24,10 +24,10 @@ import (
 // queueDepth() sums the in-flight count and the retained-work flag, so an item that opened a commit
 // window is covered by the first until the second is published. Releasing the count first leaves a
 // window where neither covers it, and the loop does real work inside that window
-// (serviceCommitRequests, applyDeferredHeals) before the flag is synced. A scrape landing there
-// reports a drained queue for a worker holding an uncommitted event, which can satisfy a drain gate
-// early.
-func TestReleaseHandledItem_PublishesRetainedWorkBeforeReleasingInflight(t *testing.T) {
+// (serviceCommitRequests, applyDeferredHeals, advance) before the flag is published. A scrape
+// landing there reports a drained queue for a worker holding an uncommitted event, which can satisfy
+// a drain gate early. The loop releases the count only after the wake that handled the item.
+func TestHandledItem_PublishesRetainedWorkBeforeReleasingInflight(t *testing.T) {
 	w := newMetricsTestWorker()
 	w.inflightItems.Store(1)
 
@@ -36,7 +36,8 @@ func TestReleaseHandledItem_PublishesRetainedWorkBeforeReleasingInflight(t *test
 	loop.openWindow = &openWindow{}
 
 	require.Positive(t, w.queueDepth(), "the in-flight count covers the item before the release")
-	loop.releaseHandledItem()
+	loop.endWake(0)
+	w.inflightItems.Add(-1) // as run does, after the wake
 	assert.Positive(t, w.queueDepth(), "the retained-work flag must cover it after the release")
 }
 

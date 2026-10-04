@@ -123,6 +123,7 @@ func TestAtomicWrite_DoesNotCommitAFailedWritesLeftovers(t *testing.T) {
 		GitTargetName:      "team-a",
 		GitTargetNamespace: "default",
 	})
+	loop.endWake(0)
 
 	require.Len(t, loop.pendingWrites, 2, "C committed: A is retained alongside it")
 	assert.False(t, headTreeContains(t, repoPath, leftoverPath),
@@ -164,6 +165,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 					GitTargetName:      "team-a",
 					GitTargetNamespace: "default",
 				})
+				loop.endWake(0)
 			},
 		},
 		{
@@ -179,6 +181,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 					Scope:              &scope,
 					Result:             resultCh,
 				})
+				loop.endWake(0)
 				require.NoError(t, (<-resultCh).Err)
 			},
 		},
@@ -188,7 +191,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 				t.Helper()
 				serviceAttach(loop, commitEmptyReq("alice", "save: nothing changed"))
 				forceDue(loop)
-				loop.serviceCommitRequests()
+				loop.endWake(0)
 				require.Len(t, loop.pendingWrites, 2, "the record was made")
 			},
 		},
@@ -198,6 +201,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 				t.Helper()
 				target := itypes.NewResourceReference("team-a", "default")
 				loop.commitRefusalTouch(refusalKeyFor(target, "configmaps"), "refused", "observation")
+				loop.endWake(0)
 				require.Len(t, loop.pendingWrites, 2, "the empty commit was made")
 			},
 		},

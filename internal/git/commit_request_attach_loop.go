@@ -239,7 +239,6 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		// including one another request attached, and wait for a write to open the next. The
 		// registration above is what makes this happen once per request.
 		l.finalizeOpenWindowWithReason(windowFinalizeReasonAttachNext)
-		l.maybeSchedulePush()
 		return
 	}
 	if l.openWindow.pendingCR == nil {
@@ -329,13 +328,15 @@ func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 
 // attachToOpenWindow binds a request's message to the open window and replaces the window's timers
 // with the request's own: the request's maxDuration runs from this attach, and so does its first
-// idle interval. A zero maxDuration closes the window right here.
+// idle interval. A zero maxDuration closes the window right here. The message is the window's to
+// keep from now on, so it moves into the window's charge.
 func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 	now := time.Now()
 	l.openWindow.pendingMessage = pcr.message
 	id := pcr.id
 	l.openWindow.pendingCR = &id
 	pcr.attached = true
+	l.windowBytes += attachCharge(pcr.message)
 	timers := windowTimers{noIdle: pcr.idleTimeout == nil, maxAt: now.Add(pcr.maxDuration)}
 	if pcr.idleTimeout != nil {
 		timers.idle = *pcr.idleTimeout
@@ -402,9 +403,7 @@ func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (
 	}
 	// A record whose commit fails for good resolves the request itself, so either way the request
 	// is no longer the caller's to resolve.
-	if l.decide(*pendingWrite) {
-		l.maybeSchedulePush()
-	}
+	l.decide(*pendingWrite)
 	return true, nil
 }
 

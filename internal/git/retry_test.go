@@ -43,6 +43,7 @@ func failNextPushes(t *testing.T, n int32) *atomic.Int32 {
 func fireRetry(l *branchWorkerEventLoop) {
 	l.retry.timer = nil
 	l.runRetry()
+	l.endWake(0)
 }
 
 func seedMain(t *testing.T) func(string) {

@@ -66,20 +66,24 @@ func (g *intakeGate) admit(charge, budget int64) bool {
 	return true
 }
 
-// release returns a charge whose item did not enter the FIFO after all, or that the loop has
-// handled: what the item left behind is in held from now on.
+// release returns a charge whose item did not enter the FIFO after all, or that no loop will handle.
+// An item the loop handled is released by sync instead, in the same step that counts what it left
+// behind.
 func (g *intakeGate) release(charge int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.queued -= charge
 }
 
-// sync is the loop's publication, once per iteration: whether a retry is pending, and what it
-// holds. It pauses a branch whose held work already fills the budget when the outage begins, and
-// reopens a paused one once the retry clears.
-func (g *intakeGate) sync(outage bool, held, budget int64) {
+// sync is the loop's publication, once per iteration: whether a retry is pending, what it holds, and
+// the charge of the item it handled, whose work held now counts. Moving that charge from queued to
+// held is one step under the lock, so no producer ever sees the item counted in neither. It pauses a
+// branch whose held work already fills the budget when the outage begins, and reopens a paused one
+// once the retry clears.
+func (g *intakeGate) sync(released int64, outage bool, held, budget int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.queued -= released
 	g.outage, g.held = outage, held
 	switch {
 	case g.paused != nil && !outage:
@@ -119,18 +123,25 @@ func (w *BranchWorker) intakeRefusal(charge int64) error {
 	return errAdmissionClosed
 }
 
-// eventCharge is what a queued live or atomic write is charged: its events' payload, and the
-// overhead of one kept item.
+// eventCharge is what a queued live or atomic write is charged: what keeping each of its events
+// costs, as a window or a decided write keeps it.
 func eventCharge(request *WriteRequest) int64 {
-	charge := int64(pendingWriteOverheadBytes)
+	var charge int64
 	for i := range request.Events {
-		charge += eventPayloadSize(&request.Events[i])
+		charge += eventRetainedCharge(&request.Events[i])
 	}
 	return charge
 }
 
-// attachCharge is what a save is charged while it is queued and while it waits for a window: its
-// message, and the overhead of one kept item.
+// eventRetainedCharge is what keeping one event costs: its payload, and the overhead of one kept
+// item, which a delete with no object still carries.
+func eventRetainedCharge(e *Event) int64 {
+	return eventPayloadSize(e) + pendingWriteOverheadBytes
+}
+
+// attachCharge is what a save is charged from enqueue until its message is in a decided write: its
+// message, and the overhead of one kept item. A save waiting for a window is charged on its own, and
+// one attached to the open window is in the window's charge.
 func attachCharge(message string) int64 {
 	return int64(len(message)) + pendingWriteOverheadBytes
 }
@@ -158,8 +169,8 @@ func (r *ResyncRequest) payloadSize() int64 {
 func (r *ResyncRequest) charge() int64 { return r.payloadSize() + pendingWriteOverheadBytes }
 
 // heldBytes is what the loop holds that is not published yet: the open window, the log, the
-// deferred heals' snapshots, and the saves waiting for a window. A save bound to a write rides
-// that write's charge.
+// deferred heals' snapshots, and the saves waiting for a window. An attached save is in the charge
+// of the window it is attached to, and then of the write that window became.
 func (l *branchWorkerEventLoop) heldBytes() int64 {
 	held := l.windowBytes + l.pendingWritesBytes
 	for _, heal := range l.deferredHeals {
@@ -174,9 +185,10 @@ func (l *branchWorkerEventLoop) heldBytes() int64 {
 }
 
 // syncAdmission publishes the loop's state to the intake gate, and from there to the publication
-// report and its gauges. Run once per loop iteration.
-func (l *branchWorkerEventLoop) syncAdmission() {
+// report and its gauges, releasing the charge of the item the wake handled. Run once per loop
+// iteration.
+func (l *branchWorkerEventLoop) syncAdmission(released int64) {
 	held := l.heldBytes()
-	l.w.intake.sync(l.retry.pending(), held, l.w.branchBufferMaxBytes)
+	l.w.intake.sync(released, l.retry.pending(), held, l.w.branchBufferMaxBytes)
 	l.publishPublication(held)
 }

@@ -152,6 +152,29 @@ Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. 
 
 These findings gated steps 5a to 5c; the markers above say where each was fixed.
 
+A second review, at `fc02f51d`, reproduced four more. All are fixed in the same branch:
+
+- **Recovery could stay open with nothing owed.** A resync held while the parent was missing could
+  find nothing to change once it was back. The log emptied without a push, so neither recovery nor
+  its retry closed, and intake stayed paused. `advance` now ends the outage whenever the log is
+  empty (`TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit`).
+- **A handled item's charge was briefly counted nowhere.** The loop released its queued charge
+  before publishing what it held, and a producer in between found room the branch did not have.
+  `intakeGate.sync` now moves the charge in one step
+  (`TestIntake_AHandledItemsChargeMovesToHeldInOneStep`).
+- **The FIFO kept coalesced snapshots.** A marker was the first request of its key, so the queue
+  kept every snapshot coalescing replaced, while the budget counted only the newest. The FIFO now
+  holds a `resyncMarker` that holds the current request and its charge, and `releasedResyncs` is
+  gone (`TestEnqueueResync_ACoalescedSnapshotIsNotKeptByTheQueue`).
+- **A window under-charged what it kept.** A delete was charged nothing, and an attached save
+  stopped counting until its window closed. A window now charges each event it keeps and the save
+  attached to it. A decided write is never charged more than the window or save it came from
+  (`TestIntake_AWindowChargesTheEventsItKeeps`, `TestIntake_AnAttachedSaveStaysCharged`).
+
+The same review asked for one more structural step, also taken: `decide` only appends, and one
+driver, `advance`, run once per wake, materializes, settles, publishes and closes the outage. That
+removed the `materializing`, `followUps` and `deciding` flags and decision numbering.
+
 ## Steps
 
 Each step is one commit. Its red tests are written first.
@@ -197,8 +220,9 @@ handling. This step closes them, in [`branch_log.go`](../../internal/git/branch_
 - `materialize` is never re-entered. A refusal's empty commit decided while a refused write is being
   settled is appended to the log, and the running pass commits it in order. No push starts inside a
   pass.
-- A write committed later than its own decision re-reads its prune policy, as a replay does
-  (`TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy`, a review finding).
+- Every commit re-reads its write's prune policy, as a replay does
+  (`TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy`, a review finding). The read comes
+  from the informer cache.
 - Parent recovery never opens an obligation with nothing owed
   (`TestParentRecovery_AFailedEmptySaveOwesNothing`, a review finding).
 - `pcr.committed` is gone: `attached` means bound to a write, a window's or a save's own record.

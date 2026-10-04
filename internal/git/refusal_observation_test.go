@@ -83,6 +83,7 @@ func refuseResync(t *testing.T, f *ledgerFixture, l *branchWorkerEventLoop, imag
 		},
 		Result: result,
 	})
+	l.endWake(0)
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	require.ErrorAs(t, (<-result).Err, &refused, "the diamond must refuse this write at the boundary")
 
@@ -161,6 +162,7 @@ func TestRefusalTouch_AResyncsRefusalIsPushedByTheLoopItself(t *testing.T) {
 		Desired:         []manifestanalyzer.DesiredResource{{Resource: event.Identifier, Object: event.Object}},
 		Result:          result,
 	})
+	l.endWake(0)
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	require.ErrorAs(t, (<-result).Err, &refused)
 
@@ -378,6 +380,7 @@ func TestRefusalTouch_AQueuedCommitIsDroppedOnceSomethingElseCoveredIt(t *testin
 
 	loop.stopRefusalTimer()
 	loop.flushPendingRefusalTouch()
+	loop.endWake(0)
 
 	assert.Empty(t, loop.refusalPending, "the entry is consumed either way")
 	limited, _ := w.refusalRateLimited(editingRef())
@@ -408,6 +411,7 @@ func TestRefusalTouch_AnAcceptedSiblingTypeDoesNotRearmAStandingRefusal(t *testi
 		GitTargetName: ledgerTargetName, GitTargetNamespace: "default",
 		Scope: &configMaps, Result: result,
 	})
+	l.endWake(0)
 	require.NoError(t, (<-result).Err, "an empty ConfigMap snapshot is accepted")
 	require.NoError(t, f.worker.pushPendingCommits(l.pendingWrites))
 	l.pendingWrites, l.pendingWritesBytes = nil, 0
@@ -563,6 +567,7 @@ func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCollection(t *testin
 			Desired: []manifestanalyzer.DesiredResource{{Resource: event.Identifier, Object: event.Object}},
 			Result:  result,
 		})
+		l.endWake(0)
 		err := (<-result).Err
 		require.NoError(t, f.worker.pushPendingCommits(l.pendingWrites))
 		l.pendingWrites, l.pendingWritesBytes = nil, 0
@@ -586,6 +591,7 @@ func TestRefusalTouch_RecoveryCancelsACommitQueuedForTheSameCollection(t *testin
 	f.worker.refusalTouchMu.Unlock()
 	l.stopRefusalTimer()
 	l.flushPendingRefusalTouch()
+	l.endWake(0)
 	require.NoError(t, f.worker.pushPendingCommits(l.pendingWrites))
 
 	assert.Equal(t, before, remoteCommits(t, f),

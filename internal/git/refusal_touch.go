@@ -490,9 +490,7 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, obser
 	// refusal free to make one. Deciding it while a refused write is being settled appends it to the
 	// log for the running pass, behind the writes decided before it.
 	pendingWrite.origin.refusal = &refusalTouchOrigin{key: key, observation: observation}
-	if l.decide(*pendingWrite) {
-		l.maybeSchedulePush()
-	}
+	l.decide(*pendingWrite)
 }
 
 // refusalIsAWriteBoundary reports whether this refusal is one where the FOLDER is accepted and

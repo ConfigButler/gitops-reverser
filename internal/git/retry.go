@@ -71,7 +71,16 @@ func (l *branchWorkerEventLoop) scheduleRetry(cause error) {
 	l.publishRecovery()
 }
 
-// clearRetry closes the schedule: the work was published, or nothing is owed.
+// endOutage closes the retry and parent recovery together: a publication landed, or nothing is owed
+// any more. Either ends whatever the last failed attempt was waiting out, and with it the pause on
+// intake (intake.go).
+func (l *branchWorkerEventLoop) endOutage() {
+	l.recovery = parentRecovery{}
+	l.clearRetry()
+}
+
+// clearRetry closes the schedule. It also publishes the recovery latch, which reads the schedule's
+// deadline.
 func (l *branchWorkerEventLoop) clearRetry() {
 	if l.retry.timer != nil {
 		l.retry.timer.Stop()

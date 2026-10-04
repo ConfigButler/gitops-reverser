@@ -230,7 +230,7 @@ func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
 
 	loop := newBranchWorkerEventLoop(w, time.Second)
 	loop.handleShutdown()
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 
 	assert.Equal(t, int64(0), w.inflightItems.Load(), "buffered items must be drained from the inflight count")
 	assert.Equal(t, int64(0), w.queueDepth(), "a drained, exiting worker must read depth 0")

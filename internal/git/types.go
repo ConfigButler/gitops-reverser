@@ -396,9 +396,6 @@ type PendingWrite struct {
 	// was replayed onto refuses it, so the replay skipped it and the checkout does not hold it. The
 	// loop settles it out of the log (settleReplayRefusals). Stamped by replayPendingWrites.
 	replayRefusal error
-	// seq numbers the loop's decisions, so a decision can be found in the log after writes before
-	// or after it were dropped or added. Loop-goroutine only.
-	seq uint64
 	// charge is what keeping this write was charged against the retained-byte budget when it was
 	// decided, and is refunded when it leaves the log. See retainedCharge. Loop-goroutine only.
 	charge int64
@@ -423,9 +420,9 @@ type WorkItem struct {
 	// Attach is a CommitRequest attach: bind a message to the author's window and
 	// let its timers close that window.
 	Attach *AttachCommitRequest
-	// Resync is a streaming-snapshot resync request (M8): a synchronous
+	// Resync is the FIFO position of a streaming-snapshot resync request (M8): a synchronous
 	// request/reply that materialises a GitTarget's complete desired set.
-	Resync *ResyncRequest
+	Resync *resyncMarker
 	// Refresh asks the worker to re-prove where its branch is on the remote. It is the only
 	// work item that never writes anything: see RefreshRequest.
 	Refresh *RefreshRequest
@@ -434,8 +431,8 @@ type WorkItem struct {
 	Withdraw *AttachCommitRequest
 
 	// charge is what a write or an attach was charged against the intake budget at enqueue, and is
-	// released once the loop has handled it. A resync's is its request's (ResyncRequest.charge),
-	// because the request a marker runs can change while it waits. See intake.go.
+	// released once the loop has handled it. A resync's is on its marker, because coalescing can
+	// change it while the marker waits. See intake.go.
 	charge int64
 }
 
@@ -558,20 +555,21 @@ type resyncKey struct {
 	scope     string
 }
 
-// pendingResync is the coalescing entry for one resyncKey: the current request for
-// that key, and whether anything for its scope has been queued behind the marker
-// that represents it in the FIFO. Once tailPassed is set the marker's position is
-// no longer a safe place to run a newer snapshot — see the pendingResyncs field on
-// BranchWorker, and "Queue ordering and coalescing" in docs/design/target-watch-plan.md.
-type pendingResync struct {
-	// marker is the request whose pointer sits on the FIFO for this key. It is fixed
-	// for the entry's life: coalescing swaps request, never marker. Identifying the
-	// entry by its marker is what keeps a released key unambiguous — once a later
-	// request re-inserts the same key, the older marker must run the request it held
-	// when it was released (BranchWorker.releasedResyncs) rather than pick up the
-	// newer entry.
-	marker     *ResyncRequest
-	request    *ResyncRequest
+// resyncMarker is a queued resync's place in the FIFO, and the request it runs when it comes up. The
+// FIFO holds the marker, never a request, so a request coalescing replaced is not kept alive by the
+// queue: only the current one is reachable, and only the current one is charged.
+//
+// While its key is open (BranchWorker.pendingResyncs), a newer request for the same key replaces
+// request. Once anything for its scope is queued behind it (tailPassed) the marker's position is no
+// longer a safe place to run a newer snapshot, and the key is released: the marker keeps the request
+// it holds, and the next request for the key takes a marker of its own. See "Queue ordering and
+// coalescing" in docs/design/target-watch-plan.md.
+type resyncMarker struct {
+	// request, charge and tailPassed are guarded by pendingResyncsMu.
+	request *ResyncRequest
+	// charge is what the intake budget was charged for the marker: its current request's, adjusted
+	// whenever coalescing replaces it. See intake.go.
+	charge     int64
 	tailPassed bool
 }
 

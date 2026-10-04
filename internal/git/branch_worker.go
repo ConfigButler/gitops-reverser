@@ -289,8 +289,8 @@ type BranchWorker struct {
 	// pendingResyncs coalesces queued resyncs by (GitTarget, scope). A resync is
 	// state-based and idempotent — "make Git match this desired set for this
 	// scope" — so a newer one wholly supersedes an older one still waiting. The
-	// map holds the current request per key; the FIFO holds one marker per key,
-	// which is what preserves ordering against live events. Queue depth is
+	// map holds the open marker per key, and the marker the current request; the
+	// FIFO holds the marker, which is what preserves ordering against live events. Queue depth is
 	// therefore bounded by the number of distinct scopes, not by the request
 	// rate, so a storm of resyncs for one target can no longer fill the queue
 	// and starve every other GitTarget on this branch.
@@ -300,10 +300,7 @@ type BranchWorker struct {
 	// before writes it already contains, which would then overwrite it. The entry's tail flag
 	// records that boundary.
 	pendingResyncsMu sync.Mutex
-	pendingResyncs   map[resyncKey]*pendingResync
-	// releasedResyncs holds, for a marker whose key was released while a newer request was
-	// coalesced into it, the request that marker runs. Guarded by pendingResyncsMu.
-	releasedResyncs map[*ResyncRequest]*ResyncRequest
+	pendingResyncs   map[resyncKey]*resyncMarker
 
 	// crOutcomes holds resolved CommitRequest outcomes for the controller to poll
 	// via LookupCommitRequestOutcome. The event loop is the only writer (on its
@@ -403,7 +400,7 @@ func NewBranchWorker(
 		),
 		contentWriter:        writer,
 		eventQueue:           make(chan WorkItem, limits.QueueDepth),
-		pendingResyncs:       make(map[resyncKey]*pendingResync),
+		pendingResyncs:       make(map[resyncKey]*resyncMarker),
 		branchBufferMaxBytes: limits.MaxBufferBytes,
 	}
 }
@@ -692,7 +689,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		return false
 	}
 	if w.pendingResyncs == nil {
-		w.pendingResyncs = make(map[resyncKey]*pendingResync)
+		w.pendingResyncs = make(map[resyncKey]*resyncMarker)
 	}
 	w.markResyncTailForResyncLocked(request, key)
 	if pending, queued := w.pendingResyncs[key]; queued && !pending.tailPassed {
@@ -705,7 +702,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 			return w.refuseResyncAtIntake(request, charge)
 		}
 		superseded := pending.request
-		pending.request = request
+		pending.request, pending.charge = request, charge
 		w.pendingResyncsMu.Unlock()
 		// The superseded request's caller is waiting on its reply channel. Answer
 		// it so its drain ends, with a sentinel that says "a newer resync for the
@@ -719,9 +716,9 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	} else if queued {
 		// A write inside this scope was queued behind the marker. Coalescing here
 		// would run this snapshot ahead of those writes and let them overwrite it
-		// with older state. Release the key instead, and this request takes a fresh
-		// marker at the tail below.
-		w.releaseResyncKeyLocked(key, pending)
+		// with older state. Release the key instead: the queued marker keeps the
+		// request it holds, and this request takes a fresh marker at the tail below.
+		delete(w.pendingResyncs, key)
 		w.Log.V(1).Info("Resync request not coalesced: writes are queued behind the pending marker",
 			"scope", request.Scope.String(),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
@@ -737,10 +734,11 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.pendingResyncsMu.Unlock()
 		return w.refuseResyncAtIntake(request, charge)
 	}
-	w.pendingResyncs[key] = &pendingResync{marker: request, request: request}
+	marker := &resyncMarker{request: request, charge: charge}
+	w.pendingResyncs[key] = marker
 	w.inflightItems.Add(1)
 	select {
-	case w.eventQueue <- WorkItem{Resync: request}:
+	case w.eventQueue <- WorkItem{Resync: marker}:
 		w.pendingResyncsMu.Unlock()
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
@@ -759,20 +757,6 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
-}
-
-// releaseResyncKeyLocked frees a key whose marker no newer request may coalesce into. The queued
-// marker runs the request it holds now, at its own position. What it holds may be a request
-// coalesced into it, which was told it was enqueued; the marker's own request was answered as
-// superseded then. The caller must hold pendingResyncsMu.
-func (w *BranchWorker) releaseResyncKeyLocked(key resyncKey, pending *pendingResync) {
-	if pending.request != pending.marker {
-		if w.releasedResyncs == nil {
-			w.releasedResyncs = make(map[*ResyncRequest]*ResyncRequest)
-		}
-		w.releasedResyncs[pending.marker] = pending.request
-	}
-	delete(w.pendingResyncs, key)
 }
 
 // refuseResyncAtIntake answers a resync the intake gate refused. It reports false: the request did
@@ -857,28 +841,17 @@ func (w *BranchWorker) markResyncTailForTargetLocked(namespace, name string) {
 	}
 }
 
-// takePendingResync returns the current request for a marker's key, which may be
-// newer than the one the marker carried, and clears the key so the next enqueue
-// queues a fresh marker.
-func (w *BranchWorker) takePendingResync(marker *ResyncRequest) *ResyncRequest {
-	key := resyncKeyFor(marker)
+// takePendingResync returns the request a marker runs, which may be newer than the one it was queued
+// with, and the charge it holds, and closes its key if it is still open, so the next enqueue queues a
+// fresh marker. A key already released belongs to a later marker, which is left alone.
+func (w *BranchWorker) takePendingResync(marker *resyncMarker) (*ResyncRequest, int64) {
 	w.pendingResyncsMu.Lock()
 	defer w.pendingResyncsMu.Unlock()
-	current, ok := w.pendingResyncs[key]
-	if !ok || current.marker != marker {
-		// No entry for this marker: it was queued before coalescing tracked it, the
-		// key was already taken, or coalescing released it because writes were
-		// queued behind this marker and a later request has since claimed the key.
-		// Run what the marker held when it was released, at this position. Any entry
-		// present belongs to a marker still on the FIFO, so it is left alone.
-		if released, ok := w.releasedResyncs[marker]; ok {
-			delete(w.releasedResyncs, marker)
-			return released
-		}
-		return marker
+	key := resyncKeyFor(marker.request)
+	if w.pendingResyncs[key] == marker {
+		delete(w.pendingResyncs, key)
 	}
-	delete(w.pendingResyncs, key)
-	return current.request
+	return marker.request, marker.charge
 }
 
 // enqueueRequest places a write request on the FIFO and reports whether it was
@@ -1181,16 +1154,6 @@ type branchWorkerEventLoop struct {
 	// recovery is the obligation to write what a missing parent branch held back, and the probe
 	// that drives it. See parent_recovery.go.
 	recovery parentRecovery
-
-	// decisions numbers the writes decide adds to the log. See PendingWrite.seq.
-	decisions uint64
-	// deciding is the decision whose own commit is being made, which needs no policy re-read.
-	deciding uint64
-	// materializing is set while materialize runs, so it is never re-entered. See branch_log.go.
-	materializing bool
-	// followUps records that a write was decided while a pass ran, so whoever started the pass
-	// schedules its push once the pass ends.
-	followUps bool
 }
 
 // commitWindowDefaults are a GitTarget's commit window timers when it declares none.
@@ -1212,17 +1175,19 @@ func newBranchWorkerEventLoop(w *BranchWorker, defaultIdleTimeout time.Duration)
 func (l *branchWorkerEventLoop) run() {
 	defer l.stopTimers()
 
-	l.syncUnpushedWorkFlag()
+	l.publishLoopState(0)
 	for {
 		commitC, pushC, attachC, refusalC := l.timerChannels()
 		select {
 		case <-l.w.ctx.Done():
 			l.handleShutdown()
-			l.syncUnpushedWorkFlag()
+			l.publishLoopState(0)
 			return
 		case item := <-l.w.eventQueue:
 			l.handleQueueItem(item)
-			l.releaseHandledItem()
+			// Released after the wake has published what the item left behind: see queueDepth.
+			l.w.inflightItems.Add(-1)
+			continue
 		case <-commitC:
 			l.commitTimer = nil
 			l.closeOrArmWindow()
@@ -1240,35 +1205,44 @@ func (l *branchWorkerEventLoop) run() {
 			l.retry.timer = nil
 			l.runRetry()
 		}
-		// After every wake: bind any waiting CommitRequest to an open window,
-		// resolve any whose attach deadline has passed, and re-arm the deadline timer.
-		l.serviceCommitRequests()
-		// Drain any heal resync parked while a window was open, now that this wake may have
-		// finalized it (a silence timeout, a CommitRequest finalize). A no-op while a window
-		// is still open or nothing is parked.
-		l.applyDeferredHeals()
-		l.syncUnpushedWorkFlag()
+		l.endWake(0)
 	}
 }
 
-// syncUnpushedWorkFlag refreshes the worker's retained-work flag from the loop's authoritative
-// state. Called once per loop iteration; the loop goroutine is the only writer of hasUnpushedWork.
-//
-// The flag is all the loop owes the depth gauge: queueDepth() reads it and inflightItems at scrape
-// time, so nothing here publishes a value that could go stale while the loop is busy.
-// releaseHandledItem releases one handled item from the in-flight count.
-//
-// The order is the contract: queueDepth() reads the in-flight count and the retained-work flag
-// together, so publishing the flag second lets both read empty while a window is open, and a scrape
-// landing there reports a drained queue for a worker that has work.
-func (l *branchWorkerEventLoop) releaseHandledItem() {
-	l.syncUnpushedWorkFlag()
-	l.w.inflightItems.Add(-1)
+// handleQueueItem handles one item from the FIFO as one wake of the loop.
+func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
+	l.endWake(l.dispatch(item))
 }
 
-func (l *branchWorkerEventLoop) syncUnpushedWorkFlag() {
+// endWake is what every wake of the loop ends with, whatever woke it. released is the intake charge
+// of the item the wake handled, or zero.
+//
+//   - Bind any waiting CommitRequest to an open window, resolve any whose attach deadline has
+//     passed, and re-arm the deadline timer.
+//   - Drain any heal resync parked while a window was open, now that this wake may have finalized
+//     it (a silence timeout, a CommitRequest finalize). A no-op while a window is still open or
+//     nothing is parked.
+//   - Drive the log: commit what the wake decided, schedule its push (advance).
+//   - Publish the result, moving the handled item's charge to what the loop holds.
+func (l *branchWorkerEventLoop) endWake(released int64) {
+	l.serviceCommitRequests()
+	l.applyDeferredHeals()
+	l.advance()
+	l.publishLoopState(released)
+}
+
+// publishLoopState refreshes the worker's retained-work flag and the intake gate from the loop's
+// authoritative state; the loop goroutine is the only writer of both. released is the charge of the
+// item the wake handled: see intakeGate.sync.
+//
+// The flag is all the loop owes the depth gauge: queueDepth() reads it and inflightItems at scrape
+// time, so nothing here publishes a value that could go stale while the loop is busy. The order is
+// the contract: the loop releases a handled item from the in-flight count only after this, because
+// publishing the flag second would let both read empty while a window is open, and a scrape landing
+// there would report a drained queue for a worker that has work.
+func (l *branchWorkerEventLoop) publishLoopState(released int64) {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
-	l.syncAdmission()
+	l.syncAdmission(released)
 }
 
 func (l *branchWorkerEventLoop) timerChannels() (
@@ -1297,52 +1271,35 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 	return l.windowBytes + l.pendingWritesBytes
 }
 
-func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
-	// Released once the item is handled, when what it left behind is counted as held: never both
-	// uncounted at once.
-	charge := item.charge
-	defer func() { l.w.intake.release(charge) }()
-	if item.Attach != nil {
+// dispatch hands one item to its handler, and returns the intake charge the item was admitted with.
+func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
+	switch {
+	case item.Attach != nil:
 		l.handleAttachCommitRequest(item.Attach)
-		return
-	}
-
-	if item.Withdraw != nil {
+	case item.Withdraw != nil:
 		l.handleWithdrawCommitRequest(item.Withdraw)
-		return
-	}
-
-	if item.Resync != nil {
-		// Take the CURRENT request for this scope: a newer one may have replaced
-		// it while this marker waited in the FIFO. Running it here keeps the
-		// original queue position, so a resync still lands before the live events
-		// buffered behind it.
-		req := l.w.takePendingResync(item.Resync)
-		charge = req.charge()
+	case item.Resync != nil:
+		// Take the CURRENT request for this scope: a newer one may have replaced it while this
+		// marker waited in the FIFO. Running it here keeps the original queue position, so a resync
+		// still lands before the live events buffered behind it.
+		req, charge := l.w.takePendingResync(item.Resync)
 		l.handleResyncRequest(req)
-		return
-	}
-
-	if item.Refresh != nil {
+		return charge
+	case item.Refresh != nil:
 		l.handleRefreshRequest(item.Refresh)
-		return
-	}
-
-	if item.Request == nil {
-		return
-	}
-	if item.Request.CommitMode == CommitModeAtomic {
+	case item.Request == nil:
+	case item.Request.CommitMode == CommitModeAtomic:
 		targetName, targetNamespace := atomicRefusalTarget(item.Request)
 		if !l.w.normalWritesAllowed(targetName, targetNamespace) {
 			l.w.Log.V(1).Info("Dropping atomic write while render fidelity is not established",
 				"gitTarget", targetNamespace+"/"+targetName)
-			return
+			break
 		}
 		l.handleAtomicRequest(item.Request)
-		return
+	default:
+		l.handleLiveEvents(item.Request)
 	}
-
-	l.handleLiveEvents(item.Request)
+	return item.charge
 }
 
 // handleLiveEvents appends one write request's live events to the commit window, splitting and
@@ -1368,7 +1325,6 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 				"resource", event.Identifier.String(),
 				"eventTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonIdentityChange)
-			l.maybeSchedulePush()
 			// The window just closed and a new one for this event has not opened yet: an idle
 			// boundary. Drain any parked heal here so it gets a turn even under sustained,
 			// author-alternating load that never lets the silence timer fire (Rec 1 non-starvation).
@@ -1392,9 +1348,12 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 			}
 			opened = true
 		}
-		l.openWindow.add(event)
+		// The window keeps one event per path, so a replaced one stops being charged.
+		if replaced, ok := l.openWindow.add(event); ok {
+			l.windowBytes -= eventRetainedCharge(&replaced)
+		}
 		l.openWindow.lastWriteAt = time.Now()
-		l.windowBytes += l.w.estimateEventSize(event)
+		l.windowBytes += eventRetainedCharge(&event)
 
 		if opened {
 			// A waiting CommitRequest gets the new window BEFORE anything can close it: before the
@@ -1416,7 +1375,6 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 			// fails on a stuck remote will not free memory, but that's the
 			// known stuck-push pathology documented in the design.
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonBufferLimit)
-			l.maybeSchedulePush()
 			continue
 		}
 		l.closeOrArmWindow()
@@ -1435,16 +1393,14 @@ func (l *branchWorkerEventLoop) closeOrArmWindow() {
 	delay := time.Until(closeAt)
 	if delay <= 0 {
 		l.finalizeOpenWindowWithReason(reason)
-		l.maybeSchedulePush()
 		return
 	}
 	l.resetCommitTimer(delay)
 }
 
-// handleAtomicRequest applies one atomic write request. Atomic batches bypass the commit
-// window, but not the retained push lifecycle: any open live work is finalized first so
-// arrival order is preserved, then the atomic write joins pendingWrites and the normal
-// cooldown-driven push path decides when to publish.
+// handleAtomicRequest decides one atomic write request. Atomic batches bypass the commit window, but
+// not the log: any open live work is finalized first so arrival order is preserved, then the atomic
+// write joins the log behind it.
 func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
 	// Finalizing the window opened an idle boundary: a heal parked behind that window
@@ -1459,9 +1415,7 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		return
 	}
 	pendingWrite.origin.atomic = request
-	if l.decide(*pendingWrite) {
-		l.maybeSchedulePush()
-	}
+	l.decide(*pendingWrite)
 }
 
 func (l *branchWorkerEventLoop) handleShutdown() {
@@ -1471,8 +1425,8 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 	// clean shutdown rather than leaking its caller's reply channel.
 	l.applyDeferredHeals()
 	if len(l.pendingWrites) > 0 {
-		// Shutdown bypasses the cooldown — pending work needs to land before
-		// the worker exits, even if a push was just sent.
+		// Shutdown bypasses the cooldown and the retry: pending work needs to land before the
+		// worker exits, even if a push was just sent. The push commits what was just decided.
 		l.pushPending()
 	}
 	l.failUnpushedCommitRequests()
@@ -1515,7 +1469,7 @@ func (w *BranchWorker) drainQueue() {
 			}
 			charge := item.charge
 			if item.Resync != nil {
-				charge = w.takePendingResync(item.Resync).charge()
+				_, charge = w.takePendingResync(item.Resync)
 			}
 			w.intake.release(charge)
 			w.inflightItems.Add(-1)
@@ -1539,22 +1493,15 @@ func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 	l.commitTimer.Reset(delay)
 }
 
-// finalizeOpenWindow closes the live event window using the generated
-// grouped-commit message. It returns true when a commit-shaped pending write
-// was produced and retained.
-func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
-	return l.finalizeOpenWindowWithReason(windowFinalizeReasonUnspecified)
-}
-
-// finalizeOpenWindowWithReason closes the live event window into one retained pending write and
-// creates the local commit. The attached CommitRequest message overrides the live template.
+// finalizeOpenWindowWithReason closes the live event window into one decided write. The attached
+// CommitRequest message overrides the live template.
 //
 // The closed window is a decided write (decide): a remote that cannot be reached leaves it in the
 // log for the publication retry, and its CommitRequest held. Only a failure of the write itself
-// drops it, and resolves that request Failed (dropDecidedWrite).
-func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) bool {
+// drops it, and resolves that request Failed (settleFailed).
+func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) {
 	if l.openWindow == nil {
-		return false
+		return
 	}
 
 	l.stopCommitTimer()
@@ -1574,7 +1521,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		l.w.Log.V(1).Info("Discarding open window while render fidelity is not established",
 			"reason", string(reason), "gitTarget", targetNamespace+"/"+targetName)
 		l.dropOpenWindow(pendingCR, err)
-		return false
+		return
 	}
 
 	l.w.Log.Info("Finalizing open commit window",
@@ -1596,20 +1543,18 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 			"windowTarget", windowTarget,
 			"events", len(events))
 		l.dropOpenWindow(pendingCR, fmt.Errorf("build pending write: %w", err))
-		return false
+		return
 	}
 	pendingWrite.CommitMessage = effectiveMessage
 	pendingCR, proceed := l.gateBuiltWindow(pendingCR, pendingWrite.Target(), reason)
 	if !proceed {
-		return false
+		return
 	}
 	l.carryRequestOnWrite(pendingWrite, pendingCR)
 
 	l.openWindow = nil
 	l.windowBytes = 0
-	if !l.decide(*pendingWrite) {
-		return false
-	}
+	l.decide(*pendingWrite)
 
 	l.w.Log.Info("Open commit window finalized",
 		"reason", string(reason),
@@ -1617,7 +1562,6 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		"windowTarget", windowTarget,
 		"events", len(events),
 		"pendingWrites", len(l.pendingWrites))
-	return true
 }
 
 // carryRequestOnWrite carries the attached CommitRequest onto the write so its result follows the
@@ -1668,20 +1612,13 @@ func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause
 	}
 }
 
-// maybeSchedulePush is the post-commit hook: it pushes immediately when the
-// cooldown has elapsed (or has never fired), and otherwise schedules a
-// one-shot pushTimer to fire when the cooldown expires. While the cooldown
-// is active, additional commits accumulate locally; when the timer fires,
-// all pending commits go to the remote in a single push. After a failed
-// publication the retry's deadline governs instead, so new commits do not
-// each spend a push on a remote that just refused one.
+// maybeSchedulePush is advance's push step: it pushes immediately when the cooldown has elapsed (or
+// has never fired), and otherwise schedules a one-shot pushTimer to fire when the cooldown expires.
+// While the cooldown is active, additional commits accumulate locally; when the timer fires, all
+// pending commits go to the remote in a single push. After a failed attempt the retry's deadline
+// governs instead, so new commits do not each spend a push on a remote that just refused one.
 func (l *branchWorkerEventLoop) maybeSchedulePush() {
-	// Nothing is pushed from inside a materialize pass: the writes after the one being settled are
-	// not committed yet. Whoever started the pass schedules the push once it is done.
-	if len(l.pendingWrites) == 0 || l.materializing {
-		return
-	}
-	if l.awaitingRetry() {
+	if len(l.pendingWrites) == 0 || l.awaitingRetry() {
 		return
 	}
 	if l.lastPushAt.IsZero() {
@@ -1698,13 +1635,14 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	}
 }
 
-// pushPending materializes the log and publishes it. On success, pendingWrites is cleared and lastPushAt advances. On failure (transient or
-// after exhausting replay retries), pendingWrites stays in place, safe but unpublished, and the
-// next attempt is scheduled (retry.go), so the work lands without another commit.
+// pushPending materializes the log and publishes it. On success, pendingWrites is cleared,
+// lastPushAt advances, and the outage, if there was one, is over. On failure (transient or after
+// exhausting replay retries), pendingWrites stays in place, safe but unpublished, and the next
+// attempt is scheduled (retry.go), so the work lands without another commit. A log that empties
+// without a push is advance's to close.
 func (l *branchWorkerEventLoop) pushPending() {
 	if len(l.pendingWrites) == 0 {
 		l.stopPushTimer()
-		l.notePublicationSettled()
 		return
 	}
 	if l.w.awaitingParentProbe() {
@@ -1717,20 +1655,17 @@ func (l *branchWorkerEventLoop) pushPending() {
 	// local commits behind the others: pushing then would find the branch already at the remote
 	// tip, report success without sending anything, and settle work that exists nowhere. Keep the
 	// writes rather than publish a lie if that fails.
-	err := l.materialize()
-	l.followUps = false // whatever this pass decided is pushed below, with the rest
-	if err != nil {
+	if err := l.materialize(); err != nil {
 		l.publicationFailed(err, "Cannot publish until the retained writes are committed; keeping them")
 		return
 	}
 	if len(l.pendingWrites) == 0 {
-		// Every decided write failed to commit, so there is nothing left to publish.
+		// Every decided write failed to commit, or committed nothing, so there is nothing to publish.
 		l.stopPushTimer()
-		l.notePublicationSettled()
 		return
 	}
 
-	err = l.w.pushPendingCommits(l.pendingWrites)
+	err := l.w.pushPendingCommits(l.pendingWrites)
 	// A rejected push replays the writes onto the moved remote, and the new tree can refuse some of
 	// them. Those were not pushed and never will be, whatever the push did with the rest: they leave
 	// the log now, and are settled once the log describes the push's outcome, because settling one
@@ -1753,8 +1688,7 @@ func (l *branchWorkerEventLoop) pushPending() {
 	l.pendingWritesBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
-	l.closeRecoveryIfDone()
-	l.notePublicationSettled()
+	l.endOutage()
 	l.settleReplayRefusals(refused)
 }
 
@@ -1764,14 +1698,6 @@ func (l *branchWorkerEventLoop) publicationFailed(err error, message string) {
 	l.noteParentUnavailable(err)
 	l.scheduleRetry(err)
 	l.w.Log.Error(err, message, "pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
-}
-
-// notePublicationSettled closes the retry once nothing is owed: every write is published and parent
-// recovery, if it was open, has closed too.
-func (l *branchWorkerEventLoop) notePublicationSettled() {
-	if len(l.pendingWrites) == 0 && !l.recovery.active {
-		l.clearRetry()
-	}
 }
 
 // resolvePushedCommitRequests settles every CommitRequest carried by a just-pushed write, now
@@ -2517,10 +2443,6 @@ func (w *BranchWorker) tightenPendingPruneModes(ctx context.Context, pendingWrit
 	}
 	return nil
 }
-
-// estimateEventSize approximates the serialized YAML size for an event's object, reusing the size
-// its producer computed at enqueue.
-func (w *BranchWorker) estimateEventSize(ev Event) int64 { return eventPayloadSize(&ev) }
 
 func (w *BranchWorker) estimateEventsSize(events []Event) int64 {
 	var total int64

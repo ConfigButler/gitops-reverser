@@ -316,6 +316,11 @@ stateDiagram-v2
     Failed --> [*]
 ```
 
+`decide` only appends to the log. One driver, `advance`, runs at the end of every wake of the loop:
+it materializes what was decided, schedules the push, and closes the retry and parent recovery once
+the log is empty. That last step is in one place, so no path that empties the log can leave intake
+paused.
+
 Three outcomes, classified in exactly one place (`settleCommitted`, `settleFailed`,
 `settleUnreachable` in [`branch_log.go`](../../internal/git/branch_log.go)):
 
@@ -544,9 +549,9 @@ remains:
   boundary in [`branch-worker-event-model.md`](branch-worker-event-model.md), after the log plan.
 - **Timers, attaches, withdrawals, and refreshes are not recorded as transitions.** Owner: the PR
   after #413.
-- **Known structural smells in the log**: the `followUps` flag (a pass producing work inside
-  itself), `checkoutApplied` living on the worker instead of with the log, and two replay
-  functions (`replayOntoRemote` and its locked wrapper). Owner: the same follow-up.
+- **Known structural smells in the log**: `checkoutApplied` living on the worker instead of with
+  the log, and two replay functions (`replayOntoRemote` and its locked wrapper). Owner: the same
+  follow-up.
 
 ### High availability
 

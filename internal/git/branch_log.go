@@ -10,14 +10,16 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// This file is the branch worker's log of decided writes, and the one executor that turns it into
-// commits. See docs/design/gittarget-branch-worker-log.md.
+// This file is the branch worker's log of decided writes, and the one driver that turns it into
+// commits and publications. See docs/design/gittarget-branch-worker-log.md.
 //
 // Every write the loop makes, whatever produced it (a closed window, an atomic batch, a resync, a
 // save's empty record, a refusal's empty commit), takes one path:
 //
-//   - decide adds it to the log. The write gates and building the write have passed, so the
-//     decision stands from here on.
+//   - decide appends it to the log. The write gates and building the write have passed, so the
+//     decision stands from here on. Deciding does nothing else: no commit, no push, no settlement.
+//   - advance is the one driver, run once at the end of every wake of the loop. It commits what was
+//     decided, schedules the push, and closes the outage once nothing is owed.
 //   - materialize makes the checkout the projection of the log: the remote tip the writes were
 //     planned on plus one commit for each, in order. It rebuilds the writes committed before when
 //     the checkout is behind them, then commits each decided write not committed yet.
@@ -25,9 +27,9 @@ import (
 //     is classified and acted on: committed; failed for good, because the write itself was refused
 //     or cannot be made; or left in the log, because the remote could not be reached.
 //
-// materialize is never re-entered. Settling an outcome can decide more work (a refused write's
-// empty commit), and that work is appended to the log for the pass already running to commit in
-// order, instead of running a second executor inside the first.
+// Settling an outcome can decide more work (a refused write's empty commit). Because deciding only
+// appends, that work joins the log behind the writes decided before it, and the pass already running
+// commits it in order: nothing is ever re-entered.
 
 // errWriteFailed marks a failure of the write itself, as opposed to reaching the remote or reading
 // the GitProvider: the plan was refused or could not be applied. It is terminal for the write, while
@@ -64,34 +66,28 @@ type refusalTouchOrigin struct {
 var errAdmissionClosed = fmt.Errorf(
 	"%w: the branch has paused intake while the remote cannot take what it holds", ErrFinalizeQueueFull)
 
-// pendingWriteOverheadBytes is what a decided write is charged beyond its payload and message: its
-// own bookkeeping (target metadata, commit configuration, signer, the save it carries). Without it a
-// write with no payload, a save's empty record or a refusal's empty commit, cost nothing to keep,
-// and a branch whose remote was down admitted them for as long as the outage lasted.
+// pendingWriteOverheadBytes is what every retained item is charged beyond its payload: each event a
+// window or a write keeps (its identity, author, path), and a write that keeps none (its target
+// metadata, commit configuration, signer, the save it carries). Without it an item with no payload,
+// a delete, a save's empty record or a refusal's empty commit, cost nothing to keep, and a branch
+// whose remote was down admitted them for as long as the outage lasted.
 const pendingWriteOverheadBytes = 1024
 
-// retainedCharge is what keeping a decided write is charged against the retained-byte budget. It is
-// fixed when the write is decided, so the refund when it leaves the log matches it whatever the
-// write's later rendering changes.
+// retainedCharge is what keeping a decided write is charged against the retained-byte budget: its
+// payload, its message, and one item's overhead for each event it keeps, or for itself when it
+// keeps none. That is never more than the window it closed or the save it records was charged, so
+// deciding a write never takes what the branch holds past what intake admitted. It is fixed when
+// the write is decided, so the refund when it leaves the log matches it whatever the write's later
+// rendering changes.
 func retainedCharge(pendingWrite *PendingWrite) int64 {
-	return pendingWrite.ByteSize + int64(len(pendingWrite.CommitMessage)) + pendingWriteOverheadBytes
+	items := int64(max(len(pendingWrite.Events), 1))
+	return pendingWrite.ByteSize + int64(len(pendingWrite.CommitMessage)) + items*pendingWriteOverheadBytes
 }
 
-// decide adds a write the loop has decided to make to the log, and commits it when it can.
-//
-// Deciding is not committing. A remote that cannot be reached when the commit would be made leaves
-// the write in the log, and the publication retry commits and pushes it. A request riding it is
-// held from here on, so the controller never fails a save whose write can still land. Until a pending
-// retry is due, a decision that would need a connection to commit waits for that retry instead of
-// spending one. A resync always needs one, and its caller is waiting to hear what it found: it is
-// answered at once with the failure the retry is waiting out, and stays in the log to be applied
-// when the retry is due, as one the remote refused is (settleUnreachable).
-//
-// It reports whether the write is still in the log afterwards, which is false only when its
-// outcome is already settled: it failed for good, or it was a resync that committed nothing.
-func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
-	l.decisions++
-	pendingWrite.seq = l.decisions
+// decide appends a write the loop has decided to make to the log, and charges what keeping it costs.
+// A request riding it is held from here on, so the controller never fails a save whose write can
+// still land. Committing it is advance's job, at the end of the wake.
+func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
 	pendingWrite.charge = retainedCharge(&pendingWrite)
 	pendingWrite.decidedAt = l.w.now()
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)
@@ -103,54 +99,59 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 			pcr.attached = true
 		}
 	}
-	if l.materializing {
-		l.followUps = true
-		return true // the pass already running commits it, in order; its starter pushes it
+}
+
+// advance drives the log once the wake's handlers have decided what they decide: it commits the
+// decided writes, schedules their push, and ends the outage once nothing is owed. It is the only
+// caller of materialize outside a publication, and the only place an empty log closes the retry and
+// parent recovery, so no exit that empties the log can leave intake paused.
+//
+// A push that lands settles the writes a replay refused, and settling one can decide more (a
+// refusal's empty commit). Those are committed on the next turn; the push after them waits for the
+// cooldown, so the loop ends.
+func (l *branchWorkerEventLoop) advance() {
+	for {
+		l.commitDecided()
+		if len(l.pendingWrites) == 0 {
+			l.stopPushTimer()
+			l.endOutage()
+			return
+		}
+		l.maybeSchedulePush()
+		if l.retry.pending() || l.materializedPrefix() == len(l.pendingWrites) {
+			return
+		}
+	}
+}
+
+// commitDecided commits every decided write not committed yet. Deciding is not committing: a remote
+// that cannot be reached leaves the writes in the log for the retry. Until a pending retry is due, a
+// commit that would need a connection waits for that retry instead of spending one. A resync always
+// needs one, and its caller is waiting to hear what it found: it is answered at once with the
+// failure the retry is waiting out, and stays in the log to be applied when the retry is due
+// (settleUnreachable).
+func (l *branchWorkerEventLoop) commitDecided() {
+	if l.materializedPrefix() == len(l.pendingWrites) {
+		return
 	}
 	if l.awaitingRetry() && !l.materializeIsLocal() && !l.w.awaitingParentProbe() {
 		l.settleUnreachable(l.retry.cause)
-		return true
+		return
 	}
-	l.deciding = pendingWrite.seq
-	err := l.materialize()
-	l.deciding = 0
-	if l.followUps {
-		// Settling this write decided more (a refusal's empty commit) that its own caller knows
-		// nothing about, and nothing is pushed from inside a pass: schedule the push now that the
-		// pass is done, so none of it is left in the checkout.
-		l.followUps = false
-		l.maybeSchedulePush()
-	}
-	if err != nil {
+	if err := l.materialize(); err != nil {
 		l.noteParentUnavailable(err)
-		if (len(l.pendingWrites) > 0 || l.recovery.active) && !l.retry.pending() {
+		if !l.retry.pending() {
 			l.scheduleRetry(err)
 		}
 		l.w.Log.Error(err, "Cannot commit the decided writes yet; they wait in the log for the retry",
 			"pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
 	}
-	return l.inLog(pendingWrite.seq)
-}
-
-// inLog reports whether the decision numbered seq is still in the log.
-func (l *branchWorkerEventLoop) inLog(seq uint64) bool {
-	for i := range l.pendingWrites {
-		if l.pendingWrites[i].seq == seq {
-			return true
-		}
-	}
-	return false
 }
 
 // materialize makes the checkout the projection of the log, committing every decided write not
-// committed yet. It returns the error that stopped it when the remote could not be reached; the
-// writes it could not commit stay in the log.
+// committed yet, including any that settling one decides. It returns the error that stopped it when
+// the remote could not be reached; the writes it could not commit stay in the log.
 func (l *branchWorkerEventLoop) materialize() error {
-	if l.materializing {
-		return nil
-	}
-	l.materializing = true
-	defer func() { l.materializing = false }()
 	for {
 		i := l.materializedPrefix()
 		// A resync judges its snapshot against the newest remote tree, so it fetches first whatever
@@ -169,14 +170,12 @@ func (l *branchWorkerEventLoop) materialize() error {
 		if i == len(l.pendingWrites) {
 			return nil
 		}
-		// A write committed later than it was decided is planned on a newer tree under the policy in
-		// force now, exactly as a replay is: an operator who tightened pruning meanwhile is obeyed.
-		if l.pendingWrites[i].seq != l.deciding {
-			if err := l.w.tightenPendingPruneModes(l.w.ctx, l.pendingWrites[i:i+1]); err != nil {
-				l.settleUnreachable(err)
-				l.w.recordMaterializationFailure(err)
-				return err
-			}
+		// A write is planned under the policy in force when it is committed, exactly as a replay is:
+		// an operator who tightened pruning since it was decided is obeyed.
+		if err := l.w.tightenPendingPruneModes(l.w.ctx, l.pendingWrites[i:i+1]); err != nil {
+			l.settleUnreachable(err)
+			l.w.recordMaterializationFailure(err)
+			return err
 		}
 		err := l.w.commitPendingWrites(l.pendingWrites[i : i+1])
 		switch {

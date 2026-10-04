@@ -34,7 +34,7 @@ const (
 // does after dequeuing an attach work item.
 func serviceAttach(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
 	loop.handleAttachCommitRequest(req)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 }
 
 // attachReq builds a CurrentOrNext request that waits up to d for a window and, once attached,
@@ -65,6 +65,7 @@ func forceDue(loop *branchWorkerEventLoop) {
 	if loop.openWindow != nil && loop.openWindow.pendingCR != nil && *loop.openWindow.pendingCR == id {
 		loop.openWindow.timers.maxAt = past
 		loop.closeOrArmWindow()
+		loop.endWake(0)
 	}
 }
 
@@ -220,14 +221,14 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
 	}})
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	require.NotNil(t, loop.openWindow)
 	require.NotNil(t, loop.openWindow.pendingCR, "the opened window must carry the attached request")
 	assert.Equal(t, "bundle save", loop.openWindow.pendingMessage)
 
 	// Grace elapses → the collected window is finalized as one commit.
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -286,7 +287,7 @@ func TestAttach_AnExpiredWaitNeverTakesALaterWindow(t *testing.T) {
 		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
 	}})
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok, "the overdue request must resolve in this pass")
@@ -316,13 +317,13 @@ func TestAttach_WritesAfterTheClaimJoinOneCommit(t *testing.T) {
 			Events:     []Event{configMapTargetEvent(name, "alice", "team-a")},
 			CommitMode: CommitModePerEvent,
 		}})
-		loop.serviceCommitRequests()
+		loop.endWake(0)
 		_, resolved := outcome(t, worker)
 		require.False(t, resolved, "a write inside the delay must not close the window: %s", name)
 	}
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
 	require.NoError(t, res.Err)
@@ -366,7 +367,7 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	require.Nil(t, loop.openWindow.pendingCR, "bob's attach must not claim alice's window")
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -392,7 +393,7 @@ func TestAttach_NoWindowAtAllIsNotAMismatch(t *testing.T) {
 	require.Nil(t, loop.openWindow, "precondition: nothing is open")
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -426,7 +427,7 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 	require.Nil(t, loop.openWindow, "precondition: nothing is open when bob's grace runs out")
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -492,7 +493,7 @@ func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
 		CommitMode: CommitModePerEvent,
 	}})
 	require.NotNil(t, loop.openWindow)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -706,6 +707,7 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 		Scope:              &scope,
 		Result:             resultCh,
 	})
+	loop.endWake(0)
 	require.NoError(t, (<-resultCh).Err)
 
 	res, ok := outcome(t, worker)
@@ -1029,7 +1031,7 @@ func TestAttach_ACommittedRequestNeverClaimsAnotherWindow(t *testing.T) {
 		CommitMode: CommitModePerEvent,
 	}})
 	require.NotNil(t, loop.openWindow)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	assert.Nil(t, loop.openWindow.pendingCR,
 		"a request whose window is already committed must not claim a second window")

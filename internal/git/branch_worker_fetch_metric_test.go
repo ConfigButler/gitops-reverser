@@ -235,7 +235,7 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 	for range idleLedgerWindows {
 		loop.finalizeOpenWindow()
 		loop.pushPending()
-		loop.applyDeferredHeals()
+		loop.endWake(0)
 	}
 
 	for _, reason := range []string{
@@ -311,6 +311,7 @@ func TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote(t *testing.
 		Result:             make(chan ResyncResult, 1),
 	}
 	loop.applyResync(req)
+	loop.endWake(0)
 	require.NoError(t, (<-req.Result).Err)
 
 	assert.Greater(t, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck), before,
@@ -390,6 +391,7 @@ func TestGitFetchesTotal_ResyncWithNoRetainedWritesAlsoReadsTheRemote(t *testing
 		Result:             make(chan ResyncResult, 1),
 	}
 	loop.applyResync(req)
+	loop.endWake(0)
 	require.NoError(t, (<-req.Result).Err)
 
 	assert.Equal(t, forcedBefore+1, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
