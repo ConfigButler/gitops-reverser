@@ -1,6 +1,6 @@
 # Event pipeline overview: from a watch event to a Git commit
 
-> **Snapshot, 2026-10-04, at #413 step 5b.** A picture-first tour of how a change
+> **Snapshot, 2026-10-04, at #413 step 5c.** A picture-first tour of how a change
 > in the cluster becomes a commit today, with the replay paths drawn out and an honest list of
 > what is still missing. It describes behavior that exists. The plan that changes it is
 > [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md); the longer-term event model
@@ -363,7 +363,10 @@ and only the reply was lost, so the cycle settles as published instead of replay
 
 One retry deadline covers everything the worker still owes: 10 seconds, doubling to 5 minutes.
 While a parent branch is missing, the deadline's attempt is a single advertisement probe;
-otherwise it materializes and pushes. The deadline records the failure it is waiting out.
+otherwise it materializes and pushes. The deadline records the failure it is waiting out and when
+the outage began. The worker publishes both, with the intake pause, as its publication report:
+every `GitTarget` on the branch shows it on `Ready`, and a held save in its message. The report
+changes only when one of those does, so a retry that fails the same way writes no status.
 
 ```mermaid
 stateDiagram-v2
@@ -519,10 +522,10 @@ remains:
 
 ### Status and observability
 
-- **A publication outage is invisible on the `GitTarget`.** There is no condition saying "cannot
-  publish, retrying at T, intake paused". A held save shows `WaitingForPush` without the cause.
-  A stream waiting for a paused branch reports the generic `WatchError`. A materialization failure
-  before the push cycle is not counted by any metric. Owner: step 5c.
+- **The outage reason is generic.** Since step 5c every `GitTarget` on a branch that cannot publish
+  reports `Ready=False` under `Progressing`, with the start, the cause, and the pause in the message,
+  and a held save carries the same cause. A dedicated reason such as `PublicationFailing` waits for
+  a measured need. Owner: nobody yet.
 
 ### Watch history and ordering
 
@@ -561,6 +564,7 @@ remains:
 | Intake budget and pause | [`internal/git/intake.go`](../../internal/git/intake.go) |
 | Log, decide, materialize, settle | [`internal/git/branch_log.go`](../../internal/git/branch_log.go) |
 | Retry deadline | [`internal/git/retry.go`](../../internal/git/retry.go) |
+| Publication report and backlog gauges | [`internal/git/publication.go`](../../internal/git/publication.go) |
 | Resyncs and heals | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) |
 | Saves | [`internal/git/commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go) |
 | Missing parent probe | [`internal/git/parent_recovery.go`](../../internal/git/parent_recovery.go) |

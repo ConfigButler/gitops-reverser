@@ -1,8 +1,8 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
-> Steps 1 to 4, 5a, 5a2, 5b, and 6 are built; step 3 was split into 3a, 3b, and 3c after review.
-> Steps 5c and 7 remain, in that order.
+> Steps 1 to 6 are built, 5a2 included; step 3 was split into 3a, 3b, and 3c after review.
+> Step 7 remains.
 > Git calls are bounded now, so the pause/resume state machine of 5b cannot be defeated by a stalled call.
 > The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
 > the remaining defects. This is the write-path part of the "transition boundary" in
@@ -147,8 +147,8 @@ Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. 
 - **Watch recovery polled** (fixed in step 5b). `runTargetWatch` reconnected after its fixed
   two-second backoff, with no wait for the worker to reopen admission, so queue saturation became
   repeated work. The generic watch error it reports is step 5c's.
-- **Git calls were unbounded** (fixed in step 6). **Failure status is incomplete**; step 5c
-  addresses it.
+- **Git calls were unbounded** (fixed in step 6). **Failure status was incomplete** (fixed in step
+  5c).
 
 These findings gated steps 5a to 5c; the markers above say where each was fixed.
 
@@ -379,24 +379,31 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
   the marker released its key: the marker ran the request already answered as superseded, and the
   coalesced request was never run or answered. A released marker now runs the request it held.
 
-### Step 5c: project publication and intake state
+### Step 5c: project publication and intake state (built)
 
-`feat(status)`. One immutable worker observation supplies every target's status and held save.
+`feat(status)`. One immutable worker observation supplies every target's status and held save:
+`PublicationStatus` in [`publication.go`](../../internal/git/publication.go).
 
-- With only a retryable publication problem, report `Ready=False`, `Reconciling=True`, and
-  `Stalled=False`. Use the existing `Progressing` reason initially; say whether intake is paused,
-  what failed, and that retained work remains scheduled. Preserve more specific parent status and
-  independent terminal validation/refusal conditions. Intentional producer pause is not a generic
-  terminal `WatchError`.
-- Keep the first-failure time stable. Update the diagnostic only when the error or operational
-  state changes. Expose next retry time in diagnostics/metrics without a status write every tick.
-  A sibling target's success cannot clear the shared publication failure, and publication success
-  cannot clear an unrelated scope refusal or unfinished watch replay.
-- A held save remains `WaitingForPush` with the same cause. An unaccepted save stays under the
-  controller's existing safety bound and can fail only after withdrawal proves it is not held.
-- Count materialization failures and report retained bytes/count, admission pause, oldest pending
-  work, and next retry. Check existing telemetry first. Update
-  [`interpreting-metrics.md`](../interpreting-metrics.md) and `UPGRADING.md` when implemented.
+- **One report per worker.** The loop publishes whether a failed attempt waits for its retry, since
+  when (`retrySchedule.since`, stable across retries), the last cause, whether the cause is the
+  parent branch, and whether intake is paused. It replaces the report, and tells the branch's
+  `GitTarget`s through `WorkerManager.PublicationEvents`, only when one of those changes. When the
+  next retry is due is deliberately left out of it.
+- **GitTarget.** A failing report contributes `Ready=False`, `Reconciling=True`, `Stalled=False`
+  under the existing `Progressing` reason, with a message naming the start, the cause, and the
+  pause. It ranks after the dependency gates and ahead of the target's own data plane, which it
+  explains; terminal gates still win. A cause that is the parent branch is left to
+  `ParentBranchNotFound`. Every target on the branch reads the same report, so a sibling's success
+  cannot clear it, and nothing in it touches a refusal or a replay.
+- **Streams.** A session that ends while its branch has paused intake is graded `Replaying` with
+  reason `BranchIntakePaused`, never `Blocked`/`WatchError`, so a Git outage no longer stalls the
+  target.
+- **Saves.** A request in `WaitingForPush` carries the report's message (`FinalizeResult.Held`), and
+  its status is written again when that changes. The withdrawal path is unchanged.
+- **Metrics.** `git_retained_bytes`, `git_retained_writes`, `git_intake_paused`,
+  `git_oldest_retained_write_timestamp_seconds`, `git_next_retry_timestamp_seconds` (scrape-time
+  gauges), and `git_materialization_failures_total{reason}`; documented in
+  [`interpreting-metrics.md`](../interpreting-metrics.md) with two alerts.
 
 ### Step 6: deadlines on Git network calls (built)
 
@@ -474,6 +481,7 @@ the effective-point comment in `write_gate.go`, [`architecture.md`](../architect
 | Parent recovery's `scopes`, `awaitingPush`, `noteResyncApplied`, `recoveryTargets`, the snapshot-request sequence, the controller's snapshot-request tracker, and the per-scope drop paths | step 3c |
 | `Manager.liveContentDedup`, its compare-and-swap between overlapping streams, and overlapping streams within one `GitTarget` | step 5a2 |
 | The `admissionClosed` flag, the budget read only once per loop iteration, and the paused watch's two-second reconnect | step 5b |
+| A Git outage reported as `Ready=True`, or as `Stalled=True` with `WatchError` once intake paused | step 5c |
 
 ## What stays
 
@@ -531,7 +539,7 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 |---|---|
 | UPDATE refused, then replayed from the unchanged cursor | Built (5a): it is enqueued; dedup cannot skip it or advance the cursor past it |
 | Push outage under continuous events and empty saves | Built (5b): the budget stops intake at enqueue; accepted entries and saves remain |
-| Saturation across two targets on one branch and a second branch | Shared targets show the pause; the second branch continues |
+| Saturation across two targets on one branch and a second branch | Built (5c): every target on the branch is told; another branch is not |
 | Paused producers, with no new Kubernetes edits | Built (5b): one due retry recovers; producers wake without a restart |
 | Resync arrives during backoff | Built: no early fetch; the caller hears the failure and the resync stays |
 | Read access returns but pushes are still rejected | Built (5b): intake stays paused and backoff continues |
@@ -545,11 +553,10 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 ## Prompt for the next implementation
 
 ```text
-Implement step 5c's contract. Read intake.go, retry.go, branch_log.go, the GitTarget status
-projection and target_watch.go's session-end grading first. Write 5c's acceptance scenarios as red
-tests first: a paused branch is not a generic WatchError, a sibling's success cannot clear the
-shared failure, and a held save stays WaitingForPush with the cause. Mark only 5c built and update
-interpreting-metrics.md and UPGRADING.md. Run the AGENTS.md gates.
+Do step 7. Reconcile branch-worker-event-model.md's "Next implementation" and "Problems", the
+state-of-affairs findings, the gate table in commitrequest-design.md, write_gate.go's effective-point
+comment, architecture.md and UPGRADING.md with what steps 1 to 6 built. Then move this page to
+docs/finished/ and make the PR body describe the final branch state. Docs-only: task lint-docs.
 ```
 
 ## Out of scope
