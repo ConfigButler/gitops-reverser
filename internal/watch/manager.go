@@ -102,16 +102,6 @@ type Manager struct {
 		opts metav1.ListOptions,
 	) (*unstructured.UnstructuredList, error)
 
-	// liveContentDedup caches, per (gitDest, object), the hash of the last sanitized
-	// content a branch worker ACCEPTED (never one it refused: see checkLiveContent). A
-	// live UPDATE whose sanitized content is
-	// unchanged (the classic /status-only churn, which carries no git-writable change)
-	// is dropped before routing, so it cannot split an open commit window by arriving
-	// unattributed against a named window author. Keyed by gitDest+gvr+namespace+uid;
-	// entries are cleared on delete. Cross-session by design: a reconnect keeps deduping
-	// against what the worker already holds. See routeLiveTargetWatchEvent.
-	liveContentDedup sync.Map
-
 	// SourceClusters resolves a GitTarget's source cluster — a ClusterProvider NAME — into a
 	// rest.Config, reading the kubeconfig Secret the provider names from the config plane. It is
 	// required for any GitTarget to mirror, single-cluster installs included: a source cluster is

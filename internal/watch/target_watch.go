@@ -4,8 +4,6 @@ package watch
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -24,7 +22,6 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -176,6 +173,9 @@ type targetWatchStream struct {
 	// replayed is set once one of this stream's sessions has completed a replay and recorded the
 	// cursor that replay earned. runTargetWatch gives it to every stream it runs; nil reads unset.
 	replayed *atomic.Bool
+	// changes is this stream's desired-state change filter. runTargetWatch gives every stream a fresh
+	// one, so a replacement stream starts with no baselines; nil passes every event.
+	changes *desiredStateChangeFilter
 }
 
 // markReplayed records that this stream's replay completed and its cursor is the stream's own.
@@ -563,6 +563,7 @@ func (m *Manager) runTargetWatch(
 	// still a previous stream's: resuming from it would skip this stream's snapshot and its
 	// sweep, and leave the scope pending all the same.
 	stream.replayed = &atomic.Bool{}
+	stream.changes = newDesiredStateChangeFilter()
 	for ctx.Err() == nil {
 		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, stream.hasReplayed())
 		recordWatchSessionEnded(ctx, stream.key.GVR, sessionEndReason(ctx, err))
@@ -730,7 +731,7 @@ func (m *Manager) pumpTargetWatchSession(
 	replaying bool,
 	replayStarted time.Time,
 ) error {
-	var replay []manifestanalyzer.DesiredResource
+	var replay replaySnapshot
 	for {
 		select {
 		case <-ctx.Done():
@@ -855,9 +856,9 @@ func (m *Manager) targetWatchListAndStream(
 		)
 		return fmt.Errorf("list target watch snapshot %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
-	desired := desiredFromList(stream.key.GVR, list)
+	snapshot := snapshotFromList(stream.key.GVR, list)
 	resourceVersion := list.GetResourceVersion()
-	if err := m.enqueueReplayResync(ctx, log, gitDest, stream, desired, resourceVersion); err != nil {
+	if err := m.enqueueReplayResync(ctx, log, gitDest, stream, snapshot, resourceVersion); err != nil {
 		return err
 	}
 	if err := m.recordTargetWatchCursor(ctx, gitDest, stream.key, resourceVersion); err != nil {
@@ -871,7 +872,7 @@ func (m *Manager) targetWatchListAndStream(
 	m.recordWatchRecovery(gitDest, stream.key.GVR.Group, stream.key.GVR.Resource, recoveryModeListFallback)
 	log.Info("target watch list fallback complete",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
-		"count", len(desired), "resourceVersion", resourceVersion)
+		"count", len(snapshot.desired), "resourceVersion", resourceVersion)
 	m.markTargetStreamState(
 		gitDest,
 		stream.key.Collection(),
@@ -889,7 +890,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 	stream targetWatchStream,
 	ev watch.Event,
 	replaying bool,
-	replay *[]manifestanalyzer.DesiredResource,
+	replay *replaySnapshot,
 ) (bool, error) {
 	if !replaying {
 		rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, stream, ev)
@@ -909,7 +910,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 		return true, err
 	}
 	stream.markReplayed()
-	*replay = nil
+	*replay = replaySnapshot{}
 	m.markTargetStreamState(
 		gitDest,
 		stream.key.Collection(),
@@ -925,7 +926,7 @@ func (m *Manager) foldTargetReplayEvent(
 	gitDest types.ResourceReference,
 	stream targetWatchStream,
 	ev watch.Event,
-	replay *[]manifestanalyzer.DesiredResource,
+	replay *replaySnapshot,
 ) (bool, string, error) {
 	switch ev.Type {
 	case watch.Bookmark:
@@ -938,16 +939,14 @@ func (m *Manager) foldTargetReplayEvent(
 		}
 		log.Info("target watch replay complete",
 			"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
-			"count", len(*replay), "resourceVersion", u.GetResourceVersion())
+			"count", len(replay.desired), "resourceVersion", u.GetResourceVersion())
 		return true, u.GetResourceVersion(), nil
 	case watch.Added, watch.Modified:
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
 			return false, "", fmt.Errorf("target replay event carried %T for %s", ev.Object, stream.key.GVR.String())
 		}
-		if desired, ok := desiredFromObject(stream.key.GVR, u); ok {
-			*replay = append(*replay, desired)
-		}
+		replay.add(stream.key.GVR, u)
 		return false, "", nil
 	case watch.Deleted:
 		return false, "", nil
@@ -963,7 +962,7 @@ func (m *Manager) enqueueReplayResync(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	stream targetWatchStream,
-	desired []manifestanalyzer.DesiredResource,
+	snapshot replaySnapshot,
 	resourceVersion string,
 ) error {
 	if m.EventRouter == nil {
@@ -983,8 +982,8 @@ func (m *Manager) enqueueReplayResync(
 	// A retired stream's snapshot is dropped here, at the producer: see producerGate.
 	if !stream.gate.enqueue(ctx, func() {
 		resultCh, enqueued, err = m.EventRouter.enqueueScopedResync(
-			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), desired, resourceVersion,
-			false)
+			ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCollection(), snapshot.desired,
+			resourceVersion, false)
 	}) {
 		return nil
 	}
@@ -1007,9 +1006,13 @@ func (m *Manager) enqueueReplayResync(
 		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
 			stream.key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
 	}
+	// The worker holds this snapshot now, ahead of every live event the stream routes after it, so
+	// its content is the baseline for those events. A refused or never-completed snapshot never
+	// gets here, and the stream keeps the baselines of what the worker did accept.
+	stream.changes.adopt(snapshot.baselines)
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
-		"resourceVersion", resourceVersion, "count", len(desired))
+		"resourceVersion", resourceVersion, "count", len(snapshot.desired))
 	return nil
 }
 
@@ -1126,18 +1129,15 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		op := operationForLiveTargetWatchEvent(ev.Type, u)
 		event := targetWatchGitEvent(stream.key.GVR, u, op)
 		// Stamp the producing collection and stream incarnation before the event leaves the stream.
-		// It is the only place both are known: downstream, a cluster-wide and a namespaced
-		// stream deliver the same object and the collection can no longer be recovered from it.
+		// It is the only place both are known: an object does not name the collection that delivered
+		// it (all namespaces or one, which selector), so downstream it cannot be recovered.
 		event.SourceCollection = stream.sourceCollection()
 		// Carry the source cluster so the git writer resolves this document's GVK->GVR
 		// against the cluster it was watched on, never a union of all clusters.
 		event.SourceCluster = m.clusterIDForGitTarget(gitDest)
-		// Drop a no-op UPDATE before it reaches the worker: a /status-only change
-		// sanitizes to identical git content but ships unattributed (its /status audit
-		// is dropped), so routing it would split an open commit window on the author
-		// flip. CREATE/DELETE always route. The cache itself changes only below, once the
-		// worker has taken the event: see acceptLiveContent.
-		content, unchanged := m.checkLiveContent(gitDest, stream.key.GVR, u, &event, op)
+		// Drop an UPDATE that changes no desired state before attribution and admission: see
+		// desiredStateChangeFilter. Its baseline changes only below, once the worker took the event.
+		change, unchanged := stream.changes.check(u, &event, op)
 		if unchanged {
 			recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeUnchanged)
 			log.V(1).Info("target watch skipped unchanged update (no git content change)",
@@ -1170,7 +1170,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "err", err.Error())
 			return rv, err
 		}
-		m.acceptLiveContent(content)
+		stream.changes.accept(change)
 		recordWatchEvent(ctx, gitDest, stream.key.GVR, watchOutcomeRouted)
 		return rv, nil
 	case watch.Error:
@@ -1252,108 +1252,6 @@ func (m *Manager) attachAuthor(
 	if outcome == git.AttributionResolved {
 		event.UserInfo = userInfo
 	}
-}
-
-// liveContentCheck is one live event's deduplication verdict, taken before it is routed and
-// recorded only after the worker accepted it. prev is the cache entry the check compared against;
-// acceptLiveContent swaps from it, so an acceptance by an overlapping stream in between is never
-// overwritten.
-type liveContentCheck struct {
-	key     string
-	delete  bool
-	hash    string
-	hashed  bool
-	prev    string
-	hadPrev bool
-}
-
-// checkLiveContent reports whether a live event carries no git-writable change from the last
-// event the worker accepted for the same object. Only an UPDATE whose sanitized content hashes
-// equal to that accepted baseline is unchanged (e.g. a /status-only change); a CREATE or DELETE
-// always routes, and so does an UPDATE with no baseline or content that cannot be hashed (fail
-// open, never drop a real change).
-//
-// It reads the cache and never writes it. Recording the hash here, before the worker had taken
-// the event, was a loss: a refused UPDATE ends the session without advancing the cursor, the
-// reconnect redelivers the same frame from that cursor, and the redelivery then matched the
-// hash of the event that was never accepted, was skipped as unchanged, and advanced the cursor
-// past a change Git never received.
-func (m *Manager) checkLiveContent(
-	gitDest types.ResourceReference,
-	gvr schema.GroupVersionResource,
-	u *unstructured.Unstructured,
-	event *git.Event,
-	op string,
-) (liveContentCheck, bool) {
-	check := liveContentCheck{key: liveContentDedupKey(gitDest, gvr, u)}
-	if op == string(types.OperationDelete) {
-		check.delete = true
-		return check, false
-	}
-	check.hash, check.hashed = sanitizedContentHash(event)
-	if !check.hashed {
-		return check, false
-	}
-	if prev, loaded := m.liveContentDedup.Load(check.key); loaded {
-		check.prev, check.hadPrev = prev.(string)
-	}
-	unchanged := op == string(types.OperationUpdate) && check.hadPrev && check.prev == check.hash
-	return check, unchanged
-}
-
-// acceptLiveContent records what the worker just accepted as the object's baseline: a DELETE
-// clears it (so a recreate is never deduped against its predecessor), a CREATE or UPDATE stores
-// its hash.
-//
-// The store swaps from the entry the check saw. A cluster-wide and a namespaced stream deliver
-// the same object independently, so between this event's check and its acceptance another stream
-// may have accepted a different version. Which of the two the worker took last is not known
-// here, so when the entry moved to anything but this event's own hash it is cleared instead:
-// no baseline routes the next UPDATE, which is always safe, while a baseline the worker does not
-// hold would skip a change it never got.
-func (m *Manager) acceptLiveContent(check liveContentCheck) {
-	if check.delete {
-		m.liveContentDedup.Delete(check.key)
-		return
-	}
-	if !check.hashed {
-		return
-	}
-	if check.hadPrev {
-		if m.liveContentDedup.CompareAndSwap(check.key, check.prev, check.hash) {
-			return
-		}
-	} else if _, loaded := m.liveContentDedup.LoadOrStore(check.key, check.hash); !loaded {
-		return
-	}
-	if current, ok := m.liveContentDedup.Load(check.key); ok && current != check.hash {
-		m.liveContentDedup.CompareAndDelete(check.key, current)
-	}
-}
-
-// liveContentDedupKey identifies one object within one GitTarget stream. It includes
-// gitDest so the same object mirrored to two GitTargets dedups independently, and the
-// uid so a delete-and-recreate (new uid) is never deduped against its predecessor.
-func liveContentDedupKey(
-	gitDest types.ResourceReference, gvr schema.GroupVersionResource, u *unstructured.Unstructured,
-) string {
-	return gitDest.String() + "|" + gvr.String() + "|" + string(u.GetUID())
-}
-
-// sanitizedContentHash hashes an event's git-writable content so two events that
-// materialize identically (a spec write and a later /status update) compare equal.
-// ok=false means the content cannot be hashed (nil object or marshal error); the caller
-// then routes without deduping.
-func sanitizedContentHash(event *git.Event) (string, bool) {
-	if event.Object == nil {
-		return "", false
-	}
-	raw, err := json.Marshal(event.Object)
-	if err != nil {
-		return "", false
-	}
-	sum := sha256.Sum256(raw)
-	return string(sum[:]), true
 }
 
 // targetWatchGitEvent adapts one observed object into the Event the pipeline carries.
@@ -1549,22 +1447,6 @@ func bufferTargetWatchEvents(ctx context.Context, in <-chan watch.Event, out cha
 			}
 		}
 	}
-}
-
-func desiredFromList(
-	gvr schema.GroupVersionResource,
-	list *unstructured.UnstructuredList,
-) []manifestanalyzer.DesiredResource {
-	if list == nil {
-		return nil
-	}
-	desired := make([]manifestanalyzer.DesiredResource, 0, len(list.Items))
-	for i := range list.Items {
-		if item, ok := desiredFromObject(gvr, &list.Items[i]); ok {
-			desired = append(desired, item)
-		}
-	}
-	return desired
 }
 
 func targetWatchExpired(ev watch.Event) bool {

@@ -9,18 +9,22 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 ## A `GitTarget` watches each object through one collection
 
-**Breaking.** Two rules on one `GitTarget` may no longer select overlapping collections: the same
-type in the same namespace with different `objectSelector`s, or the same type in all namespaces
-(`sourceNamespace: "*"`) and in a named one, whatever their selectors. The older rule keeps its
-collections; the newer one is refused as a whole with `ResourcesResolved=False` and reason
-`CollectionOverlap`, which replaces `ObjectSelectorConflict`. The message names both rules and both
-scopes. Exact duplicates are still allowed and share one stream, and different `GitTarget`s never
-conflict.
+**Breaking.** One `GitTarget` may no longer watch a type both in all namespaces
+(`sourceNamespace: "*"`) and in a named namespace, even with the same `objectSelector`; overlapping
+collections with different selectors were already refused. The older rule keeps its collections;
+the newer one is refused as a whole with `ResourcesResolved=False` and reason `CollectionOverlap`,
+which replaces `ObjectSelectorConflict`. The message names both rules and both scopes. Exact
+duplicates are still allowed and share one stream, and different `GitTarget`s never conflict. See
+[overlapping collections](configuration.md#overlapping-collections).
 
 Before upgrading, find targets that hold a `"*"` item and a named-namespace item for the same type,
 and remove the redundant one, or move the narrower one to its own `GitTarget`. Otherwise the newer
 rule stops mirroring after the upgrade. Alerts or scripts that match `ObjectSelectorConflict` must
 match `CollectionOverlap`.
+
+An update whose Git-visible content did not change is now also filtered right after a replay, so
+`gitopsreverser_watch_events_total{outcome="unchanged"}` rises and fewer status-only updates reach
+the branch worker.
 
 ## A Git server that stops answering no longer holds a branch
 

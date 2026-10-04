@@ -104,6 +104,13 @@ and storage call it a cursor. The first attempt after startup or watch replaceme
 current state even if a stored cursor exists; later attempts in that watch's loop may resume.
 A cursor records observation progress, not successful Git publication.
 
+**Desired-state change filter.** Passes creates, deletes, and updates that change Git-visible
+desired state, including data and retained labels and annotations. Drops updates whose sanitized
+content matches the accepted baseline; a missing baseline passes. The metric outcome is
+`unchanged`. Code: `desiredStateChangeFilter`, one per watch stream, seeded from the stream's
+accepted replay; see
+[step 5a2](design/gittarget-branch-worker-log.md#step-5a2-desired-state-change-filter-built).
+
 **Catalog.** One source cluster's normalized discovery result. It holds no judgment about whether a
 type should be watched.
 

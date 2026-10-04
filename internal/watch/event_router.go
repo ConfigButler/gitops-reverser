@@ -40,6 +40,15 @@ type EventRouter struct {
 	// Registry of GitTargetEventStreams by gitDest key
 	gitTargetStreams map[string]*reconcile.GitTargetEventStream
 	streamsMu        sync.RWMutex
+
+	// resyncWorker overrides the worker a scoped resync enters. nil resolves the GitTarget's branch
+	// worker; tests set it to accept or refuse a snapshot without running one.
+	resyncWorker func(ctx context.Context, gitDest types.ResourceReference) (resyncEnqueuer, error)
+}
+
+// resyncEnqueuer is the part of a branch worker a scoped resync enters through.
+type resyncEnqueuer interface {
+	EnqueueResync(request *git.ResyncRequest) bool
 }
 
 // NewEventRouter creates a new event router.
@@ -250,7 +259,15 @@ func (r *EventRouter) enqueueScopedResync(
 	resourceVersion string,
 	heal bool,
 ) (chan git.ResyncResult, bool, error) {
-	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
+	var (
+		worker resyncEnqueuer
+		err    error
+	)
+	if r.resyncWorker != nil {
+		worker, err = r.resyncWorker(ctx, gitDest)
+	} else {
+		worker, err = r.resolveWorkerForGitDest(ctx, gitDest)
+	}
 	if err != nil {
 		return nil, false, err
 	}

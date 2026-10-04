@@ -502,9 +502,10 @@ Following the ConfigMap edit:
    `GitTarget`'s watch on `core/configmaps` in `team-a` delivers a `MODIFIED` event carrying the new
    object body. (On a cold start or after `410 Gone`, the same object instead arrives as an `ADDED`
    during the `sendInitialEvents` replay.)
-2. **Relevance filter.** The event is sanitized (status, managedFields, and volatile metadata stripped),
-   checked for followability, and diffed against current Git content. A no-op (e.g. a `*/status` bump
-   whose desired-state projection is unchanged) is dropped here.
+2. **Desired-state change filter.** The event is sanitized (status, managedFields, and volatile
+   metadata stripped) and compared with what the branch worker last accepted for this object on this
+   stream, from a live event or the stream's replay. A no-op (e.g. a `*/status` bump whose
+   desired-state projection is unchanged) is dropped here.
 3. **Resolve the author.** When attribution is enabled, the resolver waits a bounded grace window
    (`--author-attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
    resourceVersion/UID. On a strong match the real user or named service account becomes the author. With
@@ -1086,8 +1087,8 @@ and chooses one version per collection. The plan diff keeps unaffected watches r
 new collections, and replaces a collection only when its served version changes.
 
 Each managed watch has one goroutine. Its first attempt requests initial state, enqueues scoped
-snapshot reconciliation, and then routes every live object event through unchanged-content
-suppression and author resolution.
+snapshot reconciliation, and then routes every live object event through its desired-state change
+filter and author resolution.
 Later attempts may resume a cursor; see
 [Recovery: resume, replay, or list plus mark-and-sweep](#recovery-resume-replay-or-list-plus-mark-and-sweep).
 

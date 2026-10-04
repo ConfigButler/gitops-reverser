@@ -29,7 +29,8 @@ in the [future HA plan](../future/ha-gittarget-distribution-plan.md).
 | Save outcomes follow remote publication; the controller cannot time out a held save | [`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go), [`commitrequest_controller.go`](../../internal/controller/commitrequest_controller.go) | Held-request retry and controller safety-bound tests |
 | Parent selection and compare-and-swap remain publication guards | [`git_atomic_push.go`](../../internal/git/git_atomic_push.go) | Parent-change tests and `TestGitRoundTripLedger` |
 | New watch streams start with a fresh replay; reconnects resume a cursor only after the stream's own replay completed | [`target_watch.go`](../../internal/watch/target_watch.go) | `runTargetWatch`, `TestRunTargetWatch_ResumesOnlyAfterItsOwnReplayCompleted` |
-| A live event changes the dedup baseline and the cursor only once the worker accepted it | [`target_watch.go`](../../internal/watch/target_watch.go) | `refused_admission_test.go`, `live_content_dedup_test.go` |
+| A live event changes the dedup baseline and the cursor only once the worker accepted it | [`target_watch.go`](../../internal/watch/target_watch.go) | `refused_admission_test.go`, `desired_state_change_filter_test.go` |
+| Each stream owns its filter baselines, seeded from its accepted replay; one `GitTarget` holds no overlapping collections | [`desired_state_change_filter.go`](../../internal/watch/desired_state_change_filter.go), [`collection_overlap.go`](../../internal/watch/collection_overlap.go) | `desired_state_change_filter_test.go`, `collection_overlap_test.go` |
 
 This is an in-memory execution log. It does not yet reconstruct windows, timers, or outcomes after
 process loss, and `PendingWrite` contains live interfaces and process references.

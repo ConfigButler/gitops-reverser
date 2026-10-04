@@ -1,10 +1,9 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
-> Steps 1 to 4, 5a, and 6 are built; step 3 was split into 3a, 3b, and 3c after review. Steps
-> 5a2, 5b, 5c, and 7 remain, in that order. 5a2 is **planned for review**: it waits for approval
-> of its decisions before any code changes. Git calls are bounded now, so the pause/resume state
-> machine of 5b cannot be defeated by a stalled call.
+> Steps 1 to 4, 5a, 5a2, and 6 are built; step 3 was split into 3a, 3b, and 3c after review. Steps
+> 5b, 5c, and 7 remain, in that order.
+> Git calls are bounded now, so the pause/resume state machine of 5b cannot be defeated by a stalled call.
 > The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
 > the remaining defects. This is the write-path part of the "transition boundary" in
 > [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability),
@@ -133,9 +132,9 @@ writes, intermediate history, or the identity of an empty save already published
 
 Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. It also finds:
 
-- **Deduplication preceded acceptance** (fixed in step 5a). `skipUnchangedLiveUpdate` stored the
-  content hash before enqueue, so a refused UPDATE was skipped on cursor resume, which then
-  advanced the cursor.
+- **Deduplication preceded acceptance** (fixed in step 5a; the filter is per stream since 5a2).
+  `skipUnchangedLiveUpdate` stored the content hash before enqueue, so a refused UPDATE was skipped
+  on cursor resume, which then advanced the cursor.
 - **The byte budget is incomplete.** `syncAdmission` uses `pendingWritesBytes` and a pending retry.
   `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at zero. Repeated empty
   saves can grow the log without reaching the byte threshold. The FIFO limits item count, while
@@ -263,13 +262,10 @@ on the target instead of answering its caller twice. Pinned by `replay_refusal_t
 
 `fix(watch)`. A live event changes the watch's state only once the branch worker accepted it.
 
-- **Deduplication records only accepted content.** `checkLiveContent` reads the per-object content
-  hash before routing; `acceptLiveContent` records it after the worker's `Enqueue` returned true.
-  A refused UPDATE therefore stays a change when the cursor resume redelivers it. The record is a
-  compare-and-swap from the entry the check saw: when an overlapping stream (a cluster-wide and a
-  namespaced stream deliver the same object) accepted a different version in between, the entry is
-  cleared, because which version the worker took last is unknown. No baseline routes the next
-  UPDATE; a wrong baseline would skip one.
+- **Deduplication records only accepted content.** The check reads the per-object content hash
+  before routing; the record happens after the worker's `Enqueue` returned true. A refused UPDATE
+  therefore stays a change when the cursor resume redelivers it. (5a shipped this on a process-wide
+  map with compare-and-swap between overlapping streams; 5a2 replaced both.)
 - **An event a stopping stream never enqueued records no cursor.** The shutdown arm returned the
   event's resourceVersion, and the cursor moved past an event the worker never saw.
 - **A stream resumes from a cursor only after its own replay completed.** `runTargetWatch` used to
@@ -281,8 +277,7 @@ on the target instead of answering its caller twice. Pinned by `replay_refusal_t
   called it; those tests use the unexported `enqueueRequest`.
 
 Pinned by `refused_admission_test.go` (route + cursor through the producer, cancellation, and
-resume-after-own-replay; each was reproduced red against the old behavior) and the overlap cases
-in `live_content_dedup_test.go`.
+resume-after-own-replay; each was reproduced red against the old behavior).
 
 Producer inventory, after this step:
 
@@ -299,96 +294,51 @@ Remaining limits, for 5b:
   backoff. A refused snapshot is now gathered again on every attempt until the worker accepts one,
   where before it resumed from a cursor it had not earned. That is correct, and it costs one LIST
   or replay per attempt while intake is closed. 5b's wait for capacity removes the polling.
-- When two overlapping streams accept different versions, the cleared entry lets the next
-  `/status`-only UPDATE through once. It is harmless to content, and it can split an open window
-  on the author flip, as any unattributed event can. Two streams can still hand the worker two
-  versions out of order; deduplication neither causes nor repairs that.
-- The cache is in memory. A restart starts every stream with a replay, so a lost cache only routes
-  extra UPDATEs.
+- The overlap and replay limits this step left are closed by 5a2.
 
-### Step 5a2: the unchanged filter belongs to its stream (planned, for review)
+### Step 5a2: desired-state change filter (built)
 
-`refactor(watch)`, with one `fix`. Nothing here is built; the decisions below wait for review.
+Two commits: `fix(watch)` refuses overlapping collections, then `fix(watch)` gives each stream its
+own filter.
 
-**What the filter is.** Before routing a live UPDATE, the watch compares its sanitized content
-(what would be written to Git) with the content of the last event the worker accepted for that
-object. Equal content means the event carries nothing for Git, so it is dropped and counted as
-`watch_events_total{outcome="unchanged"}`. CREATE and DELETE always pass. The typical dropped event
-is a `/status`-only update.
+**Overlap refusal.** One `GitTarget` watches each object through one collection.
+[`collection_overlap.go`](../../internal/watch/collection_overlap.go) (was `selector_conflict.go`)
+refuses, during rule resolution and before any subscription starts, every distinct collection that
+overlaps one the target already selects: same type, and the same namespace or one of them all
+namespaces, whatever the selectors. Exact duplicates are one collection and share one stream;
+disjoint namespaces and other targets stay independent. Oldest-rule precedence and whole-rule
+refusal are unchanged. The reason is `CollectionOverlap` (was `ObjectSelectorConflict`), and the
+message names both rules and both scopes. Resolution re-runs on rule and catalog changes, and the
+plan stops a leaving collection before starting its replacement.
 
-**Why it stays.** It is a filter against changes that are useless to Git, and two things depend on
-it:
+**Filter.** [`desired_state_change_filter.go`](../../internal/watch/desired_state_change_filter.go):
+`desiredStateChangeFilter` is a plain UID-to-hash map owned by one stream, created by
+`runTargetWatch`, kept across reconnects, and released with the stream. It passes CREATE, DELETE,
+and UPDATEs that change sanitized content (data, spec, retained labels and annotations), and drops
+the rest as `watch_events_total{outcome="unchanged"}`, before attribution and admission. A missing
+baseline or an unhashable object passes. A live event's hash is recorded only after `Enqueue`
+returned true; an accepted DELETE clears its UID. Each replay, initial-events or LIST fallback,
+gathers hashes beside its desired set with the same sanitizer, and the map is replaced with them
+only once the worker accepted the snapshot. A refused or unfinished replay installs nothing.
 
-1. *Commit windows.* A `/status`-only update arrives with no author, because the audit policy
-   drops `/status` writes. Routed, it meets a window opened by a named author, forces an
-   identity-change close, and splits a save's collect window into two commits. This broke the
-   "one commit" `CommitRequest` e2e specs before the filter existed (`58dd37a8`), and the
-   [save-wait guidance](commitrequest-save-wait-options.md) relies on it.
-2. *Load.* Status churn on Pods and Deployments would otherwise fill the branch FIFO, and during a
-   Git outage close admission sooner.
+Removed: `Manager.liveContentDedup`, `liveContentCheck` with its `prev`/`hadPrev` compare-and-swap,
+`liveContentDedupKey`, and `live_content_dedup_test.go`. The step 5a producer guarantees are
+unchanged.
 
-Git content does not depend on it: a routed no-op finds no diff and commits nothing.
+Pinned by `collection_overlap_test.go` (structural refusal with equal, different, and no
+selectors; precedence; exact duplicates; separate targets; recovery when the older rule goes, with
+the old stream retired before the new one launches; an overlap created by a catalog change) and
+`desired_state_change_filter_test.go` (contract table; Git-visible versus stripped fields; and,
+through both initial-events and LIST fallback, replay X→Z→X, a replayed object's status update
+inside another author's window, refused and unfinished replays, an omitted UID, and the stream
+lifetime). The replay and window cases fail without snapshot seeding.
 
-**What changes, and why.**
+Remaining limits:
 
-| Today (after 5a) | Planned |
-|---|---|
-| One process-wide `sync.Map` (`Manager.liveContentDedup`), keyed by `(GitTarget, GVR, UID)`, shared by every stream that delivers the object | A plain map owned by the stream, keyed by UID; the stream's goroutine is its only reader and writer |
-| Recording is a compare-and-swap from the entry the check read; a conflict with another stream clears the entry | Recording is a plain store after the worker accepted the event |
-| The memory survives a replay inside the stream, and outlives the stream | Reset whenever a replay of the stream is accepted; dropped with the stream |
-| Entries for objects that leave the selection, or for a deleted `GitTarget`, are never removed | Freed when the stream stops |
-
-Arguments:
-
-- **The cross-stream logic exists only because the memory is shared.** Two overlapping collections
-  (an all-namespace one and a named-namespace one) deliver the same object independently. With one
-  shared entry, each stream's record can overwrite the other's, so step 5a needed the
-  compare-and-swap and a conflict rule. Per stream, there is nothing to coordinate: a stream compares
-  only with what it delivered and the worker accepted.
-- **Per stream filters no worse, and heals better.** Every overlapping stream sees every change to
-  the object, because they watch the same object. If one stream lags and the worker receives an older
-  version last, today's shared memory can then filter the other stream's next no-op and keep the
-  stale version in Git. Per stream, the lagging stream's next event still passes its own filter and
-  heals it.
-- **The cost is duplicates that were filtered before.** When both streams deliver the same change,
-  the second copy used to be filtered against the first; now it reaches the worker. It carries the
-  same content and the same resourceVersion, so attribution names the same author and it joins the
-  same window: no split, no extra commit, one more FIFO item. Only overlapping collections pay this,
-  and only for real changes, not for status churn, which each stream still filters.
-- **It fixes a loss the shared memory has today.** A replay inside a stream (after a 410, or for a
-  stream replaced on the same collection) writes current state through a resync, which never
-  touches the filter's memory. Baseline X, the object changes to Z during the gap, the replay
-  writes Z, the object returns to X: the live X matches the stale baseline, is dropped as unchanged,
-  and Git keeps Z until the next change or replay. Resetting the stream's memory when its replay is
-  accepted (where `markReplayed` runs today) removes the stale baseline. The first no-op after a
-  replay then passes once, which costs nothing: no window is open for it to split unless a write
-  opened one, and then it carries that write's own fresh content.
-- **No locks are needed.** A stream is single-threaded (`routeLiveTargetWatchEvent` runs on its
-  goroutine), so the map needs no `sync.Map`, compare-and-swap, or conflict handling.
-
-**What is removed.** `Manager.liveContentDedup`, the `prev`/`hadPrev` fields and the
-compare-and-swap in `acceptLiveContent`, and the two overlapping-stream tests that pin the conflict
-rule. **What stays.** The check-before-route and record-after-acceptance split from 5a, the DELETE
-rule, fail-open on content that cannot be hashed, and the `unchanged` metric outcome.
-
-**Tests.** The 5a producer tests stay as they are. New: a replay inside one stream resets the
-memory (the X, Z, X sequence above, red today); two streams each filter their own no-op and each
-route a real change; a stopped stream leaves nothing behind.
-
-**Decisions for review.**
-
-1. **Per-stream ownership** as described, including the reset at an accepted replay.
-2. **The name.** The concept already has a public name, the `unchanged` outcome of
-   `watch_events_total`, and [`definitions.md`](../definitions.md) rule 1 asks for one word per
-   concept everywhere. Recommendation: **the unchanged filter** (`unchangedFilter` in code), with
-   `liveContentDedup`, `checkLiveContent`, and `acceptLiveContent` renamed to match, and a
-   `definitions.md` entry. "Filter spec changes" was proposed; it reads as filtering *out* spec
-   changes, which is the opposite of what the filter does (it passes content changes and drops
-   the rest), and "spec" is narrower than what is compared: the whole sanitized object, labels and
-   annotations included.
-3. **Reset or seed at replay.** Recommendation: reset. Seeding the memory with the replay's
-   snapshot content would also filter the first no-op after a replay, but it ties the filter to the
-   snapshot format for the sake of one event.
+- The window case is pinned at the producer: the worker receives only alice's edits, back to back.
+  That an unattributed event between them would split her commit is the worker's window rule, not
+  re-tested here.
+- The baselines are in memory. A restart starts every stream with a replay, which seeds them again.
 
 ### Step 5b: pause and resume under capacity pressure
 
@@ -501,6 +451,7 @@ the effective-point comment in `write_gate.go`, [`architecture.md`](../architect
 | The second write lifecycle (`l.commit`, `retain`, the commit guard), `pcr.committed`, `rebuildPendingWrites`, executor re-entry | step 3a |
 | `publication_retry.go`, `deferToRecovery`, parent recovery's own backoff and timer | step 3b |
 | Parent recovery's `scopes`, `awaitingPush`, `noteResyncApplied`, `recoveryTargets`, the snapshot-request sequence, the controller's snapshot-request tracker, and the per-scope drop paths | step 3c |
+| `Manager.liveContentDedup`, its compare-and-swap between overlapping streams, and overlapping streams within one `GitTarget` | step 5a2 |
 
 ## What stays
 
@@ -571,22 +522,11 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 
 ## Prompt for the next implementation
 
-Use only after the step 5a2 decisions are approved; record any change to them in the step first.
-
 ```text
-Continue the branch-worker log plan at step 5a2: the unchanged filter belongs to its stream.
-Read the step's decisions as approved, then target_watch.go (checkLiveContent,
-acceptLiveContent, routeLiveTargetWatchEvent, runTargetWatch, markReplayed), manager.go,
-live_content_dedup_test.go, and refused_admission_test.go.
-
-Write the red test first: a replay inside one stream followed by a live UPDATE back to the
-pre-gap content must route. Then move the filter's memory onto the stream, record after
-acceptance with a plain store, reset it when the stream's replay is accepted, and delete the
-shared map and the compare-and-swap. Apply the approved name everywhere, including
-definitions.md. Keep the unchanged metric outcome and the 5a producer tests.
-
-Mark only 5a2 built. Run the AGENTS.md gates; report what changed, validation, and limits.
-Step 5b follows; its scope is unchanged.
+Implement step 5b's contract. Read branch_worker.go, branch_log.go, retry.go, target_watch.go,
+and refused_admission_test.go first. Write the acceptance scenarios for 5b as red tests first.
+Keep the step 5a producer guarantees and the 5a2 filter. Mark only 5b built and update the
+affected user docs. Run the AGENTS.md gates, including local e2e before pushing.
 ```
 
 ## Out of scope
