@@ -4,9 +4,11 @@ package watch
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -126,26 +128,32 @@ func TestCollectWatchRuleSelections_WildcardIsOneClusterWideScope(t *testing.T) 
 		"a wildcard compiles to the all-namespaces collection, read once")
 }
 
-// A cluster-wide collection is a PEER of a named-namespace collection on the same type, never a
-// replacement. Collapsing the two once widened the named rule's stream to every namespace its
-// credential could read (CollectionKey's own doc comment records the bug). Two streams over
-// overlapping objects is the correct outcome here.
-func TestCollectWatchRuleSelections_WildcardIsAPeerOfANamedNamespace(t *testing.T) {
+// A cluster-wide collection is never collapsed into a named-namespace one on the same type:
+// collapsing them once widened the named rule's stream to every namespace its credential could read
+// (CollectionKey's own doc comment records the bug). Nor may one GitTarget stream both, because
+// the target would then receive every object in the named namespace twice. The newer rule is
+// refused; the older keeps its own, unwidened collection.
+func TestCollectWatchRuleSelections_WildcardAndANamedNamespaceRefuseTheNewer(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	addRule(store,
-		watchRuleWithSource("wild", "shared-target", configv1alpha3.SourceNamespaceWildcard),
-		itemScope(""))
-	addRule(store,
-		watchRuleWithSource("named", "shared-target", "repo-config"),
-		itemScope("repo-config"))
+	older := time.Unix(1000, 0)
+	named := watchRuleWithSource("named", "shared-target", "repo-config")
+	named.CreationTimestamp = metav1.NewTime(older)
+	wild := watchRuleWithSource("wild", "shared-target", configv1alpha3.SourceNamespaceWildcard)
+	wild.CreationTimestamp = metav1.NewTime(older.Add(time.Minute))
+	addRule(store, wild, itemScope(""))
+	addRule(store, named, itemScope("repo-config"))
 
 	manager.refreshWatchedTypeTables()
 
 	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("shared-target"))
 	require.True(t, ok)
 	require.Len(t, table.Types, 1)
-	assert.Equal(t, []string{"", "repo-config"}, table.Types[0].WatchScopes(),
-		"the named scope survives beside the cluster-wide one; collapsing them loses its filter")
+	assert.Equal(t, []string{"repo-config"}, table.Types[0].WatchScopes(),
+		"the older named scope keeps its own collection and is not widened")
+	refused, message := manager.CollectionOverlapForWatchRule(wild)
+	assert.True(t, refused)
+	assert.Contains(t, message, "configmaps in all namespaces")
+	assert.Contains(t, message, "configmaps in repo-config")
 }
 
 // TestCollectWatchRuleSelections_LegacyRuleStillWatchesItsOwnNamespace is the upgrade guarantee at

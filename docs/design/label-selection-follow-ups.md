@@ -65,29 +65,20 @@ exactly that fact.
 
 **Today.** `markResyncTailForResyncLocked` fences every other pending resync of the same GitTarget
 whose sweep boundary overlaps the new one's. This is what keeps a selector changed A → B → A in
-the order A1, B, A2. It also fences pairs that may legitimately run side by side, such as
-`configmaps in team-a` and `configmaps` cluster-wide with the same selector.
+the order A1, B, A2.
 
-**Cost.** During a relist storm on such a pair, each snapshot takes a fresh queue position
-instead of coalescing. The worker's event queue is bounded, and a full queue answers a resync with
-`ErrFinalizeQueueFull`.
+**Cost.** None left to pay. A GitTarget can no longer run two overlapping collections side by side
+(see [overlapping collections](../configuration.md#overlapping-collections)), so the fence only
+orders successive collections of one scope, which must not coalesce anyway.
 
-**Why it was kept.** The fence protects that pair too. Without it, an older cluster-wide snapshot
-could run after a newer `team-a` snapshot and put stale `team-a` state back. Coalescing across the
-pair would need snapshots that can be ordered by resourceVersion across two streams, and the
-ordering spec says not to infer a global order from two streams' arrivals.
+### 3. Overlap ties within one second go to the lower name
 
-**Revisit if** queue-full resyncs show up in practice for a GitTarget with overlapping collections.
-
-### 3. Selector-conflict ties within one second go to the lower name
-
-**Today.** When two rules select overlapping collections with different selectors, the older rule
-keeps them. `selectingRule.olderThan` compares `CreationTimestamp`, which has one-second
-resolution, and breaks ties by name. See
-[`selector_conflict.go`](../../internal/watch/selector_conflict.go).
+**Today.** When two rules select overlapping collections, the older rule keeps them.
+`selectingRule.olderThan` compares `CreationTimestamp`, which has one-second resolution, and breaks
+ties by name. See [`collection_overlap.go`](../../internal/watch/collection_overlap.go).
 
 **Cost.** Say rule `b` is created and running, and rule `a` is applied within the same second.
-`a` wins the tie and takes the collections. `b` is refused loudly (`ObjectSelectorConflict`), and
+`a` wins the tie and takes the collections. `b` is refused loudly (`CollectionOverlap`), and
 under `prune.mode: Always` the next snapshot sweeps with `a`'s selector.
 
 **Why it was not fixed.** The order is deterministic and documented, and the loser is told. A

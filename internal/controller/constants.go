@@ -34,11 +34,11 @@ type WatchManagerInterface interface {
 
 	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha3.WatchRule) (bool, string)
 	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha3.ClusterWatchRule) (bool, string)
-	// ObjectSelectorConflictForWatchRule and ObjectSelectorConflictForClusterWatchRule report
-	// whether a compiled rule is refused because its collections overlap another rule's on the
-	// same GitTarget with a different objectSelector; the older rule keeps the collection.
-	ObjectSelectorConflictForWatchRule(rule configv1alpha3.WatchRule) (bool, string)
-	ObjectSelectorConflictForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) (bool, string)
+	// CollectionOverlapForWatchRule and CollectionOverlapForClusterWatchRule report
+	// whether a compiled rule is refused because its collections overlap a different collection on
+	// the same GitTarget; the older rule keeps the collection.
+	CollectionOverlapForWatchRule(rule configv1alpha3.WatchRule) (bool, string)
+	CollectionOverlapForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) (bool, string)
 	StreamSummaryForGitTarget(gitDest types.ResourceReference) watch.StreamSummary
 	StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) watch.StreamSummary
 	StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) watch.StreamSummary
@@ -185,10 +185,10 @@ const (
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.
 	RequeueStreamSettleInterval = 10 * time.Second
-	// RequeueSelectorConflictInterval is how often a rule refused for an ObjectSelectorConflict
+	// RequeueCollectionOverlapInterval is how often a rule refused for a CollectionOverlap
 	// re-checks the conflict. It is a fallback: the stream-state event of the sibling rule that
 	// cleared it usually arrives first, but that event is best-effort.
-	RequeueSelectorConflictInterval = 30 * time.Second
+	RequeueCollectionOverlapInterval = 30 * time.Second
 	// RequeueWriteLostInterval is how soon a reconcile whose status write lost the optimistic-lock
 	// race comes back. It is short because there is nothing to wait FOR: the write was rejected
 	// against a resourceVersion this reconcile had already read, so the only thing that has to

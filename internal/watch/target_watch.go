@@ -310,10 +310,8 @@ func (m *Manager) replaceGitTargetWatches(
 	for _, stream := range started {
 		go m.runTargetWatch(stream.ctx, log, table.GitDest, stream.stream)
 	}
-	// Name every declared stream, not just the count. A GVR appearing twice — once
-	// cluster-wide ("") and once under a named namespace — means the same object is
-	// delivered on two streams, which is legitimate scoping but doubles the events for
-	// objects in that namespace. That is invisible in a bare count.
+	// Name every declared stream, not just the count: which collections a target watches is
+	// invisible in a bare count.
 	log.V(1).Info("watch-first target watch set reconciled",
 		"watchCount", len(keys), "streams", describeWatchKeys(keys))
 	return nil
@@ -476,9 +474,9 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 // snapshots of one boundary, each sweeping the documents the other gathered. So the version is
 // chosen once, deterministically.
 //
-// A cluster-wide scope ("") stays a peer of any named namespace on the same type, never a
-// replacement for it: collapsing THOSE widened the named rule's stream
-// (pr2-stream-scope-collapse.md). They are different collections, and both stream.
+// A cluster-wide scope ("") is never collapsed into a named namespace on the same type: that
+// widened the named rule's stream (pr2-stream-scope-collapse.md). The resolver refuses a rule that
+// would put both on one GitTarget (refuseCollectionOverlaps), so no table carries the pair.
 func targetWatchStreams(table WatchedTypeTable) map[targetWatchKey]struct{} {
 	chosen := map[types.CollectionKey]targetWatchKey{}
 	chosenPreferred := map[types.CollectionKey]bool{}

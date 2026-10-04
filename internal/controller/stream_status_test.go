@@ -140,13 +140,13 @@ func TestCommitRule_SelectorConflictRetriesOnABoundedCadence(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rule).WithStatusSubresource(rule).Build()
 
 	st := beginStatus(c, nil, rule)
-	st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonObjectSelectorConflict, "conflict")
+	st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonCollectionOverlap, "conflict")
 	rd := newRuleReadiness("rule", "")
-	rd.stalled(watch.ReasonObjectSelectorConflict, "conflict")
+	rd.stalled(watch.ReasonCollectionOverlap, "conflict")
 
 	result, err := commitRule(context.Background(), st, rd)
 	require.NoError(t, err)
-	assert.Equal(t, RequeueSelectorConflictInterval, result.RequeueAfter)
+	assert.Equal(t, RequeueCollectionOverlapInterval, result.RequeueAfter)
 	stalled := apimeta.FindStatusCondition(rule.Status.Conditions, ConditionTypeStalled)
 	require.NotNil(t, stalled)
 	assert.Equal(t, metav1.ConditionTrue, stalled.Status)

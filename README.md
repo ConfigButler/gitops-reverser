@@ -80,6 +80,10 @@ several source clusters, repositories, branches, and folders.
 - **Mirror only the objects you label.** A rule's `objectSelector` lets the API server choose which
   objects of a type are mirrored; an object that loses its label leaves the mirror like a deleted
   one. See [selecting objects by label](docs/configuration.md#selecting-objects-by-label-rulesobjectselector).
+- **Each object reaches a target once.** A target watches each object through one collection, so an
+  edit is never delivered twice and a status-only update never splits a commit. A rule that would
+  overlap another on the same target is refused, naming both. See
+  [overlapping collections](docs/configuration.md#overlapping-collections).
 - **In-place edits keep the shape of your file.** Updates preserve key order, comments, and
   untouched documents in multi-document files.
 - **Inspect a repository before you point at it.** `manifest-analyzer --mode scan-repo` classifies

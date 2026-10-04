@@ -30,7 +30,7 @@ type WatchedType struct {
 	// cluster-wide collection: a cluster-scoped resource, or a namespaced resource a WatchRule
 	// follows across every namespace. One selector per scope is enough because two collections on
 	// one type and namespace overlap, and the resolver refuses a second selector over an
-	// overlapping collection (see refuseSelectorConflicts).
+	// overlapping collection (see refuseCollectionOverlaps).
 	NamespaceScopes map[string]string
 }
 
@@ -101,8 +101,8 @@ type watchedTypeAccum struct {
 
 // buildWatchedTypeTable folds a GitTarget's selected followable records into its
 // watched-type table, deduplicating each record's namespace scopes. Identity
-// and followability are already settled by the registry, and selector conflicts by
-// refuseSelectorConflicts before this runs, so this is a pure fold with no catalog lookup and no
+// and followability are already settled by the registry, and collection overlaps by
+// refuseCollectionOverlaps before this runs, so this is a pure fold with no catalog lookup and no
 // conflict decision.
 func buildWatchedTypeTable(
 	gitDest types.ResourceReference,

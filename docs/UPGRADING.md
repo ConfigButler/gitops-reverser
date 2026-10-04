@@ -7,6 +7,21 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A `GitTarget` watches each object through one collection
+
+**Breaking.** Two rules on one `GitTarget` may no longer select overlapping collections: the same
+type in the same namespace with different `objectSelector`s, or the same type in all namespaces
+(`sourceNamespace: "*"`) and in a named one, whatever their selectors. The older rule keeps its
+collections; the newer one is refused as a whole with `ResourcesResolved=False` and reason
+`CollectionOverlap`, which replaces `ObjectSelectorConflict`. The message names both rules and both
+scopes. Exact duplicates are still allowed and share one stream, and different `GitTarget`s never
+conflict.
+
+Before upgrading, find targets that hold a `"*"` item and a named-namespace item for the same type,
+and remove the redundant one, or move the narrower one to its own `GitTarget`. Otherwise the newer
+rule stops mirroring after the upgrade. Alerts or scripts that match `ObjectSelectorConflict` must
+match `CollectionOverlap`.
+
 ## A Git server that stops answering no longer holds a branch
 
 Every call to a Git server has a deadline: two minutes for one advertisement, fetch or push
@@ -1562,9 +1577,8 @@ connections and a hundred list calls at warm-up, each with its own cursor and it
 apiserver watch cache; it is one of each now, and the saving grows with the cluster. And its failure
 mode is a clean 403 rather than a silently empty set.
 
-A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates. Each rule
-carries its own `operations` filter, so a target holding both runs two streams over overlapping
-objects. That is correct, not something to tune away.
+A later release refuses a `"*"` item and a named-namespace item for the same type on one target;
+see [A `GitTarget` watches each object through one collection](#a-gittarget-watches-each-object-through-one-collection).
 
 ## A GitTarget must cover exactly one kustomize render root
 
