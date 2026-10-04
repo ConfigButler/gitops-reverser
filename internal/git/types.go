@@ -388,10 +388,11 @@ type PendingWrite struct {
 	// render failed at commit time. Zero means "not stamped", so messageSource() recomputes.
 	committedMessageSource messageResolution
 
-	// materialized is set once the loop has committed this write at least once. A decided write
-	// the loop could not commit yet (the remote was unreachable) stays pending with it unset; such
-	// writes always form the tail of the pending writes. Loop-goroutine only.
-	materialized bool
+	// committedOnce is set once the loop has committed this write at least once. It stays set after
+	// a reset discards that commit: whether the checkout holds it now is checkoutApplied's to say. A
+	// decided write the loop could not commit yet (the remote was unreachable) stays pending with it
+	// unset; such writes always form the tail of the pending writes. Loop-goroutine only.
+	committedOnce bool
 	// replayRefusal is the refusal the last completed replay met for this write: the tree the write
 	// was replayed onto refuses it, so the replay skipped it and the checkout does not hold it. The
 	// loop settles it out of the pending writes (settleReplayRefusals). Stamped by replayPendingWrites.

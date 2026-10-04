@@ -107,7 +107,7 @@
         "branchWorkerQueueDepth": {
           "type": "integer",
           "minimum": 1,
-          "description": "Event queue depth per branch worker. A full queue drops the write (git_queue_drops_total) rather than stalling the watch path, losing that live attributed commit. Costs queue depth x payload of pod memory, which branchBufferMaxSize does not cover."
+          "description": "Event queue depth per branch worker. A full queue refuses the write (git_queue_drops_total) rather than stalling the watch path; the watch delivers it again from its cursor. Costs queue depth x payload of pod memory, which branchBufferMaxSize does not cover."
         },
         "branchBufferMaxSize": {
           "type": "string",

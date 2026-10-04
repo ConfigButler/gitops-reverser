@@ -321,12 +321,13 @@ the loop: it materializes what was decided, schedules the push, and closes the r
 recovery once nothing is pending. That last step is in one place, so no path that settles the last
 pending write can leave intake paused.
 
-Three outcomes, classified in exactly one place (`settleCommitted`, `settleFailed`,
-`settleUnreachable` in [`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go)):
+Three outcomes, classified in exactly one place, `materialize` in
+[`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go):
 
-- **Committed**: the write is now a commit in the checkout, waiting to be pushed.
-- **Failed for good**: the write itself was refused. Only that entry stops being pending.
-- **Unreachable**: the remote could not be reached. Everything stays for the retry.
+- **Committed** (`settleCommitted`): the write is now a commit in the checkout, waiting to be pushed.
+- **Failed for good** (`settleFailed`): the write itself was refused. Only that entry stops being pending.
+- **Unreachable**: the remote could not be reached. Everything stays pending for the retry, and a
+  waiting resync caller is answered with the error (`replyToDeferredResyncs`).
 
 The checkout is a *projection* of the pending writes: the remote tip the writes were planned on, plus one
 commit per materialized entry. The worker tracks how many entries the checkout holds

@@ -570,7 +570,7 @@ func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	assert.Equal(t, PhaseWaitingForPush, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
 	assert.Nil(t, loop.openWindow, "the window closed on its own timers")
 	require.Len(t, loop.pendingWrites, 1, "the decided window stays pending")
-	assert.False(t, loop.pendingWrites[0].materialized, "nothing could commit it yet")
+	assert.False(t, loop.pendingWrites[0].committedOnce, "nothing could commit it yet")
 	assert.True(t, loop.retry.pending(), "the publication retry owns the next attempt")
 }
 

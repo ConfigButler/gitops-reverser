@@ -158,14 +158,17 @@ var (
 	//                           nothing observed is dropped — but a non-zero rate is an API server
 	//                           saying something about this watch that it does not say routinely.
 	//
-	//   LOSS (an observed change that did not reach Git):
-	//     route_failed        — the writer refused it. Nothing retries until the next resync, so
-	//                           the mirror is behind for that object.
+	//   RECOVERABLE (refused, and delivered again):
+	//     route_failed        — the writer refused it: its queue was full, or its intake paused
+	//                           through an outage. The session ends without advancing the cursor
+	//                           and the reconnect delivers the event again. Only a cursor that
+	//                           expires first turns it into a relist, which restores the object's
+	//                           content but not this change's own commit.
 	//
-	// route_failed OVERLAPS git_queue_drops_total: a full worker queue is one of the ways a route
-	// fails, so one dropped event can increment both. They are two views of one event — where it
+	// route_failed OVERLAPS git_queue_drops_total: a refused enqueue is one of the ways a route
+	// fails, so one refused event can increment both. They are two views of one event — where it
 	// was refused, and by what — so a panel may show either, and a sum over both counts that event
-	// twice. Neither is a unique-loss total.
+	// twice. Neither is a unique-refusal total.
 	//
 	// It carries the GitTarget because "which tenant stopped receiving events" is the question, and
 	// deliberately NOT the watch event type (added/modified/deleted): that halves the series
@@ -293,19 +296,22 @@ var (
 	// close_reason and timer_source. The reason and source stay on the counter: a histogram's label
 	// set costs bucket count + 2 series.
 	GitCommitWindowDurationSeconds metric.Float64Histogram
-	// GitQueueDropsTotal counts work the branch worker threw away because its queue was full,
-	// labelled by {provider_namespace, provider_name, branch, kind} where kind is `write`,
-	// `attach` or `resync`. Every increment is lost work: a write is recovered only by the next
-	// resync, and until then the mirror is behind for that object with no other trace.
+	// GitQueueDropsTotal counts work the branch worker refused at enqueue, labelled by
+	// {provider_namespace, provider_name, branch, kind} where kind is `write`, `attach`, `resync`
+	// or `refresh`. Its queue was full, its intake was paused through an outage, or it was
+	// stopping. A refused item is not lost: its producer keeps it and offers it again (the watch
+	// keeps its cursor and delivers the event again, the controller re-sends a save, a resync is
+	// gathered again, the next reconcile asks for a refresh). What a refusal can cost is history: a
+	// watch cursor that expires before the event comes back turns it into a relist, which restores
+	// the object's content but not that change's own commit.
 	//
-	// The queue-depth gauge said the queue was deep. Nothing said anything had been dropped, which
-	// is the one thing an operator needs to know, and a saturating queue is exactly when it
-	// happens.
+	// The queue-depth gauge said the queue was deep. Nothing said anything had been refused, and a
+	// saturating queue is exactly when it happens.
 	GitQueueDropsTotal metric.Int64Counter
 	// GitMaterializationFailuresTotal counts attempts to commit decided writes that stopped because
 	// the remote could not be reached, or the parent branch a new write branch is created from is
 	// missing, labelled by {provider_namespace, provider_name, branch, reason} where reason is
-	// `unreachable` or `parent_unavailable`. Nothing is lost: the writes stay in the log for the
+	// `unreachable` or `parent_unavailable`. Nothing is lost: the writes stay pending for the
 	// retry. It is the failure before a push cycle starts, which git_pushes_total cannot see.
 	GitMaterializationFailuresTotal metric.Int64Counter
 

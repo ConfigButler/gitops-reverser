@@ -658,18 +658,18 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropAttach)
-		w.Log.Error(nil, "Event queue full, CommitRequest attach dropped (controller will re-send)")
+		w.Log.Error(nil, "Event queue full, CommitRequest attach refused (controller will re-send)")
 	}
 }
 
 // EnqueueResync adds a resync request to this worker's queue. Like a finalize
 // signal it rides the same queue as resource events, so it is applied in order with
 // live events: a resync enqueued during the snapshot window lands before the buffered
-// live events that follow it. If the queue is full the request is dropped and its
-// caller is notified immediately via the result channel.
+// live events that follow it. If the queue is full the request is refused and its
+// caller is told immediately via the result channel, so it can gather the scope again.
 //
 // It reports whether the request actually entered the FIFO. A caller gating downstream state on
-// the resync's ordering must not treat a drop as success: it would mark the target
+// the resync's ordering must not treat a refusal as success: it would mark the target
 // reconciled-through-Hc with no reconcile ever queued.
 func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	if request == nil {
@@ -752,7 +752,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
 		w.recordQueueDrop(queueDropResync)
-		w.Log.Error(nil, "Event queue full, resync request dropped",
+		w.Log.Error(nil, "Event queue full, resync request refused; its caller gathers it again",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
 			"sourceCollection", sourceCollectionForLog(request.SourceCollection))
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
@@ -856,9 +856,9 @@ func (w *BranchWorker) takePendingResync(marker *resyncMarker) (*ResyncRequest, 
 }
 
 // enqueueRequest places a write request on the FIFO and reports whether it was
-// accepted. A false return means the queue was full and the item was dropped, so a
-// caller that gates durable state on the write (a watch cursor) must not treat the
-// drop as success.
+// accepted. A false return means the item was refused (a full queue, paused intake, or a
+// stopping worker), so a caller that gates durable state on the write (a watch cursor) must not
+// treat the refusal as success, and offers the write again.
 func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	if request == nil {
 		return false
@@ -911,10 +911,10 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropWrite)
-		// Name the producing collection on a drop. A saturated queue is diagnosed from what was
-		// dropped and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
+		// Name the producing collection on a refusal. A saturated queue is diagnosed from what was
+		// refused and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
 		// one may be one COLLECTION of one GitTarget.
-		w.Log.Error(nil, "Event queue full, request dropped",
+		w.Log.Error(nil, "Event queue full, request refused; its producer offers it again",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName,
@@ -2907,10 +2907,11 @@ func (w *BranchWorker) recordWindowClosed(window *openWindow, reason windowFinal
 	}
 }
 
-// recordQueueDrop counts one item the queue was too full to accept.
+// recordQueueDrop counts one item refused at enqueue: the queue was full, intake was paused, or the
+// worker was stopping.
 //
-// Every increment is work thrown away: a live write is recovered only by the next resync, and an
-// attach by the controller's next poll.
+// The producer keeps a refused item and offers it again: the watch delivers a live write again from
+// its unadvanced cursor, and the controller re-sends an attach on its next poll.
 func (w *BranchWorker) recordQueueDrop(kind string) {
 	if telemetry.GitQueueDropsTotal == nil {
 		return

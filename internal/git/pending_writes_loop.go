@@ -24,9 +24,10 @@ import (
 //   - materialize makes the checkout the projection of the pending writes: the remote tip the writes were
 //     planned on plus one commit for each, in order. It rebuilds the writes committed before when
 //     the checkout is behind them, then commits each decided write not committed yet.
-//   - settleCommitted, settleFailed and settleUnreachable are the one place an attempt's outcome
-//     is classified and acted on: committed; failed for good, because the write itself was refused
-//     or cannot be made; or left pending, because the remote could not be reached.
+//   - materialize classifies each attempt in one place: committed (settleCommitted); failed for
+//     good, because the write itself was refused or cannot be made (settleFailed); or left pending,
+//     because the remote could not be reached. A write left pending needs no settling, only its
+//     waiting resync callers an answer (replyToDeferredResyncs).
 //
 // Settling an outcome can decide more work (a refused write's empty commit). Because deciding only
 // appends, that work joins the pending writes behind the ones decided before it, and the pass already running
@@ -132,13 +133,13 @@ func (l *branchWorkerEventLoop) advance() {
 // commit that would need a connection waits for that retry instead of spending one. A resync always
 // needs one, and its caller is waiting to hear what it found: it is answered at once with the
 // failure the retry is waiting out, and stays pending to be applied when the retry is due
-// (settleUnreachable).
+// (replyToDeferredResyncs).
 func (l *branchWorkerEventLoop) commitDecided() {
 	if l.materializedPrefix() == len(l.pendingWrites) {
 		return
 	}
 	if l.awaitingRetry() && !l.materializeIsLocal() && !l.w.awaitingParentProbe() {
-		l.settleUnreachable(l.retry.cause)
+		l.replyToDeferredResyncs(l.retry.cause)
 		return
 	}
 	if err := l.materialize(); err != nil {
@@ -164,7 +165,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 			refetch = fetchReasonForcedRecheck
 		}
 		if err := l.materializePrefix(refetch); err != nil {
-			l.settleUnreachable(err)
+			l.replyToDeferredResyncs(err)
 			l.w.recordMaterializationFailure(err)
 			return err
 		}
@@ -176,7 +177,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 		// A write is planned under the policy in force when it is committed, exactly as a replay is:
 		// an operator who tightened pruning since it was decided is obeyed.
 		if err := l.w.tightenPendingPruneModes(l.w.ctx, l.pendingWrites[i:i+1]); err != nil {
-			l.settleUnreachable(err)
+			l.replyToDeferredResyncs(err)
 			l.w.recordMaterializationFailure(err)
 			return err
 		}
@@ -187,7 +188,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 		case errors.Is(err, errWriteFailed):
 			l.settleFailed(i, err)
 		default:
-			l.settleUnreachable(err)
+			l.replyToDeferredResyncs(err)
 			l.w.recordMaterializationFailure(err)
 			return err
 		}
@@ -242,7 +243,7 @@ func (l *branchWorkerEventLoop) materializePrefix(refetch string) error {
 // not committed yet are always the tail: they are decided in order and committed in order.
 func (l *branchWorkerEventLoop) materializedPrefix() int {
 	for i := range l.pendingWrites {
-		if !l.pendingWrites[i].materialized {
+		if !l.pendingWrites[i].committedOnce {
 			return i
 		}
 	}
@@ -314,7 +315,7 @@ func (l *branchWorkerEventLoop) settleReplayRefusals(refused []PendingWrite) {
 // refusal's empty commit records the refusal it covered, so the same observation is not a new
 // trigger.
 func (l *branchWorkerEventLoop) settleCommitted(i int) {
-	l.pendingWrites[i].materialized = true
+	l.pendingWrites[i].committedOnce = true
 	pendingWrite := l.pendingWrites[i]
 	switch {
 	case pendingWrite.origin.resync != nil:
@@ -438,12 +439,13 @@ func changeIdentity(pendingWrite PendingWrite) (string, string, string, itypes.C
 	return commitFailureKindWindow, name, namespace, sourceCollectionForEvents(pendingWrite.Events)
 }
 
-// settleUnreachable acts on the decided writes not committed yet when the remote could not be
-// reached, or the parent branch a new write branch is created from is missing: they all stay
-// pending for the retry, and admission backpressure bounds them however long that lasts. A resync's
-// caller is answered now with the error, because it is waiting to hear what the resync found and
-// that cannot be known yet; the resync itself stays, in its place, and is applied with the rest.
-func (l *branchWorkerEventLoop) settleUnreachable(err error) {
+// replyToDeferredResyncs answers the callers of the resyncs among the writes not committed yet, when
+// the remote could not be reached or the parent branch a new write branch is created from is
+// missing. The writes themselves all stay pending for the retry, and admission backpressure bounds
+// them however long that lasts. A resync's caller is answered now with the error, because it is
+// waiting to hear what the resync found and that cannot be known yet; the resync itself stays, in
+// its place, and is applied with the rest.
+func (l *branchWorkerEventLoop) replyToDeferredResyncs(err error) {
 	for i := l.materializedPrefix(); i < len(l.pendingWrites); i++ {
 		origin := &l.pendingWrites[i].origin
 		if origin.resync == nil || origin.answered {

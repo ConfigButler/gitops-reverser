@@ -1538,12 +1538,12 @@ as one funnel and its loss paths as one selector:
 - **Ingest.** `gitopsreverser_watch_events_total{gittarget_*,group,version,resource,outcome}` counts
   every delivered watch event exactly once, at `routeLiveTargetWatchEvent`, the single switch
   carrying every terminal branch. `outcome` separates the pipeline working (`routed`, `unchanged`,
-  `bookmark`) from loss (`route_failed`). Beside it,
+  `bookmark`) from a refusal the watch delivers again (`route_failed`). Beside it,
   `_watch_event_handling_seconds` (stream occupancy, the head-of-line signal),
   `_watch_sessions_ended_total{reason}` and `_watch_replay_duration_seconds` (`410` pressure and
   what a rebuild costs), `_watch_recovery_total{mode}`, and `_watch_types{state}`.
-- **Queue.** `gitopsreverser_git_queue_drops_total{kind}` counts work a full worker queue threw
-  away, and `_git_queue_depth` is read at scrape time rather than published by the worker loop.
+- **Queue.** `gitopsreverser_git_queue_drops_total{kind}` counts work a worker refused at enqueue,
+  which its producer offers again, and `_git_queue_depth` is read at scrape time rather than published by the worker loop.
 - **Write.** `gitopsreverser_git_documents_total{gittarget_*,group,version,resource,outcome}` is the
   per-document census (`written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained`), with
   `_placements_total`, `_placement_refusals_total` and `_placement_kustomization_entries_total`

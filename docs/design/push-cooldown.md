@@ -306,9 +306,10 @@ held-request retry test, to measure those workloads.
 
 1. **Keep the success cooldown while evaluating its cost.** Changing publication cadence needs
    a separate change and its own validation.
-2. **Option C's retry schedule is built.** Step 3b unified it with parent recovery. The remaining
-   outage work is admission correctness, bounded Git calls, pause/resume, and visible status in
-   the branch-worker pending-writes plan. Removing the success cooldown would not solve those gaps.
+2. **Option C's retry schedule is built.** Step 3b unified it with parent recovery. The outage work
+   that followed it (admission correctness, bounded Git calls, pause/resume, and visible status) is
+   built too, in the branch-worker pending-writes plan. Removing the success cooldown would not have
+   closed any of those gaps.
 3. **Build the event-loop ledger rows in §9 before changing the success wait.** Retry tests prove
    progress, but the ledger still needs the cost of these scheduled workloads. Row 2 prices the
    multi-identity case.

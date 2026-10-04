@@ -219,8 +219,9 @@ handling. This step closes them, in [`pending_writes_loop.go`](../../internal/gi
 - Every write kind (window, atomic batch, resync, a save's empty record, a refusal's empty commit)
   is decided into the pending writes and committed by `materialize`. `l.commit`, `retain` and the commit guard
   are gone, with the separate resync, atomic and refusal-touch commit paths.
-- One place classifies an attempt: `settleCommitted`, `settleFailed` (terminal for that write), or
-  `settleUnreachable` (kept for the retry). A write's origin (the resync caller, the atomic request,
+- One place classifies an attempt: committed (`settleCommitted`), failed for good (`settleFailed`,
+  terminal for that write), or kept pending for the retry, with any waiting resync caller answered
+  (`replyToDeferredResyncs`). A write's origin (the resync caller, the atomic request,
   the refusal a touch answers) rides with it so its outcome can be settled there.
 - `materialize` is never re-entered. A refusal's empty commit decided while a refused write is being
   settled is appended to the pending writes, and the running pass commits it in order. No push starts inside a

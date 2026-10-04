@@ -53,9 +53,9 @@ type BranchWorkerLimits struct {
 	MaxBufferBytes int64
 
 	// QueueDepth is the depth of the event queue, and it is a HARD drop boundary: the
-	// enqueue is deliberately non-blocking, so a full queue throws the item away and
-	// counts git_queue_drops_total rather than stalling the watch path behind a slow
-	// remote.
+	// enqueue is deliberately non-blocking, so a full queue refuses the item and counts
+	// git_queue_drops_total rather than stalling the watch path behind a slow remote. The
+	// producer keeps it and offers it again: the watch redelivers from its unadvanced cursor.
 	//
 	// On a healthy branch MaxBufferBytes does NOT cover this queue: the window cap is accounted
 	// only once the loop DEQUEUES an item, so whatever is still on the channel is bounded by count

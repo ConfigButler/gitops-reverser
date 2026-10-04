@@ -52,7 +52,7 @@ func NewGitTargetEventStream(
 // OnWatchEvent forwards a live event to the GitTarget's branch worker. An event with no object
 // payload that is neither a DELETE nor a field patch carries nothing to write and is dropped
 // (returns nil — there is nothing to durably hand off). It returns a non-nil error only when the
-// worker's queue is full and a real event was dropped, so the watch loop does not advance its
+// worker refused a real event (its queue was full, or its intake paused), so the watch loop does not advance its
 // durable cursor past an event the worker never accepted: the watch reconnects from the
 // un-advanced cursor and redelivers, which is safe because the writer's no-op detection at the
 // commit boundary makes redelivery idempotent.
@@ -66,7 +66,8 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) error {
 	event.GitTargetName = s.gitTargetName
 	event.GitTargetNamespace = s.gitTargetNamespace
 	if !s.branchWorker.Enqueue(event) {
-		return fmt.Errorf("branch worker queue full for gitTarget %s/%s; dropped %s event for %s",
+		return fmt.Errorf("branch worker for gitTarget %s/%s refused %s event for %s "+
+			"(queue full or intake paused); the watch delivers it again",
 			s.gitTargetNamespace, s.gitTargetName, event.Operation, event.Identifier.Key())
 	}
 	s.logger.V(1).Info("Forwarded event", "resource", event.Identifier.Key(), "operation", event.Operation)

@@ -72,10 +72,11 @@ The repository has useful foundations, but it is not HA today.
   save decisions. Persisted cursors alone do not establish lossless failover.
 - BranchWorker keeps open commit windows, local commits, unpushed writes, and
   CommitRequest outcomes in memory. Its local clone is disposable.
-- Steps 1 to 4 provide ordered pending writes, one materializer, one retry schedule, and isolated
-  replay refusals. Admission currently closes on retained payload bytes during a retry. Empty
-  records, queued payloads, and producer deduplication still need the fixes in the linked plan;
-  this threshold is not a durable retention contract or a total memory ceiling.
+- The pending-writes plan provides ordered pending writes, one materializer, one retry schedule,
+  isolated replay refusals, and an intake budget: during a retry, admission closes on everything
+  accepted and not yet published, queued payloads and empty records included, and producers offer
+  what it refuses again. That budget is not a durable retention contract or a total memory
+  ceiling.
 - Git pushes already use a remote reference compare-and-swap. PushAtomic remains
   the final protection against a stale owner or an external remote update. See
   [git_atomic_push.go](../../internal/git/git_atomic_push.go).

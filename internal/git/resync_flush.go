@@ -81,10 +81,11 @@ func resyncHealKey(req *ResyncRequest) healKey {
 // atomic-commit path: for a non-heal resync any open live window is finalized first so arrival order
 // is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
 // resync is then decided like every other write, and its caller answered when its commit is made
-// or fails (settleResyncApplied, settleFailed, settleUnreachable). A resync that commits nothing
-// stops being pending at once, so it never schedules a push. A build or commit failure answers
-// with the error and commits nothing: the gatherer already guaranteed the snapshot is complete, so
-// a failure here is a write fault, never a partial-snapshot drop.
+// or fails (settleResyncApplied, settleFailed), or as soon as the remote holds it back
+// (replyToDeferredResyncs). A resync that commits nothing stops being pending at once, so it never
+// schedules a push. A build or commit failure answers with the error and commits nothing: the
+// gatherer already guaranteed the snapshot is complete, so a failure here is a write fault, never a
+// partial-snapshot drop.
 //
 // A resync keeps fetching, deliberately, even now that a publication does not. The rest of the
 // write path is safe without one because it always reaches the push, whose advertisement catches a

@@ -133,7 +133,7 @@ func TestBranchWorker_MissingConfiguredParentWritesNothingUntilItExists(t *testi
 	liveWrite(loop, "cm1")
 
 	require.Len(t, loop.pendingWrites, 1, "the write is kept")
-	assert.False(t, loop.pendingWrites[0].materialized, "but nothing was committed")
+	assert.False(t, loop.pendingWrites[0].committedOnce, "but nothing was committed")
 	assert.True(t, loop.lastPushAt.IsZero(), "and nothing was pushed")
 	_, onRemote := f.featureOnRemote()
 	assert.False(t, onRemote, "no orphan branch")

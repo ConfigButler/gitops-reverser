@@ -80,7 +80,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 	require.False(t, resolved, "the save is held, not failed: its write can still land")
 	assert.Equal(t, PhaseWaitingForPush, f.worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
 	require.Len(t, loop.pendingWrites, 2, "the window is decided and kept pending")
-	assert.False(t, loop.pendingWrites[1].materialized)
+	assert.False(t, loop.pendingWrites[1].committedOnce)
 	require.True(t, loop.retry.pending(), "the failure armed the publication retry")
 	require.Equal(t, int32(1), syncs.Load(), "the window tried the rebuild once")
 
@@ -139,7 +139,7 @@ func TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy(t *testing.T) {
 	deleted.Operation = "DELETE"
 	write(deleted)
 	require.Len(t, loop.pendingWrites, 2)
-	require.False(t, loop.pendingWrites[1].materialized)
+	require.False(t, loop.pendingWrites[1].committedOnce)
 
 	// The operator stops pruning before the remote comes back.
 	target := &configv1alpha3.GitTarget{}
