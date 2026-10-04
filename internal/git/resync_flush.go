@@ -169,7 +169,7 @@ func (w *BranchWorker) buildResyncPendingWrite(
 		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
 			{Name: targetMetadata.Name, Namespace: targetMetadata.Namespace}: targetMetadata,
 		},
-		ByteSize: estimateDesiredSize(req.Desired),
+		ByteSize: req.payloadSize(),
 	}, nil
 }
 

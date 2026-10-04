@@ -62,7 +62,7 @@ type refusalTouchOrigin struct {
 // errAdmissionClosed answers a resync refused at admission. It is ErrFinalizeQueueFull to every
 // caller: the work was not accepted, and the producer that sent it keeps it.
 var errAdmissionClosed = fmt.Errorf(
-	"%w: the branch holds its retained-byte budget while the remote cannot be reached", ErrFinalizeQueueFull)
+	"%w: the branch has paused intake while the remote cannot take what it holds", ErrFinalizeQueueFull)
 
 // pendingWriteOverheadBytes is what a decided write is charged beyond its payload and message: its
 // own bookkeeping (target metadata, commit configuration, signer, the save it carries). Without it a
@@ -76,25 +76,6 @@ const pendingWriteOverheadBytes = 1024
 func retainedCharge(pendingWrite *PendingWrite) int64 {
 	return pendingWrite.ByteSize + int64(len(pendingWrite.CommitMessage)) + pendingWriteOverheadBytes
 }
-
-// syncAdmission closes admission while the log holds the retained-byte budget and a failed attempt
-// is waiting for its retry, and opens it otherwise. Run once per loop iteration.
-//
-// Keeping decided writes through an outage makes the log grow for as long as the outage lasts, and
-// nothing in it may be evicted: a decided write can carry a save, and dropping a write without one
-// would need a snapshot to re-derive it. So the bound is at admission instead. A refused live write
-// is not lost: the watch keeps its cursor and delivers it again, exactly as for a full queue; a save
-// is sent again by the controller; a refused resync's collection is gathered again. A healthy branch
-// never closes: its log drains at the next push, so the budget only matters while the remote
-// refuses. The bound is the budget, plus the window being collected, plus whatever the FIFO already
-// holds.
-func (l *branchWorkerEventLoop) syncAdmission() {
-	budget := l.w.branchBufferMaxBytes
-	l.w.admissionClosed.Store(budget > 0 && l.retry.pending() && l.pendingWritesBytes >= budget)
-}
-
-// admitWork reports whether new work may enter the queue. Callers hold pendingResyncsMu.
-func (w *BranchWorker) admitWork() bool { return !w.admissionClosed.Load() }
 
 // decide adds a write the loop has decided to make to the log, and commits it when it can.
 //

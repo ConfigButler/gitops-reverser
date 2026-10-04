@@ -47,7 +47,8 @@ const DefaultBranchWorkerQueueDepth = 1000
 type BranchWorkerLimits struct {
 	// MaxBufferBytes caps totalRetainedBytes: the open commit window plus the writes
 	// committed locally and retained for replay until a push succeeds. Tripping it
-	// finalizes the window early, ignoring the commit cadence.
+	// finalizes the window early, ignoring the commit cadence. While a failed attempt waits
+	// for its retry it is also the intake budget, covering queued work too. See intake.go.
 	MaxBufferBytes int64
 
 	// QueueDepth is the depth of the event queue, and it is a HARD drop boundary: the
@@ -55,9 +56,10 @@ type BranchWorkerLimits struct {
 	// counts git_queue_drops_total rather than stalling the watch path behind a slow
 	// remote.
 	//
-	// MaxBufferBytes does NOT cover this queue. That cap is accounted only once the loop
-	// DEQUEUES an item, so whatever is still on the channel is bounded by count alone and
-	// costs memory ON TOP of it. The channel itself is trivial (a WorkItem is three
+	// On a healthy branch MaxBufferBytes does NOT cover this queue: the window cap is accounted
+	// only once the loop DEQUEUES an item, so whatever is still on the channel is bounded by count
+	// alone and costs memory ON TOP of it. During an outage the intake gate charges queued
+	// payload against MaxBufferBytes at enqueue (intake.go), in serialized bytes. The channel itself is trivial (a WorkItem is three
 	// pointers); what it retains is not, because each live-event item holds a sanitized
 	// object as an unstructured map, measured at roughly SIX times the bytes it serializes
 	// to. Budget QueueDepth x serialized size x ~6 per SATURATED worker: ~5MiB at the

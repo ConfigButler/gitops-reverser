@@ -331,9 +331,8 @@ type BranchWorker struct {
 	parentRecoveryOpen  atomic.Bool
 	parentRecoveryFound atomic.Bool
 	parentProbeHold     atomic.Pointer[parentProbeHold]
-	// admissionClosed refuses new writes, saves and resyncs at enqueue while the loop holds its
-	// retained-byte budget and the remote cannot be reached. See admitWork.
-	admissionClosed atomic.Bool
+	// intake decides whether new writes, saves and resyncs may enter the FIFO. See intake.go.
+	intake intakeGate
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -598,6 +597,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	if req == nil {
 		return
 	}
+	charge := attachCharge(req.Message)
 
 	// Increment before the send so inflightItems can never lag the loop's
 	// receive; roll back if the queue is full and the item is dropped.
@@ -614,11 +614,11 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
-	if !w.admitWork() {
+	if !w.admitPayload(charge) {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropAttach)
-		w.Log.V(1).Info("CommitRequest attach refused while the branch holds its retained-byte budget "+
+		w.Log.V(1).Info("CommitRequest attach refused while the branch has paused intake "+
 			"(the controller re-sends)", "request", req.Namespace+"/"+req.Name)
 		return
 	}
@@ -626,6 +626,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	if !w.crOwners.claim(id, w) {
 		// The router routes to the owner, so only a request that moved workers between two polls
 		// gets here. The owner answers for it; registering it twice could commit it twice.
+		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.Log.Info("CommitRequest attach refused: another branch worker holds the request",
@@ -635,7 +636,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	w.markResyncTailForTargetLocked(req.GitTargetNamespace, req.GitTargetName)
 	w.countQueuedAttach(id)
 	select {
-	case w.eventQueue <- WorkItem{Attach: req}:
+	case w.eventQueue <- WorkItem{Attach: req, charge: charge}:
 		w.pendingResyncsMu.Unlock()
 		w.Log.Info("CommitRequest attach enqueued",
 			"request", req.Namespace+"/"+req.Name,
@@ -648,6 +649,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		// loop has woken to notice it.
 	default:
 		w.uncountQueuedAttach(id)
+		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropAttach)
@@ -669,6 +671,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		return false
 	}
 	key := resyncKeyFor(request)
+	charge := request.charge() // sized here, off the loop and outside the lock
 
 	w.pendingResyncsMu.Lock()
 	if w.stoppingLocked() {
@@ -681,14 +684,6 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
-	if !w.admitWork() {
-		w.pendingResyncsMu.Unlock()
-		w.recordQueueDrop(queueDropResync)
-		w.Log.V(1).Info("Resync refused while the branch holds its retained-byte budget",
-			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
-		request.reply(ResyncResult{Err: errAdmissionClosed})
-		return false
-	}
 	if w.pendingResyncs == nil {
 		w.pendingResyncs = make(map[resyncKey]*pendingResync)
 	}
@@ -697,7 +692,11 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		// A marker for this key is already in the FIFO and nothing for this scope
 		// was queued behind it, so the marker's position is still the right place
 		// for a newer snapshot. Swap in the newer request; the loop reads whatever
-		// is current when the marker comes up.
+		// is current when the marker comes up. Only the difference in size is new.
+		if !w.admitPayload(charge - pending.request.charge()) {
+			w.pendingResyncsMu.Unlock()
+			return w.refuseResyncAtIntake(request, charge)
+		}
 		superseded := pending.request
 		pending.request = request
 		w.pendingResyncsMu.Unlock()
@@ -713,18 +712,9 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	} else if queued {
 		// A write inside this scope was queued behind the marker. Coalescing here
 		// would run this snapshot ahead of those writes and let them overwrite it
-		// with older state. Release the key instead: the queued marker runs the
-		// request it holds now, at its own position, and this request takes a fresh
-		// marker at the tail below. What it holds may be a request coalesced into it,
-		// which was told it was enqueued; the marker's own request was answered as
-		// superseded then.
-		if pending.request != pending.marker {
-			if w.releasedResyncs == nil {
-				w.releasedResyncs = make(map[*ResyncRequest]*ResyncRequest)
-			}
-			w.releasedResyncs[pending.marker] = pending.request
-		}
-		delete(w.pendingResyncs, key)
+		// with older state. Release the key instead, and this request takes a fresh
+		// marker at the tail below.
+		w.releaseResyncKeyLocked(key, pending)
 		w.Log.V(1).Info("Resync request not coalesced: writes are queued behind the pending marker",
 			"scope", request.Scope.String(),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
@@ -736,6 +726,10 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	// while its request never ran and its drain waited for a reply that never
 	// came. The send is non-blocking, so holding the lock across it cannot
 	// deadlock against the loop's takePendingResync.
+	if !w.admitPayload(charge) {
+		w.pendingResyncsMu.Unlock()
+		return w.refuseResyncAtIntake(request, charge)
+	}
 	w.pendingResyncs[key] = &pendingResync{marker: request, request: request}
 	w.inflightItems.Add(1)
 	select {
@@ -749,6 +743,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	default:
 		w.inflightItems.Add(-1)
 		delete(w.pendingResyncs, key)
+		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
 		w.recordQueueDrop(queueDropResync)
 		w.Log.Error(nil, "Event queue full, resync request dropped",
@@ -757,6 +752,31 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
+}
+
+// releaseResyncKeyLocked frees a key whose marker no newer request may coalesce into. The queued
+// marker runs the request it holds now, at its own position. What it holds may be a request
+// coalesced into it, which was told it was enqueued; the marker's own request was answered as
+// superseded then. The caller must hold pendingResyncsMu.
+func (w *BranchWorker) releaseResyncKeyLocked(key resyncKey, pending *pendingResync) {
+	if pending.request != pending.marker {
+		if w.releasedResyncs == nil {
+			w.releasedResyncs = make(map[*ResyncRequest]*ResyncRequest)
+		}
+		w.releasedResyncs[pending.marker] = pending.request
+	}
+	delete(w.pendingResyncs, key)
+}
+
+// refuseResyncAtIntake answers a resync the intake gate refused. It reports false: the request did
+// not enter the FIFO.
+func (w *BranchWorker) refuseResyncAtIntake(request *ResyncRequest, charge int64) bool {
+	w.recordQueueDrop(queueDropResync)
+	err := w.intakeRefusal(charge)
+	w.Log.V(1).Info("Resync refused while the branch has paused intake",
+		"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName, "reason", err.Error())
+	request.reply(ResyncResult{Err: err})
+	return false
 }
 
 // markResyncTailForWriteLocked records, on every pending resync whose GitTarget and
@@ -862,7 +882,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	if request == nil {
 		return false
 	}
-	item := WorkItem{Request: request}
+	item := WorkItem{Request: request, charge: eventCharge(request)} // sized off the loop
 	// Increment before the send so inflightItems can never lag the loop's
 	// receive; roll back if the queue is full and the item is dropped.
 	w.inflightItems.Add(1)
@@ -884,11 +904,11 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 			"gitTarget", request.GitTargetName)
 		return false
 	}
-	if !w.admitWork() {
+	if !w.admitPayload(item.charge) {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropWrite)
-		w.Log.V(1).Info("Write refused while the branch holds its retained-byte budget; "+
+		w.Log.V(1).Info("Write refused while the branch has paused intake; "+
 			"the producer keeps it to redeliver", "events", len(request.Events), "gitTarget", request.GitTargetName)
 		return false
 	}
@@ -906,6 +926,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		// loop has woken to notice it.
 		return true
 	default:
+		w.intake.release(item.charge)
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.recordQueueDrop(queueDropWrite)
@@ -1270,6 +1291,10 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 }
 
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
+	// Released once the item is handled, when what it left behind is counted as held: never both
+	// uncounted at once.
+	charge := item.charge
+	defer func() { l.w.intake.release(charge) }()
 	if item.Attach != nil {
 		l.handleAttachCommitRequest(item.Attach)
 		return
@@ -1285,7 +1310,9 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		// it while this marker waited in the FIFO. Running it here keeps the
 		// original queue position, so a resync still lands before the live events
 		// buffered behind it.
-		l.handleResyncRequest(l.w.takePendingResync(item.Resync))
+		req := l.w.takePendingResync(item.Resync)
+		charge = req.charge()
+		l.handleResyncRequest(req)
 		return
 	}
 
@@ -1479,6 +1506,11 @@ func (w *BranchWorker) drainQueue() {
 			if item.Attach != nil {
 				w.uncountQueuedAttach(item.Attach.id())
 			}
+			charge := item.charge
+			if item.Resync != nil {
+				charge = w.takePendingResync(item.Resync).charge()
+			}
+			w.intake.release(charge)
 			w.inflightItems.Add(-1)
 		default:
 			return
@@ -2479,8 +2511,20 @@ func (w *BranchWorker) tightenPendingPruneModes(ctx context.Context, pendingWrit
 	return nil
 }
 
-// estimateEventSize approximates the serialized YAML size for an event's object.
-func (w *BranchWorker) estimateEventSize(ev Event) int64 {
+// estimateEventSize approximates the serialized YAML size for an event's object, reusing the size
+// its producer computed at enqueue.
+func (w *BranchWorker) estimateEventSize(ev Event) int64 { return eventPayloadSize(&ev) }
+
+func (w *BranchWorker) estimateEventsSize(events []Event) int64 {
+	var total int64
+	for i := range events {
+		total += eventPayloadSize(&events[i])
+	}
+	return total
+}
+
+// estimateObjectSize approximates the serialized YAML size for an event's object.
+func estimateObjectSize(ev *Event) int64 {
 	if ev.Object == nil {
 		return 0
 	}
@@ -2488,14 +2532,6 @@ func (w *BranchWorker) estimateEventSize(ev Event) int64 {
 		return int64(len(b))
 	}
 	return 0
-}
-
-func (w *BranchWorker) estimateEventsSize(events []Event) int64 {
-	var total int64
-	for _, event := range events {
-		total += w.estimateEventSize(event)
-	}
-	return total
 }
 
 func (w *BranchWorker) getGitTarget(

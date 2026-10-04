@@ -232,7 +232,7 @@ func TestDecidedWrite_EmptySavesCountAgainstTheBudgetDuringAnOutage(t *testing.T
 	}
 
 	require.True(t, loop.retry.pending())
-	assert.True(t, f.worker.admissionClosed.Load(), "the retained empty save fills the budget")
+	assert.NotNil(t, f.worker.IntakePaused(), "the retained empty save fills the budget")
 	assert.Len(t, loop.pendingWrites, 1, "only the save admitted before the budget filled is retained")
 	assert.Equal(t, 9, refused, "every later save is refused at admission")
 	assert.Positive(t, loop.pendingWritesBytes, "an empty record is charged for what it keeps")

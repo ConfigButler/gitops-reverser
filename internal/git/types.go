@@ -428,6 +428,11 @@ type WorkItem struct {
 	// Withdraw cancels a CommitRequest the worker has not acted on yet. It rides the same FIFO as
 	// the attach, so it is always handled after every attach sent before it.
 	Withdraw *AttachCommitRequest
+
+	// charge is what a write or an attach was charged against the intake budget at enqueue, and is
+	// released once the loop has handled it. A resync's is its request's (ResyncRequest.charge),
+	// because the request a marker runs can change while it waits. See intake.go.
+	charge int64
 }
 
 // ResyncScope restricts a resync's mark-and-sweep to the slice of the mirror the desired
@@ -522,6 +527,10 @@ type ResyncRequest struct {
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult
+
+	// payloadBytes is the snapshot's estimated serialized size once sized is set. See payloadSize.
+	payloadBytes int64
+	sized        bool
 }
 
 // refusalCollection is the watched collection this request speaks for: its scope's collection for a per-type
@@ -688,6 +697,10 @@ type Event struct {
 	// non-stream producer (reconcile, bootstrap, the admission path). Diagnostic only:
 	// nothing filters the queue on it. See source_collection.go.
 	SourceCollection types.CollectionKey
+
+	// payloadBytes is the object's estimated serialized size once sized is set. See payloadSize.
+	payloadBytes int64
+	sized        bool
 }
 
 // IsFieldPatch reports whether the event carries a bounded field patch instead of
