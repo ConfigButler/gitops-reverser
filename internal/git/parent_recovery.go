@@ -112,8 +112,10 @@ func (l *branchWorkerEventLoop) runParentProbe() {
 		if err != nil || missing {
 			if err != nil {
 				l.w.Log.V(1).Info("Parent branch probe failed", "branch", l.w.Branch, "error", err.Error())
+			} else {
+				err = errAwaitingParentProbe
 			}
-			l.scheduleRetry()
+			l.scheduleRetry(err)
 			return
 		}
 		r.found = true

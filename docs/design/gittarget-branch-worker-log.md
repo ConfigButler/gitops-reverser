@@ -2,7 +2,8 @@
 
 > **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
 > Steps 1 to 4, 5a, 5a2, and 6 are built; step 3 was split into 3a, 3b, and 3c after review. Steps
-> 5b, 5c, and 7 remain, in that order.
+> 5b, 5c, and 7 remain, in that order. Two parts of 5b are built after the 2026-10-04 review: a
+> nonzero charge per retained write, and resyncs that respect the retry schedule.
 > Git calls are bounded now, so the pause/resume state machine of 5b cannot be defeated by a stalled call.
 > The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
 > the remaining defects. This is the write-path part of the "transition boundary" in
@@ -137,13 +138,17 @@ Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. 
   on cursor resume, which then advanced the cursor.
 - **The byte budget is incomplete.** `syncAdmission` uses `pendingWritesBytes` and a pending retry.
   `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at zero. Repeated empty
-  saves can grow the log without reaching the byte threshold. The FIFO limits item count, while
-  individual snapshots and batches can be large. Add accounting for entries and payloads before
-  describing retention as bounded; include registered saves and deferred snapshots.
-- **Retry pacing has an exception.** `decide` lets resyncs materialize during a pending retry.
-  Without the missing-parent hold, those resyncs can spend fetches before the retry deadline.
-  A deferred resync can answer its caller with the known retryable failure and remain retained;
-  the answer must not require a fresh failing connection.
+  saves could grow the log without reaching the byte threshold; since the 2026-10-04 review each
+  decided write is charged its payload, its message, and a fixed overhead
+  (`pendingWriteOverheadBytes`), fixed at the decision and refunded when it leaves the log. The
+  FIFO limits item count, while individual snapshots and batches can be large. Add accounting for
+  queued payloads before describing retention as bounded; include registered saves and deferred
+  snapshots.
+- **Retry pacing had an exception** (fixed after the 2026-10-04 review). `decide` let resyncs
+  materialize during a pending retry, so each one spent a fetch before the retry deadline, and a
+  write decided behind a retained resync reached that resync's fetch too. Now the retry schedule
+  records the failure it waits out (`retrySchedule.cause`); a resync during backoff is answered
+  with it, stays in the log, and is applied when the retry is due.
 - **Watch recovery currently polls.** `runTargetWatch` reconnects after its fixed two-second
   backoff. It has no wait for the worker to reopen admission. Queue saturation becomes repeated
   work and a generic watch error, rather than a publication-pause explanation.
@@ -345,7 +350,8 @@ Remaining limits:
 `fix(git)`. Implement the recovery contract after step 6 bounds synchronous Git work.
 
 - Use byte and count admission budgets covering queued payloads, open/decided work, deferred
-  resyncs, and pending saves. Give empty records a nonzero charge. State measured overhead and
+  resyncs, and pending saves. Give empty records a nonzero charge (built: every decided write
+  carries `pendingWriteOverheadBytes` beyond its payload and message). State measured overhead and
   any bounded overshoot; do not advertise the existing 8 MiB threshold as a heap limit.
 - Decide the oversized-item path explicitly: reject before acceptance with a capacity diagnostic
   and keep the scope unproven until capacity/configuration changes. Never spin on a snapshot that
@@ -355,7 +361,8 @@ Remaining limits:
   Outcome reads and duplicate attaches must not allocate a second obligation. Test eventual
   withdrawal progress while intake is closed.
 - Pause affected producers and wake them after backlog settlement. Retain accepted work and the
-  existing retry schedule. All recovery Git I/O, including a resync's fetch, respects that schedule.
+  existing retry schedule. All recovery Git I/O, including a resync's fetch, respects that schedule
+  (built for the resync's fetch).
   Preserve ordinary healthy-path refresh and pre-resync fetch costs.
 
 ### Step 5c: project publication and intake state
@@ -511,7 +518,7 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 | Push outage under continuous events and empty saves | Byte/count budgets stop intake; accepted entries and saves remain intact |
 | Saturation across two targets on one branch and a second branch | Shared targets show the pause; the second branch continues |
 | Paused producers, with no new Kubernetes edits | One due retry recovers; producers wake without Pod restart |
-| Resync arrives during backoff | No early Git fetch; caller receives the failure and accepted intent remains |
+| Resync arrives during backoff | Built: no early fetch; the caller hears the failure and the resync stays |
 | Read access returns but pushes are still rejected | Admission stays paused and backoff continues |
 | Cursor expires during pause | Fresh scoped snapshot follows accepted work; no missing-history claim |
 | DELETE history expires under each prune mode | Only permitted deletions occur; retained stale objects remain observable |

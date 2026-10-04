@@ -102,7 +102,9 @@ func (w *BranchWorker) admitWork() bool { return !w.admissionClosed.Load() }
 // the write in the log, and the publication retry commits and pushes it. A request riding it is
 // held from here on, so the controller never fails a save whose write can still land. Until a pending
 // retry is due, a decision that would need a connection to commit waits for that retry instead of
-// spending one; a resync is the exception, because its caller is waiting to hear what it found.
+// spending one. A resync always needs one, and its caller is waiting to hear what it found: it is
+// answered at once with the failure the retry is waiting out, and stays in the log to be applied
+// when the retry is due, as one the remote refused is (settleUnreachable).
 //
 // It reports whether the write is still in the log afterwards, which is false only when its
 // outcome is already settled: it failed for good, or it was a resync that committed nothing.
@@ -123,8 +125,8 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 		l.followUps = true
 		return true // the pass already running commits it, in order; its starter pushes it
 	}
-	if l.awaitingRetry() && pendingWrite.Kind != PendingWriteResync &&
-		!l.materializeIsLocal() && !l.w.awaitingParentProbe() {
+	if l.awaitingRetry() && !l.materializeIsLocal() && !l.w.awaitingParentProbe() {
+		l.settleUnreachable(l.retry.cause)
 		return true
 	}
 	l.deciding = pendingWrite.seq
@@ -140,7 +142,7 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 	if err != nil {
 		l.noteParentUnavailable(err)
 		if (len(l.pendingWrites) > 0 || l.recovery.active) && !l.retry.pending() {
-			l.scheduleRetry()
+			l.scheduleRetry(err)
 		}
 		l.w.Log.Error(err, "Cannot commit the decided writes yet; they wait in the log for the retry",
 			"pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
@@ -260,10 +262,17 @@ func (l *branchWorkerEventLoop) materializedPrefix() int {
 	return len(l.pendingWrites)
 }
 
-// materializeIsLocal reports whether committing a decided write now needs no connection: the
-// checkout already holds the writes before it, on a base the worker can vouch for.
+// materializeIsLocal reports whether committing the log's uncommitted writes now needs no
+// connection: the checkout already holds the writes before them, on a base the worker can vouch for,
+// and none of them is a resync, which fetches whatever the checkout holds.
 func (l *branchWorkerEventLoop) materializeIsLocal() bool {
-	if m := l.materializedPrefix(); m > 0 {
+	m := l.materializedPrefix()
+	for i := m; i < len(l.pendingWrites); i++ {
+		if l.pendingWrites[i].Kind == PendingWriteResync {
+			return false
+		}
+	}
+	if m > 0 {
 		return l.w.checkoutHolds(m) && !l.w.rootParentStale()
 	}
 	return l.w.baseTrusted() && !l.w.worktreeDirty()

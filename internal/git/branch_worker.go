@@ -1708,7 +1708,7 @@ func (l *branchWorkerEventLoop) pushPending() {
 func (l *branchWorkerEventLoop) publicationFailed(err error, message string) {
 	l.stopPushTimer()
 	l.noteParentUnavailable(err)
-	l.scheduleRetry()
+	l.scheduleRetry(err)
 	l.w.Log.Error(err, message, "pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
 }
 

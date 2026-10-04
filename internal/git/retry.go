@@ -37,15 +37,21 @@ type retrySchedule struct {
 	backoff time.Duration
 	due     time.Time
 	timer   *time.Timer
+	// cause is the failure the schedule is waiting out: what the last attempt met. A caller that
+	// asks for the remote before the attempt is due hears it instead of spending a connection to
+	// learn it again.
+	cause error
 }
 
 // pending reports whether a failed attempt is waiting for its next one.
 func (r *retrySchedule) pending() bool { return !r.due.IsZero() }
 
 // scheduleRetry makes the next attempt due one backoff from now, doubling the backoff since the last
-// failure up to its cap. Whoever observes a failed attempt calls it, once for that attempt.
-func (l *branchWorkerEventLoop) scheduleRetry() {
+// failure up to its cap. Whoever observes a failed attempt calls it, once for that attempt, with the
+// failure it met.
+func (l *branchWorkerEventLoop) scheduleRetry(cause error) {
 	r := &l.retry
+	r.cause = cause
 	if r.backoff == 0 {
 		r.backoff = retryInitialBackoff
 	} else {

@@ -240,3 +240,39 @@ func TestDecidedWrite_EmptySavesCountAgainstTheBudgetDuringAnOutage(t *testing.T
 	loop.removeAt(0)
 	assert.Zero(t, loop.pendingWritesBytes, "leaving the log refunds exactly what deciding charged")
 }
+
+// A resync arriving while a failed attempt waits for its retry does not dial the remote early: its
+// caller is answered at once with the failure the retry is waiting out, and the resync stays in the
+// log, applied with the rest when the retry is due. Nor does a write decided behind it, which
+// would otherwise reach the resync's fetch through the same pass.
+func TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry(t *testing.T) {
+	f := newLedgerFixture(t, "decided-write-resync-backoff", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+	calls, restoreSyncs := failSyncs(t)
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	defer loop.stopTimers()
+	resync := func() error {
+		req := &ResyncRequest{GitTargetName: ledgerTargetName, GitTargetNamespace: "default",
+			Result: make(chan ResyncResult, 1)}
+		loop.handleResyncRequest(req)
+		return (<-req.Result).Err
+	}
+
+	require.Error(t, resync(), "the first resync spends the attempt and finds the remote down")
+	require.True(t, loop.awaitingRetry())
+	require.Equal(t, int32(1), calls.Load())
+
+	require.ErrorContains(t, resync(), "connection refused", "the caller hears the known failure at once")
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("behind-the-resyncs", "alice", ledgerTargetName)},
+		CommitMode: CommitModePerEvent,
+	}})
+	loop.finalizeOpenWindow()
+	assert.Equal(t, int32(1), calls.Load(), "nothing dials the remote before the retry is due")
+	require.Len(t, loop.pendingWrites, 3, "both resyncs and the write wait in the log")
+
+	restoreSyncs()
+	fireRetry(loop)
+	assert.Empty(t, loop.pendingWrites, "the retry applies and publishes everything it kept")
+}

@@ -124,9 +124,10 @@ func TestPublicationRetry_BackoffDoublesToTheCapAndResets(t *testing.T) {
 	loop := newBranchWorkerEventLoop(w, time.Second)
 	t.Cleanup(loop.stopTimers)
 
+	unreachable := errors.New("dial tcp: connection refused")
 	var waits []time.Duration
 	for range 8 {
-		loop.scheduleRetry()
+		loop.scheduleRetry(unreachable)
 		waits = append(waits, loop.retry.due.Sub(clock.Now()))
 	}
 	assert.Equal(t, []time.Duration{
@@ -136,7 +137,7 @@ func TestPublicationRetry_BackoffDoublesToTheCapAndResets(t *testing.T) {
 
 	loop.clearRetry()
 	assert.False(t, loop.retry.pending())
-	loop.scheduleRetry()
+	loop.scheduleRetry(unreachable)
 	assert.Equal(t, clock.Now().Add(retryInitialBackoff), loop.retry.due)
 }
 
