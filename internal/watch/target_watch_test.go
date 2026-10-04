@@ -129,6 +129,7 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 		},
 	}
 	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+	t.Cleanup(manager.targetWatchesRunning.Wait)
 
 	first := WatchedTypeTable{
 		GitDest: gitDest,
@@ -947,6 +948,9 @@ func planTestManager(t *testing.T, gitDest types.ResourceReference) (*Manager, c
 		},
 	}
 	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+	// A test cancels its streams on return; wait for their goroutines too, or their last session
+	// still records metrics while the next test resets the global exporter.
+	t.Cleanup(manager.targetWatchesRunning.Wait)
 	return manager, opened
 }
 

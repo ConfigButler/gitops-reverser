@@ -173,6 +173,10 @@ type Manager struct {
 	// only writer and its only reader, so cancelling a stream and starting one no longer happen
 	// under a lock that the woken goroutine then has to contend for. See owner.go.
 	targetWatches map[string]*targetWatchSet
+	// targetWatchesRunning counts the goroutines running a target watch. Cancelling a stream
+	// returns before its goroutine has finished its last session, so a caller that must know the
+	// streams are gone, a test resetting process-wide state, waits on it.
+	targetWatchesRunning sync.WaitGroup
 
 	// watchLifetime is the parent of every target watch's context: the manager's own lifetime,
 	// set once by Start.

@@ -308,7 +308,7 @@ func (m *Manager) replaceGitTargetWatches(
 	}
 	logTargetWatchPlanDiff(log, previous, desired, diff)
 	for _, stream := range started {
-		go m.runTargetWatch(stream.ctx, log, table.GitDest, stream.stream)
+		m.targetWatchesRunning.Go(func() { m.runTargetWatch(stream.ctx, log, table.GitDest, stream.stream) })
 	}
 	// Name every declared stream, not just the count: which collections a target watches is
 	// invisible in a bare count.
