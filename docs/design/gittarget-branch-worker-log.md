@@ -1,9 +1,10 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
-> Steps 1 to 4, 5a, and 6 are built; step 3 was split into 3a, 3b, and 3c after review. Steps 5b,
-> 5c, and 7 remain, in that order. Git calls are bounded now, so the pause/resume state machine of
-> 5b cannot be defeated by a stalled call.
+> Steps 1 to 4, 5a, and 6 are built; step 3 was split into 3a, 3b, and 3c after review. Steps
+> 5a2, 5b, 5c, and 7 remain, in that order. 5a2 is **planned for review**: it waits for approval
+> of its decisions before any code changes. Git calls are bounded now, so the pause/resume state
+> machine of 5b cannot be defeated by a stalled call.
 > The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
 > the remaining defects. This is the write-path part of the "transition boundary" in
 > [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability),
@@ -305,6 +306,90 @@ Remaining limits, for 5b:
 - The cache is in memory. A restart starts every stream with a replay, so a lost cache only routes
   extra UPDATEs.
 
+### Step 5a2: the unchanged filter belongs to its stream (planned, for review)
+
+`refactor(watch)`, with one `fix`. Nothing here is built; the decisions below wait for review.
+
+**What the filter is.** Before routing a live UPDATE, the watch compares its sanitized content
+(what would be written to Git) with the content of the last event the worker accepted for that
+object. Equal content means the event carries nothing for Git, so it is dropped and counted as
+`watch_events_total{outcome="unchanged"}`. CREATE and DELETE always pass. The typical dropped event
+is a `/status`-only update.
+
+**Why it stays.** It is a filter against changes that are useless to Git, and two things depend on
+it:
+
+1. *Commit windows.* A `/status`-only update arrives with no author, because the audit policy
+   drops `/status` writes. Routed, it meets a window opened by a named author, forces an
+   identity-change close, and splits a save's collect window into two commits. This broke the
+   "one commit" `CommitRequest` e2e specs before the filter existed (`58dd37a8`), and the
+   [save-wait guidance](commitrequest-save-wait-options.md) relies on it.
+2. *Load.* Status churn on Pods and Deployments would otherwise fill the branch FIFO, and during a
+   Git outage close admission sooner.
+
+Git content does not depend on it: a routed no-op finds no diff and commits nothing.
+
+**What changes, and why.**
+
+| Today (after 5a) | Planned |
+|---|---|
+| One process-wide `sync.Map` (`Manager.liveContentDedup`), keyed by `(GitTarget, GVR, UID)`, shared by every stream that delivers the object | A plain map owned by the stream, keyed by UID; the stream's goroutine is its only reader and writer |
+| Recording is a compare-and-swap from the entry the check read; a conflict with another stream clears the entry | Recording is a plain store after the worker accepted the event |
+| The memory survives a replay inside the stream, and outlives the stream | Reset whenever a replay of the stream is accepted; dropped with the stream |
+| Entries for objects that leave the selection, or for a deleted `GitTarget`, are never removed | Freed when the stream stops |
+
+Arguments:
+
+- **The cross-stream logic exists only because the memory is shared.** Two overlapping collections
+  (an all-namespace one and a named-namespace one) deliver the same object independently. With one
+  shared entry, each stream's record can overwrite the other's, so step 5a needed the
+  compare-and-swap and a conflict rule. Per stream, there is nothing to coordinate: a stream compares
+  only with what it delivered and the worker accepted.
+- **Per stream filters no worse, and heals better.** Every overlapping stream sees every change to
+  the object, because they watch the same object. If one stream lags and the worker receives an older
+  version last, today's shared memory can then filter the other stream's next no-op and keep the
+  stale version in Git. Per stream, the lagging stream's next event still passes its own filter and
+  heals it.
+- **The cost is duplicates that were filtered before.** When both streams deliver the same change,
+  the second copy used to be filtered against the first; now it reaches the worker. It carries the
+  same content and the same resourceVersion, so attribution names the same author and it joins the
+  same window: no split, no extra commit, one more FIFO item. Only overlapping collections pay this,
+  and only for real changes, not for status churn, which each stream still filters.
+- **It fixes a loss the shared memory has today.** A replay inside a stream (after a 410, or for a
+  stream replaced on the same collection) writes current state through a resync, which never
+  touches the filter's memory. Baseline X, the object changes to Z during the gap, the replay
+  writes Z, the object returns to X: the live X matches the stale baseline, is dropped as unchanged,
+  and Git keeps Z until the next change or replay. Resetting the stream's memory when its replay is
+  accepted (where `markReplayed` runs today) removes the stale baseline. The first no-op after a
+  replay then passes once, which costs nothing: no window is open for it to split unless a write
+  opened one, and then it carries that write's own fresh content.
+- **No locks are needed.** A stream is single-threaded (`routeLiveTargetWatchEvent` runs on its
+  goroutine), so the map needs no `sync.Map`, compare-and-swap, or conflict handling.
+
+**What is removed.** `Manager.liveContentDedup`, the `prev`/`hadPrev` fields and the
+compare-and-swap in `acceptLiveContent`, and the two overlapping-stream tests that pin the conflict
+rule. **What stays.** The check-before-route and record-after-acceptance split from 5a, the DELETE
+rule, fail-open on content that cannot be hashed, and the `unchanged` metric outcome.
+
+**Tests.** The 5a producer tests stay as they are. New: a replay inside one stream resets the
+memory (the X, Z, X sequence above, red today); two streams each filter their own no-op and each
+route a real change; a stopped stream leaves nothing behind.
+
+**Decisions for review.**
+
+1. **Per-stream ownership** as described, including the reset at an accepted replay.
+2. **The name.** The concept already has a public name, the `unchanged` outcome of
+   `watch_events_total`, and [`definitions.md`](../definitions.md) rule 1 asks for one word per
+   concept everywhere. Recommendation: **the unchanged filter** (`unchangedFilter` in code), with
+   `liveContentDedup`, `checkLiveContent`, and `acceptLiveContent` renamed to match, and a
+   `definitions.md` entry. "Filter spec changes" was proposed; it reads as filtering *out* spec
+   changes, which is the opposite of what the filter does (it passes content changes and drops
+   the rest), and "spec" is narrower than what is compared: the whole sanitized object, labels and
+   annotations included.
+3. **Reset or seed at replay.** Recommendation: reset. Seeding the memory with the replay's
+   snapshot content would also filter the first no-op after a replay, but it ties the filter to the
+   snapshot format for the sake of one event.
+
 ### Step 5b: pause and resume under capacity pressure
 
 `fix(git)`. Implement the recovery contract after step 6 bounds synchronous Git work.
@@ -486,21 +571,22 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 
 ## Prompt for the next implementation
 
+Use only after the step 5a2 decisions are approved; record any change to them in the step first.
+
 ```text
-Continue the branch-worker log plan at step 5b: pause and resume under capacity pressure.
-Read this plan (recovery contract, step 5a's producer inventory and limits), branch_log.go
-(syncAdmission, decide), branch_worker.go (enqueue paths), retry.go, and target_watch.go
-(runTargetWatch's reconnect loop) first.
+Continue the branch-worker log plan at step 5a2: the unchanged filter belongs to its stream.
+Read the step's decisions as approved, then target_watch.go (checkLiveContent,
+acceptLiveContent, routeLiveTargetWatchEvent, runTargetWatch, markReplayed), manager.go,
+live_content_dedup_test.go, and refused_admission_test.go.
 
-Make the admission budget count what it claims to bound: give empty records and refusal
-touches a nonzero charge, count queued payloads, deferred heals, and registered saves, and
-latch admission closed until the accepted backlog settles. Stop resyncs fetching during retry
-backoff. Replace the producers' 2-second polling with a wakeup when intake reopens, keeping
-FIFO causality and lifecycle work moving while intake is closed. Decide the oversized-snapshot
-path explicitly.
+Write the red test first: a replay inside one stream followed by a live UPDATE back to the
+pre-gap content must route. Then move the filter's memory onto the stream, record after
+acceptance with a plain store, reset it when the stream's replay is accepted, and delete the
+shared map and the compare-and-swap. Apply the approved name everywhere, including
+definitions.md. Keep the unchanged metric outcome and the 5a producer tests.
 
-Keep the log, save boundaries, the ledger rows, and the step 6 bounds. Do not start 5c.
-Mark only 5b built. Run the AGENTS.md gates; report what changed, validation, and limits.
+Mark only 5a2 built. Run the AGENTS.md gates; report what changed, validation, and limits.
+Step 5b follows; its scope is unchanged.
 ```
 
 ## Out of scope

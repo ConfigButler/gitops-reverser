@@ -17,7 +17,7 @@ flowchart LR
 
     subgraph WATCH["Watch plane, one stream per (GitTarget, collection)"]
         WS["target watch stream<br/>replay, live, resume"]
-        DD{"content changed?<br/>(dedup check)"}
+        DD{"content changed?<br/>(unchanged filter)"}
         AT["attach author<br/>from audit facts"]
         PG["producer gate<br/>(stream retired?)"]
         CUR[("durable cursor<br/>per GitTarget UID + collection")]
@@ -53,7 +53,7 @@ flowchart LR
     DD -- "changed" --> AT --> PG --> ER --> GES --> ADM
     ADM -- "accepted" --> FIFO
     ADM -. "refused: error back up the stack" .-> WS
-    GES -. "accepted: record baseline,<br/>then the cursor" .-> CUR
+    GES -. "accepted: record content,<br/>then the cursor" .-> CUR
     WS -- "replay snapshot (resync)" --> ADM
     CRC -- "attach / withdraw a save" --> ADM
     GTC -- "refresh" --> ADM
@@ -69,10 +69,10 @@ Read it left to right:
 1. **One watch stream per collection.** A `GitTarget` that watches ConfigMaps in `apps` has one
    stream for `(configmaps, apps)`. It starts with a replay of current state and then streams live
    changes.
-2. **A live change is checked, attributed, and routed.** The dedup check drops an UPDATE whose
-   Git-visible content did not change (the classic `/status`-only update). The author comes from
-   audit facts. The producer gate makes sure a retired stream never enqueues behind its
-   replacement.
+2. **A live change is checked, attributed, and routed.** The unchanged filter drops an UPDATE
+   whose Git-visible content did not change (the classic `/status`-only update), counted as
+   `watch_events_total{outcome="unchanged"}`. The author comes from audit facts. The producer gate
+   makes sure a retired stream never enqueues behind its replacement.
 3. **The branch worker admits it or refuses it.** Admission is non-blocking: a full FIFO, a
    stopping worker, or the closed admission gate refuses the item. A refused live event travels
    back up as an error, the session ends, and the cursor stays put.
@@ -126,7 +126,7 @@ sequenceDiagram
     autonumber
     participant API as kube-apiserver
     participant S as watch stream
-    participant D as dedup cache
+    participant D as unchanged filter
     participant W as branch worker
     participant C as cursor store
 
@@ -156,9 +156,39 @@ sequenceDiagram
 Before step 5a, the hash of B was recorded at step 8, so the redelivered frame matched it, was
 skipped as unchanged, and the cursor moved to 11 without the worker ever seeing B.
 
-When two overlapping streams (a cluster-wide and a namespaced one) accept different versions of
-the same object, the record is a compare-and-swap from what the check saw, and a conflict clears
-the entry. No baseline means the next UPDATE routes; a wrong baseline could skip a change.
+### The unchanged filter, and why it stays
+
+The filter keeps changes that are useless to Git away from the worker. Git content does not depend
+on it, since a routed no-op finds no diff. Two things do:
+
+- **Commit windows.** A `/status`-only update arrives with no author, because the audit policy drops
+  `/status` writes. Routed, it would close a named author's open window on the author change and
+  split a save into two commits.
+- **Load.** Status churn on Pods and Deployments would otherwise fill the branch FIFO.
+
+Today its memory is one process-wide map shared by every stream that delivers an object, so two
+overlapping streams (an all-namespace and a named-namespace one) coordinate through a
+compare-and-swap, and a conflict clears the entry. Planned in
+[step 5a2](gittarget-branch-worker-log.md#step-5a2-the-unchanged-filter-belongs-to-its-stream-planned-for-review),
+waiting for review: each stream owns its memory, so the cross-stream logic goes away, and the memory
+resets when the stream's replay is accepted.
+
+```mermaid
+flowchart LR
+    subgraph NOW["Today: one shared memory"]
+        direction TB
+        SA["stream A<br/>(all namespaces)"] --> M[("map per<br/>(GitTarget, GVR, UID)")]
+        SB["stream B<br/>(namespace apps)"] --> M
+        M --> CAS["compare-and-swap,<br/>conflict clears the entry"]
+    end
+    subgraph PLAN["Planned (5a2): memory per stream"]
+        direction TB
+        PA["stream A"] --> MA[("A's map<br/>per UID")]
+        PB["stream B"] --> MB[("B's map<br/>per UID")]
+        RP["replay accepted"] -. "reset" .-> MA
+        RP -. "reset" .-> MB
+    end
+```
 
 ## 3. Three different things called "replay"
 
@@ -494,8 +524,14 @@ This is the honest list. Each item names who plans to close it, or says nobody d
 - **Kubernetes watch history is not an archive.** An expired cursor forces a fresh snapshot. With
   the default `prune.mode: onEvent`, a delete that happened while nothing was watching is not
   inferred from absence. Inherent; documented, not planned.
-- **Overlapping streams can deliver two versions of one object out of order.** Deduplication
-  neither causes nor repairs that; the next event for the object heals it. Not planned.
+- **Overlapping streams can deliver two versions of one object out of order.** The next event
+  for the object heals it, as long as the unchanged filter does not drop that event; with the shared
+  memory it can. Owner: step 5a2 (per-stream memory), planned for review.
+- **The unchanged filter can hide a change after a replay inside a stream.** A replay (after a 410,
+  or a stream replaced on the same collection) writes current state without updating the filter's
+  memory. If the object then returns to the content the stream delivered before the gap, that
+  UPDATE is dropped as unchanged and Git keeps the replay's version until the next change. Owner:
+  step 5a2, planned for review.
 - **Arrival order is not a save barrier.** A save can reach the worker before an earlier edit
   from an independent watch. Only the documented attachment contract is claimed. Not planned.
 - **A snapshot reply means "applied locally".** It is no publication receipt. Render fidelity
@@ -521,7 +557,7 @@ This is the honest list. Each item names who plans to close it, or says nobody d
 
 | Piece | File |
 |---|---|
-| Watch streams, replay, resume, dedup | [`internal/watch/target_watch.go`](../../internal/watch/target_watch.go) |
+| Watch streams, replay, resume, the unchanged filter | [`internal/watch/target_watch.go`](../../internal/watch/target_watch.go) |
 | Routing, resync replies, fidelity marks | [`internal/watch/event_router.go`](../../internal/watch/event_router.go) |
 | Enqueue into a worker | [`internal/reconcile/git_target_event_stream.go`](../../internal/reconcile/git_target_event_stream.go) |
 | Admission, FIFO, loop, windows, push | [`internal/git/branch_worker.go`](../../internal/git/branch_worker.go) |
