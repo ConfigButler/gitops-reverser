@@ -400,7 +400,7 @@ func createTestEvent(tb testing.TB, name string) Event {
 }
 
 // finalizeOpenWindow closes the open window and commits it, as the wake that closed it would, without
-// pushing. It reports whether the window's write is in the log afterwards: false when the window was
+// pushing. It reports whether the window's write is still pending afterwards: false when the window was
 // dropped before it was decided, or its commit failed for good.
 func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
 	before := len(l.pendingWrites)
@@ -409,7 +409,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
 		return false
 	}
 	// A window's write always carries events, and their backing array identifies it wherever the
-	// write moves in the log.
+	// write moves among the pending writes.
 	events := l.pendingWrites[len(l.pendingWrites)-1].Events
 	l.commitDecided()
 	for i := range l.pendingWrites {

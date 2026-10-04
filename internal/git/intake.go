@@ -8,18 +8,18 @@ import (
 )
 
 // This file is the branch's intake gate: whether new payload may enter the worker's FIFO. See
-// docs/design/gittarget-branch-worker-log.md, "Recovery contract".
+// docs/design/gittarget-branch-worker-pending-writes.md, "Recovery contract".
 //
 // Keeping decided writes through an outage makes the worker's memory grow for as long as the outage
 // lasts, and nothing it accepted may be evicted: a decided write can carry a save, and dropping one
 // would need a snapshot to re-derive it. So the bound is at intake. While a failed attempt waits
 // for its retry, a payload that would take what the branch holds past its retained-byte budget is
 // refused, and the refusal pauses the branch: every later payload is refused too, until a
-// publication lands. A healthy branch never pauses, because its log drains at the next push.
+// publication lands. A healthy branch never pauses, because its pending writes drain at the next push.
 //
 // What the budget counts is everything accepted and not yet published: the payload on the FIFO the
 // loop has not handled yet (charged at enqueue, so producers cannot fill the FIFO between two loop
-// iterations), and what the loop holds (the open window, the log, deferred heals, saves waiting for
+// iterations), and what the loop holds (the open window, the pending writes, deferred heals, saves waiting for
 // a window). Every item is charged a fixed overhead beyond its payload, so the budget bounds how
 // many items are kept as well as their bytes. The charge is an estimate of the serialized YAML, not
 // of the heap: an object's in-memory form is several times larger.
@@ -168,7 +168,7 @@ func (r *ResyncRequest) payloadSize() int64 {
 // charge is what a queued resync is charged: its snapshot, and the overhead of one kept item.
 func (r *ResyncRequest) charge() int64 { return r.payloadSize() + pendingWriteOverheadBytes }
 
-// heldBytes is what the loop holds that is not published yet: the open window, the log, the
+// heldBytes is what the loop holds that is not published yet: the open window, the pending writes, the
 // deferred heals' snapshots, and the saves waiting for a window. An attached save is in the charge
 // of the window it is attached to, and then of the write that window became.
 func (l *branchWorkerEventLoop) heldBytes() int64 {

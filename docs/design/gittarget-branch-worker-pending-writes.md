@@ -1,4 +1,4 @@
-# Branch worker write path as a log with one materializer
+# Branch worker write path: pending writes with one materializer
 
 > **Built on #413**, reviewed 2026-10-03 at `373bf8d7` and completed 2026-10-04. Every step
 > below is built, 5a2 included; step 3 was split into 3a, 3b, and 3c after review. The page stays
@@ -24,8 +24,8 @@ current state under the target's prune policy, with no reconstruction of missed 
 versions, authors, or save membership. With the default `prune.mode: onEvent`, a missed delete
 cannot be inferred from absence alone; `always` permits a complete scoped snapshot to sweep it.
 
-The near-term design is an in-memory log with explicit recovery. Restarting a Pod discards that
-log and its save receipts, so restart is not the recovery mechanism. A durable Redis/Valkey journal
+The near-term design keeps pending writes in memory, with explicit recovery. Restarting a Pod
+discards them and their save receipts, so restart is not the recovery mechanism. A durable Redis/Valkey journal
 remains future work. Even that journal needs a capacity limit and an explicit admission-stop state.
 
 ## Goal
@@ -42,10 +42,10 @@ This table records the original machinery; the built steps below describe what r
 
 | Event-sourcing role | Original representation | Helpers that compensated for it not being explicit |
 |---|---|---|
-| Log of decided writes | `pendingWrites`: each entry keeps its events, message, author, policy snapshot and attached save | A decision enters the log only after its local commit succeeds, so a failed commit discards the decision: `dropFailedWindow`, five drop branches, and parent recovery's dropped `scopes`, which re-derive lost decisions through snapshots |
-| Projection of the log | The checkout: a root commit plus one commit per entry, which replay already rebuilds from the log | Three flags guess whether the projection is still valid (`worktreeDirty`, `replayRequired`, `rootParentStale()`); six `recoverRetainedWrites` call sites consult them, and `TestEveryLoopCommitPathRecoversADirtyWorktree` exists to catch a seventh that forgets; five functions rebuild the projection in slightly different ways |
+| Ordered pending writes | `pendingWrites`: each entry keeps its events, message, author, policy snapshot and attached save | A decision becomes a pending write only after its local commit succeeds, so a failed commit discards the decision: `dropFailedWindow`, five drop branches, and parent recovery's dropped `scopes`, which re-derive lost decisions through snapshots |
+| Projection of the pending writes | The checkout: a root commit plus one commit per entry, which replay already rebuilds from the pending writes | Three flags guess whether the projection is still valid (`worktreeDirty`, `replayRequired`, `rootParentStale()`); six `recoverRetainedWrites` call sites consult them, and `TestEveryLoopCommitPathRecoversADirtyWorktree` exists to catch a seventh that forgets; five functions rebuild the projection in slightly different ways |
 | Deadline for an open obligation | Two clocks: `publicationRetry` and parent recovery's probe timer | `deferToRecovery`, the `parentProbeHold` atomic consulted in four places, `awaitingPush` |
-| Outcomes | Saves resolve on push | `pcr.committed`, a flag that mirrors "this save rides an entry in the log" |
+| Outcomes | Saves resolve on push | `pcr.committed`, a flag that mirrors "this save rides a pending write" |
 
 The original window-loss defect followed from the first row: `finalizeOpenWindowWithReason` ran
 the rebuild before building the window, so a failed rebuild dropped a window whose events, author,
@@ -55,31 +55,31 @@ message, and save were still intact. Step 2 fixes it.
 
 Three pieces of loop-owned state:
 
-- **`log`**: decided entries that are not yet published. Entry kinds are the existing
+- **`pendingWrites`**: decided entries, in order, that are not yet published. Entry kinds are the existing
   `PendingWrite` kinds (window, atomic, resync, request record, refusal touch). Accepted entries
   survive saturation. There is no `owedSnapshot` entry replacing discarded accepted work.
 - **`checkout`**: `{root, rootGen, applied}`. The checkout equals `root` plus the commits of
-  `log[:applied]`; `applied` unknown means the projection must be rebuilt.
+  `pendingWrites[:applied]`; `applied` unknown means the projection must be rebuilt.
 - **`retry`**: the single obligation deadline. Built fields are `backoff`, `due`, and its timer;
   cause, first-failure time, and last error are proposed diagnostic state in step 5.
 
 Three operations:
 
-- **`decide(entry)`** appends to the log. Write gates and building the write are checked here,
+- **`decide(entry)`** appends to the pending writes. Write gates and building the write are checked here,
   the decision point the event model names. A network failure cannot fail a decision.
 - **`materialize()`** is the only function that changes the checkout for a write. On a valid
   projection and a trusted base it commits the unmaterialized tail with no fetch; otherwise it
-  resets to the remote tip and replays the log.
-- **`publish()`** pushes the materialized log. A rejection caused by a moved remote invalidates the
+  resets to the remote tip and replays the pending writes.
+- **`publish()`** pushes the materialized pending writes. A rejection caused by a moved remote invalidates the
   projection, re-materializes and retries (up to three times, as today). Success resolves the saves
-  riding the published entries and removes them from the log.
+  riding the published entries and removes them from the pending writes.
 
-The log and the retry deadline are the state the HA plan's journal would persist. This plan keeps
+The pending writes and the retry deadline are the state the HA plan's journal would persist. This plan keeps
 both in memory.
 
 ## Recovery contract
 
-These are proposed operational states derived from the log, retry schedule, and admission state.
+These are proposed operational states derived from the pending writes, retry schedule, and admission state.
 Do not add a second authoritative phase field or another retry timer.
 
 | State | New payloads | Work the worker still performs | Exit |
@@ -99,7 +99,7 @@ for a retry deadline that does not exist.
 
 The worker continues consuming accepted FIFO items into decisions, so controls behind them can
 run. It does not discard those items or move withdrawals ahead of their attaches. Bound that
-accepted set at enqueue; stopping intake after transferring it into the log is too late to make
+accepted set at enqueue; stopping intake after transferring it into the pending writes is too late to make
 a strict memory promise. Check due recovery between items so a busy FIFO cannot starve it.
 
 The scope is the existing `(GitProvider namespace, name, branch)` worker. Do not stop the manager,
@@ -108,7 +108,7 @@ termination keep their explicit shutdown behavior; they cannot be described as p
 
 ### Resume and the three meanings of replay
 
-1. Replay **accepted decisions** from the retained log onto the remote when the checkout requires
+1. Replay **accepted decisions** from the pending writes onto the remote when the checkout requires
    rebuilding. Preserve order, messages, attribution, and save boundaries. A terminal refusal
    settles only its entry, as step 4 establishes. Each decision is judged against the tree the one
    before it left, so commit count and SHAs can change, and a decision that changes nothing there
@@ -135,20 +135,20 @@ writes, intermediate history, or the identity of an empty save already published
 
 ### Review findings that gate the next implementation
 
-Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. It also finds:
+Source review at `373bf8d7` confirms the pending-writes path and step 4 refusal isolation. It also finds:
 
 - **Deduplication preceded acceptance** (fixed in step 5a; the filter is per stream since 5a2).
   `skipUnchangedLiveUpdate` stored the content hash before enqueue, so a refused UPDATE was skipped
   on cursor resume, which then advanced the cursor.
 - **The byte budget was incomplete** (fixed in step 5b). `syncAdmission` used `pendingWritesBytes`
   and a pending retry. `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at
-  zero, so repeated empty saves grew the log without reaching the byte threshold, and payload on the
+  zero, so repeated empty saves grew the pending writes without reaching the byte threshold, and payload on the
   FIFO was not counted at all.
 - **Retry pacing had an exception** (fixed after the 2026-10-04 review). `decide` let resyncs
   materialize during a pending retry, so each one spent a fetch before the retry deadline, and a
   write decided behind a retained resync reached that resync's fetch too. Now the retry schedule
   records the failure it waits out (`retrySchedule.cause`); a resync during backoff is answered
-  with it, stays in the log, and is applied when the retry is due.
+  with it, stays pending, and is applied when the retry is due.
 - **Watch recovery polled** (fixed in step 5b). `runTargetWatch` reconnected after its fixed
   two-second backoff, with no wait for the worker to reopen admission, so queue saturation became
   repeated work. The generic watch error it reports is step 5c's.
@@ -160,9 +160,9 @@ These findings gated steps 5a to 5c; the markers above say where each was fixed.
 A second review, at `fc02f51d`, reproduced four more. All are fixed in the same branch:
 
 - **Recovery could stay open with nothing owed.** A resync held while the parent was missing could
-  find nothing to change once it was back. The log emptied without a push, so neither recovery nor
-  its retry closed, and intake stayed paused. `advance` now ends the outage whenever the log is
-  empty (`TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit`).
+  find nothing to change once it was back. The last pending write settled without a push, so
+  neither recovery nor its retry closed, and intake stayed paused. `advance` now ends the outage
+  whenever nothing is pending (`TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit`).
 - **A handled item's charge was briefly counted nowhere.** The loop released its queued charge
   before publishing what it held, and a producer in between found room the branch did not have.
   `intakeGate.sync` now moves the charge in one step
@@ -203,7 +203,7 @@ reset from the remote, so `fetches_total{reason="recovery"}` drops.
 
 ### Step 2: a decided window survives a failed materialization (built)
 
-`fix(git)`. A closed window enters the log before it is committed, and its save is
+`fix(git)`. A closed window becomes a pending write before it is committed, and its save is
 `WaitingForPush` from then on. An unreachable remote leaves it for the publication retry; while that
 retry is pending, a decision that would need a connection waits for it. Only a failure of the write
 itself is terminal. Pinned by `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry` and
@@ -214,16 +214,16 @@ itself is terminal. Pinned by `TestDecidedWrite_SurvivesAFailedRebuildAndLandsTh
 `refactor(git)`. Review of step 2 found two defects and a structural gap: two write lifecycles
 (`decide → materialize` for windows and saves, `materialize → commit → retain` for the rest),
 `pcr.committed` reused to mean "decided", and an executor that re-entered itself through refusal
-handling. This step closes them, in [`branch_log.go`](../../internal/git/branch_log.go):
+handling. This step closes them, in [`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go):
 
 - Every write kind (window, atomic batch, resync, a save's empty record, a refusal's empty commit)
-  is decided into the log and committed by `materialize`. `l.commit`, `retain` and the commit guard
+  is decided into the pending writes and committed by `materialize`. `l.commit`, `retain` and the commit guard
   are gone, with the separate resync, atomic and refusal-touch commit paths.
 - One place classifies an attempt: `settleCommitted`, `settleFailed` (terminal for that write), or
   `settleUnreachable` (kept for the retry). A write's origin (the resync caller, the atomic request,
   the refusal a touch answers) rides with it so its outcome can be settled there.
 - `materialize` is never re-entered. A refusal's empty commit decided while a refused write is being
-  settled is appended to the log, and the running pass commits it in order. No push starts inside a
+  settled is appended to the pending writes, and the running pass commits it in order. No push starts inside a
   pass.
 - Every commit re-reads its write's prune policy, as a replay does
   (`TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy`, a review finding). The read comes
@@ -235,9 +235,9 @@ handling. This step closes them, in [`branch_log.go`](../../internal/git/branch_
   `replayOntoRemote` is the core the push cycle calls under its lock, and
   `refreshRemoteAndRebuildPendingWrites` is the locked entry the loop calls.
 
-Still split: the log is loop state, while `checkoutApplied` lives on the worker because the Git
+Still split: the pending writes are loop state, while `checkoutApplied` lives on the worker because the Git
 effect functions (commit, replay, reset, push) and resets outside the loop (path bootstrap) update
-it. A resync whose remote cannot be reached still answers its caller and leaves the log, until 3c.
+it. A resync whose remote cannot be reached still answers its caller and is dropped, until 3c.
 
 ### Step 3b: one retry schedule (built)
 
@@ -253,13 +253,13 @@ found yet.
 
 ### Step 3c: missing-parent retention, and admission backpressure (built)
 
-`fix(git)`. Writes, saves and resyncs decided while the parent is missing stay in the log, like any
+`fix(git)`. Writes, saves and resyncs decided while the parent is missing stay pending, like any
 other a remote failure holds back, and are published when the probe finds the parent. A resync the
 remote holds back answers its caller with the error at once, because its caller is waiting to hear
-what it found, and stays in its place in the log; when it is applied later, its outcome is reported
+what it found, and stays in its place among the pending writes; when it is applied later, its outcome is reported
 the way a live write's is. Two decisions, settled 2026-10-02:
 
-- **Admission backpressure.** Nothing decided is evicted for capacity. While the log holds the retained-byte
+- **Admission backpressure.** Nothing decided is evicted for capacity. While the pending writes hold the retained-byte
   budget and a failed attempt waits for its retry, the worker refuses new writes, saves and resyncs
   at enqueue, through the existing queue-full contract. The intended producer behavior is cursor
   resume for a refused event, controller retry for a save, and recollection for a resync. The review
@@ -273,14 +273,14 @@ the way a live write's is. Two decisions, settled 2026-10-02:
 With nothing dropped, nothing is owed a snapshot: parent recovery's `scopes`, `awaitingPush`, the
 snapshot-request sequence and the controller's snapshot-request tracker are gone. The parent
 recovery tests now pin that writes decided across one or two outages are kept and published, and
-that a failure leaving nothing in the log opens no obligation.
+that a failure leaving nothing pending opens no obligation.
 
 ### Step 4: a refused replay drops only its own entry (built)
 
 `fix(git)`. A replay used to abort at its first error, so one retained write that the moved remote
 now refused blocked every write behind it indefinitely. `replayPendingWrites` now undoes a refused
 write on its own, goes on, and stamps the entry with its refusal; a replay that completes holds the
-others, and `checkoutApplied` counts only those. The loop takes stamped entries out of the log after
+others, and `checkoutApplied` counts only those. The loop takes stamped entries out of the pending writes after
 either replay (the loop's rebuild in `materializePrefix`, the push cycle's after a rejection) and
 settles each as a refusal at first commit is settled: the refusal is reported, its save fails. Any
 other failure still abandons the replay and keeps everything, refused write included, for the
@@ -377,7 +377,7 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
 
 - **One budget, bytes and count.** While a failed attempt waits for its retry, `--branch-buffer-max-size`
   bounds everything accepted and not yet published: payload on the FIFO, charged at enqueue so
-  producers cannot fill the FIFO between two loop iterations; the open window; the log; deferred
+  producers cannot fill the FIFO between two loop iterations; the open window; the pending writes; deferred
   heals; and saves waiting for a window. Every item is charged `pendingWriteOverheadBytes` (1 KiB)
   beyond its payload and message, so the byte budget also bounds the item count, empty records
   included. The producer sizes each event and snapshot once, off the loop, and the loop reuses the
@@ -389,7 +389,7 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
   nothing is owed. Room under the budget again, a partial replay, or a remote that can be read but
   refuses the push keep it paused. A healthy branch never pauses.
 - **Oversized items.** A snapshot larger than the whole budget is accepted on a healthy branch,
-  whose log drains at the next push, and the window cap finalizes around it as before. During an
+  whose pending writes drain at the next push, and the window cap finalizes around it as before. During an
   outage it can never fit: it is refused with a diagnostic naming its size and the budget, pauses
   the branch, and is gathered again once the branch reopens. Its scope stays unproven meanwhile,
   nothing of it is applied, and no sweep runs.
@@ -401,8 +401,8 @@ producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
   target watch whose session ended waits on it instead of the two-second backoff, re-checks after
   every wake-up, and falls back to a one-minute re-check. The cursor stays where the last accepted
   event left it.
-- **Retry pacing.** A resync during backoff is answered with the retry's known failure and stays in
-  the log; a write behind it is no longer treated as local. Refresh ticks were already skipped while
+- **Retry pacing.** A resync during backoff is answered with the retry's known failure and stays
+  pending; a write behind it is no longer treated as local. Refresh ticks were already skipped while
   writes are retained. Healthy-path refresh and pre-resync fetches are unchanged.
 - **Found on the way:** a resync coalesced into a queued marker was lost when a write queued behind
   the marker released its key: the marker ran the request already answered as superseded, and the
@@ -531,16 +531,16 @@ compare-and-swap with the parent-change admission check.
 - The controller never fails a request the worker holds.
 - Compare-and-swap and refused-upload tests run against `startRealGitServer`, never `file://`.
 
-## Resyncs in the log
+## Resyncs among the pending writes
 
-A resync arrives on the same FIFO as every other write, so it belongs in the same log. It does two
+A resync arrives on the same FIFO as every other write, so it belongs among the same pending writes. It does two
 separate jobs, and only one of them can wait:
 
-- **A write**: make one scope of the folder match a desired set. It is decided into the log in
+- **A write**: make one scope of the folder match a desired set. It is decided into the pending writes in
   arrival order and materialized against a fresh base (the deliberate pre-resync fetch stays, so
   ledger row 10 is unchanged). A committed resync is already retained and replayed today. When it
-  cannot be materialized, it stays in the log like a window does. Its age does not matter: writes
-  that arrived after it sit after it in the log, and a replay applies them on top.
+  cannot be materialized, it stays pending like a window does. Its age does not matter: writes
+  that arrived after it sit after it in order, and a replay applies them on top.
 - **A measurement**: its reply is what marks the scope clean for render fidelity and accepted for
   its Git path (`drainScopedResync` in
   [`event_router.go`](../../internal/watch/event_router.go)). That proof holds only against a fresh
@@ -553,7 +553,7 @@ separate jobs, and only one of them can wait:
 
 Settled 2026-10-02:
 
-1. **Resyncs stay in the log**, as described in [Resyncs in the log](#resyncs-in-the-log). Capacity
+1. **Resyncs stay pending**, as described in [Resyncs among the pending writes](#resyncs-among-the-pending-writes). Capacity
    closes admission; it never replaces accepted entries with an owed snapshot.
 2. **A partly failed write is cleaned locally** (step 1b).
 3. **Follow repository validation and push rules.** This changes the Git write and watch paths,
@@ -588,5 +588,5 @@ persistence and HA stay with the [HA plan](../future/ha-gittarget-distribution-p
 
 ## Out of scope
 
-Persisting the log or the deadlines, HA, an asynchronous executor, the success push cooldown, and
+Persisting the pending writes or the deadlines, HA, an asynchronous executor, the success push cooldown, and
 recording the other FIFO inputs (attach, withdraw, refresh) as transitions.

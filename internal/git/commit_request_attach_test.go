@@ -525,7 +525,7 @@ func TestAttach_IdempotentReSendKeepsFirstDeadline(t *testing.T) {
 
 // TestAttach_AnUnreachableRemoteHoldsTheRequest pins gap 4's contract for a save. A window whose
 // commit cannot be made because the remote cannot be reached is a decided write, not a failed
-// one: it stays in the log for the publication retry, and the request riding it is held in
+// one: it stays pending for the publication retry, and the request riding it is held in
 // WaitingForPush, because its write can still land. It used to be dropped and the request failed.
 func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	ctx := context.Background()
@@ -569,7 +569,7 @@ func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	assert.False(t, resolved, "a request whose write can still land is not failed")
 	assert.Equal(t, PhaseWaitingForPush, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
 	assert.Nil(t, loop.openWindow, "the window closed on its own timers")
-	require.Len(t, loop.pendingWrites, 1, "the decided window waits in the log")
+	require.Len(t, loop.pendingWrites, 1, "the decided window stays pending")
 	assert.False(t, loop.pendingWrites[0].materialized, "nothing could commit it yet")
 	assert.True(t, loop.retry.pending(), "the publication retry owns the next attempt")
 }

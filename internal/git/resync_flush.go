@@ -82,7 +82,7 @@ func resyncHealKey(req *ResyncRequest) healKey {
 // is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
 // resync is then decided like every other write, and its caller answered when its commit is made
 // or fails (settleResyncApplied, settleFailed, settleUnreachable). A resync that commits nothing
-// leaves the log at once, so it never schedules a push. A build or commit failure answers
+// stops being pending at once, so it never schedules a push. A build or commit failure answers
 // with the error and commits nothing: the gatherer already guaranteed the snapshot is complete, so
 // a failure here is a write fault, never a partial-snapshot drop.
 //

@@ -188,7 +188,7 @@ refused at admission and the controller sends it again; past its safety window, 
 The budget charges every kept item its payload bytes, its message, and a fixed overhead for its
 bookkeeping, so a stream of empty saves fills it too. It counts queued work, retained writes, and
 requests still waiting for a window. A refusal pauses the branch's intake until a push lands; see
-the [branch-worker log plan](../design/gittarget-branch-worker-log.md#recovery-contract). A refused
+the [branch-worker pending-writes plan](../design/gittarget-branch-worker-pending-writes.md#recovery-contract). A refused
 request is sent again by the controller.
 
 For a request the worker already holds, saturation does not change its window membership or

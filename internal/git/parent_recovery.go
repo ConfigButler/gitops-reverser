@@ -17,12 +17,13 @@ import (
 // the writes decided meanwhile have landed: the first attempt after it can fail transiently, the
 // refresher skips a branch that holds work, and with --git-refresh-interval=0 there is no refresher
 // at all. So the worker latches an obligation the moment an attempt fails on the parent, and clears
-// it only when nothing is owed any more: the log was published, or every write in it settled
-// without needing a push (endOutage).
+// it only when nothing is owed any more: the pending writes were published, or every one of them
+// settled without needing a push (endOutage).
 //
-// The obligation is the log itself. A write decided while the parent is missing stays in the log
-// like any other a remote failure holds back (branch_log.go), and admission backpressure bounds the
-// log however long the parent stays away, so nothing is dropped and no snapshot is owed.
+// The obligation is the pending writes themselves. A write decided while the parent is missing stays
+// pending like any other a remote failure holds back (pending_writes_loop.go), and admission
+// backpressure bounds them however long the parent stays away, so nothing is dropped and no snapshot
+// is owed.
 //
 // The worker probes for the parent itself, on the event loop, with one advertisement per deadline of
 // its one retry schedule (retry.go), shared by every target on the worker. Until the parent is
@@ -59,8 +60,8 @@ func (w *BranchWorker) now() time.Time {
 	return time.Now()
 }
 
-// noteParentUnavailable latches the obligation when err was caused by the parent and the log holds
-// work it owes. Any other error is not this obligation's concern, and neither is a failure that left
+// noteParentUnavailable latches the obligation when err was caused by the parent and pending writes
+// are owed. Any other error is not this obligation's concern, and neither is a failure that left
 // nothing owed: an obligation with nothing to publish would never close. It does not schedule the
 // next attempt: whoever observed the failure does, once (scheduleRetry), and a new latch starts that
 // schedule over so the first probe is one initial backoff away.
@@ -88,7 +89,7 @@ func (l *branchWorkerEventLoop) probeDue() bool {
 }
 
 // runParentProbe is the attempt while the obligation is open: while the parent is missing it spends
-// one advertisement, and once it is found it publishes the log. A publication that fails schedules
+// one advertisement, and once it is found it publishes the pending writes. A publication that fails schedules
 // the next attempt itself.
 func (l *branchWorkerEventLoop) runParentProbe() {
 	r := &l.recovery

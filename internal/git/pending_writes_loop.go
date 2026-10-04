@@ -11,30 +11,30 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// This file is the branch worker's log of decided writes, and the one driver that turns it into
-// commits and publications. See docs/design/gittarget-branch-worker-log.md.
+// This file is the branch worker's ordered pending writes, and the one driver that turns them into
+// commits and publications. See docs/design/gittarget-branch-worker-pending-writes.md.
 //
 // Every write the loop makes, whatever produced it (a closed window, an atomic batch, a resync, a
 // save's empty record, a refusal's empty commit), takes one path:
 //
-//   - decide appends it to the log. The write gates and building the write have passed, so the
+//   - decide appends it to the pending writes. The write gates and building the write have passed, so the
 //     decision stands from here on. Deciding does nothing else: no commit, no push, no settlement.
 //   - advance is the one driver, run once at the end of every wake of the loop. It commits what was
 //     decided, schedules the push, and closes the outage once nothing is owed.
-//   - materialize makes the checkout the projection of the log: the remote tip the writes were
+//   - materialize makes the checkout the projection of the pending writes: the remote tip the writes were
 //     planned on plus one commit for each, in order. It rebuilds the writes committed before when
 //     the checkout is behind them, then commits each decided write not committed yet.
 //   - settleCommitted, settleFailed and settleUnreachable are the one place an attempt's outcome
 //     is classified and acted on: committed; failed for good, because the write itself was refused
-//     or cannot be made; or left in the log, because the remote could not be reached.
+//     or cannot be made; or left pending, because the remote could not be reached.
 //
 // Settling an outcome can decide more work (a refused write's empty commit). Because deciding only
-// appends, that work joins the log behind the writes decided before it, and the pass already running
+// appends, that work joins the pending writes behind the ones decided before it, and the pass already running
 // commits it in order: nothing is ever re-entered.
 
 // errWriteFailed marks a failure of the write itself, as opposed to reaching the remote or reading
 // the GitProvider: the plan was refused or could not be applied. It is terminal for the write, while
-// any other commit failure leaves a decided write in the log for the retry. Match it with errors.Is.
+// any other commit failure leaves a decided write pending for the retry. Match it with errors.Is.
 var errWriteFailed = errors.New("the write failed")
 
 // writeFailedError carries errWriteFailed without changing the message of the error it wraps.
@@ -78,14 +78,15 @@ const pendingWriteOverheadBytes = 1024
 // payload, its message, and one item's overhead for each event it keeps, or for itself when it
 // keeps none. That is never more than the window it closed or the save it records was charged, so
 // deciding a write never takes what the branch holds past what intake admitted. It is fixed when
-// the write is decided, so the refund when it leaves the log matches it whatever the write's later
+// the write is decided, so the refund when it stops being pending matches it whatever the write's later
 // rendering changes.
 func retainedCharge(pendingWrite *PendingWrite) int64 {
 	items := int64(max(len(pendingWrite.Events), 1))
 	return pendingWrite.ByteSize + int64(len(pendingWrite.CommitMessage)) + items*pendingWriteOverheadBytes
 }
 
-// decide appends a write the loop has decided to make to the log, and charges what keeping it costs.
+// decide appends a write the loop has decided to make to the pending writes, and charges what
+// keeping it costs.
 // A request riding it is held from here on, so the controller never fails a save whose write can
 // still land. Committing it is advance's job, at the end of the wake.
 func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
@@ -102,10 +103,11 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
 	}
 }
 
-// advance drives the log once the wake's handlers have decided what they decide: it commits the
-// decided writes, schedules their push, and ends the outage once nothing is owed. It is the only
-// caller of materialize outside a publication, and the only place an empty log closes the retry and
-// parent recovery, so no exit that empties the log can leave intake paused.
+// advance drives the pending writes once the wake's handlers have decided what they decide: it
+// commits them, schedules their push, and ends the outage once nothing is owed. It is the only
+// caller of materialize outside a publication, and the only place where having no pending writes
+// closes the retry and parent recovery, so no exit that settles the last one can leave intake
+// paused.
 //
 // A push that lands settles the writes a replay refused, and settling one can decide more (a
 // refusal's empty commit). Those are committed on the next turn; the push after them waits for the
@@ -126,10 +128,10 @@ func (l *branchWorkerEventLoop) advance() {
 }
 
 // commitDecided commits every decided write not committed yet. Deciding is not committing: a remote
-// that cannot be reached leaves the writes in the log for the retry. Until a pending retry is due, a
+// that cannot be reached leaves the writes pending for the retry. Until a pending retry is due, a
 // commit that would need a connection waits for that retry instead of spending one. A resync always
 // needs one, and its caller is waiting to hear what it found: it is answered at once with the
-// failure the retry is waiting out, and stays in the log to be applied when the retry is due
+// failure the retry is waiting out, and stays pending to be applied when the retry is due
 // (settleUnreachable).
 func (l *branchWorkerEventLoop) commitDecided() {
 	if l.materializedPrefix() == len(l.pendingWrites) {
@@ -144,14 +146,14 @@ func (l *branchWorkerEventLoop) commitDecided() {
 		if !l.retry.pending() {
 			l.scheduleRetry(err)
 		}
-		l.w.Log.Error(err, "Cannot commit the decided writes yet; they wait in the log for the retry",
+		l.w.Log.Error(err, "Cannot commit the decided writes yet; they stay pending for the retry",
 			"pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
 	}
 }
 
-// materialize makes the checkout the projection of the log, committing every decided write not
+// materialize makes the checkout the projection of the pending writes, committing every one not
 // committed yet, including any that settling one decides. It returns the error that stopped it when
-// the remote could not be reached; the writes it could not commit stay in the log.
+// the remote could not be reached; the writes it could not commit stay pending.
 func (l *branchWorkerEventLoop) materialize() error {
 	for {
 		i := l.materializedPrefix()
@@ -236,7 +238,7 @@ func (l *branchWorkerEventLoop) materializePrefix(refetch string) error {
 	return nil
 }
 
-// materializedPrefix is how many writes at the head of the log have been committed before. Writes
+// materializedPrefix is how many writes at the head of the pending writes have been committed before. Writes
 // not committed yet are always the tail: they are decided in order and committed in order.
 func (l *branchWorkerEventLoop) materializedPrefix() int {
 	for i := range l.pendingWrites {
@@ -247,7 +249,7 @@ func (l *branchWorkerEventLoop) materializedPrefix() int {
 	return len(l.pendingWrites)
 }
 
-// materializeIsLocal reports whether committing the log's uncommitted writes now needs no
+// materializeIsLocal reports whether committing the uncommitted pending writes now needs no
 // connection: the checkout already holds the writes before them, on a base the worker can vouch for,
 // and none of them is a resync, which fetches whatever the checkout holds.
 func (l *branchWorkerEventLoop) materializeIsLocal() bool {
@@ -263,7 +265,7 @@ func (l *branchWorkerEventLoop) materializeIsLocal() bool {
 	return l.w.baseTrusted() && !l.w.worktreeDirty()
 }
 
-// checkoutCurrent reports whether the checkout is the projection of the whole log, so it may be
+// checkoutCurrent reports whether the checkout is the projection of every pending write, so it may be
 // pushed as it stands.
 func (l *branchWorkerEventLoop) checkoutCurrent() bool {
 	m := l.materializedPrefix()
@@ -273,7 +275,7 @@ func (l *branchWorkerEventLoop) checkoutCurrent() bool {
 	return m == 0 || l.w.checkoutHolds(m) && !l.w.rootParentStale()
 }
 
-// removeAt takes the write at i out of the log. The slot it vacates is cleared, so the backing array
+// removeAt takes the write at i out of the pending writes. The slot it vacates is cleared, so the backing array
 // does not keep the write's payload reachable once the budget has refunded it.
 func (l *branchWorkerEventLoop) removeAt(i int) PendingWrite {
 	pendingWrite := l.pendingWrites[i]
@@ -282,9 +284,9 @@ func (l *branchWorkerEventLoop) removeAt(i int) PendingWrite {
 	return pendingWrite
 }
 
-// takeReplayRefusals takes out of the log every write the last completed replay refused, and returns
-// them in log order. The checkout holds none of them (replayPendingWrites), so after this it is
-// again the projection of the log's committed prefix.
+// takeReplayRefusals takes out of the pending writes every one the last completed replay refused,
+// and returns them in order. The checkout holds none of them (replayPendingWrites), so after this it
+// is again the projection of the committed prefix.
 func (l *branchWorkerEventLoop) takeReplayRefusals() []PendingWrite {
 	var refused []PendingWrite
 	for i := 0; i < len(l.pendingWrites); {
@@ -299,7 +301,7 @@ func (l *branchWorkerEventLoop) takeReplayRefusals() []PendingWrite {
 
 // settleReplayRefusals settles writes a replay refused, the way a refusal at first commit is settled:
 // the refusal is reported, a request riding the write fails, and the write is gone. Taking them out
-// of the log is a separate step (takeReplayRefusals), because the push path must do it before it
+// of the pending writes is a separate step (takeReplayRefusals), because the push path must do it before it
 // resolves the writes it published, and settling one can decide more work.
 func (l *branchWorkerEventLoop) settleReplayRefusals(refused []PendingWrite) {
 	for _, pendingWrite := range refused {
@@ -308,7 +310,7 @@ func (l *branchWorkerEventLoop) settleReplayRefusals(refused []PendingWrite) {
 }
 
 // settleCommitted acts on a write whose commit was made. A resync answers its caller with what it
-// found, and one that committed nothing leaves the log: it is neither retained nor pushed. A
+// found, and one that committed nothing stops being pending: it is neither retained nor pushed. A
 // refusal's empty commit records the refusal it covered, so the same observation is not a new
 // trigger.
 func (l *branchWorkerEventLoop) settleCommitted(i int) {
@@ -365,14 +367,14 @@ func answerResync(req *ResyncRequest, result ResyncResult) {
 }
 
 // settleFailed acts on a write whose commit failed for good: the plan was refused, or the write
-// cannot be made, and retrying the same broken state helps nobody. It leaves the log, a request
-// riding it fails, and a refusal is surfaced as GitPathAccepted=False instead of being logged as a
+// cannot be made, and retrying the same broken state helps nobody. It is no longer pending, a
+// request riding it fails, and a refusal is surfaced as GitPathAccepted=False instead of being logged as a
 // write fault (a resync's refusal reaches its caller, which classifies it).
 func (l *branchWorkerEventLoop) settleFailed(i int, err error) {
 	l.settleDropped(l.removeAt(i), err)
 }
 
-// settleDropped settles a write already taken out of the log whose commit failed for good.
+// settleDropped settles a write already taken out of the pending writes whose commit failed for good.
 func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err error) {
 	switch {
 	case pendingWrite.origin.resync != nil && !pendingWrite.origin.answered:
@@ -437,8 +439,8 @@ func changeIdentity(pendingWrite PendingWrite) (string, string, string, itypes.C
 }
 
 // settleUnreachable acts on the decided writes not committed yet when the remote could not be
-// reached, or the parent branch a new write branch is created from is missing: they all stay in the
-// log for the retry, and admission backpressure bounds the log however long that lasts. A resync's
+// reached, or the parent branch a new write branch is created from is missing: they all stay
+// pending for the retry, and admission backpressure bounds them however long that lasts. A resync's
 // caller is answered now with the error, because it is waiting to hear what the resync found and
 // that cannot be known yet; the resync itself stays, in its place, and is applied with the rest.
 func (l *branchWorkerEventLoop) settleUnreachable(err error) {
@@ -448,7 +450,7 @@ func (l *branchWorkerEventLoop) settleUnreachable(err error) {
 			continue
 		}
 		req := origin.resync
-		l.w.Log.Error(err, "Cannot refresh the remote before resync; it waits in the log",
+		l.w.Log.Error(err, "Cannot refresh the remote before resync; it stays pending",
 			"resources", len(req.Desired), "gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName)
 		answerResync(req, ResyncResult{Err: fmt.Errorf("refresh remote before resync: %w", err)})
 		origin.answered = true

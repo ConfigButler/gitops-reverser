@@ -13,15 +13,15 @@ journal storage, acknowledgments, publication recovery, retention, and the persi
 The broader ownership contract is in [the architecture](../architecture.md#git-write-architecture).
 
 Status: design proposal, aligned 2026-10-04 with #413, which built every step of the
-[log plan](gittarget-branch-worker-log.md): one decided-write log and materializer, one retry
+[pending-writes plan](gittarget-branch-worker-pending-writes.md): ordered pending writes and one materializer, one retry
 schedule, the watch's admission boundary, Git call deadlines, intake pause and resume, and the
 publication status. Event names and the transition boundary are proposals. This document changes
 no runtime behavior and does not establish a restart or exactly-once guarantee.
 
 ## Publication progress (built in #412 and #413)
 
-The write-path refactor in [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md) built
-what this section asked for, in the order it set: a log of decided writes, one materializer for the
+The write-path refactor in [`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md) built
+what this section asked for, in the order it set: ordered pending writes, one materializer for the
 checkout, and one retry deadline; then the watch's admission boundary (5a), Git operation deadlines
 (6), intake pause and resume (5b), and the publication status (5c). None of it depends on a storage
 backend or on HA. A saturated branch pauses intake while its recovery loop stays alive; a process
@@ -109,7 +109,7 @@ not enforce that exactly one alternative is set.
 
 This inventory is the starting point for extracting explicit transitions. The atomic handler is
 supported, but it has no non-test producer; step 5a of the
-[log plan](gittarget-branch-worker-log.md#step-5a-make-refused-admission-safe-built) removed the
+[pending-writes plan](gittarget-branch-worker-pending-writes.md#step-5a-make-refused-admission-safe-built) removed the
 unused exported `EnqueueRequest`. `Refresh` normally observes an idle branch;
 during parent recovery its handler can service a due probe and publish retained work.
 
@@ -198,8 +198,8 @@ makes the attempt. Review of #412 found the handoff gap (each new commit retried
 
 The backoff schedules publication attempts, not every Git connection. A new window used to fetch
 to rebuild retained writes before reaching `maybeSchedulePush`, and a failed rebuild dropped the
-window and failed its save. A closed window is now a decided write in the log
-([`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md), step 2): an unreachable remote
+window and failed its save. A closed window is now a pending write
+([`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md), step 2): an unreachable remote
 leaves it for the publication retry with its save held. Decisions needing a connection wait,
 resyncs included since step 5b: a resync is answered with the failure the retry is waiting out and
 kept. Only a failure of the write itself drops an entry; a missing parent holds it back like
@@ -520,7 +520,7 @@ Journal crashes, retention, encryption, and HA failure tests belong to the
 | Held save outlives the controller's safety window | Built (#412): withdrawal cannot falsely fail it; recovery remains scheduled |
 | Push fails under continuous arrivals | Built (#412): arrivals cannot bypass the retry budget |
 | Parent returns, but publication still fails | Built (#413): new commits respect the one retry deadline while the obligation remains open |
-| Retained-write rebuild fails before a new window commits | Built (#413): decided window and attached save stay in the log for retry |
+| Retained-write rebuild fails before a new window commits | Built (#413): decided window and attached save stay pending for retry |
 | Intake fills during publication failure | Built (#413): accepted work stays; producers pause while the retry loop remains active |
 | Rejected UPDATE is redelivered from the same cursor | Built (#413): dedup does not suppress work that never entered the worker |
 | Ref listing, fetch, or push stalls | Built (#413): operation and cycle deadlines return control to the worker |

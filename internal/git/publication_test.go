@@ -4,7 +4,7 @@ package git
 
 // The worker's report of its publication: what every GitTarget on the branch and every save it
 // holds says during an outage, and what the metrics read. See
-// docs/design/gittarget-branch-worker-log.md, step 5c.
+// docs/design/gittarget-branch-worker-pending-writes.md, step 5c.
 
 import (
 	"context"

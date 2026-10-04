@@ -26,7 +26,7 @@ its extra publication cost; that needs the measurements in §9.
 ## An outage pause is a separate decision
 
 Keep the success cooldown unchanged while completing the
-[branch-worker recovery contract](gittarget-branch-worker-log.md#recovery-contract). Failure backoff
+[branch-worker recovery contract](gittarget-branch-worker-pending-writes.md#recovery-contract). Failure backoff
 paces attempts at Git; capacity admission controls how much new work the process accepts. Neither
 one supplies storage durability.
 
@@ -308,7 +308,7 @@ held-request retry test, to measure those workloads.
    a separate change and its own validation.
 2. **Option C's retry schedule is built.** Step 3b unified it with parent recovery. The remaining
    outage work is admission correctness, bounded Git calls, pause/resume, and visible status in
-   the branch-worker log plan. Removing the success cooldown would not solve those gaps.
+   the branch-worker pending-writes plan. Removing the success cooldown would not solve those gaps.
 3. **Build the event-loop ledger rows in §9 before changing the success wait.** Retry tests prove
    progress, but the ledger still needs the cost of these scheduled workloads. Row 2 prices the
    multi-identity case.

@@ -19,7 +19,7 @@ import (
 // otherwise hold every target on the branch, its saves, withdrawals, timers and later writes,
 // for as long as the TCP connection lives. Shutdown waits on that loop too.
 //
-// Measured against go-git v6.0.0-alpha.5 (docs/design/gittarget-branch-worker-log.md, step 6):
+// Measured against go-git v6.0.0-alpha.5 (docs/design/gittarget-branch-worker-pending-writes.md, step 6):
 //
 //   - HTTP honors the context in every phase (advertisement, upload-pack, receive-pack) when the
 //     context-taking API is used. Remote.List and Repository.Fetch take none, and over the default

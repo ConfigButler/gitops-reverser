@@ -14,8 +14,8 @@ a request on a target that may not be written fails, whatever path ends it
 
 Retry progress on quiet branches is fixed: a failed publication schedules its own bounded retry
 (`internal/git/retry.go`, [`push-cooldown.md`](design/push-cooldown.md) §7 option C). A window whose
-rebuild fails is no longer dropped: it waits in the log for that retry
-([`gittarget-branch-worker-log.md`](design/gittarget-branch-worker-log.md)).
+rebuild fails is no longer dropped: it stays pending for that retry
+([`gittarget-branch-worker-pending-writes.md`](design/gittarget-branch-worker-pending-writes.md)).
 
 **Later, non-blocking:**
 

@@ -4,7 +4,7 @@ package git
 
 // The branch's intake gate during an outage: what a worker accepts is bounded at enqueue, intake
 // stays paused until a publication lands, and the producers it refused are woken when it reopens.
-// See docs/design/gittarget-branch-worker-log.md, "Recovery contract".
+// See docs/design/gittarget-branch-worker-pending-writes.md, "Recovery contract".
 
 import (
 	"fmt"
@@ -20,7 +20,7 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// outageLoop is a worker whose remote cannot be reached, with one write held in its log and a
+// outageLoop is a worker whose remote cannot be reached, with one write pending and a
 // retry pending: the state in which the budget applies.
 func outageLoop(t *testing.T, slug string) (*ledgerFixture, *branchWorkerEventLoop, func()) {
 	t.Helper()
@@ -69,7 +69,7 @@ func TestIntake_TheBudgetBoundsAcceptedWorkAtEnqueue(t *testing.T) {
 	assert.LessOrEqual(t, loop.heldBytes(), budget, "everything accepted fits the budget once the loop holds it")
 }
 
-// Everything the loop keeps counts against the budget: the open window, the log, a deferred heal's
+// Everything the loop keeps counts against the budget: the open window, the pending writes, a deferred heal's
 // snapshot, and a save registered while it waits for a window.
 func TestIntake_EveryKindOfHeldWorkCounts(t *testing.T) {
 	_, loop, _ := outageLoop(t, "intake-held-kinds")
@@ -131,8 +131,8 @@ func TestIntake_StaysPausedUntilAPublicationLands(t *testing.T) {
 	}
 }
 
-// A snapshot larger than the whole budget is accepted on a healthy branch, whose log drains at the
-// next push. During an outage it can never fit, so it is refused with that said, pauses the branch
+// A snapshot larger than the whole budget is accepted on a healthy branch, whose pending writes drain
+// at the next push. During an outage it can never fit, so it is refused with that said, pauses the branch
 // rather than being offered again on every reconnect, and is accepted once a publication lands.
 func TestIntake_ASnapshotLargerThanTheBudget(t *testing.T) {
 	f, loop, restoreSyncs := outageLoop(t, "intake-oversized-snapshot")

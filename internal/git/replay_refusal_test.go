@@ -10,10 +10,10 @@ package git
 // does not support, say. Retrying cannot help, because the content is not going to change by
 // itself. Aborting the whole replay used to keep every write behind the refused one waiting
 // with it, indefinitely. A refusal met during a replay now settles only its own entry, as a refusal
-// at first commit does: it is reported, its save fails, and it leaves the log. The writes after it
+// at first commit does: it is reported, its save fails, and it is no longer pending. The writes after it
 // are replayed and published.
 //
-// See docs/design/gittarget-branch-worker-log.md, step 4.
+// See docs/design/gittarget-branch-worker-pending-writes.md, step 4.
 
 import (
 	"errors"
@@ -87,7 +87,7 @@ func assertOnlyTheRefusedWriteWasDropped(
 	assert.Contains(t, names, "kept-behind-it", "the write behind the refused one is published")
 	assert.NotContains(t, names, "refused-on-replay", "the refused write is not")
 	assert.Contains(t, names, "team-a/kustomization.yaml", "and the other writer's commit is kept")
-	assert.Empty(t, loop.pendingWrites, "nothing is left in the log to block the writes after it")
+	assert.Empty(t, loop.pendingWrites, "nothing is left pending to block the writes after it")
 	assert.False(t, loop.retry.pending(), "nothing is owed, so no retry is scheduled")
 
 	require.Len(t, *refusals, 1, "the refusal is reported on the target's status, once")

@@ -79,7 +79,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 	_, resolved := outcome(t, f.worker)
 	require.False(t, resolved, "the save is held, not failed: its write can still land")
 	assert.Equal(t, PhaseWaitingForPush, f.worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
-	require.Len(t, loop.pendingWrites, 2, "the window is decided and kept in the log")
+	require.Len(t, loop.pendingWrites, 2, "the window is decided and kept pending")
 	assert.False(t, loop.pendingWrites[1].materialized)
 	require.True(t, loop.retry.pending(), "the failure armed the publication retry")
 	require.Equal(t, int32(1), syncs.Load(), "the window tried the rebuild once")
@@ -156,10 +156,10 @@ func TestDecidedWrite_ADeferredDeleteObeysATightenedPrunePolicy(t *testing.T) {
 		"the deferred delete is planned under the policy in force when it is committed")
 }
 
-// Writes are kept through an outage, so the log is bounded at admission instead: past the
+// Writes are kept through an outage, so the pending writes are bounded at admission instead: past the
 // retained-byte budget, while a failed attempt waits for its retry, new writes, saves and resyncs are
 // refused the way a full queue refuses them, and their producers keep them. A healthy branch never
-// closes, and admission reopens once the log is published.
+// closes, and admission reopens once the pending writes are published.
 func TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage(t *testing.T) {
 	f := newLedgerFixture(t, "decided-write-admission", true)
 	f.createLedgerTarget("team-a", nil)
@@ -242,7 +242,7 @@ func TestDecidedWrite_EmptySavesCountAgainstTheBudgetDuringAnOutage(t *testing.T
 	assert.Positive(t, loop.pendingWritesBytes, "an empty record is charged for what it keeps")
 
 	loop.removeAt(0)
-	assert.Zero(t, loop.pendingWritesBytes, "leaving the log refunds exactly what deciding charged")
+	assert.Zero(t, loop.pendingWritesBytes, "no longer pending refunds exactly what deciding charged")
 }
 
 // A resync arriving while a failed attempt waits for its retry does not dial the remote early: its
@@ -275,7 +275,7 @@ func TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry(t *testing.T) {
 	}})
 	loop.finalizeOpenWindow()
 	assert.Equal(t, int32(1), calls.Load(), "nothing dials the remote before the retry is due")
-	require.Len(t, loop.pendingWrites, 3, "both resyncs and the write wait in the log")
+	require.Len(t, loop.pendingWrites, 3, "both resyncs and the write stay pending")
 
 	restoreSyncs()
 	fireRetry(loop)
@@ -349,10 +349,10 @@ func fileAt(t *testing.T, commit *object.Commit, path string) string {
 	return content
 }
 
-// A write that leaves the log leaves memory with it. Shortening the log in place kept the vacated
+// A write that stops being pending leaves memory with it. Shortening the pending writes in place kept the vacated
 // slot of its backing array, so a resync that committed nothing kept its whole snapshot reachable
 // while the budget said the branch held nothing.
-func TestDecidedWrite_LeavingTheLogReleasesThePayload(t *testing.T) {
+func TestDecidedWrite_NoLongerPendingReleasesThePayload(t *testing.T) {
 	loop := newBranchWorkerEventLoop(newMetricsTestWorker(), time.Hour)
 	loop.decide(PendingWrite{Kind: PendingWriteResync, Desired: []manifestanalyzer.DesiredResource{{}}})
 

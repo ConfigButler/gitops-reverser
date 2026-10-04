@@ -4,7 +4,7 @@ Status: **proposed** (not started)
 
 Reviewed 2026-10-03 alongside branch-worker steps 1 to 4 at `373bf8d7`. Redis/Valkey queue work
 remains deferred. Its prerequisite, the
-[in-memory pause/resume contract](../design/gittarget-branch-worker-log.md#recovery-contract), is
+[in-memory pause/resume contract](../design/gittarget-branch-worker-pending-writes.md#recovery-contract), is
 built in #413: capacity limits, visible failure state, and one recovery schedule. A durable queue
 keeps all three; a growing external queue does not remove the need for them.
 
@@ -72,7 +72,7 @@ The repository has useful foundations, but it is not HA today.
   save decisions. Persisted cursors alone do not establish lossless failover.
 - BranchWorker keeps open commit windows, local commits, unpushed writes, and
   CommitRequest outcomes in memory. Its local clone is disposable.
-- Steps 1 to 4 provide one decided-write log, one materializer, one retry schedule, and isolated
+- Steps 1 to 4 provide ordered pending writes, one materializer, one retry schedule, and isolated
   replay refusals. Admission currently closes on retained payload bytes during a retry. Empty
   records, queued payloads, and producer deduplication still need the fixes in the linked plan;
   this threshold is not a durable retention contract or a total memory ceiling.
@@ -335,10 +335,10 @@ healthy outage backlog from a worker that has stopped making progress.
 
 ## Implementation phases
 
-The branch-worker log plan owns admission correctness, operation deadlines, and in-memory recovery
+The branch-worker pending-writes plan owns admission correctness, operation deadlines, and in-memory recovery
 visibility. The event model owns extraction of deterministic worker transitions. These phases own
 persistence and HA after that boundary is available. Do not start them as part of finishing the
-current log refactor. Each phase needs its own failure tests; adding leadership must not be the
+current pending-writes refactor. Each phase needs its own failure tests; adding leadership must not be the
 first recovery test of the journal.
 
 ### HA-0: Specify and expose branch ownership

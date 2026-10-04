@@ -21,7 +21,7 @@ import "time"
 // two had to hand the work back and forth: a failure while recovery was open deferred to recovery's
 // deadline, or every new commit retried at once. There is one deadline now, and what is due when it
 // fires decides what the attempt is: while the parent is missing, one advertisement looking for it
-// (parent_recovery.go); otherwise, materializing the log and pushing it.
+// (parent_recovery.go); otherwise, materializing the pending writes and pushing them.
 
 //nolint:gochecknoglobals // vars, not consts, so a test can run the real loop on a short schedule.
 var (

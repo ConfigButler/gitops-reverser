@@ -61,12 +61,12 @@ check is what protects the first write.
 
 - **Recovery from a missing parent** is an obligation on the branch worker, not an observation. It
   latches when an attempt fails on the parent and clears only when the work is published. Writes,
-  saves and resyncs decided while the parent is missing are kept in the worker's log, not dropped,
-  and admission backpressure bounds the log
-  ([`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md), step 3c). The worker probes
+  saves and resyncs decided while the parent is missing are kept as the worker's pending writes,
+  not dropped, and admission backpressure bounds them
+  ([`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md), step 3c). The worker probes
   with one advertisement after 10s, doubling to 5m, on its one retry schedule shared by every target
   on it; before a deadline nothing spends a connection on the parent, and reconciles never probe.
-  Once found, it publishes the log. Meanwhile the target reports `RecoveringParentBranch`.
+  Once found, it publishes the pending writes. Meanwhile the target reports `RecoveringParentBranch`.
 - **A parent change on a live worker** takes effect at a push admission boundary: every operation
   reads one `{name, generation}` snapshot, trust is scoped to the generation, and a push is admitted
   only when its root was chosen under the current one. A push already admitted is not recalled.

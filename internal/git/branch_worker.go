@@ -189,19 +189,20 @@ type BranchWorker struct {
 	baseTrustedState atomic.Bool
 
 	// checkoutApplied is how many of the loop's retained writes the checkout holds: the checkout is
-	// the projection of the log, its root plus one commit per write in pendingWrites[:applied].
+	// the projection of the pending writes, its root plus one commit per write in
+	// pendingWrites[:applied].
 	// checkoutUnknown means a write failed part-way and the worktree may hold anything.
 	//
 	// It is the one answer to "may the loop commit on, or push, what the checkout holds?", which
 	// is why it is a count and not a flag. A reset to the remote tip sets it to zero, which with
 	// writes retained says their commits are gone and must be replayed: pushing then would find the
 	// branch already at the remote tip, report success without sending anything, and settle work
-	// that exists nowhere. A commit raises it, a replay sets it to the whole log, and a push that
-	// publishes the log returns it to zero. A failed write sets checkoutUnknown, and only a reset
+	// that exists nowhere. A commit raises it, a replay sets it to every pending write, and a push
+	// that publishes them returns it to zero. A failed write sets checkoutUnknown, and only a reset
 	// clears that: a successful push says where the remote is, and nothing about leftovers in the
 	// worktree.
 	//
-	// See docs/design/gittarget-branch-worker-log.md.
+	// See docs/design/gittarget-branch-worker-pending-writes.md.
 	checkoutApplied atomic.Int64
 
 	// lastRefusalTouch records when this worker last pushed an empty commit for a GitTarget, keyed
@@ -1222,7 +1223,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //   - Drain any heal resync parked while a window was open, now that this wake may have finalized
 //     it (a silence timeout, a CommitRequest finalize). A no-op while a window is still open or
 //     nothing is parked.
-//   - Drive the log: commit what the wake decided, schedule its push (advance).
+//   - Drive the pending writes: commit what the wake decided, schedule its push (advance).
 //   - Publish the result, moving the handled item's charge to what the loop holds.
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceCommitRequests()
@@ -1399,8 +1400,8 @@ func (l *branchWorkerEventLoop) closeOrArmWindow() {
 }
 
 // handleAtomicRequest decides one atomic write request. Atomic batches bypass the commit window, but
-// not the log: any open live work is finalized first so arrival order is preserved, then the atomic
-// write joins the log behind it.
+// not the pending writes: any open live work is finalized first so arrival order is preserved, then
+// the atomic write joins the pending writes behind it.
 func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
 	// Finalizing the window opened an idle boundary: a heal parked behind that window
@@ -1496,8 +1497,8 @@ func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 // finalizeOpenWindowWithReason closes the live event window into one decided write. The attached
 // CommitRequest message overrides the live template.
 //
-// The closed window is a decided write (decide): a remote that cannot be reached leaves it in the
-// log for the publication retry, and its CommitRequest held. Only a failure of the write itself
+// The closed window is a decided write (decide): a remote that cannot be reached leaves it pending
+// for the publication retry, and its CommitRequest held. Only a failure of the write itself
 // drops it, and resolves that request Failed (settleFailed).
 func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) {
 	if l.openWindow == nil {
@@ -1635,11 +1636,11 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	}
 }
 
-// pushPending materializes the log and publishes it. On success, pendingWrites is cleared,
+// pushPending materializes the pending writes and publishes them. On success, pendingWrites is cleared,
 // lastPushAt advances, and the outage, if there was one, is over. On failure (transient or after
 // exhausting replay retries), pendingWrites stays in place, safe but unpublished, and the next
-// attempt is scheduled (retry.go), so the work lands without another commit. A log that empties
-// without a push is advance's to close.
+// attempt is scheduled (retry.go), so the work lands without another commit. Pending writes that
+// all settle without a push are advance's to close.
 func (l *branchWorkerEventLoop) pushPending() {
 	if len(l.pendingWrites) == 0 {
 		l.stopPushTimer()
@@ -1667,9 +1668,9 @@ func (l *branchWorkerEventLoop) pushPending() {
 
 	err := l.w.pushPendingCommits(l.pendingWrites)
 	// A rejected push replays the writes onto the moved remote, and the new tree can refuse some of
-	// them. Those were not pushed and never will be, whatever the push did with the rest: they leave
-	// the log now, and are settled once the log describes the push's outcome, because settling one
-	// can decide more work.
+	// them. Those were not pushed and never will be, whatever the push did with the rest: they stop
+	// being pending now, and are settled once the pending writes describe the push's outcome,
+	// because settling one can decide more work.
 	refused := l.takeReplayRefusals()
 	if err != nil {
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
@@ -1911,8 +1912,8 @@ func (w *BranchWorker) ensureBaseForCycle(provider *configv1alpha3.GitProvider, 
 
 // commitPendingWrites creates local commits for the provided pending writes without pushing them,
 // on top of whatever retained writes the checkout already holds (checkoutApplied), and counts
-// each write the loop retains into it. Only the first commit on an empty log may fetch and reset;
-// see ensureBaseForCycle, which decides whether that fetch is needed at all.
+// each write the loop retains into it. Only the first commit with nothing committed before it may
+// fetch and reset; see ensureBaseForCycle, which decides whether that fetch is needed at all.
 func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
@@ -2001,7 +2002,7 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 	w.recordPushOutcome(outcome, started)
 	if err == nil {
 		// The published commits are the remote tip now, so they are the root the next write
-		// commits on, and the checkout holds none of the (now empty) log on top of it. A worktree a
+		// commits on, and the checkout holds no pending write on top of it. A worktree a
 		// failed write left dirty stays dirty: the push says nothing about its leftovers.
 		w.markCheckoutPublished()
 		// The commits are on the remote now, which is the only place they can honestly be counted,
@@ -2827,7 +2828,7 @@ func (w *BranchWorker) providerAttrs(extra ...attribute.KeyValue) []attribute.Ke
 
 // recordCommitFailure counts one window or request that died between routing and pushing: its
 // events are lost until the next resync re-derives them. An unreachable remote is not one: the
-// decided write waits in the log for the publication retry.
+// decided write stays pending for the publication retry.
 //
 // `refused` and `error` need different people. A refusal is a Git path a human has to fix and will
 // not clear on its own; an error may be transient.

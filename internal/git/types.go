@@ -389,15 +389,15 @@ type PendingWrite struct {
 	committedMessageSource messageResolution
 
 	// materialized is set once the loop has committed this write at least once. A decided write
-	// the loop could not commit yet (the remote was unreachable) waits in the log with it unset;
-	// such writes always form the log's tail. Loop-goroutine only.
+	// the loop could not commit yet (the remote was unreachable) stays pending with it unset; such
+	// writes always form the tail of the pending writes. Loop-goroutine only.
 	materialized bool
 	// replayRefusal is the refusal the last completed replay met for this write: the tree the write
 	// was replayed onto refuses it, so the replay skipped it and the checkout does not hold it. The
-	// loop settles it out of the log (settleReplayRefusals). Stamped by replayPendingWrites.
+	// loop settles it out of the pending writes (settleReplayRefusals). Stamped by replayPendingWrites.
 	replayRefusal error
 	// charge is what keeping this write was charged against the retained-byte budget when it was
-	// decided, and is refunded when it leaves the log. See retainedCharge. Loop-goroutine only.
+	// decided, and is refunded when it stops being pending. See retainedCharge. Loop-goroutine only.
 	charge int64
 	// decidedAt is when the write was decided, which dates the oldest kept write. Loop-goroutine
 	// only.

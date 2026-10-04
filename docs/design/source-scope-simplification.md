@@ -168,7 +168,7 @@ One trap, and the code already records it. A cluster-wide collection is a **peer
 named-namespace collection on the same type, never a replacement. `CollectionKey`'s doc comment
 names the bug from a previous attempt: collapsing the two "widened the named rule's stream to every
 namespace its credential could read". A target carrying both `*` and a named rule for one type ran
-two streams over overlapping objects; since the branch worker log's step 5a2 the newer rule is
+two streams over overlapping objects; since step 5a2 of the branch-worker pending-writes plan the newer rule is
 refused instead (see [overlapping collections](../configuration.md#overlapping-collections)).
 It is what a Kubernetes reader expects `*` to mean, and its failure is a clean 403 rather than a
 silent empty set.

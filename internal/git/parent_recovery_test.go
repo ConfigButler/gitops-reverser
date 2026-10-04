@@ -2,8 +2,8 @@
 
 package git
 
-// Work decided while the parent branch is missing is an obligation, not an observation: it stays in
-// the log until it is published, so a transient failure after the parent reappears cannot strand it,
+// Work decided while the parent branch is missing is an obligation, not an observation: it stays
+// pending until it is published, so a transient failure after the parent reappears cannot strand it,
 // and it is driven by the worker on its own deadline, whatever the refresh configuration. These pin
 // the obligation, that nothing decided meanwhile is dropped, and the probe budget.
 
@@ -134,7 +134,7 @@ func refreshTarget() itypes.ResourceReference {
 	return itypes.NewResourceReference(newBranchTarget, "default")
 }
 
-// Test 2. Writes for two targets on one worker, decided while the parent is missing, wait in the log
+// Test 2. Writes for two targets on one worker, decided while the parent is missing, stay pending
 // with their authors and collections, and so does a resync decided meanwhile, whose caller is told
 // it could not be applied yet. The probe that finds the parent publishes all of it, and nothing is
 // owed after that: no snapshot has to re-derive anything.
@@ -411,8 +411,8 @@ func TestParentRecovery_AnEmptySaveWaitsForTheParent(t *testing.T) {
 	assert.False(t, open)
 }
 
-// An obligation with nothing to publish would never close, so a parent failure that left nothing in
-// the log opens none. Found in review of #413, when a failed empty save left the target
+// An obligation with nothing to publish would never close, so a parent failure that left nothing
+// pending opens none. Found in review of #413, when a failed empty save left the target
 // RecoveringParentBranch with nothing owed.
 func TestParentRecovery_NothingOwedOpensNoObligation(t *testing.T) {
 	w := &BranchWorker{}
@@ -426,7 +426,7 @@ func TestParentRecovery_NothingOwedOpensNoObligation(t *testing.T) {
 }
 
 // Recovery ends when nothing is owed, not only when a push lands. A resync held while the parent
-// was missing can find nothing to change once it is back, and leave the log empty without a push:
+// was missing can find nothing to change once it is back, and leave nothing pending without a push:
 // recovery and its retry then stayed open, and intake stayed paused for good.
 func TestParentRecovery_EndsWhenTheHeldWorkNeedsNoCommit(t *testing.T) {
 	f := newRealServerNewBranch(t, "recovery-noop-resync", seedMain(t))

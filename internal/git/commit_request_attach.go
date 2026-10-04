@@ -175,13 +175,13 @@ type pendingCommitRequest struct {
 	commitEmpty bool
 	// attached is true once this request is bound to a write: its message to the open window, or
 	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
-	// set while the write waits in the log for the push.
+	// set while the write is pending, waiting for the push.
 	//
 	// It stays set because the request must stay IDENTIFIABLE while it waits. The controller
 	// re-sends its attach every couple of seconds until it reads an outcome, and forgetting the
 	// request at finalize made that re-send look like a brand-new one: it would register again,
 	// expire against its fresh deadline, and report NoOpenWindow for work that was sitting in
-	// the log waiting for the push cooldown, or, worse, attach to the next same-author window
+	// pending, waiting for the push cooldown, or, worse, attach to the next same-author window
 	// and stamp this request's message onto a commit somebody else authored.
 	attached bool
 	// sawForeignWindow is set when a window was open during this request's wait that it could

@@ -57,7 +57,7 @@ branch, indefinitely: no saves, withdrawals or later writes were handled, and ov
 shutdown waited for the connection to die. The same bound applies to the `GitProvider` controller's
 connectivity check.
 
-A call that runs out of time fails like any other unreachable remote. The writes stay in the log, a
+A call that runs out of time fails like any other unreachable remote. The writes stay pending, a
 save stays `WaitingForPush`, and the retry schedule attempts them again; the error names
 `context deadline exceeded`. A push whose reply was lost after the server took it is recognized on
 the next look at the remote, when the branch is still at the commits it sent, and published as is,

@@ -6,7 +6,7 @@
 
 ## Where the implementation stands
 
-Every step of the [branch-worker log plan](gittarget-branch-worker-log.md) is built. Decided
+Every step of the [branch-worker pending-writes plan](gittarget-branch-worker-pending-writes.md) is built. Decided
 writes take one materialization path, retry uses one schedule, and a refused replay entry no longer
 blocks unrelated retained work. On top of that: the watch's admission boundary, bounded Git calls,
 an explicit publication pause, and a status that operators can read.
@@ -20,23 +20,23 @@ Restarting the Pod loses in-memory decisions and save receipts. Redis persistenc
 
 | Capability | Code | Evidence inspected |
 |---|---|---|
-| All write kinds enter a decided log before materialization | [`branch_log.go`](../../internal/git/branch_log.go) | `decided_write_test.go`, `branch_worker_split_test.go` |
+| All write kinds become pending writes before materialization | [`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go) | `decided_write_test.go`, `branch_worker_split_test.go` |
 | One checkout materializer and explicit applied-prefix tracking | [`branch_worker.go`](../../internal/git/branch_worker.go) | `dirty_worktree_recovery_test.go`, `branch_worker_split_test.go` |
 | One retry deadline, 10s doubling to 5m, including parent recovery | [`retry.go`](../../internal/git/retry.go), [`parent_recovery.go`](../../internal/git/parent_recovery.go) | `retry_test.go`, `parent_recovery_test.go` |
-| Failed materialization retains decided writes and their saves | `branch_log.go` | `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry` |
+| Failed materialization retains decided writes and their saves | `pending_writes_loop.go` | `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry` |
 | Every accepted item counts against the outage budget, and the pause holds until a push lands | [`intake.go`](../../internal/git/intake.go) | `intake_test.go`, `TestDecidedWrite_EmptySavesCountAgainstTheBudgetDuringAnOutage` |
-| A resync during backoff spends no connection | `branch_log.go`, `retry.go` | `TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry` |
+| A resync during backoff spends no connection | `pending_writes_loop.go`, `retry.go` | `TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry` |
 | A stream on a paused branch waits to be woken, graded `BranchIntakePaused` | [`target_watch.go`](../../internal/watch/target_watch.go) | `TestRunTargetWatch_APausedBranchWaitsForIntakeToReopen` |
 | Every call to a Git server is bounded; a lost push reply is settled by evidence | [`network_bound.go`](../../internal/git/network_bound.go) | `network_bound_test.go` |
 | One publication report feeds every `GitTarget` on the branch, its held saves, and the backlog metrics | [`publication.go`](../../internal/git/publication.go), [`gittarget_publication.go`](../../internal/controller/gittarget_publication.go) | `publication_test.go`, `gittarget_publication_test.go` |
-| Replay refusal settles only the affected entry | `branch_log.go`, `branch_worker.go` | [`replay_refusal_test.go`](../../internal/git/replay_refusal_test.go) |
+| Replay refusal settles only the affected entry | `pending_writes_loop.go`, `branch_worker.go` | [`replay_refusal_test.go`](../../internal/git/replay_refusal_test.go) |
 | Save outcomes follow remote publication; the controller cannot time out a held save | [`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go), [`commitrequest_controller.go`](../../internal/controller/commitrequest_controller.go) | Held-request retry and controller safety-bound tests |
 | Parent selection and compare-and-swap remain publication guards | [`git_atomic_push.go`](../../internal/git/git_atomic_push.go) | Parent-change tests and `TestGitRoundTripLedger` |
 | New watch streams start with a fresh replay; reconnects resume a cursor only after the stream's own replay completed | [`target_watch.go`](../../internal/watch/target_watch.go) | `runTargetWatch`, `TestRunTargetWatch_ResumesOnlyAfterItsOwnReplayCompleted` |
 | A live event changes the dedup baseline and the cursor only once the worker accepted it | [`target_watch.go`](../../internal/watch/target_watch.go) | `refused_admission_test.go`, `desired_state_change_filter_test.go` |
 | Each stream owns its filter baselines, seeded from its accepted replay; one `GitTarget` holds no overlapping collections | [`desired_state_change_filter.go`](../../internal/watch/desired_state_change_filter.go), [`collection_overlap.go`](../../internal/watch/collection_overlap.go) | `desired_state_change_filter_test.go`, `collection_overlap_test.go` |
 
-This is an in-memory execution log. It does not yet reconstruct windows, timers, or outcomes after
+The pending writes live in memory. They do not yet reconstruct windows, timers, or outcomes after
 process loss, and `PendingWrite` contains live interfaces and process references.
 
 ## Review findings and remaining gaps
@@ -47,7 +47,7 @@ process loss, and `PendingWrite` contains live interfaces and process references
 redelivered by the cursor resume was skipped as unchanged and the cursor advanced past it. Step 5a
 records the baseline only after the worker accepts the event, records no cursor for an event a
 stopping stream never enqueued, and resumes a stream from a cursor only after its own replay
-completed. The [step 5a section](gittarget-branch-worker-log.md#step-5a-make-refused-admission-safe-built)
+completed. The [step 5a section](gittarget-branch-worker-pending-writes.md#step-5a-make-refused-admission-safe-built)
 lists the producer inventory and the limits left for 5b.
 
 ### 2. The retention threshold was not a total memory bound (fixed in step 5b)
@@ -75,7 +75,7 @@ two-second delay when admission refuses it. That can repeatedly gather snapshots
 worker cannot accept.
 
 Producers now wait for the branch to reopen intake, and a resync during backoff is answered with
-the failure the retry is waiting out and kept in the log. The single retry schedule remains the
+the failure the retry is waiting out and kept pending. The single retry schedule remains the
 recovery driver.
 
 ### 4. Git network calls had no operation budget (fixed in step 6)
@@ -85,7 +85,7 @@ no deadline. Measurement showed worse: go-git's SSH transport ignores the contex
 Step 6 bounds every call (two minutes) and the whole push cycle (five minutes), closes an SSH
 connection when its call's context ends, and settles a push whose reply was lost by finding the
 remote at the commits it sent. The
-[step 6 section](gittarget-branch-worker-log.md#step-6-deadlines-on-git-network-calls-built) has the
+[step 6 section](gittarget-branch-worker-pending-writes.md#step-6-deadlines-on-git-network-calls-built) has the
 measurement and the limits left.
 
 ### 5. Publication and saturation had no coherent operator state (fixed in step 5c)
@@ -122,7 +122,7 @@ also prevents one invalid folder from blocking another target on the same branch
 
 The earlier `owedSnapshot` proposal and a separate parent retry timer are unnecessary for the
 chosen capacity policy. Keep accepted entries and reject new admission explicitly. The next change
-should repair the acceptance boundary, not replace the log or introduce a generic workflow engine.
+should repair the acceptance boundary, not replace the pending writes or introduce a generic workflow engine.
 
 ## Recommended order
 
@@ -140,7 +140,7 @@ and persistence and HA ([HA plan](../future/ha-gittarget-distribution-plan.md)).
 
 | Page | Role after this review |
 |---|---|
-| `gittarget-branch-worker-log.md` | The steps as built, the pause/resume contract, and the review findings |
+| `gittarget-branch-worker-pending-writes.md` | The steps as built, the pause/resume contract, and the review findings |
 | [`branch-worker-event-model.md`](branch-worker-event-model.md) | Transition semantics and the later boundary for reconstructing execution |
 | [`push-cooldown.md`](push-cooldown.md) | Healthy publication cadence; the success cooldown remains unchanged |
 | [`commitrequest-design.md`](../spec/commitrequest-design.md) | Current save contract, including retained versus unaccepted requests |

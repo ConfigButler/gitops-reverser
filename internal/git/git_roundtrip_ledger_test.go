@@ -129,7 +129,7 @@ func newLedgerFixtureOnBranch(t *testing.T, slug string, seeded bool, branch str
 func (f *ledgerFixture) mark() gitRequestSnapshot { return f.sim.ledger.snapshot() }
 
 // commit runs one local commit for the named ConfigMaps and retains its pending write. Only the
-// first commit on an empty log may fetch: commitPendingWrites reads that from the checkout.
+// first commit with nothing committed before it may fetch: commitPendingWrites reads that from the checkout.
 func (f *ledgerFixture) commit(names ...string) {
 	f.t.Helper()
 	events := make([]Event, 0, len(names))
@@ -418,7 +418,7 @@ func ledgerOperations() []ledgerOp {
 				pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx,
 					[]Event{configMapEvent("held", "alice", "team-a")})
 				require.NoError(f.t, err)
-				// The fetch that finds the parent missing; the write is held in the log for it.
+				// The fetch that finds the parent missing; the write stays pending for it.
 				f.loop.decide(*pendingWrite)
 				f.loop.endWake(0)
 				require.Len(f.t, f.loop.pendingWrites, 1)

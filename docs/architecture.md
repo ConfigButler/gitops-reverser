@@ -1287,18 +1287,18 @@ directories removes the ones it made on its way out. Only then is `worktreeDirty
 ### When the remote cannot be reached
 
 A decided write is kept until a push lands. When a commit or a push cannot reach the remote, the
-worker keeps every decided write in its log ([`branch_log.go`](../internal/git/branch_log.go)), with
+worker keeps every decided write pending ([`pending_writes_loop.go`](../internal/git/pending_writes_loop.go)), with
 its author, its message, and any save riding it, and tries again on one schedule: 10 seconds,
 doubling to 5 minutes ([`retry.go`](../internal/git/retry.go)). The retry does not wait for another
-edit. Until it is due nothing else on the branch spends a connection: a write that needs one waits
-in the log, and a resync is answered with the failure the retry is waiting out and kept. Only a
+edit. Until it is due nothing else on the branch spends a connection: a write that needs one stays
+pending, and a resync is answered with the failure the retry is waiting out and kept. Only a
 failure of the write itself, such as a refused plan, drops an entry. Every call to a Git server is
 bounded, two minutes per call and five per push cycle, so a server that stops answering cannot hold
 the branch.
 
 The kept work is bounded at intake ([`intake.go`](../internal/git/intake.go)). While a retry is
 pending, `--branch-buffer-max-size` counts everything accepted and not yet published: queued items,
-the open window, the log, deferred snapshots and waiting saves, each with a 1 KiB per-item charge.
+the open window, the pending writes, deferred snapshots and waiting saves, each with a 1 KiB per-item charge.
 The first payload that does not fit pauses the branch's intake until a push lands; room under the
 budget again, or a remote that can be read but refuses the push, keeps it paused. A paused branch's
 watch streams wait to be woken instead of reconnecting, and their cursors stay where the last
@@ -1311,7 +1311,7 @@ Every `GitTarget` on the branch reports the outage from one worker report
 held save says the same in its `WaitingForPush` message, and the `git_retained_*`,
 `git_intake_paused` and `git_next_retry_timestamp_seconds` metrics describe the backlog. What this
 recovers, and what watch history and a restart cannot, is the
-[recovery contract](design/gittarget-branch-worker-log.md#recovery-contract); the
+[recovery contract](design/gittarget-branch-worker-pending-writes.md#recovery-contract); the
 [event pipeline overview](design/event-pipeline-overview.md) draws it.
 
 ### Durability of the write queue (planned)

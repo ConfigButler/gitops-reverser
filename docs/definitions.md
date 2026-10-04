@@ -109,7 +109,7 @@ desired state, including data and retained labels and annotations. Drops updates
 content matches the accepted baseline; a missing baseline passes. The metric outcome is
 `unchanged`. Code: `desiredStateChangeFilter`, one per watch stream, seeded from the stream's
 accepted replay; see
-[step 5a2](design/gittarget-branch-worker-log.md#step-5a2-desired-state-change-filter-built).
+[step 5a2](design/gittarget-branch-worker-pending-writes.md#step-5a2-desired-state-change-filter-built).
 
 **Catalog.** One source cluster's normalized discovery result. It holds no judgment about whether a
 type should be watched.
@@ -151,6 +151,13 @@ is why attribution can be per-commit.
 replaces the window's timers with its own. A request attaches to at most one window and never opens
 one. One word for the act, in the API (`window.attach`, `attachTimeout`), the code and the docs: not
 "claim", which names a rule's demand on the read side.
+
+**Pending write.** A write a branch worker has decided to make and not yet published: a closed
+commit window, an atomic batch, a resync, a save's empty record, or a refusal's empty commit. The
+branch worker keeps its pending writes in order, commits them, and pushes them on one retry
+schedule. A pending write can be waiting to become a commit, committed locally and waiting for a
+push, or replayed onto a remote that moved. `PendingWrite` and `pendingWrites` in Go. Not "log",
+which also names diagnostic logs and suggests a durable journal, which this is not.
 
 **Publication.** One commit-and-push cycle by a branch worker. The thing a `GitTarget` reports in
 `status.remote`.
@@ -379,6 +386,7 @@ outage.
 | stream (for the managed lifecycle) | watch | reserve watch stream for delivered events; configuration kinds keep their full names |
 | initial sync, backfill, replay (for current state) | initial events or initialization | follows Kubernetes streaming-list terminology |
 | git worker, commit worker | branch worker | the tuple it owns is keyed by branch |
+| log, journal (for what a branch worker holds) | pending writes | they are in memory and not a record of history; "log" also names diagnostic logs |
 | attribution (bare) | author attribution, render attribution | two unrelated concepts share the word |
 | `GitRepoConfig` | `GitProvider` | the kind was renamed; the string survived in two reasons |
 | failure, error (for a declined write) | refusal | the operator worked correctly |

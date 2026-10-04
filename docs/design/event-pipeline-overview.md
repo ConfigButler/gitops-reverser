@@ -3,7 +3,7 @@
 > **Snapshot, 2026-10-04, at the end of #413.** A picture-first tour of how a change
 > in the cluster becomes a commit today, with the replay paths drawn out and an honest list of
 > what is still missing. It describes behavior that exists. The plan that changes it is
-> [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md); the longer-term event model
+> [`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md); the longer-term event model
 > is [`branch-worker-event-model.md`](branch-worker-event-model.md).
 
 ## 1. The whole pipeline on one page
@@ -38,7 +38,7 @@ flowchart LR
         FIFO[["FIFO<br/>default 1,000 items"]]
         LOOP(("event loop<br/>single goroutine"))
         WIN["open commit window"]
-        LOG[("log of decided writes<br/>in memory")]
+        PW[("pending writes, in order<br/>in memory")]
         MAT["materialize<br/>(the only commit path)"]
         CO[("local checkout")]
         PUB["publish<br/>(atomic push, CAS)"]
@@ -58,9 +58,9 @@ flowchart LR
     CRC -- "attach / withdraw a save" --> ADM
     GTC -- "refresh" --> ADM
     FIFO --> LOOP
-    LOOP --> WIN -- "window closes" --> LOG
-    LOOP -- "resync, save record,<br/>refusal touch, atomic" --> LOG
-    LOG --> MAT --> CO --> PUB --> REMOTE
+    LOOP --> WIN -- "window closes" --> PW
+    LOOP -- "resync, save record,<br/>refusal touch, atomic" --> PW
+    PW --> MAT --> CO --> PUB --> REMOTE
     REMOTE -. "rejected: replay onto new tip" .-> MAT
 ```
 
@@ -78,10 +78,10 @@ Read it left to right:
    as an error, the session ends, and the cursor stays put. When the branch has paused intake, the
    stream waits for it to reopen before it reconnects.
 4. **One goroutine owns everything after the FIFO.** It collects live events into a commit window,
-   decides writes into the log, materializes them into commits, and publishes them.
+   decides pending writes, materializes them into commits, and publishes them.
 
 Several `GitTarget`s that write to the same provider and branch share one worker, and with it one
-FIFO, one log, one checkout, and one retry schedule.
+FIFO, one set of pending writes, one checkout, and one retry schedule.
 
 ## 2. The watch stream: replay, live, and resume
 
@@ -175,7 +175,7 @@ Each stream owns its baselines: a hash per UID of what the worker last accepted,
 or from the stream's accepted replay snapshot, which replaces them all. A refused or unfinished
 replay installs nothing. A `GitTarget` cannot hold two overlapping collections, so one stream is the
 only producer for an object. See
-[step 5a2](gittarget-branch-worker-log.md#step-5a2-desired-state-change-filter-built).
+[step 5a2](gittarget-branch-worker-pending-writes.md#step-5a2-desired-state-change-filter-built).
 
 ## 3. Three different things called "replay"
 
@@ -192,26 +192,26 @@ flowchart TB
 
     subgraph R2["2. Resync: apply a snapshot as a write"]
         direction LR
-        B1["resync decided into the log<br/>(fetches first: judged against<br/>the newest remote tree)"] --> B2["mark-and-sweep plan<br/>under the target's prune mode"]
+        B1["resync decided as a pending write<br/>(fetches first: judged against<br/>the newest remote tree)"] --> B2["mark-and-sweep plan<br/>under the target's prune mode"]
         B2 --> B3["reply: created / updated / deleted<br/>marks scope accepted + render-clean"]
     end
 
     subgraph R3["3. Git replay: re-apply decided writes"]
         direction LR
         C1["remote moved, or checkout<br/>lost the commits"] --> C2["reset to remote tip"]
-        C2 --> C3["re-plan each log entry in order<br/>on the new tree"]
+        C2 --> C3["re-plan each pending write in order<br/>on the new tree"]
         C3 --> C4["entry the new tree refuses:<br/>settled alone (step 4)"]
     end
 
     R1 --> R2
-    R2 -. "the resync is now a log entry,<br/>so it can be Git-replayed too" .-> R3
+    R2 -. "the resync is now a pending write,<br/>so it can be Git-replayed too" .-> R3
 ```
 
 | Replay | Input | What it recovers | What it cannot recover |
 |---|---|---|---|
 | Watch replay | Current cluster state | Current content of every object in scope | Intermediate versions, who made them, which save they belonged to |
 | Resync | One collection's desired set | Git matches that set; with `prune.mode: always`, objects gone from the cluster are swept | With `onEvent` (the default), a delete that happened while nobody watched cannot be inferred from absence |
-| Git replay | The in-memory log | Every decided write, in order, with its message, author, and save | Anything lost with the process: the log is not persisted |
+| Git replay | The pending writes, in memory | Every decided write, in order, with its message, author, and save | Anything lost with the process: pending writes are not persisted |
 
 ### Resync coalescing and fences
 
@@ -292,7 +292,7 @@ The other write gate, `spec.suspend`, applies later, when the write is committed
 target's events are dropped, its folder is still scanned so its status stays fresh, and resuming
 replays current state.
 
-## 5. The log: decide, materialize, publish
+## 5. Pending writes: decide, materialize, publish
 
 Every write takes one path, whatever produced it: a closed window, a resync, a save's empty
 record, a refusal's empty commit, or an atomic batch.
@@ -316,19 +316,19 @@ stateDiagram-v2
     Failed --> [*]
 ```
 
-`decide` only appends to the log. One driver, `advance`, runs at the end of every wake of the loop:
-it materializes what was decided, schedules the push, and closes the retry and parent recovery once
-the log is empty. That last step is in one place, so no path that empties the log can leave intake
-paused.
+`decide` only appends to the pending writes. One driver, `advance`, runs at the end of every wake of
+the loop: it materializes what was decided, schedules the push, and closes the retry and parent
+recovery once nothing is pending. That last step is in one place, so no path that settles the last
+pending write can leave intake paused.
 
 Three outcomes, classified in exactly one place (`settleCommitted`, `settleFailed`,
-`settleUnreachable` in [`branch_log.go`](../../internal/git/branch_log.go)):
+`settleUnreachable` in [`pending_writes_loop.go`](../../internal/git/pending_writes_loop.go)):
 
 - **Committed**: the write is now a commit in the checkout, waiting to be pushed.
-- **Failed for good**: the write itself was refused. Only that entry leaves the log.
+- **Failed for good**: the write itself was refused. Only that entry stops being pending.
 - **Unreachable**: the remote could not be reached. Everything stays for the retry.
 
-The checkout is a *projection* of the log: the remote tip the writes were planned on, plus one
+The checkout is a *projection* of the pending writes: the remote tip the writes were planned on, plus one
 commit per materialized entry. The worker tracks how many entries the checkout holds
 (`checkoutApplied`); when that is unknown, `materialize` resets to the remote tip and replays.
 
@@ -352,12 +352,12 @@ sequenceDiagram
     G-->>M: accepted
     M-->>L: pushed
     L->>L: resolve saves on pushed entries<br/>(each with its own SHA)
-    L->>L: clear the log, clear the retry
+    L->>L: clear the pending writes, clear the retry
     L->>L: settle entry k as a refusal<br/>(may decide an empty "touch" commit)
 ```
 
-The refused entry is taken out before the pushed saves resolve and settled after the log is
-cleared, because settling it can decide new work.
+The refused entry is taken out before the pushed saves resolve and settled after the pending
+writes are cleared, because settling it can decide new work.
 
 Every Git call in this sequence is bounded: two minutes per advertisement, fetch, or push session,
 and five minutes for the whole cycle. When a push fails without a rejection (a deadline, a dropped
@@ -389,10 +389,10 @@ stateDiagram-v2
 ```
 
 The intake gate ([`intake.go`](../../internal/git/intake.go)) applies only while a retry is
-pending; a healthy branch never pauses, because its log drains at the next push.
+pending; a healthy branch never pauses, because its pending writes drain at the next push.
 
 - **What it counts.** Payload on the FIFO, charged at enqueue so producers cannot fill the FIFO
-  between two loop iterations, plus what the loop holds: the open window, the log, parked heals,
+  between two loop iterations, plus what the loop holds: the open window, the pending writes, parked heals,
   and saves waiting for a window. Every item is charged 1 KiB beyond its payload and message, so
   empty saves and refusal commits count and the budget bounds the item count too. Sizes are
   serialized YAML, estimated once by the producer.
@@ -427,7 +427,7 @@ sequenceDiagram
     W->>W: register (first come, first served)
     alt a same-author window is open or opens before the deadline
         W->>W: attach to that window
-        W->>W: window closes, decided into the log<br/>save: WaitingForPush
+        W->>W: window closes, decided as a pending write<br/>save: WaitingForPush
     else no window by the attach deadline
         W->>W: decide an empty "save record" commit<br/>save: WaitingForPush
     end
@@ -455,11 +455,11 @@ flowchart LR
     subgraph YES["Explicit, ordered inputs"]
         Y1["6 FIFO item kinds"]
         Y2["5 timers in one select"]
-        Y3["5 log entry kinds<br/>(window, atomic, resync,<br/>save record, refusal touch)"]
+        Y3["5 pending write kinds<br/>(window, atomic, resync,<br/>save record, refusal touch)"]
         Y4["3 settle outcomes"]
     end
     subgraph PARTLY["Recorded, but only in memory"]
-        P1["the log itself"]
+        P1["the pending writes"]
         P2["save registrations<br/>and outcomes"]
         P3["retry deadline<br/>and intake pause"]
     end
@@ -477,7 +477,7 @@ flowchart LR
 |---|---|
 | Single owner of branch state | Yes: one goroutine per worker |
 | Ordered inputs | Yes, for what enters the FIFO; timers interleave by wall clock |
-| Decisions as recorded facts | Partly: the log records decided writes; window membership, save attachment, and timer firings are not recorded |
+| Decisions as recorded facts | Partly: the pending writes record decided writes; window membership, save attachment, and timer firings are not recorded |
 | Effects separated from decisions | Partly: `decide` and `materialize` are separate, but both run synchronously on the loop |
 | Replayable without side effects | No: replaying would call Git and read current config |
 | Durable | No: everything after the FIFO is in memory |
@@ -488,7 +488,7 @@ This is the honest list. Each item names who plans to close it, or says nobody d
 
 ### Durability
 
-- **Nothing after admission survives a restart.** The FIFO, the log, open windows, save
+- **Nothing after admission survives a restart.** The FIFO, the pending writes, open windows, save
   registrations, and outcomes are in memory. The watch cursor *is* durable (Redis), so it can be
   ahead of work the process lost. A restart replays every stream, which repairs current content
   under each target's write gates and prune policy. It does not restore decided writes,
@@ -519,7 +519,7 @@ remains:
   about six times its YAML size, so the 8 MiB default is well below the memory it stands for. Owner: nobody yet;
   documented in [Interpreting metrics](../interpreting-metrics.md).
 - **A healthy branch's FIFO is bounded by count only.** The budget applies while a retry is pending;
-  until then, up to 1,000 queued items cost memory on top of the window and the log. By design: a
+  until then, up to 1,000 queued items cost memory on top of the window and the pending writes. By design: a
   healthy branch drains.
 - **Work the loop derives can overshoot.** A refusal's empty commit is decided from work already
   accepted, and work accepted before the outage began is kept, so the held total can pass the
@@ -546,11 +546,11 @@ remains:
 
 - **Decisions read implicit inputs**: the clock, live configuration, the fidelity gate, and Git
   results. Replaying the same items tomorrow can produce different windows. Owner: the transition
-  boundary in [`branch-worker-event-model.md`](branch-worker-event-model.md), after the log plan.
+  boundary in [`branch-worker-event-model.md`](branch-worker-event-model.md), after the pending-writes plan.
 - **Timers, attaches, withdrawals, and refreshes are not recorded as transitions.** Owner: the PR
   after #413.
-- **Known structural smells in the log**: `checkoutApplied` living on the worker instead of with
-  the log, and two replay functions (`replayOntoRemote` and its locked wrapper). Owner: the same
+- **Known structural smells in the pending writes**: `checkoutApplied` living on the worker instead
+  of with the pending writes, and two replay functions (`replayOntoRemote` and its locked wrapper). Owner: the same
   follow-up.
 
 ### High availability
@@ -567,7 +567,7 @@ remains:
 | Enqueue into a worker | [`internal/reconcile/git_target_event_stream.go`](../../internal/reconcile/git_target_event_stream.go) |
 | Admission, FIFO, loop, windows, push | [`internal/git/branch_worker.go`](../../internal/git/branch_worker.go) |
 | Intake budget and pause | [`internal/git/intake.go`](../../internal/git/intake.go) |
-| Log, decide, materialize, settle | [`internal/git/branch_log.go`](../../internal/git/branch_log.go) |
+| Pending writes: decide, materialize, settle | [`internal/git/pending_writes_loop.go`](../../internal/git/pending_writes_loop.go) |
 | Retry deadline | [`internal/git/retry.go`](../../internal/git/retry.go) |
 | Publication report and backlog gauges | [`internal/git/publication.go`](../../internal/git/publication.go) |
 | Resyncs and heals | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) |

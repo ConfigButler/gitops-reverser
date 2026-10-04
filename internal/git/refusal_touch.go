@@ -488,7 +488,7 @@ func (l *branchWorkerEventLoop) commitRefusalTouch(key refusalKey, detail, obser
 	// Decided like every other write, and recorded once its commit exists (settleCommitted): a build
 	// or commit failure has produced no trigger, so it must leave the next observation of the same
 	// refusal free to make one. Deciding it while a refused write is being settled appends it to the
-	// log for the running pass, behind the writes decided before it.
+	// pending writes for the running pass, behind the writes decided before it.
 	pendingWrite.origin.refusal = &refusalTouchOrigin{key: key, observation: observation}
 	l.decide(*pendingWrite)
 }
