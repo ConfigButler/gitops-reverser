@@ -184,12 +184,11 @@ with `FinalizeFailed` only after withdrawal confirms that the worker does not ho
 
 ### Capacity, replay, and restart limits
 
-The budget charges each retained write its payload bytes, its message, and a fixed overhead for its
-bookkeeping, so a stream of empty saves fills it too. The
-[branch-worker log plan](../design/gittarget-branch-worker-log.md#recovery-contract) specifies the
-remaining accounting (work still queued, requests waiting for a window) and explicit producer
-pause. That behavior is planned; current
-enqueue refusal and controller retry remain the runtime contract.
+The budget charges every kept item its payload bytes, its message, and a fixed overhead for its
+bookkeeping, so a stream of empty saves fills it too. It counts queued work, retained writes, and
+requests still waiting for a window. A refusal pauses the branch's intake until a push lands; see
+the [branch-worker log plan](../design/gittarget-branch-worker-log.md#recovery-contract). A refused
+request is sent again by the controller.
 
 For a request the worker already holds, saturation does not change its window membership or
 replace its decided write with a newer snapshot. A refused replay entry fails its own request;

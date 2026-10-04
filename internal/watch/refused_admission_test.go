@@ -207,3 +207,123 @@ func receiveReconnect(t *testing.T, opened <-chan openedWatch) openedWatch {
 		return openedWatch{}
 	}
 }
+
+// pausingResyncs is a branch worker that has paused intake: it refuses every snapshot until it
+// reopens, and says so through IntakePaused, the way the real worker does.
+type pausingResyncs struct {
+	mu     sync.Mutex
+	paused chan struct{}
+}
+
+func (p *pausingResyncs) EnqueueResync(request *git.ResyncRequest) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.paused != nil {
+		request.Result <- git.ResyncResult{Err: git.ErrFinalizeQueueFull}
+		return false
+	}
+	request.Result <- git.ResyncResult{}
+	return true
+}
+
+func (p *pausingResyncs) IntakePaused() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.paused
+}
+
+func (p *pausingResyncs) pause() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.paused = make(chan struct{})
+}
+
+// wake wakes the waiting producers; pausedAgain pauses again before they get to look.
+func (p *pausingResyncs) wake(pausedAgain bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	close(p.paused)
+	p.paused = nil
+	if pausedAgain {
+		p.paused = make(chan struct{})
+	}
+}
+
+// A stream whose branch has paused intake waits for the branch to reopen instead of reconnecting on
+// its backoff: reconnecting would gather a snapshot the branch refuses again, every two seconds,
+// for as long as the outage lasts. A wake-up finds the branch paused again and keeps waiting; the
+// reopening reconnects at once.
+func TestRunTargetWatch_APausedBranchWaitsForIntakeToReopen(t *testing.T) {
+	setTargetWatchBackoff(t, 10*time.Millisecond)
+	gitDest := types.NewResourceReference("target", "default")
+	worker := &pausingResyncs{}
+	worker.pause()
+	opened := make(chan openedWatch, 8)
+	manager := &Manager{
+		Log:              logr.Discard(),
+		WatchCursorStore: &fakeWatchCursorStore{},
+		EventRouter: &EventRouter{
+			Log: logr.Discard(),
+			resyncWorker: func(context.Context, types.ResourceReference) (resyncEnqueuer, error) {
+				return worker, nil
+			},
+		},
+		targetWatchOpen: func(
+			_ context.Context, _ schema.GroupVersionResource, namespace string, opts metav1.ListOptions,
+		) (watch.Interface, error) {
+			fw := watch.NewFakeWithChanSize(8, false)
+			opened <- openedWatch{namespace: namespace, opts: opts, watch: fw}
+			return fw, nil
+		},
+	}
+	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+		manager.runTargetWatch(ctx, logr.Discard(), gitDest, testStream(key))
+	}()
+
+	first := receiveOpenedWatch(t, opened)
+	completeInitialEvents(first.watch, "50") // the paused branch refuses the replay's snapshot
+	assertNoReconnectWithin(t, opened, 300*time.Millisecond, "a paused branch is not offered the snapshot again")
+
+	worker.wake(true)
+	assertNoReconnectWithin(t, opened, 300*time.Millisecond, "a wake-up that finds the branch paused again waits on")
+
+	worker.wake(false)
+	second := receiveReconnect(t, opened)
+	assert.NotNil(t, second.opts.SendInitialEvents, "the reopened branch gets the replay it refused")
+
+	cancel()
+	<-done
+}
+
+// completeInitialEvents ends an initial-events replay with its bookmark at rv.
+func completeInitialEvents(fw *watch.FakeWatcher, rv string) {
+	bookmark := &unstructured.Unstructured{}
+	bookmark.SetResourceVersion(rv)
+	bookmark.SetAnnotations(map[string]string{metav1.InitialEventsAnnotationKey: "true"})
+	fw.Action(watch.Bookmark, bookmark)
+}
+
+func assertNoReconnectWithin(t *testing.T, opened <-chan openedWatch, d time.Duration, msg string) {
+	t.Helper()
+	select {
+	case got := <-opened:
+		got.watch.Stop()
+		t.Fatalf("reconnected: %s", msg)
+	case <-time.After(d):
+	}
+}
+
+// setTargetWatchBackoff shortens the reconnect backoff for one test.
+func setTargetWatchBackoff(t *testing.T, d time.Duration) {
+	t.Helper()
+	original := targetWatchBackoff
+	targetWatchBackoff = d
+	t.Cleanup(func() { targetWatchBackoff = original })
+}

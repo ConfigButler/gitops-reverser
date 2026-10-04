@@ -1,9 +1,8 @@
 # Branch worker write path as a log with one materializer
 
 > **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
-> Steps 1 to 4, 5a, 5a2, and 6 are built; step 3 was split into 3a, 3b, and 3c after review. Steps
-> 5b, 5c, and 7 remain, in that order. Two parts of 5b are built after the 2026-10-04 review: a
-> nonzero charge per retained write, and resyncs that respect the retry schedule.
+> Steps 1 to 4, 5a, 5a2, 5b, and 6 are built; step 3 was split into 3a, 3b, and 3c after review.
+> Steps 5c and 7 remain, in that order.
 > Git calls are bounded now, so the pause/resume state machine of 5b cannot be defeated by a stalled call.
 > The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
 > the remaining defects. This is the write-path part of the "transition boundary" in
@@ -136,26 +135,22 @@ Source review at `373bf8d7` confirms the log path and step 4 refusal isolation. 
 - **Deduplication preceded acceptance** (fixed in step 5a; the filter is per stream since 5a2).
   `skipUnchangedLiveUpdate` stored the content hash before enqueue, so a refused UPDATE was skipped
   on cursor resume, which then advanced the cursor.
-- **The byte budget is incomplete.** `syncAdmission` uses `pendingWritesBytes` and a pending retry.
-  `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at zero. Repeated empty
-  saves could grow the log without reaching the byte threshold; since the 2026-10-04 review each
-  decided write is charged its payload, its message, and a fixed overhead
-  (`pendingWriteOverheadBytes`), fixed at the decision and refunded when it leaves the log. The
-  FIFO limits item count, while individual snapshots and batches can be large. Add accounting for
-  queued payloads before describing retention as bounded; include registered saves and deferred
-  snapshots.
+- **The byte budget was incomplete** (fixed in step 5b). `syncAdmission` used `pendingWritesBytes`
+  and a pending retry. `buildRequestRecordWrite` and `buildRefusalTouchWrite` leave `ByteSize` at
+  zero, so repeated empty saves grew the log without reaching the byte threshold, and payload on the
+  FIFO was not counted at all.
 - **Retry pacing had an exception** (fixed after the 2026-10-04 review). `decide` let resyncs
   materialize during a pending retry, so each one spent a fetch before the retry deadline, and a
   write decided behind a retained resync reached that resync's fetch too. Now the retry schedule
   records the failure it waits out (`retrySchedule.cause`); a resync during backoff is answered
   with it, stays in the log, and is applied when the retry is due.
-- **Watch recovery currently polls.** `runTargetWatch` reconnects after its fixed two-second
-  backoff. It has no wait for the worker to reopen admission. Queue saturation becomes repeated
-  work and a generic watch error, rather than a publication-pause explanation.
+- **Watch recovery polled** (fixed in step 5b). `runTargetWatch` reconnected after its fixed
+  two-second backoff, with no wait for the worker to reopen admission, so queue saturation became
+  repeated work. The generic watch error it reports is step 5c's.
 - **Git calls were unbounded** (fixed in step 6). **Failure status is incomplete**; step 5c
   addresses it.
 
-These are follow-up requirements, not runtime fixes made by this documentation revision.
+These findings gated steps 5a to 5c; the markers above say where each was fixed.
 
 ## Steps
 
@@ -345,25 +340,44 @@ Remaining limits:
   re-tested here.
 - The baselines are in memory. A restart starts every stream with a replay, which seeds them again.
 
-### Step 5b: pause and resume under capacity pressure
+### Step 5b: pause and resume under capacity pressure (built)
 
-`fix(git)`. Implement the recovery contract after step 6 bounds synchronous Git work.
+`fix(git)`, `fix(watch)`. Built in five commits: the per-entry charge and the resync pacing after
+the 2026-10-04 review, then a coalescing fix the accounting needed, the intake gate, and the
+producer wait. The intake gate is [`intake.go`](../../internal/git/intake.go).
 
-- Use byte and count admission budgets covering queued payloads, open/decided work, deferred
-  resyncs, and pending saves. Give empty records a nonzero charge (built: every decided write
-  carries `pendingWriteOverheadBytes` beyond its payload and message). State measured overhead and
-  any bounded overshoot; do not advertise the existing 8 MiB threshold as a heap limit.
-- Decide the oversized-item path explicitly: reject before acceptance with a capacity diagnostic
-  and keep the scope unproven until capacity/configuration changes. Never spin on a snapshot that
-  can never fit, partially apply it, or invent permission to sweep. Chunked snapshots remain a
-  separate extension if required by measured workloads.
-- Keep a small bounded allowance for lifecycle work, with existing FIFO causality intact.
-  Outcome reads and duplicate attaches must not allocate a second obligation. Test eventual
-  withdrawal progress while intake is closed.
-- Pause affected producers and wake them after backlog settlement. Retain accepted work and the
-  existing retry schedule. All recovery Git I/O, including a resync's fetch, respects that schedule
-  (built for the resync's fetch).
-  Preserve ordinary healthy-path refresh and pre-resync fetch costs.
+- **One budget, bytes and count.** While a failed attempt waits for its retry, `--branch-buffer-max-size`
+  bounds everything accepted and not yet published: payload on the FIFO, charged at enqueue so
+  producers cannot fill the FIFO between two loop iterations; the open window; the log; deferred
+  heals; and saves waiting for a window. Every item is charged `pendingWriteOverheadBytes` (1 KiB)
+  beyond its payload and message, so the byte budget also bounds the item count, empty records
+  included. The producer sizes each event and snapshot once, off the loop, and the loop reuses the
+  size. The charge is serialized YAML, not heap: a queued object is held as an unstructured map of
+  about six times that. Overshoot is limited to work accepted before the outage began and to work
+  the loop derives from accepted work, such as a refusal's empty commit.
+- **Pause is a latch.** A payload that would cross the budget is refused and pauses the branch;
+  every later payload is refused until the retry clears, which means a publication landed or
+  nothing is owed. Room under the budget again, a partial replay, or a remote that can be read but
+  refuses the push keep it paused. A healthy branch never pauses.
+- **Oversized items.** A snapshot larger than the whole budget is accepted on a healthy branch,
+  whose log drains at the next push, and the window cap finalizes around it as before. During an
+  outage it can never fit: it is refused with a diagnostic naming its size and the budget, pauses
+  the branch, and is gathered again once the branch reopens. Its scope stays unproven meanwhile,
+  nothing of it is applied, and no sweep runs.
+- **Lifecycle work is not payload.** A withdrawal, a refresh tick, and shutdown never pass the
+  gate. While the branch is paused nothing new enters the FIFO and the loop keeps draining it, so
+  they find room without a reserved allowance, in FIFO order. A duplicate attach allocates nothing:
+  the loop keeps the first registration, and the queued charge is released once it is handled.
+- **Producers wait.** `BranchWorker.IntakePaused` returns a channel closed when intake reopens. A
+  target watch whose session ended waits on it instead of the two-second backoff, re-checks after
+  every wake-up, and falls back to a one-minute re-check. The cursor stays where the last accepted
+  event left it.
+- **Retry pacing.** A resync during backoff is answered with the retry's known failure and stays in
+  the log; a write behind it is no longer treated as local. Refresh ticks were already skipped while
+  writes are retained. Healthy-path refresh and pre-resync fetches are unchanged.
+- **Found on the way:** a resync coalesced into a queued marker was lost when a write queued behind
+  the marker released its key: the marker ran the request already answered as superseded, and the
+  coalesced request was never run or answered. A released marker now runs the request it held.
 
 ### Step 5c: project publication and intake state
 
@@ -459,6 +473,7 @@ the effective-point comment in `write_gate.go`, [`architecture.md`](../architect
 | `publication_retry.go`, `deferToRecovery`, parent recovery's own backoff and timer | step 3b |
 | Parent recovery's `scopes`, `awaitingPush`, `noteResyncApplied`, `recoveryTargets`, the snapshot-request sequence, the controller's snapshot-request tracker, and the per-scope drop paths | step 3c |
 | `Manager.liveContentDedup`, its compare-and-swap between overlapping streams, and overlapping streams within one `GitTarget` | step 5a2 |
+| The `admissionClosed` flag, the budget read only once per loop iteration, and the paused watch's two-second reconnect | step 5b |
 
 ## What stays
 
@@ -515,25 +530,26 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 | Scenario | Required observation |
 |---|---|
 | UPDATE refused, then replayed from the unchanged cursor | Built (5a): it is enqueued; dedup cannot skip it or advance the cursor past it |
-| Push outage under continuous events and empty saves | Byte/count budgets stop intake; accepted entries and saves remain intact |
+| Push outage under continuous events and empty saves | Built (5b): the budget stops intake at enqueue; accepted entries and saves remain |
 | Saturation across two targets on one branch and a second branch | Shared targets show the pause; the second branch continues |
-| Paused producers, with no new Kubernetes edits | One due retry recovers; producers wake without Pod restart |
+| Paused producers, with no new Kubernetes edits | Built (5b): one due retry recovers; producers wake without a restart |
 | Resync arrives during backoff | Built: no early fetch; the caller hears the failure and the resync stays |
-| Read access returns but pushes are still rejected | Admission stays paused and backoff continues |
+| Read access returns but pushes are still rejected | Built (5b): intake stays paused and backoff continues |
 | Cursor expires during pause | Fresh scoped snapshot follows accepted work; no missing-history claim |
 | DELETE history expires under each prune mode | Only permitted deletions occur; retained stale objects remain observable |
 | One replay entry is refused | Only that entry settles; later work can publish |
 | Capacity stays full during withdrawal and shutdown | Controls progress in order; held saves never falsely time out |
-| A snapshot exceeds the entire payload budget | Explicit capacity state, no retry storm or partial sweep |
+| A snapshot exceeds the entire payload budget | Built (5b): refused with its size; no retry storm or partial sweep |
 | Remote stalls, or accepts a push and loses its reply | Built (6): deadline returns control; publication evidence governs save outcomes |
 
 ## Prompt for the next implementation
 
 ```text
-Implement step 5b's contract. Read branch_worker.go, branch_log.go, retry.go, target_watch.go,
-and refused_admission_test.go first. Write the acceptance scenarios for 5b as red tests first.
-Keep the step 5a producer guarantees and the 5a2 filter. Mark only 5b built and update the
-affected user docs. Run the AGENTS.md gates, including local e2e before pushing.
+Implement step 5c's contract. Read intake.go, retry.go, branch_log.go, the GitTarget status
+projection and target_watch.go's session-end grading first. Write 5c's acceptance scenarios as red
+tests first: a paused branch is not a generic WatchError, a sibling's success cannot clear the
+shared failure, and a held save stays WaitingForPush with the cause. Mark only 5c built and update
+interpreting-metrics.md and UPGRADING.md. Run the AGENTS.md gates.
 ```
 
 ## Out of scope

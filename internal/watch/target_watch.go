@@ -27,10 +27,17 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-const (
-	targetWatchBackoff        = 2 * time.Second
-	targetWatchBufferCapacity = 1024
-)
+const targetWatchBufferCapacity = 1024
+
+// targetWatchBackoff is the wait before a stream's next session. A var, not a const, so a test can
+// shorten it.
+//
+//nolint:gochecknoglobals // a test seam
+var targetWatchBackoff = 2 * time.Second
+
+// intakePauseRecheck bounds how long a stream waits on a paused branch without looking again. The
+// branch wakes its producers when it reopens, so this is only a fallback.
+const intakePauseRecheck = time.Minute
 
 var (
 	errTargetWatchClosed  = errors.New("target watch result channel closed")
@@ -586,10 +593,46 @@ func (m *Manager) runTargetWatch(
 			log.Info("target watch session ended; reconnecting",
 				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
 		}
-		if !sleepOrDone(ctx, targetWatchBackoff) {
+		if !m.waitToReconnect(ctx, log, gitDest, stream.key) {
 			return
 		}
 	}
+}
+
+// waitToReconnect waits before a stream's next session, and reports false once the stream is
+// cancelled. While the GitTarget's branch has paused intake it waits for the branch to reopen
+// rather than for the backoff: a reconnect would gather a snapshot, or deliver an event, that the
+// branch refuses again, for as long as the outage lasts. A wake-up looks again, because the branch
+// can pause again before this stream gets there. The cursor stays where the last accepted event
+// left it, so the reopened stream resumes or replays exactly as after any other session end.
+func (m *Manager) waitToReconnect(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+) bool {
+	logged := false
+	for m.EventRouter != nil {
+		paused := m.EventRouter.branchIntakePaused(ctx, gitDest)
+		if paused == nil {
+			break
+		}
+		if !logged {
+			log.Info("target watch waits for its branch to reopen intake",
+				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace)
+			logged = true
+		}
+		recheck := time.NewTimer(intakePauseRecheck)
+		select {
+		case <-ctx.Done():
+			recheck.Stop()
+			return false
+		case <-paused:
+		case <-recheck.C:
+		}
+		recheck.Stop()
+	}
+	return sleepOrDone(ctx, targetWatchBackoff)
 }
 
 // targetStreamStateForSessionEnd grades one watch session ending, and reports whether that

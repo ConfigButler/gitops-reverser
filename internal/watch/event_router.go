@@ -51,6 +51,12 @@ type resyncEnqueuer interface {
 	EnqueueResync(request *git.ResyncRequest) bool
 }
 
+// intakePauser is the part of a branch worker that says whether it has paused intake. See
+// git.BranchWorker.IntakePaused.
+type intakePauser interface {
+	IntakePaused() <-chan struct{}
+}
+
 // NewEventRouter creates a new event router.
 func NewEventRouter(
 	workerManager *git.WorkerManager,
@@ -259,15 +265,7 @@ func (r *EventRouter) enqueueScopedResync(
 	resourceVersion string,
 	heal bool,
 ) (chan git.ResyncResult, bool, error) {
-	var (
-		worker resyncEnqueuer
-		err    error
-	)
-	if r.resyncWorker != nil {
-		worker, err = r.resyncWorker(ctx, gitDest)
-	} else {
-		worker, err = r.resolveWorkerForGitDest(ctx, gitDest)
-	}
+	worker, err := r.resyncTarget(ctx, gitDest)
 	if err != nil {
 		return nil, false, err
 	}
@@ -283,6 +281,32 @@ func (r *EventRouter) enqueueScopedResync(
 		Result:             resultCh,
 	})
 	return resultCh, enqueued, nil
+}
+
+// resyncTarget is the branch worker a GitTarget's scoped resyncs enter.
+func (r *EventRouter) resyncTarget(ctx context.Context, gitDest types.ResourceReference) (resyncEnqueuer, error) {
+	if r.resyncWorker != nil {
+		return r.resyncWorker(ctx, gitDest)
+	}
+	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
+	if err != nil {
+		return nil, err
+	}
+	return worker, nil
+}
+
+// branchIntakePaused reports a GitTarget whose branch worker has paused intake: it returns a channel
+// closed when intake reopens, or nil while it is open or the worker cannot be resolved, in which
+// case nothing is known to wait for.
+func (r *EventRouter) branchIntakePaused(ctx context.Context, gitDest types.ResourceReference) <-chan struct{} {
+	worker, err := r.resyncTarget(ctx, gitDest)
+	if err != nil {
+		return nil
+	}
+	if pauser, ok := worker.(intakePauser); ok {
+		return pauser.IntakePaused()
+	}
+	return nil
 }
 
 // resyncScopeForWatchKey is the single conversion from a watch key to the resync scope its

@@ -308,10 +308,11 @@ halves the headroom of a worker already in use, and nothing in the API surface s
 which targets share one worker by joining on `git_branch_targets` — several targets against a
 single `git_queue_depth` series is one worker serving all of them.
 
-**What it costs.** `--branch-buffer-max-size` does **not** cover this queue. That cap bounds the
-open commit window plus the writes retained for replay until a push succeeds, and it is accounted
-only once an item *leaves* the queue — so queue depth × payload is additional pod memory, on top of
-it.
+**What it costs.** On a healthy branch `--branch-buffer-max-size` does **not** cover this queue. That
+cap bounds the open commit window plus the writes retained for replay until a push succeeds, and it
+is accounted only once an item *leaves* the queue, so queue depth × payload is additional pod
+memory, on top of it. During a Git outage the same cap is charged at enqueue and covers the queue
+as well; see the backpressure paragraph below.
 
 Budget it as **queue depth × serialized size × ~6**. A queued object is held as an unstructured
 map, which measures around six times the bytes it serializes to; the channel itself is negligible
@@ -337,12 +338,14 @@ red trains people to ignore it. Four classes:
 one dropped event increments both. They are two views of one event, and summing them double-counts.
 
 **Backpressure during an outage looks like loss and is not.** A branch worker keeps every decided
-write while its remote cannot be reached, and bounds that at admission: once its retained writes
-fill the retained-byte budget while a failed publication waits for its retry, it refuses new writes,
-saves and resyncs the way a full queue does, and both series rise. The watch does not advance its
-cursor past a refused event, so the reconnect delivers it again; only a cursor that expires during a
-long outage turns it into a relist, whose snapshot converges the folder without that event's own
-commit. Read these increments beside `git_pushes_total{outcome="failed"}` with no successes: that is
+write while its remote cannot be reached, and bounds that at intake: while a failed publication
+waits for its retry, work that would take what it holds past the retained-byte budget (queued work,
+the open window, retained writes, deferred snapshots and waiting saves) pauses its intake. It then
+refuses new writes, saves and resyncs the way a full queue does, and both series rise. Intake stays
+paused until a push lands. The watch does not advance its cursor past a refused event; its stream
+waits for the branch to reopen intake and then delivers the event again. Only a cursor that expires
+during a long outage turns it into a relist, whose snapshot converges the folder without that
+event's own commit. Read these increments beside `git_pushes_total{outcome="failed"}` with no successes: that is
 an outage holding work back, not work thrown away. A healthy branch never refuses for this reason.
 
 `placement_refusals_total` and `git_documents_total{outcome="refused"}` **overlap the same way**: a

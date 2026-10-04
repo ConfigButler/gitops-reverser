@@ -55,11 +55,14 @@ A configured `spec.parentBranch` that the remote does not carry holds writes bac
 they are kept and published once the parent exists, with their own authors and messages, instead of
 being dropped and re-derived from a snapshot of the cluster. A save on such a target waits too.
 
-The kept work is bounded at admission. While an outage has filled a branch's retained-byte budget
-(`controllerManager.branchBufferMaxSize`), the worker refuses new writes, saves and resyncs the way a
-full queue does, so `gitopsreverser_watch_events_total{outcome="route_failed"}` and
-`gitopsreverser_git_queue_drops_total` rise during such an outage; the watch delivers a refused event
-again when it reconnects. See [Interpreting metrics](interpreting-metrics.md).
+The kept work is bounded at intake. During an outage, work that would take a branch past its
+retained-byte budget (`controllerManager.branchBufferMaxSize`) pauses the worker's intake: it refuses
+new writes, saves and resyncs the way a full queue does until a push lands, so
+`gitopsreverser_watch_events_total{outcome="route_failed"}` and
+`gitopsreverser_git_queue_drops_total` rise during such an outage. The budget counts queued work and
+every kept item, empty saves included. A paused branch's watch streams wait for it to reopen instead
+of reconnecting every two seconds, and deliver what was refused once it does. See
+[Interpreting metrics](interpreting-metrics.md).
 
 ## A save on a target that may not be written fails
 
