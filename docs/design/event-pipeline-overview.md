@@ -1,6 +1,6 @@
 # Event pipeline overview: from a watch event to a Git commit
 
-> **Snapshot, 2026-10-03, at #413 step 6.** A picture-first tour of how a change
+> **Snapshot, 2026-10-04, at #413 step 5b.** A picture-first tour of how a change
 > in the cluster becomes a commit today, with the replay paths drawn out and an honest list of
 > what is still missing. It describes behavior that exists. The plan that changes it is
 > [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md); the longer-term event model
@@ -34,7 +34,7 @@ flowchart LR
     end
 
     subgraph BW["Branch worker, one per (GitProvider, branch)"]
-        ADM{"admission<br/>queue room and<br/>admission gate"}
+        ADM{"intake<br/>queue room and<br/>budget gate"}
         FIFO[["FIFO<br/>default 1,000 items"]]
         LOOP(("event loop<br/>single goroutine"))
         WIN["open commit window"]
@@ -52,7 +52,7 @@ flowchart LR
     DD -- "no-op UPDATE: skip" --> CUR
     DD -- "changed" --> AT --> PG --> ER --> GES --> ADM
     ADM -- "accepted" --> FIFO
-    ADM -. "refused: error back up the stack" .-> WS
+    ADM -. "refused: session ends,<br/>stream waits for intake" .-> WS
     GES -. "accepted: record content,<br/>then the cursor" .-> CUR
     WS -- "replay snapshot (resync)" --> ADM
     CRC -- "attach / withdraw a save" --> ADM
@@ -74,8 +74,9 @@ Read it left to right:
    unchanged UPDATEs, counted as `watch_events_total{outcome="unchanged"}`. The author comes from
    audit facts. The producer gate prevents retired streams from enqueueing behind their replacements.
 3. **The branch worker admits it or refuses it.** Admission is non-blocking: a full FIFO, a
-   stopping worker, or the closed admission gate refuses the item. A refused live event travels
-   back up as an error, the session ends, and the cursor stays put.
+   stopping worker, or a paused intake gate refuses the item. A refused live event travels back up
+   as an error, the session ends, and the cursor stays put. When the branch has paused intake, the
+   stream waits for it to reopen before it reconnects.
 4. **One goroutine owns everything after the FIFO.** It collects live events into a commit window,
    decides writes into the log, materializes them into commits, and publishes them.
 
@@ -101,6 +102,10 @@ stateDiagram-v2
     Live --> Backoff: event refused, watch error,<br/>or server closed the watch
     Live --> Backoff: 410 Gone (cursor expired)
 
+    Backoff --> WaitingForIntake: the branch has paused intake
+    WaitingForIntake --> WaitingForIntake: woken, but paused again<br/>(or 1 min fallback recheck)
+    WaitingForIntake --> Backoff: intake reopened
+
     Backoff --> Replaying: 2s later, stream has NOT replayed yet
     Backoff --> Resuming: 2s later, stream has replayed
     Resuming --> Live: watch opened from stored cursor
@@ -109,7 +114,7 @@ stateDiagram-v2
     Live --> [*]: stream retired or GitTarget gone
 ```
 
-Three rules hold this together:
+Four rules hold this together:
 
 - **A new stream always replays.** Starting a stream issues a fresh render-fidelity revision for
   its collection; resuming an old cursor would never report that revision, so the scope would stay
@@ -118,6 +123,10 @@ Three rules hold this together:
   snapshot, the stored cursor still belongs to a previous stream, so the reconnect replays again.
 - **The cursor only moves past what the worker accepted.** A refused event ends the session before
   the cursor is written; an event that a retiring stream never enqueued records no cursor at all.
+- **A stream waits for a paused branch** (step 5b). Before every reconnect the stream asks
+  its branch worker whether intake is paused, and if so waits on a channel the worker closes when
+  it reopens. Reconnecting on the 2s backoff would gather a snapshot the branch refuses again,
+  for as long as the outage lasts.
 
 ### The step 5a case, as a sequence
 
@@ -140,10 +149,11 @@ sequenceDiagram
     API->>S: MODIFIED cm rv=11 data=B
     S->>D: check: B != A, changed
     S->>W: Enqueue
-    W-->>S: refused (queue full or admission closed)
+    W-->>S: refused (queue full or intake paused)
     Note over S,D: nothing recorded:<br/>the baseline stays A
     S--xS: session ends with an error, cursor stays 10
 
+    Note over S,W: if intake is paused: wait until the worker reopens it
     Note over S: 2s backoff, resume from rv=10
     API->>S: MODIFIED cm rv=11 data=B (redelivered)
     S->>D: check: B != A, still a change
@@ -213,11 +223,13 @@ flowchart LR
     N["new resync for scope S"] --> Q{"a resync for S<br/>already queued?"}
     Q -- "no" --> M["queue a marker at the tail"]
     Q -- "yes, nothing for S<br/>queued behind it" --> SW["swap in the newer payload<br/>answer the old caller: superseded"]
-    Q -- "yes, but a write for S<br/>is queued behind it (fenced)" --> REL["old marker keeps its own payload<br/>new request takes a fresh marker"]
+    Q -- "yes, but a write for S<br/>is queued behind it (fenced)" --> REL["old marker keeps the payload it holds<br/>new request takes a fresh marker"]
 ```
 
 Swapping a payload behind a live write would let the older write overwrite the newer snapshot, so
-the fence (`tailPassed`) forces a new position instead.
+the fence (`tailPassed`) forces a new position instead. The payload the old marker holds may be a
+request swapped into it earlier; since step 5b that request runs, where before it was dropped and
+its caller never answered.
 
 A resync marked `Heal` (a re-anchor that must not close another target's window) is parked until
 the window is idle. No production producer sends one today; the watch replay sends `Heal=false`,
@@ -249,7 +261,7 @@ flowchart TB
     TIMERS --> SEL
 
     SEL --> H["handler"]
-    H --> AFTER["after every wake:<br/>service waiting saves,<br/>apply parked heals,<br/>sync admission gate"]
+    H --> AFTER["after every wake:<br/>service waiting saves,<br/>apply parked heals,<br/>publish held bytes to the intake gate"]
     AFTER --> SEL
 ```
 
@@ -347,37 +359,50 @@ and five minutes for the whole cycle. When a push fails without a rejection (a d
 connection), the cycle probes the remote. If the branch is at the commits it sent, the push landed
 and only the reply was lost, so the cycle settles as published instead of replaying them.
 
-## 6. Retry and admission
+## 6. Retry and intake
 
 One retry deadline covers everything the worker still owes: 10 seconds, doubling to 5 minutes.
 While a parent branch is missing, the deadline's attempt is a single advertisement probe;
-otherwise it materializes and pushes.
+otherwise it materializes and pushes. The deadline records the failure it is waiting out.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Healthy
-    Healthy --> RetryPending: an attempt failed<br/>scheduleRetry()
-    RetryPending --> RetryPending: new decisions wait<br/>(no connection spent)<br/>except resyncs
+    Healthy --> RetryPending: an attempt failed<br/>scheduleRetry(cause)
+    RetryPending --> RetryPending: new decisions wait<br/>(no connection spent);<br/>a resync is answered with the cause
     RetryPending --> Attempt: retry deadline fires
-    Attempt --> Healthy: published, nothing owed<br/>clearRetry()
+    Attempt --> Healthy: published, nothing owed<br/>clearRetry(): intake reopens
     Attempt --> RetryPending: failed again<br/>backoff doubles
 
     state RetryPending {
-        [*] --> AdmissionOpen
-        AdmissionOpen --> AdmissionClosed: retained bytes >= budget<br/>(default 8 MiB)
-        AdmissionClosed --> AdmissionOpen: retained bytes < budget
+        [*] --> IntakeOpen
+        IntakeOpen --> IntakePaused: a payload would take<br/>held + queued past the budget<br/>(default 8 MiB)
     }
 ```
 
-While admission is closed, new live events, saves, and resyncs are refused at enqueue through the
-same contract as a full queue. The intended producer behavior after a refusal:
+The intake gate ([`intake.go`](../../internal/git/intake.go)) applies only while a retry is
+pending; a healthy branch never pauses, because its log drains at the next push.
+
+- **What it counts.** Payload on the FIFO, charged at enqueue so producers cannot fill the FIFO
+  between two loop iterations, plus what the loop holds: the open window, the log, parked heals,
+  and saves waiting for a window. Every item is charged 1 KiB beyond its payload and message, so
+  empty saves and refusal commits count and the budget bounds the item count too. Sizes are
+  serialized YAML, estimated once by the producer.
+- **Pausing is a latch.** The first payload that does not fit is refused and pauses the branch.
+  Only a cleared retry reopens it. Room under the budget again, a partial replay, or a remote that
+  can be read but refuses the push keep it paused.
+- **Waking producers.** `BranchWorker.IntakePaused` returns a channel the gate closes when it
+  reopens; the watch streams wait on it.
+
+What each producer does when the gate refuses it:
 
 | Producer | On refusal | Comes back through |
 |---|---|---|
-| Live watch event | Session ends, cursor not advanced | Cursor resume redelivers the frame |
-| Replay snapshot | Session ends, stream not marked replayed | The reconnect replays again |
-| Save attach / withdraw | Dropped | The `CommitRequest` controller re-sends on its next poll |
-| Refresh | Dropped | The next `GitTarget` reconcile asks again |
+| Live watch event | Session ends, cursor not advanced | Waits for intake, then the cursor resume redelivers the frame |
+| Replay snapshot | Session ends, stream not marked replayed | Waits for intake, then the reconnect replays again |
+| Snapshot larger than the whole budget | Refused during an outage, with both sizes in the message | Gathered again once the branch reopens; accepted on a healthy branch |
+| Save attach | Dropped | The `CommitRequest` controller re-sends on its next poll |
+| Save withdraw, refresh | Not refused by a pause: lifecycle work | Only a full FIFO or a stopping worker drops them; the sender asks again |
 
 ## 7. A save (`CommitRequest`) from start to finish
 
@@ -428,7 +453,7 @@ flowchart LR
     subgraph PARTLY["Recorded, but only in memory"]
         P1["the log itself"]
         P2["save registrations<br/>and outcomes"]
-        P3["retry deadline"]
+        P3["retry deadline<br/>and intake pause"]
     end
     subgraph NO["Implicit inputs a decision still reads"]
         N1["time.Now()"]
@@ -477,24 +502,27 @@ This is the honest list. Each item names who plans to close it, or says nobody d
 
 ### Bounded memory and pause/resume
 
-- **The admission budget is not a memory bound.** It counts only decided-write bytes. Empty save
-  records and refusal touches count zero, the FIFO caps item count only, and the open
-  window, parked heals, and registered saves are not counted. Owner: step 5b.
-- **Admission reopens as soon as bytes dip under the budget**, even while publication still
-  fails. There is no "backlog settled" latch. Owner: step 5b.
-- **Producers poll instead of waiting.** A refused stream reconnects every 2 seconds, and before
-  its first accepted replay each attempt gathers a full snapshot again. There is no wake-up when
-  the worker reopens intake. Owner: step 5b.
-- **Resyncs fetch during retry backoff.** Every other decision waits for the retry deadline; a
-  resync still spends a connection early. Owner: step 5b.
-- **An oversized snapshot has no explicit path.** A snapshot bigger than the whole budget has no
-  dedicated capacity state. Owner: step 5b.
+Step 5b closed the gaps this section used to list: queued payload, empty records, parked heals,
+and waiting saves are counted; the pause holds until a push lands; producers wait instead of
+polling; resyncs respect the retry deadline; and an oversized snapshot has an explicit path. What
+remains:
+
+- **The budget counts serialized bytes.** A queued object is held as an unstructured map of
+  about six times its YAML size, so the 8 MiB default is well below the memory it stands for. Owner: nobody yet;
+  documented in [Interpreting metrics](../interpreting-metrics.md).
+- **A healthy branch's FIFO is bounded by count only.** The budget applies while a retry is pending;
+  until then, up to 1,000 queued items cost memory on top of the window and the log. By design: a
+  healthy branch drains.
+- **Work the loop derives can overshoot.** A refusal's empty commit is decided from work already
+  accepted, and work accepted before the outage began is kept, so the held total can pass the
+  budget by that much, and no further.
 
 ### Status and observability
 
 - **A publication outage is invisible on the `GitTarget`.** There is no condition saying "cannot
   publish, retrying at T, intake paused". A held save shows `WaitingForPush` without the cause.
-  A materialization failure before the push cycle is not counted by any metric. Owner: step 5c.
+  A stream waiting for a paused branch reports the generic `WatchError`. A materialization failure
+  before the push cycle is not counted by any metric. Owner: step 5c.
 
 ### Watch history and ordering
 
@@ -530,6 +558,7 @@ This is the honest list. Each item names who plans to close it, or says nobody d
 | Routing, resync replies, fidelity marks | [`internal/watch/event_router.go`](../../internal/watch/event_router.go) |
 | Enqueue into a worker | [`internal/reconcile/git_target_event_stream.go`](../../internal/reconcile/git_target_event_stream.go) |
 | Admission, FIFO, loop, windows, push | [`internal/git/branch_worker.go`](../../internal/git/branch_worker.go) |
+| Intake budget and pause | [`internal/git/intake.go`](../../internal/git/intake.go) |
 | Log, decide, materialize, settle | [`internal/git/branch_log.go`](../../internal/git/branch_log.go) |
 | Retry deadline | [`internal/git/retry.go`](../../internal/git/retry.go) |
 | Resyncs and heals | [`internal/git/resync_flush.go`](../../internal/git/resync_flush.go) |
