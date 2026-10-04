@@ -5,6 +5,7 @@ package git
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -272,10 +273,11 @@ func (l *branchWorkerEventLoop) checkoutCurrent() bool {
 	return m == 0 || l.w.checkoutHolds(m) && !l.w.rootParentStale()
 }
 
-// removeAt takes the write at i out of the log.
+// removeAt takes the write at i out of the log. The slot it vacates is cleared, so the backing array
+// does not keep the write's payload reachable once the budget has refunded it.
 func (l *branchWorkerEventLoop) removeAt(i int) PendingWrite {
 	pendingWrite := l.pendingWrites[i]
-	l.pendingWrites = append(l.pendingWrites[:i], l.pendingWrites[i+1:]...)
+	l.pendingWrites = slices.Delete(l.pendingWrites, i, i+1)
 	l.pendingWritesBytes -= pendingWrite.charge
 	return pendingWrite
 }

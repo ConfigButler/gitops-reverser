@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -346,4 +347,19 @@ func fileAt(t *testing.T, commit *object.Commit, path string) string {
 	content, err := file.Contents()
 	require.NoError(t, err)
 	return content
+}
+
+// A write that leaves the log leaves memory with it. Shortening the log in place kept the vacated
+// slot of its backing array, so a resync that committed nothing kept its whole snapshot reachable
+// while the budget said the branch held nothing.
+func TestDecidedWrite_LeavingTheLogReleasesThePayload(t *testing.T) {
+	loop := newBranchWorkerEventLoop(newMetricsTestWorker(), time.Hour)
+	loop.decide(PendingWrite{Kind: PendingWriteResync, Desired: []manifestanalyzer.DesiredResource{{}}})
+
+	loop.removeAt(0)
+
+	require.Empty(t, loop.pendingWrites)
+	assert.Zero(t, loop.pendingWritesBytes)
+	vacated := loop.pendingWrites[:1][0]
+	assert.Nil(t, vacated.Desired, "the vacated slot no longer holds the removed write's snapshot")
 }
