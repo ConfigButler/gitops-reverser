@@ -1,6 +1,6 @@
 # Event pipeline overview: from a watch event to a Git commit
 
-> **Snapshot, 2026-10-04, at #413 step 5c.** A picture-first tour of how a change
+> **Snapshot, 2026-10-04, at the end of #413.** A picture-first tour of how a change
 > in the cluster becomes a commit today, with the replay paths drawn out and an honest list of
 > what is still missing. It describes behavior that exists. The plan that changes it is
 > [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md); the longer-term event model

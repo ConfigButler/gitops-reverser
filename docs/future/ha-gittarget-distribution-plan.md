@@ -3,15 +3,15 @@
 Status: **proposed** (not started)
 
 Reviewed 2026-10-03 alongside branch-worker steps 1 to 4 at `373bf8d7`. Redis/Valkey queue work
-remains deferred. Complete the
-[in-memory pause/resume contract](../design/gittarget-branch-worker-log.md#recovery-contract)
-before starting these phases; a growing external queue does not remove the need for capacity
-limits, visible failure state, or a recovery schedule.
+remains deferred. Its prerequisite, the
+[in-memory pause/resume contract](../design/gittarget-branch-worker-log.md#recovery-contract), is
+built in #413: capacity limits, visible failure state, and one recovery schedule. A durable queue
+keeps all three; a growing external queue does not remove the need for them.
 
 This is the owning document for the durable journal, publication recovery, retention, and the
 persistence/HA rollout. The [branch worker event model](../design/branch-worker-event-model.md)
 owns worker transitions, deadline semantics, the publication retry (built in #412), and the
-operation-timeout fix, which can ship independently of this plan.
+operation timeouts (built in #413), which shipped independently of this plan.
 
 ## Scope and definition of done
 

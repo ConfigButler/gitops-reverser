@@ -1,11 +1,11 @@
 # Branch worker write path as a log with one materializer
 
-> **Plan, partly built on #413**, reviewed 2026-10-03 at `373bf8d7`.
-> Steps 1 to 6 are built, 5a2 included; step 3 was split into 3a, 3b, and 3c after review.
-> Step 7 remains.
-> Git calls are bounded now, so the pause/resume state machine of 5b cannot be defeated by a stalled call.
-> The [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records
-> the remaining defects. This is the write-path part of the "transition boundary" in
+> **Built on #413**, reviewed 2026-10-03 at `373bf8d7` and completed 2026-10-04. Every step
+> below is built, 5a2 included; step 3 was split into 3a, 3b, and 3c after review. The page stays
+> here rather than in `finished/` because its recovery contract is still the reference for how a
+> branch behaves through an outage. The
+> [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records how each
+> finding was closed. This is the write-path part of the "transition boundary" in
 > [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability),
 > limited to the write path. Persistence stays with the
 > [HA plan](../future/ha-gittarget-distribution-plan.md). Ships as one PR, one commit per step below.
@@ -458,14 +458,15 @@ Remaining limits:
 - Local work inside a cycle (planning, replay, Kubernetes reads for prune policy) counts against
   the cycle's budget but has no bound of its own.
 
-### Step 7: documentation
+### Step 7: documentation (built)
 
-Update the event model's "Next implementation" and "Problems" sections, the remaining findings in the
-state-of-affairs page, the gate table in
+Updated the event model's "Next implementation" and "Problems" sections, the findings in the
+state-of-affairs page, the paragraph after the gate table in
 [`commitrequest-design.md`](../spec/commitrequest-design.md#when-the-target-may-not-be-written),
-the effective-point comment in `write_gate.go`, [`architecture.md`](../architecture.md), and
-`UPGRADING.md`. The PR body carries the argument; this page is updated to "built" or moved to
-`docs/finished/`.
+and [`architecture.md`](../architecture.md), which gained a section on a remote that cannot be
+reached. The effective-point comment in `write_gate.go` already said what was built and is
+unchanged. `UPGRADING.md` gained its entries with each step. The PR body carries the argument; this
+page is marked built.
 
 ## What is gone so far
 
@@ -550,14 +551,11 @@ has a weaker guarantee than replaying accepted decisions. Redis remains deferred
 | A snapshot exceeds the entire payload budget | Built (5b): refused with its size; no retry storm or partial sweep |
 | Remote stalls, or accepts a push and loses its reply | Built (6): deadline returns control; publication evidence governs save outcomes |
 
-## Prompt for the next implementation
+## What comes next
 
-```text
-Do step 7. Reconcile branch-worker-event-model.md's "Next implementation" and "Problems", the
-state-of-affairs findings, the gate table in commitrequest-design.md, write_gate.go's effective-point
-comment, architecture.md and UPGRADING.md with what steps 1 to 6 built. Then move this page to
-docs/finished/ and make the PR body describe the final branch state. Docs-only: task lint-docs.
-```
+Nothing in this plan. Recording timers, attaches, withdrawals, and refreshes as transitions is the
+next PR, under [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability);
+persistence and HA stay with the [HA plan](../future/ha-gittarget-distribution-plan.md).
 
 ## Out of scope
 

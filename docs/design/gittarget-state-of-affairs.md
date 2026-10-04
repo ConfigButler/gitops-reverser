@@ -1,20 +1,20 @@
 # GitTarget and the branch worker: state of affairs
 
-> **Source review**, 2026-10-03 at `373bf8d7` on the step-4 branch. This page distinguishes
-> implemented behavior from the remaining plan. It reports source and test coverage inspected;
-> it does not claim a fresh runtime validation or current PR/CI status.
+> **Source review**, 2026-10-03 at `373bf8d7` on the step-4 branch, updated 2026-10-04 when #413
+> built the remaining steps. This page distinguishes implemented behavior from what is left. It
+> reports source and test coverage inspected; it does not claim current PR/CI status.
 
 ## Where the implementation stands
 
-Steps 1 to 4 of the [branch-worker log plan](gittarget-branch-worker-log.md) are built. Keep that
-foundation: decided writes take one materialization path, retry uses one schedule, and a refused
-replay entry no longer blocks unrelated retained work. The remaining work is admission
-correctness, bounded Git calls, and an explicit publication pause that operators can understand.
+Every step of the [branch-worker log plan](gittarget-branch-worker-log.md) is built. Decided
+writes take one materialization path, retry uses one schedule, and a refused replay entry no longer
+blocks unrelated retained work. On top of that: the watch's admission boundary, bounded Git calls,
+an explicit publication pause, and a status that operators can read.
 
-The simplest recovery stays inside the existing worker. Pause intake for the affected branch
-when capacity fills, keep accepted work, retry with backoff, and resume producers after the backlog
-settles. Restarting the Pod loses in-memory decisions and save receipts. Redis persistence remains
-in the [future HA plan](../future/ha-gittarget-distribution-plan.md).
+Recovery stays inside the existing worker. It pauses intake for the affected branch when capacity
+fills, keeps accepted work, retries with backoff, and wakes producers once a push lands.
+Restarting the Pod loses in-memory decisions and save receipts. Redis persistence remains in the
+[future HA plan](../future/ha-gittarget-distribution-plan.md).
 
 ## What is built
 
@@ -24,7 +24,11 @@ in the [future HA plan](../future/ha-gittarget-distribution-plan.md).
 | One checkout materializer and explicit applied-prefix tracking | [`branch_worker.go`](../../internal/git/branch_worker.go) | `dirty_worktree_recovery_test.go`, `branch_worker_split_test.go` |
 | One retry deadline, 10s doubling to 5m, including parent recovery | [`retry.go`](../../internal/git/retry.go), [`parent_recovery.go`](../../internal/git/parent_recovery.go) | `retry_test.go`, `parent_recovery_test.go` |
 | Failed materialization retains decided writes and their saves | `branch_log.go` | `TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry` |
-| Retained-byte threshold closes enqueue admission during retry | `branch_log.go`, `branch_worker.go` | `TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage` |
+| Every accepted item counts against the outage budget, and the pause holds until a push lands | [`intake.go`](../../internal/git/intake.go) | `intake_test.go`, `TestDecidedWrite_EmptySavesCountAgainstTheBudgetDuringAnOutage` |
+| A resync during backoff spends no connection | `branch_log.go`, `retry.go` | `TestDecidedWrite_AResyncDuringBackoffWaitsForTheRetry` |
+| A stream on a paused branch waits to be woken, graded `BranchIntakePaused` | [`target_watch.go`](../../internal/watch/target_watch.go) | `TestRunTargetWatch_APausedBranchWaitsForIntakeToReopen` |
+| Every call to a Git server is bounded; a lost push reply is settled by evidence | [`network_bound.go`](../../internal/git/network_bound.go) | `network_bound_test.go` |
+| One publication report feeds every `GitTarget` on the branch, its held saves, and the backlog metrics | [`publication.go`](../../internal/git/publication.go), [`gittarget_publication.go`](../../internal/controller/gittarget_publication.go) | `publication_test.go`, `gittarget_publication_test.go` |
 | Replay refusal settles only the affected entry | `branch_log.go`, `branch_worker.go` | [`replay_refusal_test.go`](../../internal/git/replay_refusal_test.go) |
 | Save outcomes follow remote publication; the controller cannot time out a held save | [`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go), [`commitrequest_controller.go`](../../internal/controller/commitrequest_controller.go) | Held-request retry and controller safety-bound tests |
 | Parent selection and compare-and-swap remain publication guards | [`git_atomic_push.go`](../../internal/git/git_atomic_push.go) | Parent-change tests and `TestGitRoundTripLedger` |
@@ -46,10 +50,10 @@ stopping stream never enqueued, and resumes a stream from a cursor only after it
 completed. The [step 5a section](gittarget-branch-worker-log.md#step-5a-make-refused-admission-safe-built)
 lists the producer inventory and the limits left for 5b.
 
-### 2. The retention threshold is not a total memory bound
+### 2. The retention threshold was not a total memory bound (fixed in step 5b)
 
-`syncAdmission` closes intake when a retry is pending and `pendingWritesBytes` reaches the branch
-budget. That improves ordinary outage behavior, but:
+`syncAdmission` closed intake when a retry was pending and `pendingWritesBytes` reached the branch
+budget. That improved ordinary outage behavior, but:
 
 - Empty request records and refusal touches have zero `ByteSize`; repeated empty saves bypass it.
 - The FIFO caps item count (default 1,000), not payload bytes. A snapshot can be large.
@@ -58,19 +62,21 @@ budget. That improves ordinary outage behavior, but:
 - Admission can reopen when retained bytes fall below the threshold even if publication still
   fails. There is no explicit backlog-settlement latch.
 
-Step 5b needs byte and count accounting at admission, a stated oversized-item path, and room for
-ordered lifecycle work. Accepted decisions must not be evicted to make room.
+Step 5b charges every item at enqueue, with a fixed per-item overhead, counts everything the loop
+holds, latches the pause until a push lands, refuses an oversized snapshot during an outage with
+both sizes in the message, and keeps lifecycle work outside the gate. Accepted decisions are never
+evicted. The budget counts serialized bytes, not heap.
 
-### 3. Backoff does not suppress every failing Git connection
+### 3. Backoff did not suppress every failing Git connection (fixed in step 5b)
 
 `decide` exempts resyncs from the ordinary retry hold. A resync can fetch during publication
 backoff unless the missing-parent hold stops it. The producer also reconnects after a fixed
 two-second delay when admission refuses it. That can repeatedly gather snapshots which the
 worker cannot accept.
 
-While intake is paused, producers should wait for branch capacity. While publication is backing
-off, accepted resyncs should answer with the known failure and retain their write intent without
-spending another connection. The existing single retry schedule remains the recovery driver.
+Producers now wait for the branch to reopen intake, and a resync during backoff is answered with
+the failure the retry is waiting out and kept in the log. The single retry schedule remains the
+recovery driver.
 
 ### 4. Git network calls had no operation budget (fixed in step 6)
 
@@ -82,15 +88,17 @@ remote at the commits it sent. The
 [step 6 section](gittarget-branch-worker-log.md#step-6-deadlines-on-git-network-calls-built) has the
 measurement and the limits left.
 
-### 5. Publication and saturation have no coherent operator state
+### 5. Publication and saturation had no coherent operator state (fixed in step 5c)
 
 Parent recovery has status, and push failures have logs and a counter. General publication failure
 has no shared worker observation projected to all its targets. A held save can say `WaitingForPush`
 without explaining that the remote rejects pushes or intake has stopped. A pre-push rebuild failure
 also misses the push-failure counter. Intentional producer pause currently looks like a watch error.
 
-Step 5c projects the worker's failure and admission state into existing conditions, with stable
-messages and diagnostics for backlog and retry. Independent target refusals and source replay stay
+Step 5c publishes one worker report and projects it onto every `GitTarget` on the branch as
+`Ready=False`/`Progressing`, with a message that changes only when the cause or the pause does, and
+onto a held save's `WaitingForPush` message. A paused stream is `BranchIntakePaused`, and gauges
+describe the backlog and the next retry. Independent target refusals and source replay stay
 visible; a successful push cannot clear them.
 
 ### 6. Watch replay recovers a weaker contract than accepted-write replay
@@ -120,20 +128,19 @@ should repair the acceptance boundary, not replace the log or introduce a generi
 
 1. **Step 5a (built):** fix producer deduplication after rejected admission and test cursor resume.
 2. **Step 6 (built):** bound network calls and test stalls and lost push responses.
-3. **Step 5b:** complete capacity accounting and per-worker pause/resume, including producer waits.
-4. **Step 5c:** expose publication failure, intake pause, and recovery through status and metrics.
-5. **Step 7:** update runtime documentation after each behavior lands and validate the final branch.
+3. **Step 5b (built):** complete capacity accounting and per-worker pause/resume, including producer waits.
+4. **Step 5c (built):** expose publication failure, intake pause, and recovery through status and metrics.
+5. **Step 7 (built):** update runtime documentation and validate the final branch.
 
-The [implementation prompt](gittarget-branch-worker-log.md#prompt-for-the-next-implementation)
-now starts at step 5b. The full acceptance matrix lives beside it. Use the
-repository's high-risk validation rule for Git/write-stream implementation changes; this review
-itself is documentation-only.
+What is left belongs elsewhere: recording timers, attaches, withdrawals, and refreshes as
+transitions ([event model](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability)),
+and persistence and HA ([HA plan](../future/ha-gittarget-distribution-plan.md)).
 
 ## Document ownership
 
 | Page | Role after this review |
 |---|---|
-| `gittarget-branch-worker-log.md` | Current implementation steps, pause/resume contract, review findings, and next prompt |
+| `gittarget-branch-worker-log.md` | The steps as built, the pause/resume contract, and the review findings |
 | [`branch-worker-event-model.md`](branch-worker-event-model.md) | Transition semantics and the later boundary for reconstructing execution |
 | [`push-cooldown.md`](push-cooldown.md) | Healthy publication cadence; the success cooldown remains unchanged |
 | [`commitrequest-design.md`](../spec/commitrequest-design.md) | Current save contract, including retained versus unaccepted requests |

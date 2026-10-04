@@ -1,8 +1,9 @@
 # Branch worker events, durable execution, and recovery
 
 A single failed push on a quiet branch used to leave a `CommitRequest` in `WaitingForPush`
-indefinitely, even after Git recovered. #412 repairs the retry half of that liveness gap. Bounding
-Git operations is the next step, with the branch worker still the owner of its checkout.
+indefinitely, even after Git recovered. #412 repaired the retry half of that liveness gap, and #413
+finished the in-process half: bounded Git calls, a bounded outage backlog with explicit pause and
+resume, and a status that says so. The branch worker remains the owner of its checkout.
 
 The longer-term direction is recoverable execution of accepted writes, save commands, window
 decisions, deadlines, and publication outcomes. This document owns the worker's event semantics,
@@ -11,47 +12,49 @@ current failure analysis, and immediate implementation scope. The
 journal storage, acknowledgments, publication recovery, retention, and the persistence/HA rollout.
 The broader ownership contract is in [the architecture](../architecture.md#git-write-architecture).
 
-Status: design proposal, aligned 2026-10-03 with branch-worker steps 1 to 4 at `373bf8d7`. Steps
-5a and 6 have since landed: the watch's admission boundary and the Git call deadlines.
-The [log plan](gittarget-branch-worker-log.md) owns the latest source review and remaining
-admission, pause/resume, status, and operation-deadline steps. Event names and the transition boundary
-are proposals. This document changes no runtime behavior and does not establish an outage or
-exactly-once guarantee.
+Status: design proposal, aligned 2026-10-04 with #413, which built every step of the
+[log plan](gittarget-branch-worker-log.md): one decided-write log and materializer, one retry
+schedule, the watch's admission boundary, Git call deadlines, intake pause and resume, and the
+publication status. Event names and the transition boundary are proposals. This document changes
+no runtime behavior and does not establish a restart or exactly-once guarantee.
 
-## Next implementation: restore publication progress
+## Publication progress (built in #412 and #413)
 
-The remaining items and the now-fixed rebuild gap are covered by the write-path refactor in
-[`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md): a log of decided writes, one
-materializer for the checkout, and one retry deadline.
+The write-path refactor in [`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md) built
+what this section asked for, in the order it set: a log of decided writes, one materializer for the
+checkout, and one retry deadline; then the watch's admission boundary (5a), Git operation deadlines
+(6), intake pause and resume (5b), and the publication status (5c). None of it depends on a storage
+backend or on HA. A saturated branch pauses intake while its recovery loop stays alive; a process
+restart still loses the in-memory obligations.
 
-Complete admission correctness, Git operation deadlines, and explicit pause/resume before journal
-work. Use the log plan's order: 5a, 6, 5b, 5c, then documentation closure. None depends on choosing
-a storage backend or implementing HA. Pause intake for a saturated branch while keeping its
-recovery loop alive; process restart cannot preserve the current in-memory obligations.
+What comes next is the [transition boundary](#prepare-the-transition-boundary-for-later-durability):
+recording timers, attaches, withdrawals, and refreshes as transitions, then the HA plan's journal.
 
 1. **Built in #412, one schedule since #413.** Retained publication work has a bounded failure
    backoff (10s, doubling to 5m) on its own timer, in [retry.go](../../internal/git/retry.go).
    Commits before the deadline do not push; a success resets it. While parent recovery is open
    the same deadline is its probe, and new commits wait for it too, including after the parent
    returns. A stopped worker's timers are stopped with it.
-2. Carry cancellation through ref listing and fetch, and impose operation deadlines across the
-   push cycle. Bound the cycle's total occupancy as well as its individual calls. Repeated
-   contention retries must not repeatedly reset the whole budget. Keep timed-out work pending;
-   a lost push response can mean the remote already accepted it.
-3. Preserve held-save semantics. The worker must resolve publication or establish that the save
-   cannot publish before it reports a terminal failure. A controller timeout alone cannot prove
-   that. Keep `WaitingForPush` while a recoverable publication obligation remains.
-4. Use an injectable clock and scheduler to test silence, continuous arrivals, cancellation, and
-   stale firings. Keep one owner of the checkout while testing the transport cancellation path.
-   Returning from a timeout wrapper while a goroutine still mutates the checkout is unsafe.
+2. **Built in #413 (step 6).** Ref listing, fetch, and push carry the caller's context; each call
+   has a two-minute bound and the whole push cycle five minutes, contention retries included. A
+   dialer closes the connection when its call's context ends, because go-git's SSH transport
+   ignores the context past the dial. Timed-out work stays pending, and a push whose reply was lost
+   is settled as published when the remote is found at the commits it sent.
+3. **Kept.** The worker resolves publication, or establishes that the save cannot publish, before it
+   reports a terminal failure; a controller timeout alone cannot. `WaitingForPush` holds while a
+   recoverable publication obligation remains, and since step 5c its message says why.
+4. **Built.** The retry schedule takes an injectable clock; the stall tests run HTTP and SSH
+   servers that stop answering, and the call returns on the worker goroutine, which stays the only
+   owner of the checkout.
 
 The completion test is a save whose first push fails, followed by silence and remote recovery:
 without another resource edit, its commit reaches Git and the same request reaches its terminal
 status with the published SHA.
 `TestPublicationRetry_AHeldCommitRequestIsCommittedWithoutAnotherWrite` covers that on the event
 loop. `TestCommitRequestReconcile_AHeldRequestOutlivesTheBound` covers the controller's safety
-window. The remaining proof is that a stalled remote call returns control within the operation
-budget.
+window. `TestGitNetworkCalls_HTTPStallsReturnAtTheCallBound` and
+`TestGitNetworkCalls_SSHStallsReturnAtTheCallBound` prove that a stalled remote call returns control
+within the operation budget.
 Use a controllable remote for those failures and a fake clock for retry timing.
 
 This change improves progress within a running worker. Restart durability follows the separate
@@ -197,53 +200,48 @@ The backoff schedules publication attempts, not every Git connection. A new wind
 to rebuild retained writes before reaching `maybeSchedulePush`, and a failed rebuild dropped the
 window and failed its save. A closed window is now a decided write in the log
 ([`gittarget-branch-worker-log.md`](gittarget-branch-worker-log.md), step 2): an unreachable remote
-leaves it for the publication retry with its save held. Ordinary decisions needing a connection
-wait; resyncs remain an exception that can fetch early. Only a failure of the write itself drops
-an entry; a missing parent holds it back like another remote failure. Admission currently limits
-retained payload bytes, with incomplete count and memory accounting recorded in the log plan.
+leaves it for the publication retry with its save held. Decisions needing a connection wait,
+resyncs included since step 5b: a resync is answered with the failure the retry is waiting out and
+kept. Only a failure of the write itself drops an entry; a missing parent holds it back like
+another remote failure.
 
-There is no worker publication-failure condition or retry deadline in `GitTarget` status. A
-push-specific refusal, such as branch protection with working read access, can leave a save in
-`WaitingForPush` without explaining the cause. Push-cycle failures appear in logs and
-`gitopsreverser_git_pushes_total{outcome="failed"}`. A rebuild that fails before entering the push
-cycle is not counted by that metric. Provider connectivity or credential failures can separately
-surface through `GitProviderReady`, and parent recovery already has status.
+Since step 5c every `GitTarget` on the branch reports a publication failure, and a held save in
+`WaitingForPush` carries the same cause, including a push-specific refusal such as branch
+protection with working read access. `gitopsreverser_git_materialization_failures_total` counts a
+rebuild that fails before entering the push cycle, which the push counter cannot see.
 
-### Slow Git operations stop the whole branch loop
+### Slow Git operations stop the whole branch loop (bounded in #413)
+
+Since step 6 every call has a deadline, so this delay ends within two minutes per call and five per
+push cycle. The description below is what remains true inside that bound.
 
 Git calls run synchronously. While one is running, the branch cannot handle queued saves,
 withdrawals, snapshots, deadlines, or later writes. Every target on that worker shares the delay.
 Producers continue admitting work until the FIFO fills.
 
-The gap covers both remote observation and fetch. In
-[smart fetch](../../internal/git/git_smart_fetch.go), `listRemoteRefs` calls `remote.List` and
-`SmartFetchFrom` calls `repo.Fetch` without passing the worker context to either network call.
-The `ctx` parameter on `SmartFetchFrom` does not make those operations cancelable by the worker.
-The separate connection check in [git.go](../../internal/git/git.go) also uses `remote.List`.
+Before step 6, ref listing and fetch ran without the worker's context, and the push carried a
+context with no deadline. [`network_bound.go`](../../internal/git/network_bound.go) now gives every
+call a bound and closes an SSH connection when the call's context ends. A timer on the event loop
+still cannot interrupt a call; the bound is what returns it. The values are fixed.
 
-The [atomic push](../../internal/git/git_atomic_push.go) does pass context through handshake,
-advertisement, and upload, but `internal/git` sets no operation deadline. Worker shutdown
-cancellation is not an elapsed-time budget. These code findings do not establish that every
-transport lacks its own timeout; they establish that the worker has no end-to-end bound.
-A timer on the event loop cannot interrupt a call that has not returned.
-
-### Admission is volatile, and retained memory has no outage bound
+### Admission is volatile (the outage bound is built in #413)
 
 Successful enqueue means an item entered process memory. The watch path can advance its resume
 cursor before the write reaches Git. A crash loses that accepted execution state. A new stream
 starts with a fresh replay, which can repair current content under its write/prune policy, but
 cannot restore lost save decisions or intermediate history. The local checkout is disposable.
 
-The FIFO defaults to 1,000 items. The default 8 MiB branch buffer threshold closes a window early
-and, since step 3c, closes new admission when retained bytes reach it during retry. Empty save
-records have zero byte charge; queued payloads and deferred snapshots also consume memory. Neither
-setting bounds total outage retention. Step 5b adds byte/count accounting and explicit pause/resume.
+The FIFO defaults to 1,000 items. The default 8 MiB branch buffer threshold closes a window early,
+and since step 5b it is also the outage budget: while a retry is pending it counts everything
+accepted and not yet published, queued payload, empty records, deferred snapshots, and waiting
+saves included, and the first payload that does not fit pauses intake until a push lands. The
+budget counts serialized bytes, not heap; on a healthy branch the FIFO is bounded by count only.
 
 Queue-full handling differs by input. Live writes return a refusal to the watch producer, which
-keeps its cursor and reconnects. However, live content deduplication currently records the hash
-before enqueue, so a refused UPDATE can be skipped on that resume; step 5a fixes the acceptance
-boundary. An expired cursor requires a fresh scoped snapshot, with missed history and deletions
-limited by prune policy. Attaches and withdrawals can be resent. Refreshes can be retried
+keeps its cursor; on a paused branch it waits to be woken instead of reconnecting. Since step 5a the
+filter records a baseline only after the worker accepted the event, so a refused UPDATE is offered
+again on resume. An expired cursor requires a fresh scoped snapshot, with missed history and
+deletions limited by prune policy. Attaches and withdrawals can be resent. Refreshes can be retried
 by a later reconcile. The supported atomic enqueue API logs a dropped request without returning
 an acceptance result. A durable admission contract needs explicit receipts for every supported
 producer. See the [durable queue backlog](../TODO.md).
@@ -518,14 +516,14 @@ Journal crashes, retention, encryption, and HA failure tests belong to the
 
 | Scenario | Required observation |
 |---|---|
-| Save's first push fails, then the branch goes quiet | Retry publishes and resolves the same request without another edit |
-| Held save outlives the controller's safety window | Withdrawal cannot falsely fail it; recovery remains scheduled |
-| Push fails under continuous arrivals | Arrivals cannot bypass the retry budget |
-| Parent returns, but publication still fails | New commits respect the recovery deadline while the obligation remains open |
-| Retained-write rebuild fails before a new window commits | Decided window and attached save stay in the log for retry |
-| Intake fills during publication failure | Accepted work stays; producers pause while the retry loop remains active |
-| Rejected UPDATE is redelivered from the same cursor | Dedup does not suppress work that never entered the worker |
-| Ref listing, fetch, or push stalls | Operation and cycle deadlines return control to the worker |
+| Save's first push fails, then the branch goes quiet | Built (#412): retry publishes and resolves the same request without another edit |
+| Held save outlives the controller's safety window | Built (#412): withdrawal cannot falsely fail it; recovery remains scheduled |
+| Push fails under continuous arrivals | Built (#412): arrivals cannot bypass the retry budget |
+| Parent returns, but publication still fails | Built (#413): new commits respect the one retry deadline while the obligation remains open |
+| Retained-write rebuild fails before a new window commits | Built (#413): decided window and attached save stay in the log for retry |
+| Intake fills during publication failure | Built (#413): accepted work stays; producers pause while the retry loop remains active |
+| Rejected UPDATE is redelivered from the same cursor | Built (#413): dedup does not suppress work that never entered the worker |
+| Ref listing, fetch, or push stalls | Built (#413): operation and cycle deadlines return control to the worker |
 | Worker is canceled during a failed attempt | No retry is rearmed and no abandoned task retains checkout access |
 | Timer moves or fires twice | Stale and duplicate firings do not close another window |
 | Recorded decisions are replayed | Identical state returns without external effects |

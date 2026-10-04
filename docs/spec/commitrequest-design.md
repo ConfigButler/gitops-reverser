@@ -178,9 +178,10 @@ request riding the write stays `WaitingForPush` until publication resolves it or
 fails it. An unavailable remote can leave it pending indefinitely, but retries no longer depend on
 another commit arriving. Only a failure of the write itself fails the request: a refused plan, or a
 write that cannot be made. A missing parent branch is a remote that cannot take the write yet, and
-holds the request the same way. While an outage has filled the branch's retained-byte budget, a new
-request is refused at admission and the controller sends it again; past its safety window, it fails
-with `FinalizeFailed` only after withdrawal confirms that the worker does not hold it.
+holds the request the same way, and its `WaitingForPush` message says why the push has not landed,
+in the words its `GitTarget` uses. While an outage has paused the branch's intake, a new request is
+refused at admission and the controller sends it again; past its safety window, it fails with
+`FinalizeFailed` only after withdrawal confirms that the worker does not hold it.
 
 ### Capacity, replay, and restart limits
 
