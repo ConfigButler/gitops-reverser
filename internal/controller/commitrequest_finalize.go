@@ -189,8 +189,10 @@ const (
 	pushPendingMessage      = "the commit has not been pushed yet"
 )
 
-// progressFor maps a worker-reported phase to its progress reason and message.
-func progressFor(phase git.CommitRequestPhase) (string, string) {
+// progressFor maps a worker-reported phase to its progress reason and message. held is why a
+// request waiting for its push has not reached the remote yet: the branch worker's publication
+// report, in the words its GitTarget uses.
+func progressFor(phase git.CommitRequestPhase, held string) (string, string) {
 	switch phase {
 	case git.PhaseWaitingForWorker:
 		return string(phase), waitingForWorkerMessage
@@ -199,6 +201,9 @@ func progressFor(phase git.CommitRequestPhase) (string, string) {
 	case git.PhaseCollectingWindow:
 		return string(phase), collectingWindowMessage
 	case git.PhaseWaitingForPush:
+		if held != "" {
+			return string(phase), waitingForPushMessage + ". " + held
+		}
 		return string(phase), waitingForPushMessage
 	default:
 		return ReasonProgressing, progressingMessage
@@ -221,10 +226,11 @@ func markCommitRequestProgressing(
 	cr *configv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
 	phase git.CommitRequestPhase,
+	held string,
 ) {
 	cr.Status.ObservedGeneration = cr.Generation
 	setCommitRequestAttributed(cr, attribution)
-	reason, message := progressFor(phase)
+	reason, message := progressFor(phase, held)
 	setCommitRequestProgress(cr, reason, message)
 }
 

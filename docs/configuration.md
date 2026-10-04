@@ -613,6 +613,10 @@ The most useful status fields are:
 - `Ready`: true when the target is valid, the Git path is accepted, and watched streams are running.
 - `Reconciling`: true while initial replay, a recheck, or another coarse progress step is in flight.
 - `Stalled`: true when the target is blocked until a human fixes configuration, RBAC, or Git path content.
+- While the branch cannot publish to Git, `Ready=False` with reason `Progressing` says since when,
+  what failed, and whether intake of new changes is paused; `Reconciling=True` and `Stalled=False`,
+  because the retry needs nobody. Every target on the branch says the same until a push lands, and
+  its streams report `BranchIntakePaused` while they wait.
 - `Validated` and `EncryptionConfigured`: control-plane details.
 - `StreamsRunning`: true when the source watches are past initial replay and routing live events.
 - `GitPathAccepted`: true when the target Git path is safe to materialize.
@@ -775,9 +779,8 @@ spec:
 - It recovers on its own once the parent is pushed, with no edit to the cluster and with periodic
   refresh on or off. The branch worker looks for the parent with one ref advertisement after 10s,
   then after twice as long each time, up to every 5 minutes, shared by every target on the branch.
-  When the parent is back it publishes the writes it held and asks for a fresh snapshot of the ones
-  it had to drop; until those are published the target reports `Ready=False` with reason
-  `RecoveringParentBranch`.
+  When the parent is back it publishes the writes it held, with their own authors and messages;
+  until those are published the target reports `Ready=False` with reason `RecoveringParentBranch`.
 - An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
   refs at all, tags included) the first commit starts a branch with no history. A repository that
   is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and
@@ -2083,7 +2086,7 @@ reason, without changing Git.
 | Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
 | The target is suspended, or its render fidelity is not established | `FinalizeFailed`, the cause | `FinalizeFailed`, the cause |
 | The commit or the empty commit failed | `FinalizeFailed` | `FinalizeFailed` |
-| The push failed | `WaitingForPush` until a push lands; `FinalizeFailed` if the worker stops first | the same |
+| The push failed | `WaitingForPush`, with the cause, until a push lands; `FinalizeFailed` if the worker stops first | the same |
 
 The `Ready` reason keeps the cause, and `status.commit` with `Pushed=True` says the empty commit
 reached the remote. A hash proves the message is in Git; `NoWindow` says the request saw no writes,

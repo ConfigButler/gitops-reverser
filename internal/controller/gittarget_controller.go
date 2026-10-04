@@ -187,6 +187,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// The branch worker keeps the writes decided while the parent is missing and publishes them when
 	// it returns, so nothing has to be re-derived; this only reports the progress.
 	recoveringParent := r.parentRecovering(&target, target.Namespace)
+	publication := r.branchPublication(&target, target.Namespace)
 
 	providerNS := target.Namespace
 	// One read of the GitProvider for everything below it; see getGitProvider.
@@ -284,7 +285,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
 	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
-		refs.gitProvider, refs.clusterProvider, refs.sourceCluster)
+		refs.gitProvider, refs.clusterProvider, refs.sourceCluster, publicationCondition(publication))
 	parentRecoveryReadiness(rd, recoveringParent)
 	st.applyReadiness(rd)
 
@@ -770,7 +771,7 @@ func (r *GitTargetReconciler) publishReferenceReadiness(
 func gitTargetReadinessGates(
 	rd *readiness,
 	observed dataPlaneObservation,
-	parent, provider, clusterProvider, sourceReach conditionValue,
+	parent, provider, clusterProvider, sourceReach, publication conditionValue,
 ) {
 	// Terminal, most specific first. Each of these needs a human: the folder holds content the
 	// operator will not manage, the write branch has no parent to be created from, a watch is
@@ -795,6 +796,10 @@ func gitTargetReadinessGates(
 	// An unconfirmed source has not been established at all, so Ready is Unknown rather than False.
 	rd.progressingIf(sourceReach.Status == metav1.ConditionUnknown, metav1.ConditionUnknown,
 		sourceReach.Reason, sourceReach.Message)
+	// The branch cannot publish. Ahead of this target's own data plane, because it explains it: a
+	// branch that paused intake keeps its streams waiting, and they say only that they wait.
+	rd.progressingIf(publication.Status == metav1.ConditionFalse, metav1.ConditionFalse,
+		publication.Reason, publication.Message)
 	rd.progressingIf(observed.axes.Render.Status == metav1.ConditionUnknown, metav1.ConditionFalse,
 		observed.axes.Render.Reason, observed.axes.Render.Message)
 	rd.progressingIf(observed.axes.Streams.Status != metav1.ConditionTrue, metav1.ConditionFalse,
@@ -1592,6 +1597,16 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("gittarget")
+
+	// React to a change of the branch worker's publication report (an outage starting, intake
+	// pausing, a push landing), so the status says so within one reconcile instead of at the next
+	// steady requeue.
+	if r.WorkerManager != nil && r.WorkerManager.PublicationEvents() != nil {
+		b = b.WatchesRawSource(source.Channel(
+			r.WorkerManager.PublicationEvents(),
+			&handler.EnqueueRequestForObject{},
+		))
+	}
 
 	// React to a data-plane GitPath acceptance TRANSITION (refused/recovered) so GitPathAccepted
 	// is re-projected within one reconcile instead of lagging up to RequeueSteadyInterval (5m).

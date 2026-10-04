@@ -333,6 +333,13 @@ type BranchWorker struct {
 	parentProbeHold     atomic.Pointer[parentProbeHold]
 	// intake decides whether new writes, saves and resyncs may enter the FIFO. See intake.go.
 	intake intakeGate
+	// publicationReporter is told when the worker's publication report changes. Set by the
+	// WorkerManager before Start; nil in tests that do not assert on it. See publication.go.
+	publicationReporter func()
+	// publication is the loop's latest publication report, and backlog what it keeps, for readers
+	// outside the loop. See publication.go.
+	publication atomic.Pointer[PublicationStatus]
+	backlog     publicationBacklog
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's

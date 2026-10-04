@@ -88,6 +88,9 @@ type FinalizeResult struct {
 	// Phase is where an UNRESOLVED request stands on the worker; empty once resolved, and empty
 	// before the worker has registered it.
 	Phase CommitRequestPhase
+	// Held is why a request the worker holds has not reached the remote yet: the worker's
+	// publication report while it cannot publish, empty otherwise. See PublicationStatus.
+	Held string
 }
 
 // AttachCommitRequest is the "attach this CommitRequest to the author's window, with its

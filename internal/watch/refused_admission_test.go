@@ -281,15 +281,19 @@ func TestRunTargetWatch_APausedBranchWaitsForIntakeToReopen(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
+	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	go func() {
 		defer close(done)
-		key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 		manager.runTargetWatch(ctx, logr.Discard(), gitDest, testStream(key))
 	}()
 
 	first := receiveOpenedWatch(t, opened)
 	completeInitialEvents(first.watch, "50") // the paused branch refuses the replay's snapshot
 	assertNoReconnectWithin(t, opened, 300*time.Millisecond, "a paused branch is not offered the snapshot again")
+	waiting := streamStatusFor(manager, gitDest, key)
+	assert.Equal(t, StreamStateReplaying, waiting.state,
+		"a stream waiting for its branch is not current, and not broken: no WatchError to stall the target")
+	assert.Equal(t, StreamReasonBranchIntakePaused, waiting.reason)
 
 	worker.wake(true)
 	assertNoReconnectWithin(t, opened, 300*time.Millisecond, "a wake-up that finds the branch paused again waits on")

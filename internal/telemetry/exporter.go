@@ -302,6 +302,12 @@ var (
 	// is the one thing an operator needs to know, and a saturating queue is exactly when it
 	// happens.
 	GitQueueDropsTotal metric.Int64Counter
+	// GitMaterializationFailuresTotal counts attempts to commit decided writes that stopped because
+	// the remote could not be reached, or the parent branch a new write branch is created from is
+	// missing, labelled by {provider_namespace, provider_name, branch, reason} where reason is
+	// `unreachable` or `parent_unavailable`. Nothing is lost: the writes stay in the log for the
+	// retry. It is the failure before a push cycle starts, which git_pushes_total cannot see.
+	GitMaterializationFailuresTotal metric.Int64Counter
 
 	// GitResyncFailuresTotal counts rule-change resyncs whose apply failed or
 	// timed out at the worker AFTER being enqueued. Delivery is marked on enqueue (the
@@ -553,6 +559,7 @@ func registerCounters() error {
 		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
 		{"gitopsreverser_git_fetches_total", &GitFetchesTotal},
 		{"gitopsreverser_git_queue_drops_total", &GitQueueDropsTotal},
+		{"gitopsreverser_git_materialization_failures_total", &GitMaterializationFailuresTotal},
 		{"gitopsreverser_placements_total", &PlacementsTotal},
 		{"gitopsreverser_placement_refusals_total", &PlacementRefusalsTotal},
 		{
@@ -698,6 +705,11 @@ func registerObservableGauges() error {
 		source string
 	}{
 		{"gitopsreverser_git_queue_depth", GaugeGitQueueDepth},
+		{"gitopsreverser_git_retained_bytes", GaugeGitRetainedBytes},
+		{"gitopsreverser_git_retained_writes", GaugeGitRetainedWrites},
+		{"gitopsreverser_git_intake_paused", GaugeGitIntakePaused},
+		{"gitopsreverser_git_oldest_retained_write_timestamp_seconds", GaugeGitOldestRetainedWrite},
+		{"gitopsreverser_git_next_retry_timestamp_seconds", GaugeGitNextRetry},
 		{"gitopsreverser_watch_types", GaugeWatchTypes},
 		{"gitopsreverser_watch_streams_open", GaugeWatchStreamsOpen},
 		{"gitopsreverser_watch_plan_dirty_targets", GaugeWatchPlanDirtyTargets},

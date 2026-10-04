@@ -173,7 +173,10 @@ func (l *branchWorkerEventLoop) heldBytes() int64 {
 	return held
 }
 
-// syncAdmission publishes the loop's state to the intake gate. Run once per loop iteration.
+// syncAdmission publishes the loop's state to the intake gate, and from there to the publication
+// report and its gauges. Run once per loop iteration.
 func (l *branchWorkerEventLoop) syncAdmission() {
-	l.w.intake.sync(l.retry.pending(), l.heldBytes(), l.w.branchBufferMaxBytes)
+	held := l.heldBytes()
+	l.w.intake.sync(l.retry.pending(), held, l.w.branchBufferMaxBytes)
+	l.publishPublication(held)
 }

@@ -110,6 +110,7 @@ func (r *EventRouter) ServiceCommitRequest(
 		// Report where the worker says the request stands, so the controller never has to infer
 		// a phase from having sent the attach.
 		result.Phase = worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
+		result.Held = heldBecause(worker, result.Phase)
 	}
 	return result, resolved, nil
 }
@@ -150,7 +151,7 @@ func (r *EventRouter) WithdrawCommitRequest(
 	}
 	phase := worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
 	if phase.Held() {
-		return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
+		return git.FinalizeResult{Branch: branch, Phase: phase, Held: heldBecause(worker, phase)}, false, nil
 	}
 	worker.EnqueueWithdraw(&attach)
 	// A worker whose loop has exited answers the withdraw at once.
@@ -158,6 +159,15 @@ func (r *EventRouter) WithdrawCommitRequest(
 		return result, true, nil
 	}
 	return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
+}
+
+// heldBecause is why a request waiting for its push has not reached the remote: the worker's
+// publication report while it cannot publish, empty otherwise.
+func heldBecause(worker *git.BranchWorker, phase git.CommitRequestPhase) string {
+	if phase != git.PhaseWaitingForPush {
+		return ""
+	}
+	return worker.Publication().Message()
 }
 
 // commitRequestWorker finds the worker to ask about a CommitRequest, and the branch it serves.

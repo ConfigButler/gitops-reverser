@@ -7,6 +7,28 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A `GitTarget` says when its branch cannot publish
+
+While a branch worker cannot publish to its Git remote (the remote cannot be reached, or it refuses
+the push), every `GitTarget` on that branch reports `Ready=False` with reason `Progressing`,
+`Reconciling=True` and `Stalled=False`. The message says since when, what the last attempt met, and
+whether intake of new changes is paused. It used to report `Ready=True` through such an outage,
+and, once intake paused, `Stalled=True` with `WatchError`, because the refused streams were graded
+as broken watches. A stream waiting for its branch to reopen intake now reports `BranchIntakePaused`.
+The message changes only when the cause or the pause does, so a long outage does not write status
+on every retry. A missing parent branch is still reported as `ParentBranchNotFound`.
+
+`kubectl wait --for=condition=Ready` therefore waits through a Git outage, where it used to return,
+and an alert on `Stalled=True` no longer fires for one. A save waiting for its push keeps
+`WaitingForPush`, and its message now says why.
+
+New metrics describe the backlog without a status write per attempt:
+`gitopsreverser_git_retained_bytes`, `gitopsreverser_git_retained_writes`,
+`gitopsreverser_git_intake_paused`, `gitopsreverser_git_oldest_retained_write_timestamp_seconds`,
+`gitopsreverser_git_next_retry_timestamp_seconds`, and the counter
+`gitopsreverser_git_materialization_failures_total`. See
+[Interpreting metrics](interpreting-metrics.md).
+
 ## A `GitTarget` watches each object through one collection
 
 **Breaking.** One `GitTarget` may no longer watch a type both in all namespaces

@@ -587,7 +587,13 @@ func (m *Manager) runTargetWatch(
 			return
 		}
 		if err != nil {
-			if state, reason, mark := targetStreamStateForSessionEnd(err); mark {
+			if m.branchPaused(ctx, gitDest) {
+				// The branch refused what this session offered because it cannot publish. That is
+				// the branch's outage, which its GitTarget reports, and not a broken watch: graded
+				// as a wait, so a Git outage never stalls the target as a WatchError.
+				m.markTargetStreamState(gitDest, stream.key.Collection(), StreamStateReplaying,
+					StreamReasonBranchIntakePaused, "waiting for the branch worker to reopen intake")
+			} else if state, reason, mark := targetStreamStateForSessionEnd(err); mark {
 				m.markTargetStreamState(gitDest, stream.key.Collection(), state, reason, err.Error())
 			}
 			log.Info("target watch session ended; reconnecting",
@@ -597,6 +603,11 @@ func (m *Manager) runTargetWatch(
 			return
 		}
 	}
+}
+
+// branchPaused reports whether the GitTarget's branch worker has paused intake.
+func (m *Manager) branchPaused(ctx context.Context, gitDest types.ResourceReference) bool {
+	return m.EventRouter != nil && m.EventRouter.branchIntakePaused(ctx, gitDest) != nil
 }
 
 // waitToReconnect waits before a stream's next session, and reports false once the stream is

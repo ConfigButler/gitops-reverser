@@ -41,6 +41,9 @@ type retrySchedule struct {
 	// asks for the remote before the attempt is due hears it instead of spending a connection to
 	// learn it again.
 	cause error
+	// since is when the first of these failed attempts was made. It stays put across retries, so
+	// the report of the outage does not change with every attempt.
+	since time.Time
 }
 
 // pending reports whether a failed attempt is waiting for its next one.
@@ -52,6 +55,9 @@ func (r *retrySchedule) pending() bool { return !r.due.IsZero() }
 func (l *branchWorkerEventLoop) scheduleRetry(cause error) {
 	r := &l.retry
 	r.cause = cause
+	if r.due.IsZero() {
+		r.since = l.w.now()
+	}
 	if r.backoff == 0 {
 		r.backoff = retryInitialBackoff
 	} else {

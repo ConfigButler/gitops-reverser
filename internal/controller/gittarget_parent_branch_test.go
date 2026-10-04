@@ -159,7 +159,7 @@ func TestParentBranchReadiness(t *testing.T) {
 		Streams: conditionValue{Status: metav1.ConditionTrue},
 		GitPath: conditionValue{Status: metav1.ConditionTrue},
 		Render:  conditionValue{Status: metav1.ConditionTrue},
-	}}, got, healthyDependency(), healthyDependency(), healthyDependency())
+	}}, got, healthyDependency(), healthyDependency(), healthyDependency(), conditionValue{})
 	trio := rd.trio()
 	assert.Equal(t, metav1.ConditionTrue, trio.Stalled.Status, "it needs somebody to create the branch")
 	assert.Equal(t, GitTargetReasonParentBranchNotFound, trio.Ready.Reason)

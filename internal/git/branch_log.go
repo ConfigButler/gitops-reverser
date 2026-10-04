@@ -93,6 +93,7 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 	l.decisions++
 	pendingWrite.seq = l.decisions
 	pendingWrite.charge = retainedCharge(&pendingWrite)
+	pendingWrite.decidedAt = l.w.now()
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)
 	l.pendingWritesBytes += pendingWrite.charge
 	if id := pendingWrite.CommitRequest; id != nil {
@@ -160,6 +161,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 		}
 		if err := l.materializePrefix(refetch); err != nil {
 			l.settleUnreachable(err)
+			l.w.recordMaterializationFailure(err)
 			return err
 		}
 		// Read again: a rebuild settles the writes the new tree refuses out of the prefix.
@@ -172,6 +174,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 		if l.pendingWrites[i].seq != l.deciding {
 			if err := l.w.tightenPendingPruneModes(l.w.ctx, l.pendingWrites[i:i+1]); err != nil {
 				l.settleUnreachable(err)
+				l.w.recordMaterializationFailure(err)
 				return err
 			}
 		}
@@ -183,6 +186,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 			l.settleFailed(i, err)
 		default:
 			l.settleUnreachable(err)
+			l.w.recordMaterializationFailure(err)
 			return err
 		}
 	}

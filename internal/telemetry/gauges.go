@@ -36,7 +36,16 @@ type GaugeSource func() []GaugeSample
 // Names for the observable gauges a producer can install a source for. They are the instrument
 // names with the prefix stripped, so a reader grepping the exported metric finds the source too.
 const (
-	GaugeGitQueueDepth             = "git_queue_depth"
+	GaugeGitQueueDepth = "git_queue_depth"
+	// GaugeGitRetainedBytes and the four after it are the branch worker's publication backlog, read
+	// from what its loop last published: the bytes and writes it keeps until a push lands, whether
+	// intake is paused, when the oldest kept write was decided, and when the next retry is due. The
+	// two timestamps have no sample while there is nothing to date.
+	GaugeGitRetainedBytes          = "git_retained_bytes"
+	GaugeGitRetainedWrites         = "git_retained_writes"
+	GaugeGitIntakePaused           = "git_intake_paused"
+	GaugeGitOldestRetainedWrite    = "git_oldest_retained_write_timestamp_seconds"
+	GaugeGitNextRetry              = "git_next_retry_timestamp_seconds"
 	GaugeWatchTypes                = "watch_types"
 	GaugeWatchStreamsOpen          = "watch_streams_open"
 	GaugeWatchPlanDirtyTargets     = "watch_plan_dirty_targets"

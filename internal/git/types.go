@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -401,6 +402,9 @@ type PendingWrite struct {
 	// charge is what keeping this write was charged against the retained-byte budget when it was
 	// decided, and is refunded when it leaves the log. See retainedCharge. Loop-goroutine only.
 	charge int64
+	// decidedAt is when the write was decided, which dates the oldest kept write. Loop-goroutine
+	// only.
+	decidedAt time.Time
 	// origin is what the write's outcome is settled against. See writeOrigin.
 	origin writeOrigin
 

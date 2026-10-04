@@ -207,6 +207,12 @@ boundary, the commit, the push. Background:
 | `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `atomic_before_apply` / `shutdown`; `timer_source` is `target` or `commit_request`. See [tuning commit windows](#tuning-commit-windows). |
 | `git_commit_window_duration_seconds` | histogram | `gittarget_namespace`, `gittarget_name` | How long each window collected: from the write that opened it to the start of its finalize. Its count equals `git_commit_windows_total` summed over `close_reason` and `timer_source`. |
 | `git_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed. Read at scrape time. |
+| `git_retained_bytes` | gauge | `provider_namespace`, `provider_name`, `branch` | What the worker holds until a push lands, in the units of the retained-byte budget: the open window, the retained writes, deferred snapshots and waiting saves, each with a 1 KiB per-item charge. Serialized bytes, not heap. |
+| `git_retained_writes` | gauge | `provider_namespace`, `provider_name`, `branch` | Decided writes waiting for a push. |
+| `git_intake_paused` | gauge | `provider_namespace`, `provider_name`, `branch` | 1 while the worker refuses new writes, saves and resyncs because an outage filled its budget; 0 otherwise. |
+| `git_oldest_retained_write_timestamp_seconds` | gauge | `provider_namespace`, `provider_name`, `branch` | When the oldest write still waiting for a push was decided, as a Unix timestamp. No sample while nothing waits. |
+| `git_next_retry_timestamp_seconds` | gauge | `provider_namespace`, `provider_name`, `branch` | When the next attempt at owed work is due, as a Unix timestamp. No sample while nothing is owed. |
+| `git_materialization_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Attempts to commit decided writes that stopped before any push: `reason` is `unreachable` or `parent_unavailable`. Nothing is lost; the writes wait for the retry. A failure `git_pushes_total` cannot see, because no push cycle started. |
 | `git_branch_targets` | gauge | `provider_namespace`, `provider_name`, `branch`, `gittarget_namespace`, `gittarget_name`, `source_cluster` | Always 1. The **join** between the GitTarget-labeled half of the pipeline and the branch-labeled half. Published per configured GitTarget, whether or not its worker runs. |
 | `commit_requests_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | One per `CommitRequest` terminal **decision**. `outcome` is `committed` / `no_window` / `window_mismatch` / `already_present` / `failed`. A target that never resolved publishes the empty pair. See the counting note below. |
 | `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document at a resolved path. |
@@ -345,8 +351,9 @@ refuses new writes, saves and resyncs the way a full queue does, and both series
 paused until a push lands. The watch does not advance its cursor past a refused event; its stream
 waits for the branch to reopen intake and then delivers the event again. Only a cursor that expires
 during a long outage turns it into a relist, whose snapshot converges the folder without that
-event's own commit. Read these increments beside `git_pushes_total{outcome="failed"}` with no successes: that is
-an outage holding work back, not work thrown away. A healthy branch never refuses for this reason.
+event's own commit. Read these increments beside `git_intake_paused == 1`, or
+`git_pushes_total{outcome="failed"}` with no successes: that is an outage holding work back, and
+every `GitTarget` on the branch says so on `Ready`. A healthy branch never refuses for this reason.
 
 `placement_refusals_total` and `git_documents_total{outcome="refused"}` **overlap the same way**: a
 resource the writer declines to place increments both, so the loss class holds two views of one
@@ -1268,6 +1275,8 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected by the encryption path. |
 | `rate(gitopsreverser_git_queue_drops_total[5m]) > 0` | The queue saturated and work was thrown away. |
 | `gitopsreverser_git_queue_depth` rising and not draining | A branch worker is backing up against a stalled remote. |
+| `time() - gitopsreverser_git_oldest_retained_write_timestamp_seconds > 900`, `for: 5m` | A branch has not published for 15 minutes: its writes, and any save riding them, are held. The `time() -` is not optional, as for the plan-dirty gauge above. |
+| `gitopsreverser_git_intake_paused == 1`, `for: 10m` | An outage filled a branch's budget: new changes on its `GitTarget`s are refused until a push lands. |
 | `gitopsreverser_resource_condition{type="Ready", status="False"} == 1`, `for: 15m` | A declared object has not been accepted. The `== 1` is not optional: each condition publishes one series per status, so the selector alone matches the two zeroes too. |
 | `gitopsreverser_resource_condition{type="Stalled", status="True"} == 1` | Permanently wedged: `Stalled` is the kstatus "nothing will retry" signal, so this needs a human and will not clear on its own. `reason` names the gate. |
 | any `gitopsreverser_*` series with `otel_metric_overflow="true"` | A metric family exceeded its per-instrument cardinality cap, so the labels identifying those series are gone and every query over that family is under-reporting. Raise the cap or cut a label. |

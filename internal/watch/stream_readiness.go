@@ -35,6 +35,8 @@ const (
 	StreamReasonAllStreamsReady        = "AllStreamsReady"
 	StreamReasonReplaying              = "Replaying"
 	StreamReasonNoResolvedTypes        = "NoResolvedTypes"
+	// StreamReasonBranchIntakePaused is a stream waiting for its branch worker to reopen intake.
+	StreamReasonBranchIntakePaused = "BranchIntakePaused"
 )
 
 const pendingStreamSampleLimit = 5
