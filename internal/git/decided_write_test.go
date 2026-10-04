@@ -10,6 +10,7 @@ package git
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -196,4 +197,46 @@ func TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage(t *testing.T) {
 	require.Empty(t, loop.pendingWrites)
 	assert.True(t, f.worker.Enqueue(configMapTargetEvent("after", "alice", ledgerTargetName)),
 		"published, so admission reopens")
+}
+
+// A write with no payload still costs memory to keep: its message, its metadata and the save it
+// carries. An empty save's record used to be charged nothing, so a branch whose remote was down
+// kept admitting saves against a budget it never reached.
+func TestDecidedWrite_EmptySavesCountAgainstTheBudgetDuringAnOutage(t *testing.T) {
+	f := newLedgerFixture(t, "decided-write-empty-saves", true)
+	f.createLedgerTarget("team-a", nil)
+	f.publish("prime")
+	f.worker.branchBufferMaxBytes = 1 // any retained write fills it
+	f.worker.markWorktreeDirty("a write failed part-way and could not be undone")
+	failSyncs(t)
+	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
+	defer loop.stopTimers()
+
+	refused := 0
+	for i := range 10 {
+		req := attachReq("alice", 0)
+		req.Name = fmt.Sprintf("save-%d", i)
+		req.UID = "uid-" + req.Name
+		req.GitTargetName = ledgerTargetName
+		req.CommitEmpty = true
+		req.Message = "save while Git is down"
+		f.worker.EnqueueAttach(req)
+		select {
+		case item := <-f.worker.eventQueue:
+			loop.handleQueueItem(item)
+			loop.serviceCommitRequests()
+			loop.releaseHandledItem()
+		default:
+			refused++ // the controller sends it again
+		}
+	}
+
+	require.True(t, loop.retry.pending())
+	assert.True(t, f.worker.admissionClosed.Load(), "the retained empty save fills the budget")
+	assert.Len(t, loop.pendingWrites, 1, "only the save admitted before the budget filled is retained")
+	assert.Equal(t, 9, refused, "every later save is refused at admission")
+	assert.Positive(t, loop.pendingWritesBytes, "an empty record is charged for what it keeps")
+
+	loop.removeAt(0)
+	assert.Zero(t, loop.pendingWritesBytes, "leaving the log refunds exactly what deciding charged")
 }

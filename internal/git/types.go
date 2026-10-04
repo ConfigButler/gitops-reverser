@@ -398,6 +398,9 @@ type PendingWrite struct {
 	// seq numbers the loop's decisions, so a decision can be found in the log after writes before
 	// or after it were dropped or added. Loop-goroutine only.
 	seq uint64
+	// charge is what keeping this write was charged against the retained-byte budget when it was
+	// decided, and is refunded when it leaves the log. See retainedCharge. Loop-goroutine only.
+	charge int64
 	// origin is what the write's outcome is settled against. See writeOrigin.
 	origin writeOrigin
 

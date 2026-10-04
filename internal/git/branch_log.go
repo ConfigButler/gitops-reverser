@@ -64,6 +64,19 @@ type refusalTouchOrigin struct {
 var errAdmissionClosed = fmt.Errorf(
 	"%w: the branch holds its retained-byte budget while the remote cannot be reached", ErrFinalizeQueueFull)
 
+// pendingWriteOverheadBytes is what a decided write is charged beyond its payload and message: its
+// own bookkeeping (target metadata, commit configuration, signer, the save it carries). Without it a
+// write with no payload, a save's empty record or a refusal's empty commit, cost nothing to keep,
+// and a branch whose remote was down admitted them for as long as the outage lasted.
+const pendingWriteOverheadBytes = 1024
+
+// retainedCharge is what keeping a decided write is charged against the retained-byte budget. It is
+// fixed when the write is decided, so the refund when it leaves the log matches it whatever the
+// write's later rendering changes.
+func retainedCharge(pendingWrite *PendingWrite) int64 {
+	return pendingWrite.ByteSize + int64(len(pendingWrite.CommitMessage)) + pendingWriteOverheadBytes
+}
+
 // syncAdmission closes admission while the log holds the retained-byte budget and a failed attempt
 // is waiting for its retry, and opens it otherwise. Run once per loop iteration.
 //
@@ -96,8 +109,9 @@ func (w *BranchWorker) admitWork() bool { return !w.admissionClosed.Load() }
 func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) bool {
 	l.decisions++
 	pendingWrite.seq = l.decisions
+	pendingWrite.charge = retainedCharge(&pendingWrite)
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)
-	l.pendingWritesBytes += pendingWrite.ByteSize
+	l.pendingWritesBytes += pendingWrite.charge
 	if id := pendingWrite.CommitRequest; id != nil {
 		l.w.setCommitRequestPhase(*id, PhaseWaitingForPush)
 		// Bound to its write from here on: see pendingCommitRequest.attached.
@@ -269,7 +283,7 @@ func (l *branchWorkerEventLoop) checkoutCurrent() bool {
 func (l *branchWorkerEventLoop) removeAt(i int) PendingWrite {
 	pendingWrite := l.pendingWrites[i]
 	l.pendingWrites = append(l.pendingWrites[:i], l.pendingWrites[i+1:]...)
-	l.pendingWritesBytes -= pendingWrite.ByteSize
+	l.pendingWritesBytes -= pendingWrite.charge
 	return pendingWrite
 }
 

@@ -184,10 +184,11 @@ with `FinalizeFailed` only after withdrawal confirms that the worker does not ho
 
 ### Capacity, replay, and restart limits
 
-The current budget uses retained payload bytes. Empty save records contribute zero bytes, so this
-threshold alone cannot bound a stream of empty saves. The
+The budget charges each retained write its payload bytes, its message, and a fixed overhead for its
+bookkeeping, so a stream of empty saves fills it too. The
 [branch-worker log plan](../design/gittarget-branch-worker-log.md#recovery-contract) specifies the
-remaining byte/count accounting and explicit producer pause. That behavior is planned; current
+remaining accounting (work still queued, requests waiting for a window) and explicit producer
+pause. That behavior is planned; current
 enqueue refusal and controller retry remain the runtime contract.
 
 For a request the worker already holds, saturation does not change its window membership or
