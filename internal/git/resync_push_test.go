@@ -407,6 +407,36 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedWrites(t *testing.T) {
 	assert.Equal(t, "103", w.takePendingResync(lastMarker.Resync).ResourceVersion)
 }
 
+// A resync coalesced into a queued marker owns that marker's position. When writes queued behind
+// the marker then make a newer resync take its own slot, the marker must still run the request
+// coalesced into it: that request was told it was enqueued, and its caller waits for its answer.
+// It used to run the superseded request it first carried instead, which had been answered already,
+// and the coalesced one was never run nor answered.
+func TestEnqueueResync_AReleasedMarkerRunsTheRequestCoalescedIntoIt(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+	scope := resyncScopePtr(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "app")
+	resync := func(rv string) *ResyncRequest {
+		return &ResyncRequest{GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: rv,
+			Scope: scope, Result: make(chan ResyncResult, 1)}
+	}
+	first, coalesced, last := resync("100"), resync("101"), resync("103")
+
+	require.True(t, w.EnqueueResync(first))
+	require.True(t, w.EnqueueResync(coalesced), "coalesced into the first marker's position")
+	require.ErrorIs(t, (<-first.Result).Err, ErrResyncSuperseded)
+	require.True(t, w.Enqueue(liveEvent("target", "app")), "a write now sits behind that marker")
+	require.True(t, w.EnqueueResync(last), "so the newer resync takes its own slot")
+
+	marker := <-w.eventQueue
+	require.NotNil(t, marker.Resync)
+	assert.Same(t, coalesced, w.takePendingResync(marker.Resync),
+		"the marker runs the request coalesced into it, not the one already answered as superseded")
+	assert.NotNil(t, (<-w.eventQueue).Request)
+	lastMarker := <-w.eventQueue
+	require.NotNil(t, lastMarker.Resync)
+	assert.Same(t, last, w.takePendingResync(lastMarker.Resync))
+}
+
 // TestEnqueueResync_DoesNotCoalescePastQueuedAttach pins the same fence for a
 // CommitRequest attach, which carries no resource identity of its own but decides
 // which commit window later work joins.

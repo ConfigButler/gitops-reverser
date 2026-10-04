@@ -301,6 +301,9 @@ type BranchWorker struct {
 	// records that boundary.
 	pendingResyncsMu sync.Mutex
 	pendingResyncs   map[resyncKey]*pendingResync
+	// releasedResyncs holds, for a marker whose key was released while a newer request was
+	// coalesced into it, the request that marker runs. Guarded by pendingResyncsMu.
+	releasedResyncs map[*ResyncRequest]*ResyncRequest
 
 	// crOutcomes holds resolved CommitRequest outcomes for the controller to poll
 	// via LookupCommitRequestOutcome. The event loop is the only writer (on its
@@ -710,9 +713,17 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	} else if queued {
 		// A write inside this scope was queued behind the marker. Coalescing here
 		// would run this snapshot ahead of those writes and let them overwrite it
-		// with older state. Release the key instead: the queued marker finds no
-		// entry and runs the payload it carries, at its own position, and this
-		// request takes a fresh marker at the tail below.
+		// with older state. Release the key instead: the queued marker runs the
+		// request it holds now, at its own position, and this request takes a fresh
+		// marker at the tail below. What it holds may be a request coalesced into it,
+		// which was told it was enqueued; the marker's own request was answered as
+		// superseded then.
+		if pending.request != pending.marker {
+			if w.releasedResyncs == nil {
+				w.releasedResyncs = make(map[*ResyncRequest]*ResyncRequest)
+			}
+			w.releasedResyncs[pending.marker] = pending.request
+		}
 		delete(w.pendingResyncs, key)
 		w.Log.V(1).Info("Resync request not coalesced: writes are queued behind the pending marker",
 			"scope", request.Scope.String(),
@@ -831,8 +842,12 @@ func (w *BranchWorker) takePendingResync(marker *ResyncRequest) *ResyncRequest {
 		// No entry for this marker: it was queued before coalescing tracked it, the
 		// key was already taken, or coalescing released it because writes were
 		// queued behind this marker and a later request has since claimed the key.
-		// Run what the marker carried, at this position. Any entry present belongs
-		// to a marker still on the FIFO, so it is left alone.
+		// Run what the marker held when it was released, at this position. Any entry
+		// present belongs to a marker still on the FIFO, so it is left alone.
+		if released, ok := w.releasedResyncs[marker]; ok {
+			delete(w.releasedResyncs, marker)
+			return released
+		}
 		return marker
 	}
 	delete(w.pendingResyncs, key)

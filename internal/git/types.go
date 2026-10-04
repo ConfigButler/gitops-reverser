@@ -554,8 +554,9 @@ type pendingResync struct {
 	// marker is the request whose pointer sits on the FIFO for this key. It is fixed
 	// for the entry's life: coalescing swaps request, never marker. Identifying the
 	// entry by its marker is what keeps a released key unambiguous — once a later
-	// request re-inserts the same key, the older marker must run the payload it
-	// carried rather than pick up the newer entry.
+	// request re-inserts the same key, the older marker must run the request it held
+	// when it was released (BranchWorker.releasedResyncs) rather than pick up the
+	// newer entry.
 	marker     *ResyncRequest
 	request    *ResyncRequest
 	tailPassed bool
