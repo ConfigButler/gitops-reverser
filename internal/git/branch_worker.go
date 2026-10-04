@@ -615,14 +615,14 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	if w.stoppingLocked() {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropAttach)
+		w.recordQueueRefusal(queueRefusalAttach)
 		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
 	if !w.admitPayload(charge) {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropAttach)
+		w.recordQueueRefusal(queueRefusalAttach)
 		w.Log.V(1).Info("CommitRequest attach refused while the branch has paused intake "+
 			"(the controller re-sends)", "request", req.Namespace+"/"+req.Name)
 		return
@@ -657,7 +657,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropAttach)
+		w.recordQueueRefusal(queueRefusalAttach)
 		w.Log.Error(nil, "Event queue full, CommitRequest attach refused (controller will re-send)")
 	}
 }
@@ -681,7 +681,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	w.pendingResyncsMu.Lock()
 	if w.stoppingLocked() {
 		w.pendingResyncsMu.Unlock()
-		w.recordQueueDrop(queueDropResync)
+		w.recordQueueRefusal(queueRefusalResync)
 		w.Log.V(1).Info("Worker is stopping, resync request refused",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 		// Answered rather than dropped in silence: the caller is waiting on this channel, and the
@@ -751,7 +751,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		delete(w.pendingResyncs, key)
 		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
-		w.recordQueueDrop(queueDropResync)
+		w.recordQueueRefusal(queueRefusalResync)
 		w.Log.Error(nil, "Event queue full, resync request refused; its caller gathers it again",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
 			"sourceCollection", sourceCollectionForLog(request.SourceCollection))
@@ -763,7 +763,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 // refuseResyncAtIntake answers a resync the intake gate refused. It reports false: the request did
 // not enter the FIFO.
 func (w *BranchWorker) refuseResyncAtIntake(request *ResyncRequest, charge int64) bool {
-	w.recordQueueDrop(queueDropResync)
+	w.recordQueueRefusal(queueRefusalResync)
 	err := w.intakeRefusal(charge)
 	w.Log.V(1).Info("Resync refused while the branch has paused intake",
 		"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName, "reason", err.Error())
@@ -879,7 +879,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	if w.stoppingLocked() {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropWrite)
+		w.recordQueueRefusal(queueRefusalWrite)
 		w.Log.V(1).Info("Worker is stopping, request refused; the producer keeps it to redeliver",
 			"events", len(request.Events),
 			"gitTarget", request.GitTargetName)
@@ -888,7 +888,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	if !w.admitPayload(item.charge) {
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropWrite)
+		w.recordQueueRefusal(queueRefusalWrite)
 		w.Log.V(1).Info("Write refused while the branch has paused intake; "+
 			"the producer keeps it to redeliver", "events", len(request.Events), "gitTarget", request.GitTargetName)
 		return false
@@ -910,7 +910,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.intake.release(item.charge)
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropWrite)
+		w.recordQueueRefusal(queueRefusalWrite)
 		// Name the producing collection on a refusal. A saturated queue is diagnosed from what was
 		// refused and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
 		// one may be one COLLECTION of one GitTarget.
@@ -2716,10 +2716,10 @@ const (
 
 // Queue-drop kinds. The set covers every item that can be refused by a full queue.
 const (
-	queueDropWrite   = "write"
-	queueDropAttach  = "attach"
-	queueDropResync  = "resync"
-	queueDropRefresh = "refresh"
+	queueRefusalWrite   = "write"
+	queueRefusalAttach  = "attach"
+	queueRefusalResync  = "resync"
+	queueRefusalRefresh = "refresh"
 )
 
 // commitLabels is the {author_kind, message_source} pair one commit is counted under.
@@ -2907,20 +2907,20 @@ func (w *BranchWorker) recordWindowClosed(window *openWindow, reason windowFinal
 	}
 }
 
-// recordQueueDrop counts one item refused at enqueue: the queue was full, intake was paused, or the
+// recordQueueRefusal counts one item refused at enqueue: the queue was full, intake was paused, or the
 // worker was stopping.
 //
 // The producer keeps a refused item and offers it again: the watch delivers a live write again from
 // its unadvanced cursor, and the controller re-sends an attach on its next poll.
-func (w *BranchWorker) recordQueueDrop(kind string) {
-	if telemetry.GitQueueDropsTotal == nil {
+func (w *BranchWorker) recordQueueRefusal(kind string) {
+	if telemetry.GitQueueRefusalsTotal == nil {
 		return
 	}
 	ctx := w.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	telemetry.GitQueueDropsTotal.Add(ctx, 1,
+	telemetry.GitQueueRefusalsTotal.Add(ctx, 1,
 		metric.WithAttributes(w.providerAttrs(attribute.String("kind", kind))...))
 }
 

@@ -21,7 +21,7 @@ import (
 const (
 	commitsTotalMetric   = "gitopsreverser_git_commits_total"
 	queueDepthMetric     = "gitopsreverser_git_queue_depth"
-	queueDropsMetric     = "gitopsreverser_git_queue_drops_total"
+	queueRefusalsMetric  = "gitopsreverser_git_queue_refusals_total"
 	pushesTotalMetric    = "gitopsreverser_git_pushes_total"
 	pushRetriesMetric    = "gitopsreverser_git_push_retries_total"
 	pushDurationMetric   = "gitopsreverser_git_push_duration_seconds"
@@ -211,8 +211,8 @@ func TestEnqueueRequest_FullQueueCountsTheDrop(t *testing.T) {
 		"the second request must be refused by the full queue")
 
 	labels := workerLabels()
-	labels["kind"] = queueDropWrite
-	drops, ok := telemetry.CollectInt64Sum(reader, queueDropsMetric, labels)
+	labels["kind"] = queueRefusalWrite
+	drops, ok := telemetry.CollectInt64Sum(reader, queueRefusalsMetric, labels)
 	require.True(t, ok, "a dropped write must be counted")
 	assert.Equal(t, int64(1), drops)
 	assert.Equal(t, int64(1), w.inflightItems.Load(), "the refused item must not stay in the inflight count")
@@ -456,7 +456,7 @@ func TestRecordPushOutcome_CountsTheCycleAndItsDuration(t *testing.T) {
 // A commit that fails takes its whole window with it, and that has to be countable.
 //
 // This was the largest remaining hole in the pipeline census. The failure happens AFTER routing and
-// BEFORE pushing, so neither git_queue_drops_total nor git_pushes_total sees it: the mirror falls
+// BEFORE pushing, so neither git_queue_refusals_total nor git_pushes_total sees it: the mirror falls
 // behind for every object in the window until the next resync re-derives them, and the only trace
 // was a log line, or for a refusal a GitTarget condition nobody alerts on.
 func TestRecordCommitFailure_SeparatesRefusalFromWriteFault(t *testing.T) {

@@ -7,6 +7,21 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `git_queue_drops_total` is now `git_queue_refusals_total`
+
+`gitopsreverser_git_queue_drops_total` is renamed `gitopsreverser_git_queue_refusals_total`, with the
+same labels (`provider_namespace`, `provider_name`, `branch`, `kind`). A refused item is no longer
+lost: the watch keeps its cursor and delivers a refused write again, the controller re-sends a save,
+a refused resync is gathered again, and the next reconcile asks for a refresh again. Only a watch
+cursor that expires before the write comes back costs that write its own commit. The counter counts
+both a full queue and a branch that has paused intake through a Git outage.
+
+Update every dashboard and alert that names the old series; nothing emits it any more. The suggested
+alert now fires on a healthy branch only:
+`rate(gitopsreverser_git_queue_refusals_total[5m]) > 0 unless on(provider_namespace, provider_name,
+branch) gitopsreverser_git_intake_paused == 1`, `for: 10m`. See
+[Interpreting metrics](interpreting-metrics.md).
+
 ## A `GitTarget` says when its branch cannot publish
 
 While a branch worker cannot publish to its Git remote (the remote cannot be reached, or it refuses
@@ -81,7 +96,7 @@ The kept work is bounded at intake. During an outage, work that would take a bra
 retained-byte budget (`controllerManager.branchBufferMaxSize`) pauses the worker's intake: it refuses
 new writes, saves and resyncs the way a full queue does until a push lands, so
 `gitopsreverser_watch_events_total{outcome="route_failed"}` and
-`gitopsreverser_git_queue_drops_total` rise during such an outage. The budget counts queued work and
+`gitopsreverser_git_queue_refusals_total` rise during such an outage. The budget counts queued work and
 every kept item, empty saves included. A paused branch's watch streams wait for it to reopen instead
 of reconnecting every two seconds, and deliver what was refused once it does. See
 [Interpreting metrics](interpreting-metrics.md).

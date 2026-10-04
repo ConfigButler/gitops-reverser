@@ -458,7 +458,7 @@ provider and branch so different workers do not hide one another's behavior.
 | Same counter, reason `bootstrap` | Instrumented bootstrap helper; currently called only by tests |
 | `gitopsreverser_git_pushes_total` and `gitopsreverser_git_push_retries_total` | Completed publication cycles and contention retries within them |
 | `gitopsreverser_git_push_duration_seconds` | Time inside a push cycle, including its inline replays |
-| `gitopsreverser_git_queue_depth` and `gitopsreverser_git_queue_drops_total` | Outstanding work and queue overload |
+| `gitopsreverser_git_queue_depth` and `gitopsreverser_git_queue_refusals_total` | Outstanding work and queue overload |
 
 A fetch counter counts calls. The ledger counts the HTTP requests each call produces.
 Push-cycle duration excludes

@@ -633,9 +633,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		git.DefaultBranchWorkerQueueDepth,
 		fmt.Sprintf("Event queue depth per branch worker (default %d). ", git.DefaultBranchWorkerQueueDepth)+
 			"A branch worker is shared by every "+
-			"GitTarget writing to one (GitProvider, branch), and a full queue DROPS the write "+
-			"(git_queue_drops_total) rather than stalling the watch path behind a slow remote, "+
-			"losing that live attributed commit even though convergence later heals the mirror. "+
+			"GitTarget writing to one (GitProvider, branch), and a full queue REFUSES the write "+
+			"(git_queue_refusals_total) rather than stalling the watch path behind a slow remote; "+
+			"the watch delivers it again from its cursor, and a cursor that expires first loses "+
+			"that write's own commit. "+
 			"Size it so a bounded burst cannot overrun it: roughly (concurrent writers) x "+
 			"(GitTargets sharing the branch worker). Costs queue depth x payload of pod memory "+
 			"ON TOP of --branch-buffer-max-size, which does not cover this queue.")

@@ -534,9 +534,9 @@ func TestEnqueueRefresh_CountsTheDropOnAFullQueue(t *testing.T) {
 		"provider_namespace": h.worker.GitProviderNamespace,
 		"provider_name":      h.worker.GitProviderRef,
 		"branch":             h.worker.Branch,
-		"kind":               queueDropRefresh,
+		"kind":               queueRefusalRefresh,
 	}
-	drops, ok := telemetry.CollectInt64Sum(reader, queueDropsMetric, labels)
+	drops, ok := telemetry.CollectInt64Sum(reader, queueRefusalsMetric, labels)
 	require.True(t, ok, "a dropped refresh must be counted like any other lost work item")
 	assert.Equal(t, int64(1), drops)
 }

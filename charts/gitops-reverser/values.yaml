@@ -68,10 +68,10 @@ controllerManager:
   # writing to one (GitProvider, branch), so pointing another GitTarget at a branch
   # divides the headroom of a worker already in use.
   #
-  # A full queue REFUSES the write and counts git_queue_drops_total, rather than stalling
+  # A full queue REFUSES the write and counts git_queue_refusals_total, rather than stalling
   # the watch path behind a slow remote. The watch keeps its cursor and delivers the write
   # again, but its stream stalls meanwhile, and a cursor that expires first loses that
-  # write's own commit — so raise this if git_queue_drops_total is non-zero on a healthy
+  # write's own commit — so raise this if git_queue_refusals_total is non-zero on a healthy
   # branch. Size it so a bounded burst cannot overrun it:
   # roughly (concurrent writers) x (GitTargets sharing the branch worker). Note that an
   # administrative burst (an unpaced `kubectl delete` of many objects) is far spikier than

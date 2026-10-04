@@ -278,7 +278,7 @@ flowchart TB
     AI -->|"attribution_resolutions_total{tier,actor_kind}<br/>_resolution_wait_seconds{tier,event_kind}"| RES
     subgraph GITPATH["Git: internal/git"]
         RES --> Q["worker queue"]
-        Q -->|"git_queue_drops_total{kind}"| DROPQ(["REFUSED: queue full,<br/>offered again"])
+        Q -->|"git_queue_refusals_total{kind}"| DROPQ(["REFUSED: queue full,<br/>offered again"])
         Q -->|"git_documents_total{outcome}"| F["files on disk"]
         F -->|"placement_refusals_total{reason}"| DROPP(["LOSS: not mirrored"])
         F --> C["local commits"]
@@ -296,7 +296,7 @@ drawn apart, and why an audit outage is never a mirror outage.
 | Stage | Counter | Expected values | Loss, or refusal offered again |
 |---|---|---|---|
 | 1 Ingest | `watch_events_total` | `routed`, `unchanged`, `bookmark`, `shutdown` | `route_failed` (refusal) |
-| 2 Queue | `git_queue_drops_total` | (no increment) | every increment (refusal) |
+| 2 Queue | `git_queue_refusals_total` | (no increment) | every increment (refusal) |
 | 3 Write | `git_documents_total` | `written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained` | `placement_refusals_total`, beside it |
 | 4 Commit | `git_commits_total` | all: recorded on a successful push, so it cannot claim a commit the remote never took |: |
 | 5 Push | `git_pushes_total` | `pushed` | `failed` is **recoverable**, not loss: the writes are retained and retried |
@@ -343,7 +343,7 @@ is not one panel:
     sum by (outcome) (rate(gitopsreverser_watch_events_total{outcome="route_failed"}[5m])),
     "reason", "$1", "outcome", "(.*)"), "stage", "ingest", "", "")
 or label_replace(label_replace(
-    sum by (kind) (rate(gitopsreverser_git_queue_drops_total[5m])),
+    sum by (kind) (rate(gitopsreverser_git_queue_refusals_total[5m])),
     "reason", "$1", "kind", "(.*)"), "stage", "queue", "", "")
 or label_replace(
     sum by (reason) (rate(gitopsreverser_placement_refusals_total[5m])),
@@ -429,7 +429,7 @@ on the caps rather than as a count of lost joins.
 | `watch_sessions_ended_total` | counter | `group`, `version`, `resource`, `reason` | `reason`: `expired` (the cursor fell out of history, forcing a full rebuild), `error`, or `stopped` (the plan retired the stream: routine). Watch stability and `410` pressure |
 | `watch_replay_duration_seconds` | histogram | `group`, `version`, `resource` | the cost of a replay, which is what a `410` storm charges |
 | `git_commit_failures_total` | counter | `provider_*`, `branch`, `kind`, `reason` | the largest remaining hole (§2.4). `kind`: `window` / `atomic`; `reason`: `refused` (a Git path a human must fix, which will not clear on its own) / `error`. Every increment is a window's worth of events lost until the next resync |
-| `git_queue_drops_total` | counter | `provider_*`, `branch`, `kind` | §2.4's first silent drop, a refusal since #413: the producer keeps the item and offers it again. `kind`: `write` / `attach` / `resync` / `refresh`. It **overlaps** `watch_events_total{outcome="route_failed"}`: a refused enqueue is one of the ways a route fails, so one refused event increments both. Two views of one event, never two events |
+| `git_queue_refusals_total` | counter | `provider_*`, `branch`, `kind` | §2.4's first silent drop, a refusal since #413: the producer keeps the item and offers it again. `kind`: `write` / `attach` / `resync` / `refresh`. It **overlaps** `watch_events_total{outcome="route_failed"}`: a refused enqueue is one of the ways a route fails, so one refused event increments both. Two views of one event, never two events |
 | `git_pushes_total` | counter | `provider_*`, `branch`, `outcome` | §2.4's second. `outcome`: `pushed` / `failed`, counted once per push cycle at its terminal end. `failed` is **recoverable**, not loss: the writes are retained and a later push carries them, which is why the alert on it needs the second arm in §7 |
 | `git_push_retries_total` | counter | `provider_*`, `branch`, `reason` | `reason`: `remote_moved` / `error`. A replay round is not a terminal outcome, so it is its own counter rather than a third `outcome` value. `rate(retries) / rate(pushes)` is the contention signal |
 | `git_push_duration_seconds` | histogram | `provider_*`, `branch` | push latency, re-added **with** a recording site this time |
@@ -596,7 +596,7 @@ Alerts, as rules rather than sketches this time:
 | Alert | Expression | Meaning |
 |---|---|---|
 | Mirror stopped | `sum by (provider_namespace,provider_name,branch) (rate(gitopsreverser_git_pushes_total{outcome="failed"}[15m])) > 0 unless sum by (provider_namespace,provider_name,branch) (rate(gitopsreverser_git_pushes_total{outcome="pushed"}[15m])) > 0`, for 15m | this branch is failing to push AND landing nothing. The `unless` arm is required: a failed push retains its writes and is retried, so an occasional failure beside successful ones is contention, not an outage, and paging on any failure trains people to ignore it |
-| Work refused on a healthy branch | `rate(gitopsreverser_git_queue_drops_total[5m]) > 0 unless on(provider_namespace, provider_name, branch) gitopsreverser_git_intake_paused == 1` | the queue is too small for its bursts; producers offer the work again, so this is lag until a watch cursor expires |
+| Work refused on a healthy branch | `rate(gitopsreverser_git_queue_refusals_total[5m]) > 0 unless on(provider_namespace, provider_name, branch) gitopsreverser_git_intake_paused == 1` | the queue is too small for its bursts; producers offer the work again, so this is lag until a watch cursor expires |
 | Ingest loss | `rate(gitopsreverser_watch_events_total{outcome="route_failed"}[10m]) > 0` | observed changes are not reaching the writer. Often the same events as the row above, seen from the other end |
 | Audit misdirected | `rate(gitopsreverser_audit_eventlist_duration_seconds_count{outcome=~"bad_path\|bare_endpoint_disabled"}[15m]) > 0` | an apiserver is posting audit somewhere this operator will not read it (§2.6) |
 | Fact loss | `rate(gitopsreverser_attribution_fact_stream_gaps_total[10m]) > 0 or rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | facts are gone for good. Two series in an `or`, never a sum: one counts occurrences and the other entries (§5.2) |
@@ -700,7 +700,7 @@ first, so nothing new is built beside a duplicate.
    one. Fix the three stale comments in §2.3 and the broken cache-effectiveness query. No new
    capability. The attribution loss counters are **not** merged: see §5.2 for the unit error that
    would have been.
-2. **The exceptions and the honest gauges.** `git_queue_drops_total`, `git_pushes_total`,
+2. **The exceptions and the honest gauges.** `git_queue_refusals_total`, `git_pushes_total`,
    `git_push_retries_total`, `git_push_duration_seconds`, moving `git_commits_total` to the push
    site, converting every gauge to an observable callback, and turning the dirty-set age into a
    timestamp. Two data-loss paths and one stalled-mirror path stop being log lines, and the two

@@ -165,7 +165,7 @@ var (
 	//                           expires first turns it into a relist, which restores the object's
 	//                           content but not this change's own commit.
 	//
-	// route_failed OVERLAPS git_queue_drops_total: a refused enqueue is one of the ways a route
+	// route_failed OVERLAPS git_queue_refusals_total: a refused enqueue is one of the ways a route
 	// fails, so one refused event can increment both. They are two views of one event — where it
 	// was refused, and by what — so a panel may show either, and a sum over both counts that event
 	// twice. Neither is a unique-refusal total.
@@ -235,7 +235,7 @@ var (
 	//
 	// This was the largest remaining hole. A commit failure drops the whole window — the events are
 	// already lost to the failed flush — and it happens AFTER routing and BEFORE pushing, so
-	// neither GitQueueDropsTotal nor GitPushesTotal sees it. The mirror silently falls behind for
+	// neither GitQueueRefusalsTotal nor GitPushesTotal sees it. The mirror silently falls behind for
 	// every object in that window until the next resync re-derives them, and until now the only
 	// trace was a log line (or, for a refusal, a GitTarget condition nobody is alerting on).
 	GitCommitFailuresTotal metric.Int64Counter
@@ -296,7 +296,7 @@ var (
 	// close_reason and timer_source. The reason and source stay on the counter: a histogram's label
 	// set costs bucket count + 2 series.
 	GitCommitWindowDurationSeconds metric.Float64Histogram
-	// GitQueueDropsTotal counts work the branch worker refused at enqueue, labelled by
+	// GitQueueRefusalsTotal counts work the branch worker refused at enqueue, labelled by
 	// {provider_namespace, provider_name, branch, kind} where kind is `write`, `attach`, `resync`
 	// or `refresh`. Its queue was full, its intake was paused through an outage, or it was
 	// stopping. A refused item is not lost: its producer keeps it and offers it again (the watch
@@ -307,7 +307,7 @@ var (
 	//
 	// The queue-depth gauge said the queue was deep. Nothing said anything had been refused, and a
 	// saturating queue is exactly when it happens.
-	GitQueueDropsTotal metric.Int64Counter
+	GitQueueRefusalsTotal metric.Int64Counter
 	// GitMaterializationFailuresTotal counts attempts to commit decided writes that stopped because
 	// the remote could not be reached, or the parent branch a new write branch is created from is
 	// missing, labelled by {provider_namespace, provider_name, branch, reason} where reason is
@@ -564,7 +564,7 @@ func registerCounters() error {
 		{"gitopsreverser_git_pushes_total", &GitPushesTotal},
 		{"gitopsreverser_git_push_retries_total", &GitPushRetriesTotal},
 		{"gitopsreverser_git_fetches_total", &GitFetchesTotal},
-		{"gitopsreverser_git_queue_drops_total", &GitQueueDropsTotal},
+		{"gitopsreverser_git_queue_refusals_total", &GitQueueRefusalsTotal},
 		{"gitopsreverser_git_materialization_failures_total", &GitMaterializationFailuresTotal},
 		{"gitopsreverser_placements_total", &PlacementsTotal},
 		{"gitopsreverser_placement_refusals_total", &PlacementRefusalsTotal},
