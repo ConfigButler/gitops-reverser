@@ -22,8 +22,14 @@ The Task-driven e2e prep flow first copies the tracked audit assets into `.stamp
 - `max-requests-inflight=800` (override with `KUBE_APISERVER_MAX_REQUESTS_INFLIGHT`)
 - `max-mutating-requests-inflight=400` (override with `KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT`)
 
-The k3s node image defaults to `rancher/k3s:v1.36.1-k3s1`, matching the current k3s `latest`
+The k3s node image defaults to `rancher/k3s:v1.37.1-k3s1`, matching the current k3s `latest`
 channel. Override it with `K3S_IMAGE` when intentionally testing a different k3s release.
+
+The cluster has one server and one agent (`K3D_AGENT_COUNT`, default `1`). The server node is
+tainted `node-role.kubernetes.io/control-plane:NoSchedule`, so workloads run on the agent. The
+audit webhook setup restarts the server container to load the final webhook config, and the taint
+keeps that restart from taking the manager, Valkey and Gitea down with it. `K3D_AGENT_COUNT=0`
+still builds a single-node cluster, with no taint.
 
 It also disables these packaged k3s components by default:
 

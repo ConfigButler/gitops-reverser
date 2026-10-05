@@ -40,12 +40,17 @@ func TestWindowTimers_ContinuousActivityStopsAtTheTargetsMaxDuration(t *testing.
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 	loop := newBranchWorkerEventLoop(worker, time.Hour) // the idle timer never fires here
 	defer loop.stopTimers()
-	loop.defaultWindow.maxDuration = 20 * time.Millisecond
+	loop.defaultWindow.maxDuration = time.Hour
 	loop.lastPushAt = time.Now() // hold the push, so the local commit stays inspectable
 
 	writeTo(loop, "first")
 	require.NotNil(t, loop.openWindow)
-	time.Sleep(30 * time.Millisecond)
+	// Rewind the deadline rather than sleeping past a short one: a 20ms maxDuration raced the
+	// opening write itself, which under a loaded test run took longer than 20ms and closed the
+	// window before the assertion above could see it.
+	require.WithinDuration(t, time.Now().Add(time.Hour), loop.openWindow.timers.maxAt, time.Minute,
+		"the window takes the target's maxDuration when it opens")
+	loop.openWindow.timers.maxAt = time.Now().Add(-time.Millisecond)
 	writeTo(loop, "second") // restarts idle, but maxDuration has already passed
 
 	assert.Nil(t, loop.openWindow, "a window closes at maxDuration however much keeps arriving")

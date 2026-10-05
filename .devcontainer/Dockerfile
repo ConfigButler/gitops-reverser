@@ -66,24 +66,24 @@ RUN apt-get update \
 # TRIVY_VERSION -> https://github.com/aquasecurity/trivy/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
-    KUBECTL_VERSION=v1.37.0 \
-    KUSTOMIZE_VERSION=5.8.1 \
+    KUBECTL_VERSION=v1.37.1 \
+    KUSTOMIZE_VERSION=5.8.2 \
     KUBEBUILDER_VERSION=4.16.0 \
-    GOLANGCI_LINT_VERSION=v2.13.2 \
+    GOLANGCI_LINT_VERSION=v2.14.0 \
     HELM_VERSION=v4.3.0 \
     K3D_VERSION=v5.9.0 \
-    FLUX_VERSION=2.9.5 \
-    FLUX_OPERATOR_VERSION=0.60.0 \
-    TASK_VERSION=v3.53.1 \
+    FLUX_VERSION=2.9.6 \
+    FLUX_OPERATOR_VERSION=0.61.0 \
+    TASK_VERSION=v3.54.0 \
     ACTIONLINT_VERSION=1.7.12 \
     HADOLINT_VERSION=2.15.1 \
     VALKEY_VERSION=9.1.2 \
     COSIGN_VERSION=v3.1.3 \
     ORAS_VERSION=1.3.4 \
     NODE_MAJOR=24 \
-    MARKDOWNLINT_CLI2_VERSION=0.23.2 \
-    VALE_VERSION=3.22.0 \
-    TRIVY_VERSION=0.74.0
+    MARKDOWNLINT_CLI2_VERSION=0.23.3 \
+    VALE_VERSION=3.24.0 \
+    TRIVY_VERSION=0.75.0
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -286,7 +286,7 @@ RUN chgrp -R godev /go && \
 # same layer keeps those ~400MB out of the image instead of merely hiding them.
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 \
     && go install github.com/onsi/ginkgo/v2/ginkgo@v2.33.0 \
-    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.1 \
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 \
     && go install golang.org/x/tools/cmd/goimports@v0.49.0 \
     && go install github.com/boyter/scc/v4@v4.1.0 \
     && go clean -cache

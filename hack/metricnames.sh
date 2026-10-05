@@ -18,9 +18,11 @@ cd "$(dirname "$0")/.."
 
 # Files that legitimately name metrics which no longer exist:
 #   UPGRADING.md    the old -> new migration tables; naming the old name is the point
+#   CHANGELOG.md    release-please copies each BREAKING CHANGE footer in verbatim, and a
+#                   rename's footer names the old metric; the changelog is history
 #   docs/design/    the plan's "Deleted" and "Renamed" sections argue about past names
 #   docs/finished/  shipped-and-archived plans, frozen at their own moment
-EXCLUDED_PATHS=(':!external-sources' ':!docs/UPGRADING.md' ':!docs/design' ':!docs/finished')
+EXCLUDED_PATHS=(':!external-sources' ':!CHANGELOG.md' ':!docs/UPGRADING.md' ':!docs/design' ':!docs/finished')
 
 # Tokens that look like metric names but are not references to one. Keep this list short and
 # justified; anything added here is a check that stopped checking something.

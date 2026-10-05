@@ -853,7 +853,6 @@ jobs:
             # cross-target rule-change snapshot coupling, now fixed (per-target
             # effective watch plan — docs/spec/gittarget-isolation-on-rule-change.md).
             e2e_ginkgo_procs: "4"
-            k3d_agent_count: "0"
           - name: full-core
             script: "task test-e2e"
             # `bi-directional` and `source-cluster` moved out to their own legs (they
@@ -864,7 +863,6 @@ jobs:
             needs_artifact: false
             coverage: "1"
             e2e_ginkgo_procs: "4"
-            k3d_agent_count: "0"
           # The bi-directional corner: the only leg that installs Argo CD, and the
           # only place gitops-reverser shares a path with a foreign GitOps engine.
           # Its own runner (hence its own cluster) is what keeps the Argo CD
@@ -881,7 +879,6 @@ jobs:
             e2e_report_name: "bi-directional"
             needs_artifact: false
             coverage: "1"
-            k3d_agent_count: "0"
           # The source-cluster corner: the only leg that installs kcp, and the only
           # place gitops-reverser mirrors REMOTE clusters (GitTarget.spec.kubeConfig).
           # kcp workspaces are cheap logical clusters, so its own runner installs a
@@ -898,7 +895,6 @@ jobs:
             e2e_report_name: "source-cluster"
             needs_artifact: false
             coverage: "1"
-            k3d_agent_count: "0"
           # Quickstart chain, sharded across two runners (was the single
           # `quickstart` lane). quickstart-install runs the two install-mode
           # validations on one cluster (cleanup-installs.sh resets the namespace
@@ -918,7 +914,6 @@ jobs:
             needs_artifact: true
             coverage: ""
             e2e_ginkgo_procs: "2"
-            k3d_agent_count: "0"
           - name: image-refresh
             script: >-
               export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz
@@ -926,7 +921,6 @@ jobs:
             needs_artifact: true
             coverage: ""
             e2e_ginkgo_procs: "2"
-            k3d_agent_count: "0"
     env:
       PROJECT_IMAGE: ${{ needs.build.outputs.image }}
       CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
@@ -1020,7 +1014,6 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -w "${{ env.CI_WORKDIR }}" \
             -e IMAGE_DELIVERY_MODE=${{ env.IMAGE_DELIVERY_MODE }} \
-            -e K3D_AGENT_COUNT=${{ matrix.k3d_agent_count }} \
             -e HOST_PROJECT_PATH=${{ github.workspace }} \
             -e KUBECONFIG=${{ env.CI_WORKDIR }}/.stamps/cluster/k3d-gitops-reverser-test-e2e/.kube/config \
             ${{ env.CI_CONTAINER }} \
@@ -1059,7 +1052,6 @@ jobs:
             -e E2E_GINKGO_PROCS=${{ matrix.e2e_ginkgo_procs }} \
             -e E2E_LABEL_FILTER \
             -e E2E_REPORT_NAME \
-            -e K3D_AGENT_COUNT=${{ matrix.k3d_agent_count }} \
             -e HOST_PROJECT_PATH=${{ github.workspace }} \
             -e KUBECONFIG=${{ env.CI_WORKDIR }}/.stamps/cluster/k3d-gitops-reverser-test-e2e/.kube/config \
             ${{ env.CI_CONTAINER }} \

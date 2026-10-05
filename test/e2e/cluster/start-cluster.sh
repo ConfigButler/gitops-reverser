@@ -11,8 +11,11 @@ DISABLE_K3S_TRAEFIK="${DISABLE_K3S_TRAEFIK:-true}"
 DISABLE_K3S_SERVICELB="${DISABLE_K3S_SERVICELB:-true}"
 KUBE_APISERVER_MAX_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_REQUESTS_INFLIGHT:-800}"
 KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT:-400}"
-K3D_AGENT_COUNT="${K3D_AGENT_COUNT:-3}"
-K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.36.4-k3s1}"
+# One agent, with the server tainted NoSchedule (see create_cluster), so every workload runs on
+# a node that _webhook-tls-ready's `docker restart` of the server never touches. 0 is still
+# accepted for a single-node cluster, which leaves the server untainted.
+K3D_AGENT_COUNT="${K3D_AGENT_COUNT:-1}"
+K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.37.1-k3s1}"
 AUDIT_DIR_REL="${AUDIT_DIR_REL:-test/e2e/cluster/audit}"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
@@ -236,6 +239,17 @@ create_cluster() {
     if [ "${DISABLE_K3S_TRAEFIK}" = "true" ]; then
         echo "🔧 Disabling packaged k3s Traefik so Flux can install Traefik instead"
         k3s_args+=("--disable=traefik@server:0")
+    fi
+
+    # The audit webhook setup restarts the server container (hack/e2e/inject-webhook-tls.sh),
+    # which on a single-node cluster brings every pod back at once on a freshly restarted node.
+    # The manager then sometimes came up with cluster DNS dead and never went Ready (4 of 7
+    # restarts on k3s 1.37.1, docs/ci/k3s-1.37-dns-after-node-restart.md). With the server
+    # tainted, the manager, Valkey and Gitea keep running on the agent and only the control
+    # plane restarts. k3s's own add-ons (CoreDNS, metrics-server, local-path) tolerate the taint.
+    if [ "${K3D_AGENT_COUNT}" -gt 0 ]; then
+        echo "🔧 Tainting the server node NoSchedule so workloads run on the ${K3D_AGENT_COUNT} agent(s)"
+        k3s_args+=("--node-taint=node-role.kubernetes.io/control-plane:NoSchedule@server:0")
     fi
 
     if [ "${DISABLE_K3S_SERVICELB}" = "true" ]; then

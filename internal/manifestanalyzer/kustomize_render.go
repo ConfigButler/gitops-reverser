@@ -63,19 +63,20 @@ var errRemoteBase = errors.New("kustomization reaches a remote base; the operato
 // errInvalidImageName refuses a build whose images: entry carries a name kustomize
 // cannot compile.
 //
-// An images: entry's name: is a REGULAR EXPRESSION, not a literal, and kustomize
-// compiles it while DISCARDING the compile error (api/internal/image/image.go):
+// An images: entry's name: is a REGULAR EXPRESSION, not a literal. Up to api v0.21.1
+// kustomize compiled it while DISCARDING the compile error (api/internal/image/image.go):
 //
 //	pattern, _ := regexp.Compile("^" + name + "(:[a-zA-Z0-9_.{}-]*)?(@sha256:...)?$")
 //
-// It then dereferences the nil *Regexp. So `- name: "ngin["` does not fail the build —
-// it PANICS inside it, on content that came straight from a user's repository. Like the
-// remote-base check, this one must run before krusty, and for the same reason: it is not
-// a modelling question, it is what keeps a hostile kustomization.yaml from taking the
-// process somewhere it cannot come back from.
+// and then dereferenced the nil *Regexp, so `- name: "ngin["` PANICKED inside the build.
+// v0.21.2 treats an uncompilable name as matching nothing instead. We still refuse it,
+// for two reasons. Flux's kustomize-controller (v1.9.6) pins api v0.21.1, so the folder
+// does not deploy in production; refusing keeps us in step with what deploys. And an
+// entry that silently matches nothing is never what its author meant. Like the
+// remote-base check, this one runs before krusty.
 var errInvalidImageName = errors.New("images: entry name is not a valid regular expression")
 
-// errBuildPanicked is the net under krusty. errInvalidImageName covers the one panic we
+// errBuildPanicked is the net under krusty. errInvalidImageName covered the one panic we
 // found; this covers the ones we have not. A build runs library code we do not own over
 // bytes we do not control, so a panic there has to become a refused folder — never a
 // crashed CLI, and never a GitTarget that panics, requeues and panics again for as long
@@ -87,7 +88,7 @@ var errBuildPanicked = errors.New("kustomize build panicked")
 // (api/internal/image/image.go). We validate the WHOLE pattern, not the name alone, so
 // that what we accept is exactly what kustomize can compile.
 func imageNamePattern(name string) string {
-	return "^" + name + "(:[a-zA-Z0-9_.{}-]*)?(@sha256:[a-zA-Z0-9_.{}-]*)?$"
+	return "^" + name + "(:[a-zA-Z0-9_.{}-]*)?(@[a-zA-Z0-9]+([.+_-][a-zA-Z0-9]+)*:[a-zA-Z0-9_.{}-]*)?$"
 }
 
 // renderedObject is one object kustomize produced, with the provenance saying
@@ -209,7 +210,7 @@ func build(fSys filesys.FileSystem, target string) (_ resmap.ResMap, err error) 
 
 // refuseBeforeBuild refuses the build when any kustomization THIS ROOT REACHES is one we
 // must not hand to krusty: it declares a remote base (kustomize would fetch it), or an
-// images: entry name kustomize would nil-deref on (see errInvalidImageName).
+// images: entry name that is not a valid regular expression (see errInvalidImageName).
 //
 // Scoping it to the reachable graph is deliberate, and it is both safer and more
 // accurate than a scan-wide check: kustomize only loads what it actually reaches,

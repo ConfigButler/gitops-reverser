@@ -77,7 +77,35 @@ wait_for_manager_rollout() {
     kubectl --context "${CTX}" -n "${NAMESPACE}" logs "${MANAGER_DEPLOY}" --tail=80 >&2 || true
     kubectl --context "${CTX}" get events -n "${NAMESPACE}" \
         --sort-by=.lastTimestamp 2>/dev/null | tail -30 >&2 || true
+    dump_cluster_dns_diagnostics
     return 1
+}
+
+# dump_cluster_dns_diagnostics shows whether the cluster can resolve names at all after the
+# restart. The recorded failure mode is a manager stuck 0/1 on "lookup valkey...: i/o timeout"
+# (docs/ci/k3s-1.37-dns-after-node-restart.md); this separates CoreDNS being down from pod
+# networking on the manager's node being broken.
+dump_cluster_dns_diagnostics() {
+    echo "--- nodes" >&2
+    kubectl --context "${CTX}" get nodes -o wide >&2 || true
+    echo "--- kube-system pods" >&2
+    kubectl --context "${CTX}" -n kube-system get pods -o wide >&2 || true
+    echo "--- coredns logs" >&2
+    kubectl --context "${CTX}" -n kube-system logs -l k8s-app=kube-dns --tail=30 >&2 || true
+    local selector node
+    selector="$(kubectl --context "${CTX}" -n "${NAMESPACE}" get "${MANAGER_DEPLOY}" \
+        -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' 2>/dev/null || true)"
+    node="$(kubectl --context "${CTX}" -n "${NAMESPACE}" get pods -l "${selector%,}" \
+        -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true)"
+    # kube-system, not the manager's namespace: that one enforces the restricted PodSecurity
+    # profile, which rejects a bare busybox pod. nodeName still puts the probe beside the manager.
+    echo "--- DNS probe from a fresh pod on the manager's node (${node:-unknown})" >&2
+    kubectl --context "${CTX}" -n kube-system delete pod dns-probe --ignore-not-found >/dev/null 2>&1 || true
+    timeout 90 kubectl --context "${CTX}" -n kube-system run dns-probe --image=busybox:1.36 \
+        --restart=Never --rm -i --quiet \
+        --overrides="{\"spec\":{\"nodeName\":\"${node}\"}}" --command -- \
+        sh -c 'cat /etc/resolv.conf; nslookup kubernetes.default.svc.cluster.local; nslookup valkey.valkey-e2e.svc.cluster.local' \
+        >&2 || true
 }
 
 # warmup_audit_path drives a throwaway audited write on every iteration and waits
