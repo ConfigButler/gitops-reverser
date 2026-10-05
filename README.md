@@ -180,8 +180,8 @@ repository, so that two of them never write the same paths.
 - **Deletes:** the default mirrors observed delete events but retains documents absent from a
   reconnect snapshot. Choose a [deletion policy](docs/configuration.md#deletion-policy-specprunemode)
   that fits your repository.
-- **Versions:** tested against Kubernetes `1.37` at the API level (envtest) and `1.36` end-to-end
-  (k3s, which has no stable `1.37` release yet). Other versions may work but are not in the matrix.
+- **Versions:** tested against Kubernetes `1.37`, both at the API level (envtest) and end-to-end
+  (k3s). Other versions may work but are not in the matrix.
   Importing this repo as a Go module carries its own version floor; see
   [`docs/UPGRADING.md`](docs/UPGRADING.md).
 

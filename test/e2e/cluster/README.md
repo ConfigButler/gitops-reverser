@@ -22,7 +22,7 @@ The Task-driven e2e prep flow first copies the tracked audit assets into `.stamp
 - `max-requests-inflight=800` (override with `KUBE_APISERVER_MAX_REQUESTS_INFLIGHT`)
 - `max-mutating-requests-inflight=400` (override with `KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT`)
 
-The k3s node image defaults to `rancher/k3s:v1.36.1-k3s1`, matching the current k3s `latest`
+The k3s node image defaults to `rancher/k3s:v1.37.1-k3s1`, matching the current k3s `latest`
 channel. Override it with `K3S_IMAGE` when intentionally testing a different k3s release.
 
 It also disables these packaged k3s components by default:

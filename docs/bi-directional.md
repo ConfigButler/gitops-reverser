@@ -292,7 +292,7 @@ therefore still use the old pin.
 Flux's equivalent of split ownership is `Kustomization.spec.ignore`, added in kustomize-controller
 `v1.9.0`, with the same trade as Argo's: selected live fields survive later applies, Git seeds them
 at creation, later Git edits to them do not land, and Reverser still captures them back into Git.
-Our e2e installs Flux `2.9.5` but no spec exercises `spec.ignore`, so it is upstream behavior we
+Our e2e installs Flux `2.9.6` but no spec exercises `spec.ignore`, so it is upstream behavior we
 have read in the source and have no test of our own behind; the
 [source review](facts/gitops-apply-and-field-ignore.md) has the code paths.
 
