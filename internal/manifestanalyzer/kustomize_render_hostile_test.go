@@ -16,9 +16,9 @@ import (
 // does with content nobody would write on purpose — and for the one shape that makes a
 // folder INVISIBLE to the refusal path rather than merely broken.
 
-// An images: entry's name: is a regular expression, and kustomize compiles it while
-// discarding the compile error, then dereferences the nil *Regexp. `- name: "ngin["` does
-// not fail the build; it panics inside it. We must refuse before krusty ever sees it.
+// An images: entry's name: is a regular expression. Kustomize up to api v0.21.1 (what
+// Flux builds with) panics on `- name: "ngin["`; newer ones silently match nothing. Either
+// way the folder does not do what it says, so we refuse before krusty ever sees it.
 func TestRenderRoot_InvalidImageNameIsRefusedBeforeTheBuild(t *testing.T) {
 	files := imageFixture("nginx:v1", "  - name: \"ngin[\"\n    newTag: \"2.0\"\n")
 
@@ -92,18 +92,20 @@ func TestRenderRoot_KustomizationYMLCarriesProvenance(t *testing.T) {
 	require.NotEmpty(t, rendered[0].TransformedBy, "the override chain must be readable")
 }
 
+// panickingFS panics on every ReadFile, standing in for a panic anywhere inside krusty.
+type panickingFS struct{ filesys.FileSystem }
+
+func (panickingFS) ReadFile(string) ([]byte, error) { panic("read exploded") }
+
 // The net under krusty: whatever panics in there, the caller gets an error and the process
-// keeps its footing. Driven straight at build(), because the refusal above means the panic
-// we know about can no longer reach it.
+// keeps its footing. Driven straight at build() with a filesystem that panics, because the
+// one panic we found in kustomize itself was fixed upstream (api v0.21.2) and could not
+// reach build() past the refusal above anyway.
 func TestBuild_PanicBecomesAnError(t *testing.T) {
 	fSys := filesys.MakeFsInMemory()
-	require.NoError(t, fSys.WriteFile("/scan/kustomization.yaml",
-		[]byte("resources:\n  - deployment.yaml\nimages:\n  - name: \"ngin[\"\n    newTag: \"2.0\"\n")))
-	require.NoError(t, fSys.WriteFile("/scan/deployment.yaml", []byte(
-		"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  template:\n    spec:\n"+
-			"      containers:\n        - name: web\n          image: nginx:v1\n")))
+	require.NoError(t, fSys.WriteFile("/scan/kustomization.yaml", []byte("resources:\n  - deployment.yaml\n")))
 
-	resMap, err := build(fSys, "/scan") // must not panic
+	resMap, err := build(panickingFS{fSys}, "/scan") // must not panic
 
 	require.Nil(t, resMap)
 	require.ErrorIs(t, err, errBuildPanicked)
