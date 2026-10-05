@@ -162,8 +162,9 @@ var (
 	//     route_failed        — the writer refused it: its queue was full, or its intake paused
 	//                           through an outage. The session ends without advancing the cursor
 	//                           and the reconnect delivers the event again. Only a cursor that
-	//                           expires first turns it into a relist, which restores the object's
-	//                           content but not this change's own commit.
+	//                           expires first turns it into a fresh snapshot, which restores the
+	//                           object's content but not this change's own commit, and under
+	//                           prune.mode OnEvent does not remove a deleted object's file.
 	//
 	// route_failed OVERLAPS git_queue_refusals_total: a refused enqueue is one of the ways a route
 	// fails, so one refused event can increment both. They are two views of one event — where it
@@ -302,8 +303,9 @@ var (
 	// stopping. A refused item is not lost: its producer keeps it and offers it again (the watch
 	// keeps its cursor and delivers the event again, the controller re-sends a save, a resync is
 	// gathered again, the next reconcile asks for a refresh). What a refusal can cost is history: a
-	// watch cursor that expires before the event comes back turns it into a relist, which restores
-	// the object's content but not that change's own commit.
+	// watch cursor that expires before the event comes back turns it into a fresh snapshot, which
+	// restores the object's content but not that change's own commit, and under prune.mode OnEvent
+	// does not remove a deleted object's file.
 	//
 	// The queue-depth gauge said the queue was deep. Nothing said anything had been refused, and a
 	// saturating queue is exactly when it happens.

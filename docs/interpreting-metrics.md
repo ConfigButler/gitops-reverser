@@ -202,7 +202,7 @@ boundary, the commit, the push. Background:
 | `git_push_retries_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Replay rounds inside a cycle. `reason` is `remote_moved`. |
 | `git_push_duration_seconds` | histogram | `provider_namespace`, `provider_name`, `branch` | One cycle end to end, retries included. |
 | `git_fetches_total` | counter | `provider_namespace`, `provider_name`, `branch`, `reason` | Every call that reads the remote through a `SmartFetch`. `reason` is `bootstrap` (repository preparation; **no production caller reaches it today**, so the series stays at zero) / `publication` (the head of a publication cycle) / `recovery` (re-establishing a base that could not be trusted, including a worktree a failed write left dirty that could not be undone locally) / `contention` (the reset onto the new tip after a push was rejected because somebody else moved the branch) / `push_failure_probe` (a push that failed without the remote saying anything, looking up where the branch is) / `forced_recheck` (a full re-read outside the publication cycle: a forced recheck, or the snapshot a resync judges against) / `refresh` (the periodic top-up of an idle branch, and only on the intervals where the branch had actually moved). See the note below. |
-| `git_queue_refusals_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work refused at enqueue: the queue was full, intake was paused through an outage, or the worker was stopping. `kind` is `write` / `attach` / `resync` / `refresh`. The producer keeps a refused item and offers it again: the watch delivers a write again from its cursor, the controller re-sends a save, a resync is gathered again, and the next reconcile asks for a refresh. What it can cost is a write's own commit, when its watch cursor expires before the write comes back. |
+| `git_queue_refusals_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind` | Work refused at enqueue: the queue was full, intake was paused through an outage, or the worker was stopping. `kind` is `write` / `attach` / `resync` / `refresh`. The producer keeps a refused item and offers it again: the watch delivers a write again from its cursor, the controller re-sends a save, a resync is gathered again, and the next reconcile asks for a refresh. What it can cost, when its watch cursor expires before the write comes back, is the write's own commit and, under `prune.mode: OnEvent`, a deleted object's removal from Git. |
 | `git_commit_failures_total` | counter | `provider_namespace`, `provider_name`, `branch`, `kind`, `reason` | A window or request that died between routing and pushing. `kind` is `window` / `atomic`; `reason` is `refused` (a Git path a human must fix) / `error`. Every increment is a window's events lost until the next resync. An unreachable remote does not count: a decided window waits for the publication retry instead. |
 | `git_commit_windows_total` | counter | `gittarget_namespace`, `gittarget_name`, `close_reason`, `timer_source` | One per closed commit window, whether or not it then produced a commit. `close_reason` is `idle_timeout` / `max_duration` / `attach_next` / `identity_change` / `buffer_limit` / `resync_before_apply` / `atomic_before_apply` / `shutdown`; `timer_source` is `target` or `commit_request`. See [tuning commit windows](#tuning-commit-windows). |
 | `git_commit_window_duration_seconds` | histogram | `gittarget_namespace`, `gittarget_name` | How long each window collected: from the write that opened it to the start of its finalize. Its count equals `git_commit_windows_total` summed over `close_reason` and `timer_source`. |
@@ -296,11 +296,17 @@ enqueue onto a branch worker is deliberately non-blocking, so a full queue refus
 than stalling the watch path behind a slow remote. The watch does not advance its cursor past a
 refused write: its session ends, it reconnects, and it delivers the write again. So nothing is lost
 while that cursor lives, but each refusal costs the stream a reconnect, and a burst that keeps the
-queue full keeps the stream reconnecting. If the cursor expires first, the relist restores the
-object's current content, and the write's own attributed commit is never made: the change
-happened, and the history does not say so. Treat any sustained increment on a healthy branch as a
-signal to raise `controllerManager.branchWorkerQueueDepth`. During an outage, refusals are the
-intake pause instead; see the backpressure paragraph below.
+queue full keeps the stream reconnecting. If the cursor expires first, the stream rebuilds from a
+fresh snapshot, and that recovery follows the target's prune policy. It restores the current
+content of every object it lists, but the write's own attributed commit is never made: the change
+happened, and the history does not say so. A delete is weaker still: under the default
+`prune.mode: OnEvent` a snapshot cannot infer one from absence, so an object deleted meanwhile keeps
+its file in Git until `Always` sweeps it or someone removes it; see the [recovery contract][recovery].
+Treat any sustained increment on a healthy branch as a signal to raise
+`controllerManager.branchWorkerQueueDepth`. During an outage, refusals are the intake pause instead;
+see the backpressure paragraph below.
+
+[recovery]: design/gittarget-branch-worker-pending-writes.md#resume-and-the-three-meanings-of-replay
 
 **The depth gauge will not warn you first.** `git_queue_depth` shows the traffic you have, and the
 bursts that overrun the queue are usually the traffic you do not: an unpaced `kubectl delete` of a
@@ -346,7 +352,8 @@ red trains people to ignore it. Four classes:
 `route_failed` and a queue refusal **overlap**: a refused enqueue is one of the ways a route fails,
 so one refused event increments both. They are two views of one event, and summing them
 double-counts. A refused event becomes loss only when its watch cursor expires before it comes back:
-the relist then restores the object's content, without that change's own commit.
+the fresh snapshot then restores the object's content without that change's own commit, and, under
+`prune.mode: OnEvent`, does not remove a deleted object's file.
 
 **Backpressure during an outage looks like loss and is not.** A branch worker keeps every decided
 write while its remote cannot be reached, and bounds that at intake: while a failed publication
@@ -355,8 +362,8 @@ the open window, retained writes, deferred snapshots and waiting saves) pauses i
 refuses new writes, saves and resyncs the way a full queue does, and both series rise. Intake stays
 paused until a push lands. The watch does not advance its cursor past a refused event; its stream
 waits for the branch to reopen intake and then delivers the event again. Only a cursor that expires
-during a long outage turns it into a relist, whose snapshot converges the folder without that
-event's own commit. Read these increments beside `git_intake_paused == 1`, or
+during a long outage turns it into a fresh snapshot, which converges the folder under the target's
+prune policy and without that event's own commit. Read these increments beside `git_intake_paused == 1`, or
 `git_pushes_total{outcome="failed"}` with no successes: that is an outage holding work back, and
 every `GitTarget` on the branch says so on `Ready`. A healthy branch never refuses for this reason.
 
@@ -1279,7 +1286,7 @@ sum by (outcome) (rate(gitopsreverser_secret_encryptions_total[5m]))
 | `time() - gitopsreverser_watch_plan_oldest_dirty_since_timestamp_seconds > 120`, `for: 5m` | A GitTarget cannot be planned — its source cluster or catalog is unreachable — and its mirror is not converging. The `time() -` is not optional: the gauge is a Unix timestamp, so a bare `> 120` is true of every instant since 1970 and would fire on ordinary planning. |
 | `rate(gitopsreverser_watch_plan_passes_total{outcome="timed_out"}[15m]) > 0` sustained | Plan passes are hitting their per-target deadline; the target stays dirty and installs nothing. |
 | `rate(gitopsreverser_secret_encryptions_total{outcome="failed"}[10m]) > 0` | Secret writes are being rejected by the encryption path. |
-| `rate(gitopsreverser_git_queue_refusals_total[5m]) > 0 unless on(provider_namespace, provider_name, branch) gitopsreverser_git_intake_paused == 1`, `for: 10m` | A healthy branch keeps refusing work: its queue is too small for its bursts. Producers offer the work again, so this is lag, and a lost commit only if a watch cursor expires first. During an outage the intake-paused alert below covers it. |
+| `rate(gitopsreverser_git_queue_refusals_total[5m]) > 0 unless on(provider_namespace, provider_name, branch) gitopsreverser_git_intake_paused == 1`, `for: 10m` | A healthy branch keeps refusing work: its queue is too small for its bursts. Producers offer the work again, so this is lag; only a watch cursor that expires first loses commits, and under `OnEvent` deletes. During an outage the intake-paused alert below covers it. |
 | `gitopsreverser_git_queue_depth` rising and not draining | A branch worker is backing up against a stalled remote. |
 | `time() - gitopsreverser_git_oldest_retained_write_timestamp_seconds > 900`, `for: 5m` | A branch has not published for 15 minutes: its writes, and any save riding them, are held. The `time() -` is not optional, as for the plan-dirty gauge above. |
 | `gitopsreverser_git_intake_paused == 1`, `for: 10m` | An outage filled a branch's budget: new changes on its `GitTarget`s are refused until a push lands. |

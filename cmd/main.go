@@ -636,7 +636,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"GitTarget writing to one (GitProvider, branch), and a full queue REFUSES the write "+
 			"(git_queue_refusals_total) rather than stalling the watch path behind a slow remote; "+
 			"the watch delivers it again from its cursor, and a cursor that expires first loses "+
-			"that write's own commit. "+
+			"that write's own commit (and, under prune.mode OnEvent, a delete's removal). "+
 			"Size it so a bounded burst cannot overrun it: roughly (concurrent writers) x "+
 			"(GitTargets sharing the branch worker). Costs queue depth x payload of pod memory "+
 			"ON TOP of --branch-buffer-max-size, which does not cover this queue.")

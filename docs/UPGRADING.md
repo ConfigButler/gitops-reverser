@@ -13,8 +13,9 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 same labels (`provider_namespace`, `provider_name`, `branch`, `kind`). A refused item is no longer
 lost: the watch keeps its cursor and delivers a refused write again, the controller re-sends a save,
 a refused resync is gathered again, and the next reconcile asks for a refresh again. Only a watch
-cursor that expires before the write comes back costs that write its own commit. The counter counts
-both a full queue and a branch that has paused intake through a Git outage.
+cursor that expires before the write comes back costs something: that write's own commit, and under
+`prune.mode: OnEvent` a deleted object's removal from Git. The counter counts both a full queue and
+a branch that has paused intake through a Git outage.
 
 Update every dashboard and alert that names the old series; nothing emits it any more. The suggested
 alert now fires on a healthy branch only:
