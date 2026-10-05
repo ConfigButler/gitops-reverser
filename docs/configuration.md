@@ -613,6 +613,10 @@ The most useful status fields are:
 - `Ready`: true when the target is valid, the Git path is accepted, and watched streams are running.
 - `Reconciling`: true while initial replay, a recheck, or another coarse progress step is in flight.
 - `Stalled`: true when the target is blocked until a human fixes configuration, RBAC, or Git path content.
+- While the branch cannot publish to Git, `Ready=False` with reason `Progressing` says since when,
+  what failed, and whether intake of new changes is paused; `Reconciling=True` and `Stalled=False`,
+  because the retry needs nobody. Every target on the branch says the same until a push lands, and
+  its streams report `BranchIntakePaused` while they wait.
 - `Validated` and `EncryptionConfigured`: control-plane details.
 - `StreamsRunning`: true when the source watches are past initial replay and routing live events.
 - `GitPathAccepted`: true when the target Git path is safe to materialize.
@@ -775,9 +779,8 @@ spec:
 - It recovers on its own once the parent is pushed, with no edit to the cluster and with periodic
   refresh on or off. The branch worker looks for the parent with one ref advertisement after 10s,
   then after twice as long each time, up to every 5 minutes, shared by every target on the branch.
-  When the parent is back it publishes the writes it held and asks for a fresh snapshot of the ones
-  it had to drop; until those are published the target reports `Ready=False` with reason
-  `RecoveringParentBranch`.
+  When the parent is back it publishes the writes it held, with their own authors and messages;
+  until those are published the target reports `Ready=False` with reason `RecoveringParentBranch`.
 - An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
   refs at all, tags included) the first commit starts a branch with no history. A repository that
   is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and
@@ -1778,9 +1781,9 @@ namespace. Connection count is bounded per matched type, but object count, traff
 still grow with the cluster. Access is bounded by the source credential's RBAC
 and by nothing else, which is why it is refused outright while `allowAnySourceNamespace` is false.
 
-A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates: each is its
-own resource collection, so a target holding both runs two streams over overlapping objects. That is
-correct rather than something to tune away.
+A `"*"` item and a named-namespace item for the same type **overlap**, so one `GitTarget` cannot
+hold both: the newer rule is refused (see [overlapping collections](#overlapping-collections)). Keep
+the wider scope, or send the narrower one to its own `GitTarget`.
 
 The outcome for all items is aggregated into one `SourceNamespaceAuthorized` condition, also shown by
 `kubectl get watchrules -o wide`. A **denied** explicit name refuses the whole `WatchRule`
@@ -1883,15 +1886,6 @@ Consequences to plan for:
   before writing, such as `kustomize.toolkit.fluxcd.io/name`; the labels do not need to survive in
   Git.
 
-**Overlapping collections share one selector.** Two items on one `GitTarget` overlap when they
-select the same type in the same namespace, or when one of them selects all namespaces. Overlapping
-items must use the same selector, written in any equivalent form: `matchLabels: {team: a}` and
-`matchExpressions: [{key: team, operator: In, values: [a]}]` are one selector. When they differ, the
-older rule, then the rule with the lower name, keeps its collections, and the newer rule is refused
-as a whole with `ResourcesResolved=False`, reason `ObjectSelectorConflict`. Different selectors in
-different namespaces are fine. To select several values, use one set-based selector such as
-`team in (a,b)`.
-
 The field is the Kubernetes `LabelSelector` type, so the CRD schema checks only its shape. The rule
 compiler checks the rest (operators, values, and label syntax, exactly as Kubernetes parses a
 selector) and refuses the whole rule before it opens any watch, with `ResourcesResolved=False`,
@@ -1916,6 +1910,21 @@ change. A deletion from a selected collection never carries that evidence, so it
 authored unresolved; a deletion that waited on a finalizer was already attributed when it was
 requested. The document is removed either way. See the
 [attribution contract](spec/attribution.md#four-rules-that-are-easy-to-miss).
+
+### Overlapping collections
+
+A `GitTarget` watches each object through one collection. Two items on one `GitTarget` overlap
+when they select the same type in the same namespace, or when one of them selects all namespaces.
+Only an exact duplicate is allowed: the same type, namespace scope, and selector, written in any
+equivalent form (`matchLabels: {team: a}` and
+`matchExpressions: [{key: team, operator: In, values: [a]}]` are one selector). It shares one stream.
+Any other overlap is refused, whether the selectors are equal or differ: the older rule, then the
+rule with the lower name, keeps its collections, and the newer rule is refused as a whole with
+`ResourcesResolved=False`, reason `CollectionOverlap`. The message names both rules and both
+scopes. A rule whose own items overlap is refused whatever its age. Different namespaces, and
+different `GitTarget`s, never overlap. To select several values, use one set-based selector such as
+`team in (a,b)`. The check re-runs when rules change or the source cluster starts serving a type. A
+collection that leaves the plan stops before an overlapping one that replaces it starts.
 
 ## `ClusterWatchRule`
 
@@ -2077,7 +2086,7 @@ reason, without changing Git.
 | Only another author's window was open | no commit, `WindowMismatch` | no commit, `WindowMismatch` |
 | The target is suspended, or its render fidelity is not established | `FinalizeFailed`, the cause | `FinalizeFailed`, the cause |
 | The commit or the empty commit failed | `FinalizeFailed` | `FinalizeFailed` |
-| The push failed | `WaitingForPush` until a push lands; `FinalizeFailed` if the worker stops first | the same |
+| The push failed | `WaitingForPush`, with the cause, until a push lands; `FinalizeFailed` if the worker stops first | the same |
 
 The `Ready` reason keeps the cause, and `status.commit` with `Pushed=True` says the empty commit
 reached the remote. A hash proves the message is in Git; `NoWindow` says the request saw no writes,

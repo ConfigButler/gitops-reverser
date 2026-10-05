@@ -168,7 +168,7 @@ func TestRefresh_AMovedBranchFetchesAndResets(t *testing.T) {
 // A reset here would destroy the local commits behind retained writes.
 func TestRefresh_SkipsABranchMidCycle(t *testing.T) {
 	h := newRefreshHarness(t, "refresh-mid-cycle")
-	h.commit(false, "retained")
+	h.commit("retained")
 	h.loop.pendingWrites = h.pending
 
 	h.reported = nil
@@ -534,9 +534,9 @@ func TestEnqueueRefresh_CountsTheDropOnAFullQueue(t *testing.T) {
 		"provider_namespace": h.worker.GitProviderNamespace,
 		"provider_name":      h.worker.GitProviderRef,
 		"branch":             h.worker.Branch,
-		"kind":               queueDropRefresh,
+		"kind":               queueRefusalRefresh,
 	}
-	drops, ok := telemetry.CollectInt64Sum(reader, queueDropsMetric, labels)
+	drops, ok := telemetry.CollectInt64Sum(reader, queueRefusalsMetric, labels)
 	require.True(t, ok, "a dropped refresh must be counted like any other lost work item")
 	assert.Equal(t, int64(1), drops)
 }

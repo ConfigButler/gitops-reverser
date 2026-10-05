@@ -464,6 +464,7 @@ func TestResync_ReportsWhatItsFetchProved(t *testing.T) {
 		Desired:            nil,
 		Result:             result,
 	})
+	loop.endWake(0)
 
 	require.NotEmpty(t, reported, "the resync's own fetch must reach the status surface")
 	assert.Equal(t, ObservedByFetch, reported[len(reported)-1].By,

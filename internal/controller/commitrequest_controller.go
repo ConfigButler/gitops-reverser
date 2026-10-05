@@ -281,7 +281,7 @@ func (r *CommitRequestReconciler) attachCommitRequest(
 			log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
 				"name", req.NamespacedName, "err", serviceErr.Error())
 		}
-		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase)
+		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
 	}
 
 	if result.Err != nil {
@@ -312,7 +312,7 @@ func (r *CommitRequestReconciler) withdrawCommitRequest(
 				"name", req.NamespacedName, "err", withdrawErr.Error())
 		}
 		// Not answered yet, or the worker holds the request: keep polling.
-		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase)
+		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
 	}
 
 	if !errors.Is(result.Err, git.ErrCommitRequestWithdrawn) {
@@ -349,8 +349,9 @@ func (r *CommitRequestReconciler) pollCommitRequest(
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
 	phase git.CommitRequestPhase,
+	held string,
 ) (ctrl.Result, error) {
-	if err := r.recordWorkerPhase(ctx, commitRequest, attribution, phase); err != nil {
+	if err := r.recordWorkerPhase(ctx, commitRequest, attribution, phase, held); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
@@ -367,7 +368,7 @@ func (r *CommitRequestReconciler) stampFirstSightConditions(
 	if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) != nil {
 		return nil
 	}
-	markCommitRequestProgressing(commitRequest, attribution, "")
+	markCommitRequestProgressing(commitRequest, attribution, "", "")
 	if err := r.Status().Update(ctx, commitRequest); err != nil {
 		return err
 	}
@@ -453,13 +454,27 @@ func (r *CommitRequestReconciler) recordWorkerPhase(
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
 	phase git.CommitRequestPhase,
+	held string,
 ) error {
-	current := findCondition(commitRequest.Status.Conditions, ConditionTypeReconciling)
-	if current != nil && (phase == "" || current.Reason == string(phase)) {
+	if progressRecorded(commitRequest, phase, held) {
 		return nil
 	}
-	markCommitRequestProgressing(commitRequest, attribution, phase)
+	markCommitRequestProgressing(commitRequest, attribution, phase, held)
 	return r.Status().Update(ctx, commitRequest)
+}
+
+// progressRecorded reports whether the request's status already says this phase, and why it is
+// held, so a poll writes only what changed. An empty phase says nothing new.
+func progressRecorded(cr *configbutleraiv1alpha3.CommitRequest, phase git.CommitRequestPhase, held string) bool {
+	current := findCondition(cr.Status.Conditions, ConditionTypeReconciling)
+	if current == nil {
+		return false
+	}
+	if phase == "" {
+		return true
+	}
+	reason, message := progressFor(phase, held)
+	return current.Reason == reason && current.Message == message
 }
 
 // loadActionableCommitRequest fetches the CommitRequest and short-circuits

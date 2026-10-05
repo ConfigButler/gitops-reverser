@@ -205,7 +205,7 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 	}
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, events)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	// Remote must be untouched after commitPendingWrites; only pushPendingCommits
 	// publishes work.
@@ -247,7 +247,7 @@ func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
 		[]Event{configMapEvent("first", "alice", "team-a")},
 	)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*firstPendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*firstPendingWrite}))
 	rootAfterFirst := worker.pushCycleRootHash
 
 	secondPendingWrite, err := worker.buildGroupedPendingWrite(
@@ -255,7 +255,7 @@ func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
 		[]Event{configMapEvent("second", "bob", "team-b")},
 	)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*secondPendingWrite}, true))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*secondPendingWrite}))
 
 	assert.Equal(t, rootAfterFirst, worker.pushCycleRootHash,
 		"hasUnpushedCommits=true must preserve the rootHash from the first commit")
@@ -293,11 +293,11 @@ func TestPushPendingCommits_FlushesAccumulated(t *testing.T) {
 
 	pendingWrite1, err := worker.buildGroupedPendingWrite(worker.ctx, events1)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite1}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite1}))
 
 	pendingWrite2, err := worker.buildGroupedPendingWrite(worker.ctx, events2)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite2}, true))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite2}))
 
 	pending1, err := worker.buildGroupedPendingWrite(worker.ctx, events1)
 	require.NoError(t, err)
@@ -335,7 +335,7 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 	events := []Event{configMapEvent("from-operator", "alice", "team-a")}
 	retainedPendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, events)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*retainedPendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*retainedPendingWrite}))
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, events)
 	require.NoError(t, err)
 
@@ -378,7 +378,7 @@ func TestRefreshRemoteAndRebuildPendingWrites_ReplaysWithoutPushing(t *testing.T
 		[]Event{configMapEvent("from-operator", "alice", "team-a")},
 	)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	pendingWrites := []PendingWrite{*pendingWrite}
 
 	otherPath := filepath.Join(t.TempDir(), "other")
@@ -422,10 +422,10 @@ func TestPushPendingCommits_ReplayPreservesPendingWriteCommitOrder(t *testing.T)
 	}
 	pendingWrites := make([]PendingWrite, 0, len(events))
 
-	for i, batch := range events {
+	for _, batch := range events {
 		pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, batch)
 		require.NoError(t, err)
-		require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, i > 0))
+		require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 		pendingWrites = append(pendingWrites, *pendingWrite)
 	}
 
@@ -523,7 +523,7 @@ func TestBranchWorker_Replay_UsesResolvedMetadata_GitTargetDeletedMidBurst(t *te
 	require.NoError(t, err)
 	targetMetadata := pendingWrite.findTargetMetadata("secret-target", "default")
 	require.NotNil(t, targetMetadata.EncryptionConfig, "resolved encryption must be retained on the pending write")
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	require.NoError(t, worker.Client.Delete(worker.ctx, &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "secret-target", Namespace: "default"},
@@ -572,7 +572,7 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 		[]Event{configMapEvent("transient", "alice", "team-a")},
 	)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
@@ -651,7 +651,7 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 		[]Event{configMapEvent("fetch-failure", "alice", "team-a")},
 	)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	localRepo, err := git.PlainOpen(worker.repoPath())
 	require.NoError(t, err)
@@ -726,7 +726,7 @@ func TestBranchWorker_AtomicAndGroupedInterleaved_PreservesArrivalOrder(t *testi
 		[]Event{configMapEvent("grouped-first", "alice", "team-a")},
 	)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedFirst}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedFirst}))
 
 	atomicRequest := &WriteRequest{
 		Events:        []Event{configMapEvent("atomic-second", "reconciler", "team-a")},
@@ -735,14 +735,14 @@ func TestBranchWorker_AtomicAndGroupedInterleaved_PreservesArrivalOrder(t *testi
 	}
 	atomicSecond, err := worker.buildAtomicPendingWrite(worker.ctx, atomicRequest)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*atomicSecond}, true))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*atomicSecond}))
 
 	groupedThird, err := worker.buildGroupedPendingWrite(
 		worker.ctx,
 		[]Event{configMapEvent("grouped-third", "bob", "team-a")},
 	)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedThird}, true))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedThird}))
 
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*groupedFirst, *atomicSecond, *groupedThird}))
 
@@ -778,7 +778,7 @@ func TestBranchWorker_Replay_DropsUnitsThatBecomeNoOpAgainstNewRemoteTree(t *tes
 	event := configMapEvent("already-applied", "alice", "team-a")
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	localRepoPath := worker.repoPath()
 	filePath := generateFilePath(event.Identifier, itypes.SensitiveResourcePolicy{})
@@ -1091,7 +1091,7 @@ func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *te
 	}})
 	require.Len(t, loop.pendingWrites, 2,
 		"deferred event commits during cooldown are retained as local commits, not lost")
-	loop.syncUnpushedWorkFlag()
+	loop.publishLoopState(0)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:             []Event{configMapEvent("snapshot-only", "reconciler", "")},
@@ -1124,7 +1124,7 @@ func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t 
 
 	pendingWrite, err := worker.buildAtomicPendingWrite(worker.ctx, request)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 
 	loop := newBranchWorkerEventLoop(worker, time.Second)
 	loop.pendingWrites = []PendingWrite{*pendingWrite}
@@ -1170,7 +1170,7 @@ func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 
 	result := <-req.Result
 	require.NoError(t, result.Err)
@@ -1206,7 +1206,7 @@ func TestResync_WorkerNoopDoesNotRetainOrPush(t *testing.T) {
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 
 	result := <-req.Result
 	require.NoError(t, result.Err)
@@ -1239,7 +1239,7 @@ func TestResync_WorkerEmptyDesiredSweepsManagedResource(t *testing.T) {
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 
 	result := <-req.Result
 	require.NoError(t, result.Err)

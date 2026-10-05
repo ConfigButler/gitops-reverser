@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -47,17 +48,19 @@ const DefaultBranchWorkerQueueDepth = 1000
 type BranchWorkerLimits struct {
 	// MaxBufferBytes caps totalRetainedBytes: the open commit window plus the writes
 	// committed locally and retained for replay until a push succeeds. Tripping it
-	// finalizes the window early, ignoring the commit cadence.
+	// finalizes the window early, ignoring the commit cadence. While a failed attempt waits
+	// for its retry it is also the intake budget, covering queued work too. See intake.go.
 	MaxBufferBytes int64
 
 	// QueueDepth is the depth of the event queue, and it is a HARD drop boundary: the
-	// enqueue is deliberately non-blocking, so a full queue throws the item away and
-	// counts git_queue_drops_total rather than stalling the watch path behind a slow
-	// remote.
+	// enqueue is deliberately non-blocking, so a full queue refuses the item and counts
+	// git_queue_refusals_total rather than stalling the watch path behind a slow remote. The
+	// producer keeps it and offers it again: the watch redelivers from its unadvanced cursor.
 	//
-	// MaxBufferBytes does NOT cover this queue. That cap is accounted only once the loop
-	// DEQUEUES an item, so whatever is still on the channel is bounded by count alone and
-	// costs memory ON TOP of it. The channel itself is trivial (a WorkItem is three
+	// On a healthy branch MaxBufferBytes does NOT cover this queue: the window cap is accounted
+	// only once the loop DEQUEUES an item, so whatever is still on the channel is bounded by count
+	// alone and costs memory ON TOP of it. During an outage the intake gate charges queued
+	// payload against MaxBufferBytes at enqueue (intake.go), in serialized bytes. The channel itself is trivial (a WorkItem is three
 	// pointers); what it retains is not, because each live-event item holds a sanitized
 	// object as an unstructured map, measured at roughly SIX times the bytes it serializes
 	// to. Budget QueueDepth x serialized size x ~6 per SATURATED worker: ~5MiB at the
@@ -156,6 +159,10 @@ type WorkerManager struct {
 	// empty indefinitely. Recorded here instead, a pending recovery survives every failure until
 	// something acknowledges it.
 	replacements map[BranchKey]struct{}
+
+	// publicationEvents carries the GitTargets whose worker's publication report changed. See
+	// PublicationEvents.
+	publicationEvents chan event.GenericEvent
 }
 
 // NewWorkerManager creates a new worker manager. limits bounds every worker this manager
@@ -176,6 +183,7 @@ func NewWorkerManager(
 		remotes:            make(map[BranchKey]RemoteObservation),
 		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
+		publicationEvents:  make(chan event.GenericEvent, publicationEventBuffer),
 	}
 }
 
@@ -362,6 +370,8 @@ func (m *WorkerManager) EnsureWorker(
 		worker.pathRefusal = m.pathRefusal
 		worker.layoutReporter = m.layoutReporter
 		worker.remoteReporter = func(observed RemoteObservation) { m.recordRemoteObservation(key, observed) }
+		managerCtx := m.ctx // read under m.mu; the worker's loop calls the reporter later
+		worker.publicationReporter = func() { go m.notifyPublication(managerCtx, key) }
 		worker.scanAcceptance = m.scanAcceptance
 		worker.renderFidelityGate = m.renderFidelityGate
 		worker.crOwners = m.commitRequests
@@ -592,6 +602,7 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	m.ctx = ctx
 	m.mu.Unlock()
 	telemetry.SetGaugeSource(telemetry.GaugeGitQueueDepth, m.queueDepthSamples)
+	m.setPublicationGaugeSources()
 	m.Log.Info("WorkerManager started")
 
 	m.sweepPeriodically(ctx)
@@ -658,13 +669,7 @@ func (m *WorkerManager) sweepPeriodically(ctx context.Context) {
 // source that waited on the lock a wedged worker holds across its slow work would reintroduce the
 // staleness the observable gauge exists to remove.
 func (m *WorkerManager) queueDepthSamples() []telemetry.GaugeSample {
-	m.mu.RLock()
-	workers := make([]*BranchWorker, 0, len(m.workers))
-	for _, worker := range m.workers {
-		workers = append(workers, worker)
-	}
-	m.mu.RUnlock()
-
+	workers := m.liveWorkers()
 	samples := make([]telemetry.GaugeSample, 0, len(workers))
 	for _, worker := range workers {
 		samples = append(samples, telemetry.GaugeSample{
@@ -673,6 +678,18 @@ func (m *WorkerManager) queueDepthSamples() []telemetry.GaugeSample {
 		})
 	}
 	return samples
+}
+
+// liveWorkers copies the worker pointers out under m.mu, for a gauge source to read each worker's
+// atomics without holding the lock.
+func (m *WorkerManager) liveWorkers() []*BranchWorker {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workers := make([]*BranchWorker, 0, len(m.workers))
+	for _, worker := range m.workers {
+		workers = append(workers, worker)
+	}
+	return workers
 }
 
 // NeedLeaderElection ensures only the elected leader manages workers.

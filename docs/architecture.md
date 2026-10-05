@@ -65,11 +65,12 @@ Every write to that branch goes through the worker's single event loop and commi
 fetch and hard-reset before the first commit of every publication cycle. It no longer does: the push
 session reads the remote's ref advertisement on a connection the cycle was making anyway, and a cycle
 that commits nothing still reaches it, so a base the worker can vouch for needs no fetch to plan
-against. Two flags on the worker carry that claim, and they are separate on purpose: `baseTrusted`
-is dropped by anything that can no longer prove where the remote is, while `worktreeDirty` records
-that a write failed part-way and is cleared **only by a reset** (a third, `replayRequired`, marks
-retained writes whose local commits a reset discarded before the replay could rebuild them).
-Collapsing them would let one kind of doubt clear another. Either flag makes the next cycle fetch. The
+against. Two pieces of state on the worker carry that claim, and they are separate on purpose:
+`baseTrusted` is dropped by anything that can no longer prove where the remote is, while
+`checkoutApplied` counts how many retained writes the checkout holds on top of its root. A write
+that failed part-way sets it to unknown, which **only a reset** clears; a reset sets it to zero,
+which with writes retained says their local commits are gone and must be replayed. Collapsing the
+two would let one kind of doubt clear another. Either one makes the next cycle fetch. The
 failure direction is safe by construction: a stale "untrusted" costs one fetch, while a stale "trusted"
 is caught by the compare-and-swap on the next push. For a new write branch, the worker checks the
 parent's advertised tip before sending the push. A moved parent triggers fetch, reset, and replay.
@@ -501,9 +502,10 @@ Following the ConfigMap edit:
    `GitTarget`'s watch on `core/configmaps` in `team-a` delivers a `MODIFIED` event carrying the new
    object body. (On a cold start or after `410 Gone`, the same object instead arrives as an `ADDED`
    during the `sendInitialEvents` replay.)
-2. **Relevance filter.** The event is sanitized (status, managedFields, and volatile metadata stripped),
-   checked for followability, and diffed against current Git content. A no-op (e.g. a `*/status` bump
-   whose desired-state projection is unchanged) is dropped here.
+2. **Desired-state change filter.** The event is sanitized (status, managedFields, and volatile
+   metadata stripped) and compared with what the branch worker last accepted for this object on this
+   stream, from a live event or the stream's replay. A no-op (e.g. a `*/status` bump whose
+   desired-state projection is unchanged) is dropped here.
 3. **Resolve the author.** When attribution is enabled, the resolver waits a bounded grace window
    (`--author-attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
    resourceVersion/UID. On a strong match the real user or named service account becomes the author. With
@@ -1085,8 +1087,8 @@ and chooses one version per collection. The plan diff keeps unaffected watches r
 new collections, and replaces a collection only when its served version changes.
 
 Each managed watch has one goroutine. Its first attempt requests initial state, enqueues scoped
-snapshot reconciliation, and then routes every live object event through unchanged-content
-suppression and author resolution.
+snapshot reconciliation, and then routes every live object event through its desired-state change
+filter and author resolution.
 Later attempts may resume a cursor; see
 [Recovery: resume, replay, or list plus mark-and-sweep](#recovery-resume-replay-or-list-plus-mark-and-sweep).
 
@@ -1267,12 +1269,12 @@ with no refresher.
 is untrusted or the worktree is dirty (see the ground rule above); a healthy publishing target plans
 straight onto its own last push. Once writes are retained the guard flips off entirely, because a
 reset would destroy the local commits those writes already produced. Anything that needs a fresh
-tree with work in hand therefore resets **and replays**
-([`refreshRemoteAndRebuildPendingWrites`](../internal/git/branch_worker.go)) rather than resetting
-alone, re-planning the retained writes onto the new tip. Three things reach it: a forced recheck
-calls it directly, while a worktree a failed write left dirty and the snapshot a resync judges
-against go through `invalidateAndRefresh`, which drops base trust first because nothing has asked
-the remote anything yet.
+tree with work in hand therefore resets **and replays** rather than resetting alone, re-planning the
+retained writes onto the new tip. One function on the event loop does that,
+[`materialize`](../internal/git/branch_worker.go): every commit and push the loop makes runs it
+first, and the loop's commit refuses a checkout that is not the projection of the retained writes.
+A worktree a failed write left dirty, retained writes whose commits a reset discarded, a parent
+change, and the snapshot a resync judges against all reach it.
 
 **What a reset has to leave behind, now that it is the only cleanup.** A hard reset restores tracked
 files and stops there, so a document a failed write created, and the placement directory it created
@@ -1282,10 +1284,41 @@ explicitly discards untracked and newly staged leftovers and prunes the director
 ([`discardWorktreeLeftovers`](../internal/git/git.go)), and a write that fails while creating
 directories removes the ones it made on its way out. Only then is `worktreeDirty` cleared.
 
+### When the remote cannot be reached
+
+A decided write is kept until a push lands. When a commit or a push cannot reach the remote, the
+worker keeps every decided write pending ([`pending_writes_loop.go`](../internal/git/pending_writes_loop.go)), with
+its author, its message, and any save riding it, and tries again on one schedule: 10 seconds,
+doubling to 5 minutes ([`retry.go`](../internal/git/retry.go)). The retry does not wait for another
+edit. Until it is due nothing else on the branch spends a connection: a write that needs one stays
+pending, and a resync is answered with the failure the retry is waiting out and kept. Only a
+failure of the write itself, such as a refused plan, drops an entry. Every call to a Git server is
+bounded, two minutes per call and five per push cycle, so a server that stops answering cannot hold
+the branch.
+
+The kept work is bounded at intake ([`intake.go`](../internal/git/intake.go)). While a retry is
+pending, `--branch-buffer-max-size` counts everything accepted and not yet published: queued items,
+the open window, the pending writes, deferred snapshots and waiting saves, each with a 1 KiB per-item charge.
+The first payload that does not fit pauses the branch's intake until a push lands; room under the
+budget again, or a remote that can be read but refuses the push, keeps it paused. A paused branch's
+watch streams wait to be woken instead of reconnecting, and their cursors stay where the last
+accepted event left them. Withdrawals, refreshes, and shutdown are lifecycle work and are never
+paused. The budget counts serialized bytes; a queued object costs several times that in memory.
+
+Every `GitTarget` on the branch reports the outage from one worker report
+([`publication.go`](../internal/git/publication.go)): `Ready=False`, `Reconciling=True`,
+`Stalled=False` under `Progressing`, naming since when, what failed, and whether intake is paused. A
+held save says the same in its `WaitingForPush` message, and the `git_retained_*`,
+`git_intake_paused` and `git_next_retry_timestamp_seconds` metrics describe the backlog. What this
+recovers, and what watch history and a restart cannot, is the
+[recovery contract](design/gittarget-branch-worker-pending-writes.md#recovery-contract); the
+[event pipeline overview](design/event-pipeline-overview.md) draws it.
+
 ### Durability of the write queue (planned)
 
 A BranchWorker's queue (the open commit window's retained writes plus any local commits not yet pushed)
-lives **only in process memory today**. It is about to be **materialized into Redis**, for two reasons:
+lives **only in process memory today**, bounded as described above. Persisting it to **Redis** is
+planned, for two reasons:
 
 - **High availability.** Multi-pod HA needs a durable, cross-pod write queue so a branch's
   accepted-but-unpushed work survives a failover: the pod that takes the branch-shard lease resumes that
@@ -1505,12 +1538,12 @@ as one funnel and its loss paths as one selector:
 - **Ingest.** `gitopsreverser_watch_events_total{gittarget_*,group,version,resource,outcome}` counts
   every delivered watch event exactly once, at `routeLiveTargetWatchEvent`, the single switch
   carrying every terminal branch. `outcome` separates the pipeline working (`routed`, `unchanged`,
-  `bookmark`) from loss (`route_failed`). Beside it,
+  `bookmark`) from a refusal the watch delivers again (`route_failed`). Beside it,
   `_watch_event_handling_seconds` (stream occupancy, the head-of-line signal),
   `_watch_sessions_ended_total{reason}` and `_watch_replay_duration_seconds` (`410` pressure and
   what a rebuild costs), `_watch_recovery_total{mode}`, and `_watch_types{state}`.
-- **Queue.** `gitopsreverser_git_queue_drops_total{kind}` counts work a full worker queue threw
-  away, and `_git_queue_depth` is read at scrape time rather than published by the worker loop.
+- **Queue.** `gitopsreverser_git_queue_refusals_total{kind}` counts work a worker refused at enqueue,
+  which its producer offers again, and `_git_queue_depth` is read at scrape time rather than published by the worker loop.
 - **Write.** `gitopsreverser_git_documents_total{gittarget_*,group,version,resource,outcome}` is the
   per-document census (`written`, `deleted_live`, `deleted_sweep`, `unchanged`, `retained`), with
   `_placements_total`, `_placement_refusals_total` and `_placement_kustomization_entries_total`

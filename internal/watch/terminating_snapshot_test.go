@@ -40,21 +40,22 @@ func TestFoldTargetReplayEvent_SkipsTerminatingObjects(t *testing.T) {
 		t.Run(string(eventType), func(t *testing.T) {
 			manager := &Manager{}
 			key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-			var desired []manifestanalyzer.DesiredResource
+			var replay replaySnapshot
 
 			done, rv, err := manager.foldTargetReplayEvent(
 				logr.Discard(),
 				types.NewResourceReference("target", "default"),
 				testStream(key),
 				watch.Event{Type: eventType, Object: terminatingConfigMapObject("7")},
-				&desired,
+				&replay,
 			)
 
 			require.NoError(t, err)
 			assert.False(t, done)
 			assert.Empty(t, rv)
-			assert.Empty(t, desired,
+			assert.Empty(t, replay.desired,
 				"a Terminating object must not be folded into the replay's desired set")
+			assert.Empty(t, replay.baselines, "nor given a baseline Git does not hold")
 		})
 	}
 }
@@ -70,7 +71,7 @@ func TestDesiredFromList_ExcludesTerminatingItems(t *testing.T) {
 
 	list := &unstructured.UnstructuredList{Items: []unstructured.Unstructured{*live, *terminating}}
 
-	desired := desiredFromList(configmapsGVR, list)
+	desired := snapshotFromList(configmapsGVR, list).desired
 
 	require.Len(t, desired, 1, "only the live object belongs in the desired set")
 	assert.Equal(t, "still-here", desired[0].Resource.Name)

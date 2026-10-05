@@ -13,10 +13,9 @@ a request on a target that may not be written fails, whatever path ends it
 (`internal/git/write_gate.go`).
 
 Retry progress on quiet branches is fixed: a failed publication schedules its own bounded retry
-(`internal/git/publication_retry.go`, [`push-cooldown.md`](design/push-cooldown.md) §7 option C).
-Still open: when a rebuild's fetch fails, the open window is dropped, and unless the cause was a
-missing parent nothing records the dropped scope or asks for a snapshot, so those writes wait for
-the next resync.
+(`internal/git/retry.go`, [`push-cooldown.md`](design/push-cooldown.md) §7 option C). A window whose
+rebuild fails is no longer dropped: it stays pending for that retry
+([`gittarget-branch-worker-pending-writes.md`](design/gittarget-branch-worker-pending-writes.md)).
 
 **Later, non-blocking:**
 

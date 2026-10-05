@@ -151,7 +151,7 @@ func (f *newBranchFixture) noopResync(loop *branchWorkerEventLoop) {
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 	result := <-req.Result
 	require.NoError(f.t, result.Err)
 	require.Zero(f.t, result.Stats.Created+result.Stats.Updated+result.Stats.Deleted, "the resync must be a no-op")
@@ -295,7 +295,7 @@ func TestBranchWorker_ResyncOnAbsentBranchDiffsAgainstTheMovedParent(t *testing.
 		GitTargetNamespace: "default",
 		Result:             make(chan ResyncResult, 1),
 	}
-	loop.handleQueueItem(WorkItem{Resync: req})
+	loop.handleQueueItem(resyncItem(req))
 	result := <-req.Result
 	require.NoError(t, result.Err)
 	assert.Equal(t, 1, result.Stats.Deleted, "the document main gained is not in the cluster")

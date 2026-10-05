@@ -361,8 +361,8 @@ func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) {
-	if refused, message := r.WatchManager.ObjectSelectorConflictForClusterWatchRule(*clusterRule); refused {
-		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonObjectSelectorConflict, message)
+	if refused, message := r.WatchManager.CollectionOverlapForClusterWatchRule(*clusterRule); refused {
+		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonCollectionOverlap, message)
 		return
 	}
 	resolved, message := r.WatchManager.ResolveClusterWatchRuleResources(ctx, *clusterRule)

@@ -72,9 +72,9 @@ func TestGitFetchesTotal_SteadyStatePublicationDoesNotFetch(t *testing.T) {
 
 	// And still once per CYCLE rather than per commit, which is the property the guard must not
 	// have broken on its way to becoming conditional.
-	f.commit(false, "fourth")
-	f.commit(true, "fifth")
-	f.commit(true, "sixth")
+	f.commit("fourth")
+	f.commit("fifth")
+	f.commit("sixth")
 	f.push()
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonPublication))
 
@@ -115,7 +115,7 @@ func TestGitFetchesTotal_ContentionIsCountedSeparately(t *testing.T) {
 	f := newLedgerFixture(t, "metric-contention", true)
 	f.publish("prime")
 
-	f.commit(false, "mine")
+	f.commit("mine")
 	f.contend("OUTSIDE.md", "from-another-writer\n")
 	f.push()
 
@@ -140,7 +140,7 @@ func TestGitFetchesTotal_PushFailureProbeIsNotContention(t *testing.T) {
 
 	f := newLedgerFixture(t, "metric-probe", true)
 	f.publish("prime")
-	f.commit(false, "mine")
+	f.commit("mine")
 
 	// A push that dies before the remote says anything, on every attempt.
 	original := pushAtomicFn
@@ -168,7 +168,7 @@ func TestGitFetchesTotal_ProbeThenResetWhenTheRemoteDidMove(t *testing.T) {
 
 	f := newLedgerFixture(t, "metric-probe-moved", true)
 	f.publish("prime")
-	f.commit(false, "mine")
+	f.commit("mine")
 
 	original := pushAtomicFn
 	pushes := 0
@@ -212,7 +212,7 @@ func TestGitFetchesTotal_ForcedRecheckAndBootstrap(t *testing.T) {
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
 		"a forced recheck with nothing retained fetches through syncWithRemote")
 
-	f.commit(false, "retained")
+	f.commit("retained")
 	require.NoError(t, f.worker.refreshRemoteAndRebuildPendingWrites(f.worker.ctx, f.pending, fetchReasonForcedRecheck))
 	assert.Equal(t, int64(2), fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),
 		"and with retained writes it fetches through refreshRemoteAndRebuildPendingWrites")
@@ -235,7 +235,7 @@ func TestGitFetchesTotal_IdleTargetNeverFetches(t *testing.T) {
 	for range idleLedgerWindows {
 		loop.finalizeOpenWindow()
 		loop.pushPending()
-		loop.applyDeferredHeals()
+		loop.endWake(0)
 	}
 
 	for _, reason := range []string{
@@ -311,6 +311,7 @@ func TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote(t *testing.
 		Result:             make(chan ResyncResult, 1),
 	}
 	loop.applyResync(req)
+	loop.endWake(0)
 	require.NoError(t, (<-req.Result).Err)
 
 	assert.Greater(t, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck), before,
@@ -347,7 +348,7 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 
 	forcedBefore := fetchCount(t, reader, f.worker, fetchReasonForcedRecheck)
 	f.worker.markWorktreeDirty("a write failed part-way")
-	require.NoError(t, loop.recoverRetainedWrites())
+	require.NoError(t, loop.materialize())
 
 	assert.Equal(t, int64(1), fetchCount(t, reader, f.worker, fetchReasonRecovery),
 		"a recovery is a recovery whether or not a push happened to be in cooldown")
@@ -360,8 +361,8 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 // resync guarantee, and it is worth pinning separately because the fetch is not where you would
 // look for it.
 //
-// prepareBaseForResync owns the fetch on this path. With nothing retained, invalidateAndRefresh
-// drops base trust and then calls syncWithRemote directly rather than leaving the reset to the
+// The resync's own materialize pass owns the fetch on this path. With nothing retained, it
+// calls syncWithRemote directly, which drops base trust first, rather than leaving the reset to the
 // commit that follows, which is what makes the reason `forced_recheck` instead of `publication`:
 // the fetch belongs to the snapshot that asked for it, not to a live publication. Ledger row 10
 // measures the same operation as requests on the wire; this pins which series it lands in.
@@ -390,6 +391,7 @@ func TestGitFetchesTotal_ResyncWithNoRetainedWritesAlsoReadsTheRemote(t *testing
 		Result:             make(chan ResyncResult, 1),
 	}
 	loop.applyResync(req)
+	loop.endWake(0)
 	require.NoError(t, (<-req.Result).Err)
 
 	assert.Equal(t, forcedBefore+1, fetchCount(t, reader, f.worker, fetchReasonForcedRecheck),

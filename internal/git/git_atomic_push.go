@@ -49,7 +49,7 @@ func getPushSession(
 		return nil, fmt.Errorf("failed to parse remote URL: %w", err)
 	}
 
-	session, err := gitclient.New(auth...).Handshake(ctx, &transport.Request{
+	session, err := gitclient.New(boundToContext(ctx, auth)...).Handshake(ctx, &transport.Request{
 		URL:     endpoint,
 		Command: transport.ReceivePackService,
 	})
@@ -391,6 +391,22 @@ func PushAtomic(
 
 	logger := log.FromContext(ctx)
 
+	// One push session is one call to the server: bounded as a whole (network_bound.go), from the
+	// handshake through the advertisement it validates against to the upload.
+	ctx, cancel := boundGitCall(ctx)
+	defer cancel()
+	outcome, err := pushAtomicSession(ctx, repo, rootHash, rootBranch, auth, logger)
+	return outcome, boundedCallError(ctx, err)
+}
+
+func pushAtomicSession(
+	ctx context.Context,
+	repo *git.Repository,
+	rootHash plumbing.Hash,
+	rootBranch plumbing.ReferenceName,
+	auth []gitclient.Option,
+	logger logr.Logger,
+) (PushOutcome, error) {
 	session, err := getPushSession(ctx, repo, auth)
 	if err != nil {
 		return PushOutcome{}, err

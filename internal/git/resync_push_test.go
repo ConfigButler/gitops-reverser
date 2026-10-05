@@ -63,8 +63,7 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	superseded := make(chan ResyncResult, 1)
 	require.True(t, w.EnqueueResync(&ResyncRequest{
 		GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: "1",
-		RefreshRemote: true,
-		Result:        superseded,
+		Result: superseded,
 	}))
 
 	// The queue now has no free slot, yet a second request for the SAME scope is
@@ -87,9 +86,8 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	require.Len(t, w.eventQueue, 1, "coalescing must not consume a second FIFO slot")
 	item := <-w.eventQueue
 	require.NotNil(t, item.Resync)
-	current := w.takePendingResync(item.Resync)
+	current := takenResync(w, item.Resync)
 	assert.Equal(t, "2", current.ResourceVersion, "the marker runs the newest request for its scope")
-	assert.True(t, current.RefreshRemote, "coalescing must preserve a pending remote refresh")
 
 	// The key is cleared, so the next resync for that scope queues a fresh marker.
 	require.True(t, w.EnqueueResync(&ResyncRequest{
@@ -118,7 +116,7 @@ func TestEnqueueResync_CoalescingCarriesTheSurvivingRequest(t *testing.T) {
 
 	item := <-w.eventQueue
 	require.NotNil(t, item.Resync)
-	current := w.takePendingResync(item.Resync)
+	current := takenResync(w, item.Resync)
 	assert.Equal(t, "2", current.ResourceVersion,
 		"the newer snapshot is the one that runs, at the marker's position")
 	assert.Equal(t, collection, current.SourceCollection, "and it still names the collection that gathered it")
@@ -175,7 +173,7 @@ func raceEnqueuesOnOneScope(t *testing.T) (int, int, int) {
 	wg.Wait()
 
 	for len(w.eventQueue) > 0 {
-		if item := <-w.eventQueue; item.Resync != nil && item.Resync.GitTargetName == "contended" {
+		if item := <-w.eventQueue; item.Resync != nil && item.Resync.request.GitTargetName == "contended" {
 			markers++
 		}
 	}
@@ -242,7 +240,7 @@ func TestEnqueueResync_ASelectorChangedBackDoesNotJumpTheOtherSelection(t *testi
 	var order []string
 	for range 3 {
 		item := <-w.eventQueue
-		order = append(order, w.takePendingResync(item.Resync).ResourceVersion)
+		order = append(order, takenResync(w, item.Resync).ResourceVersion)
 	}
 	assert.Equal(t, []string{"100", "101", "102"}, order)
 }
@@ -303,10 +301,10 @@ func TestEnqueueResync_ALabelExitFencesTheSelectedSnapshot(t *testing.T) {
 
 	require.Len(t, w.eventQueue, 3, "the re-entry snapshot queues behind the exit")
 	first := <-w.eventQueue
-	assert.Equal(t, "100", w.takePendingResync(first.Resync).ResourceVersion)
+	assert.Equal(t, "100", takenResync(w, first.Resync).ResourceVersion)
 	assert.NotNil(t, (<-w.eventQueue).Request)
 	last := <-w.eventQueue
-	assert.Equal(t, "103", w.takePendingResync(last.Resync).ResourceVersion)
+	assert.Equal(t, "103", takenResync(w, last.Resync).ResourceVersion)
 }
 
 // TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync pins the
@@ -345,6 +343,7 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 		Desired:            nil,
 		Result:             resultCh,
 	})
+	loop.endWake(0)
 	res := <-resultCh
 	require.NoError(t, res.Err)
 	require.Zero(t, res.Stats.Created+res.Stats.Updated+res.Stats.Deleted,
@@ -401,12 +400,42 @@ func TestEnqueueResync_DoesNotCoalescePastQueuedWrites(t *testing.T) {
 	require.Len(t, w.eventQueue, 3, "the later resync takes its own slot rather than coalescing")
 	firstMarker := <-w.eventQueue
 	require.NotNil(t, firstMarker.Resync)
-	assert.Equal(t, "100", w.takePendingResync(firstMarker.Resync).ResourceVersion,
+	assert.Equal(t, "100", takenResync(w, firstMarker.Resync).ResourceVersion,
 		"the earlier marker runs the snapshot it carried, not the newer one")
 	assert.NotNil(t, (<-w.eventQueue).Request, "the write keeps its position between the snapshots")
 	lastMarker := <-w.eventQueue
 	require.NotNil(t, lastMarker.Resync)
-	assert.Equal(t, "103", w.takePendingResync(lastMarker.Resync).ResourceVersion)
+	assert.Equal(t, "103", takenResync(w, lastMarker.Resync).ResourceVersion)
+}
+
+// A resync coalesced into a queued marker owns that marker's position. When writes queued behind
+// the marker then make a newer resync take its own slot, the marker must still run the request
+// coalesced into it: that request was told it was enqueued, and its caller waits for its answer.
+// It used to run the superseded request it first carried instead, which had been answered already,
+// and the coalesced one was never run nor answered.
+func TestEnqueueResync_AReleasedMarkerRunsTheRequestCoalescedIntoIt(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+	scope := resyncScopePtr(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "app")
+	resync := func(rv string) *ResyncRequest {
+		return &ResyncRequest{GitTargetNamespace: "ns", GitTargetName: "target", ResourceVersion: rv,
+			Scope: scope, Result: make(chan ResyncResult, 1)}
+	}
+	first, coalesced, last := resync("100"), resync("101"), resync("103")
+
+	require.True(t, w.EnqueueResync(first))
+	require.True(t, w.EnqueueResync(coalesced), "coalesced into the first marker's position")
+	require.ErrorIs(t, (<-first.Result).Err, ErrResyncSuperseded)
+	require.True(t, w.Enqueue(liveEvent("target", "app")), "a write now sits behind that marker")
+	require.True(t, w.EnqueueResync(last), "so the newer resync takes its own slot")
+
+	marker := <-w.eventQueue
+	require.NotNil(t, marker.Resync)
+	assert.Same(t, coalesced, takenResync(w, marker.Resync),
+		"the marker runs the request coalesced into it, not the one already answered as superseded")
+	assert.NotNil(t, (<-w.eventQueue).Request)
+	lastMarker := <-w.eventQueue
+	require.NotNil(t, lastMarker.Resync)
+	assert.Same(t, last, takenResync(w, lastMarker.Resync))
 }
 
 // TestEnqueueResync_DoesNotCoalescePastQueuedAttach pins the same fence for a
@@ -470,7 +499,7 @@ func TestEnqueueResync_CoalescesPastUnrelatedWrites(t *testing.T) {
 	require.Len(t, w.eventQueue, 3, "coalescing still costs no extra FIFO slot")
 	marker := <-w.eventQueue
 	require.NotNil(t, marker.Resync)
-	assert.Equal(t, "103", w.takePendingResync(marker.Resync).ResourceVersion)
+	assert.Equal(t, "103", takenResync(w, marker.Resync).ResourceVersion)
 }
 
 // TestEnqueueResync_FenceHoldsUnderConcurrentWrites drives writes and resyncs for one

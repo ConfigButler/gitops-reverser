@@ -46,8 +46,8 @@ type watchedTypeStore struct {
 	// the previous cluster's GVR table.
 	clusterFP uint64
 	resolved  bool
-	// refusals is the last resolution's selector-conflict refusals, keyed by rule; see
-	// refuseSelectorConflicts. It is published with the tables it was decided for, so a rule's
+	// refusals is the last resolution's collection-overlap refusals, keyed by rule; see
+	// refuseCollectionOverlaps. It is published with the tables it was decided for, so a rule's
 	// status never reports a refusal the running plan does not reflect.
 	refusals map[selectingRule]string
 }
@@ -267,8 +267,8 @@ func (m *Manager) clusterMappingFingerprint() uint64 {
 // an empty table so a transient discovery gap does not look like rule removal. The per-target
 // table is stamped with its own cluster's registry generation.
 //
-// A rule whose collections overlap another rule's with a different object selector contributes
-// nothing to its target's table, and is returned among the refusals instead.
+// A rule whose collections overlap a different collection of its target contributes nothing to
+// that target's table, and is returned among the refusals instead.
 func (m *Manager) resolveWatchedTypeTables() (map[string]WatchedTypeTable, map[selectingRule]string) {
 	if m.RuleStore == nil {
 		return map[string]WatchedTypeTable{}, nil
@@ -304,7 +304,7 @@ func (m *Manager) resolveWatchedTypeTables() (map[string]WatchedTypeTable, map[s
 	tables := make(map[string]WatchedTypeTable, len(byTarget))
 	var refusals map[selectingRule]string
 	for key, ts := range byTarget {
-		admitted, refused := refuseSelectorConflicts(ts.selections)
+		admitted, refused := refuseCollectionOverlaps(ts.selections)
 		for rule, reason := range refused {
 			if refusals == nil {
 				refusals = map[selectingRule]string{}
@@ -354,10 +354,11 @@ func (m *Manager) collectWatchRuleSelections(
 				// metadata.namespace. So changing it never moves anything in Git.
 				//
 				// A WILDCARD item emits the empty key deliberately: "*" is one cluster-wide list
-				// and watch, which for a namespaced GVR is the all-namespaces collection. That
-				// collection is a PEER of any named-namespace collection on the same type, never a
-				// replacement — collapsing the two once widened a named rule's stream (CollectionKey
-				// in internal/types/collection.go). An omitted item still resolves to a concrete name.
+				// and watch, which for a namespaced GVR is the all-namespaces collection. It is never
+				// collapsed into a named-namespace collection on the same type — that once widened a
+				// named rule's stream (CollectionKey in internal/types/collection.go) — and one
+				// GitTarget cannot hold both: refuseCollectionOverlaps refuses the newer rule. An
+				// omitted item still resolves to a concrete name.
 				for _, namespace := range rr.SourceNamespaces {
 					ts.selections = append(ts.selections, watchSelection{
 						record: rec, namespace: namespace, labelSelector: rr.LabelSelector, rule: selecting,
@@ -551,7 +552,7 @@ func (m *Manager) rulesFingerprint() uint64 {
 
 // watchRuleFingerprint hashes everything about a compiled WatchRule that can change what it
 // watches, including the rule's identity and age: they decide which of two conflicting rules keeps
-// its collections (refuseSelectorConflicts). Each item's src= component MUST be that item's RESOLVED source-namespace SET, not the
+// its collections (refuseCollectionOverlaps). Each item's src= component MUST be that item's RESOLVED source-namespace SET, not the
 // WatchRule object's own namespace and not the requested value.
 //
 // It is now derivable from the rule spec alone: a wildcard resolves to the one cluster-wide collection
@@ -591,24 +592,23 @@ func clusterWatchRuleFingerprint(rule rulestore.CompiledClusterRule) string {
 	return b.String()
 }
 
-// ObjectSelectorConflictForWatchRule reports whether the rule is refused because one of its
-// collections overlaps another rule's on the same GitTarget with a different object selector, and
-// why. It reads the resolution the running plan was built from, refreshing it first.
-func (m *Manager) ObjectSelectorConflictForWatchRule(rule configv1alpha3.WatchRule) (bool, string) {
-	return m.objectSelectorConflict(selectingRule{
+// CollectionOverlapForWatchRule reports whether the rule is refused because one of its
+// collections overlaps a different collection on the same GitTarget, and why. It reads the resolution the running plan was built from, refreshing it first.
+func (m *Manager) CollectionOverlapForWatchRule(rule configv1alpha3.WatchRule) (bool, string) {
+	return m.overlapRefusal(selectingRule{
 		kind: ruleKindWatchRule, namespace: rule.Namespace, name: rule.Name, createdAt: rule.CreationTimestamp,
 	})
 }
 
-// ObjectSelectorConflictForClusterWatchRule is ObjectSelectorConflictForWatchRule for a
+// CollectionOverlapForClusterWatchRule is CollectionOverlapForWatchRule for a
 // ClusterWatchRule.
-func (m *Manager) ObjectSelectorConflictForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) (bool, string) {
-	return m.objectSelectorConflict(selectingRule{
+func (m *Manager) CollectionOverlapForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) (bool, string) {
+	return m.overlapRefusal(selectingRule{
 		kind: ruleKindClusterWatchRule, name: rule.Name, createdAt: rule.CreationTimestamp,
 	})
 }
 
-func (m *Manager) objectSelectorConflict(rule selectingRule) (bool, string) {
+func (m *Manager) overlapRefusal(rule selectingRule) (bool, string) {
 	m.refreshWatchedTypeTables()
 	m.watchedTypes.mu.Lock()
 	defer m.watchedTypes.mu.Unlock()

@@ -144,10 +144,6 @@ type GitTargetReconciler struct {
 	// value is usable.
 	reconcileRequests reconcileRequestTracker
 
-	// snapshotRequests remembers which of a branch worker's snapshot requests were acted on, so a
-	// missing parent's recovery forces one recheck per request rather than one per reconcile.
-	snapshotRequests snapshotRequestTracker
-
 	// remotePublications is what each GitTarget last wrote to status.remote: when, and about which
 	// repository. It is internal by design; see remotePublicationLedger.
 	remotePublications remotePublicationLedger
@@ -188,10 +184,10 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	st := beginStatus(r.Client, r.Recorder, &target)
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
-	// Writes are dropped while the parent is missing, so its return is recovered the way a refused
-	// folder is: by a recheck that re-derives what the cluster holds. The branch worker decides
-	// when, and asks; this acts once per request.
-	parentRecheck, recoveringParent := r.parentRecovery(&target, target.Namespace)
+	// The branch worker keeps the writes decided while the parent is missing and publishes them when
+	// it returns, so nothing has to be re-derived; this only reports the progress.
+	recoveringParent := r.parentRecovering(&target, target.Namespace)
+	publication := r.branchPublication(&target, target.Namespace)
 
 	providerNS := target.Namespace
 	// One read of the GitProvider for everything below it; see getGitProvider.
@@ -277,7 +273,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// A standing reconcile request forces the same re-check a refused Git path does: the watch
 	// plane re-anchors the target's streams, which is what makes it re-read the folder rather than
 	// wait for the periodic pass. Taken once per distinct annotation value.
-	forceRecheck := gitPathWasRefused || parentRecheck || r.reconcileRequests.take(
+	forceRecheck := gitPathWasRefused || r.reconcileRequests.take(
 		types.NewResourceReference(target.Name, target.Namespace), reconcileRequestedAt(&target))
 	observed := r.observeDataPlane(&target, sourceProvider, forceRecheck, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
@@ -289,7 +285,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	rd := newGitTargetReadiness()
 	convergeAsSuspended(rd, &target)
 	gitTargetReadinessGates(rd, observed, r.parentBranchReadiness(&target, providerNS, repoIdentityOf(gitProvider)),
-		refs.gitProvider, refs.clusterProvider, refs.sourceCluster)
+		refs.gitProvider, refs.clusterProvider, refs.sourceCluster, publicationCondition(publication))
 	parentRecoveryReadiness(rd, recoveringParent)
 	st.applyReadiness(rd)
 
@@ -775,7 +771,7 @@ func (r *GitTargetReconciler) publishReferenceReadiness(
 func gitTargetReadinessGates(
 	rd *readiness,
 	observed dataPlaneObservation,
-	parent, provider, clusterProvider, sourceReach conditionValue,
+	parent, provider, clusterProvider, sourceReach, publication conditionValue,
 ) {
 	// Terminal, most specific first. Each of these needs a human: the folder holds content the
 	// operator will not manage, the write branch has no parent to be created from, a watch is
@@ -800,6 +796,10 @@ func gitTargetReadinessGates(
 	// An unconfirmed source has not been established at all, so Ready is Unknown rather than False.
 	rd.progressingIf(sourceReach.Status == metav1.ConditionUnknown, metav1.ConditionUnknown,
 		sourceReach.Reason, sourceReach.Message)
+	// The branch cannot publish. Ahead of this target's own data plane, because it explains it: a
+	// branch that paused intake keeps its streams waiting, and they say only that they wait.
+	rd.progressingIf(publication.Status == metav1.ConditionFalse, metav1.ConditionFalse,
+		publication.Reason, publication.Message)
 	rd.progressingIf(observed.axes.Render.Status == metav1.ConditionUnknown, metav1.ConditionFalse,
 		observed.axes.Render.Reason, observed.axes.Render.Message)
 	rd.progressingIf(observed.axes.Streams.Status != metav1.ConditionTrue, metav1.ConditionFalse,
@@ -1465,7 +1465,6 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// condition gauge is released on the same terms and for a sharper reason: a condition series
 	// that outlives its object reports Ready=False forever and the alert on it never clears.
 	r.reconcileRequests.forget(gitDest)
-	r.snapshotRequests.forget(gitDest)
 	// Same terms: the publication ledger is this reconciler's memory of what the object's status
 	// said, and an entry that outlives the object is a rate limit held against a name that may be
 	// recreated tomorrow with nothing published.
@@ -1598,6 +1597,16 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("gittarget")
+
+	// React to a change of the branch worker's publication report (an outage starting, intake
+	// pausing, a push landing), so the status says so within one reconcile instead of at the next
+	// steady requeue.
+	if r.WorkerManager != nil && r.WorkerManager.PublicationEvents() != nil {
+		b = b.WatchesRawSource(source.Channel(
+			r.WorkerManager.PublicationEvents(),
+			&handler.EnqueueRequestForObject{},
+		))
+	}
 
 	// React to a data-plane GitPath acceptance TRANSITION (refused/recovered) so GitPathAccepted
 	// is re-projected within one reconcile instead of lagging up to RequeueSteadyInterval (5m).

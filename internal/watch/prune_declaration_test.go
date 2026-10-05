@@ -145,6 +145,7 @@ func TestReplaceGitTargetWatches_ForceReplaysAnUnchangedSet(t *testing.T) {
 		},
 	}
 	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+	t.Cleanup(manager.targetWatchesRunning.Wait)
 
 	table := WatchedTypeTable{
 		GitDest: gitDest,

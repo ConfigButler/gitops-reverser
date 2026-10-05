@@ -144,7 +144,7 @@ func TestWithdraw_AnOutcomeIsKeptWhileAnAttachForItIsQueued(t *testing.T) {
 	require.True(t, kept, "an outcome with an attach still queued is not collected")
 
 	loop.handleQueueItem(<-worker.eventQueue)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	assert.Empty(t, loop.pendingCRs, "the late attach does not register the withdrawn request")
 	res, _ := outcome(t, worker)
 	require.ErrorIs(t, res.Err, ErrCommitRequestWithdrawn)

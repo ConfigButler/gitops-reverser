@@ -54,14 +54,14 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 	defer w.pendingResyncsMu.Unlock()
 	if w.stoppingLocked() {
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropRefresh)
+		w.recordQueueRefusal(queueRefusalRefresh)
 		return
 	}
 	select {
 	case w.eventQueue <- WorkItem{Refresh: req}:
 	default:
 		w.inflightItems.Add(-1)
-		w.recordQueueDrop(queueDropRefresh)
+		w.recordQueueRefusal(queueRefusalRefresh)
 		w.Log.V(1).Info("Event queue full, refresh dropped; the next reconcile asks again",
 			"branch", w.Branch, "gitTarget", req.Target.String())
 	}
@@ -107,7 +107,7 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	// commits, and the worktree may hold a partial write — which is also why this is the one exit
 	// that does not re-read the folder: a layout resolved from a half-written tree is worse than
 	// a slightly old one. A target mid-cycle is writing, and a write publishes its own layout.
-	if len(l.pendingWrites) > 0 || l.openWindow != nil || w.worktreeDirty() || w.replayRequired() {
+	if len(l.pendingWrites) > 0 || l.openWindow != nil || w.worktreeDirty() {
 		w.Log.V(1).Info("Skipping refresh: this branch is mid-cycle",
 			"branch", w.Branch, "gitTarget", req.Target.String())
 		return
@@ -201,7 +201,7 @@ func (l *branchWorkerEventLoop) refreshFromRemote(provider *configv1alpha3.GitPr
 	// different repository.
 	parentBranch := w.ParentBranch()
 	advertisement, err := advertiseRemoteBranchFn(
-		w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), parentBranch, auth)
+		ctx, w.repo.URL, plumbing.NewBranchReferenceName(w.Branch), parentBranch, auth)
 	if err != nil {
 		return fmt.Errorf("read the remote advertisement: %w", err)
 	}
@@ -424,13 +424,14 @@ type remoteAdvertisement struct {
 // means the advertisement did not carry the branch, which includes an empty repository — an
 // observation rather than an error: a branch does not exist without a commit.
 func advertiseRemoteBranch(
+	ctx context.Context,
 	remoteURL string,
 	branch plumbing.ReferenceName,
 	parentBranch string,
 	auth []gitclient.Option,
 ) (remoteAdvertisement, error) {
 	remote := gogit.NewRemote(nil, &config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
-	refs, err := listRemoteRefs(remote, auth)
+	refs, err := listRemoteRefs(ctx, remote, auth)
 	if err != nil {
 		return remoteAdvertisement{}, err
 	}

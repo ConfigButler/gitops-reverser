@@ -68,23 +68,27 @@ controllerManager:
   # writing to one (GitProvider, branch), so pointing another GitTarget at a branch
   # divides the headroom of a worker already in use.
   #
-  # A full queue DROPS the write and counts git_queue_drops_total, rather than stalling
-  # the watch path behind a slow remote. Convergence heals the mirror afterwards, but the
-  # live attributed commit for a dropped write never happens — so raise this if
-  # git_queue_drops_total is ever non-zero. Size it so a bounded burst cannot overrun it:
+  # A full queue REFUSES the write and counts git_queue_refusals_total, rather than stalling
+  # the watch path behind a slow remote. The watch keeps its cursor and delivers the write
+  # again, but its stream stalls meanwhile, and a cursor that expires first loses that
+  # write's own commit (and, under prune.mode OnEvent, a delete's removal) — so raise this if git_queue_refusals_total is non-zero on a healthy
+  # branch. Size it so a bounded burst cannot overrun it:
   # roughly (concurrent writers) x (GitTargets sharing the branch worker). Note that an
   # administrative burst (an unpaced `kubectl delete` of many objects) is far spikier than
   # the steady-state traffic the depth gauge shows you.
   #
-  # Costs pod memory ON TOP of branchBufferMaxSize, which does NOT cover this queue: that
-  # cap is accounted only after an item leaves it. Budget queue depth x serialized size
+  # Costs pod memory ON TOP of branchBufferMaxSize on a healthy branch, where that cap does
+  # NOT cover this queue (during a Git outage it does). Budget queue depth x serialized size
   # x ~6 (a queued object is held as an unstructured map), per SATURATED worker — about
   # 5Mi at this default for ~800-byte resources, but the multiplier is on the payload, so
   # size it against your own if you mirror megabyte-sized ConfigMaps or Secrets.
   branchWorkerQueueDepth: 1000
   # Maximum in-memory event buffer per branch worker, as a Kubernetes resource quantity.
   # Bounds the open commit window plus the writes retained for replay until a push
-  # succeeds; tripping it finalizes the window early, ignoring the commit cadence.
+  # succeeds; tripping it finalizes the window early, ignoring the commit cadence. While the
+  # remote cannot be reached, it also bounds everything the worker accepts, queued work
+  # included: work that would exceed it pauses the worker's intake of new writes, saves and
+  # resyncs until a push lands, and the watch delivers what was refused once intake reopens.
   branchBufferMaxSize: 8Mi
   # How long a CommitRequest is kept once it finishes, as a duration. Every save leaves one object
   # behind, so without this they accumulate for as long as the namespace lives. The controller

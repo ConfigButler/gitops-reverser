@@ -635,7 +635,7 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	localRepoPath := worker.repoPath()
@@ -753,7 +753,7 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteMainRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
@@ -886,7 +886,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitterAndTargetMessage
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
@@ -1008,7 +1008,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 
 	pendingWrite, err := worker.buildAtomicPendingWrite(worker.ctx, request)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
@@ -1114,7 +1114,7 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)

@@ -458,7 +458,6 @@ func TestOwner_AStreamOutlivesThePassThatStartedIt(t *testing.T) {
 		keysByCollection([]targetWatchKey{{GVR: configmapsGVR, Namespace: "apps"}}),
 		map[types.CollectionKey]uint64{},
 		[]types.CollectionKey{types.CollectionKeyFor(configmapsGVR, "apps")},
-		false,
 	)
 	require.Len(t, started, 1)
 	streamCtx = started[0].ctx

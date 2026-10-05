@@ -58,7 +58,7 @@ func TestCommitEmpty_NoWindowBeforeTheTimeoutRecordsTheMessage(t *testing.T) {
 
 	serviceAttach(loop, commitEmptyReq("alice", "save: nothing changed"))
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	loop.pushPending()
 
 	res, ok := outcome(t, worker)
@@ -126,7 +126,7 @@ func TestCommitEmpty_AWindowMismatchNeverFallsBackToAnEmptyCommit(t *testing.T) 
 	serviceAttach(loop, commitEmptyReq("bob", "bob's save"))
 	writeTo(loop, "alices-edit") // only alice's window is ever open
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -148,7 +148,7 @@ func TestCommitEmpty_ResolveIsTheDefaultAndCommitsNothing(t *testing.T) {
 	req.Message = "save"
 	serviceAttach(loop, req)
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -194,7 +194,7 @@ func TestCommitEmpty_AFailedPushTreatsEveryCommitShapeAlike(t *testing.T) {
 			commit: func(loop *branchWorkerEventLoop) {
 				serviceAttach(loop, commitEmptyReq("alice", message))
 				forceDue(loop)
-				loop.serviceCommitRequests()
+				loop.endWake(0)
 			},
 			outcome: FinalizeNoOpenWindow,
 			empty:   true,
@@ -275,7 +275,7 @@ func TestCommitEmpty_AFailedRecordFailsTheRequest(t *testing.T) {
 	// message to be recorded, and reporting a benign NoWindow would hide that it was not.
 	serviceAttach(loop, commitEmptyReq("alice", "save"))
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -323,7 +323,7 @@ func TestCommitEmpty_ARecordThatFailedToPushLandsInOrderAfterTheRemoteMoved(t *t
 	// The record, then a failed push.
 	serviceAttach(loop, commitEmptyReq("alice", message))
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	require.Len(t, loop.pendingWrites, 1)
 	staleRecordSHA := loop.pendingWrites[0].CommitSHA
 	loop.pushPending()
@@ -409,7 +409,7 @@ func TestCommitEmpty_ARecordOnARepositoryWithNoHistoryKeepsItsCause(t *testing.T
 
 	serviceAttach(loop, commitEmptyReq("alice", "save: the first commit"))
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	loop.pushPending()
 
 	res, ok := outcome(t, worker)
@@ -443,7 +443,7 @@ func TestCommitEmpty_ABufferFlushStillServesTheWaitingSaves(t *testing.T) {
 		serviceAttach(loop, req)
 		writeTo(loop, "oversized")
 		assert.Nil(t, loop.openWindow, "the buffer limit flushed the window")
-		loop.serviceCommitRequests()
+		loop.endWake(0)
 		loop.pushPending()
 
 		res, ok := outcome(t, worker)
@@ -467,7 +467,7 @@ func TestCommitEmpty_ABufferFlushStillServesTheWaitingSaves(t *testing.T) {
 		writeTo(loop, "oversized") // alice's write, flushed in the step that opened it
 		require.Len(t, loop.pendingWrites, 1, "only alice's commit")
 		forceDue(loop)
-		loop.serviceCommitRequests()
+		loop.endWake(0)
 
 		res, ok := outcome(t, worker)
 		require.True(t, ok)

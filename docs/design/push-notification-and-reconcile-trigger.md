@@ -163,6 +163,12 @@ stateDiagram-v2
   at a SHA that is on no remote. `worktreeDirty` cannot cover this, because the reset **clears**
   `worktreeDirty` at exactly the moment the problem starts.
 
+The second and third questions are now one count, `checkoutApplied`: how many retained writes the
+checkout holds on top of its root. Unknown is `worktreeDirty`; a count below the retained writes is
+`replayRequired`, and a reset sets it to zero, so the reset no longer hides the problem it starts.
+The loop's `materialize` is the one place that acts on it
+([`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md), step 1).
+
 A cycle plans straight onto the worktree only when the base is trusted and the tree is clean:
 
 ```mermaid

@@ -7,6 +7,101 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `git_queue_drops_total` is now `git_queue_refusals_total`
+
+`gitopsreverser_git_queue_drops_total` is renamed `gitopsreverser_git_queue_refusals_total`, with the
+same labels (`provider_namespace`, `provider_name`, `branch`, `kind`). A refused item is no longer
+lost: the watch keeps its cursor and delivers a refused write again, the controller re-sends a save,
+a refused resync is gathered again, and the next reconcile asks for a refresh again. Only a watch
+cursor that expires before the write comes back costs something: that write's own commit, and under
+`prune.mode: OnEvent` a deleted object's removal from Git. The counter counts both a full queue and
+a branch that has paused intake through a Git outage.
+
+Update every dashboard and alert that names the old series; nothing emits it any more. The suggested
+alert now fires on a healthy branch only:
+`rate(gitopsreverser_git_queue_refusals_total[5m]) > 0 unless on(provider_namespace, provider_name,
+branch) gitopsreverser_git_intake_paused == 1`, `for: 10m`. See
+[Interpreting metrics](interpreting-metrics.md).
+
+## A `GitTarget` says when its branch cannot publish
+
+While a branch worker cannot publish to its Git remote (the remote cannot be reached, or it refuses
+the push), every `GitTarget` on that branch reports `Ready=False` with reason `Progressing`,
+`Reconciling=True` and `Stalled=False`. The message says since when, what the last attempt met, and
+whether intake of new changes is paused. It used to report `Ready=True` through such an outage,
+and, once intake paused, `Stalled=True` with `WatchError`, because the refused streams were graded
+as broken watches. A stream waiting for its branch to reopen intake now reports `BranchIntakePaused`.
+The message changes only when the cause or the pause does, so a long outage does not write status
+on every retry. A missing parent branch is still reported as `ParentBranchNotFound`.
+
+`kubectl wait --for=condition=Ready` therefore waits through a Git outage, where it used to return,
+and an alert on `Stalled=True` no longer fires for one. A save waiting for its push keeps
+`WaitingForPush`, and its message now says why.
+
+New metrics describe the backlog without a status write per attempt:
+`gitopsreverser_git_retained_bytes`, `gitopsreverser_git_retained_writes`,
+`gitopsreverser_git_intake_paused`, `gitopsreverser_git_oldest_retained_write_timestamp_seconds`,
+`gitopsreverser_git_next_retry_timestamp_seconds`, and the counter
+`gitopsreverser_git_materialization_failures_total`. See
+[Interpreting metrics](interpreting-metrics.md).
+
+## A `GitTarget` watches each object through one collection
+
+**Breaking.** One `GitTarget` may no longer watch a type both in all namespaces
+(`sourceNamespace: "*"`) and in a named namespace, even with the same `objectSelector`; overlapping
+collections with different selectors were already refused. The older rule keeps its collections;
+the newer one is refused as a whole with `ResourcesResolved=False` and reason `CollectionOverlap`,
+which replaces `ObjectSelectorConflict`. The message names both rules and both scopes. Exact
+duplicates are still allowed and share one stream, and different `GitTarget`s never conflict. See
+[overlapping collections](configuration.md#overlapping-collections).
+
+Before upgrading, find targets that hold a `"*"` item and a named-namespace item for the same type,
+and remove the redundant one, or move the narrower one to its own `GitTarget`. Otherwise the newer
+rule stops mirroring after the upgrade. Alerts or scripts that match `ObjectSelectorConflict` must
+match `CollectionOverlap`.
+
+An update whose Git-visible content did not change is now also filtered right after a replay, so
+`gitopsreverser_watch_events_total{outcome="unchanged"}` rises and fewer status-only updates reach
+the branch worker.
+
+## A Git server that stops answering no longer holds a branch
+
+Every call to a Git server has a deadline: two minutes for one advertisement, fetch or push
+session, and five minutes for a whole push cycle, contention retries included. A server that accepts
+a connection and then stops answering used to hold the branch worker, and every `GitTarget` on that
+branch, indefinitely: no saves, withdrawals or later writes were handled, and over SSH even a
+shutdown waited for the connection to die. The same bound applies to the `GitProvider` controller's
+connectivity check.
+
+A call that runs out of time fails like any other unreachable remote. The writes stay pending, a
+save stays `WaitingForPush`, and the retry schedule attempts them again; the error names
+`context deadline exceeded`. A push whose reply was lost after the server took it is recognized on
+the next look at the remote, when the branch is still at the commits it sent, and published as is,
+so a save's empty commit does not land twice. When another writer has pushed on top in the
+meantime, the writes are replayed as for any other contention.
+
+## A save survives a remote that cannot be reached
+
+A `CommitRequest` whose window closes while the remote cannot be reached stays `WaitingForPush` and
+resolves `Committed` once the remote is back, with its own message and author. It used to resolve
+`Ready=False` with `FinalizeFailed`, and the window's changes waited for the next resync. The window
+is kept as well when no request rides it, so `gitopsreverser_git_commit_failures_total` no longer
+counts an unreachable remote. Automation that treated `FinalizeFailed` as "the remote is down, try
+again" now sees the request wait instead.
+
+A configured `spec.parentBranch` that the remote does not carry holds writes back the same way:
+they are kept and published once the parent exists, with their own authors and messages, instead of
+being dropped and re-derived from a snapshot of the cluster. A save on such a target waits too.
+
+The kept work is bounded at intake. During an outage, work that would take a branch past its
+retained-byte budget (`controllerManager.branchBufferMaxSize`) pauses the worker's intake: it refuses
+new writes, saves and resyncs the way a full queue does until a push lands, so
+`gitopsreverser_watch_events_total{outcome="route_failed"}` and
+`gitopsreverser_git_queue_refusals_total` rise during such an outage. The budget counts queued work and
+every kept item, empty saves included. A paused branch's watch streams wait for it to reopen instead
+of reconnecting every two seconds, and deliver what was refused once it does. See
+[Interpreting metrics](interpreting-metrics.md).
+
 ## A save on a target that may not be written fails
 
 A `CommitRequest` on a suspended `GitTarget`, or on one whose render fidelity is not established,
@@ -1527,9 +1622,8 @@ connections and a hundred list calls at warm-up, each with its own cursor and it
 apiserver watch cache; it is one of each now, and the saving grows with the cluster. And its failure
 mode is a clean 403 rather than a silently empty set.
 
-A `"*"` item and a named-namespace item for the same type are **peers**, not duplicates. Each rule
-carries its own `operations` filter, so a target holding both runs two streams over overlapping
-objects. That is correct, not something to tune away.
+A later release refuses a `"*"` item and a named-namespace item for the same type on one target;
+see [A `GitTarget` watches each object through one collection](#a-gittarget-watches-each-object-through-one-collection).
 
 ## A GitTarget must cover exactly one kustomize render root
 

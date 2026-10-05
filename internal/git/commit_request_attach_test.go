@@ -34,7 +34,7 @@ const (
 // does after dequeuing an attach work item.
 func serviceAttach(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
 	loop.handleAttachCommitRequest(req)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 }
 
 // attachReq builds a CurrentOrNext request that waits up to d for a window and, once attached,
@@ -65,6 +65,7 @@ func forceDue(loop *branchWorkerEventLoop) {
 	if loop.openWindow != nil && loop.openWindow.pendingCR != nil && *loop.openWindow.pendingCR == id {
 		loop.openWindow.timers.maxAt = past
 		loop.closeOrArmWindow()
+		loop.endWake(0)
 	}
 }
 
@@ -220,14 +221,14 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
 	}})
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	require.NotNil(t, loop.openWindow)
 	require.NotNil(t, loop.openWindow.pendingCR, "the opened window must carry the attached request")
 	assert.Equal(t, "bundle save", loop.openWindow.pendingMessage)
 
 	// Grace elapses → the collected window is finalized as one commit.
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -286,7 +287,7 @@ func TestAttach_AnExpiredWaitNeverTakesALaterWindow(t *testing.T) {
 		Events:     []Event{configMapTargetEvent("late", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
 	}})
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok, "the overdue request must resolve in this pass")
@@ -316,13 +317,13 @@ func TestAttach_WritesAfterTheClaimJoinOneCommit(t *testing.T) {
 			Events:     []Event{configMapTargetEvent(name, "alice", "team-a")},
 			CommitMode: CommitModePerEvent,
 		}})
-		loop.serviceCommitRequests()
+		loop.endWake(0)
 		_, resolved := outcome(t, worker)
 		require.False(t, resolved, "a write inside the delay must not close the window: %s", name)
 	}
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
 	require.NoError(t, res.Err)
@@ -366,7 +367,7 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	require.Nil(t, loop.openWindow.pendingCR, "bob's attach must not claim alice's window")
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -392,7 +393,7 @@ func TestAttach_NoWindowAtAllIsNotAMismatch(t *testing.T) {
 	require.Nil(t, loop.openWindow, "precondition: nothing is open")
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -426,7 +427,7 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 	require.Nil(t, loop.openWindow, "precondition: nothing is open when bob's grace runs out")
 
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -492,7 +493,7 @@ func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
 		CommitMode: CommitModePerEvent,
 	}})
 	require.NotNil(t, loop.openWindow)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
@@ -522,9 +523,11 @@ func TestAttach_IdempotentReSendKeepsFirstDeadline(t *testing.T) {
 	assert.Equal(t, firstDeadline, loop.pendingCRs[id].attachDeadline, "the first deadline must be kept")
 }
 
-// TestAttach_FinalizeFailureResolvesFailed verifies that when the attached
-// window's commit fails (unreachable remote) the request resolves with an error.
-func TestAttach_FinalizeFailureResolvesFailed(t *testing.T) {
+// TestAttach_AnUnreachableRemoteHoldsTheRequest pins gap 4's contract for a save. A window whose
+// commit cannot be made because the remote cannot be reached is a decided write, not a failed
+// one: it stays pending for the publication retry, and the request riding it is held in
+// WaitingForPush, because its write can still land. It used to be dropped and the request failed.
+func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -562,10 +565,13 @@ func TestAttach_FinalizeFailureResolvesFailed(t *testing.T) {
 
 	serviceAttach(loop, attachReq("alice", 0))
 
-	res, ok := outcome(t, worker)
-	require.True(t, ok)
-	require.Error(t, res.Err, "an unreachable remote must resolve the request with an error")
-	assert.Nil(t, loop.openWindow, "a failed finalize still drops the broken window")
+	_, resolved := outcome(t, worker)
+	assert.False(t, resolved, "a request whose write can still land is not failed")
+	assert.Equal(t, PhaseWaitingForPush, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
+	assert.Nil(t, loop.openWindow, "the window closed on its own timers")
+	require.Len(t, loop.pendingWrites, 1, "the decided window stays pending")
+	assert.False(t, loop.pendingWrites[0].committedOnce, "nothing could commit it yet")
+	assert.True(t, loop.retry.pending(), "the publication retry owns the next attempt")
 }
 
 // TestFinalizeOpenWindow_ReturnsCommittedFlag verifies the boolean contract of
@@ -701,6 +707,7 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 		Scope:              &scope,
 		Result:             resultCh,
 	})
+	loop.endWake(0)
 	require.NoError(t, (<-resultCh).Err)
 
 	res, ok := outcome(t, worker)
@@ -1024,7 +1031,7 @@ func TestAttach_ACommittedRequestNeverClaimsAnotherWindow(t *testing.T) {
 		CommitMode: CommitModePerEvent,
 	}})
 	require.NotNil(t, loop.openWindow)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 
 	assert.Nil(t, loop.openWindow.pendingCR,
 		"a request whose window is already committed must not claim a second window")

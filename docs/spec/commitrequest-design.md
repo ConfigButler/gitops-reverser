@@ -1,6 +1,7 @@
 # CommitRequest window finalization
 
-> **spec** — current behaviour. The code depends on this document; change one, change the other.
+> **spec**: current behavior, reviewed at `373bf8d7` on 2026-10-03.
+> The code depends on this document; change one, change the other.
 > Index: [`../INDEX.md`](../INDEX.md)
 
 A `CommitRequest` is a one-shot “save now” command for one `GitTarget`. It does not mirror the
@@ -100,7 +101,11 @@ object is visible.
 | No same window before deadline | `Ready=True`, `Pushed=False`, reason `NoWindow` or `WindowMismatch` |
 | Nothing to commit, with `whenNothingToCommit: CommitEmpty` | `Ready=True`, `Pushed=True`, reason `NoWindow` or `AlreadyPresent`; `status.commit` is the empty commit |
 | Window produced no diff, and the remote agreed | `Ready=True`, `Pushed=False`, reason `AlreadyPresent` |
-| Finalize or push error, or a target that may not be written | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
+| Terminal write failure, withdrawal before the worker holds it, shutdown with an unresolved held write, or a target that may not be written | `Ready=False`, `Pushed=False`, `Stalled=True`, reason `FinalizeFailed` |
+
+A retryable materialization or push failure keeps a held request in `WaitingForPush`; it is not a
+terminal outcome. Publication has to settle the request or the worker must establish that it will
+no longer execute it before the controller can report failure.
 
 `Reconciling=True` is the normal in-progress state, with the phase the worker reports as its reason:
 `Progressing`, `WaitingForWorker`, `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`. Once the
@@ -127,13 +132,13 @@ produced no diff used to resolve `AlreadyPresent` at finalize, on the strength o
 That was only sound while every cycle fetched before it planned. It no longer does (see
 [inbound push notification](../design/push-notification-and-reconcile-trigger.md) §3), so the plan may have run
 against a tree the remote has moved past, and the replay that follows a rejected push can turn the
-same captured object into a real commit. "Already present" is a claim about the remote, so the
+same captured object into a commit. "Already present" is a claim about the remote, so the
 remote settles it: a no-diff request resolves `AlreadyPresent` when the push confirms there was
 nothing to add, and `Committed` when the replay produced a commit after all.
 
-**A request whose window has committed stays identifiable until then.** It is neither pending nor
-resolved in that interval, and the controller keeps re-sending its attach every couple of seconds
-until it reads an outcome. The worker marks such a request committed rather than forgetting it, so
+**A request whose write is decided stays identifiable until publication.** It remains attached to
+that write, and the controller keeps re-sending its attach every couple of seconds until it reads
+an outcome. The worker keeps that attachment even when local materialization is deferred, so
 the re-send is recognized as the same request: it cannot register afresh and expire into
 `NoWindow` while its commit waits out the push cooldown, and it cannot claim the next same-author
 window and stamp its message on somebody else's commit. Its attach deadline is spent and no longer
@@ -147,28 +152,60 @@ remote" says what happened.
 
 Two gates stop a GitTarget being written at all: `spec.suspend`, and a render-fidelity check that
 has not passed. One branch worker serves every GitTarget on its branch, and each gate applies per
-GitTarget, so a sibling target's save is unaffected. A third condition, a failed push, is not a gate
-but a retry:
+GitTarget, so a sibling target's save is unaffected. A third condition, an unreachable remote, is
+not a gate but a retry:
 
-| Path | Suspended | Render fidelity not established | Push fails |
+| Path | Suspended | Render fidelity not established | Remote unreachable (commit or push) |
 |---|---|---|---|
-| Live window, no request | The window still scans, writes nothing | Writes dropped on arrival, and the window dropped at close; the next resync re-derives them | The commit is kept and published by a later push |
+| Live window, no request | The window still scans, writes nothing | Writes dropped on arrival, and the window dropped at close; the next resync re-derives them | The decided write is kept and published by a later push |
 | Window a request is attached to | The request fails; the window still scans | The request fails | The request stays `WaitingForPush` |
 | Request no window reached, `Resolve` or `CommitEmpty` | The request fails; no empty commit | The request fails; no empty commit | `CommitEmpty`: the record is kept, `WaitingForPush` |
-| A gate closes after the request's local commit | The commit is pushed and the request resolves with it | Same | Same, once a push lands |
+| A gate closes after the request's window closed | The write is pushed and the request resolves with it | Same | Same, once a push lands |
 
 A request fails with `FinalizeFailed` and the gate as its message, under either
 `whenNothingToCommit`: `NoWindow` would say the save saw no writes, and a target that drops or
 suppresses its writes cannot say that. `WindowMismatch` is the exception, because another author's
 window refused that request and its reason says so.
 
-The gates are read when the commit is made, as `suspend` already was for every write. A local commit
-made before a gate closed is pushed rather than kept back, because a commit that never left the
-operator's checkout would surface later, out of order.
+The gates are read when the window closes, which is when the write is decided and normally when it
+is committed. A write decided before a gate closed is pushed rather than kept back, because a write
+that never left the worker would surface later, out of order.
 
-A failed push schedules its own retry (10s, doubling to 5m), with parent recovery owning attempts
-while its obligation remains active. A request riding the retained write stays `WaitingForPush`
-until publication resolves it or worker shutdown fails it. An unavailable remote can leave it
-pending indefinitely, but retries no longer depend on another commit arriving.
+A decided write is kept when the remote cannot be reached, whether that happens at its commit (a
+rebuild of the checkout that needs a fetch) or at its push. The worker retries on its own schedule
+(10s, doubling to 5m), with parent recovery owning attempts while its obligation remains active. A
+request riding the write stays `WaitingForPush` until publication resolves it or worker shutdown
+fails it. An unavailable remote can leave it pending indefinitely, but retries no longer depend on
+another commit arriving. Only a failure of the write itself fails the request: a refused plan, or a
+write that cannot be made. A missing parent branch is a remote that cannot take the write yet, and
+holds the request the same way, and its `WaitingForPush` message says why the push has not landed,
+in the words its `GitTarget` uses. While an outage has paused the branch's intake, a new request is
+refused at admission and the controller sends it again; past its safety window, it fails with
+`FinalizeFailed` only after withdrawal confirms that the worker does not hold it.
+
+### Capacity, replay, and restart limits
+
+The budget charges every kept item its payload bytes, its message, and a fixed overhead for its
+bookkeeping, so a stream of empty saves fills it too. It counts queued work, retained writes, and
+requests still waiting for a window. A refusal pauses the branch's intake until a push lands; see
+the [branch-worker pending-writes plan](../design/gittarget-branch-worker-pending-writes.md#recovery-contract). A refused
+request is sent again by the controller.
+
+For a request the worker already holds, saturation does not change its window membership or
+replace its decided write with a newer snapshot. A refused replay entry fails its own request;
+unrelated retained writes can still publish. Requests accepted but still waiting for a window
+keep their existing attach deadline and no-window behavior.
+
+An unaccepted request is retried within the controller's safety bound. Neither an API object
+created successfully nor a later source snapshot proves that the worker accepted that save.
+Resource watches and save commands arrive independently: a save is not a barrier covering every
+Kubernetes mutation before its creation.
+
+Pausing the live worker preserves accepted work in memory. Restarting the process does not preserve
+its attachments or outcome receipts. Startup replays current watched state, subject to pruning,
+but cannot recreate the same save history. A push accepted immediately before a crash can therefore be
+followed by another empty commit when the request is resent. A lost push response also needs remote
+evidence; equal tree content alone cannot prove that an empty save's message was published. Durable
+save recovery belongs to the [future HA plan](../future/ha-gittarget-distribution-plan.md).
 
 The complete status vocabulary is in the [status conditions guide](status-conditions-guide.md).

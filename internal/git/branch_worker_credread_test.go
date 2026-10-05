@@ -25,7 +25,7 @@ import (
 
 // TestCommitPendingWrites_ResolvesCredentialsOncePerPushCycle proves the branch worker does not
 // re-read the Git credentials Secret for every commit in a push cycle. Only the first commit
-// (hasPendingCommits=false) touches the remote through PrepareBranch and needs auth; later commits
+// (the checkout holds no retained write yet) touches the remote through PrepareBranch and needs auth; later commits
 // build on the local repo and must not issue another Secret GET — with the Secret cache disabled
 // that would be a wasted API round-trip per commit. See docs/rbac.md §5.
 func TestCommitPendingWrites_ResolvesCredentialsOncePerPushCycle(t *testing.T) {
@@ -88,14 +88,14 @@ func TestCommitPendingWrites_ResolvesCredentialsOncePerPushCycle(t *testing.T) {
 	// First commit of the cycle: fetches the remote tip, so it resolves credentials exactly once.
 	firstWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{createTestEvent(t, "pod-a")})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*firstWrite}, false))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*firstWrite}))
 	require.Equal(t, int64(1), credentialReads.Load(),
 		"first commit resolves credentials once for the remote fetch")
 
-	// Second commit in the same cycle (hasPendingCommits=true): local-only, no credential read.
+	// Second commit in the same cycle (the first is retained): local-only, no credential read.
 	secondWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{createTestEvent(t, "pod-b")})
 	require.NoError(t, err)
-	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*secondWrite}, true))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*secondWrite}))
 	assert.Equal(t, int64(1), credentialReads.Load(),
 		"a later commit in the same push cycle must not re-read the credentials Secret")
 }

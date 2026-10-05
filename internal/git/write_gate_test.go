@@ -63,7 +63,7 @@ func expire(loop *branchWorkerEventLoop) {
 			pcr.attachDeadline = past
 		}
 	}
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 }
 
 // remoteHead is the remote's main.
@@ -188,6 +188,7 @@ func forceDueNamed(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
 	if loop.openWindow != nil && loop.openWindow.pendingCR != nil && *loop.openWindow.pendingCR == id {
 		loop.openWindow.timers.maxAt = time.Now().Add(-time.Millisecond)
 		loop.closeOrArmWindow()
+		loop.endWake(0)
 	}
 }
 

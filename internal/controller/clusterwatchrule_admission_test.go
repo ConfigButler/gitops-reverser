@@ -33,8 +33,8 @@ import (
 type cwaWatchManager struct {
 	replans     int
 	onReconcile func()
-	// selectorConflict, when set, is the refusal message both ObjectSelectorConflict methods report.
-	selectorConflict string
+	// collectionOverlap, when set, is the refusal message both CollectionOverlap methods report.
+	collectionOverlap string
 }
 
 func (m *cwaWatchManager) TriggerRuleChange(internaltypes.ResourceReference) {
@@ -63,16 +63,16 @@ func (m *cwaWatchManager) ResolveClusterWatchRuleResources(
 	return true, "resolved"
 }
 
-func (m *cwaWatchManager) ObjectSelectorConflictForWatchRule(
+func (m *cwaWatchManager) CollectionOverlapForWatchRule(
 	configbutleraiv1alpha3.WatchRule,
 ) (bool, string) {
-	return m.selectorConflict != "", m.selectorConflict
+	return m.collectionOverlap != "", m.collectionOverlap
 }
 
-func (m *cwaWatchManager) ObjectSelectorConflictForClusterWatchRule(
+func (m *cwaWatchManager) CollectionOverlapForClusterWatchRule(
 	configbutleraiv1alpha3.ClusterWatchRule,
 ) (bool, string) {
-	return m.selectorConflict != "", m.selectorConflict
+	return m.collectionOverlap != "", m.collectionOverlap
 }
 
 func (m *cwaWatchManager) StreamSummaryForGitTarget(internaltypes.ResourceReference) watch.StreamSummary {

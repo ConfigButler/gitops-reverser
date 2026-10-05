@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -11,33 +12,95 @@ import (
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 )
 
+// executePendingWrites commits each write in order on top of the checkout, and stops at the first
+// that fails, undoing the whole batch. It is the first commit of a decided write; a replay of
+// writes committed before goes through replayPendingWrites instead.
 func (w *BranchWorker) executePendingWrites(
 	ctx context.Context,
 	repo *gogit.Repository,
 	pendingWrites []PendingWrite,
 ) (int, error) {
+	commitsCreated, _, err := w.runPendingWrites(ctx, repo, pendingWrites, false)
+	return commitsCreated, err
+}
+
+// replayPendingWrites commits retained writes again onto a fresh root, and returns how many of them
+// the checkout holds afterwards.
+//
+// A write is accepted against the tree it was first committed on, and the tree it is replayed onto
+// can refuse it: somebody else changed its folder in the meantime. That refusal is a final answer
+// about that one write, and the writes after it have no reason to wait on it, so the replay skips
+// it and goes on. The skipped write is stamped with its refusal (replayRefusal), and the loop
+// settles it the way it settles a refusal at first commit. Any other failure says nothing final
+// about the write it hit, so it abandons the whole replay, as before, and nothing is stamped.
+func (w *BranchWorker) replayPendingWrites(
+	ctx context.Context,
+	repo *gogit.Repository,
+	pendingWrites []PendingWrite,
+) (int, error) {
+	// A stamp describes the checkout the last completed replay produced, so a replay that starts
+	// clears them all, and only one that completes leaves any behind.
+	for i := range pendingWrites {
+		pendingWrites[i].replayRefusal = nil
+	}
+	_, refusals, err := w.runPendingWrites(ctx, repo, pendingWrites, true)
+	if err != nil {
+		return 0, err
+	}
+	for i, refusal := range refusals {
+		pendingWrites[i].replayRefusal = refusal
+	}
+	return len(pendingWrites) - len(refusals), nil
+}
+
+// runPendingWrites is the loop both execute the writes with. With skipRefused, a write the
+// acceptance gate refuses is undone on its own and recorded in the returned map by index, instead
+// of failing the batch.
+func (w *BranchWorker) runPendingWrites(
+	ctx context.Context,
+	repo *gogit.Repository,
+	pendingWrites []PendingWrite,
+	skipRefused bool,
+) (int, map[int]error, error) {
 	worktree, err := repo.Worktree()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get worktree: %w", err)
+		return 0, nil, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
+	// Where the batch starts, so a write that fails part-way can be undone locally: see
+	// restoreWorktree. An unborn branch has no commit to return to, and falls back to a reset.
+	start := headOr(repo, plumbing.ZeroHash)
+
 	commitsCreated := 0
+	refusals := map[int]error{}
 
 	// Index over the slice so the per-write commit hash is written back onto the
 	// caller's PendingWrite (§6.5): a CommitRequest riding a write resolves to this
 	// SHA on push, and a rebase-replay (which re-runs this loop on the retained
 	// writes) refreshes it to the post-rebase hash.
 	for i := range pendingWrites {
+		// Where this write starts: a refused write is undone back to here, keeping the writes
+		// before it.
+		before := headOr(repo, start)
 		created, hash, source, err := w.executePendingWrite(ctx, repo, worktree, pendingWrites[i])
+		if err != nil && skipRefused && undoRefusedWrite(repo, before, err) {
+			refusals[i] = err
+			continue
+		}
 		if err != nil {
 			// A write can fail after it has staged part of its change, so the worktree may now
-			// hold content nobody asked for. Only a reset clears this: a later successful push
-			// says where the remote is and says nothing about these leftovers, and a cycle that
-			// planned on top of them would commit them under an unrelated author.
-			w.markWorktreeDirty("execute pending write failed")
-			return commitsCreated, err
+			// hold content nobody asked for, and a cycle that planned on top of it would commit it
+			// under an unrelated author. Returning to where the batch started clears it without a
+			// round trip; only if that fails is the worktree left for a reset from the remote.
+			if restoreErr := restoreWorktree(repo, start); restoreErr != nil {
+				w.Log.V(1).Info("Could not undo a failed write locally", "error", restoreErr.Error())
+				w.markWorktreeDirty("execute pending write failed")
+			}
+			return commitsCreated, nil, err
 		}
 		pendingWrites[i].CommitSHA = hash
 		pendingWrites[i].emptyCommitted = pendingWrites[i].mayCommitEmpty() && isEmptyCommit(repo, hash)
@@ -48,7 +111,59 @@ func (w *BranchWorker) executePendingWrites(
 		commitsCreated += created
 	}
 
-	return commitsCreated, nil
+	return commitsCreated, refusals, nil
+}
+
+// headOr is the commit HEAD points at, or fallback when it cannot be read.
+func headOr(repo *gogit.Repository, fallback plumbing.Hash) plumbing.Hash {
+	if head, err := repo.Head(); err == nil {
+		return head.Hash()
+	}
+	return fallback
+}
+
+// undoRefusedWrite reports whether err is the acceptance gate refusing a write, and that write was
+// undone back to before, the commit it started on. A refusal that cannot be undone fails the batch
+// like any other error.
+func undoRefusedWrite(repo *gogit.Repository, before plumbing.Hash, err error) bool {
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	return errors.As(err, &refused) && restoreWorktree(repo, before) == nil
+}
+
+// windowTarget is the GitTarget a window's write belongs to: the target its events were routed
+// to, as the window recorded it when it opened.
+func (p PendingWrite) windowTarget() (string, string) {
+	for i := range p.Events {
+		if p.Events[i].GitTargetName != "" {
+			return p.Events[i].GitTargetName, p.Events[i].GitTargetNamespace
+		}
+	}
+	return p.GitTargetName, p.GitTargetNamespace
+}
+
+// restoreWorktree undoes a batch that failed part-way: the branch goes back to the commit the batch
+// started on, discarding any commits it made, and the worktree back to that commit's tree, leftovers
+// included (discardWorktreeLeftovers). The checkout then holds exactly what it held before the
+// batch, which is what checkoutApplied still says, so nothing has to be fetched.
+func restoreWorktree(repo *gogit.Repository, start plumbing.Hash) error {
+	if start.IsZero() {
+		return errors.New("the branch had no commit to return to")
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("get worktree: %w", err)
+	}
+	if err := worktree.Reset(&gogit.ResetOptions{Commit: start, Mode: gogit.HardReset}); err != nil {
+		return fmt.Errorf("reset to %s: %w", start, err)
+	}
+	return discardWorktreeLeftovers(repo)
+}
+
+// retained reports whether the loop keeps this write once it is committed: every write does except
+// a resync that changed nothing, which is neither retained nor pushed (see Committed). The checkout
+// counts the same writes (checkoutApplied), so the two can never disagree.
+func (p PendingWrite) retained() bool {
+	return p.Kind != PendingWriteResync || p.Committed == nil || *p.Committed
 }
 
 func (p PendingWrite) path() string {

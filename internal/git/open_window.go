@@ -106,14 +106,16 @@ func (w *openWindow) canAppend(e Event) bool {
 }
 
 // add records an event in the window. If the path was already present the
-// event replaces the previous one (last-write-wins inside a single window);
-// otherwise pathOrder is extended.
-func (w *openWindow) add(e Event) {
+// event replaces the previous one (last-write-wins inside a single window), which
+// it returns; otherwise pathOrder is extended.
+func (w *openWindow) add(e Event) (Event, bool) {
 	key := windowPathKey(e, w.writer)
-	if _, exists := w.pathToEvent[key]; !exists {
+	replaced, exists := w.pathToEvent[key]
+	if !exists {
 		w.pathOrder = append(w.pathOrder, key)
 	}
 	w.pathToEvent[key] = e
+	return replaced, exists
 }
 
 // orderedEvents returns one event per distinct path, in the order paths were

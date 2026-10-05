@@ -102,15 +102,6 @@ type Manager struct {
 		opts metav1.ListOptions,
 	) (*unstructured.UnstructuredList, error)
 
-	// liveContentDedup caches, per (gitDest, object), the hash of the last sanitized
-	// content routed to a branch worker. A live UPDATE whose sanitized content is
-	// unchanged (the classic /status-only churn, which carries no git-writable change)
-	// is dropped before routing, so it cannot split an open commit window by arriving
-	// unattributed against a named window author. Keyed by gitDest+gvr+namespace+uid;
-	// entries are cleared on delete. Cross-session by design: a reconnect keeps deduping
-	// against what git already holds. See routeLiveTargetWatchEvent.
-	liveContentDedup sync.Map
-
 	// SourceClusters resolves a GitTarget's source cluster — a ClusterProvider NAME — into a
 	// rest.Config, reading the kubeconfig Secret the provider names from the config plane. It is
 	// required for any GitTarget to mirror, single-cluster installs included: a source cluster is
@@ -182,6 +173,10 @@ type Manager struct {
 	// only writer and its only reader, so cancelling a stream and starting one no longer happen
 	// under a lock that the woken goroutine then has to contend for. See owner.go.
 	targetWatches map[string]*targetWatchSet
+	// targetWatchesRunning counts the goroutines running a target watch. Cancelling a stream
+	// returns before its goroutine has finished its last session, so a caller that must know the
+	// streams are gone, a test resetting process-wide state, waits on it.
+	targetWatchesRunning sync.WaitGroup
 
 	// watchLifetime is the parent of every target watch's context: the manager's own lifetime,
 	// set once by Start.

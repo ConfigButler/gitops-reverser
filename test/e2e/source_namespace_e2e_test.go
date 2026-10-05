@@ -35,11 +35,13 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		delegatingCP    = "srcns-delegating"
 		nonDelegatingCP = "srcns-non-delegating"
 		grantedTarget   = "srcns-granted"
+		wildcardTarget  = "srcns-wildcard"
 		refusedTarget   = "srcns-refused"
 		grantedRule     = "srcns-granted-rule"
 		refusedRule     = "srcns-refused-rule"
 		wildcardRule    = "srcns-wildcard-rule"
 		grantedPath     = "e2e/srcns-granted"
+		wildcardPath    = "e2e/srcns-wildcard"
 		refusedPath     = "e2e/srcns-refused"
 	)
 
@@ -90,18 +92,23 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		Expect(applyInClusterClusterProvider(nonDelegatingCP, configNS, false)).Error().
 			NotTo(HaveOccurred(), "failed to apply non-delegating ClusterProvider")
 
-		By("creating one GitTarget behind the delegating provider and one behind the refusing one")
+		By("creating two GitTargets behind the delegating provider and one behind the refusing one")
 		// The targets are identical. The only thing that differs is which ClusterProvider they
 		// mirror through, which is now the whole of the source-namespace policy: there is no
-		// per-target allow-list any more.
+		// per-target allow-list any more. The wildcard gets a target of its own because one
+		// GitTarget cannot watch a type both in all namespaces and in a named one.
 		Expect(applyGitTargetForClusterProvider(
 			configNS, grantedTarget, providerName, grantedPath, delegatingCP)).Error().
 			NotTo(HaveOccurred(), "failed to apply granted GitTarget")
+		Expect(applyGitTargetForClusterProvider(
+			configNS, wildcardTarget, providerName, wildcardPath, delegatingCP)).Error().
+			NotTo(HaveOccurred(), "failed to apply wildcard GitTarget")
 		Expect(applyGitTargetForClusterProvider(
 			configNS, refusedTarget, providerName, refusedPath, nonDelegatingCP)).Error().
 			NotTo(HaveOccurred(), "failed to apply refused GitTarget")
 
 		verifyResourceCondition("gittarget", grantedTarget, configNS, "Validated", "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", wildcardTarget, configNS, "Validated", "True", "Succeeded", "")
 		verifyResourceCondition("gittarget", refusedTarget, configNS, "Validated", "True", "Succeeded", "")
 	})
 
@@ -155,14 +162,25 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 	})
 
 	It("reaches every namespace the credential can read through one cluster-wide watch", func() {
-		By("creating a WatchRule whose item asks for every namespace")
+		By("refusing a wildcard beside the named source namespace on the same target")
+		// The granted target already watches ConfigMaps in sourceNS. All namespaces would deliver
+		// those objects a second time, so the newer rule is refused as a whole, naming both scopes.
+		Expect(applyWildcardConfigMapWatchRule(
+			wildcardRule, configNS, grantedTarget)).Error().
+			NotTo(HaveOccurred(), "failed to apply overlapping wildcard WatchRule")
+		verifyResourceCondition("watchrule", wildcardRule, configNS,
+			"ResourcesResolved", "False", "CollectionOverlap", "configmaps in all namespaces")
+		verifyResourceCondition("watchrule", grantedRule, configNS, "ResourcesResolved", "True", "", "")
+
+		By("pointing the WatchRule at a target of its own")
 		// ConfigMaps only, deliberately. A cluster-wide "*" mirrors everything the credential can
 		// read, and adding secrets here would file every service-account token in the cluster into
 		// the fixture repository. That the widening reaches that far is the POINT of the change;
 		// one type is enough to observe it.
 		Expect(applyWildcardConfigMapWatchRule(
-			wildcardRule, configNS, grantedTarget)).Error().
+			wildcardRule, configNS, wildcardTarget)).Error().
 			NotTo(HaveOccurred(), "failed to apply wildcard WatchRule")
+		verifyResourceCondition("watchrule", wildcardRule, configNS, "ResourcesResolved", "True", "", "")
 
 		By("asserting the wildcard is authorized")
 		// The gate is what this spec is about. Whole-target Ready is deliberately NOT asserted: a
@@ -187,17 +205,17 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		Expect(err).NotTo(HaveOccurred())
 
 		By("asserting both arrive, each under its own namespace's folder")
-		wantWildcard := path.Join(grantedPath, fmt.Sprintf("%s/configmaps/%s.yaml", wildcardNS, wildcardCM))
-		wantOutside := path.Join(grantedPath, fmt.Sprintf("%s/configmaps/%s.yaml", outsideNS, outsideCM))
+		wantWildcard := path.Join(wildcardPath, fmt.Sprintf("%s/configmaps/%s.yaml", wildcardNS, wildcardCM))
+		wantOutside := path.Join(wildcardPath, fmt.Sprintf("%s/configmaps/%s.yaml", outsideNS, outsideCM))
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, srcnsRepo.CheckoutDir)
 			g.Expect(filepath.Join(srcnsRepo.CheckoutDir, wantWildcard)).To(BeAnExistingFile(),
 				`"*" must reach %q, which no rule item names. Recent commits:\n%s`,
-				wildcardNS, recentCommitDiagnostics(srcnsRepo.CheckoutDir, grantedPath))
+				wildcardNS, recentCommitDiagnostics(srcnsRepo.CheckoutDir, wildcardPath))
 			g.Expect(filepath.Join(srcnsRepo.CheckoutDir, wantOutside)).To(BeAnExistingFile(),
 				`"*" is bounded by the source credential's RBAC and nothing else, so %q arrives `+
 					"too. Recent commits:\n%s",
-				outsideNS, recentCommitDiagnostics(srcnsRepo.CheckoutDir, grantedPath))
+				outsideNS, recentCommitDiagnostics(srcnsRepo.CheckoutDir, wildcardPath))
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 	})
 

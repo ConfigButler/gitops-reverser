@@ -46,6 +46,7 @@ func TestHandleResyncRequest_HealDefersWhileWindowOpenThenApplies(t *testing.T) 
 		Desired:            nil,
 		Result:             healCh,
 	})
+	loop.endWake(0)
 
 	// It must be parked, not applied: the window is still open and the heal has not replied.
 	require.NotNil(t, loop.openWindow, "a heal must never force-finalize the open window")
@@ -61,7 +62,7 @@ func TestHandleResyncRequest_HealDefersWhileWindowOpenThenApplies(t *testing.T) 
 
 	// The window finalizes on its own (silence boundary) and the loop drains the parked heal.
 	loop.finalizeOpenWindow()
-	loop.applyDeferredHeals()
+	loop.endWake(0)
 
 	require.Empty(t, loop.deferredHeals, "the heal applies once the window is idle")
 	res := <-healCh
@@ -92,6 +93,7 @@ func TestHandleResyncRequest_AtomicDrainsDeferredHealFirst(t *testing.T) {
 		GitTargetName: "team-a", GitTargetNamespace: "default",
 		Scope: &scope, Heal: true, Result: healCh,
 	})
+	loop.endWake(0)
 	require.Len(t, loop.deferredHeals, 1, "the heal parks behind the open window")
 
 	// An atomic request arrives: it finalizes the window, and the parked heal must drain at that
@@ -128,7 +130,7 @@ func TestHandleResyncRequest_HealDoesNotStealSiblingCommitRequestWindow(t *testi
 		Events:     []Event{configMapTargetEvent("held", "alice", crTarget)},
 		CommitMode: CommitModePerEvent,
 	}})
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	require.NotNil(t, loop.openWindow, "the edit must open a window")
 	require.NotNil(t, loop.openWindow.pendingCR, "the window must carry the attached CommitRequest")
 
@@ -142,6 +144,7 @@ func TestHandleResyncRequest_HealDoesNotStealSiblingCommitRequestWindow(t *testi
 		Heal:               true,
 		Result:             healCh,
 	})
+	loop.endWake(0)
 
 	// The sibling's window and its CommitRequest must be untouched, and the heal merely parked.
 	require.Len(t, loop.deferredHeals, 1, "the heal is parked, not applied")

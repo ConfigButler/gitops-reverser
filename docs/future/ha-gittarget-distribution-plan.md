@@ -2,10 +2,16 @@
 
 Status: **proposed** (not started)
 
+Reviewed 2026-10-03 alongside branch-worker steps 1 to 4 at `373bf8d7`. Redis/Valkey queue work
+remains deferred. Its prerequisite, the
+[in-memory pause/resume contract](../design/gittarget-branch-worker-pending-writes.md#recovery-contract), is
+built in #413: capacity limits, visible failure state, and one recovery schedule. A durable queue
+keeps all three; a growing external queue does not remove the need for them.
+
 This is the owning document for the durable journal, publication recovery, retention, and the
 persistence/HA rollout. The [branch worker event model](../design/branch-worker-event-model.md)
 owns worker transitions, deadline semantics, the publication retry (built in #412), and the
-operation-timeout fix, which can ship independently of this plan.
+operation timeouts (built in #413), which shipped independently of this plan.
 
 ## Scope and definition of done
 
@@ -22,10 +28,11 @@ The first HA release uses active/passive ownership:
 - Losing one controller Pod must not silently drop a Kubernetes-to-Git state
   change. The replacement may replay a change or create a no-op Git attempt.
 
-The baseline durability contract is eventual state convergence: after recovery, Git matches the
-watched Kubernetes state. The proposed extension preserves accepted save obligations, including
-window membership, attribution, messages, deadlines, and outcomes. The event model defines those
-execution semantics; this plan owns how their records survive failure.
+The baseline durability contract is eventual state convergence under the configured write and
+prune policies. A missed DELETE cannot be inferred from a snapshot under `prune.mode: onEvent`;
+an `always` target permits scoped absence-based pruning. The proposed extension preserves accepted
+save obligations, including window membership, attribution, messages, deadlines, and outcomes.
+The event model defines those execution semantics; this plan owns how their records survive failure.
 
 Before implementing the extension, agree on retention, target replacement, and the response to
 an indeterminate publication result. Existing coalescing still applies, and rebuilding unpublished
@@ -58,12 +65,18 @@ The repository has useful foundations, but it is not HA today.
   GitTargetEventStream into an in-memory BranchWorker FIFO. See
   [event_router.go](../../internal/watch/event_router.go) and
   [git_target_event_stream.go](../../internal/reconcile/git_target_event_stream.go).
-- Redis currently stores resume cursors and author-attribution data. A cursor is
-  written after the event enters the in-memory FIFO, but before the eventual Git
-  push. A Pod crash in that interval can make a replacement resume past work
-  that only existed in RAM. This is the blocker for lossless failover.
+- Redis currently stores resume cursors and author-attribution data. A cursor is written after
+  admission to the in-memory FIFO, before Git publication. A new watch stream starts with a fresh
+  replay even with a stored cursor; later reconnects may resume it. Startup can repair current
+  content under the write/prune policy, but cannot recover lost intermediate events or accepted
+  save decisions. Persisted cursors alone do not establish lossless failover.
 - BranchWorker keeps open commit windows, local commits, unpushed writes, and
   CommitRequest outcomes in memory. Its local clone is disposable.
+- The pending-writes plan provides ordered pending writes, one materializer, one retry schedule,
+  isolated replay refusals, and an intake budget: during a retry, admission closes on everything
+  accepted and not yet published, queued payloads and empty records included, and producers offer
+  what it refuses again. That budget is not a durable retention contract or a total memory
+  ceiling.
 - Git pushes already use a remote reference compare-and-swap. PushAtomic remains
   the final protection against a stale owner or an external remote update. See
   [git_atomic_push.go](../../internal/git/git_atomic_push.go).
@@ -273,6 +286,21 @@ acknowledge the journal or prove a request's historical execution.
 
 ## Surviving hours without Git
 
+Use the same pause/recover/resume behavior as the in-memory worker, with durable admission as the
+acceptance boundary. Storage changes how long accepted obligations survive and how much backlog
+fits; it does not change which outcomes the worker owes.
+
+| Boundary | During an outage | At capacity | After recovery |
+|---|---|---|---|
+| Current in-memory path | Retain accepted writes while the process lives | Refuse new admission; explicit producer pause is planned | Replay retained decisions, then resume watches |
+| Future durable journal | Persist accepted inputs and workflow decisions; page the active working set | Stop durable admission before eviction or storage failure | Recover accepted obligations, then catch up sources |
+
+If Git is unavailable but the durable store has capacity, producers can keep appending without
+loading that backlog into the worker's RAM. When the store fills or cannot guarantee a durable
+write, stop admission and keep the source cursor unchanged. Report whether Git publication or
+journal admission is blocked; they are different dependencies and can recover independently.
+Never acknowledge and trim accepted work merely to free capacity for newer observations.
+
 State an outage budget in workload and storage terms. A useful first estimate is admitted bytes
 per second multiplied by outage duration, plus snapshot, index, encryption, and retention costs.
 Recovery also needs enough publication throughput to drain the backlog while new work arrives.
@@ -281,6 +309,12 @@ Use the atomic admission and cursor handoff defined above. Enforce byte quotas a
 policy from the first durable implementation. Stop accepting
 new payloads when the durable store cannot honor its contract. This does not guarantee recovery
 of every later Kubernetes mutation: a prolonged ingestion stop can outlast watch history.
+
+Retained accepted work drains in branch order before a fresh source snapshot can supersede current
+state. An expired watch cursor records a continuity gap; the complete scoped snapshot repairs only
+what the current write/prune policy permits. Missed intermediate versions and expired delete
+events are not recreated. An accepted save keeps its original obligation through this catch-up;
+an unaccepted save has no durable receipt. State these limits in status and operator documentation.
 
 Give recovery and lifecycle work a way to run under saturation, with its causal ordering intact.
 Reserved capacity must not let a withdrawal overtake an already accepted attach. Bound the active
@@ -302,9 +336,10 @@ healthy outage backlog from a worker that has stopped making progress.
 
 ## Implementation phases
 
-The event model owns the operation-deadline fix (its publication retry shipped in #412) and
-extraction of deterministic worker transitions. These phases own persistence and HA after that
-boundary is available. Each phase needs its own failure tests; adding leadership must not be the
+The branch-worker pending-writes plan owns admission correctness, operation deadlines, and in-memory recovery
+visibility. The event model owns extraction of deterministic worker transitions. These phases own
+persistence and HA after that boundary is available. Do not start them as part of finishing the
+current pending-writes refactor. Each phase needs its own failure tests; adding leadership must not be the
 first recovery test of the journal.
 
 ### HA-0: Specify and expose branch ownership
@@ -420,7 +455,9 @@ Add fault tests for each durable boundary before enabling the supported HA mode:
 | Empty save is redelivered | Original result is recovered; missing evidence remains explicit |
 | Snapshot lacks a complete marker | No sweep runs |
 | Watch cursor expires | Fresh replay preserves the old journal tail and scoped deletion rules |
-| Journal quota fills during an outage | Admission stops explicitly; recovery retains capacity |
+| Journal quota fills during an outage | Admission stops explicitly; accepted records remain; recovery retains capacity |
+| Store is full when watch history expires | Gap is explicit; fresh snapshot obeys prune policy and preserves accepted saves |
+| Git is down while the journal still has capacity | Durable backlog grows while the active worker memory stays bounded |
 | Target or provider is recreated | Old work cannot bind to the replacement by name |
 | Old owner completes an in-flight push | Replacement recovers the outcome and rejects stale journal transitions |
 | Remote branch moves | Compare-and-swap and recorded rebuild attempts preserve the pending work |

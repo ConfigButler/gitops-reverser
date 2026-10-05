@@ -18,8 +18,8 @@ import (
 // snapshot owns every managed document of its type in its namespace scope, including documents
 // the selector never matched, so a selector narrows what the mirror holds rather than which
 // documents a sweep may reach. Two selectors over one boundary are two collections, and the rule
-// compiler refuses a second selector over an overlapping scope so that two snapshots never sweep
-// each other's documents.
+// resolver refuses a second collection over an overlapping scope of one GitTarget, so two
+// snapshots never sweep each other's documents and no object reaches the target on two streams.
 //
 // # The version is deliberately absent
 //
@@ -42,9 +42,9 @@ type CollectionKey struct {
 	// Resource is the plural resource name, e.g. "configmaps".
 	Resource string
 	// Namespace restricts the collection to one namespace. Empty is a genuinely cluster-wide
-	// (all-namespaces) collection, which is a PEER of any named namespace on the same type and never
-	// a replacement for it: collapsing the two widened the named rule's stream to every namespace
-	// its credential could read.
+	// (all-namespaces) collection, never a replacement for a named namespace on the same type:
+	// collapsing the two widened the named rule's stream to every namespace its credential could
+	// read. The two overlap, so one GitTarget cannot select both.
 	Namespace string
 	// LabelSelector is the canonical label selector (see CanonicalLabelSelector) the API server
 	// selects the collection with. Empty selects every object.

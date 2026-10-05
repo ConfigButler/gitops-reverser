@@ -40,6 +40,21 @@ type EventRouter struct {
 	// Registry of GitTargetEventStreams by gitDest key
 	gitTargetStreams map[string]*reconcile.GitTargetEventStream
 	streamsMu        sync.RWMutex
+
+	// resyncWorker overrides the worker a scoped resync enters. nil resolves the GitTarget's branch
+	// worker; tests set it to accept or refuse a snapshot without running one.
+	resyncWorker func(ctx context.Context, gitDest types.ResourceReference) (resyncEnqueuer, error)
+}
+
+// resyncEnqueuer is the part of a branch worker a scoped resync enters through.
+type resyncEnqueuer interface {
+	EnqueueResync(request *git.ResyncRequest) bool
+}
+
+// intakePauser is the part of a branch worker that says whether it has paused intake. See
+// git.BranchWorker.IntakePaused.
+type intakePauser interface {
+	IntakePaused() <-chan struct{}
 }
 
 // NewEventRouter creates a new event router.
@@ -95,6 +110,7 @@ func (r *EventRouter) ServiceCommitRequest(
 		// Report where the worker says the request stands, so the controller never has to infer
 		// a phase from having sent the attach.
 		result.Phase = worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
+		result.Held = heldBecause(worker, result.Phase)
 	}
 	return result, resolved, nil
 }
@@ -135,7 +151,7 @@ func (r *EventRouter) WithdrawCommitRequest(
 	}
 	phase := worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
 	if phase.Held() {
-		return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
+		return git.FinalizeResult{Branch: branch, Phase: phase, Held: heldBecause(worker, phase)}, false, nil
 	}
 	worker.EnqueueWithdraw(&attach)
 	// A worker whose loop has exited answers the withdraw at once.
@@ -143,6 +159,15 @@ func (r *EventRouter) WithdrawCommitRequest(
 		return result, true, nil
 	}
 	return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
+}
+
+// heldBecause is why a request waiting for its push has not reached the remote: the worker's
+// publication report while it cannot publish, empty otherwise.
+func heldBecause(worker *git.BranchWorker, phase git.CommitRequestPhase) string {
+	if phase != git.PhaseWaitingForPush {
+		return ""
+	}
+	return worker.Publication().Message()
 }
 
 // commitRequestWorker finds the worker to ask about a CommitRequest, and the branch it serves.
@@ -240,7 +265,6 @@ func (r *EventRouter) resolveWorkerForGitDest(
 // than the gather deletes managed documents outside it. heal marks a drift-correcting resync the
 // worker defers while a commit window is open. enqueued is false when the worker's queue was full
 // and dropped the request (its failure is still delivered on resultCh for the drain to record).
-// refreshRemote asks the worker to fetch the latest remote tip before it inspects the folder.
 // resourceVersion is the LIST's collection version the desired set is pinned to.
 func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
@@ -250,9 +274,8 @@ func (r *EventRouter) enqueueScopedResync(
 	desired []manifestanalyzer.DesiredResource,
 	resourceVersion string,
 	heal bool,
-	refreshRemote bool,
 ) (chan git.ResyncResult, bool, error) {
-	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
+	worker, err := r.resyncTarget(ctx, gitDest)
 	if err != nil {
 		return nil, false, err
 	}
@@ -265,10 +288,35 @@ func (r *EventRouter) enqueueScopedResync(
 		Scope:              &scope,
 		SourceCollection:   sourceCollection,
 		Heal:               heal,
-		RefreshRemote:      refreshRemote,
 		Result:             resultCh,
 	})
 	return resultCh, enqueued, nil
+}
+
+// resyncTarget is the branch worker a GitTarget's scoped resyncs enter.
+func (r *EventRouter) resyncTarget(ctx context.Context, gitDest types.ResourceReference) (resyncEnqueuer, error) {
+	if r.resyncWorker != nil {
+		return r.resyncWorker(ctx, gitDest)
+	}
+	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
+	if err != nil {
+		return nil, err
+	}
+	return worker, nil
+}
+
+// branchIntakePaused reports a GitTarget whose branch worker has paused intake: it returns a channel
+// closed when intake reopens, or nil while it is open or the worker cannot be resolved, in which
+// case nothing is known to wait for.
+func (r *EventRouter) branchIntakePaused(ctx context.Context, gitDest types.ResourceReference) <-chan struct{} {
+	worker, err := r.resyncTarget(ctx, gitDest)
+	if err != nil {
+		return nil
+	}
+	if pauser, ok := worker.(intakePauser); ok {
+		return pauser.IntakePaused()
+	}
+	return nil
 }
 
 // resyncScopeForWatchKey is the single conversion from a watch key to the resync scope its

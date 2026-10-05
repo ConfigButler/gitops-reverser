@@ -128,10 +128,9 @@ func newLedgerFixtureOnBranch(t *testing.T, slug string, seeded bool, branch str
 // operation, so setup traffic is never attributed to the thing under test.
 func (f *ledgerFixture) mark() gitRequestSnapshot { return f.sim.ledger.snapshot() }
 
-// commit runs one local commit for the named ConfigMaps and retains its pending write.
-// hasPendingCommits is the flag commitPendingWrites gates its head-of-cycle fetch on: false means
-// "first commit of a cycle".
-func (f *ledgerFixture) commit(hasPendingCommits bool, names ...string) {
+// commit runs one local commit for the named ConfigMaps and retains its pending write. Only the
+// first commit with nothing committed before it may fetch: commitPendingWrites reads that from the checkout.
+func (f *ledgerFixture) commit(names ...string) {
 	f.t.Helper()
 	events := make([]Event, 0, len(names))
 	for _, name := range names {
@@ -139,7 +138,7 @@ func (f *ledgerFixture) commit(hasPendingCommits bool, names ...string) {
 	}
 	pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, events)
 	require.NoError(f.t, err)
-	require.NoError(f.t, f.worker.commitPendingWrites([]PendingWrite{*pendingWrite}, hasPendingCommits))
+	require.NoError(f.t, f.worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 	f.pending = append(f.pending, *pendingWrite)
 }
 
@@ -153,7 +152,7 @@ func (f *ledgerFixture) push() {
 // publish is the whole steady-state cycle: one commit, then the push.
 func (f *ledgerFixture) publish(names ...string) {
 	f.t.Helper()
-	f.commit(false, names...)
+	f.commit(names...)
 	f.push()
 }
 
@@ -235,9 +234,9 @@ func ledgerOperations() []ledgerOp {
 			prime:  func(f *ledgerFixture) { f.publish("prime") },
 			run: func(f *ledgerFixture) {
 				// Only the first commit of a cycle may fetch: that is the claim this row checks.
-				f.commit(false, "first")
-				f.commit(true, "second")
-				f.commit(true, "third")
+				f.commit("first")
+				f.commit("second")
+				f.commit("third")
 				f.push()
 			},
 		},
@@ -250,7 +249,7 @@ func ledgerOperations() []ledgerOp {
 				// The identical object plans to no change, so commitPendingWrites creates no
 				// commit — and the write is still retained and still reaches PushAtomic, which is
 				// the property §2 rests on.
-				f.commit(false, "same")
+				f.commit("same")
 				require.True(f.t, f.pending[0].CommitSHA.IsZero(),
 					"the no-diff write must be retained with no commit of its own")
 				f.push()
@@ -262,7 +261,7 @@ func ledgerOperations() []ledgerOp {
 			seeded: true,
 			prime:  func(f *ledgerFixture) { f.publish("prime") },
 			run: func(f *ledgerFixture) {
-				f.commit(false, "mine")
+				f.commit("mine")
 				f.contend("OUTSIDE.md", "from-another-writer\n")
 				f.push()
 			},
@@ -273,7 +272,7 @@ func ledgerOperations() []ledgerOp {
 			seeded: true,
 			prime:  func(f *ledgerFixture) { f.publish("prime") },
 			run: func(f *ledgerFixture) {
-				f.commit(false, "mine")
+				f.commit("mine")
 				f.contend("OUTSIDE-1.md", "first-other-writer\n")
 				// Move the remote again just before the SECOND push attempt, so the replay is
 				// rejected too. Hooking the push is the only way to land a write inside the retry
@@ -301,7 +300,7 @@ func ledgerOperations() []ledgerOp {
 			seeded: true,
 			prime: func(f *ledgerFixture) {
 				f.publish("prime")
-				f.commit(false, "retained")
+				f.commit("retained")
 			},
 			run: func(f *ledgerFixture) {
 				require.NoError(f.t,
@@ -332,7 +331,7 @@ func ledgerOperations() []ledgerOp {
 				// handleQueueItem commits AND pushes: applyResync ends in maybeSchedulePush,
 				// and a worker that has not pushed before has no cooldown to wait out. So this
 				// one call is the whole resync cycle, which is what the row is meant to cost.
-				loop.handleQueueItem(WorkItem{Resync: req})
+				loop.handleQueueItem(resyncItem(req))
 				result := <-req.Result
 				require.NoError(f.t, result.Err)
 				require.Equal(f.t, 1, result.Stats.Created, "the resync must have written something")
@@ -386,7 +385,7 @@ func ledgerOperations() []ledgerOp {
 				deleted.Object = nil
 				pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{deleted})
 				require.NoError(f.t, err)
-				require.NoError(f.t, f.worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+				require.NoError(f.t, f.worker.commitPendingWrites([]PendingWrite{*pendingWrite}))
 				f.pending = append(f.pending, *pendingWrite)
 				f.push()
 			},
@@ -419,9 +418,11 @@ func ledgerOperations() []ledgerOp {
 				pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx,
 					[]Event{configMapEvent("held", "alice", "team-a")})
 				require.NoError(f.t, err)
-				err = f.worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false)
-				require.ErrorIs(f.t, err, ErrParentBranchNotFound)
-				f.loop.noteParentUnavailable(err)
+				// The fetch that finds the parent missing; the write stays pending for it.
+				f.loop.decide(*pendingWrite)
+				f.loop.endWake(0)
+				require.Len(f.t, f.loop.pendingWrites, 1)
+				require.True(f.t, f.loop.recovery.active)
 			},
 			run: func(f *ledgerFixture) {
 				f.worker.clock = func() time.Time { return time.Now().Add(time.Hour) }

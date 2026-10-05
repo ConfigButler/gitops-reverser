@@ -42,15 +42,19 @@ func CheckRepo(ctx context.Context, repoURL string, auth []gitclient.Option) (*R
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("Checking repository connectivity and metadata", "url", repoURL)
 
-	// Use remote.List() for lightweight connectivity check
+	// Use a ref listing for a lightweight connectivity check, bounded like every call to a Git
+	// server (network_bound.go): a controller's reconcile has no deadline of its own.
 	remote := git.NewRemote(nil, &config.RemoteConfig{
 		Name: "origin",
 		URLs: []string{repoURL},
 	})
 
-	refs, err := remote.List(&git.ListOptions{
-		ClientOptions: auth,
+	callCtx, cancel := boundGitCall(ctx)
+	defer cancel()
+	refs, err := remote.ListContext(callCtx, &git.ListOptions{
+		ClientOptions: boundToContext(callCtx, auth),
 	})
+	err = boundedCallError(callCtx, err)
 	if err != nil {
 		// Check if this is an empty repository error
 		if errors.Is(err, transport.ErrEmptyRemoteRepository) {

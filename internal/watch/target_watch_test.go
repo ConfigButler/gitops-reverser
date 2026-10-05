@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -49,7 +48,8 @@ func TestTargetWatchKeys_UsesOneWatchPerScope(t *testing.T) {
 
 // A cluster-wide selection and a named-namespace selection on the SAME GVR are two streams.
 // Collapsing them to one all-namespaces watch gave the named rule events from every namespace
-// the credential could read.
+// the credential could read. The resolver refuses that pair on one GitTarget (collection_overlap.go);
+// the planner still never collapses it.
 func TestTargetWatchKeys_NamedAndClusterWideScopesStayDistinctStreams(t *testing.T) {
 	table := WatchedTypeTable{
 		GitDest: types.NewResourceReference("target", "default"),
@@ -129,6 +129,7 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 		},
 	}
 	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+	t.Cleanup(manager.targetWatchesRunning.Wait)
 
 	first := WatchedTypeTable{
 		GitDest: gitDest,
@@ -193,9 +194,8 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 	assert.Empty(t, event.Object.GetResourceVersion(), "live events are sanitized before entering Git")
 }
 
-// The source collection is stamped where it is known. Downstream it cannot be reconstructed: a
-// cluster-wide and a namespaced stream deliver the same object, so the producing collection is not
-// recoverable from the event itself.
+// The source collection is stamped where it is known. Downstream it cannot be reconstructed: an
+// object does not name the collection (all namespaces or one, which selector) that delivered it.
 func TestRouteLiveTargetWatchEvent_StampsTheProducingCollection(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	enqueuer := &recordingEnqueuer{}
@@ -378,7 +378,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 	manager := &Manager{}
 	gitDest := types.NewResourceReference("target", "default")
 	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-	var replay []manifestanalyzer.DesiredResource
+	var replay replaySnapshot
 
 	replaying, err := manager.handleTargetWatchSessionEvent(
 		context.Background(),
@@ -391,7 +391,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 	)
 	require.NoError(t, err)
 	assert.True(t, replaying)
-	require.Len(t, replay, 1)
+	require.Len(t, replay.desired, 1)
 
 	bookmark := &unstructured.Unstructured{}
 	bookmark.SetResourceVersion("11")
@@ -407,7 +407,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 	)
 	require.NoError(t, err)
 	assert.False(t, replaying)
-	assert.Nil(t, replay)
+	assert.Empty(t, replay.desired)
 }
 
 func TestTargetWatchReplayAndStream_ReturnsWhenContextCancels(t *testing.T) {
@@ -610,19 +610,19 @@ func TestFoldTargetReplayEvent_AccumulatesUntilInitialEventsBookmark(t *testing.
 	manager := &Manager{}
 	gitDest := types.NewResourceReference("target", "default")
 	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
-	var desired []manifestanalyzer.DesiredResource
+	var replay replaySnapshot
 
 	done, rv, err := manager.foldTargetReplayEvent(
 		logr.Discard(),
 		gitDest,
 		testStream(key),
 		watch.Event{Type: watch.Added, Object: configMapObject("10")},
-		&desired,
+		&replay,
 	)
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Empty(t, rv)
-	require.Len(t, desired, 1)
+	require.Len(t, replay.desired, 1)
 
 	bookmark := &unstructured.Unstructured{}
 	bookmark.SetResourceVersion("11")
@@ -632,7 +632,7 @@ func TestFoldTargetReplayEvent_AccumulatesUntilInitialEventsBookmark(t *testing.
 		gitDest,
 		testStream(key),
 		watch.Event{Type: watch.Bookmark, Object: bookmark},
-		&desired,
+		&replay,
 	)
 	require.NoError(t, err)
 	assert.True(t, done)
@@ -948,6 +948,9 @@ func planTestManager(t *testing.T, gitDest types.ResourceReference) (*Manager, c
 		},
 	}
 	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+	// A test cancels its streams on return; wait for their goroutines too, or their last session
+	// still records metrics while the next test resets the global exporter.
+	t.Cleanup(manager.targetWatchesRunning.Wait)
 	return manager, opened
 }
 
@@ -1122,7 +1125,7 @@ func TestRouteLiveTargetWatchEvent_ACancelledStreamStopsEnqueuing(t *testing.T) 
 	)
 
 	require.NoError(t, err)
-	assert.Equal(t, "12", rv, "the cursor still advances; only the enqueue is dropped")
+	assert.Empty(t, rv, "an event that was never enqueued must not advance the cursor")
 	assert.Empty(t, enqueuer.events)
 }
 

@@ -264,7 +264,7 @@ metadata:
 		const conflicting = "selector-conflicting-rule"
 		applySelectorRule(conflicting, alwaysTarget, selectedBy("other"))
 		verifyResourceCondition("watchrule", conflicting, testNs, "ResourcesResolved", "False",
-			"ObjectSelectorConflict", "")
+			"CollectionOverlap", "")
 		verifyResourceCondition("watchrule", alwaysRule, testNs, "ResourcesResolved", "True", "", "")
 
 		By("the older rule's mirror keeps following its own selection")

@@ -53,7 +53,7 @@ func TestRepoint_TheWorkerStopsRatherThanWriteWithTheNewProvidersCredentials(t *
 
 	elsewhere := f.repointProvider(t)
 
-	require.Error(t, f.worker.commitPendingWrites([]PendingWrite{*write}, false),
+	require.Error(t, f.worker.commitPendingWrites([]PendingWrite{*write}),
 		"the GitProvider names a repository this worker is not for")
 	_, err = f.worker.buildGroupedPendingWrite(f.worker.ctx, events)
 	require.Error(t, err, "and nothing new is planned against it either")

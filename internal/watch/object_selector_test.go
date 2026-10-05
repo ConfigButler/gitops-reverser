@@ -202,13 +202,13 @@ func TestResolveWatchedTypeTables_RefusesTheNewerOfTwoOverlappingSelectors(t *te
 	assert.Equal(t, []string{""}, table.Types[0].WatchScopes())
 	assert.Equal(t, map[string]string{"": teamA}, table.Types[0].NamespaceScopes)
 
-	refused, message := manager.ObjectSelectorConflictForWatchRule(
+	refused, message := manager.CollectionOverlapForWatchRule(
 		selectorRule("named", "team-b", older.Add(time.Minute), labels("team", "b"), ""))
 	assert.True(t, refused)
 	assert.Contains(t, message, "WatchRule test-ns/cluster-wide")
 	assert.Contains(t, message, `objectSelector "team in (b)"`)
 
-	refused, _ = manager.ObjectSelectorConflictForWatchRule(
+	refused, _ = manager.CollectionOverlapForWatchRule(
 		selectorRule("cluster-wide", "test-ns", older, labels("team", "a"), "*"))
 	assert.False(t, refused, "the older rule keeps its collection")
 }
@@ -224,89 +224,10 @@ func TestResolveWatchedTypeTables_DisjointNamespacesMayUseDifferentSelectors(t *
 	require.Len(t, table.Types, 1)
 	assert.Equal(t, map[string]string{"team-a": teamA, "team-b": "team in (b)"}, table.Types[0].NamespaceScopes)
 	for _, name := range []string{"a", "b"} {
-		refused, message := manager.ObjectSelectorConflictForWatchRule(
+		refused, message := manager.CollectionOverlapForWatchRule(
 			selectorRule(name, "team-"+name, now, nil, ""))
 		assert.False(t, refused, message)
 	}
-}
-
-// Equivalent selectors written differently are one canonical selector, so they never conflict.
-func TestResolveWatchedTypeTables_EquivalentSelectorsDoNotConflict(t *testing.T) {
-	manager, store := makeWatchedTypeManager(t)
-	now := time.Unix(1000, 0)
-	addSelectorRule(store, selectorRule("labels", "test-ns", now, labels("team", "a"), "*"), "")
-	addSelectorRule(store, selectorRule("expression", "team-a", now.Add(time.Minute), &metav1.LabelSelector{
-		MatchExpressions: []metav1.LabelSelectorRequirement{
-			{Key: "team", Operator: metav1.LabelSelectorOpIn, Values: []string{"a", "a"}},
-		},
-	}, ""), "team-a")
-
-	manager.refreshWatchedTypeTables()
-	table, _ := manager.watchedTypeTableForGitDest(gitDestRef("sel-target"))
-	require.Len(t, table.Types, 1)
-	assert.Equal(t, []string{"", "team-a"}, table.Types[0].WatchScopes())
-	refused, message := manager.ObjectSelectorConflictForWatchRule(
-		selectorRule("expression", "team-a", now.Add(time.Minute), nil, ""))
-	assert.False(t, refused, message)
-}
-
-func TestRefuseSelectorConflicts(t *testing.T) {
-	rec := typesetRecordForTest(configmapsGVR)
-	older := selectingRule{
-		kind:      ruleKindWatchRule,
-		namespace: "ns",
-		name:      "b",
-		createdAt: metav1.NewTime(time.Unix(1, 0)),
-	}
-	newer := selectingRule{
-		kind:      ruleKindWatchRule,
-		namespace: "ns",
-		name:      "a",
-		createdAt: metav1.NewTime(time.Unix(2, 0)),
-	}
-	sameAgeLowerName := selectingRule{kind: ruleKindWatchRule, namespace: "ns", name: "a", createdAt: older.createdAt}
-
-	t.Run("the older rule wins regardless of order", func(t *testing.T) {
-		admitted, refused := refuseSelectorConflicts([]watchSelection{
-			{record: rec, namespace: "x", labelSelector: "b=1", rule: newer},
-			{record: rec, namespace: "x", labelSelector: "a=1", rule: older},
-		})
-		require.Len(t, admitted, 1)
-		assert.Equal(t, older, admitted[0].rule)
-		assert.Contains(t, refused, newer)
-	})
-	t.Run("equal age falls back to the lower name", func(t *testing.T) {
-		_, refused := refuseSelectorConflicts([]watchSelection{
-			{record: rec, namespace: "x", labelSelector: "b=1", rule: older},
-			{record: rec, namespace: "x", labelSelector: "a=1", rule: sameAgeLowerName},
-		})
-		assert.Contains(t, refused, older)
-		assert.NotContains(t, refused, sameAgeLowerName)
-	})
-	t.Run("a rule conflicting with itself is refused", func(t *testing.T) {
-		admitted, refused := refuseSelectorConflicts([]watchSelection{
-			{record: rec, namespace: "", labelSelector: "a=1", rule: older},
-			{record: rec, namespace: "x", labelSelector: "", rule: older},
-		})
-		assert.Empty(t, admitted)
-		assert.Contains(t, refused[older], "its items select overlapping collections differently")
-	})
-	t.Run("the same selector over overlapping scopes is allowed", func(t *testing.T) {
-		admitted, refused := refuseSelectorConflicts([]watchSelection{
-			{record: rec, namespace: "", labelSelector: "a=1", rule: older},
-			{record: rec, namespace: "x", labelSelector: "a=1", rule: newer},
-		})
-		assert.Len(t, admitted, 2)
-		assert.Empty(t, refused)
-	})
-	t.Run("other types never conflict", func(t *testing.T) {
-		admitted, refused := refuseSelectorConflicts([]watchSelection{
-			{record: rec, namespace: "x", labelSelector: "a=1", rule: older},
-			{record: typesetRecordForTest(resolverGVR), namespace: "x", labelSelector: "", rule: newer},
-		})
-		assert.Len(t, admitted, 2)
-		assert.Empty(t, refused)
-	})
 }
 
 func TestCompileWatchRule_RefusesAnInvalidObjectSelector(t *testing.T) {

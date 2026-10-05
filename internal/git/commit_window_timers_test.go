@@ -82,6 +82,7 @@ func TestWindowTimers_ARequestIdleTimeoutLongerThanTheTargetsKeepsTheWindowOpen(
 
 	time.Sleep(20 * time.Millisecond)
 	loop.closeOrArmWindow() // what the commit timer does when it fires
+	loop.endWake(0)
 
 	assert.NotNil(t, loop.openWindow, "the request's longer idleTimeout replaces the target's")
 }
@@ -100,6 +101,7 @@ func TestWindowTimers_ARequestIdleTimeoutShorterThanTheTargetsClosesSooner(t *te
 
 	time.Sleep(20 * time.Millisecond)
 	loop.closeOrArmWindow()
+	loop.endWake(0)
 
 	assert.Nil(t, loop.openWindow, "the request's shorter idleTimeout replaces the target's hour")
 }
@@ -114,6 +116,7 @@ func TestWindowTimers_ARequestWithOnlyMaxDurationIgnoresTheTargetsIdleTimer(t *t
 	writeTo(loop, "first")
 	time.Sleep(20 * time.Millisecond)
 	loop.closeOrArmWindow()
+	loop.endWake(0)
 
 	assert.NotNil(t, loop.openWindow, "no idle close: maxDuration alone ends the collection")
 }
@@ -262,7 +265,7 @@ func TestWindowTimers_AWaitingRequestWithMaxDurationZeroCommitsExactlyTheNextWri
 	assert.Equal(t, PhaseWaitingForWindow, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
 
 	writeTo(loop, "the-change")
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	assert.Nil(t, loop.openWindow, "the write opened a window, the request attached, and maxDuration: 0s closed it")
 	require.Len(t, loop.pendingWrites, 1)
 	assert.Equal(t, req.Message, loop.pendingWrites[0].CommitMessage)

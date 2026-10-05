@@ -77,6 +77,7 @@ func TestCommitWindowMetrics_EachCloseReasonIsCountedUnderItsOwnName(t *testing.
 	writeTo(loop, "a")
 	loop.openWindow.timers.maxAt = time.Now().Add(-time.Millisecond)
 	loop.closeOrArmWindow()
+	loop.endWake(0)
 
 	// identity_change: another author's write arrives while alice's window is open.
 	writeTo(loop, "b")
@@ -200,7 +201,7 @@ func TestCommitWindowMetrics_ACommitEmptyRecordIsNotAWindow(t *testing.T) {
 
 	serviceAttach(loop, commitEmptyReq("alice", "save: nothing changed"))
 	forceDue(loop)
-	loop.serviceCommitRequests()
+	loop.endWake(0)
 	require.Len(t, loop.pendingWrites, 1, "the record was made")
 
 	_, counted := telemetry.CollectInt64Sum(reader, commitWindowsMetric, map[string]string{})

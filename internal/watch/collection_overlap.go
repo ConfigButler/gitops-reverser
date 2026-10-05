@@ -12,10 +12,9 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// ReasonObjectSelectorConflict is the ResourcesResolved reason for a rule refused because one of
-// its collections overlaps a collection the same GitTarget already selects with a different
-// object selector.
-const ReasonObjectSelectorConflict = "ObjectSelectorConflict"
+// ReasonCollectionOverlap is the ResourcesResolved reason for a rule refused because one of its
+// collections overlaps a different collection the same GitTarget already selects.
+const ReasonCollectionOverlap = "CollectionOverlap"
 
 // Rule kinds, as a selectingRule names them in a refusal message.
 const (
@@ -70,20 +69,24 @@ func describeSelection(c types.CollectionKey) string {
 	return fmt.Sprintf("%s with objectSelector %q", name, c.LabelSelector)
 }
 
-// refuseSelectorConflicts drops the selections of every rule whose collections overlap a
-// collection another rule of the same GitTarget selects with a different object selector, and
-// returns the refused rules with the reason for each.
+// refuseCollectionOverlaps drops the selections of every rule whose collections overlap a
+// different collection of the same GitTarget, and returns the refused rules with the reason for
+// each.
 //
-// Overlapping collections must share one selector. Two selections of one object would be two
-// watches that disagree about whether it is in the mirror: one would delete a document the other
-// still selects, and their snapshots would prune each other's documents on every replay.
-// Different selectors in disjoint namespaces are fine.
+// One GitTarget watches each object through at most one stream. Two streams over one object would
+// deliver it twice, in no defined order: a delayed copy can restore content the other stream has
+// already moved past, or split another author's commit window, and their snapshots would prune
+// each other's documents. So overlapping collections are refused structurally — same type, and the
+// same namespace or one of them all namespaces — whatever their object selectors, because a
+// snapshot owns its whole structural scope. An exact duplicate is one collection, so one stream,
+// and is not an overlap. Disjoint namespaces never overlap, and another GitTarget has its own
+// streams.
 //
 // Rules are admitted oldest first, so the rule that got there first keeps its collections and a
-// newer rule cannot take a running mirror away by asking for a different selector. A rule whose
-// own items conflict with each other is refused whatever its age. A refusal is whole-rule, as a
-// denied source namespace is: mirroring part of what a rule asked for is worse than a loud failure.
-func refuseSelectorConflicts(selections []watchSelection) ([]watchSelection, map[selectingRule]string) {
+// newer rule cannot take a running mirror away. A rule whose own items overlap each other is
+// refused whatever its age. A refusal is whole-rule, as a denied source namespace is: mirroring
+// part of what a rule asked for is worse than a loud failure.
+func refuseCollectionOverlaps(selections []watchSelection) ([]watchSelection, map[selectingRule]string) {
 	byRule := map[selectingRule][]watchSelection{}
 	var rules []selectingRule
 	for _, sel := range selections {
@@ -99,7 +102,7 @@ func refuseSelectorConflicts(selections []watchSelection) ([]watchSelection, map
 	var refused map[selectingRule]string
 	for _, rule := range rules {
 		own := collectionsOf(byRule[rule])
-		if reason := selectorConflict(own, held); reason != "" {
+		if reason := collectionOverlap(own, held); reason != "" {
 			if refused == nil {
 				refused = map[selectingRule]string{}
 			}
@@ -120,20 +123,26 @@ type heldCollection struct {
 	rule       selectingRule
 }
 
-// selectorConflict returns why a rule's collections cannot be admitted beside the ones already
+// overlapsDistinct reports whether two collections can deliver one object on two streams.
+func overlapsDistinct(a, b types.CollectionKey) bool {
+	return a != b && a.Overlaps(b)
+}
+
+// collectionOverlap returns why a rule's collections cannot be admitted beside the ones already
 // held, or "" when they can.
-func selectorConflict(own []types.CollectionKey, held []heldCollection) string {
+func collectionOverlap(own []types.CollectionKey, held []heldCollection) string {
 	for i, c := range own {
 		for _, other := range own[i+1:] {
-			if c.Overlaps(other) && c.LabelSelector != other.LabelSelector {
-				return fmt.Sprintf("its items select overlapping collections differently: %s, and %s; "+
-					"overlapping collections must use one objectSelector", describeSelection(c), describeSelection(other))
+			if overlapsDistinct(c, other) {
+				return fmt.Sprintf("its items select overlapping collections: %s, and %s; "+
+					"a GitTarget watches each object through one collection",
+					describeSelection(c), describeSelection(other))
 			}
 		}
 		for _, h := range held {
-			if c.Overlaps(h.collection) && c.LabelSelector != h.collection.LabelSelector {
+			if overlapsDistinct(c, h.collection) {
 				return fmt.Sprintf("it selects %s, which overlaps %s already selected by the older %s; "+
-					"overlapping collections on one GitTarget must use one objectSelector",
+					"a GitTarget watches each object through one collection",
 					describeSelection(c), describeSelection(h.collection), h.rule)
 			}
 		}

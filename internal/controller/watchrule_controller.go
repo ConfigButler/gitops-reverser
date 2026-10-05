@@ -259,8 +259,8 @@ func (r *WatchRuleReconciler) setResourceResolutionCondition(
 	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 ) {
-	if refused, message := r.WatchManager.ObjectSelectorConflictForWatchRule(*watchRule); refused {
-		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonObjectSelectorConflict, message)
+	if refused, message := r.WatchManager.CollectionOverlapForWatchRule(*watchRule); refused {
+		st.set(ConditionTypeResourcesResolved, metav1.ConditionFalse, watch.ReasonCollectionOverlap, message)
 		return
 	}
 	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)

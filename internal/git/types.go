@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -387,6 +388,24 @@ type PendingWrite struct {
 	// render failed at commit time. Zero means "not stamped", so messageSource() recomputes.
 	committedMessageSource messageResolution
 
+	// committedOnce is set once the loop has committed this write at least once. It stays set after
+	// a reset discards that commit: whether the checkout holds it now is checkoutApplied's to say. A
+	// decided write the loop could not commit yet (the remote was unreachable) stays pending with it
+	// unset; such writes always form the tail of the pending writes. Loop-goroutine only.
+	committedOnce bool
+	// replayRefusal is the refusal the last completed replay met for this write: the tree the write
+	// was replayed onto refuses it, so the replay skipped it and the checkout does not hold it. The
+	// loop settles it out of the pending writes (settleReplayRefusals). Stamped by replayPendingWrites.
+	replayRefusal error
+	// charge is what keeping this write was charged against the retained-byte budget when it was
+	// decided, and is refunded when it stops being pending. See retainedCharge. Loop-goroutine only.
+	charge int64
+	// decidedAt is when the write was decided, which dates the oldest kept write. Loop-goroutine
+	// only.
+	decidedAt time.Time
+	// origin is what the write's outcome is settled against. See writeOrigin.
+	origin writeOrigin
+
 	// CommitSHA is the hash of the commit this write created, captured in
 	// executePendingWrite and refreshed when the write is re-executed on a
 	// rebase-replay (so it is never a stale pre-rebase hash). Zero when the write
@@ -402,15 +421,20 @@ type WorkItem struct {
 	// Attach is a CommitRequest attach: bind a message to the author's window and
 	// let its timers close that window.
 	Attach *AttachCommitRequest
-	// Resync is a streaming-snapshot resync request (M8): a synchronous
+	// Resync is the FIFO position of a streaming-snapshot resync request (M8): a synchronous
 	// request/reply that materialises a GitTarget's complete desired set.
-	Resync *ResyncRequest
+	Resync *resyncMarker
 	// Refresh asks the worker to re-prove where its branch is on the remote. It is the only
 	// work item that never writes anything: see RefreshRequest.
 	Refresh *RefreshRequest
 	// Withdraw cancels a CommitRequest the worker has not acted on yet. It rides the same FIFO as
 	// the attach, so it is always handled after every attach sent before it.
 	Withdraw *AttachCommitRequest
+
+	// charge is what a write or an attach was charged against the intake budget at enqueue, and is
+	// released once the loop has handled it. A resync's is on its marker, because coalescing can
+	// change it while the marker waits. See intake.go.
+	charge int64
 }
 
 // ResyncScope restricts a resync's mark-and-sweep to the slice of the mirror the desired
@@ -498,10 +522,6 @@ type ResyncRequest struct {
 	// for idle recurs on every silence timeout, so it never starves. A first-sync backfill is NOT
 	// a heal: it must establish initial state promptly.
 	Heal bool
-	// RefreshRemote asks the worker to fetch/reset to the remote tip before evaluating the
-	// acceptance gate. Forced GitTarget rechecks use it because their trigger is often "I changed
-	// Git; look again", and the local checkout may still hold the refused revision.
-	RefreshRemote bool
 	// SourceCollection names the target-watch collection that gathered this snapshot. Zero for a
 	// whole-GitTarget resync, which speaks for no single collection. Diagnostic only: nothing
 	// filters the queue on it. See source_collection.go.
@@ -509,6 +529,10 @@ type ResyncRequest struct {
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult
+
+	// payloadBytes is the snapshot's estimated serialized size once sized is set. See payloadSize.
+	payloadBytes int64
+	sized        bool
 }
 
 // refusalCollection is the watched collection this request speaks for: its scope's collection for a per-type
@@ -532,19 +556,21 @@ type resyncKey struct {
 	scope     string
 }
 
-// pendingResync is the coalescing entry for one resyncKey: the current request for
-// that key, and whether anything for its scope has been queued behind the marker
-// that represents it in the FIFO. Once tailPassed is set the marker's position is
-// no longer a safe place to run a newer snapshot — see the pendingResyncs field on
-// BranchWorker, and "Queue ordering and coalescing" in docs/design/target-watch-plan.md.
-type pendingResync struct {
-	// marker is the request whose pointer sits on the FIFO for this key. It is fixed
-	// for the entry's life: coalescing swaps request, never marker. Identifying the
-	// entry by its marker is what keeps a released key unambiguous — once a later
-	// request re-inserts the same key, the older marker must run the payload it
-	// carried rather than pick up the newer entry.
-	marker     *ResyncRequest
-	request    *ResyncRequest
+// resyncMarker is a queued resync's place in the FIFO, and the request it runs when it comes up. The
+// FIFO holds the marker, never a request, so a request coalescing replaced is not kept alive by the
+// queue: only the current one is reachable, and only the current one is charged.
+//
+// While its key is open (BranchWorker.pendingResyncs), a newer request for the same key replaces
+// request. Once anything for its scope is queued behind it (tailPassed) the marker's position is no
+// longer a safe place to run a newer snapshot, and the key is released: the marker keeps the request
+// it holds, and the next request for the key takes a marker of its own. See "Queue ordering and
+// coalescing" in docs/design/target-watch-plan.md.
+type resyncMarker struct {
+	// request, charge and tailPassed are guarded by pendingResyncsMu.
+	request *ResyncRequest
+	// charge is what the intake budget was charged for the marker: its current request's, adjusted
+	// whenever coalescing replaces it. See intake.go.
+	charge     int64
 	tailPassed bool
 }
 
@@ -674,6 +700,10 @@ type Event struct {
 	// non-stream producer (reconcile, bootstrap, the admission path). Diagnostic only:
 	// nothing filters the queue on it. See source_collection.go.
 	SourceCollection types.CollectionKey
+
+	// payloadBytes is the object's estimated serialized size once sized is set. See payloadSize.
+	payloadBytes int64
+	sized        bool
 }
 
 // IsFieldPatch reports whether the event carries a bounded field patch instead of
