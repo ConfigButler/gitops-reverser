@@ -2348,11 +2348,12 @@ controller could deploy:
   refused: nothing was built, nothing failed, and the folder passed. It is now built, and
   kustomize says *"cycle detected"*;
 - an `images:` entry whose `name:` is not a valid **regular expression** — `- name: "ngin["`.
-  A kustomization `name:` is a regex, not a literal string, and kustomize compiles it without
-  checking the compile error, so such an entry does not fail the build, it **panics** inside
-  it. We refuse the folder before the build rather than hand it over. (Note the corollary,
-  which is not new but is easy to miss: `- name: "ngin."` **matches** `nginx`, because it is
-  a regex.)
+  A kustomization `name:` is a regex, not a literal string. Kustomize up to api v0.21.1, the
+  version Flux's kustomize-controller builds with, compiles it without checking the compile
+  error and **panics** inside the build; from v0.21.2 it treats the name as matching nothing.
+  Either way the entry does not do what it says, so we refuse the folder before the build.
+  (Note the corollary, which is not new but is easy to miss: `- name: "ngin."` **matches**
+  `nginx`, because it is a regex.)
 
 **Why this is a safety fix, not just strictness.** The override chain, and therefore the
 write-fan-in guard, is derived from the render. A root that does not build yields no chain,
