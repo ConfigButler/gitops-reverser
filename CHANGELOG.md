@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.51.0...v0.52.0) (2026-10-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **git:** gitopsreverser_git_queue_drops_total is no longer emitted; dashboards and alerts must use gitopsreverser_git_queue_refusals_total.
+
+### Bug Fixes
+
+* **git:** keep the branch worker's decided writes pending, with one materializer ([#413](https://github.com/ConfigButler/gitops-reverser/issues/413)) ([b6492d8](https://github.com/ConfigButler/gitops-reverser/commit/b6492d865187a97fc5680080618c1341027cc88b))
+
+
+### Documentation
+
+* **upgrading:** say which kustomize panics on an invalid images: name ([#416](https://github.com/ConfigButler/gitops-reverser/issues/416)) ([2e656de](https://github.com/ConfigButler/gitops-reverser/commit/2e656de24abc9ba1e64886c03919da4f0a707c12))
+
 ## [0.51.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.50.0...v0.51.0) (2026-10-02)
 
 
