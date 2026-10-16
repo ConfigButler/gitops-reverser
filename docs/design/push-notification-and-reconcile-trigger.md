@@ -1,1019 +1,475 @@
-# Push notification and the reconcile trigger
+# Push notification and the apply trigger
 
-> **design**: part shipped, the rest is a menu of options and none of them is chosen.
-> Index: [`../INDEX.md`](../INDEX.md)
-> Captured 2026-09-19, merged and rewritten 2026-09-21. This page replaces
-> `inbound-push-notification.md` and `support-boundary/orchestrator-reconcile-trigger.md`,
-> which argued two halves of one subject.
-> Related: [`reconcile-triggering.md`](reconcile-triggering.md) (how our own controllers wake up;
-> its §5 is superseded here), [`../bi-directional.md`](../bi-directional.md) (the user-facing
-> model), [`support-boundary/orchestrator-knowledge-boundary.md`](support-boundary/orchestrator-knowledge-boundary.md)
-> (the ownership model part 3 keeps running into),
-> [`support-boundary/admission-consent.md`](support-boundary/admission-consent.md) (deciding
-> *whether* a write happens, where this page is about what happens after).
+> **design**: decided 2026-10-16, not built. Index: [`../INDEX.md`](../INDEX.md)
+> User-facing model: [`../bi-directional.md`](../bi-directional.md). Fields:
+> [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplier). The request that
+> led here: [`bi-directional-right.md`](bi-directional-right.md).
 
-Reverser and the GitOps reconciler share a branch and tell each other almost nothing. This page is
-about the messages that do not exist yet, what shipped instead, and what each remaining option
-would cost.
+GitOps Reverser and the applier (Flux or Argo CD) share a branch. This page is how they talk:
+how GitOps Reverser learns that somebody else pushed, and how it decides when the applier applies.
 
-**Part 1** is built and measured. **Part 2** is the gap it leaves. **Part 3** is the menu, and
-doing nothing is the first entry rather than a rhetorical one.
+**The decision: GitOps Reverser owns the apply trigger.** The applier keeps fetching, rendering,
+applying and pruning. It stops applying at its own will: its timers, webhooks and automated sync
+are switched off, and GitOps Reverser sends apply requests at moments it has checked.
+
+**Part 1** is the Git side as built, because the trigger rests on it. **Part 2** is why the trigger
+has to move. **Part 3** is the design. **Part 4** is the reference: wire contracts, status, metrics,
+tests.
 
 ---
 
-## Part 1: what is built
+## Part 1: how the branch worker reads the remote
 
-### 1.1 The loop, and where it closes
+### 1.1 Which side wins
 
-```mermaid
-flowchart LR
-  api(["API or operator edit"]) --> cluster[("Cluster")]
-  cluster -- "watch event" --> gr["GitOps Reverser"]
-  gr -- "commit, then compare-and-swap push" --> git[("Git branch")]
-  git -- "push webhook" --> recon["Flux or Argo CD<br/>(selfHeal off)"]
-  recon -- "apply the fresh commit" --> cluster
+Everything else depends on this, so it goes first.
 
-  style gr fill:#e8f4fd,stroke:#2196f3
-  style recon fill:#fff3e0,stroke:#ff9800
-```
-
-That is the product: the cluster is the editing surface, Reverser mirrors it to Git, and the
-reconciler is a **triggered applier** rather than an always-on loop. Every arrow exists today, and
-the one from Git to the reconciler is a webhook the user configures.
-
-### 1.2 Which side wins, before anything else
-
-Every option in part 3 depends on this, so it goes first.
-
-- **Cluster to Git.** The Kubernetes API is where edits are made. A write we captured from it is
+- **Cluster to Git.** The Kubernetes API is where edits are made. A write captured from it is
   intent, and it wins over what Git holds. Replay re-plans the captured object onto the new tip and
-  writes it ([`../bi-directional.md`](../bi-directional.md)).
-- **Git to cluster.** A push we did not author is new truth. We do not overrule it, and getting it
-  applied quickly is the point.
+  writes it.
+- **Git to cluster.** A push GitOps Reverser did not author is new truth. It is not overruled, and
+  getting it applied promptly is the point.
 
-Those read like a contradiction and are not, because they meet in exactly one cell.
+They meet in one cell:
 
-| | We hold a captured write for the object | We hold nothing |
+| | A captured write is pending for the object | Nothing is pending |
 | --- | --- | --- |
-| **A push changed it** | API wins, silently | **The hazard.** We must never publish here |
+| **A push changed it** | API wins, silently | **The hazard.** Never publish here |
 | **A push did not** | Ordinary publication | Nothing to do |
 
-The top-left cell is the only genuine conflict and it is decided: the API value wins, with no extra
-signal raised. The cell that matters is the top right. We hold no intent there, so anything we
-publish for that object is a stale reading rather than a decision, and publishing it reverts a push
-for no reason at all.
+The top-left cell is the only real conflict, and it is decided: the API value wins, with no extra
+signal. The top-right cell is where danger lives. Nothing is pending, so anything published for
+that object is a stale reading, and publishing it reverts a push for no reason.
 
-**Everything dangerous on this page lives in that one cell.**
+**So a notification that the branch moved never triggers a cluster snapshot.** The cluster still
+holds the values from before the push; a snapshot would publish them over it. A push says something
+about Git and nothing about the cluster.
 
-### 1.3 The push already detects a moved branch
+### 1.2 The push is the read
 
-[`validatePushState`](../../internal/git/git_atomic_push.go) opens a push session, reads the
-remote's ref advertisement, and compares it against the SHA the cycle's commits were based on. A
-mismatch is refused before a single object is uploaded, and the `packp.Command` carries
-`Old: oldHash` so the server enforces the same condition independently.
+A publication cycle does not fetch before it plans. It plans on the checkout it has, and the push
+reads the branch: [`validatePushState`](../../internal/git/git_atomic_push.go) opens the push
+session, reads the remote's ref advertisement, and compares it with the commit the cycle's writes
+were based on. A mismatch is refused before any object is uploaded, and the `packp.Command` carries
+`Old` so the server enforces the same condition. A cycle that commits nothing still reaches the
+push, so the advertisement is read either way.
 
-A cycle that commits **nothing** still reaches that push. A no-diff write is retained with a zero
-`CommitSHA`, so the advertisement is read either way. That is what makes the next section safe.
-
-### 1.4 What shipped: the fetch in front of every cycle is gone
-
-```mermaid
-sequenceDiagram
-    participant W as Branch worker
-    participant R as Git remote
-
-    rect rgb(255, 235, 235)
-        Note over W,R: REMOVED: first commit of a cycle
-        W->>R: list refs
-        R-->>W: advertisement
-        W->>R: fetch objects
-        R-->>W: packfile
-        Note over W: reset worktree to the fetched tip
-    end
-
-    Note over W: plan and commit locally
-
-    rect rgb(232, 245, 233)
-        Note over W,R: KEPT: the push
-        W->>R: open receive-pack, read advertisement
-        R-->>W: current branch SHA
-        Note over W: SHA matches the commits' base,<br/>so the write is safe to send
-        W->>R: packfile with Old = expected SHA
-        R-->>W: accepted
-    end
-```
-
-The green block already reads the branch SHA, which is the only thing the red block contributed on
-an uncontended cycle. **A target that is publishing therefore reads the remote only through the
-push it was making anyway**, which is what the whole of §1.6 measures.
-
-One qualifier, added when the refresher shipped: an IDLE target now spends one ref advertisement
-per `--git-refresh-interval` to re-prove where its branch is, so "no Git traffic at all" holds for
-a publishing target always, and for an idle one only at `--git-refresh-interval=0`. Nothing here
-changes for the active case, because a successful push renews the same knowledge and an active
-branch therefore never schedules a refresh.
-
-### 1.5 The invariant that replaced it
+That rests on one invariant:
 
 > **The worktree sits at the remote tip of the target branch, or the worker knows it does not.**
 
-Three flags carry it, and they are three because each brackets a different span. Collapsing any two
-is a bug that was found by trying.
+`baseTrusted` says whether the worker is at the remote tip. A reset onto a fetched tip sets it, and
+so does a push the server accepted, which is the stronger proof: the server has just moved the
+branch on the worker's authority. Any push error or rejection clears it. `checkoutApplied` counts
+how many pending writes the checkout holds on top of its root; unknown means a failed write left
+the tree dirty, and a count below the pending writes means a reset discarded their commits and they
+must be replayed. The loop's `materialize` is the one place that acts on it
+([`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md)).
 
-Trust is gained in two ways, and after the refresher shipped the push is the main one: a reset onto
-a fetched tip, and a `PushAtomic` the server did not reject. The second is the stronger of the two —
-a fetch says where the branch was when we looked, while an accepted push says the server has just
-moved it there on our authority — which is why a push also renews `status.remote` and why an
-actively-written branch never needs a refresh.
+A cycle plans straight onto the worktree only when the base is trusted and the tree is clean;
+otherwise it fetches, resets and replays first.
+
+### 1.3 What it costs
+
+Every row comes from [`git-roundtrip-ledger.golden`](../../internal/git/testdata/git-roundtrip-ledger.golden),
+measured against canonical git's `http-backend`. The unit is HTTP requests to the Git host.
+
+| Situation | Requests |
+| --- | --- |
+| Idle target | 0 |
+| Uncontended publication | 2 |
+| Publication that commits nothing | 1 |
+| Contended publication, one rejection | 6 |
+| Contended publication, two rejections | 10 |
+| Resync snapshot | 4 |
+| Forced recheck | 2 |
+| Publication onto a branch the remote does not have | 2 |
+
+An idle target also spends one ref advertisement per `--git-refresh-interval` to re-prove where its
+branch is, and a fetch only when the branch moved. A receiver delivery costs the same as that
+refresh (§3.3).
+
+`gitopsreverser_git_fetches_total{reason}` counts every call that runs a `SmartFetch`. On a healthy
+publishing target `reason="publication"` stays at zero; see
+[interpreting-metrics.md](../interpreting-metrics.md#reading-git_fetches_total).
+
+---
+
+## Part 2: why the trigger has to move
+
+An apply is safe only when nothing live is missing from the commit being applied. Between an edit
+and its push, the edit is live and absent from Git: in an open commit window or in the pending
+writes. An apply then writes Git's older value over it, GitOps Reverser mirrors that revert as the
+applier's commit, and the edit is lost.
+
+Only the branch worker can see those edits. Every trigger the applier runs by itself fires without
+that knowledge:
+
+- **A Git-host webhook into the applier** fires on every push, GitOps Reverser's own included. Two
+  API edits a few seconds apart are enough: the first commit is fetched, the second edit lands, and
+  the first commit is applied over it.
+- **Argo CD's timed refresh** resolves the branch tip every `timeout.reconciliation` (120s plus up
+  to 60s of jitter). Automated sync then runs whenever the tip is a commit it has not synced; with
+  `selfHeal: false` it skips only one it already synced
+  ([`alreadyAttemptedSync`](https://github.com/argoproj/argo-cd/blob/3cbae653d41ced2fcdec5d07c25fff2693c4242e/controller/appcontroller.go#L2648-L2670)).
+  Every push GitOps Reverser makes is a new commit, so two to three minutes after each push the
+  whole `Application` is synced over whatever is pending.
+- **Flux's intervals** apply on every reconcile. kustomize-controller corrects drift each time it
+  runs, and a new `GitRepository` artifact wakes every `Kustomization` that reads it.
+
+Filtering which webhook deliveries reach the applier removes the first trigger only. The timers
+remain, and they cannot be filtered from outside. So the applier's own triggers are switched off,
+and GitOps Reverser, which can see the pending edits, makes the requests.
+
+That costs something real: **GitOps Reverser becomes the fast path to a deployment.** While it is
+down, a Git-side push reaches the cluster only through a human or a long backstop timer. That is
+accepted. Bi-directional editing already stops in that state.
+
+---
+
+## Part 3: the design
+
+### 3.1 The applier
+
+`GitTarget.spec.applier` names exactly one applier, enforced with a CEL rule:
+
+| Field | Applier |
+| --- | --- |
+| `kustomizationRef` | a Flux `Kustomization` whose `sourceRef` is a `GitRepository` |
+| `applicationRef` | an Argo CD `Application` |
+| `webhook` (`url`, `secretRef`) | anything else, through a signed POST |
+
+plus `quietPeriod` (default `30s`, a Go duration string), used for `CatchUp` (§3.5).
+
+The reference is a declaration, not an inference. The earlier objection to naming an orchestrator
+object was to **deriving** which object applies a folder: neither Flux nor Argo CD derives that
+mapping, and a guess here would drive a write. A reference the user declares claims nothing we have
+to guess.
+
+It is looked up in the **source cluster**, the cluster the applier applies to, through the source
+context the watches already use and with the `ClusterProvider`'s identity. An applier living in
+another cluster (a hub Argo CD with its `Application` in a management cluster) is out of scope;
+see §4.6.
+
+### 3.2 The worker state
+
+The branch worker gains one piece of state per applier it serves: **the applier is behind**,
+holding the commit and the reason it is owed. Three signals set it, and one action clears it:
 
 ```mermaid
 stateDiagram-v2
     direction LR
-
-    state "Base at remote tip?" as Base {
-        [*] --> Untrusted
-        Untrusted --> Trusted: reset to the target branch
-        Untrusted --> Trusted: PushAtomic succeeded
-        Trusted --> Untrusted: push error or rejection
-        Trusted --> Untrusted: forced recheck
-    }
-
-    state "Worktree clean?" as Tree {
-        [*] --> Clean
-        Clean --> Dirty: executePendingWrites error
-        Dirty --> Clean: reset (only this clears it)
-    }
-
-    state "Retained writes real?" as Replay {
-        [*] --> Current
-        Current --> Stale: a reset discarded their commits
-        Stale --> Current: the replay rebuilt them
-    }
+    [*] --> Current
+    Current --> Behind: foreign commit seen
+    Current --> Behind: eligible refusal, onRefusal Reapply
+    Current --> Behind: own push, Flux or webhook applier
+    Behind --> Behind: newer reason or commit, coalesced
+    Behind --> Current: request sent on a quiet branch
 ```
 
-- **`baseTrusted`** answers "are we at the remote tip". A successful push sets it; any push error or
-  rejection clears it.
-- **`worktreeDirty`** answers "did a failed write leave files nobody asked for". Only a reset clears
-  it, and a successful push must never clear it: a push can succeed while an earlier write's
-  leftovers are still staged, and treating those as one question commits them under an unrelated
-  author.
-- **`replayRequired`** answers "do the retained writes still name commits that exist". A reset
-  discards the local commits behind retained writes; the replay rebuilds them. Die in between and
-  the next push sends nothing, returns nil, and the worker settles a `CommitRequest` as `Committed`
-  at a SHA that is on no remote. `worktreeDirty` cannot cover this, because the reset **clears**
-  `worktreeDirty` at exactly the moment the problem starts.
+The worker serves every applier declared by a `GitTarget` on its branch, keyed by the applier
+object, so two targets naming one `Application` share one entry and one request.
 
-The second and third questions are now one count, `checkoutApplied`: how many retained writes the
-checkout holds on top of its root. Unknown is `worktreeDirty`; a count below the retained writes is
-`replayRequired`, and a reset sets it to zero, so the reset no longer hides the problem it starts.
-The loop's `materialize` is the one place that acts on it
-([`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md), step 1).
+**A quiet branch** has no open commit window and no pending writes. It is the only moment a request
+may go out, because it is the only moment nothing live is missing from the tip. The worker knows it
+on its own goroutine, since every write and every window passes through its queue.
 
-A cycle plans straight onto the worktree only when the base is trusted and the tree is clean:
+### 3.3 Learning that somebody else pushed
 
-```mermaid
-flowchart TD
-    START["First commit of a cycle"] --> RETAINED{"Retained writes<br/>from this cycle?"}
-    RETAINED -->|yes| DIRTY1{"Worktree dirty?"}
-    DIRTY1 -->|no| PLAN["Plan on the worktree"]
-    DIRTY1 -->|yes| REPLAY["Reset, then replay<br/>the retained writes"]
-    REPLAY --> PLAN
-    RETAINED -->|no| OK{"Base trusted<br/>and tree clean?"}
-    OK -->|yes| PLAN
-    OK -->|no| FETCH["Fetch and reset"]
-    FETCH --> PLAN
-
-    style PLAN fill:#e8f5e9,stroke:#43a047
-```
-
-### 1.6 What it cost, measured
-
-Every row comes from [`git-roundtrip-ledger.golden`](../../internal/git/testdata/git-roundtrip-ledger.golden),
-produced against canonical git's `http-backend`. The unit is **HTTP requests to the Git host**.
-
-| Situation | Before | Now |
-| --- | --- | --- |
-| Idle target | 0 | **0** |
-| Uncontended publication | 4 | **2** |
-| Publication that commits nothing | 3 | **1** |
-| Contended publication, one rejection | 10 | **6** |
-| Contended publication, two rejections | 16 | **10** |
-| Resync snapshot | 4 | **4** |
-| Forced recheck | 2 | **2** |
-| Publication onto a branch the remote does not have | 4 | **2** |
-
-Three of those are worth reading twice.
-
-**A publication that commits nothing costs one request.** It opens the push conversation, reads the
-advertisement, finds the remote correct, and sends nothing. That row *is* §1.3's argument, measured.
-
-**A rejection cost ten, not the eight an earlier draft predicted.** When the remote has moved, the
-fetch that discovers it transfers objects, so it costs three requests rather than two.
-
-**The resync row does not move, deliberately.** A resync that finds nothing to change never reaches
-a push, so nothing would catch a stale base. It keeps its fetch.
-
-**A branch the remote does not have is trusted right away**, which is the last row and a later
-change than the rest of the table. A reset lands the worktree on whatever the remote has for the
-branch, and for a branch it does not have, a worktree based on the default branch (or an empty one)
-**is** that state. There is nothing left to learn, so the two `fetch-open` requests that cycle used
-to pay could only re-learn the absence. The compare-and-swap is what makes it safe: a push onto a
-branch we believe is absent declares `Old = zero`, which the server rejects if somebody created it
-meanwhile, and the rejection invalidates and fetches. The cost of being wrong is one rejection, not
-a bad write.
-
-### 1.7 The instrument
-
-`gitopsreverser_git_fetches_total{provider_namespace, provider_name, branch, reason}` counts every
-call that runs `SmartFetch`. The label is the point: a bare total would fall when contention fell
-and rise when a webhook arrived.
-
-| `reason` | Means |
+| Signal | How it reaches the worker |
 | --- | --- |
-| `publication` | Head of a cycle. **Zero on a healthy steady-state target**, which is the claim §1.4 makes |
-| `recovery` | The base was untrusted or the tree was dirty. Nonzero means trust is being lost |
-| `contention` | The reset after a confirmed rejection. One rejection costs exactly one |
-| `push_failure_probe` | A push that died before the remote said anything: credentials, connectivity |
-| `forced_recheck` | An operator asked, or a resync refreshed |
-| `bootstrap` | **Test-only today.** `prepareBootstrapRepository` has no production caller |
+| A receiver delivery (§4.1) | Enqueued as an immediate refresh of that branch |
+| A rejected compare-and-swap push | Already on the worker; the replay that follows is the response |
+| The periodic refresh | Already on the worker, every `--git-refresh-interval` on an idle branch |
 
----
+All three end in the same comparison: the remote's tip against the last commit the worker pushed.
+Equal means its own work. Anything else is foreign, including a tip the worker cannot classify.
 
-## Part 2: the gap
+**A delivery is a hint, never a fact.** The worker does not trust the commit a delivery names. On
+an idle branch it reads the advertisement (one request), compares, and fetches only when the tip is
+foreign, exactly as the refresh does. With work pending it does not read anything first: it closes
+the open windows and publishes, and the compare-and-swap discovers the move. That makes the hard
+cases come out right without bookkeeping:
 
-### 2.1 Two messages that do not exist
+- **A late delivery for an earlier push of the worker's own.** The advertisement shows the current
+  tip, the worker's latest push, so it is own work.
+- **A rollback onto one of the worker's older commits.** The tip is not the last push, so it is
+  foreign, and the rollback is applied.
+- **A delivery that arrives before `PushAtomic` returns.** The worker records the commit it is
+  pushing before it sends, so the comparison is against the commit in flight.
+- **The delivery for the replayed push `F + W`.** It names the worker's own push and is dropped,
+  which is correct: the foreign commit `F` already set the applier behind, and the request is
+  owed whether or not this delivery arrives.
 
-```mermaid
-flowchart LR
-  api(["API or operator edit"]) --> cluster[("Cluster")]
-  cluster -- watch --> gr["GitOps Reverser"]
-  gr -- "commit + push" --> git[("Git branch")]
-  git -- "push webhook" --> recon["Flux or Argo CD"]
-  recon -- apply --> cluster
-  other(["Someone else pushes"]) --> git
+A set of SHAs the worker has pushed is deliberately not kept. It cannot tell a late delivery from a
+rollback, because the distinction needs order, and the advertisement already supplies order for
+one request.
 
-  git -. "A: nobody tells Reverser<br/>the branch moved" .-> gr
-  gr -. "B: refused write means no commit,<br/>no push, no webhook, no revert" .-> recon
+### 3.4 Foreign commits with work pending
 
-  style gr fill:#e8f4fd,stroke:#2196f3
-  style recon fill:#fff3e0,stroke:#ff9800
+When the applier falls behind on a foreign commit while windows are open or writes are pending, the
+worker does not wait for the windows' timers. A window closes on silence, so a user who keeps
+editing would hold a Git-side change back indefinitely. Instead:
+
+1. Close every open window on the branch, as a resync boundary already does.
+2. Publish. The push is rejected, the worker fetches the foreign commit, replays the pending writes
+   onto it, and pushes `F + W`.
+3. The branch is quiet. Request the apply of `F + W`.
+
+The applied commit carries the API side's answer, so for `W`'s objects the apply is a no-op and
+only `F`'s changes land: §1.1's top-left cell, enforced in the cluster as well as in Git.
+
+If publishing fails, the request waits with the pending writes. It is never sent past them:
+applying `F` would revert `W` live, the worker would capture that revert as a newer write, and `W`
+would be lost even after the push recovers. The usual cause is an unreachable Git host, which the
+applier could not fetch from either.
+
+### 3.5 The three reasons
+
+| `reason` | Set by | Requested commit | Sent to |
+| --- | --- | --- | --- |
+| `ForeignCommit` | §3.3 | The tip once the branch is quiet, after any replay | Every applier on the branch |
+| `Refusal` | An eligible refusal (§3.7) on a target with `onRefusal: Reapply` | The tip once the branch is quiet | That target's applier |
+| `CatchUp` | An accepted push of the worker's own | The tip once the branch has been quiet for `quietPeriod` | `kustomizationRef` and `webhook` appliers |
+
+**Why Flux gets `CatchUp` and Argo CD does not.** With automated sync disabled Argo CD applies
+nothing on its own, so an `Application` that has not seen GitOps Reverser's own commits has nothing
+stale to apply; and every sync runs the `Application`'s hooks, so syncing for no change would run
+them for no reason. Flux has no refresh-only mode: its timers and a controller restart apply
+whatever artifact the `GitRepository` holds, and with a long interval that artifact falls behind.
+Applying a stale artifact reverts **published** edits, not only pending ones, which is far worse.
+`CatchUp` keeps the artifact at the tip, so any apply Flux starts on its own applies values the
+cluster already holds.
+
+`quietPeriod` exists because a quiet branch is a moment, not a guarantee. An editor who saves twice
+a few seconds apart produces a quiet instant between the first push and the second write; a catch-up
+sent then is exactly the race of Part 2. Waiting `quietPeriod`, restarted by every write, keeps the
+catch-up out of an editing session. `ForeignCommit` and `Refusal` do not wait it out, since a
+Git-side change should land promptly and §3.4 already published everything pending.
+
+**Never sent:** a request for the worker's own commits to an `applicationRef`; any request while
+windows are open or writes are pending; a `Refusal` for a suspended target.
+
+A suspended target's applier still receives `ForeignCommit`. Suspend stops writes; with the
+applier's own triggers off, withholding the request would stall Git-side deployments too.
+
+### 3.6 What a request does
+
+**Flux (`kustomizationRef`).** The request `flux reconcile kustomization --with-source` makes:
+stamp `reconcile.fluxcd.io/requestedAt` on the `GitRepository` named by the `Kustomization`'s
+`sourceRef`, wait until its artifact names the requested commit or a later one, then stamp the
+`Kustomization` unless it already started reconciling that artifact. A `Refusal` needs the second
+stamp, since a reapply at an unchanged commit produces no new artifact to wake it. A `CatchUp` stamps
+only the `GitRepository`. Permissions: `get` and `patch` on `gitrepositories` and `kustomizations`.
+
+**Argo CD (`applicationRef`).** Set `operation` on the `Application` as Argo CD's own automated
+sync builds it ([`appcontroller.go`](https://github.com/argoproj/argo-cd/blob/3cbae653d41ced2fcdec5d07c25fff2693c4242e/controller/appcontroller.go#L2628-L2641)),
+pinned to one commit:
+
+```yaml
+operation:
+  initiatedBy:
+    username: gitops-reverser
+  sync:
+    revision: <the requested commit>
+    prune: <spec.syncPolicy.automated.prune>
+    syncOptions: <spec.syncPolicy.syncOptions>
+    source: <spec.source>   # or sources and revisions, for a multi-source Application
+  retry: <spec.syncPolicy.retry, else {limit: 5}>
 ```
 
-**A: nothing tells Reverser that a branch it tracks moved.** A *publishing* target finds out at its
-next push and replays, which is correct and costs one wasted request. A *refused* target recovers on
-its own, because it is not converged and requeues every 10 seconds with a forced re-read. The case
-that does not recover is a **healthy, idle** target: converged, requeuing every 5 minutes without
-touching Git, holding its previous answer about a folder somebody has since changed.
+Pinning the commit means the sync applies exactly what the worker checked, not whatever the tip has
+become by the time Argo CD runs it. An operation already in progress is waited for, never replaced,
+which is the rule Argo CD's own `SetAppOperation` enforces. `automated.enabled: false` (Argo CD 3.1
+and later) is what keeps `prune` configured while automated sync is off; without it the operation
+does not prune. Permissions: `get` and `update` on `applications`.
 
-Two honest qualifications. This gap predates §1.4, because a target with no writes never performed
-the head-of-cycle fetch either. And on the traffic this system is built for it is mild. What changed
-is the stakes: a notification is now the only thing that would move an idle target's view of Git.
+**Webhook.** POST `{"repository", "branch", "commit", "reason"}` with
+`X-Signature: sha256=<hex HMAC-SHA256 of the body>`, keyed by the Secret's `token`. That is the
+header Flux's `generic-hmac` `Receiver` checks, so a webhook applier can also point straight at
+one. A third-party tool needs a small adapter that maps the request to its own trigger. There is no
+in-process plugin, because it would run with every credential the operator holds.
 
-**B: a refused write produces no commit, so nothing reverts it.** With Argo CD `selfHeal: false`,
-which bi-directional editing requires, the live edit stays `OutOfSync` until a human intervenes.
-Under Flux it is reverted on the next apply interval, which a long interval leaves hours away.
+**For all three:**
 
-Note the shape of that sentence, because option 7 turns on it: the reconciler is idle here not
-because it lacks permission to apply, but because **nothing has changed the revision**.
+- A request asks and never reports. Nothing GitOps Reverser publishes claims the apply happened;
+  the applier's own status says that.
+- It runs off the worker's queue, in `internal/applier`, so a slow applier never holds the branch.
+- It retries with backoff, and a newer request for the same applier supersedes one not yet sent.
+- A failed request never fails the publication that caused it.
+- Each request records an `ApplyRequested` Event and updates `status.applier`. A request that
+  keeps failing records `ApplyRequestFailed`.
 
-### 2.2 Why the obvious fix for A is dangerous
+### 3.7 Refusals: `onRefusal: Reapply`
 
-The chain to make an idle target re-read Git already exists and a human can drive it:
+A refused edit has no legal destination in Git, so it stays live until something applies Git over
+it. `Reapply` asks the target's applier to apply the current tip, which reverts it. It replaces the
+earlier `PushEmptyCommit`, which moved the branch with an empty commit so that appliers nobody named
+would notice a new commit. With the applier named, that indirection only added blast radius: an
+empty commit woke everything watching the branch, while a request wakes one applier.
 
-```bash
-kubectl annotate gittarget editing -n gitops-reverser \
-  reconcile.configbutler.ai/requestedAt="$(date +%s)" --overwrite
-```
+The eligibility guards carry over unchanged, because they are about what reapplying does, not about
+how it is asked for:
 
-That annotation runs a **full resync**: a cluster-to-Git snapshot with mark-and-sweep. Wiring a push
-webhook to it would be the most natural thing in the world and would be a correctness bug.
+- Only a write-boundary refusal of an edit to a document the folder already holds. Never a
+  folder-level refusal, which only a human can fix.
+- Never when the same flush removes a document anywhere: reapplying would put back an object
+  somebody deliberately deleted, or prune one somebody else is deleting. Eligibility is per
+  document.
+- A standing refusal is requested once. The digest of the refused objects and issues is kept, an
+  identical observation is dropped, and the memory clears when a write of that type is accepted.
+- Requests are coalesced per target, not rate-limited away: a refusal arriving while one is
+  outstanding rides the next request.
+- A target that cannot be read is treated as `Ignore`.
 
-```mermaid
-sequenceDiagram
-    actor Dev as Git-side author
-    participant Git
-    participant Rev as GitOps Reverser
-    participant Rec as Flux or Argo CD
-    participant K8s as Cluster
+Waiting for a quiet branch is the improvement over the empty commit: an allowed edit still in a
+commit window is published before the apply, so it is not reverted with the refused one.
 
-    Dev->>Git: push a fix
-    par one delivery each, nothing orders them
-        Git-->>Rev: push webhook
-    and
-        Git-->>Rec: push webhook
-    end
-    Note over Rev: needs a fetch and a plan
-    Note over Rec: needs a fetch, a render, and an apply
-    Rev->>K8s: snapshot the cluster
-    Note over K8s: still holds the PRE-push values
-    Rev->>Git: commit that snapshot over the fix
-    Rec->>K8s: apply... the reverted content
-    Note over Dev,K8s: the author watches their change<br/>get undone by the mirror
-```
+### 3.8 Validating the applier
 
-The argument is not that we are always first. It is that **nothing prevents it**, the window is a
-render and an apply wide, and the failure is silent. This is §1.2's top-right cell: those pre-push
-values are not intent, they are what the cluster happened to hold.
+The `GitTarget` controller reads the applier on its reconcile tick and sets `ApplierConfigured`, a
+gate:
 
-**So the rule for anything built in part 3 is absolute: a notification that a branch moved must
-never trigger a cluster snapshot.** A push tells you about Git. It says nothing about the cluster.
-
-The annotation stays exactly what it is, a human escape hatch for "go and look at Git now", where a
-snapshot is what the operator is asking for.
-
----
-
-## Part 3: the options
-
-Six of them, cheapest first. They are not mutually exclusive, and the order below is roughly the
-order in which they could be built.
-
-### Option 0: do nothing
-
-**What it is.** Keep §1.4 as shipped. Operators use the annotation when they need a re-read, and
-configure their Git host's webhook to point at Flux or Argo CD as they do today.
-
-**What it costs.** §2.1's two gaps stay open. An idle target holds a stale answer about its folder
-for up to 5 minutes plus however long until somebody looks. A refused edit is never reverted on
-Argo CD without a human.
-
-**What it buys.** No new inbound surface, no new secret to handle, no new outbound call, no new
-single point of failure, and nothing extra for an operator to configure.
-
-**When it is the right answer.** For audit-only use it is straightforwardly correct: nobody is
-editing through the API, so neither gap bites. For bi-directional use it is the honest default
-until somebody reports the staleness as a real problem, and the counter in §1.7 is what turns that
-report into a number instead of an anecdote.
-
-**This is the baseline every option below has to beat.** Note that the measured argument for a
-notification is weak on traffic alone: told in advance, the worker still has to fetch the moved
-branch (three requests) and push (two). It saves exactly one request, the rejected advertisement.
-The case for anything here rests on §2.1's staleness, not on §1.6's table.
-
-### Option 1: a maximum age on `baseTrusted`
-
-**What it is.** Not a new poller. The `GitTarget` already requeues on a 5-minute steady interval and
-that pass currently publishes status without touching Git, so it is a scheduled tick looking for a
-job. Give `baseTrusted` an age; when the tick finds it too old, clear it. The next cycle fetches.
-
-**It has to schedule a wake-up, not be consulted lazily.** An idle target is precisely the one with
-no arriving writes, so an age tested only at the head of a cycle can never fire on the target it
-exists to protect.
-
-**What it costs.** One fetch per target per interval on targets that are otherwise silent, whether
-or not anything changed. That is the cost §1.4 removed, reintroduced at a cadence you choose
-rather than per cycle.
-
-**What it buys.** Bounded staleness with **no Git-host configuration at all**, which no other option
-here can say. It is also the safety net that turns a missed webhook into a latency problem rather
-than a stuck one, which is the same argument Flux makes for keeping a short `GitRepository`
-interval alongside a `Receiver`.
-
-**Consequence worth stating.** If any option below is built, this one should be too, expressed as
-the same age rather than as a second mechanism.
-
-**Built, then removed, and the reason is worth keeping.** A duration flag shipped in
-[#383](https://github.com/ConfigButler/gitops-reverser/pull/383) and was taken out again. Expiring a
-belief cannot reach the target it exists for: an idle target is converged, nothing publishes, and
-so nothing ever spends the fetch the cleared flag merely permits. Making anything happen therefore
-meant scheduling a full re-check, which drives a **resync** — a cluster snapshot with
-mark-and-sweep — so the knob's real price was a snapshot per target per interval, reaching
-freshness through the most expensive door in the building. No supported install could pay it
-either: the chart builds `args:` as a closed allowlist with no escape hatch, so the flag was
-unreachable from a chart install.
-
-**What replaced it** renews the observation instead of revoking it: a periodic refresh that reads
-the remote's ref advertisement on an idle branch, fetches only when the branch actually moved, and
-publishes what it saw on `GitTarget.status.remote`. The option's argument above survives intact —
-bounded staleness with no Git-host configuration — but the mechanism under it is one advertisement
-rather than a cluster snapshot, and a branch that is actively being written never schedules one at
-all, because a successful push has already proved where the remote is.
-
-### Option 2: tell the reconciler after we push
-
-**What it is.** After a successful `PushAtomic`, ask the downstream to reconcile. Outbound only.
-
-```mermaid
-flowchart LR
-  subgraph TODAY["Today"]
-    direction LR
-    r1["Reverser"] -- push --> g1[("Git")]
-    g1 -- "push webhook<br/>(user must configure<br/>at the Git host)" --> f1["Flux"]
-  end
-
-  subgraph WITH["With option 2"]
-    direction LR
-    r2["Reverser"] -- push --> g2[("Git")]
-    r2 ==>|"reconcile now"| f2["Flux Receiver"]
-    g2 -. "webhook now optional" .-> f2
-  end
-
-  style r1 fill:#e8f4fd,stroke:#2196f3
-  style r2 fill:#e8f4fd,stroke:#2196f3
-```
-
-Flux ships the client for this. `flux trigger receiver` is an HMAC and a POST against a
-`generic-hmac` `Receiver`, with the path derived from the token
-(`cmd/flux/trigger_receiver.go` in flux2). It needs **no Flux Go types and no ownership claim**,
-because the `Receiver` already names the resources to wake.
-
-**What it costs.** One optional configuration block (a URL, a secret, a flavor), one outbound HTTP
-call per successful push, and the discipline in the four rules below. Argo CD is worse, because it
-has no generic receiver type: reaching it means synthesizing a host-shaped signed push event, which
-is the inverse of option 4 and shares its code. **Start with Flux.**
-
-**What it buys, and this is the part worth noticing.** The cluster-to-Git-to-cluster loop closes
-**without the user configuring a Git host webhook at all.** Today somebody editing through the
-Kubernetes API has to set up a webhook at GitHub only to watch their own edit come back. With this,
-they do not. That is a quickstart simplification, not only a latency win, and it is the strongest
-user-facing argument anywhere on this page.
-
-**Four rules it does not get to soften:**
-
-- **It requests reconciliation.** The POST says the reconciler was asked, never that the revision
-  was applied. No status, log line or metric may claim otherwise.
-- **It is asynchronous and bounded,** off the publication path.
-- **It retries and reports on its own.**
-- **A failed notification never fails a successful publication.** The commit is in Git either way,
-  and the reconciler's timer is the backstop.
-
-**What it does not do.** Nothing for gap A. A push we made tells us nothing about a push somebody
-else made.
-
-### Option 3: receive a push notification
-
-**What it is.** Our own validated endpoint. The Git host (or a relay in front of it) posts
-`{repository, branch, after}`; we clear `baseTrusted` and record the believed tip. §4.1 is the wire
-contract.
-
-**All it does is invalidate, and it must not fetch.** Fetching looks like the obvious thing and is
-wrong under the budget: it would spend requests immediately on a target that may have nothing to
-publish for an hour. Clearing the flag costs zero. The next publication cycle then finds an
-untrusted base, fetches once with a real reason, and pushes onto the correct tip instead of
-discovering the move through a rejection.
-
-**Its mandatory companion.** The dedupe rule is one comparison, and the bookkeeping behind it is one
-SHA.
-
-| `after` | Meaning | Action |
-| --- | --- | --- |
-| equals the believed tip | Our own push coming back | Ignore |
-| anything else | Somebody moved the branch, or we cannot tell | **Invalidate** |
-
-That needs `lastCommitSHA` to advance **on a successful push**, which it does not today: it is
-written only on fetch paths, so every one of our own publications would look foreign and earn a
-fetch. Without that write the feature pays back the round trip it saved.
-
-**There is deliberately no `before` field.** A set of SHAs we published cannot distinguish our own
-delayed delivery from somebody rolling the branch back through commits we published, because both
-are pairs drawn from the same set: the information the distinction needs is **order**, which a set
-has thrown away. If false invalidations ever measure as a problem, the escalation is an ordered
-record, built with a number in hand.
-
-**What it costs.** An inbound endpoint, per-route secrets, repository-URL normalization, and the
-rule from §2.2 written into the handler rather than assumed.
-
-**What it buys.** Gap A closes within a second of a push, for the price of one more webhook at the
-Git host. §5.4 of the old triggering design called that config cost the thing this feature has to
-justify, and on §1.6's numbers it does not justify it on traffic.
-
-**One thing refresh alone does not do.** `syncWithRemote` updates the checkout and the branch
-metadata and stops. It does not re-evaluate the acceptance gate or re-resolve placement, because
-those reach status today only via the snapshot that §2.2 forbids here. So an idle target would
-fetch a fresh tree and report nothing about it. The round-trip-free answer is to **report the
-staleness rather than resolve it**: set `status.remote.commit` to the commit the notification named
-and leave `lastFetchedAt` where it was. The two disagreeing is the signal, and it is honest.
-
-### Option 4: take over the webhook and forward it
-
-**What it is.** The Git host talks only to us, and we forward each delivery onward to Flux or
-Argo CD. Option 3 plus an outbound leg and a payload parser.
-
-```mermaid
-flowchart LR
-  gh[("Git host")] -- "one webhook" --> rev["GitOps Reverser<br/>relay"]
-  rev -- "verify, then" --> inv["invalidate baseTrusted<br/>(zero round trips)"]
-  rev -- "forward the exact bytes" --> flux["Flux Receiver"]
-  rev -- "forward the exact bytes" --> argo["Argo CD /api/webhook"]
-
-  style rev fill:#e8f4fd,stroke:#2196f3
-```
-
-**The load-bearing reason is not timing: we never have to work out which object syncs the folder.**
-Argo CD's `/api/webhook` matches a delivery against every `Application` whose source repository
-matches; a Flux `Receiver` fans out to the objects in its `spec.resources`. Forwarding hands routing
-to the tool that owns it.
-
-That matters because **neither orchestrator derives that mapping either.** Argo CD refreshes every
-matching `Application` and narrows only when the user supplies the
-`argocd.argoproj.io/manifest-generate-paths` annotation; with no annotation, or a payload that did
-not list changed files, `AppFilesHaveChanged` returns true and it refreshes
-(`util/app/path/path.go`). A Flux `Receiver` derives nothing at all: `spec.resources` is written by
-hand. Both either ask the user or fan out, because a redundant refresh is cheap for whoever owns the
-cache. An interpreter that derived the answer would be claiming something neither tool claims, to
-drive a **write** rather than a refresh, against `resources:` lines and `ApplicationSet` generators
-that move without telling us. A stale claim does not fail loudly; it triggers the wrong controller,
-or none.
-
-This repository has already paid for modeling a tool instead of asking it: the write path stopped
-re-implementing kustomize's transformers and now asks kustomize what a folder renders to, and three
-shipped render bugs went with that change ([`../UPGRADING.md`](../UPGRADING.md)).
-
-**Forwarding must be transparent.** Each downstream authenticates differently:
-
-| Argo CD parser | What it verifies |
+| Reason | Check |
 | --- | --- |
-| GitHub, Gogs, Bitbucket Server | HMAC over the raw body |
-| GitLab | a token compared against the configured secret |
-| Azure DevOps | HTTP Basic |
-| Bitbucket Cloud | a UUID |
+| `ApplierNotFound` | The object exists in the source cluster, and its kind is served there |
+| `SourceMismatch` | The `GitRepository` URL or the `Application`'s `repoURL` matches `GitProvider.spec.url` after normalization, and its branch or `targetRevision` is `spec.branch` |
+| `AutomatedSyncEnabled` | The `Application` has automated sync off |
+| `Forbidden` | The identity can patch it (a `SelfSubjectAccessReview` in the source cluster) |
 
-What they share is the property the relay needs: each checks the request **as the host sent it**, and
-none asks the relay to hold a secret. So copy the bytes and the headers, sign nothing, re-serialize
-nothing. Adoption is changing a URL at the Git host and keeping the secret.
+It is read, not watched, so a cluster without the Flux or Argo CD CRDs needs no informer for them.
+`AutomatedSyncEnabled` still sends requests: they are correct, only the guarantee is missing.
+Intervals are not checked; a short Flux interval is legal, and the guide says what it costs.
 
-Three constraints follow. Cap the buffered body at or above the downstream's own limit (Argo CD
-enforces `maxWebhookPayloadSizeB`, and a smaller cap makes the relay the limit). Take the forward
-target from configuration and never from the payload. And parse host-native envelopes after all,
-for our own `(repository, ref, after)`, behind a per-route declaration of which host's shape to
-expect, never behind sniffing; a parse failure forwards anyway.
-
-**What it costs, and it is the largest cost on this page: we become the only trigger.** Today an
-operator outage stops Git from being updated. Here it stops deployments. The reconciler's timer is
-then the whole backstop, so it has to stay a real one.
-[`../bi-directional.md`](../bi-directional.md) already has the right shape for Flux and for the
-right reason: `GitRepository.spec.interval: 1m` with a long `Kustomization` interval, because a new
-source revision wakes the dependent Kustomizations. That poll survives untouched. Argo CD's
-`timeout.reconciliation` does not, since `0` disables the timed refresh outright, and **"long
-intervals" must never be read as "no intervals"**.
-
-**What it buys.** Gap A, plus the ordering in §2.2 becomes structural instead of a rule, plus one
-webhook at the Git host instead of two.
-
-**What it does not buy: being first in general.** A `GitRepository` poll, an Argo CD refresh timer,
-a retry, or an operator running `flux reconcile` all reach Git without us. Forwarding removes the
-race between two webhook deliveries, which is the one race that had no other answer. **Nothing may
-depend on being first.**
-
-### Option 5: hold the push while an apply is in flight
-
-**What it is.** On a foreign push, stop producing commits until the apply has had its chance, since
-anything produced there is replayed anyway.
-
-**It cannot carry correctness, and this is the important part.** Four reasons, all in the tree
-today:
-
-- **Commit windows do not merge across authors.** `canAppend`
-  ([`open_window.go`](../../internal/git/open_window.go)) requires a matching author, attribution and
-  target, so an apply under the orchestrator's service account **closes** the user's window and
-  opens its own rather than collapsing into it.
-- **Window timers fire during a hold.** A window closes on silence, not on our permission.
-- **Retained writes sit outside any window** and a hold does not reach them.
-- **Nothing observes an apply converging.** Knowing a revision landed means comparing live objects
-  against a rendered revision, deletions included. That is its own piece of work, and it is not
-  `skipUnchangedLiveUpdate`, which caches the last sanitized hash per object and compares successive
-  **live** events, never Git.
-
-**So it is an optimization.** A bounded pause on the **push**, never on the watch, expiring on a
-timer, with compare-and-swap and replay unchanged underneath. The test of whether it stayed one is
-that skipping it entirely changes no outcome.
-
-**What it buys.** One doomed commit and one doomed push per foreign push.
-
-**What it costs.** Latency on unrelated live edits for the length of the hold, unless it is scoped
-to the objects the push changed, which needs a local diff of the two tips.
-
-**Do not stop the event stream to achieve this.** Dropping watch events means re-deriving them, and
-re-deriving is a resync, which is the cluster snapshot §2.2 forbids next to a push.
-
-### Option 6: trigger a reconcile to revert a refused edit
-
-**What it is.** Gap B. When the flush oracle refuses a write, ask the reconciler to re-apply the
-governing object, which reverts the live edit that has no home in Git.
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant K8s as Cluster
-    participant Rev as GitOps Reverser
-    participant Git
-    participant Rec as Flux or Argo CD
-
-    User->>K8s: edit a base-owned field
-    K8s-->>Rev: watch event
-    Note over Rev: the flush oracle REFUSES:<br/>no legal destination in Git
-    Rev-->>K8s: GitPathAccepted=False
-    Note over Git: nothing committed, no push, no webhook
-    Note over Rec: selfHeal off, so it reverts nothing on its own
-    Rev->>Rec: TRIGGER a reconcile of the governing object
-    Rec->>Git: fetch the current revision (unchanged)
-    Rec->>K8s: re-apply, and the refused edit is reverted
-```
-
-**The operator is uniquely entitled to do this.** Argo CD cannot distinguish authorized drift from
-unauthorized, which is why `selfHeal` has to be off. At refusal time we have exactly that signal,
-because a refused edit is by construction the drift with no home in Git. So this is the targeted,
-per-write substitute for the blanket self-heal that had to be switched off.
-
-**What it costs, and why it is last.** This is the one option that **cannot** be done by forwarding,
-because a refusal produces no push to forward. It needs the ownership interpreters: a claim of the
-form "object O reconciles path P", plus the ability to patch O. Flux is a one-annotation trigger
-with a correct outcome (`reconcile.fluxcd.io/requestedAt` on the `Kustomization`; a server-side
-apply reverts drift as a side effect). **Argo CD needs a sync operation, not a refresh**, because a
-refresh with `selfHeal` off only marks `OutOfSync`. That is a write into somebody else's controller
-and has to be scoped so it can only ever revert the specific refused object.
-
-**What it buys.** The only thing that ever reverts a refused edit on Argo CD without a human.
-
-**Hard boundaries if it is built.** Off by default, per `GitTarget`. Never on a cluster we merely
-mirror: we do not get to drive somebody's orchestrator because our mirror is lossy. And an absent
-orchestrator is a no-op, not an error.
-
-### Option 7: push an empty commit
-
-**What it is.** Gap B again, with none of option 6's machinery. On a refusal, commit nothing and
-push it: `git commit --allow-empty` with a message naming what was refused. The branch moves, both
-reconcilers notice a new revision, and each applies the same desired state it already had, which
-reverts the drift as a side effect.
-
-```mermaid
-sequenceDiagram
-    participant Rev as GitOps Reverser
-    participant Git
-    participant Rec as Flux or Argo CD
-    participant K8s as Cluster
-
-    Note over Rev: a write is REFUSED:<br/>no legal destination in Git
-    Rev->>Git: empty commit, message names the refusal
-    Note over Git: content identical, SHA is new
-    Git-->>Rec: new revision (webhook, or the next poll)
-    Rec->>Rec: build: manifests unchanged
-    Rec->>K8s: apply anyway
-    Note over K8s: the refused live edit is reverted
-    K8s-->>Rev: watch event, content now matches Git
-    Note over Rev: no commit, so no loop
-```
-
-**It is the same move as option 4.** We do not name the object that syncs the folder, we move the
-branch and let each tool decide what that means. Option 6 has to patch a specific `Kustomization` or
-`Application`; this patches nothing and needs no claim about anybody's topology.
-
-**It works, and here is why, per tool.**
-
-*Flux is unconditional.* A new commit is a new `GitRepository` artifact revision, which wakes the
-dependent Kustomizations, and kustomize-controller server-side-applies the built manifests, which
-corrects drift whether or not the build changed.
-
-*Argo CD works by default and has one exception worth knowing.* The `selfHeal: false` skip in
-`autoSync` sits inside `if alreadyAttempted`, and `alreadyAttemptedSync` compares the desired
-revision against the last sync's revision (`controller/appcontroller.go`). A new SHA makes them
-differ, so the skip never runs and automated sync proceeds. **This is the whole trick: `selfHeal`
-gates drift at an unchanged revision, and an empty commit is a changed revision.**
-
-The exception is `argocd.argoproj.io/manifest-generate-paths`. With it set, `evaluateRevisionChanges`
-asks the repo server whether any file under the refresh paths changed between the two revisions
-(`controller/state.go`). For an empty commit nothing did, so `revisionsMayHaveChanges` is false, the
-revision comparison is skipped, and the sync is treated as already attempted. **An empty commit is
-ignored by an Application carrying that annotation.** It is the same annotation option 4 discusses,
-which is a coincidence worth remembering rather than a connection.
-
-**What it buys, and it is a lot for the price.** Option 6's entire cost disappears: no ownership
-interpreters, no patching another controller's object, and above all **no Argo CD sync authority**,
-which was its worst problem. It needs no webhook, no secret, no URL, and no new configuration of any
-kind, because we already hold push credentials. It is the only option on this page that adds zero
-configuration surface. The commit message is also an audit trail of refusals, in the place an
-operator is already looking.
-
-**Four costs, and the third is the one to be careful about.**
-
-- **The blast radius is the branch, not the object.** Everything watching that repository re-applies.
-  Option 6 wakes one object; this wakes all of them. That is usually harmless and occasionally not.
-- **It can revert live edits we have not published yet.** An allowed edit sitting in an open commit
-  window is reverted along with the refused one. Landing pending intent before the empty commit
-  shrinks the window to the length of the apply; it does not close it.
-- **Pruning is not ours to hurry, and that decides the scope.** Re-applying only corrects drift on
-  an object Git manages. For one it does not, re-applying does nothing (Flux prunes from its
-  inventory and Argo CD from the resources it tracks, so a live-created object is in neither), or
-  prunes it, when the object was managed and has since been removed from Git. The two are
-  indistinguishable from here and only one is harmless, so **the commit fires only when the folder
-  already holds a file for every refused object**. An earlier version of this page said the action
-  deletes such objects and left that as a warning; it is now a fence.
-- **The blast radius still reaches other people's prunes.** The commit moves the branch, so
-  everything watching it re-applies, including another target's pending delete. The fence bounds
-  what we commit FOR, not what a moved branch causes, and nothing in a branch-wide trigger can.
-- **A flapping refusal writes a stream of empty commits.** Debounce per object, and cap it.
-
-**What it does not do.** Nothing for gap A, which is about learning that somebody else pushed.
-
-**How it degrades.** Without a Git-host webhook it still works, on the reconciler's own clock:
-Flux notices within its `GitRepository` interval, Argo CD within `timeout.reconciliation`. So it
-needs no webhook to be correct, only to be fast.
-
-**Where this leaves option 6.** Mostly superseded. It survives only where waking exactly one object
-matters and waking the branch is unacceptable, and that case now has to argue for the interpreters
-on its own rather than inheriting the need from gap B.
-
-**Built, as `GitTarget.spec.onRefusal: PushEmptyCommit`,** defaulting to `Ignore`. Four guards ship
-with it, and the first two are the ones this section argued for:
-
-- **Off unless asked for**, because of the `prune` row above.
-- **Only for a refusal carrying evidence the document exists.** The refusal KIND is not enough, and
-  a review found the hole: a render refusal fires for a brand-new resource an `images:` entry would
-  override, and a write that is REMOVING a document had one before it. Both would have been
-  committed for. The evidence is set where the pre-write buffer is in hand and carried on the issue.
-  It is evidence about the DOCUMENT, not the file, which a second review found the hole in too:
-  removing one document from a two-document file leaves the file present, so file survival answered
-  "an edit to a surviving document" for what was plainly a removal. A flush that removes a document
-  by any route — an explicit `DELETE`, a mark-and-sweep drop, a `$patch: delete` authored into an
-  overlay — earns no commit at all, because the refusal means Git still holds the document and
-  re-applying would put back an object somebody deliberately deleted.
-- **An unchanged refusal is one trigger, not one per recheck.** The rate limit decides how often a
-  commit may be made; it cannot tell whether the refusal is the same one. A forced recheck re-lists
-  every interval, so a refused edit nobody corrects is observed over and over, and each observation
-  used to be another commit. Each commit carries the digest of what it covered — the objects the
-  refused write would have produced, and the issues raised about them — and an observation matching
-  it is dropped. The digest is CONTENT: a re-list gives every snapshot a fresh collection version,
-  so a version would make every recheck look new. The memory is dropped again as soon as a write
-  for that target is ACCEPTED, which is what makes an identical edit, re-made after the reconciler
-  reverted the first one, a new trigger rather than a repeat.
-- **Rate limited per target, and COALESCED rather than dropped.** A controller rewriting a
-  base-owned field refuses on every one of its own reconciles, and every commit wakes every
-  reconciler watching the branch. But a refusal discarded inside that window is lost: the reconcile
-  an earlier commit triggered may already have finished, so nothing would ever cover it. One
-  trailing commit covers every refusal that arrived during the window, and re-checks consent when
-  it fires.
-- **Never for a suspended target.** An empty commit is a write, and it is the one write that
-  reaches outside this operator, so the state that means "write nothing" has to stop it.
-- **A GitTarget that cannot be read is treated as opted out.** Missing evidence is not consent for
-  an action that deletes where the reconciler prunes.
-
-The commit message explains its own empty diff, so `git log` does not show what looks like a stray
-no-op.
-
-### Option 8: hand the action to the installer
-
-**What it is.** Stop deciding what a refusal should cause. Emit the fact, with enough detail to act
-on, and let whoever installed the operator decide. We then need to know nothing about Argo CD or
-Flux for gap B at all.
-
-**The instinct is right and it is the same one behind options 4 and 7:** do not model somebody
-else's system, hand them the decision. What it turns on is the *mechanism*, and the three candidates
-are not equivalent.
-
-#### 8a. Execute a script mounted from a ConfigMap: declined
-
-The obvious shape: mount a script, run it on refusal, pass the `GitTarget` and the destination as
-arguments. It is declined, and recorded here so it is not re-proposed.
-
-**It is arbitrary code execution as the operator.** The operator process holds Git push credentials,
-SSH private keys, SOPS and age keys, and the kubeconfigs of every mirrored remote cluster, and its
-service account watches the whole cluster. A script mounted from a ConfigMap runs with all of that.
-Anyone who can write that one ConfigMap can exfiltrate every credential the operator holds. That is
-a privilege escalation from "edit a ConfigMap in one namespace" to "own every Git repository and
-cluster this operator touches", and no amount of care in the handler changes it.
-
-**Argo CD already ran this experiment.** Config management plugins were configured in `argocd-cm`,
-were deprecated in 2.4 and **removed completely in 2.8**, and the replacement is a sidecar container
-with its own image and security context, not a mounted script. Flux does not offer the pattern at
-all.
-
-Three smaller objections, any one of which would still need answering:
-
-- **It blocks the branch queue.** Publication for a branch is one serialized worker. A script that
-  hangs stalls every write for that branch, so this needs timeouts, concurrency limits and an answer
-  for "the script is broken" before it is a feature.
-- **It fixes the base image.** The runtime is `distroless/static:debug`, whose shell is busybox from
-  the debug tag. Depending on that for a product feature pins the image to `:debug` and turns every
-  future attack-surface review into a conversation about it.
-- **We cannot test the outcome.** Our e2e could assert that the hook was called and nothing about
-  what it did, so the product's promise for gap B would shrink to "we told someone".
-
-#### 8b. Emit a structured event: recommended, and nearly free
-
-The operator already has an `EventRecorder` and already emits Events on condition transitions
-([`status.go`](../../internal/controller/status.go)). A refusal already sets `GitPathAccepted=False`.
-What is missing is an Event carrying enough to act on.
-
-**The payload has to say more than which target refused.** A handler that knows only the `GitTarget`
-and the destination cannot do anything specific. It needs the refused object (group, kind, namespace,
-name), the reason, and the author, because the useful actions are all per-object: revert this one
-resource, notify the person who made the edit, open a ticket naming the field.
-
-The installer then wires whatever they want to it, with no new privilege anywhere: a small
-controller watching Events, a Prometheus alert into Alertmanager, or a Flux `Alert` in
-notification-controller. This is the idiomatic Kubernetes seam, it costs us one call, and it is
-testable on our side because "we emitted this Event with these fields" is an assertion.
-
-The honest trade against 8a: the installer has to run *something*, rather than dropping a shell
-script into a ConfigMap. That is the price of not putting an RCE in the operator.
-
-#### 8c. Notify an endpoint the installer configures
-
-The same idea over HTTP, and it is **option 2's outbound leg with a second event type**: the same
-configuration object, the same HMAC, the same retry and the same rule that a failed notification
-never fails a publication. Point it at a Flux `Receiver` after a push, or at the installer's own
-endpoint after a refusal.
-
-Worth building only once option 2 exists, at which point it is small. Until then 8b covers the same
-ground without any new machinery.
-
-#### How this composes
-
-Option 7 is the sensible **default** action for a refusal and option 8 is the **escape hatch** for
-installers who want something else, so they are not competitors. Between them, gap B is covered
-without the operator ever naming a `Kustomization` or an `Application`, which is what option 6
-needed the ownership interpreters for. **On this reading option 6 may never be built at all**, and
-the interpreters would then have to justify themselves on some other feature rather than on this one.
-
-### 3.7 Summary
-
-| | Closes gap | New inbound surface | New outbound call | Git-host config | Needs ownership interpreters |
-| --- | --- | --- | --- | --- | --- |
-| **0. Do nothing** | neither | no | no | unchanged | no |
-| **1. Max age on `baseTrusted`** | A, bounded | no | no | **none** | no |
-| **2. Tell the reconciler after we push** | neither | no | yes | **removes one** | no |
-| **3. Receive a notification** | A | yes | no | adds one | no |
-| **4. Take over and forward** | A | yes | yes | **replaces one** | no |
-| **5. Hold the push** | neither | no | no | unchanged | no |
-| **6. Trigger on refusal** | B | no | yes | unchanged | **yes** |
-| **7. Push an empty commit** | B | no | no | **none** | no |
-| **8b. Emit a structured Event** | B, by delegation | no | no | **none** | no |
-| **8c. Notify an endpoint** | B, by delegation | no | yes | **none** | no |
-
-Options 2, 3 and 4 share one configuration object and one piece of bookkeeping (`lastCommitSHA`
-advancing on a successful push), so whichever is built first should shape both.
-
-**Option 7 is the cheapest thing on this page and it closes gap B on its own**, which is not where
-this page expected to end up: gap B was the one that looked like it needed the ownership
-interpreters. It adds no configuration at all. Read its four costs before believing that, in
-particular what it does under `prune: true`.
-
-**Options 7 and 8 together are why option 6 may never be built.** One gives a sensible default
-action and the other gives installers a seam for anything else, and neither requires the operator to
-name an orchestrator object. Option 6 remains the only way to wake exactly one object rather than
-the branch, and that is now the whole of its case.
+URL normalization is the receiver's (§4.1): case-insensitive host and path, no trailing `.git`,
+`git@host:org/repo` equal to `https://host/org/repo`, default ports ignored.
 
 ---
 
 ## Part 4: reference
 
-### 4.1 The wire contract for option 3
+### 4.1 The receiver
 
-Two readers need this before any code exists: whoever builds the handler, and whoever points
-something at it.
-
-**Where it listens.** The operator runs two HTTPS listeners: the controller-runtime webhook server
-(admission and conversion, called by the API server) and the audit server (its own `Service` and
-certificate, called by the API server's audit backend, possibly off-cluster). **The receiver belongs
-on the audit listener.** It is the same shape of traffic: an inbound POST from something that is not
-the API server, authenticated by a shared secret. Putting it on the admission server would expose
-the listener the API server trusts to a Git host. That is a recommendation; an implementer who
-disagrees should record why here rather than landing it on the admission server because `Register`
-was easier to call.
+`GitProvider.spec.receiver` (`type`, `secretRef`), named after Flux's `Receiver`, served on its own
+listener (`--receiver-bind-address`, Helm `receiver.bindAddress`, off by default). It cannot share
+the audit listener, which requires a client certificate signed by the audit CA that no Git host can
+present.
 
 ```text
-POST /git-push/<route>
-Content-Type: application/json
-X-Reverser-Signature: sha256=<hex HMAC of the exact request body>
+POST /git-push/<GitProvider namespace>/<GitProvider name>
 ```
 
-```json
-{
-  "repository": "https://github.com/acme/infra.git",
-  "branch": "main",
-  "after": "9f7fc13494903993371f49caa67bd08051987cd3"
-}
-```
+`GitProvider.status.webhookPath` publishes the path.
 
-| Field | Meaning |
-| --- | --- |
-| `repository` | In any form the host uses. Matched against `GitProvider.spec.url` after normalization, never by string equality |
-| `branch` | The short name, `main`, not `refs/heads/main` |
-| `after` | The SHA the branch now points at, or forty zeros for a deletion |
+| `type` | Verifies | Body read for |
+| --- | --- | --- |
+| `github` | `X-Hub-Signature-256`, HMAC-SHA256 of the raw body | `ref`, `after` |
+| `gitlab` | `X-Gitlab-Token` equals the token | `ref`, `after` |
+| `gitea` | `X-Gitea-Signature`, HMAC-SHA256 of the raw body | `ref`, `after` |
+| `generic-hmac` | `X-Signature: sha256=<hex>`, HMAC-SHA256 of the raw body | `repository`, `branch`, `after` |
 
-`<route>` names a receiver configuration the way `/audit-webhook/<route>` does today, so several
-hosts or organizations can deliver to one operator with separate secrets. It is a path segment so a
-proxy can route on it and a log line identifies the sender without a body.
+The token is the Secret's `token` key, the key a Flux `Receiver` Secret uses.
 
-**A host-native payload is not accepted here.** The three fields above are trivially derivable from
-every host's envelope, and whoever wires a host up writes that mapping once. (Option 4 changes this,
-because there we *are* the thing in front.)
-
-**A deletion is a movement like any other.** Forty zeros says the branch is gone, and the handler
-invalidates as it would for any value it does not believe.
-
-**Authentication.** Hex HMAC-SHA256 of the exact body, keyed by the route's secret, compared in
-constant time and computed over the raw bytes before any JSON decoding: re-serializing changes them.
-Three rules that do not soften. An unsigned or wrongly signed request is refused and nothing about it
-is acted on, because an endpoint accepting anonymous "this moved" claims is a way to make a target
-fetch on demand. A route with no configured secret does not serve. And verification happens before
-the body is parsed for anything else, including the repository lookup, so an unsigned request cannot
-probe which repositories this operator tracks.
+**Authentication comes first.** The signature is verified over the raw bytes before the body is
+parsed for anything, in constant time. An unsigned or wrongly signed request is refused and nothing
+about it is acted on, so the endpoint cannot be used to make a target do work on demand or to probe
+which branches are tracked. A route whose `GitProvider` has no `spec.receiver` does not serve.
 
 | Status | When |
 | --- | --- |
-| `202 Accepted` | Verified and applied, **including when it matched no branch worker** |
-| `400` | Not JSON, or a required field missing or malformed |
+| `202 Accepted` | Verified, including when it named a branch no `GitTarget` writes, a tag, or another repository's events on a shared hook |
+| `400` | Verified but not parseable, or a required field missing |
 | `401` | Signature absent or wrong |
 | `404` | No such route |
-| `503` | Not ready to serve |
+| `503` | Not the elected replica, or not ready |
 
-**A delivery that matches nothing is a success.** A `GitTarget` may be suspended, the branch may be
-one nobody mirrors, or the repository may not be ours. None is the caller's fault, and an error
-teaches a Git host to disable the hook. The body says `{"matched": 0}`, which is what makes a
-misconfigured hook debuggable and is the argument for a counter labeled by route.
+A verified delivery that matches nothing is a success, because it is not the host's fault and an
+error teaches a host to disable the hook. A `generic-hmac` body naming a repository other than
+`spec.url` is ignored, not refused.
 
-**Normalization is where matching goes wrong**, so state it: compare case-insensitively on host and
-path, strip a trailing `.git`, strip a leading `git@` or `ssh://git@`, and ignore a default port.
-`git@github.com:acme/infra.git` and `https://github.com/acme/infra` are the same repository.
+**Delivery is unreliable, and correctness does not depend on it.** Deliveries arrive late, twice,
+out of order or never. Each one is only a request to look (§3.3), so a duplicate is one more
+advertisement, and a missed one costs latency until the refresh or the next push finds the move.
 
-**Delivery is unreliable and the handler is built for that.** Deliveries arrive out of order, twice,
-or never. Invalidation is idempotent, so applying it twice is applying it once. A missed delivery
-costs freshness, never correctness, because the compare-and-swap is still what makes a stale base
-safe. The tests are reordered delivery, dropped delivery, a duplicate, and a rollback that passes
-only through SHAs we published.
+### 4.2 Status
 
-**Calling it by hand:**
-
-```bash
-BODY='{"repository":"https://github.com/acme/infra.git","branch":"main","after":"9f7fc134..."}'
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$RECEIVER_SECRET" -hex | awk '{print $2}')
-
-curl -sS -X POST "https://reverser.example.com/git-push/acme" \
-  -H 'Content-Type: application/json' \
-  -H "X-Reverser-Signature: sha256=$SIG" \
-  --data "$BODY"
+```yaml
+status:
+  conditions:
+    - type: ApplierConfigured
+      status: "True"
+      reason: Succeeded
+  applier:
+    requestedCommit: 4f2c1ab9...
+    requestedAt: "2026-10-20T10:14:03Z"
+    reason: ForeignCommit   # ForeignCommit | Refusal | CatchUp
+  remote:
+    commit: 4f2c1ab9...
+    lastVerifiedAt: "2026-10-20T10:14:02Z"
+    verifiedBy: Push        # Push | Fetch
 ```
 
-### 4.2 `status.remote`
+`status.applier` is an observation of what was requested, sampled on the target's reconcile like
+`status.remote`. It never says what was applied.
 
-An operator who can no longer assume a fetch per cycle needs to see when the remote was last read.
-The worker tracks it and does not surface it.
+### 4.3 Metrics
 
-| Field | Source | Meaning |
+| Family | Labels | Reads as |
 | --- | --- | --- |
-| `revision` | `lastCommitSHA` | The branch head as of the last read |
-| `lastFetchedAt` | `lastFetchTime` | When that read happened |
-| `branchExists` | `branchExists` | False while the branch is unborn |
+| `gitopsreverser_apply_requests_total` | `applier_kind`, `reason`, `outcome` | Requests decided. `outcome`: `sent`, `failed`, `superseded` |
+| `gitopsreverser_receiver_deliveries_total` | `type`, `outcome` | Deliveries. `outcome`: `foreign`, `own`, `ignored`, `rejected` |
+| `gitopsreverser_git_fetches_total` | `reason` | Unchanged. A delivery that finds a foreign tip on an idle branch fetches under `refresh` |
 
-Name it fetch rather than pull: nothing merges. The doc comment should say it dates the **read**, so
-a timestamp well in the past means nothing has looked, which after §1.4 is the normal state of a
-healthy quiet target. A successful push advances `revision` too, which is the same write option 3
-depends on.
+These are recorded in [interpreting-metrics.md](../interpreting-metrics.md) when they ship.
 
-### 4.3 What has to be proven
+### 4.4 Chart
 
-The [bi-directional corner](../../test/e2e/flux_bi_directional_e2e_test.go) is the only place with
-both reconcilers against a real remote. Whatever is built from part 3 needs these, and the last one
-must never be allowed to lapse:
+- `receiver.bindAddress` and a `gitops-reverser-receiver` Service when it is set. Exposing it is the
+  installer's Ingress or Gateway route.
+- RBAC for the operator's own cluster: `get` and `patch` on `kustomize.toolkit.fluxcd.io`
+  `kustomizations` and `source.toolkit.fluxcd.io` `gitrepositories`; `get` and `update` on
+  `argoproj.io` `applications`. Off unless asked for, since most installs run one of the two.
 
-0. **A new revision is enough** (option 7's load-bearing claim, and the only part of it real Flux
-   can answer). Drift a live object, push a commit that changes no file, wake only the
-   `GitRepository`, and assert the `Kustomization` applies on its own and reverts the drift. The
-   `GitTarget` is suspended first, or the operator publishes the drift and there is nothing left to
-   revert; and the `Kustomization` is never reconciled by hand, or it would apply for a reason that
-   has nothing to do with the new revision. **Built**, in the Flux corner.
-0b. **A real refusal producing the operator's own empty commit.** Not the foreign-file refusal an
-   earlier version of this page described: that is folder-level, the filter excludes it, and it is
-   normally found by the per-type reconcile rather than by a write. The spec uses a **write-boundary**
-   refusal instead, from corpus shape 8: an overlay whose Deployment comes from `../../base`, and a
-   drifted env var that no overlay declaration can express. It asserts the refusal kind and message,
-   the commit, its empty diff, and that the commit names the `GitTarget`. It then asserts settling
-   **past** the one-minute trailing interval, and that a corrected object leaves the branch alone,
-   because a shorter window only proves the rate limit works. **Built**, as its own manager spec,
-   not in the Flux corner.
-0c. **A refusal alongside accepted work, under contention.** Deliberately NOT an e2e: the property
-   is about arrival order between our push and somebody else's, which the corner does not control.
-   Over a real Git server the contending commit lands between our commit and our push, so the
-   rejection is deterministic, and the replay must keep the accepted write, bring the empty commit
-   back still empty, and rebase onto the other writer rather than over them. **Built**, in
-   `internal/git`.
-1. **The hazard cell.** A push changes an object we hold no pending write for. It survives in Git
-   and reaches the cluster. This is §2.2 written as a test.
-2. **The contested cell, as decided.** A push changes an object we do hold a captured write for, and
-   the API value wins. This pins §1.2 rather than discovering it.
-3. **Somebody else gets there first.** The reconciler learns the revision from its own poll while a
-   hold is in effect or before a relay forwards. Nothing breaks, because nothing depends on order.
-4. **The webhook is absent.** The same foreign push with no notification delivered at all; assert
-   the worker still recovers on its next push through rejection, replay and a clean landing. This is
-   the guarantee that a missing or broken webhook degrades to correct-but-slower rather than to data
-   loss, and it is the one that must stay green for the life of any feature here.
+### 4.5 What has to be proven
 
-### 4.4 Open questions
+In the bi-directional corner, against real Flux and Argo CD configured as the guide says:
 
-1. **Which object carries a receiver's configuration?** A push moves a branch and several targets
-   can track it. The worker layer already maps repo-and-branch to targets, so this does not block
-   the handler, but the secret has to hang somewhere and the candidates differ in blast radius.
-2. **Under option 4, serve from every replica or only the leader?** Forwarding is idempotent and
-   needs no worker; the barrier needs the replica that owns the branch worker.
-3. **Under option 4, what about repositories we do not track?** The host has one webhook now, so
-   deliveries arrive for repositories only the reconciler cares about. They must be forwarded, which
-   makes the configuration per route rather than per `GitProvider`.
-4. **Should `baseTrusted` survive a worker restart?** **Answered: no, and the question is closed.**
-   Repositories are cloned into an empty directory, so every restart starts from a fresh checkout
-   with nothing to carry forward. Keeping the flag alive across a pod replacement would mean making
-   the clone durable first, and one fetch is not expensive enough to justify that.
-5. **How confident must an ownership claim be before we *write* on it?** Option 6 only. A wrong
-   claim triggers the wrong controller, and this is a higher bar than a claim used to read.
-6. **Does the default-branch fallback deserve better than untrusted?** **Answered: yes, and it is
-   now trusted.** See §1.6's last row: it was four requests per cycle and is two.
+1. **The original race.** Patch one field to `1`, then to `2` within two seconds of the first push.
+   After both commits and two applier intervals, the live value and Git hold `2`, and no commit
+   after the second patch is authored by the applier. Run for both appliers.
+2. **Argo CD's timer does nothing.** With `timeout.reconciliation` at 10 seconds and edits in
+   flight, the `Application`'s operation history holds only GitOps Reverser's syncs.
+3. **A foreign push with an edit pending.** Both land, and the applier applies the replayed commit.
+4. **Catch-up.** After `quietPeriod` the `GitRepository` artifact holds the tip, and a forced
+   `Kustomization` reconcile changes nothing and produces no commit.
+5. **Refusal.** An eligible refused edit is reverted by `Reapply`, only its own applier is asked,
+   and an allowed edit made just before it reaches Git.
+6. **No receiver.** A foreign push with no delivery at all is still applied once the refresh finds
+   it. This is the guarantee that a missing webhook degrades to latency, never to loss, and it must
+   stay green for the life of the feature.
+
+In `internal/git` over a real Git server (not `file://`, whose in-process receive-pack never
+compares `Old`): the delivery cases of §3.3, the window-closing of §3.4, coalescing and
+superseding, and that no request leaves a branch with pending writes.
+
+### 4.6 Open questions
+
+1. **An applier in another cluster.** Hub Argo CD keeps `Application`s in a management cluster.
+   Supporting it means a second identity, the control cluster's or a kubeconfig, on
+   `spec.applier`. Deferred until someone runs that topology.
+2. **High availability.** The decision lives on the replica that owns the branch worker, so a
+   delivery reaching another replica answers `503` today. With multiple replicas, deliveries need
+   routing to the owner, or a shared queue in Redis.
+3. **Path scoping for `ForeignCommit`.** Every applier on the branch is asked, whether or not the
+   foreign commit touched its folder. That is safe, since the branch is quiet, but it runs every
+   `Application`'s hooks. Narrowing it needs the applier's own source paths, which are not ours to
+   interpret; revisit only with a measured complaint.
+
+### 4.7 Build order
+
+1. Worker state, the quiet-branch rule and `status.applier`, with the Flux client. This alone fixes
+   the original race for Flux users.
+2. The receiver, on its own listener.
+3. The Argo CD client, and the guide's Argo CD configuration.
+4. `onRefusal: Reapply` in place of `PushEmptyCommit`, with the upgrade note.
+5. The webhook applier.

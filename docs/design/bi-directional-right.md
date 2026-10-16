@@ -344,142 +344,83 @@ our browser harness, because it is a property of the engine plus the reconciler,
 
 ## 9. Response: GitOps Reverser takes over the triggers
 
-_From gitops-reverser, 2026-10-16._
+_From gitops-reverser, 2026-10-16. The design is
+[push-notification-and-reconcile-trigger.md](push-notification-and-reconcile-trigger.md); the
+guide as it will read is [bi-directional.md](../bi-directional.md)._
 
 **The short version: GitOps Reverser takes over the reconciliation triggers. It has to.** Flux and
 Argo CD keep doing what they are good at: fetching, rendering, applying, pruning, and reporting
-health. They stop doing it at their own will. An apply happens because GitOps Reverser decided the
-revision is safe to apply, because a human asked for one, or because of a backstop timer that was
-chosen knowing what it costs.
+health. They stop doing it at their own will. An apply happens because GitOps Reverser asked for
+it on a branch with nothing pending, because a human asked, or because of a long backstop timer.
 
-We accept the ask's rule and its ordering. We go further than §8's last bullet: the webhook is not
-the only trigger to take away, because every timer the reconciler runs is a trigger too.
+We accept the rule and the ordering in §4, and we go further than §8's last bullet: the webhook is
+not the only trigger to take away, because every timer the applier runs is a trigger too.
 
 ### 9.1 Why it has to
 
-An apply is safe only when nothing live is missing from the revision being applied. GitOps
-Reverser is the only component that can know that, because it holds the open commit windows and
-the writes waiting to be pushed. The applier cannot see an edit that has not reached Git yet. An
-apply GitOps Reverser did not ask for is one nobody checked, and it reverts exactly the edits we
-captured and have not published.
-
-That makes the trigger part of the engine's correctness rather than an integration detail, and a
-component that cannot see the pending writes cannot own it.
+An apply is safe only when nothing live is missing from the commit being applied. GitOps Reverser
+is the only component that can know that, because it holds the open commit windows and the writes
+waiting to be pushed. An apply it did not ask for is one nobody checked.
 
 ### 9.2 Timers are triggers too
 
-§6 notes this for Flux's short `GitRepository` poll. On Argo CD it is worse, and it is not a matter
-of tuning.
-
-Argo CD's timed refresh (`timeout.reconciliation`, 120s plus up to 60s of jitter) resolves the
-branch tip. With `selfHeal: false`, automated sync is skipped only when that tip equals the last
-synced revision
+§6 notes this for Flux's short `GitRepository` poll. On Argo CD it is worse. The timed refresh
+(`timeout.reconciliation`, 120s plus up to 60s of jitter) resolves the branch tip, and with
+`selfHeal: false` automated sync skips only a commit it already synced
 ([`alreadyAttemptedSync`](https://github.com/argoproj/argo-cd/blob/3cbae653d41ced2fcdec5d07c25fff2693c4242e/controller/appcontroller.go#L2648-L2670)).
-Every push GitOps Reverser makes is a new revision. So two to three minutes after each of our
-pushes, Argo CD syncs the whole Application at the tip, and reverts whatever is live but not yet
-pushed at that moment. An idle branch is safe; during an editing session something is usually
-pending, so in practice it resets an arbitrary edit.
+Every push GitOps Reverser makes is a new commit, so two to three minutes after each push the whole
+`Application` is synced over whatever is pending. Filtering webhooks does nothing about it.
 
-Filtering the webhook removes the sync that lands about four seconds after a push. It does nothing
-about this one. On Flux the same holds for every reconcile: kustomize-controller applies whatever
-woke it.
+### 9.3 What we take from the ask, and what we change
 
-### 9.3 What it means per reconciler
+We take the rule (apply when the branch gained commits we did not author), the ordering in §4, and
+the test in §7. What changes:
 
-| | Argo CD | Flux |
-| --- | --- | --- |
-| Configure | `syncPolicy` **without** `automated` | `Receiver` on the `GitRepository` only, long intervals on both objects |
-| GitOps Reverser's trigger | a sync of a declared `Application`, pinned to the revision we judged safe | a signed POST to the `Receiver` |
-| Their own timers | keep them: without auto-sync a refresh only reports `OutOfSync` | the residual: one apply per `Kustomization` interval that nobody checked |
-| What stays exposed | an edit landing between our push and the sync's apply | the same, plus that interval apply |
+1. **The applier is named, on the `GitTarget`.** `spec.applier` holds a `kustomizationRef`, an
+   `applicationRef` or a `webhook`. The objection to naming orchestrator objects was to inferring
+   which one applies a folder; a declared reference infers nothing. That also replaces §5's
+   `Receiver` and synthesized-event plumbing: GitOps Reverser patches the applier through the
+   Kubernetes API, as `flux reconcile --with-source` does, or sets the `Application`'s sync
+   operation pinned to the checked commit.
+2. **Argo CD runs with automated sync off.** `automated.enabled: false` (Argo CD 3.1 and later)
+   keeps `prune` configured; GitOps Reverser's sync copies it. A refresh then only compares, so
+   Argo CD's timer can stay.
+3. **Flux needs one request for our own commits after all.** Flux has no refresh-only mode: its
+   timers and a controller restart apply whatever artifact it holds, and with long intervals that
+   artifact falls behind our pushes. Applying it would revert published edits. So once the branch
+   has been quiet for `quietPeriod` (`30s`), GitOps Reverser asks Flux to fetch, reason `CatchUp`.
+   The wait keeps it out of an editing session like the one in §1.
+4. **Not every commit we author is a no-op**, and the design does not rely on that. Our replayed
+   `F + W'` carries `F`; a refusal needs an apply too. So the decision is state on the branch
+   worker ("the applier is behind"), set by any foreign commit or eligible refusal and cleared by a
+   request on a quiet branch, not a verdict on each delivery. A delivery is a hint: the worker reads
+   the remote's advertisement and judges from that, which handles late deliveries, rollbacks onto
+   our own older commits, and deliveries for our own replayed push.
+5. **The hold does not wait for commit windows to close.** A busy user would hold a foreign push
+   back indefinitely. On a foreign commit the worker closes the windows, replays, pushes, then
+   requests.
+6. **`onRefusal: PushEmptyCommit` becomes `onRefusal: Reapply`.** With the applier named, the
+   refusal asks that one applier to apply the tip, once the branch is quiet, instead of moving the
+   branch for everything watching it.
+7. **Suppression is per applier, by construction.** A reconciler for another cluster is not
+   declared on this `GitTarget`, so we never ask it anything and its own triggers are its business.
 
-**Argo CD.** Without `automated`, a refresh from the timer, a webhook, or the UI only compares and
-reports. Nothing applies until a sync, and a sync names its revision, so it applies exactly the
-commit we checked rather than whatever the tip has become. This needs the `Application`'s name and
-Argo CD's `applications, sync` permission. That is naming an orchestrator object, which this
-repository has avoided until now. What
-[push-notification-and-reconcile-trigger.md](push-notification-and-reconcile-trigger.md) objected
-to was **inferring** which object owns a folder. A reference the user declares is a different claim,
-and we accept it.
+### 9.4 What changes for gitops-api
 
-**Flux** has no refresh-only mode, and `suspend: true` stops a `Receiver` as well. The closest
-setup is long intervals with the `Receiver` as the only fast path. The `Kustomization` interval
-then remains the one apply we do not control. A very long interval removes it, and removes the
-backstop with it. That is the installer's choice, and the guide has to say so.
+- Your webhook stops waking Flux. Relay `{repository, branch, after}` to the tenant `GitProvider`'s
+  receiver (`type: generic-hmac`, path in `status.webhookPath`).
+- Declare the tenant `Kustomization` as each `GitTarget`'s `kustomizationRef`, and drop any Flux
+  `Receiver` for the repository.
+- The `lastAppliedRevision` gate goes. Flux still applies your saves eventually, through `CatchUp`,
+  but only after the branch has been quiet, which is what the gate was approximating.
+- `GitRepository` and `Kustomization` intervals go long (`24h`); the `1m` poll goes.
 
-### 9.4 What we take from the ask, and what we change
+### 9.5 What we accept, and what is open
 
-We take the rule (trigger only when the branch gained commits we did not author), the ordering in
-§4 (trigger after the replayed push lands), and the test in §7. Four things change.
-
-1. **Not every commit we author is a no-op.** There are three exceptions:
-   - `GitTarget.spec.onRefusal: PushEmptyCommit` exists only to make the reconciler apply, so it
-     must trigger.
-   - The replayed `F + W'` is our commit, but it carries `F`, which nothing has applied.
-   - A folder applied to a cluster other than the one it was mirrored from: a shared base, a fleet,
-     or a `GitTarget` that mirrors a remote cluster through `spec.kubeConfig`. Our commit is a no-op
-     only for the reconciler that applies to the cluster it was read from, so suppression is per
-     trigger target, not global.
-2. **The decision is state on the branch worker, not a verdict on each delivery.** One flag, "the
-   reconciler is behind". It is set when the worker sees a tip it did not push (a rejected
-   compare-and-swap push, a refresh fetch, a foreign delivery) or pushes a refusal empty commit. It
-   is cleared by sending the trigger once the worker is quiet: no pending writes, base trusted.
-   Deliveries become hints. This settles the cases a per-delivery table gets wrong:
-   - the delivery for `F + W'` names our own SHA, yet `F` was never applied;
-   - a late delivery for an older push of ours;
-   - a rollback onto one of our own older commits, settled by one ref advertisement rather than by
-     guessing order;
-   - a delivery that arrives before `PushAtomic` returns, handled by recording the SHA while the
-     push is in flight.
-3. **The hold cannot wait for commit windows to close.** A window closes on silence, so a user who
-   keeps editing would hold back a foreign push indefinitely. On a foreign commit, close the open
-   windows, replay onto `F`, push, then trigger, with a bound on the whole sequence.
-4. **Forwarding host deliveries is no longer the mechanism.** Under the takeover an Argo CD webhook
-   only refreshes, and a Flux `Receiver` is a trigger target we call. Forwarding stays useful for a
-   Git host that can point at only one place, and to keep the reconciler's status fresh.
-
-### 9.5 The seam
-
-The decision is core and names no orchestrator. Delivering it is a short list of trigger targets,
-named by what they send:
-
-| Trigger target | What GitOps Reverser sends | For |
-| --- | --- | --- |
-| `argocd-sync` | a sync of a declared `Application` at the checked revision | Argo CD |
-| `webhook` | a signed POST, `generic-hmac` or a synthesized `github-push` | a Flux `Receiver`, or any third-party receiver |
-| _(always)_ | a Kubernetes Event naming the branch, the revision, and why | whatever the installer wires up |
-
-A third-party GitOps tool plugs in through `webhook` or the Event. There is no in-process plugin,
-for the reason Option 8a was declined: it would run with every credential the operator holds.
-
-### 9.6 What changes for gitops-api
-
-- Your webhook stops waking Flux and relays `{repository, branch, after}` to the Option 3 endpoint.
-- The `lastAppliedRevision` gate goes, and has to: Flux no longer applies your own saves, so that
-  watermark never arrives for them.
-- The `GitRepository` loses its `1m` poll, and the `Receiver` lists the `GitRepository` only.
-
-### 9.7 What changes in this repository
-
-- [`bi-directional.md`](../bi-directional.md): Argo CD without `automated`, Flux without the short
-  poll, and "Why the loop stops" restated around the trigger.
-- [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md): a
-  direction is chosen. Option 2 as written is rejected, and Options 3 and 4 become inputs to the
-  trigger decision.
-- The bi-directional e2e corner: the Argo CD specs that rely on automated sync change. §7's test
-  lands there, with an Argo CD variant run on a short `timeout.reconciliation`, asserting that no
-  reconciler-authored commit appears.
-
-### 9.8 What we accept, and what is open
-
-- **GitOps Reverser becomes the only fast path to a deployment.** While it is down, a push by a
-  human reaches the cluster only through a manual sync or Flux's backstop interval. Bi-directional
-  editing is already broken in that state; Git-side deployments were not, and now they are.
-- **Uncertainty triggers.** When the branch worker is absent, suspended, or on another replica, the
-  trigger fires. Only a commit known to be ours is held back.
-- **Open: where trigger targets are configured.** `GitProvider` (the repository) or `GitTarget`
-  (the folder and the cluster). The per-cluster suppression in §9.4 argues for the `GitTarget`.
-- **Open: high availability.** The decision needs the branch worker's state, which lives on the
-  replica that owns the worker.
-- **To verify:** that Flux's `github` `Receiver` type accepts a synthesized push without matching
-  the repository it names. If it does, `generic-hmac` is not needed.
+- **GitOps Reverser becomes the fast path to a deployment.** While it is down, a Git-side push
+  reaches the cluster only through a manual sync, `flux reconcile`, or Flux's backstop interval.
+- **An apply request cannot reserve time.** An edit made while a requested apply runs is still
+  reverted. That now happens only after a foreign push, a refusal, or a quiet period, not after
+  every commit we make.
+- **Open:** an applier in a cluster other than the one it applies to (hub Argo CD), and routing
+  deliveries with more than one replica. Both are in the design's open questions.

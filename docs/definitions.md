@@ -153,10 +153,10 @@ one. One word for the act, in the API (`window.attach`, `attachTimeout`), the co
 "claim", which names a rule's demand on the read side.
 
 **Pending write.** A write a branch worker has decided to make and not yet published: a closed
-commit window, an atomic batch, a resync, a save's empty record, or a refusal's empty commit. The
-branch worker keeps its pending writes in order, commits them, and pushes them on one retry
-schedule. A pending write can be waiting to become a commit, committed locally and waiting for a
-push, or replayed onto a remote that moved. `PendingWrite` and `pendingWrites` in Go. Not "log",
+commit window, an atomic batch, a resync, or a save's empty record. The branch worker keeps its
+pending writes in order, commits them, and pushes them on one retry schedule. A pending write can
+be waiting to become a commit, committed locally and waiting for a push, or replayed onto a remote
+that moved. `PendingWrite` and `pendingWrites` in Go. Not "log",
 which also names diagnostic logs and suggests a durable journal, which this is not.
 
 **Publication.** One commit-and-push cycle by a branch worker. The thing a `GitTarget` reports in
@@ -187,6 +187,22 @@ called pruning.
 
 **Refresher.** The periodic re-proof of an idle branch's remote state. Freshness is not base trust,
 and the two are not interchangeable.
+
+## Applying back
+
+**Applier.** The object that applies a folder to its source cluster: a Flux `Kustomization`, an
+Argo CD `Application`, or a webhook standing in for another tool. `GitTarget.spec.applier` names
+it. Not "reconciler", which also names this operator's own controllers, and not "orchestrator",
+which says nothing about what it does to the cluster.
+
+**Apply request.** What GitOps Reverser sends an applier: apply this commit, for this reason
+(`ForeignCommit`, `Refusal`, `CatchUp`). It asks; it never reports that the apply happened.
+
+**Quiet branch.** A branch whose worker holds no open commit window and no pending writes. Apply
+requests go out only on a quiet branch, because only then is nothing live missing from the tip.
+
+**Receiver.** `GitProvider.spec.receiver`, the endpoint a Git host notifies on a push. The word and
+its `type` values are Flux's. A delivery to it is a hint to look, never a fact about the branch.
 
 ## Attribution
 
@@ -296,7 +312,8 @@ type already carries, and never says "yet": the `Unknown` status already says it
 ### 7. An enum value we invent is PascalCase; a value that names something else keeps its spelling
 
 `Never`, `OnEvent`, `Always`, `Plain`, `KustomizeRoot`, `KustomizeOverlay`, `Push`, `Fetch`,
-`Ignore`, `PushEmptyCommit`, `ConfigMap`, `Secret`. An acronym stays uppercase (`HTTP`, not `Http`).
+`Ignore`, `Reapply`, `ForeignCommit`, `CatchUp`, `ConfigMap`, `Secret`. An acronym stays uppercase
+(`HTTP`, not `Http`).
 
 The exception is a value that names a thing outside this API: a tool, an operating system, a
 protocol, a Kubernetes resource name. It keeps that thing's own spelling.
@@ -392,3 +409,4 @@ outage.
 | failure, error (for a declined write) | refusal | the operator worked correctly |
 | sha, revision (for a commit hash) | commit | `revision` is Flux's word for a polymorphic identifier, and is reserved for one |
 | namespace access (bare) | access, or source namespace | two directions, two names |
+| reconciler, orchestrator (for Flux or Argo CD) | applier | "reconciler" also names our own controllers |

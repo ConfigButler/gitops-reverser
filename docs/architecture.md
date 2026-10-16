@@ -109,10 +109,23 @@ than a side effect, and `reconcile.configbutler.ai/requestedAt` still forces a f
 human who wants one now. A refusal a write found is left alone: a structural read cannot see a
 write-boundary precondition, so only the resync that writes the affected type clears that one.
 
-What none of this closes is the latency: seconds-fresh needs the inbound receiver,
-designed but not built.
-[§8.3](design/push-notification-and-reconcile-trigger.md#83-the-wire-contract-for-whoever-calls-it) is the
-request shape it will accept.
+Seconds-fresh is the push receiver's job: a `GitProvider` with `spec.receiver` accepts the Git
+host's push webhook. A delivery is only a hint: it makes the branch worker read the ref
+advertisement, and what the remote says decides whether the branch moved. It never triggers a
+cluster snapshot: the cluster still holds the values from before the push, so a snapshot would
+publish them over the incoming change.
+
+**GitOps Reverser decides when Git is applied to the cluster.** An apply is safe only when nothing
+live is missing from the commit being applied, and only the branch worker can see the edits that
+are live and not yet pushed. So a `GitTarget` names its **applier** (a Flux `Kustomization`, an
+Argo CD `Application`, or a webhook), the applier's own triggers are switched off, and the branch
+worker sends **apply requests** instead. A request is sent only on a **quiet branch**, with no open
+commit window and no pending writes: for a commit somebody else pushed (after closing open windows
+and replaying the pending writes onto it), for a refused edit the target opted to revert, and, for
+Flux, to keep its artifact current after GitOps Reverser's own pushes. Argo CD is never asked to
+apply GitOps Reverser's own commits, because the cluster already holds those values. A request asks
+and never reports; it runs off the publication path and cannot fail a publication. See
+[the apply trigger design](design/push-notification-and-reconcile-trigger.md).
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches initialize from current state on startup. When an endpoint
@@ -251,11 +264,16 @@ graph LR
 
     subgraph SOURCE["Source cluster selected by ClusterProvider"]
         API["Kubernetes API\ndiscovery · Namespace policy · watches"]
+        APPLIER["Applier\nFlux Kustomization or Argo CD Application"]
     end
+
+    HOST[("Git host")]
 
     CP -. "optional kubeconfig reference" .-> KCFG
     CP -->|"source identity + config"| WM
     WM -->|"source client"| API
+    GT -. "spec.applier" .-> APPLIER
+    HOST -. "push webhook to spec.receiver" .-> GP
 
     style GP fill:#e8f4fd,stroke:#2196f3
     style CP fill:#e8f4fd,stroke:#2196f3
@@ -271,6 +289,9 @@ a kubeconfig Secret in the operator namespace. Each referenced `ClusterProvider`
 source context: client, discovery catalog, followability registry, source-namespace snapshot, and
 reachability state. Its `GitTarget`s open their source watches through that context. The contexts are keyed
 by provider name and are released when no `GitTarget` references them.
+
+The applier is not one of the six kinds. It belongs to Flux or Argo CD, lives in the source cluster
+it applies to, and is reached through the same source context and identity the watches use.
 
 | CRD | Scope | One line role |
 |---|---|---|
@@ -370,6 +391,11 @@ Key fields:
 - `spec.commit.window`: when this target's commit windows close: `idleTimeout` (default `5s`) of
   silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
+- `spec.applier`: optional; exactly one of `kustomizationRef`, `applicationRef` or `webhook`, plus
+  `quietPeriod` (default `30s`). The object that applies this folder, and that GitOps Reverser asks
+  to apply.
+- `spec.onRefusal`: `Ignore` (default) or `Reapply`, which asks the applier to reapply the tip when
+  an edit to an existing document is refused. `Reapply` requires `spec.applier`.
 
 `spec.commit` describes the folder, not the connection, so two `GitTarget`s sharing one `GitProvider`
 may batch and phrase their commits differently. A branch worker serves a `(provider, branch)` pair and
@@ -393,7 +419,10 @@ Status has a kstatus-compatible summary layer plus domain conditions:
   source API the data plane can currently reach.
 - `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
+- `ApplierConfigured`, present only with `spec.applier`, says the applier exists in the source
+  cluster, applies this repository and branch, and can be patched. It is a gate.
 - `status.streams` is a bounded count summary, not a per-type list.
+- `status.applier` is an observation: the last apply request's commit, time and reason.
 
 WatchRule and ClusterWatchRule add `ResourcesResolved` and `GitTargetReady`. `ResourcesResolved` explains
 the source selector. `GitTargetReady` mirrors the referenced GitTarget's write readiness. This keeps
@@ -412,7 +441,10 @@ Represents a Git repository and the credentials/configuration used to write it. 
 - `spec.allowedBranches`: glob patterns that gate writable branches.
 - `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).
 - `spec.commit.signing`: SSH signing key reference and optional key generation.
+- `spec.receiver`: optional push receiver, `type` (`github`, `gitlab`, `gitea`, `generic-hmac`) and
+  the `secretRef` holding its token, named after Flux's `Receiver`.
 - `status.signingPublicKey`: populated when signing is configured and key material is available.
+- `status.webhookPath`: the receiver's path, `/git-push/<namespace>/<name>`, when `spec.receiver` is set.
 
 The controller verifies repository reachability and manages the signing key lifecycle. It generates an
 ed25519 keypair when `signing.generateWhenMissing` is set. The portable artifact across GitOps
@@ -597,6 +629,43 @@ flowchart TD
 For a `CommitRequest`, success is reported only after the push reaches the remote. If the push had to
 replay on top of someone else's commit, `status.commit` is the refreshed post-replay commit, not the stale
 local commit from before the retry.
+
+### Somebody else pushed, and the cluster has to follow
+
+A rejected push is one of three ways the branch worker learns the branch gained a commit it did
+not push. The other two are a push-receiver delivery and the periodic refresh. All three set the
+same piece of worker state, **the applier is behind**, and the worker clears it by sending an apply
+request once the branch is quiet.
+
+```mermaid
+flowchart TD
+    HINT["Receiver delivery"] --> ADV["Read the ref advertisement"]
+    REJECT["Rejected compare-and-swap push"] --> SEEN
+    REFRESH["Periodic refresh fetch"] --> SEEN
+    ADV --> OURS{"Tip is a commit<br/>we pushed?"}
+    OURS -->|yes| DROP["Nothing to do"]
+    OURS -->|"no, or cannot tell"| SEEN["Applier is behind"]
+    SEEN --> PENDING{"Open windows or<br/>pending writes?"}
+    PENDING -->|yes| FLUSH["Close the windows, fetch,<br/>replay onto the foreign commit, push"]
+    FLUSH --> QUIET
+    PENDING -->|no| QUIET["Branch is quiet"]
+    QUIET --> REQ["Apply request to every applier on the branch,<br/>naming the tip, reason ForeignCommit"]
+
+    style DROP fill:#eeeeee,stroke:#9e9e9e
+    style REQ fill:#fff3e0,stroke:#ff9800
+```
+
+The worker records the commit of a push while the push is in flight, so a delivery that arrives
+before `PushAtomic` returns is still recognized as its own. A rollback onto one of its own older
+commits is foreign, because the advertisement names a tip that is not the last one it pushed.
+
+The same quiet-branch rule sends two other requests: `Refusal`, to the refusing target's applier
+when `spec.onRefusal: Reapply` is set, and `CatchUp`, to Flux and webhook appliers once the branch
+has been quiet for `spec.applier.quietPeriod` after the worker's own pushes. Delivering them is
+the job of the applier client in `internal/applier`, off the worker's queue: a Kubernetes patch
+for Flux and Argo CD, a signed POST for a webhook, retried with backoff, recorded as an
+`ApplyRequested` Event and on `status.applier`. A failed request never reaches back into the publication that
+caused it.
 
 ***
 
@@ -1134,11 +1203,11 @@ write side is shared with live writes):
 - nothing is committed if the apply cannot complete safely.
 
 A **write-boundary** refusal is a different thing and is scoped accordingly: the folder is
-accepted, and one edit had nowhere to land in it. Only those can earn the empty commit a target
+accepted, and one edit had nowhere to land in it. Only those can earn the apply request a target
 opts into with
-[`spec.onRefusal: PushEmptyCommit`](configuration.md#reverting-a-refused-edit-specconrefusal), and
-only when the edit is to a document the folder already holds. A folder-level refusal above is
-excluded deliberately: an empty commit cannot repair a folder, and only a human can.
+[`spec.onRefusal: Reapply`](configuration.md#reverting-a-refused-edit-speconrefusal), and only
+when the edit is to a document the folder already holds. A folder-level refusal above is excluded
+deliberately: reapplying Git cannot repair a folder, and only a human can.
 
 The acceptance gate is **structure-only on purpose**: it never refuses on a discovery-derived
 followability fact (unwatched / out-of-scope), which can blink on a discovery wobble; only facts that are
@@ -1167,6 +1236,8 @@ stops a fact being published by something that cannot actually prove it.
 | Where is branch B on the remote, and when was that proved? | the branch worker, on its queue | `GitTarget.status.remote`, sampled by each `GitTarget` on the branch |
 | What is this repository being used for? | the `GitTarget`s that reference it | `GitProvider.status.branches` |
 | Is this folder accepted, streaming and matching live? | the watch plane, per `GitTarget` | the `GitTarget`'s conditions and `status.placement` |
+| Does the applier need to apply, and is now safe? | the branch worker, on its queue | `GitTarget.status.applier` and an `ApplyRequested` Event |
+| Can the applier be asked at all? | the `GitTarget` controller, reading the applier in the source cluster | `ApplierConfigured` |
 
 A branch worker sits at the intersection and belongs wholly to neither object: `GitTarget`s decide
 which branches are needed, `GitProvider` decides which repository those branches are in. So the
@@ -1196,8 +1267,10 @@ the newest revision beside a stale clock.
 ### Everything about a branch happens on that branch's queue
 
 Reading or writing a branch's repository state is the branch worker's job, and the worker does it on
-one FIFO queue, on one goroutine. Live events, resyncs, `CommitRequest` attaches and periodic
-refreshes all enter the same queue and are served in order. Nothing else opens a connection on a
+one FIFO queue, on one goroutine. Live events, resyncs, `CommitRequest` attaches, periodic
+refreshes and push-receiver deliveries all enter the same queue and are served in order. Whether
+the branch is quiet is therefore a fact one goroutine holds, which is what lets the worker decide
+when an apply request may go out. Nothing else opens a connection on a
 branch's behalf, and nothing else touches its clone. That is what makes "the base is trusted" a
 statement one goroutine can hold.
 
@@ -1461,7 +1534,9 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   Namespace label changes re-check provider-reference access. Rule changes re-resolve selected
   collections. It deliberately does **not** watch encryption Secrets, so their recovery is picked up
   by periodic reconciliation without retaining
-  every Secret value in the control-plane cache.
+  every Secret value in the control-plane cache. Nor does it watch appliers: it reads the
+  `Kustomization` or `Application` on its tick to set `ApplierConfigured`, so a cluster without the
+  Flux or Argo CD CRDs needs no informer for them.
 - `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
   RuleStore, and trigger the rule-change reconcile.
 - `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
@@ -1500,7 +1575,12 @@ flowchart TD
     Hq -->|no| J[Configured-author: no fact streams or index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
-    K --> L[Register GitProvider + ClusterProvider + GitTarget + CommitRequest controllers]
+    K --> R{receiver-bind-address set?}
+    R -->|yes| Ri[Start push receiver listener; route deliveries to branch workers]
+    R -->|no| Rj[No receiver; foreign pushes found by rejection and refresh]
+    Ri --> L
+    Rj --> L
+    L[Register GitProvider + ClusterProvider + GitTarget + CommitRequest controllers]
     L --> M[Add cert watchers + health checks]
     M --> N[mgr.Start]
 ```
@@ -1558,6 +1638,15 @@ as one funnel and its loss paths as one selector:
   counters read identically whether the worker fetches constantly or never. On a healthy publishing
   target `reason="publication"` is flat at zero. See
   [Interpreting metrics](interpreting-metrics.md#reading-git_fetches_total).
+
+**Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
+request the worker decided to send (`applier_kind` is `kustomization`, `application` or
+`webhook`; `reason` is `ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
+`sent` from `failed` and `superseded` (a newer request for the same applier replaced it before it
+went out). `receiver_deliveries_total{type,outcome}` counts receiver deliveries:
+`foreign`, `own`, `ignored` (another branch, or a tag), and `rejected` (bad signature). A healthy
+bi-directional branch shows `CatchUp` and `ForeignCommit` and never a request on a branch with
+pending writes, which is what the decision rule promises.
 
 **Authorship**, when `--author-attribution` is on:
 
@@ -1626,6 +1715,15 @@ Current limitations:
   is refused with more than one replica, and it loses every unjoined fact on restart by design; a
   multi-replica install must use the Redis transport.
 - **No pull request creation;** the operator writes directly to branches.
+- **GitOps Reverser is the fast path to a deployment.** With `spec.applier` set, the applier's own
+  triggers are off, so while the operator is down a Git-side push reaches the cluster only through a
+  manual sync, `flux reconcile`, or Flux's long backstop interval.
+- **The applier must live in the cluster it applies to.** It is looked up in the source cluster
+  with the `ClusterProvider`'s identity. A hub Argo CD whose `Application` lives in a management
+  cluster that is not the source is not supported.
+- **An apply request cannot reserve time.** An edit made while a requested apply runs is reverted
+  and mirrored as the applier's commit. The rule confines that to the seconds after a foreign push,
+  a refusal with `Reapply`, or a quiet period on a Flux branch.
 - **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
   certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not
@@ -1643,6 +1741,7 @@ Current limitations:
 | Package | Role |
 |---|---|
 | [api/v1alpha3/](../api/v1alpha3/) | CRD types |
+| `internal/applier/` | apply requests: the Flux, Argo CD and webhook clients, and the `ApplierConfigured` check |
 | [cmd/](../cmd/) | operator entry point and server setup |
 | [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers feeding attribution facts |
 | [internal/controller/](../internal/controller/) | Kubernetes reconcilers |
@@ -1661,7 +1760,7 @@ Current limitations:
 | [internal/types/](../internal/types/) | shared resource identity/reference and sensitivity policy |
 | [internal/typeset/](../internal/typeset/) | type followability registry, lookup model, and the relevance filter (controller-owned → don't mirror) |
 | [internal/watch/](../internal/watch/) | discovery catalog, watch manager, per-`(GVR, scope)` raw watches with `sendInitialEvents` replay + mark-and-sweep, the author resolver, watched type tables, event router |
-| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner) |
+| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner), and the `/git-push` receiver |
 
 ***
 
@@ -1688,6 +1787,7 @@ Deeper dives live under [docs/design/](design/):
 - [Kubernetes API resource catalog](facts/kubernetes-api-resource-catalog.md)
 - [GitTarget status design](spec/status-conditions-guide.md)
 - [The support contract: what we edit, what we refuse, and why](design/support-boundary/support-contract.md)
+- [Push notification and the apply trigger](design/push-notification-and-reconcile-trigger.md)
 - [Git credentials interop](finished/git-credentials-interop.md)
 - [SOPS/age key management](finished/sops-repo-bootstrap-and-key-management-architecture.md)
 - [Commit signing](commit-signing.md)

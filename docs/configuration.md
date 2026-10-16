@@ -32,6 +32,10 @@ The usual flow is:
 3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
 4. Create a `CommitRequest` only when you want a save: your writes in one commit, on the request's
    timers rather than the target's, and optionally with your message.
+5. When the folder is also applied back to the cluster by Flux or Argo CD, name that applier on the
+   `GitTarget` and give the `GitProvider` a push receiver, so GitOps Reverser decides when Git is
+   applied. See [who applies this folder](#who-applies-this-folder-specapplier) and the
+   [bi-directional guide](bi-directional.md).
 
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
@@ -389,6 +393,53 @@ want custom `spec.commit` behavior because the starter values do not currently e
 For the platform-facing behavior behind "valid signature" versus "verified badge", see
 [commit-signing.md](commit-signing.md).
 
+### Receiving push notifications (`spec.receiver`)
+
+`spec.receiver` lets the Git host tell GitOps Reverser that somebody else pushed. The names follow
+Flux's `Receiver`, so a Flux user already knows them:
+
+```yaml
+spec:
+  url: https://github.com/acme/platform.git
+  receiver:
+    type: github            # github | gitlab | gitea | generic-hmac
+    secretRef:
+      name: platform-receiver-token   # key: token
+status:
+  webhookPath: /git-push/team-a/platform-repo
+```
+
+Point the host's push webhook at the receiver listener plus `status.webhookPath`, with the same
+token as the webhook secret. Each type verifies the request the way its host signs it:
+
+| `type` | Verifies | Body |
+| --- | --- | --- |
+| `github` | `X-Hub-Signature-256`, an HMAC of the body | GitHub's push event |
+| `gitlab` | `X-Gitlab-Token`, compared with the token | GitLab's push event |
+| `gitea` | `X-Gitea-Signature`, an HMAC of the body | Gitea's push event |
+| `generic-hmac` | `X-Signature: sha256=<hex>`, an HMAC of the body | `{"repository": "...", "branch": "main", "after": "<commit>"}` |
+
+`generic-hmac` is for a relay, such as one GitHub App webhook fanned out to many repositories. Its
+header is the one Flux's `generic-hmac` `Receiver` checks.
+
+The signature is checked before anything in the body is read, so an unsigned request cannot probe
+which repositories or branches are tracked. A verified delivery answers `202 Accepted` even when it
+names a branch no `GitTarget` writes, because that is not the host's fault and an error teaches a
+host to disable the hook. Pushes to other branches and tag pushes are accepted and ignored.
+
+A delivery is a hint, never a fact. It makes the branch worker read the branch's ref advertisement
+(one request), and what the remote says decides whether the branch gained a foreign commit. A late
+delivery for one of GitOps Reverser's own pushes, a duplicate, or a rollback onto one of its older
+commits are all judged by the remote's answer, not by the commit the delivery names. Nothing fetches
+or plans until there is something to apply, and a delivery never triggers a cluster snapshot.
+
+The receiver needs its own listener, because the Git host cannot present the client certificate
+the audit listener requires. See [push receiver settings](#push-receiver-settings).
+
+Without a receiver, GitOps Reverser still learns of a foreign push, from its next rejected push or
+from the [periodic refresh](#keeping-an-idle-target-fresh---git-refresh-interval). The receiver
+makes it seconds instead of minutes.
+
 ## `ClusterProvider`
 
 `ClusterProvider` names the Kubernetes cluster a `GitTarget` mirrors **from**. It is the read-side
@@ -570,6 +621,12 @@ The important fields are:
   omit it and each document's namespace is inferred from the folder
 - `spec.prune`: which deletion paths may remove documents from this target's folder (see
   [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
+- `spec.applier`: the Flux `Kustomization` or Argo CD `Application` that applies this folder, so
+  GitOps Reverser decides when it applies (see
+  [Who applies this folder](#who-applies-this-folder-specapplier)); omit it when nothing applies the
+  folder back
+- `spec.onRefusal`: whether a refused edit asks the applier to reapply Git (see
+  [Reverting a refused edit](#reverting-a-refused-edit-speconrefusal))
 
 Example:
 
@@ -624,6 +681,9 @@ The most useful status fields are:
 - `status.retention`: how many documents `spec.prune.mode` is keeping, and under which mode.
 - `LayoutResolved`: what the last scan resolved about the folder's shape, with
   `status.placement` carrying the detail. See below.
+- `ApplierConfigured`: true when the declared applier exists, applies this folder's repository and
+  branch, and can be asked to apply. Present only when `spec.applier` is set.
+- `status.applier`: the last apply request GitOps Reverser made, and why.
 
 Use conditions for automation.
 
@@ -648,6 +708,7 @@ summary reason, while the domain conditions name the axis to fix:
 | `ClusterProviderReady=False` or `SourceClusterReachable=False` | Source-cluster credentials and access. |
 | `GitPathAccepted=False` | Repository files under `spec.path`; the message includes the issue kind, path, and actor when known. |
 | `RenderMatchesLive=False` | Fields that no longer match the rendered source, often transformer-owned values. |
+| `ApplierConfigured=False` | The applier named in `spec.applier`, its source, and the permission to patch it. Commits still flow; apply requests may not. |
 
 A green `GitTarget` with a red `WatchRule` or `ClusterWatchRule` means the destination may be fine,
 but the selected source objects are not being watched or authorized. Inspect the rule's `Ready`,
@@ -840,6 +901,11 @@ Clearing `suspend` resumes from the cluster's current state on the next resync. 
 suppressed while it was set are not replayed, so what lands is what the cluster holds then, not a
 backlog of the values it passed through.
 
+**Suspend stops writes, not deployments.** A suspended target's applier is still asked to apply a
+commit somebody else pushed, because with [`spec.applier`](#who-applies-this-folder-specapplier)
+set nothing else asks it, and a paused mirror must not stall Git-side changes. It requests nothing
+for a refusal, since that request exists to act on a live edit the target is no longer publishing.
+
 To re-read the folder now rather than on the periodic cadence, stamp the reconcile-request
 annotation with any value that changes:
 
@@ -999,10 +1065,9 @@ a human fixing a folder in Git produces no event either, so a periodic re-read i
 that can notice. What a refresh still never does is write anything. It plans nothing, commits
 nothing and pushes nothing.
 
-That includes [`spec.onRefusal: PushEmptyCommit`](#reverting-a-refused-edit-speconrefusal), which a
-folder refusal never triggers. That setting reverts a refused **edit**, and an empty commit cannot
-fix a folder: only a human can, and the reconciler may be part-way through its own corrections
-there.
+That includes [`spec.onRefusal: Reapply`](#reverting-a-refused-edit-speconrefusal), which a folder
+refusal never triggers. That setting reverts a refused **edit**, and reapplying Git cannot fix a
+folder: only a human can, and the applier may be part-way through its own corrections there.
 
 A refusal a **write** found is not cleared by a refresh. A structural read sees the files; it
 cannot see that a particular write may not touch one of them, so only the resync that writes the
@@ -1014,84 +1079,173 @@ effective granularity is the 5-minute control-plane reconcile, so a value below 
 tick". [`gitopsreverser_git_fetches_total{reason="refresh"}`](interpreting-metrics.md#reading-git_fetches_total)
 is what it costs.
 
-Reverser still does not **act** on what a refresh reads: applying a Git-side change is the GitOps
-reconciler's job. And it is not a latency mechanism: it buys bounded staleness with no inbound
-surface and no Git-host configuration. Seconds-fresh is
-[the inbound receiver's job](design/push-notification-and-reconcile-trigger.md).
+A refresh that finds a commit GitOps Reverser did not push is a foreign commit like any other: the
+target's [applier](#who-applies-this-folder-specapplier) is asked to apply it once the branch is
+quiet. That makes the refresh the backstop for deployments when no push webhook reaches the
+operator. It is not a latency mechanism: it buys bounded staleness with no inbound surface and no
+Git-host configuration. Seconds-fresh is the job of the
+[push receiver](#receiving-push-notifications-specreceiver).
+
+### Who applies this folder (`spec.applier`)
+
+When Flux or Argo CD applies this folder back to the cluster, `spec.applier` names the object that
+does it, and GitOps Reverser becomes the one that decides when it applies. The applier keeps doing
+the fetching, rendering, applying and pruning. The reason it has to be this way, and how to
+configure each tool, is the [bi-directional guide](bi-directional.md).
+
+Exactly one of three:
+
+```yaml
+spec:
+  applier:
+    kustomizationRef:        # a Flux Kustomization
+      namespace: flux-system
+      name: checkout
+```
+
+```yaml
+spec:
+  applier:
+    applicationRef:          # an Argo CD Application
+      namespace: argocd
+      name: checkout
+```
+
+```yaml
+spec:
+  applier:
+    webhook:                 # anything else
+      url: https://deployer.example.com/apply
+      secretRef:
+        name: deployer-hmac  # key: token
+    quietPeriod: 30s         # kustomizationRef and webhook only
+```
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `kustomizationRef` | | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` on this repository and branch |
+| `applicationRef` | | An Argo CD `Application` whose source is this repository and branch |
+| `webhook.url` | | Where to POST each apply request |
+| `webhook.secretRef` | | Secret whose `token` key signs the request |
+| `quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` request. Ignored for `applicationRef` |
+
+**Where the reference is looked up.** In the source cluster, the cluster the applier applies to,
+with the identity the [`ClusterProvider`](#clusterprovider) already uses. For the operator's own
+cluster the chart grants `get` and `patch` on `kustomizations` and `gitrepositories`
+(`kustomize.toolkit.fluxcd.io`, `source.toolkit.fluxcd.io`) and on `applications`
+(`argoproj.io`). For a remote source cluster, grant the same to the kubeconfig's identity. An
+applier that lives in a cluster other than the one it applies to, such as a hub Argo CD managing a
+remote cluster, is not supported.
+
+**When a request is made.** Only on a quiet branch: no open commit window and no pending writes on
+the branch worker, which is the moment nothing live is missing from the tip.
+
+| `reason` | When | Sent to |
+| --- | --- | --- |
+| `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed and pending writes replayed and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier object |
+| `Refusal` | An eligible refused edit, with `spec.onRefusal: Reapply` | This target's applier |
+| `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes | `kustomizationRef` and `webhook` appliers on the branch |
+
+An `applicationRef` applier is never asked to apply GitOps Reverser's own commits: with automated
+sync off, Argo CD applies nothing on its own, so there is no stale state to catch up, and every sync
+runs the `Application`'s hooks. Flux applies on its timers and on a controller restart, so its
+`GitRepository` artifact is kept current instead.
+
+**What a request does.**
+
+| Applier | Request |
+| --- | --- |
+| `kustomizationRef` | What `flux reconcile kustomization --with-source` does: stamp `reconcile.fluxcd.io/requestedAt` on the `GitRepository`, then on the `Kustomization` when the artifact already held the commit. A `CatchUp` stamps only the `GitRepository` |
+| `applicationRef` | Set `operation.sync` exactly as Argo CD's automated sync would: `revision` pinned to the commit, `prune` from `syncPolicy.automated.prune`, `syncOptions` and `retry` from the `Application`, `initiatedBy.username: gitops-reverser`. A running operation is waited for, never replaced |
+| `webhook` | POST `{"repository", "branch", "commit", "reason"}` with `X-Signature: sha256=<hex HMAC of the body>`, the header Flux's `generic-hmac` `Receiver` checks |
+
+A request asks; it never claims the apply happened. It runs off the publication path, is retried
+with backoff on its own, and a failed request never fails a publication that succeeded. Read the
+applier's own status (`lastAppliedRevision` on a `Kustomization`, `status.sync` on an
+`Application`) for what it applied.
+
+**What it reports.**
+
+```yaml
+status:
+  conditions:
+    - type: ApplierConfigured
+      status: "False"
+      reason: AutomatedSyncEnabled
+      message: 'Application argocd/checkout has automated sync enabled, so it also applies on its own'
+  applier:
+    requestedCommit: 4f2c1ab9...
+    requestedAt: "2026-10-20T10:14:03Z"
+    reason: ForeignCommit     # ForeignCommit | Refusal | CatchUp
+```
+
+`ApplierConfigured` is a gate, so `Ready` aggregates it. Its `False` reasons:
+
+| Reason | Means |
+| --- | --- |
+| `ApplierNotFound` | No such object in the source cluster, or its kind is not installed there |
+| `SourceMismatch` | The applier applies a different repository or branch |
+| `AutomatedSyncEnabled` | The `Application` still syncs on its own. Requests are still sent; the guarantee is not there |
+| `Forbidden` | The source-cluster identity may not read or patch the applier |
+
+It is checked on the target's reconcile tick rather than watched, so a cluster without the Flux or
+Argo CD CRDs installed costs nothing. Each request also records an `ApplyRequested` Event on the
+`GitTarget`, and a request that keeps failing records `ApplyRequestFailed`.
 
 ### Reverting a refused edit (`spec.onRefusal`)
 
-`spec.onRefusal` chooses whether an eligible refused edit should request Git re-application.
-`Ignore`, the default, records the refusal without moving the branch. Choose `PushEmptyCommit`
-when restoring Git state takes priority over preserving unpublished live edits. The
-[bi-directional guide](bi-directional.md#choosing-speconrefusal) explains when to enable it and how
-one refused edit can cause an allowed edit to be lost.
-
 A refusal means the acceptance gate or a write-boundary check found no legal destination for the
-write. Nothing is committed for that write, and `GitPathAccepted` goes `False`. The live edit stays
-until something corrects it. With Argo CD `selfHeal` off, refreshing an already-synced revision
-does not restore it; an explicit sync or a new revision can. Flux corrects drift on its next apply,
-which can follow its interval, a new source revision, or another reconcile trigger.
+write. Nothing is committed for it, `GitPathAccepted` goes `False`, and the live edit stays until
+something applies Git over it. `spec.onRefusal` decides whether GitOps Reverser asks for that:
 
 ```yaml
 spec:
   path: apps/checkout
-  onRefusal: PushEmptyCommit   # default: Ignore
+  applier:
+    kustomizationRef: {namespace: flux-system, name: checkout}
+  onRefusal: Reapply   # default: Ignore
 ```
 
-`PushEmptyCommit` pushes a commit that changes no file. Flux can observe a new artifact revision
-and re-apply; Argo CD can sync an `OutOfSync` Application against a revision it has not synced, even
-with `selfHeal: false`. The commit message says what was refused and why its diff is empty.
+| Value | What happens |
+| --- | --- |
+| `Ignore` (default) | The refusal is reported and nothing else happens |
+| `Reapply` | Once the branch is quiet, this target's [applier](#who-applies-this-folder-specapplier) is asked to apply the current tip, with reason `Refusal`. The refused edit is reverted |
 
-This is a request for restoration. It requires a successful push and a reconciler configured to
-observe and apply the new revision. Suspension, sync restrictions, or field-ignore settings can
-prevent restoration. The empty commit does not clear the refusal condition: recovery still
-requires a successful resync covering the refused scope. Re-applying Git can remove the offending
-difference, but it cannot repair an unsupported folder or give a field a writable destination.
-
-Reverser deliberately does not name the `Kustomization` or `Application` that renders the folder.
-Neither tool derives that mapping itself, so deriving it here to write into somebody else's object
-would be guessing on their behalf. Moving the branch asks them instead.
+`Reapply` requires `spec.applier`; a target without one is rejected at admission. The request goes
+to this target's applier alone, so other folders on the branch are not woken, and it waits for a
+quiet branch, so an allowed edit still in a commit window is published before the apply and is not
+reverted with the refused one. The [bi-directional guide](bi-directional.md#choosing-speconrefusal)
+covers when to choose it.
 
 **It only fires for an edit to a document the folder already holds, and never for a write that
-removes one.** That is the pruning fence, and it is why the action is narrower than it first looks.
-Re-applying corrects drift on an object Git manages, which is the point. For an object Git does not
-manage, re-applying either does nothing (
-[Flux prunes from its inventory](https://fluxcd.io/flux/components/kustomize/kustomizations/#prune)
-and Argo CD from the resources it tracks, and a live-created object is in neither) or, if the object
-was managed and has since been removed from Git, prunes it. **Hurrying along somebody else's delete
-is not this operator's call**, and the two cases cannot be told apart from here, so both are
-excluded.
+removes one.** That is the pruning fence. Re-applying corrects drift on an object Git manages,
+which is the point. For an object Git does not manage, re-applying either does nothing (Flux prunes
+from its inventory and Argo CD from the resources it tracks, and a live-created object is in
+neither) or, if the object was managed and has since been removed from Git, prunes it. Hurrying
+along somebody else's delete is not this operator's call, and the two cases cannot be told apart
+from here, so both are excluded.
 
 Establishing that takes more than the refusal's kind, and more than the file. A render refusal fires
 for a brand-new resource an `images:` entry would override; removing one document from a file that
 holds two leaves the file in place, which looks exactly like an edit. Eligibility is therefore
 decided per document, and a write that removes one anywhere in the same flush is excluded whole.
+Folder-level refusals, such as invalid YAML or unsupported content, never trigger it: they need a
+correction to the folder.
 
-**Read this before enabling it.**
+Three more guards. A suspended target requests nothing. A `GitTarget` that cannot be read is
+treated as `Ignore`, since missing evidence is not consent. And requests are coalesced per target:
+a controller rewriting a base-owned field refuses on every one of its own reconciles, so refusals
+that arrive while a request is outstanding share the next one rather than each making their own.
 
-| | What to expect |
-| --- | --- |
-| Blast radius | The commit wakes **everything** watching the branch, not the refused object alone, so it can hurry unrelated work including another target's pending prune |
-| Unpublished edits | An allowed edit still waiting in the commit window can be reverted along with the refused one |
-| Argo CD exception | An `Application` with `argocd.argoproj.io/manifest-generate-paths` ignores the commit, because no file under its refresh paths changed |
+**A refusal nobody corrects is requested once, not once per recheck.** The target keeps re-reading
+its folder and keeps refusing, and an observation of the same objects with the same issues is
+already covered by the request made for it. Anything different (a new value, another object, a
+different refusal) is a new trigger. So is the same edit made a second time after the applier
+reverted it, because a write of that resource type was accepted in between.
 
-Folder-level refusals, such as invalid YAML or unsupported content, do not trigger this action.
-They still require a correction to the folder.
-
-Three more guards. A suspended target never commits, because an empty commit is a write. A
-`GitTarget` that cannot be read is treated as `Ignore`, since missing evidence is not consent. And
-the commit is rate-limited per target, because a controller rewriting a base-owned field refuses on
-every one of its own reconciles; a refusal arriving inside that window is **coalesced into one
-trailing commit rather than dropped**, since the reconcile an earlier commit triggered may already
-have finished.
-
-**A refusal nobody corrects is committed for once, not once per interval.** The target keeps
-re-reading its folder and keeps refusing, and an observation of the same objects with the same
-issues is already covered by the commit made for it. Anything different (a new value, another
-object, a different refusal) is a new trigger and earns its own commit. So is the same edit made a
-second time after the reconciler reverted it, because a reconcile of that resource type was accepted
-in between.
+Reapplying does not clear the refusal condition: recovery still requires a successful resync
+covering the refused scope. It removes the offending live difference, but it cannot repair an
+unsupported folder or give a field a writable destination.
 
 ### Deletion policy (`spec.prune.mode`)
 
@@ -2319,6 +2473,23 @@ attribution:
   collectionWindow: "30s"
   collectionUIDCap: 10000
 ```
+
+## Push receiver settings
+
+The [push receiver](#receiving-push-notifications-specreceiver) is its own HTTP listener, separate
+from the audit listener. A Git host authenticates with an HMAC or a token over the body and cannot
+present the client certificate the audit listener requires, so the two cannot share one.
+
+| Flag | Helm value | Default | What it does |
+| --- | --- | --- | --- |
+| `--receiver-bind-address` | `receiver.bindAddress` | `0` (off) | `host:port` the receiver listens on. `0` serves no receiver |
+
+The chart creates a `gitops-reverser-receiver` Service when the listener is on. Expose it to your
+Git host with an Ingress or a Gateway route of your own that terminates TLS, the way Flux's
+`webhook-receiver` Service is exposed. Every request still has to carry a valid signature for the
+route it names; a route whose `GitProvider` has no `spec.receiver` does not serve.
+
+Like everything that drives a branch worker, a delivery is handled on the elected replica.
 
 ## Quickstart vs hand-managed resources
 
