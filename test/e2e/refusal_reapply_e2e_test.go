@@ -89,6 +89,9 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 		_, err := kubectlRunInNamespace(testNs, "set", "env", "deployment/checkout", "LOG_LEVEL=debug")
 		Expect(err).NotTo(HaveOccurred(), "failed to drift the base-owned env var")
 
+		// Relative, because the seeded root commit has no parent to diff against and reads as empty.
+		emptyBefore := emptyCommitCount(repo.CheckoutDir)
+
 		By("creating the GitTarget on the OVERLAY, naming the Kustomization and asking it to reapply")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
 		_, err = kubectlRunInNamespace(testNs, "patch", "gittarget", destName, "--type=merge", "-p",
@@ -120,7 +123,11 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 			g.Expect(checkoutLogLevel(g, testNs)).To(Equal("info"),
 				"a refused edit on a Reapply target must be reverted by its applier")
 		}, 3*time.Minute, 2*time.Second).Should(Succeed())
-		Expect(emptyCommitCount(repo.CheckoutDir)).To(BeZero(),
+		Eventually(func(g Gomega) {
+			g.Expect(applyRequestedMessages(g, testNs, destName)).To(ContainSubstring("(Refusal)"),
+				"the revert must come from GitOps Reverser's Refusal request, not from Flux's own schedule")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+		Expect(emptyCommitCount(repo.CheckoutDir)).To(Equal(emptyBefore),
 			"the request goes to the applier; nothing moves the branch for it")
 
 		// Past two rate-limit intervals. The revert itself is a new observation of the refusal
@@ -159,7 +166,7 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 			g.Expect(checkoutLogLevel(g, testNs)).To(Equal("info"),
 				"a genuinely new refused edit must be requested again")
 		}, 3*time.Minute, 2*time.Second).Should(Succeed())
-		Expect(emptyCommitCount(repo.CheckoutDir)).To(BeZero())
+		Expect(emptyCommitCount(repo.CheckoutDir)).To(Equal(emptyBefore))
 	})
 })
 
@@ -189,6 +196,15 @@ func applyRefusalFluxApplier(testNs string, repo *RepoArtifacts, name, secretNam
 	_, err := kubectlRunInNamespace("flux-system", "wait", "--for=condition=Ready",
 		"kustomization/"+name, "--timeout=3m")
 	Expect(err).NotTo(HaveOccurred(), "the Kustomization must apply the overlay once")
+}
+
+// applyRequestedMessages is every ApplyRequested Event message recorded on a GitTarget.
+func applyRequestedMessages(g Gomega, testNs, gitTarget string) string {
+	out, err := kubectlRunInNamespace(testNs, "get", "events", "--field-selector",
+		"involvedObject.kind=GitTarget,involvedObject.name="+gitTarget+",reason=ApplyRequested",
+		"-o", "jsonpath={.items[*].message}")
+	g.Expect(err).NotTo(HaveOccurred())
+	return out
 }
 
 // checkoutLogLevel reads the LOG_LEVEL env var of the live checkout Deployment.
