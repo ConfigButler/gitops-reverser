@@ -424,9 +424,6 @@ type WorkItem struct {
 	// Withdraw cancels a CommitRequest the worker has not acted on yet. It rides the same FIFO as
 	// the attach, so it is always handled after every attach sent before it.
 	Withdraw *AttachCommitRequest
-	// ApplyWake wakes the loop after an apply request was handed back (ApplyHandBack). It carries
-	// nothing: the request is in the worker's debt, and the wake's serviceAppliers sends it.
-	ApplyWake bool
 
 	// charge is what a write or an attach was charged against the intake budget at enqueue, and is
 	// released once the loop has handled it. A resync's is on its marker, because coalescing can

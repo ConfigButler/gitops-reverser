@@ -14,6 +14,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -69,21 +70,30 @@ func (k refusalKey) String() string {
 }
 
 // refusalConsent reports whether this GitTarget asked for its applier to reapply on refusal,
-// ignoring rate limiting. It is re-read every time, including when a coalesced request finally
-// fires, so a target that was suspended, set back to Ignore, or stripped of its applier in the
-// meantime is honoured.
+// ignoring rate limiting, and which incarnation of it asked. It is re-read every time, including
+// when a coalesced request finally fires, so a target that was suspended, set back to Ignore, or
+// stripped of its applier in the meantime is honoured. serviceAppliers reads consent once more
+// before it sends.
 //
 // The GitTarget is read live rather than from the write's resolved metadata because a refusal has
 // no write to carry metadata: the plan was aborted before anything was built. A read failure
 // returns false, which is the safe direction — an unreadable target is not evidence of consent.
-func (w *BranchWorker) refusalConsent(ctx context.Context, target itypes.ResourceReference) bool {
+func (w *BranchWorker) refusalConsent(ctx context.Context, target itypes.ResourceReference) (k8stypes.UID, bool) {
 	gitTarget, err := w.getGitTarget(ctx, target.Name, target.Namespace)
 	if err != nil {
 		w.Log.V(1).Info("Cannot read GitTarget to decide the refusal action; not requesting a reapply",
 			"gitTarget", target.String(), "error", err.Error())
-		return false
+		return "", false
 	}
-	return ConsentsToReapply(gitTarget)
+	return gitTarget.UID, ConsentsToReapply(gitTarget)
+}
+
+// owedRefusal is one refusal its target's applier is owed a Refusal request for: what was refused,
+// for the logs, and the incarnation of the GitTarget that consented. A GitTarget deleted and
+// recreated under the same name is another incarnation, and inherits nothing owed to the first.
+type owedRefusal struct {
+	detail string
+	uid    k8stypes.UID
 }
 
 // ConsentsToReapply reports whether a GitTarget, as it is now, asks for its applier to reapply on a
@@ -143,7 +153,8 @@ func (l *branchWorkerEventLoop) reapplyForRefusal(
 		return
 	}
 	target := itypes.NewResourceReference(targetName, targetNamespace)
-	if !l.w.refusalConsent(l.w.ctx, target) {
+	uid, consents := l.w.refusalConsent(l.w.ctx, target)
+	if !consents {
 		return
 	}
 	key := newRefusalKey(target, collection)
@@ -167,7 +178,7 @@ func (l *branchWorkerEventLoop) reapplyForRefusal(
 		return
 	}
 
-	l.oweReapply(key, detail, observation)
+	l.oweReapply(key, owedRefusal{detail: detail, uid: uid}, observation)
 }
 
 // refusalObservation digests what was refused: the objects the write would have produced, and the
@@ -254,7 +265,7 @@ func (w *BranchWorker) refusalAlreadyCovered(key refusalKey, observation string)
 
 // recordRefusalObservation remembers what the request just owed covers. An empty observation is
 // recorded too, though it covers nothing (refusalAlreadyCovered): the entry is also the record that
-// the refusal stands until it recovers (standingRefusals).
+// the refusal stands until it recovers (refusalStands).
 func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation string) {
 	w.refusalMu.Lock()
 	defer w.refusalMu.Unlock()
@@ -308,19 +319,12 @@ func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference
 	l.rearmRefusalTimer()
 }
 
-// standingRefusals returns the refusals of target a request was owed for and that have not
-// recovered since, in a stable order.
-func (w *BranchWorker) standingRefusals(target itypes.ResourceReference) []refusalKey {
+// refusalStands reports whether a request was owed for this refusal and it has not recovered since.
+func (w *BranchWorker) refusalStands(key refusalKey) bool {
 	w.refusalMu.Lock()
 	defer w.refusalMu.Unlock()
-	var keys []refusalKey
-	for key := range w.coveredRefusal {
-		if key.target == target {
-			keys = append(keys, key)
-		}
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
-	return keys
+	_, standing := w.coveredRefusal[newRefusalKey(key.target, key.collection)]
+	return standing
 }
 
 // clearRefusalObservations forgets what this collection's last reapply request covered. The ZERO collection is a
@@ -401,7 +405,8 @@ func (l *branchWorkerEventLoop) flushPendingReapply() {
 		}
 		delete(l.refusalPending, key)
 
-		if !l.w.refusalConsent(l.w.ctx, entry.key.target) {
+		uid, consents := l.w.refusalConsent(l.w.ctx, entry.key.target)
+		if !consents {
 			continue
 		}
 		// Re-checked here as well as on arrival: another request for this collection may have been owed
@@ -417,7 +422,7 @@ func (l *branchWorkerEventLoop) flushPendingReapply() {
 			l.armTrailingReapply(entry.key, entry.detail, entry.observation, wait)
 			continue
 		}
-		l.oweReapply(entry.key, entry.detail, entry.observation)
+		l.oweReapply(entry.key, owedRefusal{detail: entry.detail, uid: uid}, entry.observation)
 	}
 	l.rearmRefusalTimer()
 }
@@ -435,18 +440,18 @@ func sortedRefusalKeys(pending map[refusalKey]pendingRefusalReapply) []refusalKe
 
 // oweReapply records that the target's applier is owed a Refusal request, which serviceAppliers
 // sends once the branch is quiet. Several refusals for one target before then share one request.
-func (l *branchWorkerEventLoop) oweReapply(key refusalKey, detail, observation string) {
+func (l *branchWorkerEventLoop) oweReapply(key refusalKey, refusal owedRefusal, observation string) {
 	// Recorded as covered now, when the request is owed, rather than when it is delivered: the
 	// request is the worker's decision, and a recheck of the same refusal while the branch is still
-	// busy must not owe a second one. A request the requester cannot deliver comes back
-	// (ApplyHandBack) and is owed again while the refusal stands.
+	// busy must not owe a second one. An attempt that does not deliver gives the refusal back while
+	// it stands (restoreAttempt).
 	l.w.recordRefusalObservation(key, observation)
 	if l.reapplyOwed == nil {
-		l.reapplyOwed = map[refusalKey]string{}
+		l.reapplyOwed = map[refusalKey]owedRefusal{}
 	}
-	l.reapplyOwed[key] = detail
+	l.reapplyOwed[key] = refusal
 	l.w.Log.Info("Refused edit owes its applier a reapply, sent once the branch is quiet",
-		"gitTarget", key.target.String(), "branch", l.w.Branch, "refused", detail)
+		"gitTarget", key.target.String(), "branch", l.w.Branch, "refused", refusal.detail)
 }
 
 // refusalIsAWriteBoundary reports whether this refusal is one where the FOLDER is accepted and

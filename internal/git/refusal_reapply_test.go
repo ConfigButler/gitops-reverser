@@ -3,7 +3,7 @@
 package git
 
 // The reapply request that reverts a refused write, from
-// docs/design/push-notification-and-reconcile-trigger.md §3.7.
+// docs/design/apply-trigger.md.
 //
 // The request itself is one call; every interesting property is in the decision to make one. A
 // refusal is not a one-off, the action is opt-in per GitTarget and needs an applier, and an
@@ -52,7 +52,7 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 		spec.Applier = testApplier("editing")
 	}
 	target := &configv1alpha3.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "editing", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "editing", Namespace: "team-a", UID: editingUID},
 		Spec:       spec,
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(target).Build()
@@ -66,6 +66,9 @@ func refusalTouchWorker(t *testing.T, spec configv1alpha3.GitTargetSpec) *Branch
 	w.ctx = context.Background()
 	return w
 }
+
+// editingUID is the uid of refusalTouchWorker's GitTarget.
+const editingUID = "uid-editing"
 
 func editingRef() itypes.ResourceReference {
 	return itypes.NewResourceReference("editing", "team-a")
@@ -84,7 +87,7 @@ func editingKey() refusalKey { return refusalKeyFor(editingRef(), "deployments")
 func TestRefusalReapply_OffByDefault(t *testing.T) {
 	w := refusalTouchWorker(t, configv1alpha3.GitTargetSpec{})
 
-	assert.False(t, w.refusalConsent(w.ctx, editingRef()),
+	assert.False(t, consents(w, editingRef()),
 		"a GitTarget that did not ask for a reapply must not get one")
 }
 
@@ -94,7 +97,7 @@ func TestRefusalReapply_ExplicitIgnoreIsAlsoOff(t *testing.T) {
 		OnRefusal: configv1alpha3.RefusalActionIgnore,
 	})
 
-	assert.False(t, w.refusalConsent(w.ctx, editingRef()))
+	assert.False(t, consents(w, editingRef()))
 }
 
 // TestRefusalReapply_AllowedWhenAskedFor is the positive case.
@@ -103,7 +106,7 @@ func TestRefusalReapply_AllowedWhenAskedFor(t *testing.T) {
 		OnRefusal: configv1alpha3.RefusalActionReapply,
 	})
 
-	assert.True(t, w.refusalConsent(w.ctx, editingRef()))
+	assert.True(t, consents(w, editingRef()))
 }
 
 // TestRefusalReapply_SuspendedTargetIsNeverTouched. A suspended target has stopped publishing the
@@ -114,7 +117,7 @@ func TestRefusalReapply_SuspendedTargetIsNeverTouched(t *testing.T) {
 		Suspend:   true,
 	})
 
-	assert.False(t, w.refusalConsent(w.ctx, editingRef()),
+	assert.False(t, consents(w, editingRef()),
 		"a suspended target must not drive the applier")
 }
 
@@ -127,7 +130,7 @@ func TestRefusalReapply_NoApplierIsNoConsent(t *testing.T) {
 	target.Spec.OnRefusal = configv1alpha3.RefusalActionReapply
 	require.NoError(t, w.Client.Update(w.ctx, target))
 
-	assert.False(t, w.refusalConsent(w.ctx, editingRef()))
+	assert.False(t, consents(w, editingRef()))
 }
 
 // TestRefusalReapply_RateLimitedPerTarget. A controller rewriting a base-owned field produces a
@@ -162,7 +165,7 @@ func TestRefusalReapply_UnreadableTargetIsNotConsent(t *testing.T) {
 		OnRefusal: configv1alpha3.RefusalActionReapply,
 	})
 
-	assert.False(t, w.refusalConsent(w.ctx, itypes.NewResourceReference("absent", "team-a")),
+	assert.False(t, consents(w, itypes.NewResourceReference("absent", "team-a")),
 		"a GitTarget that cannot be read must not be treated as opted in")
 }
 
@@ -177,7 +180,7 @@ func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
 	t.Cleanup(loop.stopTimers)
 
 	loop.openWindow = &openWindow{}
-	loop.oweReapply(editingKey(), "a base-owned field", "observation-1")
+	loop.oweReapply(editingKey(), owedRefusal{detail: "a base-owned field", uid: editingUID}, "observation-1")
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "nothing is sent while a commit window is open")
 
@@ -186,7 +189,7 @@ func TestRefusalReapply_OwedRequestWaitsForAQuietBranch(t *testing.T) {
 	requests := requester.taken()
 	require.Len(t, requests, 1)
 	assert.Equal(t, configv1alpha3.ApplyReasonRefusal, requests[0].Reason)
-	assert.Equal(t, []itypes.ResourceReference{editingRef()}, requests[0].Targets,
+	assert.Equal(t, []itypes.ResourceReference{editingRef()}, requests[0].TargetRefs(),
 		"only the refusing target's applier is asked")
 	assert.True(t, w.refusalAlreadyCovered(editingKey(), "observation-1"),
 		"the observation is covered once the request is owed")
@@ -471,18 +474,30 @@ func testApplier(name string) *configv1alpha3.GitTargetApplier {
 	return &configv1alpha3.GitTargetApplier{KustomizationRef: meta.NamespacedObjectReference{Name: name}}
 }
 
-// recordingRequester records every apply request a worker sends.
+// recordingRequester records every apply request a worker sends, and reports each one at once with
+// outcome (Delivered unless a test sets another). With manual set it reports nothing, and the test
+// reports for it.
 type recordingRequester struct {
 	mu       sync.Mutex
 	requests []ApplyRequest
-	// counted keeps the reasons of the requests taken, so count still sees them.
+	// counted keeps the reasons of the requests taken, so refusals still sees them.
 	counted map[configv1alpha3.ApplyReason]int
+	outcome ApplyOutcome
+	manual  bool
 }
 
 func (r *recordingRequester) RequestApply(req ApplyRequest) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.requests = append(r.requests, req)
+	outcome, manual := r.outcome, r.manual
+	r.mu.Unlock()
+	if manual {
+		return
+	}
+	if outcome == "" {
+		outcome = ApplyDelivered
+	}
+	req.Report(ApplyResult{ID: req.ID, Outcome: outcome})
 }
 
 // refusals is how many Refusal requests were recorded, taken or not.
@@ -511,4 +526,10 @@ func (r *recordingRequester) taken() []ApplyRequest {
 		r.counted[req.Reason]++
 	}
 	return requests
+}
+
+// consents is refusalConsent's verdict alone.
+func consents(w *BranchWorker, target itypes.ResourceReference) bool {
+	_, ok := w.refusalConsent(w.ctx, target)
+	return ok
 }

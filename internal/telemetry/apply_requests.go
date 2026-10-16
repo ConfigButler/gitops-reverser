@@ -4,25 +4,27 @@ package telemetry
 
 import "go.opentelemetry.io/otel/metric"
 
-// ApplyRequestsTotal counts the apply requests GitOps Reverser decided, one per applier object per
-// request, labelled by {applier_kind, reason, outcome}.
+// ApplyRequestsTotal counts the apply attempts GitOps Reverser made, one per attempt to one applier
+// object, labelled by {applier_kind, reason, outcome}.
 //
-// applier_kind names the applier: "kustomization" (a Flux Kustomization). reason is the request's
+// applier_kind names the applier: "kustomization" (a Flux Kustomization). reason is the attempt's
 // ApplyReason (ForeignCommit, Refusal, CatchUp). outcome is a frozen enum:
 //
-//	sent        — the applier was asked and the ask landed: a requestedAt stamp was patched, or, for
-//	              a CatchUp, the applier's source already held the commit and nothing was owed.
-//	failed      — every attempt failed and the request was given up on. An ApplyRequestFailed
-//	              Event names the GitTargets it was for.
-//	superseded  — a newer request for the same applier replaced this one before it was sent. The
-//	              newer request carries the newer commit, so nothing is lost; a steady stream of
-//	              these says requests are arriving faster than the applier is answering.
+//	sent     — the applier was asked and the ask landed: a requestedAt stamp was patched, or, for a
+//	           CatchUp, the applier's source already held the commit and nothing was owed.
+//	failed   — the attempt could not ask, including an applier that applies another repository or
+//	           branch. The branch worker owns the obligation and decides a retry on a quiet branch,
+//	           with a backoff of its own, so a failure that persists keeps counting. An
+//	           ApplyRequestFailed Event marks the first failure of a run.
+//	dropped  — the attempt asked nothing, because no GitTarget may still ask for its reason: each
+//	           was deleted or recreated, moved to another branch or applier, is no longer admitted by
+//	           its ClusterProvider, or withdrew its consent to a Refusal.
 //
-// It counts decisions, not attempts: a request that fails twice and then lands is one "sent". The
-// retries are in the logs. It says nothing about whether the applier APPLIED: a request asks and
-// never reports, and the applier's own status is the record of what it did.
+// It counts attempts, so a request that fails twice and then lands is two "failed" and one "sent".
+// It says nothing about whether the applier APPLIED: a request asks and never reports, and the
+// applier's own status is the record of what it did.
 //
-// No GitTarget identity: one request is for one applier, which several targets can share, so a
+// No GitTarget identity: one attempt is for one applier, which several targets can share, so a
 // target label would have to invent an owner. The ApplyRequested and ApplyRequestFailed Events on
 // each GitTarget carry that identity instead.
 var ApplyRequestsTotal metric.Int64Counter

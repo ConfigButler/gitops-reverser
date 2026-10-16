@@ -141,6 +141,15 @@ type BranchWorker struct {
 	// that do not exercise it).
 	applyRequester ApplyRequester
 	debt           applyDebt
+	// applyWake wakes the loop to service the appliers without queueing a work item: an attempt
+	// reported back, or another worker writing this repository and branch went quiet.
+	applyWake chan struct{}
+	// siblings are the workers writing the same repository and branch as this one, under another
+	// GitProvider; their open windows and pending writes make the branch busy too. busyWriting is
+	// this worker's own, published for them at the end of every wake. Nil siblings (the CLI, tests)
+	// means this worker is alone. See apply_siblings.go.
+	siblings    *branchSiblings
+	busyWriting atomic.Bool
 
 	// Event processing
 	eventQueue chan WorkItem
@@ -192,7 +201,7 @@ type BranchWorker struct {
 	// across every error return on the write path, and a lock there would put a second ordering
 	// constraint on code whose only job is to record that something went wrong.
 	//
-	// See the package's design note in docs/design/push-notification-and-reconcile-trigger.md §1.5.
+	// See the package's design note in docs/finished/push-notification-and-reconcile-trigger.md §1.5.
 	baseTrustedState atomic.Bool
 
 	// checkoutApplied is how many of the loop's retained writes the checkout holds: the checkout is
@@ -409,6 +418,7 @@ func NewBranchWorker(
 		),
 		contentWriter:        writer,
 		eventQueue:           make(chan WorkItem, limits.QueueDepth),
+		applyWake:            make(chan struct{}, 1),
 		pendingResyncs:       make(map[resyncKey]*resyncMarker),
 		branchBufferMaxBytes: limits.MaxBufferBytes,
 	}
@@ -1153,21 +1163,18 @@ type branchWorkerEventLoop struct {
 	// overwrite another's pending work: A queues, B replaces it, B is then suspended, and A's
 	// authorized request is gone with nothing to report it.
 	refusalPending map[refusalKey]pendingRefusalReapply
-	// reapplyOwed holds the refusals whose target's applier is owed a Refusal request, with the
-	// refusal each answers, until serviceAppliers sends it on a quiet branch. It is keyed like
-	// refusalPending, by target AND collection, so a collection that recovers cancels its own
-	// obligation and no other (refusalRecovered). See apply_trigger.go.
-	reapplyOwed map[refusalKey]string
-	// handBackCount is, per GitTarget, how many times its last request was handed back
-	// undelivered. The next request for the target carries it (ApplyRequest.HandBacks) and
-	// consumes it. See apply_trigger.go.
-	handBackCount map[itypes.ResourceReference]int
+	// reapplyOwed holds the refusals whose target's applier is owed a Refusal request, until an
+	// attempt carries them on a quiet branch. It is keyed like refusalPending, by target AND
+	// collection, so a collection that recovers cancels its own obligation and no other
+	// (refusalRecovered). See apply_trigger.go.
+	reapplyOwed map[refusalKey]owedRefusal
 
-	// catchUpOwed holds, per GitTarget with an applier on this branch, how long the branch must stay
-	// quiet before that applier is asked to catch up with this worker's own pushes. quietSince is
-	// when the branch last became quiet (zero while it is busy), and applierTimer fires at the
-	// earliest catch-up still due. See apply_trigger.go.
-	catchUpOwed  map[itypes.ResourceReference]time.Duration
+	// appliers holds what each applier named on this branch is owed and how its attempts are going,
+	// and nextApplyID numbers the attempts. quietSince is when the branch last became quiet (zero
+	// while it is busy), and applierTimer fires when the earliest waiting attempt comes due. See
+	// apply_trigger.go.
+	appliers     map[ApplierRef]*applierState
+	nextApplyID  uint64
 	quietSince   time.Time
 	applierTimer *time.Timer
 	// pushHinted records that a Git host reported a push while the branch was busy. The wake closes
@@ -1235,6 +1242,9 @@ func (l *branchWorkerEventLoop) run() {
 		case <-l.applierTimerC():
 			l.applierTimer = nil
 			// serviceAppliers, at the end of the wake, sends what has come due.
+		case <-l.w.applyWake:
+			// An attempt reported back, or a sibling worker on this branch went quiet;
+			// serviceAppliers settles and sends.
 		}
 		l.endWake(0)
 	}
@@ -1322,8 +1332,6 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 		return charge
 	case item.Refresh != nil:
 		l.handleRefreshRequest(item.Refresh)
-	case item.ApplyWake:
-		// The wake is the point: endWake's serviceAppliers sends what was handed back.
 	case item.Request == nil:
 	case item.Request.CommitMode == CommitModeAtomic:
 		targetName, targetNamespace := atomicRefusalTarget(item.Request)
@@ -1905,7 +1913,7 @@ func (w *BranchWorker) stoppingLocked() bool { return w.stoppingState }
 //
 // The push session reads the remote's ref advertisement on a connection the cycle was making
 // anyway, and a cycle that commits nothing still reaches it, so a trusted base needs no fetch to
-// plan against. That is the whole saving. See docs/design/push-notification-and-reconcile-trigger.md §1.3 and §1.5.
+// plan against. That is the whole saving. See docs/finished/push-notification-and-reconcile-trigger.md §1.3 and §1.5.
 //
 // Only a checkout holding no retained writes may fetch here at all: a reset would destroy the
 // local commits those writes produced. With writes retained, the event loop's materialize has

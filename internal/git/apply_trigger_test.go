@@ -2,9 +2,8 @@
 
 package git
 
-// The branch worker's half of the apply trigger, from
-// docs/design/push-notification-and-reconcile-trigger.md part 3: what the appliers are owed, and the
-// rule that nothing is asked while anything live is unpublished.
+// The branch worker's half of the apply trigger, from docs/design/apply-trigger.md: what the appliers
+// are owed, and the rule that nothing is asked while anything live is unpublished.
 
 import (
 	"context"
@@ -17,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -76,10 +76,15 @@ func TestApplyDebt_RestorePutsBackWhatWasTaken(t *testing.T) {
 	assert.True(t, debt.foreignOwed())
 }
 
+// applierRef is the applier testApplier(name) names for a GitTarget in team-a.
+func applierRef(name string) ApplierRef {
+	return ApplierRef{Cluster: configv1alpha3.DefaultClusterProviderName, Namespace: "team-a", Name: name}
+}
+
 // applierTestTarget is a GitTarget on the trigger worker's provider and branch unless overridden.
 func applierTestTarget(name string, applier bool, mutate ...func(*configv1alpha3.GitTarget)) *configv1alpha3.GitTarget {
 	target := &configv1alpha3.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: k8stypes.UID("uid-" + name)},
 		Spec: configv1alpha3.GitTargetSpec{
 			GitProviderRef: meta.LocalObjectReference{Name: "test-provider"},
 			Branch:         "main",
@@ -137,14 +142,17 @@ func TestServiceAppliers_ForeignCommitAsksEveryApplierOnTheBranch(t *testing.T) 
 	loop.serviceAppliers()
 
 	requests := requester.taken()
-	require.Len(t, requests, 1)
-	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[0].Reason)
-	assert.Equal(t, "bbb", requests[0].Commit)
-	assert.Equal(t, BranchKey{RepoNamespace: "team-a", RepoName: "test-provider", Branch: "main"}, requests[0].Branch)
-	assert.Equal(t, []itypes.ResourceReference{
-		itypes.NewResourceReference("alpha", "team-a"),
-		itypes.NewResourceReference("bravo", "team-a"),
-	}, requests[0].Targets, "a suspended target stops writing, not deployments")
+	require.Len(t, requests, 2, "one attempt per applier")
+	for i, name := range []string{"alpha", "bravo"} {
+		assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[i].Reason)
+		assert.Equal(t, "bbb", requests[i].Commit)
+		assert.Equal(t, BranchKey{RepoNamespace: "team-a", RepoName: "test-provider", Branch: "main"},
+			requests[i].Branch)
+		assert.Equal(t, ApplierRef{Cluster: configv1alpha3.DefaultClusterProviderName, Namespace: "team-a", Name: name},
+			requests[i].Applier)
+		assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(name, "team-a")},
+			requests[i].TargetRefs(), "a suspended target stops writing, not deployments")
+	}
 }
 
 func TestServiceAppliers_NothingIsSentWhileAnythingLiveIsUnpublished(t *testing.T) {
@@ -188,7 +196,7 @@ func TestServiceAppliers_CatchUpWaitsForTheQuietPeriod(t *testing.T) {
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "the branch has only just become quiet")
 	require.NotNil(t, loop.applierTimer, "the earliest catch-up is armed")
-	require.Len(t, loop.catchUpOwed, 2)
+	require.Len(t, loop.appliers, 2)
 
 	// Two minutes of quiet: the one-minute applier is due, the one-hour one is not.
 	loop.quietSince = time.Now().Add(-2 * time.Minute)
@@ -197,8 +205,9 @@ func TestServiceAppliers_CatchUpWaitsForTheQuietPeriod(t *testing.T) {
 	require.Len(t, requests, 1)
 	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
 	assert.Equal(t, "aaa", requests[0].Commit)
-	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference("soon", "team-a")}, requests[0].Targets)
-	assert.Contains(t, loop.catchUpOwed, itypes.NewResourceReference("late", "team-a"))
+	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference("soon", "team-a")},
+		requests[0].TargetRefs())
+	assert.True(t, loop.appliers[applierRef("late")].catchUp, "the one-hour applier still waits")
 	assert.NotNil(t, loop.applierTimer)
 }
 
@@ -277,7 +286,8 @@ func TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt(t *testing.T
 
 func TestServiceAppliers_AForeignCommitAnswersEverythingElseOwed(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
-	loop.oweReapply(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"), "refused", "obs")
+	loop.oweReapply(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"),
+		owedRefusal{detail: "refused", uid: "uid-alpha"}, "obs")
 	owesForeign(loop.w)
 
 	loop.serviceAppliers()
@@ -286,7 +296,7 @@ func TestServiceAppliers_AForeignCommitAnswersEverythingElseOwed(t *testing.T) {
 	require.Len(t, requests, 1, "one apply of the tip covers the refusal and the catch-up")
 	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, requests[0].Reason)
 	assert.Empty(t, loop.reapplyOwed)
-	assert.Empty(t, loop.catchUpOwed)
+	assert.False(t, loop.appliers[applierRef("alpha")].catchUp)
 }
 
 func TestServiceAppliers_NoApplierOnTheBranchClearsTheDebt(t *testing.T) {
@@ -298,7 +308,7 @@ func TestServiceAppliers_NoApplierOnTheBranchClearsTheDebt(t *testing.T) {
 
 	assert.Empty(t, requester.taken())
 	assert.False(t, loop.w.debt.foreignOwed())
-	assert.Empty(t, loop.catchUpOwed)
+	assert.Empty(t, loop.appliers)
 	assert.Nil(t, loop.applierTimer)
 }
 
@@ -394,7 +404,7 @@ func TestApplyTrigger_APushNoticeFindsAForeignCommit(t *testing.T) {
 	require.Len(t, requests, 1)
 	assert.Equal(t, gitOut(t, f.repoDir, "rev-parse", "main"), requests[0].Commit)
 	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(ledgerTargetName, "default")},
-		requests[0].Targets)
+		requests[0].TargetRefs())
 
 	// A duplicate delivery of the same push is one more advertisement and no second request.
 	loop.handleRefreshRequest(&RefreshRequest{PushNotice: true})

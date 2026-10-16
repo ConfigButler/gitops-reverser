@@ -186,8 +186,6 @@ func main() {
 	applyDispatcher := applier.NewDispatcher(
 		mgr.GetClient(), watchMgr.SourceDynamicClient, mgr.GetEventRecorderFor("gittarget"),
 		ctrl.Log.WithName("applier"))
-	// A request the dispatcher cannot deliver goes back to its branch worker, which owes it again.
-	applyDispatcher.HandBack = workerManager
 	fatalIfErr(mgr.Add(applyDispatcher), "unable to add apply request dispatcher to manager")
 	workerManager.SetApplyRequester(applyDispatcher)
 

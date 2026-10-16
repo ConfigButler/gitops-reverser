@@ -6,29 +6,108 @@ import (
 	"slices"
 	"time"
 
+	k8stypes "k8s.io/apimachinery/pkg/types"
+
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// ApplyRequest is one request, decided by a branch worker, that the appliers of some GitTargets on
-// its branch apply a commit. The worker decides WHEN; delivering it is the ApplyRequester's job, off
-// the worker's queue, so a slow applier never holds the branch.
+// ApplierRef is one applier, as the GitTargets on a branch name it: a Flux Kustomization in a
+// source cluster. Several GitTargets may name one applier, and it is asked once for all of them.
+type ApplierRef struct {
+	// Cluster is the source cluster the applier lives in (GitTarget.SourceCluster()).
+	Cluster string
+	// Namespace and Name are the Kustomization's, the namespace defaulted to the GitTarget's own.
+	Namespace string
+	Name      string
+}
+
+func (a ApplierRef) String() string { return a.Cluster + "/" + a.Namespace + "/" + a.Name }
+
+// applierOf is the applier a GitTarget names. Call it only for a target with spec.applier.
+func applierOf(target *v1alpha3.GitTarget) ApplierRef {
+	ref := target.Spec.Applier.KustomizationRef
+	namespace := ref.Namespace
+	if namespace == "" {
+		namespace = target.Namespace
+	}
+	return ApplierRef{Cluster: target.SourceCluster(), Namespace: namespace, Name: ref.Name}
+}
+
+// ApplyRequest is one attempt, decided by a branch worker on a quiet branch, to have one applier
+// apply a commit. The worker decides every attempt, retries included; the requester only carries it
+// out, once, off the worker's goroutine, and reports how it went. So nothing is ever sent that the
+// worker did not check on a quiet branch, against the GitTargets as they were at that moment.
 type ApplyRequest struct {
+	// ID identifies the attempt, so its report can be matched to it.
+	ID uint64
 	// Branch is the branch the request is about.
 	Branch BranchKey
-	// Reason is why the appliers are asked.
+	// Applier is what is asked to apply.
+	Applier ApplierRef
+	// Reason is what the applier is asked: the strongest of the targets' reasons.
 	Reason v1alpha3.ApplyReason
 	// Commit is the commit to apply: the branch tip when the worker decided, which the worker has
 	// pushed or proved by a fetch. Empty when the remote does not carry the branch.
 	Commit string
-	// Targets are the GitTargets whose appliers are asked. Several may name one applier; the
-	// requester asks it once.
-	Targets []itypes.ResourceReference
-	// HandBacks is how many times a request for these targets has already been handed back
-	// undelivered (ApplyHandBack). Zero for a request the worker decided fresh. The worker's
-	// backoff grows with it, and the requester reports a failure only for a request at zero, so a
-	// standing failure is reported once rather than on every retry.
-	HandBacks int
+	// Targets are the GitTargets the request is for, each the incarnation the worker decided for
+	// and with its own reason. The requester asks nothing for a target that has changed since.
+	Targets []ApplyTarget
+	// PriorFailures is how many attempts for this applier failed since the last that did not. The
+	// requester reports a failure only for an attempt at zero, so a standing failure is reported
+	// once rather than on every retry.
+	PriorFailures int
+	// Report receives the attempt's outcome. It is called exactly once, and does not block.
+	Report func(ApplyResult)
+}
+
+// ApplyTarget is one GitTarget an ApplyRequest is for.
+type ApplyTarget struct {
+	Ref    itypes.ResourceReference
+	UID    k8stypes.UID
+	Reason v1alpha3.ApplyReason
+}
+
+// TargetRefs lists the request's GitTargets.
+func (r ApplyRequest) TargetRefs() []itypes.ResourceReference {
+	refs := make([]itypes.ResourceReference, 0, len(r.Targets))
+	for _, target := range r.Targets {
+		refs = append(refs, target.Ref)
+	}
+	return refs
+}
+
+// ApplyOutcome is how one attempt went.
+type ApplyOutcome string
+
+const (
+	// ApplyDelivered asked the applier to apply.
+	ApplyDelivered ApplyOutcome = "Delivered"
+	// ApplyCurrent asked nothing: a CatchUp found the applier already at the commit.
+	ApplyCurrent ApplyOutcome = "Current"
+	// ApplyFailed could not ask; a later attempt may.
+	ApplyFailed ApplyOutcome = "Failed"
+	// ApplyRejected could not ask, and asking again will not help until the applier's
+	// configuration changes: it applies another repository or branch, or no GitRepository.
+	ApplyRejected ApplyOutcome = "Rejected"
+	// ApplyDropped asked nothing, because none of the targets may still ask for the reason the
+	// request carried: each changed, is no longer admitted by its ClusterProvider, or withdrew its
+	// consent to a Refusal. The worker decides again from what the targets are now.
+	ApplyDropped ApplyOutcome = "Dropped"
+)
+
+// ApplyResult is the report of one attempt.
+type ApplyResult struct {
+	ID      uint64
+	Outcome ApplyOutcome
+	// Err is the cause of a Failed or Rejected attempt.
+	Err error
+}
+
+// ApplyRequester carries out apply requests. RequestApply must not block: it is called on the
+// branch worker's loop goroutine.
+type ApplyRequester interface {
+	RequestApply(req ApplyRequest)
 }
 
 // StrongerApplyReason is the reason a target owed two requests is owed. A CatchUp asks for the
@@ -45,68 +124,23 @@ func StrongerApplyReason(a, b v1alpha3.ApplyReason) v1alpha3.ApplyReason {
 	return a
 }
 
-// ApplyRequester delivers apply requests. RequestApply must not block: it is called on the branch
-// worker's loop goroutine.
-type ApplyRequester interface {
-	RequestApply(req ApplyRequest)
-}
-
-// ApplyHandBack takes back a request the requester could not deliver, so the worker owes it again.
-//
-// The requester retries a failed request only briefly. A retry is the worker's decision replayed
-// without the quiet check: the worker decided it on a quiet branch, and by the time a long retry
-// lands, live edits may be waiting in an open window that the apply would revert. So the requester
-// hands a request back once it has failed for about one quiet period, and the worker sends it
-// again only when the branch is quiet once more. HandBackApply must not block.
-type ApplyHandBack interface {
-	HandBackApply(req ApplyRequest)
-}
-
-// handBackDelay is how long the worker waits before sending a request that has been handed back
-// handBacks times: doubling from handBackInitialDelay, capped at handBackMaxDelay, so a permanent
-// failure (a misconfigured Kustomization) is asked about every few minutes rather than in a loop.
-func handBackDelay(handBacks int) time.Duration {
-	delay := handBackInitialDelay
-	for i := 1; i < handBacks && delay < handBackMaxDelay; i++ {
+// applierRetryDelay is how long an applier waits after failures consecutive failed attempts:
+// doubling from applierRetryInitial, capped at applierRetryMax. A rejected attempt waits at least
+// applierRejectedFloor, because only a change to the applier's configuration can make it succeed.
+func applierRetryDelay(failures int, rejected bool) time.Duration {
+	delay := applierRetryInitial
+	for i := 1; i < failures && delay < applierRetryMax; i++ {
 		delay *= 2
 	}
-	return min(delay, handBackMaxDelay)
+	delay = min(delay, applierRetryMax)
+	if rejected {
+		delay = max(delay, applierRejectedFloor)
+	}
+	return delay
 }
 
 const (
-	handBackInitialDelay = 15 * time.Second
-	handBackMaxDelay     = 5 * time.Minute
+	applierRetryInitial  = 2 * time.Second
+	applierRetryMax      = 5 * time.Minute
+	applierRejectedFloor = 15 * time.Second
 )
-
-// HandBackApply hands a request back to the worker for its branch. A branch with no worker has
-// nothing to owe it to: a worker created later starts by owing every applier a catch-up.
-func (m *WorkerManager) HandBackApply(req ApplyRequest) {
-	worker, found := m.GetWorkerForTarget(req.Branch.RepoName, req.Branch.RepoNamespace, req.Branch.Branch)
-	if !found {
-		return
-	}
-	worker.handBackApply(req)
-}
-
-// handBackApply records a handed-back request in the debt and wakes the loop, which sends it
-// again once it is due and the branch is quiet (serviceAppliers). The record is the debt, not the
-// wake: a wake dropped on a full queue costs nothing, because the work already queued wakes the
-// loop, and every wake ends by servicing the appliers.
-func (w *BranchWorker) handBackApply(req ApplyRequest) {
-	w.debt.handBack(req, time.Now())
-	w.Log.Info("An apply request could not be delivered; owing it again",
-		"branch", w.Branch, "reason", string(req.Reason), "gitTargets", len(req.Targets),
-		"handBacks", req.HandBacks, "retryIn", handBackDelay(req.HandBacks))
-	w.inflightItems.Add(1)
-	w.pendingResyncsMu.Lock()
-	defer w.pendingResyncsMu.Unlock()
-	if w.stoppingLocked() {
-		w.inflightItems.Add(-1)
-		return
-	}
-	select {
-	case w.eventQueue <- WorkItem{ApplyWake: true}:
-	default:
-		w.inflightItems.Add(-1)
-	}
-}
