@@ -187,9 +187,9 @@ A refusal is not a transient error and is not retried into success. It is the co
 edit never appears in Git while the worker looks healthy, so check the `GitTarget` conditions before
 the worker logs.
 
-[`spec.onRefusal: PushEmptyCommit`](bi-directional.md#choosing-speconrefusal) can request Git
-re-application for eligible refused edits. It leaves these gates in force, and publishing the
-empty commit does not establish that the live value was restored or the target recovered.
+[`spec.onRefusal: Reapply`](bi-directional.md#choosing-speconrefusal) asks the target's applier to
+reapply Git for eligible refused edits. It leaves these gates in force, and a delivered request does
+not establish that the live value was restored or the target recovered.
 
 Separately, a window whose finalize fails is **dropped**, not retried: its events are gone until
 the next resync re-derives them from the current live state. That is a deliberate choice, because
