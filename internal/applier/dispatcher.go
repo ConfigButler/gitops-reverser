@@ -44,6 +44,7 @@ const (
 	outcomeSent    = "sent"
 	outcomeFailed  = "failed"
 	outcomeDropped = "dropped"
+	outcomeStale   = "stale"
 )
 
 // shortCommitLength is how much of a commit an Event names.
@@ -61,8 +62,8 @@ type SourceClients func(ctx context.Context, clusterID string) (dynamic.Interfac
 const DefaultAttemptTimeout = 30 * time.Second
 
 // Dispatcher carries out the apply requests the branch workers decide. It implements
-// git.ApplyRequester, and runs as a leader-elected manager.Runnable, the same replica the branch
-// workers run on.
+// git.ApplyRequester, and runs as a manager.Runnable beside the branch workers (it asks for leader
+// election as they do, which keeps the two together should it ever be switched on).
 //
 // It keeps no queue and makes no decision of its own. Each request is one attempt for one applier,
 // carried out on its own goroutine and reported back to the worker that decided it; the worker owns
@@ -219,8 +220,12 @@ func (d *Dispatcher) attempt(ctx context.Context, req git.ApplyRequest) git.Appl
 	}
 	flux := NewFlux(sourceClient)
 	flux.Now = d.Now
-	outcome, err := flux.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason)
+	outcome, err := flux.Request(ctx, applierName(req.Applier), want, req.Commit, req.Reason, req.Current)
 	switch {
+	case errors.Is(err, errStale):
+		d.count(ctx, req.Reason, outcomeStale)
+		log.Info("the decision no longer holds; asking nothing, the branch worker decides again")
+		return report(git.ApplyStale, nil)
 	case isPermanent(err):
 		return d.failure(ctx, req, eligible, report(git.ApplyRejected, err), log)
 	case err != nil:

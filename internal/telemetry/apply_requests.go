@@ -19,6 +19,9 @@ import "go.opentelemetry.io/otel/metric"
 //	dropped  — the attempt asked nothing, because no GitTarget may still ask for its reason: each
 //	           was deleted or recreated, moved to another branch or applier, is no longer admitted by
 //	           its ClusterProvider, or withdrew its consent to a Refusal.
+//	stale    — the attempt asked nothing, because the decision no longer held when the patch was due:
+//	           the branch had moved on or become busy. The worker decides again at the next quiet
+//	           moment. Frequent stale attempts mean edits keep arriving within an attempt's lifetime.
 //
 // It counts attempts, so a request that fails twice and then lands is two "failed" and one "sent".
 // It says nothing about whether the applier APPLIED: a request asks and never reports, and the

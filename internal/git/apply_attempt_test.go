@@ -331,3 +331,79 @@ func TestApplierRetryDelay_DoublesToACap(t *testing.T) {
 	assert.Equal(t, 15*time.Second, applierRetryDelay(1, true), "a rejected attempt waits for a configuration change")
 	assert.Equal(t, 5*time.Minute, applierRetryDelay(50, true))
 }
+
+// TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff: an attempt whose decision no longer held
+// at the patch (the branch moved on, or became busy) asked nothing, and that is no failure. What it
+// carried comes back, and the next quiet moment decides again at the new tip.
+func TestApplier_AStaleAttemptIsDecidedAgainWithoutBackoff(t *testing.T) {
+	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
+	owesForeign(loop.w)
+	loop.serviceAppliers()
+	out := requester.taken()
+	require.Len(t, out, 1)
+	require.True(t, out[0].Current(), "decided at the tip on a quiet branch")
+
+	loop.w.debt.observe(RemoteObservation{Commit: "ccc", By: ObservedByPush})
+	assert.False(t, out[0].Current(), "the branch moved on")
+
+	report(out[0], ApplyStale)
+	loop.serviceAppliers()
+	retry := requester.taken()
+	require.Len(t, retry, 1, "decided again at once: nothing failed")
+	assert.Equal(t, "ccc", retry[0].Commit)
+	assert.Equal(t, configv1alpha3.ApplyReasonForeignCommit, retry[0].Reason)
+	assert.Zero(t, retry[0].PriorFailures)
+}
+
+// TestDecisionHolds_OnlyAtTheTipOnAQuietBranch: the check the requester makes before it patches.
+func TestDecisionHolds_OnlyAtTheTipOnAQuietBranch(t *testing.T) {
+	w := newMetricsTestWorker()
+	w.debt.observe(RemoteObservation{Commit: "aaa", By: ObservedByPush})
+	assert.True(t, w.decisionHolds("aaa"))
+	assert.False(t, w.decisionHolds("older"), "another commit is not the tip")
+
+	w.publishWriteBusy(true)
+	assert.False(t, w.decisionHolds("aaa"), "a window open since")
+	w.publishWriteBusy(false)
+
+	w.eventQueue <- WorkItem{}
+	assert.False(t, w.decisionHolds("aaa"), "a queued event is a live edit not yet decided")
+}
+
+// TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow is the customer review's third blocker: the
+// late webhook for the worker's own push closed the next save's window, splitting that save across
+// two commits. A notice naming the tip already observed leaves the window alone; one naming
+// anything else, or nothing, still closes it.
+func TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		after     string
+		wantClose bool
+	}{
+		{name: "our own push, reported late", after: "ours"},
+		{name: "somebody else's push", after: "theirs", wantClose: true},
+		{name: "a notice that names no commit", after: "", wantClose: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true), &configv1alpha3.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-provider", Namespace: "team-a"},
+				Spec:       configv1alpha3.GitProviderSpec{URL: "https://github.com/acme/platform"},
+			})
+			loop.w.recordRemoteObservation("ours", ObservedByPush)
+			loop.openWindow = &openWindow{}
+
+			loop.handleRefreshRequest(&RefreshRequest{PushNotice: true, After: tc.after})
+
+			assert.Equal(t, tc.wantClose, loop.pushHinted)
+		})
+	}
+}
+
+// TestWriteBusy_ASaveAnnouncedBeforeItsWrites: a registered CommitRequest makes the branch busy, so
+// a catch-up cannot land between a save's announcement and its first writes.
+func TestWriteBusy_ASaveAnnouncedBeforeItsWrites(t *testing.T) {
+	loop, _ := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	assert.False(t, loop.writeBusy())
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{{}: {}}
+	assert.True(t, loop.writeBusy())
+}

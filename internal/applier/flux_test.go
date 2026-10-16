@@ -163,9 +163,12 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 			want: OutcomeStampedKustomization, wantKustomStamps: true,
 		},
 		{
-			name: "foreign commit already fetched stamps the kustomization", revision: "main/" + testCommit,
+			// The artifact that holds the commit already woke the Kustomization when it arrived. A
+			// stamp here would only re-apply it, and if the tip had moved on since, re-apply an
+			// older commit over a published edit.
+			name: "foreign commit already fetched stamps nothing", revision: "main/" + testCommit,
 			commit: testCommit, reason: v1alpha3.ApplyReasonForeignCommit,
-			want: OutcomeStampedKustomization, wantKustomStamps: true,
+			want: OutcomeCurrent,
 		},
 		{
 			name: "catch-up already current stamps nothing", revision: "sha1:" + testCommit,
@@ -180,7 +183,7 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 				gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), tt.revision),
 			)
 			got, err := pinnedFlux(client).Request(context.Background(),
-				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding, tt.commit, tt.reason)
+				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding, tt.commit, tt.reason, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 
@@ -200,6 +203,26 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 
 // TestFluxRequest_SourceRefNamespace: an omitted sourceRef namespace is the Kustomization's own; a
 // set one is followed across namespaces.
+// TestFluxRequest_AStaleDecisionStampsNothing is the customer review's first blocker: a request
+// decided at one commit, landing after a newer push, stamped the Kustomization of an artifact that
+// held the older commit, re-applying it over a published edit. The decision is checked again just
+// before the stamp.
+func TestFluxRequest_AStaleDecisionStampsNothing(t *testing.T) {
+	for _, revision := range []string{"main@sha1:" + testCommit, "main@sha1:" + olderCommit} {
+		client := newSourceClient(
+			kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+			gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), revision),
+		)
+		_, err := pinnedFlux(client).Request(context.Background(),
+			types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding, testCommit,
+			v1alpha3.ApplyReasonRefusal, func() bool { return false })
+		require.ErrorIs(t, err, errStale, revision)
+		for _, action := range client.Actions() {
+			assert.NotEqual(t, "patch", action.GetVerb(), "a stale decision stamps nothing")
+		}
+	}
+}
+
 func TestFluxRequest_SourceRefNamespace(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -221,7 +244,7 @@ func TestFluxRequest_SourceRefNamespace(t *testing.T) {
 			)
 			kustomization := types.NamespacedName{Namespace: "apps", Name: "checkout"}
 			got, err := pinnedFlux(client).Request(context.Background(), kustomization, testBinding, testCommit,
-				v1alpha3.ApplyReasonForeignCommit)
+				v1alpha3.ApplyReasonForeignCommit, nil)
 			require.NoError(t, err)
 			assert.Equal(t, OutcomeStampedSource, got)
 			assert.NotEmpty(t, requestedAt(t, client, gitRepositoryGVR(), tt.wantNamespace, "platform"))
@@ -281,7 +304,7 @@ func TestFluxRequest_Failures(t *testing.T) {
 			client := newSourceClient(tt.objs...)
 			_, err := pinnedFlux(client).Request(context.Background(),
 				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding, testCommit,
-				v1alpha3.ApplyReasonForeignCommit)
+				v1alpha3.ApplyReasonForeignCommit, nil)
 			require.Error(t, err)
 			assert.Equal(t, tt.wantPermanent, isPermanent(err))
 			for _, action := range client.Actions() {

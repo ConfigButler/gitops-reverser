@@ -89,7 +89,7 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	verdict := flux.Validate(context.Background(), ref, want)
 	assert.True(t, verdict.OK, "ApplierConfigured for the guide's example: %s: %s", verdict.Reason, verdict.Message)
 
-	outcome, err := flux.Request(context.Background(), ref, want, testCommit, v1alpha3.ApplyReasonForeignCommit)
+	outcome, err := flux.Request(context.Background(), ref, want, testCommit, v1alpha3.ApplyReasonForeignCommit, nil)
 	require.NoError(t, err)
 	assert.Equal(t, OutcomeStampedSource, outcome, "a source with no artifact yet is asked to fetch")
 	assert.NotEmpty(t, requestedAt(t, client, gitRepositoryGVR(), repository.GetNamespace(), repository.GetName()))

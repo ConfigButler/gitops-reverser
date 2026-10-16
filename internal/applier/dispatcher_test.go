@@ -360,6 +360,22 @@ func TestDispatcher_ATargetThatChangedAsksNothing(t *testing.T) {
 	}
 }
 
+// TestDispatcher_AStaleDecisionAsksNothing: the worker's decision is checked again just before the
+// patch, and an attempt whose branch moved on or became busy reports Stale and stamps nothing.
+func TestDispatcher_AStaleDecisionAsksNothing(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{reapplying(gitTarget("a", checkoutRef(), ""))},
+		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
+	)
+	req := request(checkout, v1alpha3.ApplyReasonRefusal, "a")
+	req.Current = func() bool { return false }
+
+	assert.Equal(t, git.ApplyStale, f.attempt(req).Outcome)
+	assert.Empty(t, f.patches())
+	assert.Empty(t, f.events(), "a stale decision is no failure")
+	assert.Equal(t, int64(1), f.count(v1alpha3.ApplyReasonRefusal, outcomeStale))
+}
+
 // TestDispatcher_CatchUpAlreadyCurrent: a CatchUp the applier already satisfies counts as sent and
 // records nothing, since nothing was asked of it.
 func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {

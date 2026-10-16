@@ -109,6 +109,13 @@ func (d *applyDebt) foreignOwed() bool {
 	return d.foreign
 }
 
+// tipIs reports whether the last commit observed is commit.
+func (d *applyDebt) tipIs(commit string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.known && d.tip == commit
+}
+
 func (d *applyDebt) addResult(res ApplyResult) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -200,10 +207,12 @@ func (s *applierState) quietPeriod() time.Duration {
 }
 
 // writeBusy reports whether the loop holds anything live that is not yet on the remote, or is in a
-// state where it cannot say. A request is never sent while it does.
+// state where it cannot say. A request is never sent while it does. A registered CommitRequest
+// counts: a save is announced before its writes arrive, and an apply landing between the two would
+// revert the save's first edits before they reach Git.
 func (l *branchWorkerEventLoop) writeBusy() bool {
 	return l.openWindow != nil || len(l.pendingWrites) > 0 || len(l.deferredHeals) > 0 ||
-		l.recovery.active || l.w.worktreeDirty()
+		len(l.pendingCRs) > 0 || l.recovery.active || l.w.worktreeDirty()
 }
 
 // closeWindowForForeignCommit closes the open commit window early when the branch has moved under
@@ -420,6 +429,7 @@ func (l *branchWorkerEventLoop) sendAttempt(state *applierState, tip string, ref
 		Commit:        tip,
 		Targets:       targets,
 		PriorFailures: state.failures,
+		Current:       func() bool { return w.decisionHolds(tip) },
 		Report:        w.reportApplyResult,
 	})
 }
@@ -439,6 +449,11 @@ func (l *branchWorkerEventLoop) settleApplyResults(now time.Time) {
 		switch res.Outcome {
 		case ApplyDelivered, ApplyCurrent:
 			state.failures, state.retryAt = 0, time.Time{}
+			continue
+		case ApplyStale:
+			// The decision went stale before the patch: nothing failed, and the next quiet moment
+			// decides again, at the tip as it is then.
+			l.restoreAttempt(state, attempt)
 			continue
 		case ApplyFailed, ApplyRejected, ApplyDropped:
 		}
@@ -478,6 +493,14 @@ func (l *branchWorkerEventLoop) applierAwaiting(id uint64) *applierState {
 		}
 	}
 	return nil
+}
+
+// decisionHolds is ApplyRequest.Current for an attempt decided at tip: the branch is still at that
+// commit, and nothing live is waiting to be published on this worker or a sibling. Work still in the
+// queue counts, because a queued watch event is an edit that is live and not yet decided. It is
+// called from the requester's goroutine, so it reads only what is safe to read there.
+func (w *BranchWorker) decisionHolds(tip string) bool {
+	return w.debt.tipIs(tip) && !w.busyWriting.Load() && len(w.eventQueue) == 0 && !w.siblingWriteBusy()
 }
 
 // reportApplyResult is ApplyRequest.Report: it records the report and wakes the loop to settle it.

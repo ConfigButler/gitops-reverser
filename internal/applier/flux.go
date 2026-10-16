@@ -74,8 +74,8 @@ const (
 	// OutcomeStampedKustomization stamped the Kustomization: the artifact already held the commit,
 	// so a source stamp would produce no new artifact and wake nothing.
 	OutcomeStampedKustomization Outcome = "StampedKustomization"
-	// OutcomeCurrent stamped nothing: a CatchUp found the artifact already at the commit, which is
-	// all a CatchUp asks for.
+	// OutcomeCurrent stamped nothing: a CatchUp or ForeignCommit found the artifact already at the
+	// commit, so the Kustomization was already woken by it.
 	OutcomeCurrent Outcome = "Current"
 )
 
@@ -146,6 +146,9 @@ type permanentError struct{ err error }
 func (e permanentError) Error() string { return e.err.Error() }
 func (e permanentError) Unwrap() error { return e.err }
 
+// errStale reports a request whose decision no longer held when the stamp was due.
+var errStale = errors.New("the decision no longer holds: the branch moved on or became busy")
+
 // isPermanent reports whether err is a permanentError.
 func isPermanent(err error) bool {
 	var p permanentError
@@ -162,16 +165,22 @@ func isPermanent(err error) bool {
 //
 // When the GitRepository's artifact does not hold commit, it stamps the GitRepository: the fetch
 // produces a new artifact and the new artifact wakes the Kustomization by itself, so a second stamp
-// would only be a second apply. When the artifact already holds it, a source stamp would wake
-// nothing, so it stamps the Kustomization instead, which is what a Refusal at an unchanged commit
-// needs; a CatchUp needs nothing then, because a CatchUp only keeps the artifact current. An empty
-// commit (the remote does not carry the branch) stamps the GitRepository, so Flux finds out itself.
+// would only be a second apply. When the artifact already holds it, only a Refusal stamps the
+// Kustomization, because only a Refusal asks for an apply of an unchanged commit (to revert drift).
+// A ForeignCommit or CatchUp then needs nothing: the artifact that holds the commit already woke the
+// Kustomization when it arrived. An empty commit (the remote does not carry the branch) stamps the
+// GitRepository, so Flux finds out itself.
+//
+// current is asked just before the stamp. When it reports false the decision no longer holds (the
+// branch moved on, or became busy) and nothing is stamped: errStale. Stamping the Kustomization of
+// an artifact holding an older commit would re-apply that commit over an edit published since.
 func (f *Flux) Request(
 	ctx context.Context,
 	ref types.NamespacedName,
 	want Binding,
 	commit string,
 	reason v1alpha3.ApplyReason,
+	current func() bool,
 ) (Outcome, error) {
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
@@ -190,8 +199,11 @@ func (f *Flux) Request(
 		return "", permanentError{fmt.Errorf("%s %s: %s", kindKustomization, ref, msg)}
 	}
 
+	if current != nil && !current() {
+		return "", errStale
+	}
 	if commit != "" && artifactHolds(source, commit) {
-		if reason == v1alpha3.ApplyReasonCatchUp {
+		if reason != v1alpha3.ApplyReasonRefusal {
 			return OutcomeCurrent, nil
 		}
 		if err := f.stamp(ctx, kustomizationGVR(), ref); err != nil {
