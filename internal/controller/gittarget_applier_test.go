@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
@@ -59,10 +60,14 @@ func applierFakeSource(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
 
 type fixedLedger map[types.ResourceReference]configbutleraiv1alpha3.GitTargetApplierStatus
 
-func (l fixedLedger) LastRequest(ref types.ResourceReference) (configbutleraiv1alpha3.GitTargetApplierStatus, bool) {
+func (l fixedLedger) LastRequest(
+	ref types.ResourceReference, _ k8stypes.UID,
+) (configbutleraiv1alpha3.GitTargetApplierStatus, bool) {
 	status, ok := l[ref]
 	return status, ok
 }
+
+func (l fixedLedger) Forget(ref types.ResourceReference) { delete(l, ref) }
 
 func applierTarget(applierSet bool) *configbutleraiv1alpha3.GitTarget {
 	target := &configbutleraiv1alpha3.GitTarget{

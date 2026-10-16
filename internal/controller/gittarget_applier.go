@@ -27,9 +27,11 @@ const GitTargetConditionApplierConfigured = "ApplierConfigured"
 const applierCheckTimeout = 10 * time.Second
 
 // ApplyRequestLedger is what the GitTarget controller reads to publish status.applier: the last
-// apply request delivered for a GitTarget. The applier dispatcher implements it.
+// apply request delivered for a GitTarget, for the incarnation with this uid. Forget drops a
+// GitTarget that is gone. The applier dispatcher implements it.
 type ApplyRequestLedger interface {
-	LastRequest(ref types.ResourceReference) (configbutleraiv1alpha3.GitTargetApplierStatus, bool)
+	LastRequest(ref types.ResourceReference, uid k8stypes.UID) (configbutleraiv1alpha3.GitTargetApplierStatus, bool)
+	Forget(ref types.ResourceReference)
 }
 
 // observeApplier publishes status.applier and the ApplierConfigured condition, and returns the
@@ -52,7 +54,8 @@ func (r *GitTargetReconciler) observeApplier(
 	}
 
 	if r.ApplyRequests != nil {
-		if last, ok := r.ApplyRequests.LastRequest(types.NewResourceReference(target.Name, target.Namespace)); ok {
+		ref := types.NewResourceReference(target.Name, target.Namespace)
+		if last, ok := r.ApplyRequests.LastRequest(ref, target.UID); ok {
 			target.Status.Applier = &last
 		}
 	}

@@ -1486,6 +1486,10 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	// said, and an entry that outlives the object is a rate limit held against a name that may be
 	// recreated tomorrow with nothing published.
 	r.remotePublications.forget(gitDest)
+	// Same terms: the last apply request delivered for it.
+	if r.ApplyRequests != nil {
+		r.ApplyRequests.Forget(gitDest)
+	}
 	telemetry.ForgetResourceConditions(conditionKindGitTarget, namespacedName.Namespace, namespacedName.Name)
 	// Same terms, same reason: a join series that outlives its GitTarget keeps attributing a live
 	// branch's push failures to an object that no longer exists.

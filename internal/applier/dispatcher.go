@@ -141,7 +141,7 @@ type Dispatcher struct {
 	wake    chan struct{}
 
 	ledgerMu sync.RWMutex
-	ledger   map[string]v1alpha3.GitTargetApplierStatus
+	ledger   map[string]ledgerEntry
 
 	// Owned by the Start loop.
 	pending  map[applierKey]*job
@@ -172,7 +172,7 @@ func NewDispatcher(
 		AttemptTimeout: DefaultAttemptTimeout,
 		Now:            time.Now,
 		wake:           make(chan struct{}, 1),
-		ledger:         map[string]v1alpha3.GitTargetApplierStatus{},
+		ledger:         map[string]ledgerEntry{},
 		pending:        map[applierKey]*job{},
 		inflight:       map[applierKey]*job{},
 		results:        make(chan result),
@@ -239,17 +239,34 @@ func sameScope(a, b git.ApplyRequest) bool {
 	return slices.Equal(keys(a.Targets), keys(b.Targets))
 }
 
+// ledgerEntry is the last request delivered for one GitTarget, and which incarnation of it the
+// request was for.
+type ledgerEntry struct {
+	uid    types.UID
+	status v1alpha3.GitTargetApplierStatus
+}
+
 // LastRequest is the last apply request delivered for a GitTarget's applier, for status.applier.
-// It is false until one was delivered. A CatchUp that found the applier already current is not a
-// request made, and leaves it unchanged.
-func (d *Dispatcher) LastRequest(ref itypes.ResourceReference) (v1alpha3.GitTargetApplierStatus, bool) {
+// It is false until one was delivered for this uid: a GitTarget deleted and recreated under the
+// same name does not inherit its predecessor's. A CatchUp that found the applier already current is
+// not a request made, and leaves it unchanged.
+func (d *Dispatcher) LastRequest(
+	ref itypes.ResourceReference, uid types.UID,
+) (v1alpha3.GitTargetApplierStatus, bool) {
 	d.ledgerMu.RLock()
 	defer d.ledgerMu.RUnlock()
-	status, ok := d.ledger[ref.Key()]
-	if !ok {
+	entry, ok := d.ledger[ref.Key()]
+	if !ok || entry.uid != uid {
 		return v1alpha3.GitTargetApplierStatus{}, false
 	}
-	return *status.DeepCopy(), true
+	return *entry.status.DeepCopy(), true
+}
+
+// Forget drops what the ledger holds for a GitTarget that is gone.
+func (d *Dispatcher) Forget(ref itypes.ResourceReference) {
+	d.ledgerMu.Lock()
+	defer d.ledgerMu.Unlock()
+	delete(d.ledger, ref.Key())
 }
 
 // applierKey identifies one applier for one branch. The branch is part of it so that two branches
@@ -678,8 +695,14 @@ func (d *Dispatcher) delivered(j *job, eligible []eligibleTarget) {
 	at := metav1.NewTime(d.Now())
 	d.ledgerMu.Lock()
 	for _, e := range eligible {
-		d.ledger[itypes.NewResourceReference(e.target.Name, e.target.Namespace).Key()] =
-			v1alpha3.GitTargetApplierStatus{RequestedCommit: j.commit, RequestedAt: at.DeepCopy(), Reason: e.reason}
+		d.ledger[itypes.NewResourceReference(e.target.Name, e.target.Namespace).Key()] = ledgerEntry{
+			uid: e.target.UID,
+			status: v1alpha3.GitTargetApplierStatus{
+				RequestedCommit: j.commit,
+				RequestedAt:     at.DeepCopy(),
+				Reason:          e.reason,
+			},
+		}
 	}
 	d.ledgerMu.Unlock()
 

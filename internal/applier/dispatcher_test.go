@@ -17,6 +17,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -40,7 +41,7 @@ var testBranchKey = git.BranchKey{RepoNamespace: targetNS, RepoName: "platform",
 // gitTarget builds a GitTarget on testBranchKey; a nil kustomizationRef declares no applier.
 func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference, cluster string) *v1alpha3.GitTarget {
 	target := &v1alpha3.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name},
+		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name, UID: uid(name)},
 		Spec: v1alpha3.GitTargetSpec{
 			GitProviderRef: fluxmeta.LocalObjectReference{Name: testBranchKey.RepoName},
 			Branch:         testBranch,
@@ -94,6 +95,9 @@ func ksRef(namespace, name string) *fluxmeta.NamespacedObjectReference {
 }
 
 func ref(name string) itypes.ResourceReference { return itypes.NewResourceReference(name, targetNS) }
+
+// uid is the uid gitTarget gives the GitTarget of that name.
+func uid(name string) types.UID { return types.UID("uid-" + name) }
 
 // sourceStub hands out one fake source cluster's client, failing the first failFirst calls (or
 // every call, with failFirst < 0), and remembers which cluster ids it was asked for.
@@ -259,13 +263,13 @@ func TestDispatcher_AsksEachApplierOnce(t *testing.T) {
 		Reason:          v1alpha3.ApplyReasonForeignCommit,
 	}
 	for _, name := range []string{"a", "b", "c"} {
-		got, ok := f.dispatcher.LastRequest(ref(name))
+		got, ok := f.dispatcher.LastRequest(ref(name), uid(name))
 		require.True(t, ok, name)
 		assert.True(t, got.RequestedAt.Equal(want.RequestedAt), name)
 		assert.Equal(t, want.RequestedCommit, got.RequestedCommit, name)
 		assert.Equal(t, want.Reason, got.Reason, name)
 	}
-	_, ok := f.dispatcher.LastRequest(ref("no-applier"))
+	_, ok := f.dispatcher.LastRequest(ref("no-applier"), uid("no-applier"))
 	assert.False(t, ok, "a target without an applier records no request")
 
 	assert.ElementsMatch(t, []string{
@@ -296,9 +300,33 @@ func TestDispatcher_RetriesThenDelivers(t *testing.T) {
 	assert.Equal(t, int64(0), f.count(v1alpha3.ApplyReasonRefusal, outcomeFailed))
 	assert.Equal(t, []string{"kustomizations " + fluxSystemNS}, f.patches(),
 		"a refusal at the artifact's commit stamps the kustomization")
-	got, ok := f.dispatcher.LastRequest(ref("a"))
+	got, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
 	require.True(t, ok)
 	assert.Equal(t, v1alpha3.ApplyReasonRefusal, got.Reason)
+}
+
+// TestDispatcher_TheLedgerIsPerIncarnation: a GitTarget deleted and recreated under the same name
+// does not inherit its predecessor's last request, and a forgotten one holds nothing.
+func TestDispatcher_TheLedgerIsPerIncarnation(t *testing.T) {
+	f := newDispatcherFixture(t,
+		[]client.Object{gitTarget("a", ksRef(fluxSystemNS, "checkout"), "")},
+		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+olderCommit),
+	)
+	f.start(t)
+	f.dispatcher.RequestApply(git.ApplyRequest{
+		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
+		Targets: []itypes.ResourceReference{ref("a")},
+	})
+	f.waitForCount(t, v1alpha3.ApplyReasonForeignCommit, outcomeSent, 1)
+
+	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
+	assert.True(t, ok)
+	_, ok = f.dispatcher.LastRequest(ref("a"), "the-recreated-one")
+	assert.False(t, ok, "a recreated GitTarget does not inherit the last request")
+	f.dispatcher.Forget(ref("a"))
+	_, ok = f.dispatcher.LastRequest(ref("a"), uid("a"))
+	assert.False(t, ok)
 }
 
 // TestDispatcher_HandsBackAfterItsRetryBudget is the review's finding 4: a request that kept
@@ -325,7 +353,7 @@ func TestDispatcher_HandsBackAfterItsRetryBudget(t *testing.T) {
 		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
 		Targets: []itypes.ResourceReference{ref("a"), ref("b")}, HandBacks: 1,
 	}, f.handBacks.got()[0], "every GitTarget goes back, with its reason and one more hand-back")
-	_, ok := f.dispatcher.LastRequest(ref("a"))
+	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
 	assert.False(t, ok, "nothing was delivered")
 	events := f.events()
 	require.Len(t, events, 2, "one Warning per GitTarget")
@@ -404,7 +432,7 @@ func TestDispatcher_ATargetItsClusterProviderDeniesAsksNothing(t *testing.T) {
 
 	assert.Equal(t, []string{v1alpha3.DefaultClusterProviderName}, f.source.clusters,
 		"the denied GitTarget's cluster client is never even asked for")
-	_, ok := f.dispatcher.LastRequest(ref("denied"))
+	_, ok := f.dispatcher.LastRequest(ref("denied"), uid("denied"))
 	assert.False(t, ok)
 }
 
@@ -483,10 +511,10 @@ func TestDispatcher_ARefusalNeedsConsentAtEveryAttempt(t *testing.T) {
 		Targets: []itypes.ResourceReference{ref("suspended"), ref("consenting")},
 	})
 	f.waitForCount(t, v1alpha3.ApplyReasonRefusal, outcomeSent, 1)
-	consenting, ok := f.dispatcher.LastRequest(ref("consenting"))
+	consenting, ok := f.dispatcher.LastRequest(ref("consenting"), uid("consenting"))
 	require.True(t, ok)
 	assert.Equal(t, v1alpha3.ApplyReasonRefusal, consenting.Reason)
-	suspendedStatus, ok := f.dispatcher.LastRequest(ref("suspended"))
+	suspendedStatus, ok := f.dispatcher.LastRequest(ref("suspended"), uid("suspended"))
 	require.True(t, ok, "the shared stamp reached its applier too")
 	assert.Equal(t, v1alpha3.ApplyReasonCatchUp, suspendedStatus.Reason, "recorded as what it may ask for")
 
@@ -534,7 +562,7 @@ func TestDispatcher_NewerRequestSupersedes(t *testing.T) {
 		"the failed Refusal at the older commit was superseded, not retried")
 	assert.Equal(t, int64(0), f.count(v1alpha3.ApplyReasonCatchUp, outcomeSent))
 	assert.Equal(t, []string{"kustomizations " + fluxSystemNS}, f.patches())
-	got, ok := f.dispatcher.LastRequest(ref("a"))
+	got, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
 	require.True(t, ok)
 	assert.Equal(t, testCommit, got.RequestedCommit, "the newer commit is the one sent")
 	assert.Equal(t, v1alpha3.ApplyReasonRefusal, got.Reason)
@@ -558,7 +586,7 @@ func TestDispatcher_CatchUpAlreadyCurrent(t *testing.T) {
 
 	assert.Empty(t, f.patches())
 	assert.Empty(t, f.events())
-	_, ok := f.dispatcher.LastRequest(ref("a"))
+	_, ok := f.dispatcher.LastRequest(ref("a"), uid("a"))
 	assert.False(t, ok)
 }
 
