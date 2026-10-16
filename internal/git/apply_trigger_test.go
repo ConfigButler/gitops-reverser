@@ -219,6 +219,26 @@ func TestServiceAppliers_AWriteRestartsTheQuietPeriod(t *testing.T) {
 	assert.WithinDuration(t, time.Now(), loop.quietSince, time.Second)
 }
 
+// TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod is the regression the
+// bi-directional e2e found. A window with a zero idle timeout opens, closes, commits and pushes in a
+// single wake that ends quiet, so a quiet period read only from how wakes END was inherited from
+// the quiet wakes before it: the catch-up went out at once, Flux applied that commit over the next
+// API edit, and the revert was mirrored as Flux's commit.
+func TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod(t *testing.T) {
+	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
+	loop.serviceAppliers()
+	loop.quietSince = time.Now().Add(-time.Hour)
+
+	loop.decide(PendingWrite{})
+	loop.pendingWrites, loop.pendingWritesBytes = nil, 0 // the same wake pushed it
+	loop.w.debt.observe(RemoteObservation{Commit: "bbb", By: ObservedByPush})
+	loop.serviceAppliers()
+
+	assert.Empty(t, requester.taken(), "the catch-up waits a quiet period from the push, not from before it")
+	assert.WithinDuration(t, time.Now(), loop.quietSince, time.Second)
+	assert.NotNil(t, loop.applierTimer)
+}
+
 func TestServiceAppliers_AForeignCommitAnswersEverythingElseOwed(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
 	loop.oweReapply(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"), "refused", "obs")

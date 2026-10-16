@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -83,6 +84,12 @@ func retainedCharge(pendingWrite *PendingWrite) int64 {
 // A request riding it is held from here on, so the controller never fails a save whose write can
 // still land. Committing it is advance's job, at the end of the wake.
 func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
+	// Every decided write restarts the quiet period the apply trigger waits out, wherever in the
+	// wake it is decided. A wake can open a window, close it, commit and push before it ends, and
+	// end quiet; reading "busy" only from the state a wake ends in would let that wake inherit the
+	// quiet period of the wakes before it and ask the applier to catch up at once, over the next
+	// edit. See serviceAppliers.
+	l.quietSince = time.Time{}
 	pendingWrite.charge = retainedCharge(&pendingWrite)
 	pendingWrite.decidedAt = l.w.now()
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)
