@@ -129,9 +129,9 @@ receiver:
 # somebody else pushed to a branch a GitTarget writes. Off unless asked for, since most installs run
 # one applier or none.
 applierAccess:
-  # Grant get/list/watch/patch on kustomize.toolkit.fluxcd.io Kustomizations and
-  # source.toolkit.fluxcd.io GitRepositories, plus create on SelfSubjectAccessReviews (to check that
-  # access before relying on it). Cluster-wide, because a GitTarget's applier can live in any
+  # Grant get/patch on kustomize.toolkit.fluxcd.io Kustomizations and source.toolkit.fluxcd.io
+  # GitRepositories, plus create on SelfSubjectAccessReviews (to check that access before relying
+  # on it). Cluster-wide, because a GitTarget's applier can live in any
   # namespace.
   flux: false
 

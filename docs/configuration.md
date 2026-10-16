@@ -1110,7 +1110,8 @@ spec:
 | `quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` request. At most `1h` |
 
 Argo CD (`applicationRef`) and a webhook for any other tool are the next appliers; until they
-exist, an Argo CD `Application` keeps its own triggers.
+exist, an Argo CD `Application` keeps its own triggers. [Using GitOps Reverser with Flux](flux.md)
+walks through the whole Flux setup, from the `GitRepository` to the Git host's webhook.
 
 **Where the reference is looked up.** In the source cluster, the cluster the `Kustomization` applies
 to, with the identity the [`ClusterProvider`](#clusterprovider) already uses. That identity needs `get`

@@ -193,36 +193,14 @@ field from GitOps Reverser's whole-object replay.
 
 ## Configure Flux
 
-Flux has no refresh-only mode: kustomize-controller applies whenever it reconciles, and
-`suspend: true` also blocks the requests GitOps Reverser makes. So the configuration keeps Flux's
-timers as a long backstop and removes every short path:
-
-```yaml
-# GitRepository: long. GitOps Reverser requests the fetches.
-spec:
-  interval: 24h
----
-# Kustomization: long, and unsuspended.
-spec:
-  interval: 24h
-  retryInterval: 1m
-  suspend: false
-```
-
-Remove any Git-host webhook into a Flux `Receiver` for this repository. GitOps Reverser's request is
-the one `flux reconcile kustomization --with-source` makes: it stamps
-`reconcile.fluxcd.io/requestedAt` on the `GitRepository`, and stamps the `Kustomization` too when
-the artifact already holds the requested commit.
-
-Flux needs one more request than the cluster's own state suggests. Its timers and a controller restart apply whatever artifact
-the `GitRepository` holds, and with a long interval that artifact falls behind GitOps Reverser's own
-pushes. Applying a stale artifact would revert published edits, not only pending ones. So after its
-own pushes, once the branch has been quiet for `spec.applier.quietPeriod` (`30s` by default),
-GitOps Reverser asks the `GitRepository` to fetch, with reason `CatchUp`. The new artifact wakes the
-`Kustomization`, which applies values the cluster already holds.
-
-`quietPeriod` is a trade. A short one keeps the artifact current; a long one makes it less likely
-that an edit arrives while that catch-up apply is running. Every new edit restarts it.
+[Using GitOps Reverser with Flux](flux.md) is the complete setup, with a worked example a unit test
+holds to the code. In short: Flux has no fetch-only mode (a new `GitRepository` artifact makes every
+`Kustomization` reading it apply, and `suspend: true` also blocks GitOps Reverser's requests), so
+set both intervals to a long backstop such as `24h`, keep the `Kustomization` unsuspended, and
+remove any Git-host webhook into a Flux `Receiver` for the repository. GitOps Reverser then asks the
+`GitRepository` to fetch: after a foreign push, after a refusal, and, once the branch has been
+quiet for `spec.applier.quietPeriod` (`30s` by default), to catch up with its own pushes, so a
+Flux restart never applies a stale artifact.
 
 Flux's equivalent of split ownership is `Kustomization.spec.ignore`, added in kustomize-controller
 `v1.9.0`, with the same trade as Argo CD's. The
@@ -471,6 +449,7 @@ concurrent writers.
 | A Git-side push with an API edit on top lands both, and Flux applies the replayed commit without being reconciled by hand | Flux |
 | A new `GitRepository` revision is enough for the `Kustomization` to apply and revert drift | Flux |
 | A refused edit with `onRefusal: Reapply` is reverted by its `Kustomization`, with no commit, and settles instead of repeating | [Refusal reapply](../test/e2e/refusal_reapply_e2e_test.go) |
+| A `SourceMismatch` applier is never stamped, a push the Git host reports or the refresh finds is applied, without the corner | [Manager Flux Applier](../test/e2e/flux_applier_e2e_test.go), and [the Flux guide](flux.md#what-the-tests-prove) |
 | A Git to cluster to Git round trip settles without a commit loop | Flux |
 | A SOPS-encrypted Secret round-trips without a reverse commit | Flux |
 | A Git revert removes the live object and the committed file | Flux |
