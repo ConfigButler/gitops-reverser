@@ -1153,9 +1153,15 @@ type branchWorkerEventLoop struct {
 	// overwrite another's pending work: A queues, B replaces it, B is then suspended, and A's
 	// authorized request is gone with nothing to report it.
 	refusalPending map[refusalKey]pendingRefusalReapply
-	// reapplyOwed holds the GitTargets whose applier is owed a Refusal request, with the refusal it
-	// answers, until serviceAppliers sends it on a quiet branch. See apply_trigger.go.
-	reapplyOwed map[itypes.ResourceReference]string
+	// reapplyOwed holds the refusals whose target's applier is owed a Refusal request, with the
+	// refusal each answers, until serviceAppliers sends it on a quiet branch. It is keyed like
+	// refusalPending, by target AND collection, so a collection that recovers cancels its own
+	// obligation and no other (refusalRecovered). See apply_trigger.go.
+	reapplyOwed map[refusalKey]string
+	// handBackCount is, per GitTarget, how many times its last request was handed back
+	// undelivered. The next request for the target carries it (ApplyRequest.HandBacks) and
+	// consumes it. See apply_trigger.go.
+	handBackCount map[itypes.ResourceReference]int
 
 	// catchUpOwed holds, per GitTarget with an applier on this branch, how long the branch must stay
 	// quiet before that applier is asked to catch up with this worker's own pushes. quietSince is
@@ -1316,6 +1322,8 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 		return charge
 	case item.Refresh != nil:
 		l.handleRefreshRequest(item.Refresh)
+	case item.ApplyWake:
+		// The wake is the point: endWake's serviceAppliers sends what was handed back.
 	case item.Request == nil:
 	case item.Request.CommitMode == CommitModeAtomic:
 		targetName, targetNamespace := atomicRefusalTarget(item.Request)

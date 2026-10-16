@@ -175,12 +175,12 @@ func TestChartApplierAccess_Flux(t *testing.T) {
 		{
 			APIGroups: []string{"kustomize.toolkit.fluxcd.io"},
 			Resources: []string{"kustomizations"},
-			Verbs:     []string{"get", "list", "watch", "patch"},
+			Verbs:     []string{"get", "patch"},
 		},
 		{
 			APIGroups: []string{"source.toolkit.fluxcd.io"},
 			Resources: []string{"gitrepositories"},
-			Verbs:     []string{"get", "list", "watch", "patch"},
+			Verbs:     []string{"get", "patch"},
 		},
 		{
 			APIGroups: []string{"authorization.k8s.io"},

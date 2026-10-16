@@ -105,7 +105,7 @@ func refusalRequests(t *testing.T, f *ledgerFixture) int {
 	t.Helper()
 	requester, ok := f.worker.applyRequester.(*recordingRequester)
 	require.True(t, ok, "the fixture records apply requests")
-	return requester.count(configv1alpha3.ApplyReasonRefusal)
+	return requester.refusals()
 }
 
 // TestRefusalReapply_AnUnchangedRefusalIsNotASecondTrigger is the regression a review reproduced:

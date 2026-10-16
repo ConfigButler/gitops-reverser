@@ -109,6 +109,14 @@ type Verdict struct {
 	Err error
 }
 
+// Binding is the repository and branch an applier must apply from: the GitProvider's spec.url and
+// the GitTarget's spec.branch. Request checks it before it writes anything, not only Validate,
+// because a published ApplierConfigured verdict can be older than the applier it describes.
+type Binding struct {
+	RepositoryURL string
+	Branch        string
+}
+
 // AccessCheck reports whether the source-cluster identity may perform attrs.
 type AccessCheck func(ctx context.Context, attrs authorizationv1.ResourceAttributes) (bool, error)
 
@@ -130,8 +138,9 @@ func NewFlux(client dynamic.Interface) *Flux {
 }
 
 // permanentError marks a request no retry can make succeed: the Kustomization is configured in a
-// way a request cannot work with. It fails loudly once rather than retrying to the limit; a newer
-// request still tries again, because the configuration may have been fixed in between.
+// way a request cannot work with, or applies another repository or branch. The dispatcher hands it
+// back to the branch worker at once rather than retrying it, and the worker asks again later,
+// because the configuration may have been fixed in between.
 type permanentError struct{ err error }
 
 func (e permanentError) Error() string { return e.err.Error() }
@@ -146,6 +155,11 @@ func isPermanent(err error) bool {
 // Request asks the Kustomization ref to apply commit, the way `flux reconcile kustomization
 // --with-source` does, minus the waiting: a request asks and never waits to see the apply.
 //
+// It first checks that the Kustomization applies want, and refuses with a permanent error when it
+// does not: stamping a GitRepository that follows another branch would deploy that branch and
+// leave this one unapplied. The check reads the same objects the stamp is decided from, so no
+// change to either can slip in between.
+//
 // When the GitRepository's artifact does not hold commit, it stamps the GitRepository: the fetch
 // produces a new artifact and the new artifact wakes the Kustomization by itself, so a second stamp
 // would only be a second apply. When the artifact already holds it, a source stamp would wake
@@ -155,6 +169,7 @@ func isPermanent(err error) bool {
 func (f *Flux) Request(
 	ctx context.Context,
 	ref types.NamespacedName,
+	want Binding,
 	commit string,
 	reason v1alpha3.ApplyReason,
 ) (Outcome, error) {
@@ -170,6 +185,9 @@ func (f *Flux) Request(
 		Get(ctx, sourceRef.Name, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("get %s %s: %w", kindGitRepository, sourceRef, err)
+	}
+	if msg := sourceMismatch(source, sourceRef, want.RepositoryURL, want.Branch); msg != "" {
+		return "", permanentError{fmt.Errorf("%s %s: %s", kindKustomization, ref, msg)}
 	}
 
 	if commit != "" && artifactHolds(source, commit) {
@@ -267,13 +285,13 @@ func splitRevision(revision string) (string, string) {
 }
 
 // Validate answers ApplierConfigured for a Kustomization: that it exists in the source cluster and
-// its kind is served there, that it applies a GitRepository fetching branch of repositoryURL (the
-// GitProvider's spec.url, compared after normalization), and that this identity may patch both
-// objects, since a request patches one or the other.
+// its kind is served there, that it applies a GitRepository fetching want (the GitProvider's
+// spec.url, compared after normalization, and the GitTarget's branch), and that this identity may
+// patch both objects, since a request patches one or the other.
 //
 // It reads; it never watches. A cluster without Flux installed answers ApplierNotFound from one
 // failed GET and keeps no informer for kinds it does not serve.
-func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, repositoryURL, branch string) Verdict {
+func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, want Binding) Verdict {
 	ks, err := f.client.Resource(kustomizationGVR()).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
 		return readFailure(kindKustomization, kustomizationGVR(), ref, err)
@@ -289,7 +307,7 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, repositor
 		verdict.Message = fmt.Sprintf("%s (the sourceRef of %s %s)", verdict.Message, kindKustomization, ref)
 		return verdict
 	}
-	if msg := sourceMismatch(source, sourceRef, repositoryURL, branch); msg != "" {
+	if msg := sourceMismatch(source, sourceRef, want.RepositoryURL, want.Branch); msg != "" {
 		return Verdict{Reason: ReasonSourceMismatch, Message: msg}
 	}
 
@@ -329,7 +347,7 @@ func (f *Flux) Validate(ctx context.Context, ref types.NamespacedName, repositor
 		OK:     true,
 		Reason: ReasonSucceeded,
 		Message: fmt.Sprintf("%s %s applies %s %s, which fetches branch %s",
-			kindKustomization, ref, kindGitRepository, sourceRef, branch),
+			kindKustomization, ref, kindGitRepository, sourceRef, want.Branch),
 	}
 }
 

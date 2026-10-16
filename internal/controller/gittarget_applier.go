@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -18,6 +19,12 @@ import (
 // can ask to apply: it exists in the source cluster, applies this target's repository and branch,
 // and may be patched. Present only while spec.applier is set.
 const GitTargetConditionApplierConfigured = "ApplierConfigured"
+
+// applierCheckTimeout bounds the ApplierConfigured check: two GETs and two access reviews against
+// the source cluster. Its client has no request timeout, because it also carries the watches, and
+// this controller runs one reconcile worker, so a source API server that accepts the connection and
+// never answers would otherwise stop every GitTarget's reconcile, not only this one's.
+const applierCheckTimeout = 10 * time.Second
 
 // ApplyRequestLedger is what the GitTarget controller reads to publish status.applier: the last
 // apply request delivered for a GitTarget. The applier dispatcher implements it.
@@ -64,6 +71,8 @@ func (r *GitTargetReconciler) applierVerdict(
 	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) conditionValue {
 	ref := applierReference(target)
+	ctx, cancel := context.WithTimeout(ctx, applierCheckTimeout)
+	defer cancel()
 	if r.ApplierClients == nil || gitProvider == nil {
 		return conditionValue{
 			Status:  metav1.ConditionUnknown,
@@ -80,7 +89,8 @@ func (r *GitTargetReconciler) applierVerdict(
 	if newFlux == nil {
 		newFlux = applier.NewFlux
 	}
-	verdict := newFlux(client).Validate(ctx, ref, gitProvider.Spec.URL, target.Spec.Branch)
+	verdict := newFlux(client).Validate(ctx, ref,
+		applier.Binding{RepositoryURL: gitProvider.Spec.URL, Branch: target.Spec.Branch})
 	switch {
 	case verdict.OK:
 		return conditionValue{

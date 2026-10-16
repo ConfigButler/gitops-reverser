@@ -35,6 +35,9 @@ const (
 
 var stampTime = time.Date(2026, 10, 20, 10, 14, 3, 123456789, time.UTC)
 
+// testBinding is the repository and branch the test appliers are expected to apply.
+var testBinding = Binding{RepositoryURL: testRepoURL, Branch: testBranch}
+
 func newSourceClient(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{
@@ -177,7 +180,7 @@ func TestFluxRequest_Outcomes(t *testing.T) {
 				gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), tt.revision),
 			)
 			got, err := pinnedFlux(client).Request(context.Background(),
-				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, tt.commit, tt.reason)
+				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding, tt.commit, tt.reason)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 
@@ -217,7 +220,7 @@ func TestFluxRequest_SourceRefNamespace(t *testing.T) {
 				gitRepositoryObj(tt.wantNamespace, "platform", testRepoURL, branchRef(testBranch), ""),
 			)
 			kustomization := types.NamespacedName{Namespace: "apps", Name: "checkout"}
-			got, err := pinnedFlux(client).Request(context.Background(), kustomization, testCommit,
+			got, err := pinnedFlux(client).Request(context.Background(), kustomization, testBinding, testCommit,
 				v1alpha3.ApplyReasonForeignCommit)
 			require.NoError(t, err)
 			assert.Equal(t, OutcomeStampedSource, got)
@@ -248,14 +251,42 @@ func TestFluxRequest_Failures(t *testing.T) {
 			objs:          []runtime.Object{kustomizationObj(fluxSystemNS, "checkout", nil)},
 			wantPermanent: true,
 		},
+		{
+			// The review's reproduction of finding 2: Validate said SourceMismatch, and the
+			// request stamped the release source anyway.
+			name: "source follows another branch",
+			objs: []runtime.Object{
+				kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+				gitRepositoryObj(
+					fluxSystemNS,
+					"platform",
+					testRepoURL,
+					branchRef("release"),
+					"release@sha1:"+olderCommit,
+				),
+			},
+			wantPermanent: true,
+		},
+		{
+			name: "source fetches another repository",
+			objs: []runtime.Object{
+				kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+				gitRepositoryObj(fluxSystemNS, "platform", "https://github.com/acme/other", branchRef(testBranch), ""),
+			},
+			wantPermanent: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := pinnedFlux(newSourceClient(tt.objs...)).Request(context.Background(),
-				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testCommit,
+			client := newSourceClient(tt.objs...)
+			_, err := pinnedFlux(client).Request(context.Background(),
+				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding, testCommit,
 				v1alpha3.ApplyReasonForeignCommit)
 			require.Error(t, err)
 			assert.Equal(t, tt.wantPermanent, isPermanent(err))
+			for _, action := range client.Actions() {
+				assert.NotEqual(t, "patch", action.GetVerb(), "a failed request stamps nothing")
+			}
 		})
 	}
 }
@@ -414,7 +445,7 @@ func TestFluxValidate_Reasons(t *testing.T) {
 			}
 
 			got := flux.Validate(context.Background(),
-				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testRepoURL, testBranch)
+				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, testBinding)
 			assert.Equal(t, tt.wantReason, got.Reason, got.Message)
 			assert.Equal(t, tt.wantReason == ReasonSucceeded, got.OK)
 			assert.Contains(t, got.Message, tt.wantMessage)
@@ -450,7 +481,8 @@ func TestFluxValidate_URLEquivalences(t *testing.T) {
 			flux := pinnedFlux(client)
 			flux.CanI = allowAll
 			got := flux.Validate(context.Background(),
-				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"}, tt.provider, testBranch)
+				types.NamespacedName{Namespace: fluxSystemNS, Name: "checkout"},
+				Binding{RepositoryURL: tt.provider, Branch: testBranch})
 			assert.Equal(t, tt.wantOK, got.OK, got.Message)
 		})
 	}

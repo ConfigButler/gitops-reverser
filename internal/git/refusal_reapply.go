@@ -83,16 +83,20 @@ func (w *BranchWorker) refusalConsent(ctx context.Context, target itypes.Resourc
 			"gitTarget", target.String(), "error", err.Error())
 		return false
 	}
+	return ConsentsToReapply(gitTarget)
+}
+
+// ConsentsToReapply reports whether a GitTarget, as it is now, asks for its applier to reapply on a
+// refusal. The worker asks before it owes a Refusal request and again before it sends one, and the
+// applier dispatcher asks before every attempt to deliver one.
+func ConsentsToReapply(gitTarget *v1alpha3.GitTarget) bool {
 	if gitTarget.EffectiveOnRefusal() != v1alpha3.RefusalActionReapply || gitTarget.Spec.Applier == nil {
 		return false
 	}
-	if gitTarget.Spec.Suspend {
-		// A suspended target has stopped publishing the live edits a reapply would be weighed
-		// against. Driving its applier on behalf of a target the operator has deliberately parked
-		// would be acting on a mirror nobody is keeping.
-		return false
-	}
-	return true
+	// A suspended target has stopped publishing the live edits a reapply would be weighed against.
+	// Driving its applier on behalf of a target the operator has deliberately parked would be
+	// acting on a mirror nobody is keeping.
+	return !gitTarget.Spec.Suspend
 }
 
 // refusalRateLimited reports whether a request for this target is inside the rate-limit window,
@@ -248,17 +252,20 @@ func (w *BranchWorker) refusalAlreadyCovered(key refusalKey, observation string)
 	return w.coveredRefusal[newRefusalKey(key.target, key.collection)] == observation
 }
 
-// recordRefusalObservation remembers what the request just owed covers.
+// recordRefusalObservation remembers what the request just owed covers. An empty observation is
+// recorded too, though it covers nothing (refusalAlreadyCovered): the entry is also the record that
+// the refusal stands until it recovers (standingRefusals).
 func (w *BranchWorker) recordRefusalObservation(key refusalKey, observation string) {
-	if observation == "" {
-		return
-	}
 	w.refusalMu.Lock()
 	defer w.refusalMu.Unlock()
 	if w.coveredRefusal == nil {
 		w.coveredRefusal = map[refusalKey]string{}
 	}
-	w.coveredRefusal[newRefusalKey(key.target, key.collection)] = observation
+	key = newRefusalKey(key.target, key.collection)
+	if _, standing := w.coveredRefusal[key]; standing && observation == "" {
+		return // an observation that covers nothing must not replace one that covers something
+	}
+	w.coveredRefusal[key] = observation
 }
 
 // refusalRecovered records that an evaluation for this target and collection was ACCEPTED, so whatever
@@ -282,12 +289,38 @@ func (l *branchWorkerEventLoop) refusalRecovered(target itypes.ResourceReference
 	}
 	collection = refusalBoundary(collection)
 	l.w.clearRefusalObservations(target, collection)
+	recovered := func(key refusalKey) bool {
+		return key.target == target && (collection == (itypes.CollectionKey{}) || key.collection == collection)
+	}
 	for _, key := range sortedRefusalKeys(l.refusalPending) {
-		if key.target == target && (collection == (itypes.CollectionKey{}) || key.collection == collection) {
+		if recovered(key) {
 			delete(l.refusalPending, key)
 		}
 	}
+	// An obligation already owed, waiting for a quiet branch, is cancelled the same way. Keyed by
+	// target alone it could not be told apart from a sibling collection's, so it outlived the
+	// recovery and asked for an apply for a refusal that no longer existed.
+	for key := range l.reapplyOwed {
+		if recovered(key) {
+			delete(l.reapplyOwed, key)
+		}
+	}
 	l.rearmRefusalTimer()
+}
+
+// standingRefusals returns the refusals of target a request was owed for and that have not
+// recovered since, in a stable order.
+func (w *BranchWorker) standingRefusals(target itypes.ResourceReference) []refusalKey {
+	w.refusalMu.Lock()
+	defer w.refusalMu.Unlock()
+	var keys []refusalKey
+	for key := range w.coveredRefusal {
+		if key.target == target {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+	return keys
 }
 
 // clearRefusalObservations forgets what this collection's last reapply request covered. The ZERO collection is a
@@ -405,12 +438,13 @@ func sortedRefusalKeys(pending map[refusalKey]pendingRefusalReapply) []refusalKe
 func (l *branchWorkerEventLoop) oweReapply(key refusalKey, detail, observation string) {
 	// Recorded as covered now, when the request is owed, rather than when it is delivered: the
 	// request is the worker's decision, and a recheck of the same refusal while the branch is still
-	// busy must not owe a second one. Delivery failures are the requester's to retry.
+	// busy must not owe a second one. A request the requester cannot deliver comes back
+	// (ApplyHandBack) and is owed again while the refusal stands.
 	l.w.recordRefusalObservation(key, observation)
 	if l.reapplyOwed == nil {
-		l.reapplyOwed = map[itypes.ResourceReference]string{}
+		l.reapplyOwed = map[refusalKey]string{}
 	}
-	l.reapplyOwed[key.target] = detail
+	l.reapplyOwed[key] = detail
 	l.w.Log.Info("Refused edit owes its applier a reapply, sent once the branch is quiet",
 		"gitTarget", key.target.String(), "branch", l.w.Branch, "refused", detail)
 }

@@ -485,13 +485,13 @@ func (r *recordingRequester) RequestApply(req ApplyRequest) {
 	r.requests = append(r.requests, req)
 }
 
-// count is how many requests with this reason were recorded, taken or not.
-func (r *recordingRequester) count(reason configv1alpha3.ApplyReason) int {
+// refusals is how many Refusal requests were recorded, taken or not.
+func (r *recordingRequester) refusals() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	n := r.counted[reason]
+	n := r.counted[configv1alpha3.ApplyReasonRefusal]
 	for _, req := range r.requests {
-		if req.Reason == reason {
+		if req.Reason == configv1alpha3.ApplyReasonRefusal {
 			n++
 		}
 	}

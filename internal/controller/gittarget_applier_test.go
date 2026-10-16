@@ -158,6 +158,39 @@ func TestObserveApplier_AnUnreachableSourceKeepsThePublishedVerdict(t *testing.T
 	assert.Equal(t, metav1.ConditionTrue, value.Status, "the published verdict stands")
 }
 
+// TestObserveApplier_AHangingSourceIsBounded is the review's finding 6: the source client has no
+// request timeout, so a source API server that accepts the connection and never answers held the
+// reconcile, and with it every GitTarget, for as long as it liked. The check now gives up, and a
+// check that could not be made keeps the published verdict.
+func TestObserveApplier_AHangingSourceIsBounded(t *testing.T) {
+	var sawDeadline bool
+	r := &GitTargetReconciler{
+		ApplierClients: func(ctx context.Context, _ string) (dynamic.Interface, error) {
+			_, sawDeadline = ctx.Deadline()
+			return applierFakeSource(applierFluxObjects("main")...), nil
+		},
+		newFlux: func(client dynamic.Interface) *applier.Flux {
+			flux := applier.NewFlux(client)
+			flux.CanI = func(ctx context.Context, _ authorizationv1.ResourceAttributes) (bool, error) {
+				deadline, ok := ctx.Deadline()
+				require.True(t, ok, "the access review must run under a deadline")
+				assert.LessOrEqual(t, time.Until(deadline), applierCheckTimeout)
+				return false, context.DeadlineExceeded // what a server that never answers ends in
+			}
+			return flux
+		},
+	}
+
+	target := applierTarget(true)
+	target.Status.Conditions = []metav1.Condition{{
+		Type: GitTargetConditionApplierConfigured, Status: metav1.ConditionTrue, Reason: ReasonSucceeded,
+	}}
+	value, _ := r.observeApplier(context.Background(), beginStatus(nil, nil, target), target, applierProvider())
+
+	assert.True(t, sawDeadline, "the client lookup must run under a deadline")
+	assert.Equal(t, metav1.ConditionTrue, value.Status, "a timed-out check keeps the published verdict")
+}
+
 func TestObserveApplier_PublishesTheLastRequest(t *testing.T) {
 	target := applierTarget(true)
 	at := metav1.NewTime(time.Date(2026, 10, 20, 10, 14, 3, 0, time.UTC))

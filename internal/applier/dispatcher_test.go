@@ -37,11 +37,15 @@ const (
 
 var testBranchKey = git.BranchKey{RepoNamespace: targetNS, RepoName: "platform", Branch: testBranch}
 
-// gitTarget builds a GitTarget; a nil kustomizationRef declares no applier.
+// gitTarget builds a GitTarget on testBranchKey; a nil kustomizationRef declares no applier.
 func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference, cluster string) *v1alpha3.GitTarget {
 	target := &v1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Namespace: targetNS, Name: name},
-		Spec:       v1alpha3.GitTargetSpec{Branch: testBranch, Path: name},
+		Spec: v1alpha3.GitTargetSpec{
+			GitProviderRef: fluxmeta.LocalObjectReference{Name: testBranchKey.RepoName},
+			Branch:         testBranch,
+			Path:           name,
+		},
 	}
 	if kustomizationRef != nil {
 		target.Spec.Applier = &v1alpha3.GitTargetApplier{KustomizationRef: *kustomizationRef}
@@ -50,6 +54,39 @@ func gitTarget(name string, kustomizationRef *fluxmeta.NamespacedObjectReference
 		target.Spec.ClusterProviderRef = &fluxmeta.LocalObjectReference{Name: cluster}
 	}
 	return target
+}
+
+// reapplying makes a GitTarget consent to a Refusal request.
+func reapplying(target *v1alpha3.GitTarget) *v1alpha3.GitTarget {
+	target.Spec.OnRefusal = v1alpha3.RefusalActionReapply
+	return target
+}
+
+// quietFor sets a GitTarget's quiet period, which is also how long its requests are retried.
+func quietFor(target *v1alpha3.GitTarget, quietPeriod time.Duration) *v1alpha3.GitTarget {
+	target.Spec.Applier.QuietPeriod = &metav1.Duration{Duration: quietPeriod}
+	return target
+}
+
+// clusterProvider admits the GitTargets in the named namespaces.
+func clusterProvider(name string, admits ...string) *v1alpha3.ClusterProvider {
+	return &v1alpha3.ClusterProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       v1alpha3.ClusterProviderSpec{AccessFrom: &v1alpha3.NamespaceMatcher{Names: admits}},
+	}
+}
+
+// controlPlane is what every dispatcher test reads besides its GitTargets: the GitProvider of
+// testBranchKey, and the ClusterProviders the tests name, admitting targetNS.
+func controlPlane() []client.Object {
+	return []client.Object{
+		&v1alpha3.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testBranchKey.RepoNamespace, Name: testBranchKey.RepoName},
+			Spec:       v1alpha3.GitProviderSpec{URL: testRepoURL},
+		},
+		clusterProvider(v1alpha3.DefaultClusterProviderName, targetNS),
+		clusterProvider("prod-eu-1", targetNS),
+	}
 }
 
 func ksRef(namespace, name string) *fluxmeta.NamespacedObjectReference {
@@ -87,9 +124,29 @@ func (s *sourceStub) callCount() int {
 
 type dispatcherFixture struct {
 	dispatcher *Dispatcher
+	control    client.Client
 	source     *sourceStub
 	recorder   *record.FakeRecorder
 	reader     *sdkmetric.ManualReader
+	handBacks  *handBackRecorder
+}
+
+// handBackRecorder records the requests the dispatcher hands back.
+type handBackRecorder struct {
+	mu       sync.Mutex
+	requests []git.ApplyRequest
+}
+
+func (h *handBackRecorder) HandBackApply(req git.ApplyRequest) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.requests = append(h.requests, req)
+}
+
+func (h *handBackRecorder) got() []git.ApplyRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]git.ApplyRequest(nil), h.requests...)
 }
 
 func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...runtime.Object) *dispatcherFixture {
@@ -100,14 +157,19 @@ func newDispatcherFixture(t *testing.T, targets []client.Object, sourceObjs ...r
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, v1alpha3.AddToScheme(scheme))
-	controlClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(targets...).Build()
+	controlClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(append(controlPlane(), targets...)...).Build()
 
 	source := &sourceStub{client: newSourceClient(sourceObjs...)}
 	recorder := record.NewFakeRecorder(64)
+	handBacks := &handBackRecorder{}
 	d := NewDispatcher(controlClient, source.get, recorder, logr.Discard())
-	d.Backoff = Backoff{Initial: time.Millisecond, Max: 4 * time.Millisecond, Attempts: 4}
+	d.Backoff = Backoff{Initial: time.Millisecond, Max: 4 * time.Millisecond}
 	d.Now = func() time.Time { return stampTime }
-	return &dispatcherFixture{dispatcher: d, source: source, recorder: recorder, reader: reader}
+	d.HandBack = handBacks
+	return &dispatcherFixture{
+		dispatcher: d, control: controlClient, source: source, recorder: recorder, reader: reader, handBacks: handBacks,
+	}
 }
 
 // start runs the dispatcher until the test ends.
@@ -217,7 +279,7 @@ func TestDispatcher_AsksEachApplierOnce(t *testing.T) {
 // delivery counts.
 func TestDispatcher_RetriesThenDelivers(t *testing.T) {
 	f := newDispatcherFixture(t,
-		[]client.Object{gitTarget("a", ksRef(fluxSystemNS, "checkout"), "")},
+		[]client.Object{reapplying(gitTarget("a", ksRef(fluxSystemNS, "checkout"), ""))},
 		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
 		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
 	)
@@ -239,32 +301,50 @@ func TestDispatcher_RetriesThenDelivers(t *testing.T) {
 	assert.Equal(t, v1alpha3.ApplyReasonRefusal, got.Reason)
 }
 
-// TestDispatcher_GivesUp: a request that keeps failing is given up on after its last attempt, with a
-// Warning Event, and is not recorded as made.
-func TestDispatcher_GivesUp(t *testing.T) {
-	f := newDispatcherFixture(t, []client.Object{gitTarget("a", ksRef(fluxSystemNS, "checkout"), "")})
+// TestDispatcher_HandsBackAfterItsRetryBudget is the review's finding 4: a request that kept
+// failing was given up on, while the worker had already cleared its debt, so nothing asked again
+// until an unrelated commit. It is now retried for about one quiet period and handed back to the
+// worker, and the failure is reported once, not again when the worker's next request fails too.
+func TestDispatcher_HandsBackAfterItsRetryBudget(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{
+		quietFor(gitTarget("a", ksRef(fluxSystemNS, "checkout"), ""), 20*time.Millisecond),
+		gitTarget("b", ksRef(fluxSystemNS, "checkout"), ""),
+	})
 	f.source.failFirst = -1
 	f.start(t)
 
 	f.dispatcher.RequestApply(git.ApplyRequest{
 		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
-		Targets: []itypes.ResourceReference{ref("a")},
+		Targets: []itypes.ResourceReference{ref("a"), ref("b")},
 	})
 	f.waitForCount(t, v1alpha3.ApplyReasonForeignCommit, outcomeFailed, 1)
 
-	assert.Equal(t, f.dispatcher.Backoff.Attempts, f.source.callCount())
+	assert.Greater(t, f.source.callCount(), 1, "retried within the budget before handing back")
+	require.Eventually(t, func() bool { return len(f.handBacks.got()) == 1 }, 5*time.Second, time.Millisecond)
+	assert.Equal(t, git.ApplyRequest{
+		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
+		Targets: []itypes.ResourceReference{ref("a"), ref("b")}, HandBacks: 1,
+	}, f.handBacks.got()[0], "every GitTarget goes back, with its reason and one more hand-back")
 	_, ok := f.dispatcher.LastRequest(ref("a"))
-	assert.False(t, ok)
+	assert.False(t, ok, "nothing was delivered")
 	events := f.events()
-	require.Len(t, events, 1)
-	const want = "Warning ApplyRequestFailed could not ask flux-system/checkout to apply 4f2c1ab9 (ForeignCommit)" +
-		" after 4 attempts"
+	require.Len(t, events, 2, "one Warning per GitTarget")
+	const want = "Warning ApplyRequestFailed could not ask flux-system/checkout to apply 4f2c1ab9 (ForeignCommit)"
 	assert.True(t, strings.HasPrefix(events[0], want), events[0])
+
+	// The worker sends it again, and it fails again.
+	f.dispatcher.RequestApply(git.ApplyRequest{
+		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
+		Targets: []itypes.ResourceReference{ref("a"), ref("b")}, HandBacks: 1,
+	})
+	require.Eventually(t, func() bool { return len(f.handBacks.got()) == 2 }, 5*time.Second, time.Millisecond)
+	assert.Equal(t, 2, f.handBacks.got()[1].HandBacks)
+	assert.Empty(t, f.events(), "a failure already reported is not reported again")
 }
 
-// TestDispatcher_PermanentFailureIsNotRetried: a Kustomization a request cannot work with fails
-// once rather than retrying to the limit.
-func TestDispatcher_PermanentFailureIsNotRetried(t *testing.T) {
+// TestDispatcher_PermanentFailureIsHandedBackAtOnce: a Kustomization a request cannot work with is
+// not retried; the worker asks again later, in case it was fixed.
+func TestDispatcher_PermanentFailureIsHandedBackAtOnce(t *testing.T) {
 	f := newDispatcherFixture(t,
 		[]client.Object{gitTarget("a", ksRef(fluxSystemNS, "checkout"), "")},
 		kustomizationObj(fluxSystemNS, "checkout", map[string]any{"kind": "Bucket", "name": "platform"}),
@@ -277,6 +357,151 @@ func TestDispatcher_PermanentFailureIsNotRetried(t *testing.T) {
 	})
 	f.waitForCount(t, v1alpha3.ApplyReasonForeignCommit, outcomeFailed, 1)
 	assert.Equal(t, 1, f.source.callCount())
+	require.Eventually(t, func() bool { return len(f.handBacks.got()) == 1 }, 5*time.Second, time.Millisecond)
+}
+
+// TestDispatcher_ASourceMismatchIsNeverStamped is the review's finding 2: ApplierConfigured said
+// SourceMismatch, and a foreign commit stamped the GitRepository of the other branch anyway.
+func TestDispatcher_ASourceMismatchIsNeverStamped(t *testing.T) {
+	f := newDispatcherFixture(t,
+		[]client.Object{gitTarget("a", ksRef(fluxSystemNS, "checkout"), "")},
+		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef("release"), "release@sha1:"+olderCommit),
+	)
+	f.start(t)
+
+	f.dispatcher.RequestApply(git.ApplyRequest{
+		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
+		Targets: []itypes.ResourceReference{ref("a")},
+	})
+	f.waitForCount(t, v1alpha3.ApplyReasonForeignCommit, outcomeFailed, 1)
+	assert.Empty(t, f.patches(), "a source that follows another branch is never stamped")
+	assert.Equal(t, 1, f.source.callCount(), "and a mismatch is not retried")
+}
+
+// TestDispatcher_ATargetItsClusterProviderDeniesAsksNothing is the review's finding 1: the source
+// client is shared by every GitTarget that declared the cluster, so a GitTarget its ClusterProvider
+// does not admit drove the applier on another GitTarget's admission.
+func TestDispatcher_ATargetItsClusterProviderDeniesAsksNothing(t *testing.T) {
+	f := newDispatcherFixture(t,
+		[]client.Object{
+			gitTarget("admitted", ksRef(fluxSystemNS, "checkout"), ""),
+			gitTarget("denied", ksRef(fluxSystemNS, "restricted"), "restricted"),
+			clusterProvider("restricted", "some-other-namespace"),
+		},
+		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+		kustomizationObj(fluxSystemNS, "restricted", gitRepoSourceRef("platform")),
+		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
+	)
+	f.start(t)
+
+	f.dispatcher.RequestApply(git.ApplyRequest{
+		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
+		Targets: []itypes.ResourceReference{ref("admitted"), ref("denied")},
+	})
+	f.waitForCount(t, v1alpha3.ApplyReasonForeignCommit, outcomeSent, 1)
+	f.waitForCount(t, v1alpha3.ApplyReasonForeignCommit, outcomeDropped, 1)
+
+	assert.Equal(t, []string{v1alpha3.DefaultClusterProviderName}, f.source.clusters,
+		"the denied GitTarget's cluster client is never even asked for")
+	_, ok := f.dispatcher.LastRequest(ref("denied"))
+	assert.False(t, ok)
+}
+
+// TestDispatcher_EveryRetryChecksAgain: a GitTarget admitted when its request was decided, and
+// denied before a retry, is not asked for on the retry. The same holds for a GitTarget that moved
+// to another branch.
+func TestDispatcher_EveryRetryChecksAgain(t *testing.T) {
+	for name, change := range map[string]func(ctx context.Context, c client.Client) error{
+		"its ClusterProvider stops admitting it": func(ctx context.Context, c client.Client) error {
+			provider := &v1alpha3.ClusterProvider{}
+			if err := c.Get(ctx, client.ObjectKey{Name: v1alpha3.DefaultClusterProviderName}, provider); err != nil {
+				return err
+			}
+			provider.Spec.AccessFrom.Names = []string{"some-other-namespace"}
+			return c.Update(ctx, provider)
+		},
+		"it moves to another branch": func(ctx context.Context, c client.Client) error {
+			target := &v1alpha3.GitTarget{}
+			if err := c.Get(ctx, client.ObjectKey{Namespace: targetNS, Name: "a"}, target); err != nil {
+				return err
+			}
+			target.Spec.Branch = "release"
+			return c.Update(ctx, target)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newDispatcherFixture(
+				t,
+				[]client.Object{gitTarget("a", ksRef(fluxSystemNS, "checkout"), "")},
+				kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+				gitRepositoryObj(
+					fluxSystemNS,
+					"platform",
+					testRepoURL,
+					branchRef(testBranch),
+					"main@sha1:"+olderCommit,
+				),
+			)
+			f.dispatcher.Backoff = Backoff{Initial: 50 * time.Millisecond, Max: 50 * time.Millisecond}
+			f.source.failFirst = 1
+			f.start(t)
+
+			f.dispatcher.RequestApply(git.ApplyRequest{
+				Branch: testBranchKey, Reason: v1alpha3.ApplyReasonForeignCommit, Commit: testCommit,
+				Targets: []itypes.ResourceReference{ref("a")},
+			})
+			require.Eventually(t, func() bool { return f.source.callCount() == 1 }, 5*time.Second, time.Millisecond)
+			require.NoError(t, change(context.Background(), f.control))
+
+			f.waitForCount(t, v1alpha3.ApplyReasonForeignCommit, outcomeDropped, 1)
+			assert.Empty(t, f.patches())
+		})
+	}
+}
+
+// TestDispatcher_ARefusalNeedsConsentAtEveryAttempt is the dispatcher's half of the review's
+// finding 3: consent is per GitTarget, so a GitTarget suspended after its Refusal was decided is
+// asked only a CatchUp, while a sibling on the same applier that still consents keeps its Refusal.
+func TestDispatcher_ARefusalNeedsConsentAtEveryAttempt(t *testing.T) {
+	suspended := reapplying(gitTarget("suspended", ksRef(fluxSystemNS, "checkout"), ""))
+	suspended.Spec.Suspend = true
+	f := newDispatcherFixture(t,
+		[]client.Object{
+			suspended,
+			reapplying(gitTarget("consenting", ksRef(fluxSystemNS, "checkout"), "")),
+			reapplying(gitTarget("alone", ksRef(fluxSystemNS, "alone"), "")),
+		},
+		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
+		kustomizationObj(fluxSystemNS, "alone", gitRepoSourceRef("platform")),
+		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
+	)
+	f.start(t)
+
+	f.dispatcher.RequestApply(git.ApplyRequest{
+		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonRefusal, Commit: testCommit,
+		Targets: []itypes.ResourceReference{ref("suspended"), ref("consenting")},
+	})
+	f.waitForCount(t, v1alpha3.ApplyReasonRefusal, outcomeSent, 1)
+	consenting, ok := f.dispatcher.LastRequest(ref("consenting"))
+	require.True(t, ok)
+	assert.Equal(t, v1alpha3.ApplyReasonRefusal, consenting.Reason)
+	suspendedStatus, ok := f.dispatcher.LastRequest(ref("suspended"))
+	require.True(t, ok, "the shared stamp reached its applier too")
+	assert.Equal(t, v1alpha3.ApplyReasonCatchUp, suspendedStatus.Reason, "recorded as what it may ask for")
+
+	// A Refusal whose only GitTarget withdrew consent is a CatchUp, which an applier already at the
+	// commit satisfies: the only stamp is the one the first request made.
+	alone := &v1alpha3.GitTarget{}
+	require.NoError(t, f.control.Get(context.Background(), client.ObjectKey{Namespace: targetNS, Name: "alone"}, alone))
+	alone.Spec.OnRefusal = v1alpha3.RefusalActionIgnore
+	require.NoError(t, f.control.Update(context.Background(), alone))
+	f.dispatcher.RequestApply(git.ApplyRequest{
+		Branch: testBranchKey, Reason: v1alpha3.ApplyReasonRefusal, Commit: testCommit,
+		Targets: []itypes.ResourceReference{ref("alone")},
+	})
+	f.waitForCount(t, v1alpha3.ApplyReasonCatchUp, outcomeSent, 1)
+	assert.Equal(t, []string{"kustomizations " + fluxSystemNS}, f.patches())
 }
 
 // TestDispatcher_NewerRequestSupersedes: a request waiting on its retry is replaced by a newer one
@@ -285,11 +510,11 @@ func TestDispatcher_PermanentFailureIsNotRetried(t *testing.T) {
 // commit, and a CatchUp would then stamp nothing and drop the revert.
 func TestDispatcher_NewerRequestSupersedes(t *testing.T) {
 	f := newDispatcherFixture(t,
-		[]client.Object{gitTarget("a", ksRef(fluxSystemNS, "checkout"), "")},
+		[]client.Object{reapplying(gitTarget("a", ksRef(fluxSystemNS, "checkout"), ""))},
 		kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform")),
 		gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
 	)
-	f.dispatcher.Backoff = Backoff{Initial: time.Hour, Max: time.Hour, Attempts: 4}
+	f.dispatcher.Backoff = Backoff{Initial: time.Hour, Max: time.Hour}
 	f.source.failFirst = 1
 	f.start(t)
 
@@ -369,7 +594,7 @@ func TestDispatcher_RequestApplyNeverBlocks(t *testing.T) {
 }
 
 func TestBackoff_Delay(t *testing.T) {
-	b := Backoff{Initial: 2 * time.Second, Max: time.Minute, Attempts: 8}
+	b := Backoff{Initial: 2 * time.Second, Max: time.Minute}
 	for failures, want := range map[int]time.Duration{
 		1: 2 * time.Second, 2: 4 * time.Second, 3: 8 * time.Second, 5: 32 * time.Second, 6: time.Minute, 20: time.Minute,
 	} {
@@ -377,16 +602,18 @@ func TestBackoff_Delay(t *testing.T) {
 	}
 }
 
-func TestSupersedingReason(t *testing.T) {
+func TestStrongerApplyReason(t *testing.T) {
 	tests := []struct{ older, newer, want v1alpha3.ApplyReason }{
 		{v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonRefusal},
 		{v1alpha3.ApplyReasonForeignCommit, v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonForeignCommit},
 		{v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonCatchUp},
 		{v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonRefusal},
 		{v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonForeignCommit, v1alpha3.ApplyReasonForeignCommit},
+		{v1alpha3.ApplyReasonForeignCommit, v1alpha3.ApplyReasonRefusal, v1alpha3.ApplyReasonForeignCommit},
+		{"", v1alpha3.ApplyReasonCatchUp, v1alpha3.ApplyReasonCatchUp},
 	}
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, supersedingReason(tt.older, tt.newer), "%s then %s", tt.older, tt.newer)
+		assert.Equal(t, tt.want, git.StrongerApplyReason(tt.older, tt.newer), "%s then %s", tt.older, tt.newer)
 	}
 }
 
