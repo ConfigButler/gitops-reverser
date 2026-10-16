@@ -40,6 +40,10 @@ type RefreshRequest struct {
 	// remote on an idle branch, and on a busy one it closes the open window so the publication
 	// finds the move. See EnqueuePushNotification.
 	PushNotice bool
+	// After is the commit a push notice named, or empty. It is never trusted as the branch's tip;
+	// it only spares an open window a notice that names the tip already observed (see
+	// EnqueuePushNotification).
+	After string
 }
 
 // EnqueueRefresh queues a refresh, dropping it if the queue is full.
@@ -68,6 +72,18 @@ func (w *BranchWorker) EnqueueRefresh(req *RefreshRequest) {
 		w.recordQueueRefusal(queueRefusalRefresh)
 		w.Log.V(1).Info("Event queue full, refresh dropped; the next reconcile asks again",
 			"branch", w.Branch, "gitTarget", req.Target.String())
+	}
+}
+
+// noteBusyPushNotice records a push notice that reached a busy branch, so the wake closes the open
+// window (closeWindowForForeignCommit): the publication it is about to make reads the remote anyway,
+// closing the window makes that happen now, and its rejection, if the branch moved, starts the
+// replay. A notice naming the tip already observed is the late report of a push already seen,
+// usually this worker's own, and is no reason to cut a window short.
+func (l *branchWorkerEventLoop) noteBusyPushNotice(req *RefreshRequest, observed RemoteObservation, known bool) {
+	namesSeenTip := known && req.After != "" && req.After == observed.Commit
+	if req.PushNotice && !namesSeenTip {
+		l.pushHinted = true
 	}
 }
 
@@ -112,11 +128,7 @@ func (l *branchWorkerEventLoop) handleRefreshRequest(req *RefreshRequest) {
 	// that does not re-read the folder: a layout resolved from a half-written tree is worse than
 	// a slightly old one. A target mid-cycle is writing, and a write publishes its own layout.
 	if len(l.pendingWrites) > 0 || l.openWindow != nil || w.worktreeDirty() {
-		if req.PushNotice {
-			// The publication this branch is about to make reads the remote anyway; closing the
-			// window makes it happen now, and its rejection, if the branch moved, starts the replay.
-			l.pushHinted = true
-		}
+		l.noteBusyPushNotice(req, observed, known)
 		w.Log.V(1).Info("Skipping refresh: this branch is mid-cycle",
 			"branch", w.Branch, "gitTarget", req.Target.String())
 		return
