@@ -7,7 +7,7 @@ commit is safe to apply. The worker decides WHEN; this package decides HOW, off 
 so a slow or unreachable applier never holds a branch.
 
 Only Flux is served: spec.applier.kustomizationRef, a Kustomization whose sourceRef is a
-GitRepository. See docs/design/push-notification-and-reconcile-trigger.md §3.6 and §3.8.
+GitRepository. See docs/design/apply-trigger.md.
 
 A request asks and never reports. Nothing here claims an apply happened; the applier's own status
 (lastAppliedRevision on a Kustomization) is the record of that.

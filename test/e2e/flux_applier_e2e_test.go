@@ -16,7 +16,7 @@ import (
 )
 
 // GitTarget spec.applier against a real Flux, from what a request is allowed to do to how GitOps
-// Reverser learns that it has to make one. See docs/design/apply-trigger-follow-ups.md.
+// Reverser learns that it has to make one. See docs/design/apply-trigger.md.
 //
 // The Kustomization applies its own folder (fluxApplierFolder) into a namespace the WatchRule does
 // not watch, so nothing Flux applies is mirrored back and every commit on the branch is either this
@@ -145,7 +145,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 
 	// With no receiver and no API edit, the only thing that can find a Git-side push is the
 	// refresher on the GitTarget's steady tick. This is the guarantee that a missing webhook costs
-	// latency and never an apply (docs/design/push-notification-and-reconcile-trigger.md §4.5 item 6).
+	// latency and never an apply (docs/design/apply-trigger.md).
 	// The e2e install refreshes after 30s, so the wait is the control plane's reconcile cadence of
 	// about five minutes, as in the refresh-remote spec.
 	It("applies a Git-side push the refresher finds, with no receiver and no API edit", func() {

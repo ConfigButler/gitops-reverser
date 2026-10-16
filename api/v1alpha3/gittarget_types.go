@@ -90,7 +90,7 @@ type GitTargetSpec struct {
 
 	// Why a reference rather than an inference: deriving which Kustomization applies a folder would
 	// be guessing on Flux's behalf, and the guess would drive a write. A reference the user declares
-	// claims nothing. See docs/design/push-notification-and-reconcile-trigger.md §3.1.
+	// claims nothing. See docs/design/apply-trigger.md.
 
 	// Applier names the object that applies this folder back to its source cluster. With it set,
 	// GitOps Reverser decides when that object applies: it asks for an apply only when the branch

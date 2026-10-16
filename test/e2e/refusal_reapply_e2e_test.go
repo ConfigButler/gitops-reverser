@@ -293,8 +293,9 @@ func remoteCommitCount(checkoutDir string) int {
 	return count
 }
 
-// emptyCommitCount counts the commits on the remote branch whose diff is empty. A refusal moves the
-// branch for nothing, so it must stay at zero however often the refusal is answered.
+// emptyCommitCount counts the commits on the remote branch whose diff is empty. A refusal is answered
+// by asking its applier; nothing is committed for it, so the count must not grow however often the
+// refusal is answered.
 func emptyCommitCount(checkoutDir string) int {
 	GinkgoHelper()
 	Expect(runGitIn(checkoutDir, "fetch", "origin", "main")).To(Succeed())
