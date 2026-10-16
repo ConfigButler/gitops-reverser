@@ -184,8 +184,9 @@ on its own goroutine, since every write and every window passes through its queu
 | A rejected compare-and-swap push | Already on the worker; the replay that follows is the response |
 | The periodic refresh | Already on the worker, every `--git-refresh-interval` on an idle branch |
 
-All three end in the same comparison: the remote's tip against the last commit the worker pushed.
-Equal means its own work. Anything else is foreign, including a tip the worker cannot classify.
+All three end in the same comparison: the remote's tip against the last tip the worker observed,
+by a push or a fetch. Unchanged is nothing new; a change proved by the worker's own push is its own
+work; a change any fetch found is foreign. A worker's first observation is a baseline (§3.5).
 
 **A delivery is a hint, never a fact.** The worker does not trust the commit a delivery names. On
 an idle branch it reads the advertisement (one request), compares, and fetches only when the tip is
@@ -197,8 +198,8 @@ cases come out right without bookkeeping:
   tip, the worker's latest push, so it is own work.
 - **A rollback onto one of the worker's older commits.** The tip is not the last push, so it is
   foreign, and the rollback is applied.
-- **A delivery that arrives before `PushAtomic` returns.** The worker records the commit it is
-  pushing before it sends, so the comparison is against the commit in flight.
+- **A delivery that arrives while a push is in flight.** It waits on the worker's queue behind the
+  push, which has recorded its commit by the time the delivery is read.
 - **The delivery for the replayed push `F + W`.** It names the worker's own push and is dropped,
   which is correct: the foreign commit `F` already set the applier behind, and the request is
   owed whether or not this delivery arrives.
@@ -263,11 +264,11 @@ applier's own triggers off, withholding the request would stall Git-side deploym
 ### 3.6 What a request does
 
 **Flux (`kustomizationRef`).** The request `flux reconcile kustomization --with-source` makes:
-stamp `reconcile.fluxcd.io/requestedAt` on the `GitRepository` named by the `Kustomization`'s
-`sourceRef`, wait until its artifact names the requested commit or a later one, then stamp the
-`Kustomization` unless it already started reconciling that artifact. A `Refusal` needs the second
-stamp, since a reapply at an unchanged commit produces no new artifact to wake it. A `CatchUp` stamps
-only the `GitRepository`. Permissions: `get` and `patch` on `gitrepositories` and `kustomizations`.
+when the `GitRepository` named by the `Kustomization`'s `sourceRef` does not hold the requested
+commit yet, stamp `reconcile.fluxcd.io/requestedAt` on it, and the new artifact wakes the
+`Kustomization` by itself; when it already holds the commit, stamp the `Kustomization` instead, which
+is what a `Refusal` at an unchanged commit needs. A `CatchUp` whose artifact already holds the commit
+stamps nothing. Permissions: `get` and `patch` on `gitrepositories` and `kustomizations`.
 
 **Argo CD (`applicationRef`).** Set `operation` on the `Application` as Argo CD's own automated
 sync builds it ([`appcontroller.go`](https://github.com/argoproj/argo-cd/blob/3cbae653d41ced2fcdec5d07c25fff2693c4242e/controller/appcontroller.go#L2628-L2641)),

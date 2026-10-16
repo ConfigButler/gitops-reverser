@@ -1151,7 +1151,7 @@ status:
     - type: ApplierConfigured
       status: "False"
       reason: SourceMismatch
-      message: 'Kustomization flux-system/checkout applies GitRepository flux-system/infra, whose branch is "release", not "main"'
+      message: 'GitRepository flux-system/infra fetches branch "release", not main'
   applier:
     requestedCommit: 4f2c1ab9...
     requestedAt: "2026-10-20T10:14:03Z"
@@ -2460,7 +2460,7 @@ present the client certificate the audit listener requires, so the two cannot sh
 
 | Flag | Helm value | Default | What it does |
 | --- | --- | --- | --- |
-| `--receiver-bind-address` | `receiver.bindAddress` | `0` (off) | `host:port` the receiver listens on. `0` serves no receiver |
+| `--receiver-bind-address` | `receiver.bindAddress` | `0` (off); Helm: empty (off) | `host:port` the receiver listens on, such as `:9292`. `0` or empty serves no receiver |
 
 The chart creates a `<release>-receiver` Service when the listener is on. Expose it to your
 Git host with an Ingress or a Gateway route of your own that terminates TLS, the way Flux's

@@ -146,8 +146,9 @@ spec:
 
 GitOps Reverser looks the applier up in the **source cluster**, the cluster it applies to, with
 the identity the `ClusterProvider` already uses. That identity needs permission to read and patch
-the applier; the chart grants it for the operator's own cluster. The applier must apply this
-folder's repository and branch, or the target reports `ApplierConfigured=False`. The
+the applier; the chart grants it for the operator's own cluster with `applierAccess.flux: true`.
+The applier must apply this folder's repository and branch, or the target reports
+`ApplierConfigured=False`. The
 [configuration reference](configuration.md#who-applies-this-folder-specapplier) has every field
 and reason.
 

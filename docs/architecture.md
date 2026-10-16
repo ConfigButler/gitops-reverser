@@ -653,9 +653,9 @@ flowchart TD
     style REQ fill:#fff3e0,stroke:#ff9800
 ```
 
-The worker records the commit of a push while the push is in flight, so a delivery that arrives
-before `PushAtomic` returns is still recognized as its own. A rollback onto one of its own older
-commits is foreign, because the advertisement names a tip that is not the last one it pushed.
+A delivery is handled on the worker's own queue, so it is never judged while a push is in flight:
+the push has recorded its commit before the delivery is read. A rollback onto one of the worker's
+older commits is foreign, because the advertisement names a tip other than the last one observed.
 
 The same quiet-branch rule sends two other requests: `Refusal`, to the refusing target's applier
 when `spec.onRefusal: Reapply` is set, and `CatchUp`, to every applier on the branch once it has
