@@ -364,6 +364,44 @@ var _ = Describe("GitProvider Controller", func() {
 			}), "a branch nothing references any more is not what this repository is for")
 		})
 
+		It("publishes status.webhookPath while spec.receiver is set, and clears it when removed", func() {
+			// Published ahead of every gate like the inventory: the remote is unreachable here, and
+			// the path is still what an operator needs to wire the Git host's webhook.
+			gitProvider = &configbutleraiv1alpha3.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-provider-receiver", Namespace: "default"},
+				Spec: configbutleraiv1alpha3.GitProviderSpec{
+					URL:             "https://example.invalid/unreachable.git",
+					AllowedBranches: []string{"main"},
+					Receiver: &configbutleraiv1alpha3.GitProviderReceiver{
+						Type:      configbutleraiv1alpha3.ReceiverTypeGitHub,
+						SecretRef: meta.LocalObjectReference{Name: "receiver-token"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
+
+			key := types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace}
+			webhookPath := func(g Gomega) string {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+				g.Expect(err).NotTo(HaveOccurred())
+				published := &configbutleraiv1alpha3.GitProvider{}
+				g.Expect(k8sClient.Get(ctx, key, published)).To(Succeed())
+				return published.Status.WebhookPath
+			}
+
+			Eventually(webhookPath, "30s", "500ms").Should(Equal("/git-push/default/test-provider-receiver"))
+
+			Eventually(func(g Gomega) {
+				current := &configbutleraiv1alpha3.GitProvider{}
+				g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+				current.Spec.Receiver = nil
+				g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
+			}, "10s", "200ms").Should(Succeed())
+
+			Eventually(webhookPath, "30s", "500ms").Should(BeEmpty(),
+				"a stale path would point a Git host at a route that no longer serves")
+		})
+
 		It("should fail when secret is not found", func() {
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{

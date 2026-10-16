@@ -479,7 +479,7 @@ message does not preserve the race guarantee by itself.
 
 The [write gates](../../internal/git/write_gate.go) apply suspension and render fidelity when a
 commit is decided. A commit already created locally can still publish after a gate closes.
-Delayed [refusal actions](../../internal/git/refusal_touch.go) recheck consent and suspension.
+Delayed [refusal actions](../../internal/git/refusal_reapply.go) recheck consent and suspension.
 Preserve those distinct effective points and record their decisions. Applying current gates
 while reconstructing a previously completed decision would rewrite its history.
 

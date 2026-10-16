@@ -109,6 +109,9 @@ spec:
             - --branch-buffer-max-size={{ .Values.controllerManager.branchBufferMaxSize }}
             - --git-refresh-interval={{ .Values.git.refreshInterval }}
             - --commit-request-ttl={{ .Values.controllerManager.commitRequestTTL }}
+            {{- if include "gitops-reverser.receiverEnabled" . }}
+            - {{ printf "--receiver-bind-address=%s" (.Values.receiver.bindAddress | toString | trim) | quote }}
+            {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}
@@ -133,6 +136,11 @@ spec:
             {{- if .Values.servers.admission.enabled }}
             - name: webhook
               containerPort: {{ .Values.servers.admission.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if include "gitops-reverser.receiverEnabled" . }}
+            - name: receiver
+              containerPort: {{ include "gitops-reverser.receiverPort" . }}
               protocol: TCP
             {{- end }}
           env:

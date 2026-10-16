@@ -52,6 +52,10 @@ spec:
       name: RenderMatchesLive
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="ApplierConfigured")].status
+      name: ApplierConfigured
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
       name: StreamsRunning
       priority: 1
@@ -108,6 +112,51 @@ spec:
           spec:
             description: spec defines the desired state of GitTarget
             properties:
+              applier:
+                description: |-
+                  Applier names the object that applies this folder back to its source cluster. With it set,
+                  GitOps Reverser decides when that object applies: it asks for an apply only when the branch
+                  holds no open commit window and no pending writes, after a commit it did not push, after a
+                  refused edit (spec.onRefusal: Reapply), and, once the branch has been quiet for quietPeriod,
+                  to keep the applier current with its own pushes. Switch off the applier's own triggers (short
+                  intervals, Git-host webhooks into it), or they go on applying without that check. The
+                  reference is looked up in the source cluster, with the identity the ClusterProvider uses.
+                properties:
+                  kustomizationRef:
+                    description: |-
+                      KustomizationRef is a Flux Kustomization whose spec.sourceRef is a GitRepository on this
+                      target's repository and branch. Its namespace defaults to the GitTarget's namespace. GitOps
+                      Reverser asks it to apply the way `flux reconcile kustomization --with-source` does: it
+                      stamps reconcile.fluxcd.io/requestedAt on the GitRepository, and on the Kustomization too
+                      when the GitRepository's artifact already holds the commit.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                      namespace:
+                        description: Namespace of the referent, when not specified
+                          it acts as LocalObjectReference.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  quietPeriod:
+                    default: 30s
+                    description: |-
+                      QuietPeriod is how long the branch must hold no open commit window and no pending writes,
+                      after GitOps Reverser's own pushes, before the applier is asked to catch up with them. Flux
+                      applies on its own timers and on a controller restart from whatever artifact it holds, so
+                      an artifact left behind those pushes would revert edits that are already in Git. Every new
+                      write restarts the wait. A Go duration of at most "1h". Defaults to "30s".
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: spec.applier.quietPeriod must be a Go duration of at
+                        most 1h
+                      rule: duration(self) <= duration('1h')
+                required:
+                - kustomizationRef
+                type: object
               branch:
                 description: |-
                   Branch to use for this target.
@@ -309,44 +358,25 @@ spec:
                 default: Ignore
                 description: |-
                   OnRefusal decides what happens when a live edit is refused because it has no legal
-                  destination in the Git folder. A refusal produces no commit, so nothing normally reverts
-                  the edit: with Argo CD selfHeal off it stays OutOfSync until a human acts, and under Flux
-                  it survives until the next apply interval.
+                  destination in the Git folder. A refusal produces no commit, so nothing reverts the edit
+                  until something applies Git over it.
 
                   "Ignore", the default, records the refusal in conditions and events and does nothing else.
 
-                  "PushEmptyCommit" pushes a commit that changes no file, which moves the branch. Flux then
-                  sees a new artifact revision and re-applies; Argo CD sees a revision it has not synced, so
-                  its selfHeal=false skip does not apply and automated sync reverts the edit.
+                  "Reapply" asks this target's applier (spec.applier, which it requires) to apply the current
+                  tip once the branch holds no open window and no pending writes, which reverts the refused
+                  edit and nothing that is still waiting to be published. No other folder on the branch is
+                  woken.
 
-                  It fires only when the refused write was an edit to a document the folder ALREADY holds and
-                  is not removing. An object Git does not manage is left alone deliberately: re-applying would
-                  do nothing to it (Flux prunes from its inventory and Argo CD from the resources it tracks,
-                  and a live-created object is in neither), or, if it was managed and has since been removed
-                  from Git, would prune it. That second one is the reconciler's decision to take on its own
-                  schedule, not this operator's to hurry. Eligibility is per document, not per file: a write
-                  that removes a document from a file other documents keep alive is still a removal, and a
-                  flush that removes one anywhere is excluded whole.
-
-                  A standing refusal earns one commit, not one per recheck. The target re-reads its folder and
-                  refuses again for as long as nobody corrects the edit, and an observation of the same objects
-                  with the same issues is already covered by the commit that was made for it. A different
-                  refused edit is a new commit, as is the same edit re-made after the target accepted a write
-                  in between.
-
-                  It also fires only for a refusal where the folder itself is accepted and this one write had
-                  nowhere to land. A folder-level refusal (unparseable YAML, a foreign file) is left alone: an
-                  empty commit cannot repair a folder, and the reconciler may be mid-way through its own
-                  corrections there.
-
-                  Two consequences remain to weigh. The commit wakes EVERYTHING watching the branch, not just
-                  the refused object, so it can hurry along unrelated work including another target's pending
-                  prune. And it can revert allowed live edits that are still waiting in the commit window. An
-                  Argo CD Application carrying argocd.argoproj.io/manifest-generate-paths ignores the commit
-                  entirely, because no file under its refresh paths changed.
+                  It fires only for an edit to a document the folder ALREADY holds, in a write that removes no
+                  document anywhere: re-applying would otherwise prune, or put back, an object somebody else is
+                  deleting. A folder-level refusal (unparseable YAML, a foreign file) never fires it, because
+                  re-applying Git cannot repair a folder. A standing refusal is requested once, not once per
+                  recheck; a different refused edit, or the same edit re-made after a write of that type was
+                  accepted, is a new request.
                 enum:
                 - Ignore
-                - PushEmptyCommit
+                - Reapply
                 type: string
               parentBranch:
                 description: |-
@@ -541,9 +571,35 @@ spec:
             - message: spec.clusterProviderRef is immutable; delete and recreate the
                 GitTarget to change the cluster it mirrors
               rule: self.clusterProviderRef == oldSelf.clusterProviderRef
+            - message: 'spec.onRefusal: Reapply needs spec.applier, the object asked
+                to reapply'
+              rule: '!has(self.onRefusal) || self.onRefusal != ''Reapply'' || has(self.applier)'
           status:
             description: status defines the observed state of GitTarget
             properties:
+              applier:
+                description: |-
+                  Applier is the last apply request made to spec.applier: the commit, when, and why. Absent
+                  until the first request.
+                properties:
+                  reason:
+                    description: Reason is why it was asked.
+                    enum:
+                    - ForeignCommit
+                    - Refusal
+                    - CatchUp
+                    type: string
+                  requestedAt:
+                    description: |-
+                      RequestedAt is when the request was made. It says the applier was asked, never that it
+                      applied: read the applier's own status for that.
+                    format: date-time
+                    type: string
+                  requestedCommit:
+                    description: RequestedCommit is the commit the applier was asked
+                      to apply.
+                    type: string
+                type: object
               conditions:
                 description: Conditions represent the latest available observations
                   of an object's state

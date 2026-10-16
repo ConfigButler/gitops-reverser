@@ -107,3 +107,27 @@ as the Certificate name and in the webhook's cert-manager.io/inject-ca-from anno
 {{- define "gitops-reverser.admissionServerCertName" -}}
 {{- printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .) -}}
 {{- end }}
+
+{{/*
+Non-empty when the push receiver listener is on: receiver.bindAddress is set and is not the "0"
+the binary reads as off. Used as `if include ...`, so it renders "true" or nothing.
+*/}}
+{{- define "gitops-reverser.receiverEnabled" -}}
+{{- $addr := .Values.receiver.bindAddress | default "" | toString | trim -}}
+{{- if and $addr (ne $addr "0") -}}true{{- end -}}
+{{- end }}
+
+{{/*
+The port in receiver.bindAddress ("host:port"; an empty host or an IPv6 "[::]" host included), so
+the containerPort and the Service's targetPort cannot drift from what the binary binds.
+*/}}
+{{- define "gitops-reverser.receiverPort" -}}
+{{- splitList ":" (.Values.receiver.bindAddress | toString | trim) | last | int -}}
+{{- end }}
+
+{{/*
+Name of the push receiver Service.
+*/}}
+{{- define "gitops-reverser.receiverServiceName" -}}
+{{- printf "%s-receiver" (include "gitops-reverser.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}

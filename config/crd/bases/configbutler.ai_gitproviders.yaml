@@ -138,6 +138,41 @@ spec:
                 required:
                 - name
                 type: object
+              receiver:
+                description: |-
+                  Receiver lets the Git host tell GitOps Reverser that somebody pushed. Point the host's push
+                  webhook at the receiver listener plus status.webhookPath, with the Secret's token as the
+                  webhook secret. A delivery is only a hint: it makes GitOps Reverser read where the branch is
+                  on the remote, and what the remote says decides whether a GitTarget's applier is asked to
+                  apply. Without a receiver, a foreign push is still found, by the next rejected push or by
+                  the periodic refresh.
+                properties:
+                  secretRef:
+                    description: SecretRef names a Secret in this namespace whose
+                      "token" key is the webhook secret.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  type:
+                    description: |-
+                      Type is the payload and signature the Git host sends. "github" checks X-Hub-Signature-256,
+                      "gitlab" checks X-Gitlab-Token, "gitea" checks X-Gitea-Signature, and "generic-hmac" checks
+                      X-Signature: sha256=<hex HMAC of the body> over a {"repository", "branch", "after"} body,
+                      for a relay of your own.
+                    enum:
+                    - github
+                    - gitlab
+                    - gitea
+                    - generic-hmac
+                    type: string
+                required:
+                - secretRef
+                - type
+                type: object
               secretRef:
                 description: |-
                   SecretRef for authentication credentials (may be nil for public repos)
@@ -295,6 +330,11 @@ spec:
                   SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
                   Register this as a signing key on your git platform.
                   Only populated when commit.signing is configured and a signing key is available.
+                type: string
+              webhookPath:
+                description: |-
+                  WebhookPath is the path spec.receiver is served on, under the receiver listener. Empty
+                  without spec.receiver.
                 type: string
             type: object
         required:

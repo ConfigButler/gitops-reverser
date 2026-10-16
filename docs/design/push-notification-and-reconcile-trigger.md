@@ -1,6 +1,7 @@
 # Push notification and the apply trigger
 
-> **design**: decided 2026-10-16, not built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: decided 2026-10-16; the Flux applier, the receiver and `Reapply` are built, Argo CD
+> and the webhook applier are not. Index: [`../INDEX.md`](../INDEX.md)
 > User-facing model: [`../bi-directional.md`](../bi-directional.md). Fields:
 > [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplier). The request that
 > led here: [`bi-directional-right.md`](bi-directional-right.md).
@@ -131,15 +132,16 @@ accepted. Bi-directional editing already stops in that state.
 
 ### 3.1 The applier
 
-`GitTarget.spec.applier` names exactly one applier, enforced with a CEL rule:
+`GitTarget.spec.applier` names the applier:
 
-| Field | Applier |
-| --- | --- |
-| `kustomizationRef` | a Flux `Kustomization` whose `sourceRef` is a `GitRepository` |
-| `applicationRef` | an Argo CD `Application` |
-| `webhook` (`url`, `secretRef`) | anything else, through a signed POST |
+| Field | Applier | Built |
+| --- | --- | --- |
+| `kustomizationRef` | a Flux `Kustomization` whose `sourceRef` is a `GitRepository` | yes |
+| `applicationRef` | an Argo CD `Application` | next |
+| `webhook` (`url`, `secretRef`) | anything else, through a signed POST | after that |
 
-plus `quietPeriod` (default `30s`, a Go duration string), used for `CatchUp` (§3.5).
+plus `quietPeriod` (default `30s`, a Go duration string), used for `CatchUp` (§3.5). Once a second
+kind exists, a CEL rule requires exactly one.
 
 The reference is a declaration, not an inference. The earlier objection to naming an orchestrator
 object was to **deriving** which object applies a folder: neither Flux nor Argo CD derives that
@@ -230,7 +232,7 @@ applier could not fetch from either.
 | --- | --- | --- | --- |
 | `ForeignCommit` | §3.3 | The tip once the branch is quiet, after any replay | Every applier on the branch |
 | `Refusal` | An eligible refusal (§3.7) on a target with `onRefusal: Reapply` | The tip once the branch is quiet | That target's applier |
-| `CatchUp` | An accepted push of the worker's own | The tip once the branch has been quiet for `quietPeriod` | `kustomizationRef` and `webhook` appliers |
+| `CatchUp` | An accepted push of the worker's own, or its first observation of the branch | The tip once the branch has been quiet for `quietPeriod` | `kustomizationRef` and `webhook` appliers |
 
 **Why Flux gets `CatchUp` and Argo CD does not.** With automated sync disabled Argo CD applies
 nothing on its own, so an `Application` that has not seen GitOps Reverser's own commits has nothing
@@ -240,6 +242,11 @@ whatever artifact the `GitRepository` holds, and with a long interval that artif
 Applying a stale artifact reverts **published** edits, not only pending ones, which is far worse.
 `CatchUp` keeps the artifact at the tip, so any apply Flux starts on its own applies values the
 cluster already holds.
+
+A worker's first observation is a baseline, never a `ForeignCommit`: nothing says what the applier
+last applied, and asking for the tip on a restart, before the watches have captured the edits made
+while the operator was down, would revert them. It owes a `CatchUp`, which waits for a quiet branch
+like any other.
 
 `quietPeriod` exists because a quiet branch is a moment, not a guarantee. An editor who saves twice
 a few seconds apart produces a quiet instant between the first push and the second write; a catch-up
@@ -351,7 +358,8 @@ URL normalization is the receiver's (§4.1): case-insensitive host and path, no 
 ### 4.1 The receiver
 
 `GitProvider.spec.receiver` (`type`, `secretRef`), named after Flux's `Receiver`, served on its own
-listener (`--receiver-bind-address`, Helm `receiver.bindAddress`, off by default). It cannot share
+listener (`--receiver-bind-address`, Helm `receiver.bindAddress`, off by default), on the elected
+replica only. It cannot share
 the audit listener, which requires a client certificate signed by the audit CA that no Git host can
 present.
 
@@ -381,7 +389,8 @@ which branches are tracked. A route whose `GitProvider` has no `spec.receiver` d
 | `400` | Verified but not parseable, or a required field missing |
 | `401` | Signature absent or wrong |
 | `404` | No such route |
-| `503` | Not the elected replica, or not ready |
+| `413` | The body is over 25 MiB, GitHub's own limit |
+| `503` | The route's token Secret, or its `token` key, cannot be read |
 
 A verified delivery that matches nothing is a success, because it is not the host's fault and an
 error teaches a host to disable the hook. A `generic-hmac` body naming a repository other than
@@ -417,10 +426,10 @@ status:
 | Family | Labels | Reads as |
 | --- | --- | --- |
 | `gitopsreverser_apply_requests_total` | `applier_kind`, `reason`, `outcome` | Requests decided. `outcome`: `sent`, `failed`, `superseded` |
-| `gitopsreverser_receiver_deliveries_total` | `type`, `outcome` | Deliveries. `outcome`: `foreign`, `own`, `ignored`, `rejected` |
+| `gitopsreverser_receiver_deliveries_total` | `type`, `outcome` | Deliveries. `outcome`: `notified`, `unmatched`, `ignored`, `rejected`, `invalid`. Foreign or own is the worker's call, not the receiver's |
 | `gitopsreverser_git_fetches_total` | `reason` | Unchanged. A delivery that finds a foreign tip on an idle branch fetches under `refresh` |
 
-These are recorded in [interpreting-metrics.md](../interpreting-metrics.md) when they ship.
+Both are in [interpreting-metrics.md](../interpreting-metrics.md#apply-requests-and-the-push-receiver).
 
 ### 4.4 Chart
 
@@ -457,9 +466,9 @@ superseding, and that no request leaves a branch with pending writes.
 1. **An applier in another cluster.** Hub Argo CD keeps `Application`s in a management cluster.
    Supporting it means a second identity, the control cluster's or a kubeconfig, on
    `spec.applier`. Deferred until someone runs that topology.
-2. **High availability.** The decision lives on the replica that owns the branch worker, so a
-   delivery reaching another replica answers `503` today. With multiple replicas, deliveries need
-   routing to the owner, or a shared queue in Redis.
+2. **High availability.** The decision lives on the replica that owns the branch worker, so the
+   listener runs on the elected replica only and a standby refuses the connection. With multiple
+   replicas, deliveries need routing to the owner, or a shared queue in Redis.
 3. **Path scoping for `ForeignCommit`.** Every applier on the branch is asked, whether or not the
    foreign commit touched its folder. That is safe, since the branch is quiet, but it runs every
    `Application`'s hooks. Narrowing it needs the applier's own source paths, which are not ours to
@@ -467,9 +476,8 @@ superseding, and that no request leaves a branch with pending writes.
 
 ### 4.7 Build order
 
-1. Worker state, the quiet-branch rule and `status.applier`, with the Flux client. This alone fixes
-   the original race for Flux users.
-2. The receiver, on its own listener.
-3. The Argo CD client, and the guide's Argo CD configuration.
-4. `onRefusal: Reapply` in place of `PushEmptyCommit`, with the upgrade note.
+1. Worker state, the quiet-branch rule and `status.applier`, with the Flux client. Built.
+2. The receiver, on its own listener. Built.
+3. `onRefusal: Reapply` in place of `PushEmptyCommit`, with the upgrade note. Built.
+4. The Argo CD client, and the guide's Argo CD configuration. Next.
 5. The webhook applier.

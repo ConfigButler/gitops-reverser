@@ -15,7 +15,7 @@ import (
 // commits and publications. See docs/design/gittarget-branch-worker-pending-writes.md.
 //
 // Every write the loop makes, whatever produced it (a closed window, an atomic batch, a resync, a
-// save's empty record, a refusal's empty commit), takes one path:
+// save's empty record), takes one path:
 //
 //   - decide appends it to the pending writes. The write gates and building the write have passed, so the
 //     decision stands from here on. Deciding does nothing else: no commit, no push, no settlement.
@@ -29,9 +29,8 @@ import (
 //     because the remote could not be reached. A write left pending needs no settling, only its
 //     waiting resync callers an answer (replyToDeferredResyncs).
 //
-// Settling an outcome can decide more work (a refused write's empty commit). Because deciding only
-// appends, that work joins the pending writes behind the ones decided before it, and the pass already running
-// commits it in order: nothing is ever re-entered.
+// Settling an outcome never decides more work directly: a refused write owes its applier a reapply
+// request (reapplyForRefusal), which is sent once the branch is quiet, outside the pending writes.
 
 // errWriteFailed marks a failure of the write itself, as opposed to reaching the remote or reading
 // the GitProvider: the plan was refused or could not be applied. It is terminal for the write, while
@@ -45,22 +44,15 @@ func (e writeFailedError) Error() string        { return e.err.Error() }
 func (e writeFailedError) Unwrap() error        { return e.err }
 func (e writeFailedError) Is(target error) bool { return target == errWriteFailed }
 
-// writeOrigin is what a write's outcome is settled against: the caller waiting on a resync, the
-// atomic request, or the refusal an empty commit answers. They are process objects, kept beside
+// writeOrigin is what a write's outcome is settled against: the caller waiting on a resync, or the
+// atomic request. They are process objects, kept beside
 // the write's data rather than in it.
 type writeOrigin struct {
-	resync  *ResyncRequest
-	atomic  *WriteRequest
-	refusal *refusalTouchOrigin
+	resync *ResyncRequest
+	atomic *WriteRequest
 	// answered records that the resync's caller was answered already: the remote held it back,
 	// and it is applied later with nobody waiting.
 	answered bool
-}
-
-// refusalTouchOrigin is the refusal an empty commit answers, recorded once the commit exists.
-type refusalTouchOrigin struct {
-	key         refusalKey
-	observation string
 }
 
 // errAdmissionClosed answers a resync refused at admission. It is ErrFinalizeQueueFull to every
@@ -71,7 +63,7 @@ var errAdmissionClosed = fmt.Errorf(
 // pendingWriteOverheadBytes is what every retained item is charged beyond its payload: each event a
 // window or a write keeps (its identity, author, path), and a write that keeps none (its target
 // metadata, commit configuration, signer, the save it carries). Without it an item with no payload,
-// a delete, a save's empty record or a refusal's empty commit, cost nothing to keep, and a branch
+// a delete or a save's empty record, cost nothing to keep, and a branch
 // whose remote was down admitted them for as long as the outage lasted.
 const pendingWriteOverheadBytes = 1024
 
@@ -110,9 +102,8 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
 // closes the retry and parent recovery, so no exit that settles the last one can leave intake
 // paused.
 //
-// A push that lands settles the writes a replay refused, and settling one can decide more (a
-// refusal's empty commit). Those are committed on the next turn; the push after them waits for the
-// cooldown, so the loop ends.
+// A push that lands settles the writes a replay refused. The loop ends once every decided write is
+// committed and its push is scheduled.
 func (l *branchWorkerEventLoop) advance() {
 	for {
 		l.commitDecided()
@@ -311,17 +302,12 @@ func (l *branchWorkerEventLoop) settleReplayRefusals(refused []PendingWrite) {
 }
 
 // settleCommitted acts on a write whose commit was made. A resync answers its caller with what it
-// found, and one that committed nothing stops being pending: it is neither retained nor pushed. A
-// refusal's empty commit records the refusal it covered, so the same observation is not a new
-// trigger.
+// found, and one that committed nothing stops being pending: it is neither retained nor pushed.
 func (l *branchWorkerEventLoop) settleCommitted(i int) {
 	l.pendingWrites[i].committedOnce = true
 	pendingWrite := l.pendingWrites[i]
-	switch {
-	case pendingWrite.origin.resync != nil:
+	if pendingWrite.origin.resync != nil {
 		l.settleResyncApplied(i)
-	case pendingWrite.origin.refusal != nil:
-		l.w.recordRefusalObservation(pendingWrite.origin.refusal.key, pendingWrite.origin.refusal.observation)
 	}
 }
 
@@ -335,8 +321,8 @@ func (l *branchWorkerEventLoop) settleResyncApplied(i int) {
 		l.removeAt(i)
 	}
 	// The plan was accepted, so the refusal standing over THIS SCOPE is over: the observation the
-	// last empty commit covered is forgotten and any commit still queued for it is cancelled. This
-	// is the recovery path the dedupe depends on: a per-type reconcile runs after the reconciler
+	// last reapply request covered is forgotten and any request still queued for it is cancelled.
+	// This is the recovery path the dedupe depends on: a per-type reconcile runs after the applier
 	// reverts the edit, and it is what makes the NEXT refusal, including a re-made byte-identical
 	// one, a new trigger rather than a repeat. Scoped to the collection this request evaluated,
 	// because a ConfigMap resync succeeding is no evidence about a Deployment that is still refused.
@@ -386,7 +372,7 @@ func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err err
 		// normally what discovers a write-boundary refusal first.
 		var refused *manifestanalyzer.AcceptanceRefusedError
 		if errors.As(err, &refused) {
-			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
+			l.reapplyForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
 				refusalObservationForDesired(req.Desired, refused), req.refusalCollection())
 		}
 		l.w.Log.Error(err, "Resync commit failed; dropping request", "resources", len(req.Desired))
@@ -397,14 +383,11 @@ func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err err
 		collection := req.refusalCollection()
 		if isRefusal, refused := l.w.reportPathRefusal(err, req.GitTargetName, req.GitTargetNamespace,
 			collection); isRefusal {
-			l.touchBranchForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
+			l.reapplyForRefusal(req.GitTargetName, req.GitTargetNamespace, err.Error(), refused,
 				refusalObservationForDesired(req.Desired, refused), collection)
 		}
 		l.w.Log.Error(err, "Resync commit failed after its caller was answered; dropping it",
 			"resources", len(req.Desired))
-	case pendingWrite.origin.refusal != nil:
-		l.w.Log.Error(err, "The empty commit for a refused write failed",
-			"gitTarget", pendingWrite.origin.refusal.key.target.String())
 	case pendingWrite.Kind == PendingWriteRequestRecord:
 		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
 			"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName)
@@ -419,7 +402,7 @@ func (l *branchWorkerEventLoop) settleFailedChange(pendingWrite PendingWrite, er
 	kind, name, namespace, collection := changeIdentity(pendingWrite)
 	if isRefusal, refused := l.w.reportPathRefusal(err, name, namespace, collection); isRefusal {
 		l.w.recordCommitFailure(kind, commitFailureRefused)
-		l.touchBranchForRefusal(name, namespace, err.Error(), refused,
+		l.reapplyForRefusal(name, namespace, err.Error(), refused,
 			refusalObservationForEvents(pendingWrite.Events, refused), collection)
 	} else {
 		l.w.recordCommitFailure(kind, commitFailureError)

@@ -259,13 +259,7 @@ const (
 	// content-derived mark-and-sweep against the worktree (upsert every desired
 	// resource, drop every watched managed document the snapshot did not contain).
 	PendingWriteResync PendingWriteKind = "resync"
-	// PendingWriteRefusalTouch carries no content at all. It exists to move the branch after a
-	// refused write, so the reconciler re-applies the desired state and reverts the live edit a
-	// refusal left in place. It is the only write kind that deliberately produces a commit with
-	// an empty tree diff, and it is created only for a GitTarget with
-	// spec.onRefusal: PushEmptyCommit.
-	PendingWriteRefusalTouch PendingWriteKind = "refusal_touch"
-	// PendingWriteRequestRecord carries no content either. It records a CommitRequest's message
+	// PendingWriteRequestRecord carries no content. It records a CommitRequest's message
 	// in an empty commit when the request ran out of time to attach, and asked for that with
 	// whenNothingToCommit: CommitEmpty. It is not a window: only writes open windows.
 	PendingWriteRequestRecord PendingWriteKind = "request_record"

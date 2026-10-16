@@ -150,3 +150,25 @@ func newGitProviderTestClient(t *testing.T, objects ...runtime.Object) ctrlclien
 		WithRuntimeObjects(objects...).
 		Build()
 }
+
+// TestPublishWebhookPath_FollowsSpecReceiver pins status.webhookPath to spec.receiver: set while a
+// receiver is configured, cleared the moment it is removed, so a stale path never points a Git
+// host at a route that has stopped serving.
+func TestPublishWebhookPath_FollowsSpecReceiver(t *testing.T) {
+	provider := &configbutleraiv1alpha3.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-repo", Namespace: "team-a"},
+		Spec: configbutleraiv1alpha3.GitProviderSpec{
+			Receiver: &configbutleraiv1alpha3.GitProviderReceiver{
+				Type:      configbutleraiv1alpha3.ReceiverTypeGitHub,
+				SecretRef: meta.LocalObjectReference{Name: "receiver-token"},
+			},
+		},
+	}
+
+	publishWebhookPath(provider)
+	assert.Equal(t, "/git-push/team-a/platform-repo", provider.Status.WebhookPath)
+
+	provider.Spec.Receiver = nil
+	publishWebhookPath(provider)
+	assert.Empty(t, provider.Status.WebhookPath)
+}

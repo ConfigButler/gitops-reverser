@@ -116,16 +116,15 @@ cluster snapshot: the cluster still holds the values from before the push, so a 
 publish them over the incoming change.
 
 **GitOps Reverser decides when Git is applied to the cluster.** An apply is safe only when nothing
-live is missing from the commit being applied, and only the branch worker can see the edits that
-are live and not yet pushed. So a `GitTarget` names its **applier** (a Flux `Kustomization`, an
-Argo CD `Application`, or a webhook), the applier's own triggers are switched off, and the branch
-worker sends **apply requests** instead. A request is sent only on a **quiet branch**, with no open
-commit window and no pending writes: for a commit somebody else pushed (after closing open windows
-and replaying the pending writes onto it), for a refused edit the target opted to revert, and, for
-Flux, to keep its artifact current after GitOps Reverser's own pushes. Argo CD is never asked to
-apply GitOps Reverser's own commits, because the cluster already holds those values. A request asks
-and never reports; it runs off the publication path and cannot fail a publication. See
-[the apply trigger design](design/push-notification-and-reconcile-trigger.md).
+live is missing from the commit being applied, and only the branch worker can see the edits that are
+live and not yet pushed. So a `GitTarget` names its **applier** (a Flux `Kustomization`), the
+applier's own short triggers are switched off, and the branch worker sends **apply requests**
+instead. A request is sent only on a **quiet branch**, with no open commit window and no pending
+writes: for a commit somebody else pushed (after closing open windows and replaying the pending
+writes onto it), for a refused edit the target opted to revert, and to keep Flux's artifact current
+after GitOps Reverser's own pushes, because Flux's timers and restarts apply whatever artifact it
+holds. A request asks and never reports; it runs off the publication path and cannot fail a
+publication. See [the apply trigger design](design/push-notification-and-reconcile-trigger.md).
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches initialize from current state on startup. When an endpoint
@@ -264,7 +263,7 @@ graph LR
 
     subgraph SOURCE["Source cluster selected by ClusterProvider"]
         API["Kubernetes API\ndiscovery · Namespace policy · watches"]
-        APPLIER["Applier\nFlux Kustomization or Argo CD Application"]
+        APPLIER["Applier\nFlux Kustomization"]
     end
 
     HOST[("Git host")]
@@ -290,8 +289,8 @@ source context: client, discovery catalog, followability registry, source-namesp
 reachability state. Its `GitTarget`s open their source watches through that context. The contexts are keyed
 by provider name and are released when no `GitTarget` references them.
 
-The applier is not one of the six kinds. It belongs to Flux or Argo CD, lives in the source cluster
-it applies to, and is reached through the same source context and identity the watches use.
+The applier is not one of the six kinds. It belongs to Flux, lives in the source cluster it applies
+to, and is reached through the same source context and identity the watches use.
 
 | CRD | Scope | One line role |
 |---|---|---|
@@ -391,9 +390,8 @@ Key fields:
 - `spec.commit.window`: when this target's commit windows close: `idleTimeout` (default `5s`) of
   silence, or `maxDuration` (default `1m`) after the window opened.
 - `spec.commit.message`: `liveTemplate` / `reconcileTemplate` Go templates.
-- `spec.applier`: optional; exactly one of `kustomizationRef`, `applicationRef` or `webhook`, plus
-  `quietPeriod` (default `30s`). The object that applies this folder, and that GitOps Reverser asks
-  to apply.
+- `spec.applier`: optional; `kustomizationRef` (the Flux `Kustomization` that applies this folder,
+  and that GitOps Reverser asks to apply) and `quietPeriod` (default `30s`).
 - `spec.onRefusal`: `Ignore` (default) or `Reapply`, which asks the applier to reapply the tip when
   an edit to an existing document is refused. `Reapply` requires `spec.applier`.
 
@@ -660,11 +658,12 @@ before `PushAtomic` returns is still recognized as its own. A rollback onto one 
 commits is foreign, because the advertisement names a tip that is not the last one it pushed.
 
 The same quiet-branch rule sends two other requests: `Refusal`, to the refusing target's applier
-when `spec.onRefusal: Reapply` is set, and `CatchUp`, to Flux and webhook appliers once the branch
-has been quiet for `spec.applier.quietPeriod` after the worker's own pushes. Delivering them is
-the job of the applier client in `internal/applier`, off the worker's queue: a Kubernetes patch
-for Flux and Argo CD, a signed POST for a webhook, retried with backoff, recorded as an
-`ApplyRequested` Event and on `status.applier`. A failed request never reaches back into the publication that
+when `spec.onRefusal: Reapply` is set, and `CatchUp`, to every applier on the branch once it has
+been quiet for `spec.applier.quietPeriod` after the worker's own pushes. Delivering them is the job
+of the dispatcher in `internal/applier`, off the worker's queue: it stamps
+`reconcile.fluxcd.io/requestedAt` on the `GitRepository` or the `Kustomization`, retries with
+backoff, lets a newer request for the same `Kustomization` supersede one not yet sent, and records an
+`ApplyRequested` Event and `status.applier`. A failed request never reaches back into the publication that
 caused it.
 
 ***
@@ -1640,13 +1639,15 @@ as one funnel and its loss paths as one selector:
   [Interpreting metrics](interpreting-metrics.md#reading-git_fetches_total).
 
 **Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
-request the worker decided to send (`applier_kind` is `kustomization`, `application` or
-`webhook`; `reason` is `ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
+request the worker decided to send (`applier_kind` is `kustomization`; `reason` is
+`ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
 `sent` from `failed` and `superseded` (a newer request for the same applier replaced it before it
-went out). `receiver_deliveries_total{type,outcome}` counts receiver deliveries:
-`foreign`, `own`, `ignored` (another branch, or a tag), and `rejected` (bad signature). A healthy
-bi-directional branch shows `CatchUp` and `ForeignCommit` and never a request on a branch with
-pending writes, which is what the decision rule promises.
+went out). `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`,
+`unmatched`, `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
+The receiver cannot tell a foreign push from an own one; the worker decides that from the
+advertisement, which is why a `notified` delivery on an otherwise quiet branch is followed by a
+`CatchUp` and only a genuinely foreign one by a `ForeignCommit`. See
+[Interpreting metrics](interpreting-metrics.md#apply-requests-and-the-push-receiver).
 
 **Authorship**, when `--author-attribution` is on:
 
@@ -1719,8 +1720,9 @@ Current limitations:
   triggers are off, so while the operator is down a Git-side push reaches the cluster only through a
   manual sync, `flux reconcile`, or Flux's long backstop interval.
 - **The applier must live in the cluster it applies to.** It is looked up in the source cluster
-  with the `ClusterProvider`'s identity. A hub Argo CD whose `Application` lives in a management
-  cluster that is not the source is not supported.
+  with the `ClusterProvider`'s identity.
+- **Only Flux can be an applier.** An Argo CD `Application` keeps its own triggers until it can be
+  named in `spec.applier`.
 - **An apply request cannot reserve time.** An edit made while a requested apply runs is reverted
   and mirrored as the applier's commit. The rule confines that to the seconds after a foreign push,
   a refusal with `Reapply`, or a quiet period on a Flux branch.
@@ -1741,7 +1743,7 @@ Current limitations:
 | Package | Role |
 |---|---|
 | [api/v1alpha3/](../api/v1alpha3/) | CRD types |
-| `internal/applier/` | apply requests: the Flux, Argo CD and webhook clients, and the `ApplierConfigured` check |
+| [internal/applier/](../internal/applier/) | apply requests: the Flux client, the dispatcher that delivers them, and the `ApplierConfigured` check |
 | [cmd/](../cmd/) | operator entry point and server setup |
 | [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers feeding attribution facts |
 | [internal/controller/](../internal/controller/) | Kubernetes reconcilers |

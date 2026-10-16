@@ -121,6 +121,9 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		log.Error(err, "Could not list the GitTargets for the branch inventory; the last one stands",
 			"name", gitProvider.Name, "namespace", gitProvider.Namespace)
 	}
+	// Ahead of the gates for the same reason: the path is a fact about the spec, and an operator
+	// wiring a Git host's webhook needs it while the provider is still red.
+	publishWebhookPath(gitProvider)
 
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
 		rd.stalled(ReasonCommitConfigInvalid, err.Error())
@@ -189,6 +192,17 @@ func (r *GitProviderReconciler) commitProvider(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
+}
+
+// publishWebhookPath sets status.webhookPath to the path spec.receiver is served on, and clears it
+// when there is no receiver. It says where the route is, not that anything serves it: the listener
+// is a flag (--receiver-bind-address) this object cannot see, and the path is the same either way.
+func publishWebhookPath(gitProvider *configbutleraiv1alpha3.GitProvider) {
+	if gitProvider.Spec.Receiver == nil {
+		gitProvider.Status.WebhookPath = ""
+		return
+	}
+	gitProvider.Status.WebhookPath = configbutleraiv1alpha3.ReceiverPath(gitProvider.Namespace, gitProvider.Name)
 }
 
 // signingKeyFailureReason classifies an ensureSigningKey failure for the Stalled reason.

@@ -7,6 +7,29 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `onRefusal: PushEmptyCommit` is now `onRefusal: Reapply`, and needs `spec.applier`
+
+**Breaking.** `GitTarget.spec.onRefusal` accepts `Ignore` and `Reapply`. `PushEmptyCommit` is gone:
+GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
+`Reapply` it asks the target's applier, the Flux `Kustomization` named in the new
+`spec.applier.kustomizationRef`, to apply the current tip once the branch holds no open commit window
+and no pending writes. Only that applier is asked, so other folders on the branch are no longer woken,
+and an allowed edit still in a commit window is published before the apply instead of being reverted
+with the refused one. The API rejects `Reapply` without `spec.applier`.
+
+A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`, and any update to it is
+rejected until the field changes. Before upgrading, set `onRefusal: Ignore` on those targets, or
+`onRefusal: Reapply` together with `spec.applier`. See
+[reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
+
+`spec.applier` also changes what else applies the folder: GitOps Reverser asks the Kustomization to
+apply when somebody else pushes to the branch, and to catch up with its own pushes once the branch
+has been quiet for `spec.applier.quietPeriod`. Lengthen the `GitRepository` and `Kustomization`
+intervals and remove any Git-host webhook into a Flux `Receiver` for the repository, as the
+[bi-directional guide](bi-directional.md#configure-flux) describes, or Flux keeps applying on its own
+schedule as well. The operator needs `get` and `patch` on `kustomizations` and `gitrepositories` in
+the source cluster: Helm `applierAccess.flux: true` grants it for the operator's own cluster.
+
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 
 `gitopsreverser_git_queue_drops_total` is renamed `gitopsreverser_git_queue_refusals_total`, with the

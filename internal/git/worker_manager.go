@@ -163,6 +163,11 @@ type WorkerManager struct {
 	// publicationEvents carries the GitTargets whose worker's publication report changed. See
 	// PublicationEvents.
 	publicationEvents chan event.GenericEvent
+
+	// applyRequester delivers every worker's apply requests. Set once at startup
+	// (SetApplyRequester) before any worker is created; nil in the CLI and in tests, which switches
+	// the apply trigger off.
+	applyRequester ApplyRequester
 }
 
 // NewWorkerManager creates a new worker manager. limits bounds every worker this manager
@@ -254,6 +259,14 @@ func (m *WorkerManager) SetScanAcceptanceReporter(reporter ScanAcceptanceReporte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scanAcceptance = reporter
+}
+
+// SetApplyRequester injects what delivers every worker's apply requests. Like SetMapper, it is called
+// once at startup before any worker is created.
+func (m *WorkerManager) SetApplyRequester(requester ApplyRequester) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applyRequester = requester
 }
 
 // recordRemoteObservation is the delivery point for one branch's confirmed observation. Every
@@ -373,6 +386,7 @@ func (m *WorkerManager) EnsureWorker(
 		managerCtx := m.ctx // read under m.mu; the worker's loop calls the reporter later
 		worker.publicationReporter = func() { go m.notifyPublication(managerCtx, key) }
 		worker.scanAcceptance = m.scanAcceptance
+		worker.applyRequester = m.applyRequester
 		worker.renderFidelityGate = m.renderFidelityGate
 		worker.crOwners = m.commitRequests
 
@@ -695,5 +709,17 @@ func (m *WorkerManager) liveWorkers() []*BranchWorker {
 // NeedLeaderElection ensures only the elected leader manages workers.
 // This prevents multiple pods from managing the same workers.
 func (m *WorkerManager) NeedLeaderElection() bool {
+	return true
+}
+
+// NotifyPush tells the worker for a provider's branch that the Git host reported a push to it. It
+// reports whether such a worker exists. after is the commit the delivery named; it is logged and
+// never trusted: the worker reads where the branch is from the remote itself.
+func (m *WorkerManager) NotifyPush(providerNamespace, providerName, branch, after string) bool {
+	worker, found := m.GetWorkerForTarget(providerName, providerNamespace, branch)
+	if !found {
+		return false
+	}
+	worker.EnqueuePushNotification(after)
 	return true
 }

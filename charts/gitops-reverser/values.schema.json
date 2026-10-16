@@ -131,6 +131,32 @@
       }
     },
 
+    "receiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bindAddress": {
+          "anyOf": [
+            { "type": "string", "pattern": "^(|0|[^\\s]*:[1-9][0-9]{0,4})$" },
+            { "const": 0 }
+          ],
+          "description": "host:port the push receiver listens on, over plain HTTP (--receiver-bind-address). Empty or \"0\" serves no receiver. When set, the chart also renders a <release>-receiver Service; expose it with an Ingress or Gateway route that terminates TLS."
+        }
+      }
+    },
+
+    "applierAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional RBAC that lets GitOps Reverser ask an applier in this cluster to apply a commit. Off unless asked for, since most installs run one applier or none.",
+      "properties": {
+        "flux": {
+          "type": "boolean",
+          "description": "Grant get/list/watch/patch on Flux Kustomizations and GitRepositories, plus create on SelfSubjectAccessReviews."
+        }
+      }
+    },
+
     "certManager": {
       "type": "object",
       "additionalProperties": false,
@@ -485,7 +511,8 @@
           "additionalProperties": false,
           "properties": {
             "audit": { "$ref": "#/$defs/port" },
-            "metrics": { "$ref": "#/$defs/port" }
+            "metrics": { "$ref": "#/$defs/port" },
+            "receiver": { "$ref": "#/$defs/port" }
           }
         }
       }

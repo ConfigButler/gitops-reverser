@@ -7,6 +7,9 @@ resources:
   # See docs/rbac.md; the Helm chart renders the same pair from `rbac.watchTypes`.
   - watch-any-role.yaml
   - watch-any-rolebinding.yaml
+  # Patch rights on Flux Kustomizations and GitRepositories, for GitTarget.spec.applier. See the file.
+  - flux-applier-role.yaml
+  - flux-applier-rolebinding.yaml
   - cluster-role-jane-aggregated.yaml
   - cluster-rolebinding.yaml
   - cluster-rolebinding-jane.yaml   # E2E-only helper: allows impersonated user jane@acme.com writes in tests.

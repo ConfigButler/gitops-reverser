@@ -54,6 +54,55 @@ type GitProviderSpec struct {
 	// formatting moved to GitTarget.spec.commit.message.
 	// +optional
 	Commit *CommitSpec `json:"commit,omitempty"`
+
+	// The names are Flux's Receiver's, type values included, so a Flux user already knows them.
+
+	// Receiver lets the Git host tell GitOps Reverser that somebody pushed. Point the host's push
+	// webhook at the receiver listener plus status.webhookPath, with the Secret's token as the
+	// webhook secret. A delivery is only a hint: it makes GitOps Reverser read where the branch is
+	// on the remote, and what the remote says decides whether a GitTarget's applier is asked to
+	// apply. Without a receiver, a foreign push is still found, by the next rejected push or by
+	// the periodic refresh.
+	// +optional
+	Receiver *GitProviderReceiver `json:"receiver,omitempty"`
+}
+
+// GitProviderReceiver is the push-notification endpoint of a GitProvider.
+type GitProviderReceiver struct {
+	// Type is the payload and signature the Git host sends. "github" checks X-Hub-Signature-256,
+	// "gitlab" checks X-Gitlab-Token, "gitea" checks X-Gitea-Signature, and "generic-hmac" checks
+	// X-Signature: sha256=<hex HMAC of the body> over a {"repository", "branch", "after"} body,
+	// for a relay of your own.
+	// +required
+	// +kubebuilder:validation:Enum=github;gitlab;gitea;generic-hmac
+	Type ReceiverType `json:"type"`
+
+	// SecretRef names a Secret in this namespace whose "token" key is the webhook secret.
+	// +required
+	SecretRef meta.LocalObjectReference `json:"secretRef"`
+}
+
+// ReceiverType is the payload format a receiver accepts. The values are Flux's Receiver types.
+type ReceiverType string
+
+const (
+	// ReceiverTypeGitHub is a GitHub push event.
+	ReceiverTypeGitHub ReceiverType = "github"
+	// ReceiverTypeGitLab is a GitLab push event.
+	ReceiverTypeGitLab ReceiverType = "gitlab"
+	// ReceiverTypeGitea is a Gitea push event.
+	ReceiverTypeGitea ReceiverType = "gitea"
+	// ReceiverTypeGenericHMAC is a {"repository", "branch", "after"} body signed as Flux's
+	// generic-hmac Receiver expects.
+	ReceiverTypeGenericHMAC ReceiverType = "generic-hmac"
+)
+
+// ReceiverTokenKey is the Secret key holding a receiver's token, the key a Flux Receiver Secret uses.
+const ReceiverTokenKey = "token"
+
+// ReceiverPath is the path a GitProvider's receiver is served on.
+func ReceiverPath(namespace, name string) string {
+	return "/git-push/" + namespace + "/" + name
 }
 
 // KnownHostsReference points at a namespace-local ConfigMap or Secret that holds SSH known_hosts
@@ -166,6 +215,11 @@ type GitProviderStatus struct {
 	// that cadence. Providers are few and the check was already running; this adds no request.
 	// +optional
 	LastVerifiedAt *metav1.Time `json:"lastVerifiedAt,omitempty"`
+
+	// WebhookPath is the path spec.receiver is served on, under the receiver listener. Empty
+	// without spec.receiver.
+	// +optional
+	WebhookPath string `json:"webhookPath,omitempty"`
 }
 
 // GitProviderBranchStatus is one branch of this repository that GitTargets are configured to

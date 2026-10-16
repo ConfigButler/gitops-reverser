@@ -48,6 +48,9 @@ spec:
         # somebody moved from outside, without waiting out the 10m default. The effective
         # granularity is still the 5m control-plane reconcile.
         - --git-refresh-interval=30s
+        # The push receiver, so the e2e suite can deliver a Git host's push webhook through the
+        # gitops-reverser-receiver Service (receiver-service.yaml) instead of waiting for a refresh.
+        - --receiver-bind-address=:9292
         # Dev/e2e only: the in-cluster Gitea SSH host key is not pinned, so permit SSH
         # when no known_hosts source exists. Never set this in production.
         - --insecure-allow-missing-known-hosts
@@ -91,6 +94,9 @@ spec:
           protocol: TCP
         - containerPort: 8443
           name: metrics
+          protocol: TCP
+        - containerPort: 9292
+          name: receiver
           protocol: TCP
         readinessProbe:
           httpGet:

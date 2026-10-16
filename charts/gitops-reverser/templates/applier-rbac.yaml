@@ -1,0 +1,54 @@
+{{- if and .Values.rbac.create .Values.applierAccess.flux }}
+# What GitOps Reverser needs to ask Flux to apply a commit after somebody else pushed to a branch a
+# GitTarget writes: read and patch the Kustomization and its GitRepository (an apply request is a
+# reconcile request on them), and create SelfSubjectAccessReviews so the operator can check it holds
+# that access before relying on it. Separate from the manager role because it is optional and
+# names another project's API: an install without Flux grants nothing on it. See
+# docs/design/push-notification-and-reconcile-trigger.md §4.4.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-applier-flux
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - kustomize.toolkit.fluxcd.io
+  resources:
+  - kustomizations
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
+  - source.toolkit.fluxcd.io
+  resources:
+  - gitrepositories
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - selfsubjectaccessreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-applier-flux
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gitops-reverser.fullname" . }}-applier-flux
+subjects:
+- kind: ServiceAccount
+  name: {{ include "gitops-reverser.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

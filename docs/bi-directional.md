@@ -4,18 +4,19 @@ GitOps Reverser publishes live cluster state to Git. Flux or Argo CD applies Git
 cluster. Run both and a resource can be changed from either side. This guide covers who decides
 what, how to configure each actor, and which parts are proven by tests.
 
-**The short version.** GitOps Reverser decides when the cluster is applied from Git. Flux and
-Argo CD keep doing what they are good at (fetching, rendering, applying, pruning, reporting
-health), but they apply when GitOps Reverser asks, not on their own schedule. You configure that
-in three places:
+**The short version.** GitOps Reverser decides when the cluster is applied from Git. Flux keeps
+doing what it is good at (fetching, rendering, applying, pruning, reporting health), but it applies
+when GitOps Reverser asks, not on its own schedule. You configure that in three places:
 
-1. Name each folder's **applier** on its `GitTarget`: the Flux `Kustomization` or the Argo CD
-   `Application` that applies it. See [declaring the applier](#declaring-the-applier).
-2. Switch off the applier's own triggers: Argo CD's automated sync, Flux's short intervals and any
-   Git-host webhook into Flux. See [configure Argo CD](#configure-argo-cd) and
-   [configure Flux](#configure-flux).
-3. Point your Git host's push webhook at GitOps Reverser, not at the applier. See
+1. Name each folder's **applier** on its `GitTarget`: the Flux `Kustomization` that applies it. See
+   [declaring the applier](#declaring-the-applier).
+2. Switch off Flux's own triggers: short intervals and any Git-host webhook into a Flux `Receiver`.
+   See [configure Flux](#configure-flux).
+3. Point your Git host's push webhook at GitOps Reverser instead. See
    [telling GitOps Reverser that somebody else pushed](#telling-gitops-reverser-that-somebody-else-pushed).
+
+Argo CD cannot be driven this way yet; [configure Argo CD](#configure-argo-cd) says what that costs
+in the meantime.
 
 There is no merge and no lock. What remains exposed is small and named in
 [what is still exposed](#what-is-still-exposed).
@@ -25,7 +26,7 @@ flowchart LR
     subgraph CLUSTER["Kubernetes cluster"]
         API["Kubernetes API"]
         REV["GitOps Reverser"]
-        APP["Applier<br/>Flux Kustomization or<br/>Argo CD Application"]
+        APP["Applier<br/>Flux Kustomization"]
     end
     GIT[("Git branch")]
     HUMAN(["Somebody pushes to Git"])
@@ -48,7 +49,7 @@ flowchart LR
 | Kubernetes API | Takes edits from people and controllers | |
 | GitOps Reverser | Mirrors every edit into Git, and decides when the applier may apply | Apply anything to the cluster itself |
 | Git host | Stores the branch, and tells GitOps Reverser when somebody else pushed | Notify the applier |
-| Applier (Flux or Argo CD) | Fetches, renders, applies and prunes, when asked | Apply on a timer or a webhook of its own |
+| Applier (a Flux `Kustomization`) | Fetches, renders, applies and prunes, when asked | Apply on a short timer or a webhook of its own |
 | A human | Can still run `flux reconcile` or press Sync | |
 
 ## Why GitOps Reverser owns the trigger
@@ -85,10 +86,10 @@ branch worker. That is the moment nothing live is missing from the tip.
 | --- | --- | --- |
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push | Every applier declared on the branch |
 | `Refusal` | An edit was refused and the target has `onRefusal: Reapply` | The refusing target's applier |
-| `CatchUp` | The branch has been quiet for `spec.applier.quietPeriod` after GitOps Reverser's own pushes | Flux and webhook appliers only |
+| `CatchUp` | The branch has been quiet for `spec.applier.quietPeriod` after GitOps Reverser's own pushes | Every applier on the branch |
 
-GitOps Reverser never requests an apply of its own commits from an Argo CD `Application`: the
-cluster already holds those values, because they were read from it. Flux is the exception, and
+The cluster already holds the values of GitOps Reverser's own commits, because they were read from
+it, so applying them changes nothing. Flux is asked to catch up with them anyway, and
 [configure Flux](#configure-flux) says why.
 
 A foreign commit that arrives while edits are pending does not wait for their windows to close.
@@ -137,7 +138,7 @@ spec:
   branch: main
   path: apps/checkout
   applier:
-    kustomizationRef:          # or applicationRef, or webhook
+    kustomizationRef:
       namespace: flux-system
       name: checkout
   onRefusal: Reapply
@@ -150,49 +151,40 @@ folder's repository and branch, or the target reports `ApplierConfigured=False`.
 [configuration reference](configuration.md#who-applies-this-folder-specapplier) has every field
 and reason.
 
-Several `GitTarget`s may name the same applier, for example an `Application` whose path covers
-several folders. Requests to one applier object are sent once.
-
-`webhook` is for any other tool: GitOps Reverser sends a signed POST naming the repository, the
-branch, the commit and the reason, and the receiver decides what to do with it.
+Several `GitTarget`s may name the same `Kustomization`, for example one whose path covers several
+folders. Requests to one `Kustomization` are sent once.
 
 ## Configure Argo CD
 
-Switch automated sync off and keep its settings. Argo CD 3.1 and later has a field for exactly
-that:
+GitOps Reverser cannot drive an Argo CD `Application` yet; `spec.applier` names a Flux
+`Kustomization` only, and Argo CD is next. Until then an `Application` keeps its own triggers, with
+the exposure [why GitOps Reverser owns the trigger](#why-gitops-reverser-owns-the-trigger)
+describes: the timed refresh syncs each of GitOps Reverser's pushes two to three minutes later, over
+whatever is pending at that moment.
+
+The configuration that keeps the most of a live edit in the meantime:
 
 ```yaml
 spec:
   syncPolicy:
     automated:
-      enabled: false     # GitOps Reverser makes the sync requests
-      prune: true        # still read: GitOps Reverser's syncs prune when this is true
-    syncOptions:
-      - ServerSideApply=true
+      selfHeal: false
+      prune: true
 ```
 
-GitOps Reverser's request is the sync operation Argo CD's own automated sync would have made,
-pinned to one commit: `prune` from `automated.prune`, `syncOptions` and `retry` from the
-`Application`, and `initiatedBy` naming GitOps Reverser. It waits for a running operation to
-finish rather than replacing it. Because the commit is pinned, the sync applies exactly the commit
-GitOps Reverser checked, not whatever the tip has become by the time it runs.
-
-With automated sync off, a refresh only compares: the timed refresh, a Git-host webhook into
-Argo CD, and the UI's Refresh button all report `Synced` or `OutOfSync` and apply nothing. So
-`timeout.reconciliation` can stay at its default, and a Git-host webhook into Argo CD is optional;
-it only makes the comparison status fresher. `selfHeal` has nothing left to act on.
-
-On an Argo CD older than 3.1, omit `automated` altogether. GitOps Reverser's syncs then do not
-prune.
-
-Every sync runs the `Application`'s resource hooks, which is the other reason GitOps Reverser never
-syncs an `Application` for its own commits.
+With `selfHeal: true` Argo CD reverts a live edit in about a second, usually before GitOps Reverser
+can publish it, and Git records a two-commit flap. `selfHeal: false` only suppresses repeating a
+sync of a commit already synced, so a new commit or a manual sync still applies Git over an
+unpublished API edit. Use `prune: true` only when a deletion in Git should delete the live object,
+and point the Git host's webhook at `https://<argocd-server>/api/webhook` so a Git-side push is
+synced in seconds rather than on the timer.
 
 ### The split-ownership alternative
 
-`ignoreDifferences` on a field, with `RespectIgnoreDifferences=true` in `syncOptions`, hands that
-one field to the API. Its differences alone do not make the `Application` `OutOfSync`, and the
-option copies the live value into the apply target, so GitOps Reverser's syncs preserve it.
+`ignoreDifferences` on a field, with `RespectIgnoreDifferences=true` in `syncOptions`, keeps
+`selfHeal: true` everywhere else and hands that one field to the API. Its differences alone do not
+make the `Application` `OutOfSync`, and the option copies the live value into the apply target, so an
+ordinary sync preserves it.
 
 The cost is that the field stops being Git-driven on an existing object: Git seeds it at creation,
 but later Git edits to it do not reach the object while the ignore is active. It protects no other
@@ -221,7 +213,7 @@ the one `flux reconcile kustomization --with-source` makes: it stamps
 `reconcile.fluxcd.io/requestedAt` on the `GitRepository`, and stamps the `Kustomization` too when
 the artifact already holds the requested commit.
 
-Flux needs one request Argo CD does not. Its timers and a controller restart apply whatever artifact
+Flux needs one more request than the cluster's own state suggests. Its timers and a controller restart apply whatever artifact
 the `GitRepository` holds, and with a long interval that artifact falls behind GitOps Reverser's own
 pushes. Applying a stale artifact would revert published edits, not only pending ones. So after its
 own pushes, once the branch has been quiet for `spec.applier.quietPeriod` (`30s` by default),
@@ -470,20 +462,21 @@ concurrent writers.
 
 | Covered | Where |
 | --- | --- |
-| Argo CD bookkeeping never reaches Git, asserted as zero commits during a sync | [Argo CD](../test/e2e/argocd_bi_directional_e2e_test.go) |
-| Two API edits to one field seconds apart end at the later value, with no commit authored by the applier | Argo CD and [Flux](../test/e2e/flux_bi_directional_e2e_test.go) |
-| With a short `timeout.reconciliation`, Argo CD applies nothing GitOps Reverser did not request | Argo CD |
-| A Git-side push while an API edit is pending lands both, and the applier applies the replayed commit | Argo CD and Flux |
-| After a quiet period the `GitRepository` artifact holds the tip, and a forced `Kustomization` reconcile changes nothing | Flux |
-| A refused edit with `onRefusal: Reapply` is reverted, and only its own applier is asked | Argo CD and Flux |
-| With no receiver configured, a foreign push is still applied after the refresh finds it | Flux |
+| Two API edits to one field seconds apart end at the later value with no further commit, and Flux catches up with both by itself | [Flux](../test/e2e/flux_bi_directional_e2e_test.go) |
+| A Git-side push with an API edit on top lands both, and Flux applies the replayed commit without being reconciled by hand | Flux |
+| A new `GitRepository` revision is enough for the `Kustomization` to apply and revert drift | Flux |
+| A refused edit with `onRefusal: Reapply` is reverted by its `Kustomization`, with no commit, and settles instead of repeating | [Refusal reapply](../test/e2e/refusal_reapply_e2e_test.go) |
+| A Git to cluster to Git round trip settles without a commit loop | Flux |
 | A SOPS-encrypted Secret round-trips without a reverse commit | Flux |
 | A Git revert removes the live object and the committed file | Flux |
+| Argo CD bookkeeping never reaches Git, asserted as zero commits during a sync | [Argo CD](../test/e2e/argocd_bi_directional_e2e_test.go) |
+| `selfHeal: true` loses the API edit, and the flap is exactly two commits; `selfHeal: false` keeps it | Argo CD |
 
 **No spec tests simultaneous writes to one field from both sides**, because the outcome depends on
 arrival order the corner does not control. The replay mechanism is covered; a conflict policy is
 not, because there is not one.
 
-Run `task test-e2e-bi-directional` for the corner, which is also a CI job. `task argocd-ui` opens
-the installed Argo CD UI. The [corner specification](spec/e2e-bi-directional-corner.md) describes
+Run `task test-e2e-bi-directional` for the corner, which is also a CI job. `task test-e2e` excludes
+the corner and includes the refusal spec. `task argocd-ui` opens the installed Argo CD UI. The
+[corner specification](spec/e2e-bi-directional-corner.md) describes
 the setup.
