@@ -119,8 +119,9 @@ is the [contested-cell rule](#what-happens-when-somebody-else-pushed-first) seen
 for an object both sides changed, the API value wins.
 
 A request asks; it never reports that the apply happened. Requests are sent off the publication
-path, retried on their own, and a failed request never fails a publication that succeeded. Read the
-applier's own status to see what it applied.
+path, and a failed request never fails a publication that succeeded: the worker keeps what the
+applier is owed and decides the retry on a quiet branch. Read the applier's own status to see what
+it applied.
 
 ## Declaring the applier
 
@@ -447,7 +448,7 @@ concurrent writers.
 | --- | --- |
 | Two API edits to one field seconds apart end at the later value with no further commit, and Flux catches up with both by itself | [Flux](../test/e2e/flux_bi_directional_e2e_test.go) |
 | A Git-side push with an API edit on top lands both, and Flux applies the replayed commit without being reconciled by hand | Flux |
-| A new `GitRepository` revision is enough for the `Kustomization` to apply and revert drift | Flux |
+| A new `GitRepository` revision, from a commit outside the applied folder, is enough for the `Kustomization` to apply and revert drift | Flux |
 | A refused edit with `onRefusal: Reapply` is reverted by its `Kustomization`, with no commit, and settles instead of repeating | [Refusal reapply](../test/e2e/refusal_reapply_e2e_test.go) |
 | A `SourceMismatch` applier is never stamped, a push the Git host reports or the refresh finds is applied, without the corner | [Manager Flux Applier](../test/e2e/flux_applier_e2e_test.go), and [the Flux guide](flux.md#what-the-tests-prove) |
 | A Git to cluster to Git round trip settles without a commit loop | Flux |

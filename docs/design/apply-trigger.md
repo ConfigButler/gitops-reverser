@@ -57,11 +57,11 @@ already in Git.
 
 **Not every commit GitOps Reverser authors is a no-op to apply.** A replayed `F + W` carries
 somebody else's `F`, and a refusal needs an apply to be reverted. So the decision is state on the
-worker ("this applier is owed an apply"), set by observations and cleared by a delivered request,
-not a verdict on each push notification. A notification is a hint: the worker reads the remote and
+worker ("this applier is owed an apply"), set by observations and cleared by a delivered request.
+A push notification decides nothing by itself; it is a hint: the worker reads the remote and
 judges from that, which gets late, duplicate and rolled-back deliveries right.
 
-**A decision has to hold when the patch is sent, not only when it is made.** The first review found
+**A decision has to hold when the patch is sent as well as when it is made.** The first review found
 that a request decided once was attempted for minutes against whatever the cluster had become: a
 target its `ClusterProvider` no longer admitted still drove the applier, and a source that followed
 another branch was still stamped. Every attempt now reads each target again, and the Flux client
@@ -152,9 +152,10 @@ What would make the window smaller and visible, in order of cost:
    is the case that can be reverted. Recording it (an Event on the `GitTarget`, a counter) turns a
    silent revert into a visible one.
 3. **Let the API win the window.** A write by the applier's own field manager during an attempt we
-   made, that undoes a field edited after that attempt was sent, is our apply arriving late, not new
-   intent. Not mirroring it keeps the edit in Git, and the next request applies it back. This is the
-   rule "for an object both sides changed, the API value wins", applied to the apply window. It needs
+   made, that undoes a field edited after that attempt was sent, is our apply arriving late, with no
+   new intent behind it. Not mirroring it keeps the edit in Git, and the next request applies it
+   back. This is the rule "for an object both sides changed, the API value wins", applied to the
+   apply window. It needs
    the field manager from `managedFields` (no audit), and it is the only option that changes what
    reaches Git, so it needs its own decision.
 
@@ -168,7 +169,7 @@ consequences:
 
 - **No `CatchUp`.** With automated sync off Argo CD applies nothing on its own, so there is no stale
   artifact to catch up, and every sync runs the `Application`'s hooks.
-- **The commit is pinned**, so a sync applies what the worker checked, not whatever the tip became.
+- **The commit is pinned**, so a sync applies exactly what the worker checked.
 - **A running operation is waited for, never replaced**, as Argo CD's own `SetAppOperation` does.
 
 The open question that shapes its API: a hub Argo CD keeps `Application`s in a management cluster,
@@ -196,7 +197,7 @@ in-process plugin: it would run with every credential the operator holds.
 | --- | --- |
 | The decision: quiet branch, reasons, quiet period, baseline | [`apply_trigger_test.go`](../../internal/git/apply_trigger_test.go) |
 | Retries are decided by the worker; recovered refusals, withdrawn consent and recreated targets are not retried; each applier keeps its own clock; one attempt for a shared applier; a busy sibling worker holds the branch | [`apply_attempt_test.go`](../../internal/git/apply_attempt_test.go) |
-| Every attempt rechecks targets, never asks for something weaker, and never stamps a source on another branch | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
+| Every attempt rechecks targets, asks for nothing weaker than it was told, and stamps no source on another branch | [`dispatcher_test.go`](../../internal/applier/dispatcher_test.go), [`flux_test.go`](../../internal/applier/flux_test.go) |
 | The original race: two API edits end at the later value with no extra commit | [bi-directional Flux corner](../../test/e2e/flux_bi_directional_e2e_test.go) |
 | `SourceMismatch` is never stamped and is delivered once fixed; a Gitea webhook and the refresh alone each get a push applied | [Manager Flux Applier](../../test/e2e/flux_applier_e2e_test.go) |
 | A refused edit is reverted by its `Kustomization` | [Refusal reapply](../../test/e2e/refusal_reapply_e2e_test.go) |

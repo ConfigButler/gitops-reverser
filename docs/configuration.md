@@ -1090,10 +1090,11 @@ Git-host configuration. Seconds-fresh is the job of the
 
 ### Who applies this folder (`spec.applier`)
 
-When Flux applies this folder back to the cluster, `spec.applier` names the `Kustomization` that does
-it, and GitOps Reverser becomes the one that decides when it applies. Flux keeps doing the fetching,
-rendering, applying and pruning. The reason it has to be this way, and how to configure Flux for it,
-is the [bi-directional guide](bi-directional.md).
+When a GitOps tool applies this folder back to the cluster, `spec.applier` names the object that
+does it, and GitOps Reverser becomes the one that decides when it applies. The tool keeps doing the
+fetching, rendering, applying and pruning. The reason it has to be this way is the
+[apply trigger design](design/apply-trigger.md); the [bi-directional guide](bi-directional.md) is
+the model, and [Using GitOps Reverser with Flux](flux.md) the whole Flux setup.
 
 ```yaml
 spec:
@@ -1109,9 +1110,16 @@ spec:
 | `kustomizationRef` | **required** | A Flux `Kustomization` whose `sourceRef` is a `GitRepository` on this target's repository and branch |
 | `quietPeriod` | `30s` | How long the branch must stay quiet after GitOps Reverser's own pushes before a `CatchUp` request. At most `1h` |
 
-Argo CD (`applicationRef`) and a webhook for any other tool are the next appliers; until they
-exist, an Argo CD `Application` keeps its own triggers. [Using GitOps Reverser with Flux](flux.md)
-walks through the whole Flux setup, from the `GitRepository` to the Git host's webhook.
+**The appliers.** A Flux `Kustomization` (`kustomizationRef`) is built. Two more are the aim, and
+the API does not accept them yet:
+
+- **An Argo CD `Application` (`applicationRef`).** The `Application` runs with
+  `syncPolicy.automated.enabled: false`, and a request sets its sync operation exactly as automated
+  sync would, pinned to the commit GitOps Reverser checked. It is never asked to catch up with
+  GitOps Reverser's own commits, so `quietPeriod` will not apply to it. Until it lands, an
+  `Application` keeps its own triggers.
+- **A webhook (`webhook`)** for any other tool: a POST of `{"repository", "branch", "commit",
+  "reason"}`, signed the way Flux's `generic-hmac` `Receiver` checks.
 
 **Where the reference is looked up.** In the source cluster, the cluster the `Kustomization` applies
 to, with the identity the [`ClusterProvider`](#clusterprovider) already uses. That identity needs `get`
@@ -1122,7 +1130,8 @@ cluster, grant the same to the kubeconfig's identity. A `Kustomization` that liv
 than the one it applies to is not supported.
 
 **When a request is made.** Only on a quiet branch: no open commit window and no pending writes on
-the branch worker, which is the moment nothing live is missing from the tip.
+the branch worker, or on any other worker writing the same repository and branch through another
+`GitProvider`. That is the moment nothing live is missing from the tip.
 
 | `reason` | When | Sent to |
 | --- | --- | --- |
@@ -1133,7 +1142,9 @@ the branch worker, which is the moment nothing live is missing from the tip.
 Flux applies on its own timers and on a controller restart, from whatever artifact the
 `GitRepository` holds. `CatchUp` keeps that artifact at the tip, so such an apply applies values the
 cluster already holds; an artifact left behind would revert edits that are already in Git.
-`quietPeriod` keeps the catch-up out of an editing session: every new write restarts it.
+`quietPeriod` keeps the catch-up out of an editing session: every new write restarts it. When several
+`GitTarget`s name one `Kustomization`, it waits for the longest of their quiet periods, since its
+apply reaches all their folders, and it is asked once for all of them.
 
 **What a request does.** What `flux reconcile kustomization --with-source` does: stamp
 `reconcile.fluxcd.io/requestedAt` on the `GitRepository`, and on the `Kustomization` instead when
@@ -1144,19 +1155,19 @@ A request asks; it never claims the apply happened. It runs off the publication 
 request never fails a publication that succeeded. Read the `Kustomization`'s
 `status.lastAppliedRevision` for what it applied.
 
-**Every attempt checks again.** A request is decided once, on a quiet branch, and can be attempted
-later. So before every attempt, retries included, GitOps Reverser reads the `GitTarget` again and
-asks nothing for it when it no longer names this applier on this branch or its `ClusterProvider` no
-longer admits its namespace. A `Refusal` is asked only while the target still consents
-(`onRefusal: Reapply`, not suspended); otherwise its applier is asked a `CatchUp`. And nothing is
-stamped unless the `Kustomization`'s `GitRepository` fetches this repository and branch, whatever
+**Every attempt checks again.** Just before it patches, GitOps Reverser reads each `GitTarget` again
+and asks nothing for one that has been deleted or recreated, no longer names this applier on this
+branch, is no longer admitted by its `ClusterProvider`, or, for a `Refusal`, no longer consents
+(`onRefusal: Reapply`, not suspended). It never asks for something weaker in place of what it was
+told; when no target still holds the request's reason it asks nothing. And nothing is stamped unless
+the `Kustomization`'s `GitRepository` fetches this repository and branch, whatever
 `ApplierConfigured` last said.
 
-**A request that fails** is retried for about one `quietPeriod`, or not at all when the
-`Kustomization` cannot take a request, and then goes back to the branch worker, which asks again
-once the branch is quiet, waiting longer each time up to a few minutes. It is not retried for
-longer than that because a retry skips the quiet check: Flux applies whatever the tip is when the
-retry lands, and by then live edits may be waiting to be published.
+**A request that fails is decided again from scratch.** The branch worker keeps what the
+applier is owed until a request delivers it. After a failure it waits out that applier's own backoff
+(2 seconds doubling to 5 minutes, at least 15 seconds when the `Kustomization` cannot take a
+request), then waits for a quiet branch like any first request, and asks for the tip as it is then.
+A refusal that recovered in the meantime is not asked for again.
 
 **What it reports.**
 

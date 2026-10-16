@@ -1,10 +1,9 @@
 # Push notification and the apply trigger
 
-> **design**: decided 2026-10-16; the Flux applier, the receiver and `Reapply` are built, Argo CD
-> and the webhook applier are not. Index: [`../INDEX.md`](../INDEX.md)
-> User-facing model: [`../bi-directional.md`](../bi-directional.md). Fields:
-> [`../configuration.md`](../configuration.md#who-applies-this-folder-specapplier). The request that
-> led here: [`bi-directional-right.md`](bi-directional-right.md).
+> **finished**: superseded on 2026-10-16 by [`../design/apply-trigger.md`](../design/apply-trigger.md),
+> which is the current design and what is still open. This page is the record of how the apply
+> trigger was decided. Its Part 1 (how the branch worker reads the remote) is still cited from the
+> Git code by its section numbers, which predate the last restructuring of this page.
 
 GitOps Reverser and the applier (Flux or Argo CD) share a branch. This page is how they talk:
 how GitOps Reverser learns that somebody else pushed, and how it decides when the applier applies.
@@ -65,7 +64,7 @@ branch on the worker's authority. Any push error or rejection clears it. `checko
 how many pending writes the checkout holds on top of its root; unknown means a failed write left
 the tree dirty, and a count below the pending writes means a reset discarded their commits and they
 must be replayed. The loop's `materialize` is the one place that acts on it
-([`gittarget-branch-worker-pending-writes.md`](gittarget-branch-worker-pending-writes.md)).
+([`gittarget-branch-worker-pending-writes.md`](../design/gittarget-branch-worker-pending-writes.md)).
 
 A cycle plans straight onto the worktree only when the base is trusted and the tree is clean;
 otherwise it fetches, resets and replays first.

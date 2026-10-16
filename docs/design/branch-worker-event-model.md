@@ -410,7 +410,7 @@ Keep timers as wakeup mechanisms and persist the deadlines that give those wakeu
 Recording every periodic tick would add history without explaining a decision. Record meaningful
 scheduling, cancellation, and accepted firings instead.
 
-The current worker has five timer sources:
+The current worker has six timer sources:
 
 | Deadline | Existing purpose |
 |---|---|
@@ -418,7 +418,8 @@ The current worker has five timer sources:
 | Push timer | Space successful publication cycles |
 | Retry | Retry a failed publication on its backoff, or probe for a missing parent |
 | Attach timeout | Settle a save still waiting for an eligible window |
-| Refusal action | Recheck consent before an eligible empty commit |
+| Refusal action | Recheck consent before a coalesced Refusal request is owed |
+| Applier | Send an apply attempt that came due on a quiet branch |
 
 The retry schedule has its own timer; the push timer is only the success cooldown. Parent
 recovery has no timer of its own since #413: while its obligation is open, the retry deadline is
@@ -571,6 +572,6 @@ The detailed design records continue to own adjacent policy:
 - [Configuration freshness](gittarget-configuration-freshness.md): watch-plan application and
   publication are separate observations. This design does not require new public freshness fields.
 - [API boundaries](gittarget-api-wave.md) and
-  [push notifications](push-notification-and-reconcile-trigger.md): a remote-change notification
+  [push notifications](apply-trigger.md): a remote-change notification
   requests work through the owner. It does not become another checkout writer or prove that Git
   changes reached the source cluster.

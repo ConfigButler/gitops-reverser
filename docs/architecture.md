@@ -79,7 +79,7 @@ lock the parent. The parent can still move after the advertisement, so what is g
 parent's tip as that advertisement showed it. **The corollary is the rule to keep in your head
 when adding code here:** anything that resolves, commits, or concludes without reaching a push
 advertisement must either fetch, or refuse to conclude. See
-[inbound push notification](design/push-notification-and-reconcile-trigger.md) §3.
+[inbound push notification](design/apply-trigger.md).
 
 That trust belongs to **one repository**, and so does the worker holding it. A worker is keyed by
 `(GitProvider namespace, GitProvider name, branch)`, which names no repository, while `spec.url` is
@@ -116,15 +116,24 @@ cluster snapshot: the cluster still holds the values from before the push, so a 
 publish them over the incoming change.
 
 **GitOps Reverser decides when Git is applied to the cluster.** An apply is safe only when nothing
-live is missing from the commit being applied, and only the branch worker can see the edits that are
-live and not yet pushed. So a `GitTarget` names its **applier** (a Flux `Kustomization`), the
-applier's own short triggers are switched off, and the branch worker sends **apply requests**
-instead. A request is sent only on a **quiet branch**, with no open commit window and no pending
-writes: for a commit somebody else pushed (after closing open windows and replaying the pending
-writes onto it), for a refused edit the target opted to revert, and to keep Flux's artifact current
-after GitOps Reverser's own pushes, because Flux's timers and restarts apply whatever artifact it
-holds. A request asks and never reports; it runs off the publication path and cannot fail a
-publication. See [the apply trigger design](design/push-notification-and-reconcile-trigger.md).
+live is missing from the commit being applied, and only the workers writing the branch can see the
+edits that are live and not yet pushed. So a `GitTarget` names its **applier**, the applier's own
+triggers are switched off, and the branch worker sends **apply requests** instead. A request is sent
+only on a **quiet branch**, with no open commit window and no pending writes on any worker writing
+that repository and branch:
+
+- for a commit somebody else pushed, after closing open windows and replaying the pending writes
+  onto it, so the applied commit carries the API side's answer;
+- for a refused edit the target opted to revert;
+- for Flux only, to keep its artifact current after GitOps Reverser's own pushes, because Flux's
+  timers and restarts apply whatever artifact it holds. Argo CD is never asked to apply GitOps
+  Reverser's own commits: with automated sync off it applies nothing on its own, and a sync is pinned
+  to the commit the worker checked.
+
+The worker owns each request until it is delivered, and decides every retry the same way. A request
+asks and never reports; it runs off the publication path and cannot fail a publication. **Built:**
+the Flux `Kustomization` applier. **The aim:** an Argo CD `Application` and a webhook for any other
+tool. See [the apply trigger design](design/apply-trigger.md).
 
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches initialize from current state on startup. When an endpoint
@@ -659,12 +668,19 @@ older commits is foreign, because the advertisement names a tip other than the l
 
 The same quiet-branch rule sends two other requests: `Refusal`, to the refusing target's applier
 when `spec.onRefusal: Reapply` is set, and `CatchUp`, to every applier on the branch once it has
-been quiet for `spec.applier.quietPeriod` after the worker's own pushes. Delivering them is the job
-of the dispatcher in `internal/applier`, off the worker's queue: it stamps
-`reconcile.fluxcd.io/requestedAt` on the `GitRepository` or the `Kustomization`, retries with
-backoff, lets a newer request for the same `Kustomization` supersede one not yet sent, and records an
-`ApplyRequested` Event and `status.applier`. A failed request never reaches back into the publication that
-caused it.
+been quiet for `spec.applier.quietPeriod` after the worker's own pushes (the longest among the
+`GitTarget`s that share an applier, since its apply reaches all their folders).
+
+What each applier is owed lives on the worker, per applier: one attempt out at a time, and its own
+retry clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
+reports back. It reads each `GitTarget` again first (the same incarnation by uid, still naming this
+applier on this branch, still admitted, still consenting to a `Refusal`), checks that the
+`Kustomization`'s source fetches this repository and branch, and stamps
+`reconcile.fluxcd.io/requestedAt` on the `GitRepository` or the `Kustomization`. It never retries:
+an attempt that does not deliver gives the worker back what it carried, a refusal only while it still
+stands, and the worker decides the retry on a quiet branch after that applier's backoff. A delivered
+request records an `ApplyRequested` Event and `status.applier`. A failed request never reaches back
+into the publication that caused it.
 
 ***
 
@@ -1639,10 +1655,10 @@ as one funnel and its loss paths as one selector:
   [Interpreting metrics](interpreting-metrics.md#reading-git_fetches_total).
 
 **Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
-request the worker decided to send (`applier_kind` is `kustomization`; `reason` is
+attempt the worker decided to send (`applier_kind` is `kustomization`; `reason` is
 `ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
-`sent` from `failed` (handed back to the branch worker), `superseded` (a newer request for the same
-applier replaced it before it went out) and `dropped` (no target may still ask).
+`sent` from `failed` (the worker decides the retry) and `dropped` (no target may still ask for that
+reason). It counts attempts, not obligations.
 `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`, `unmatched`,
 `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the
@@ -1721,12 +1737,15 @@ Current limitations:
   triggers are off, so while the operator is down a Git-side push reaches the cluster only through a
   manual sync, `flux reconcile`, or Flux's long backstop interval.
 - **The applier must live in the cluster it applies to.** It is looked up in the source cluster
-  with the `ClusterProvider`'s identity.
-- **Only Flux can be an applier.** An Argo CD `Application` keeps its own triggers until it can be
-  named in `spec.applier`.
-- **An apply request cannot reserve time.** An edit made while a requested apply runs is reverted
-  and mirrored as the applier's commit. The rule confines that to the seconds after a foreign push,
-  a refusal with `Reapply`, or a quiet period on a Flux branch.
+  with the `ClusterProvider`'s identity, which rules out a hub Argo CD for now.
+- **Only Flux can be an applier yet.** An Argo CD `Application` keeps its own triggers until
+  `applicationRef` lands.
+- **An apply request cannot reserve time.** The request is asynchronous: an edit made while the
+  requested apply runs, to a field the applier sets, is reverted and mirrored as the applier's
+  commit. The rule confines that to the seconds after a foreign push, a refusal with `Reapply`, or a
+  quiet period on a Flux branch;
+  [the apply trigger design](design/apply-trigger.md#the-apply-window-what-is-still-racy) weighs the
+  options to shrink it further.
 - **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
   certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not
@@ -1744,7 +1763,7 @@ Current limitations:
 | Package | Role |
 |---|---|
 | [api/v1alpha3/](../api/v1alpha3/) | CRD types |
-| [internal/applier/](../internal/applier/) | apply requests: the Flux client, the dispatcher that delivers them, and the `ApplierConfigured` check |
+| [internal/applier/](../internal/applier/) | apply requests: the Flux client, the dispatcher that carries out each attempt, and the `ApplierConfigured` check |
 | [cmd/](../cmd/) | operator entry point and server setup |
 | [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers feeding attribution facts |
 | [internal/controller/](../internal/controller/) | Kubernetes reconcilers |
@@ -1790,7 +1809,7 @@ Deeper dives live under [docs/design/](design/):
 - [Kubernetes API resource catalog](facts/kubernetes-api-resource-catalog.md)
 - [GitTarget status design](spec/status-conditions-guide.md)
 - [The support contract: what we edit, what we refuse, and why](design/support-boundary/support-contract.md)
-- [Push notification and the apply trigger](design/push-notification-and-reconcile-trigger.md)
+- [The apply trigger](design/apply-trigger.md)
 - [Git credentials interop](finished/git-credentials-interop.md)
 - [SOPS/age key management](finished/sops-repo-bootstrap-and-key-management-architecture.md)
 - [Commit signing](commit-signing.md)

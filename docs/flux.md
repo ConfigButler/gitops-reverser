@@ -163,7 +163,11 @@ Reverser is down; a short one is a source that fetches, and so applies, on its o
   `GitProvider`'s repository and branch, so naming one elsewhere grants nothing that write access to
   the repository does not already give.
 - Several `GitTarget`s may name one `Kustomization`, for example one whose `path` covers several
-  folders. It is asked once per request, however many of them share it.
+  folders. It is asked once for all of them, each with its own reason, and waits for the longest of
+  their `quietPeriod`s, because its apply reaches every one of their folders.
+- Two `GitProvider`s may name one repository, for example one per team. Each gets its own branch
+  worker, and the branch counts as quiet only when both are: a `Kustomization` applies the tip
+  whichever of them wrote it.
 
 ## The `GitTarget`
 
@@ -248,14 +252,24 @@ already holds it, it stamps the `Kustomization` instead, and a `CatchUp` stamps 
 
 **It is asynchronous.** The patch returns as soon as the API server accepts it, and nothing waits
 for Flux to fetch or apply. It runs off the branch worker, so a slow source cluster never holds a
-publication, and a failed request never fails one.
+publication, and a failed request never fails one. That leaves a window of a few seconds while Flux
+applies: an API edit made then, to a field the `Kustomization` sets, is reverted by the apply. The
+quiet-branch rule confines the window to the moments listed above; waiting for the apply would not
+close it, because waiting does not stop anybody editing.
+[The apply trigger design](design/apply-trigger.md#the-apply-window-what-is-still-racy) weighs the
+ways to shrink it.
 
-Before every attempt, retries included, GitOps Reverser reads the `GitTarget` again: it must still
-name this `Kustomization` on this branch, its `ClusterProvider` must still admit it, and a
-`Refusal` must still have consent. A request that fails is retried for about one `quietPeriod`,
-because a retry skips the quiet check, and is then handed back to the branch worker, which asks
-again once the branch is quiet, waiting longer each time up to five minutes. A failure that cannot
-be retried, such as a `SourceMismatch`, is handed back at once and delivered once it is fixed.
+Before it patches, GitOps Reverser reads each `GitTarget` again: it must still be the same
+object (a deleted and recreated one inherits nothing), still name this `Kustomization` on this
+branch, still be admitted by its `ClusterProvider`, and, for a `Refusal`, still consent. When none
+still holds the request's reason it asks nothing; it does not substitute a weaker request.
+
+**A request that fails is decided again from scratch.** GitOps Reverser keeps what each
+`Kustomization` is owed until a request delivers it. After a failure, that `Kustomization` waits out
+its own backoff (2 seconds doubling to 5 minutes, at least 15 seconds after a `SourceMismatch`),
+then waits for a quiet branch like any first request, and asks for the tip as it is then. So a
+`SourceMismatch` is delivered once it is fixed, and a refusal that recovered meanwhile is not asked
+for again.
 
 ## Reverting refused edits
 
@@ -297,7 +311,7 @@ kubectl get kustomization checkout -n flux-system -o jsonpath='{.status.lastAppl
 | `ApplierConfigured=False`, `ApplierNotFound` | The `Kustomization` does not exist in the source cluster under that namespace and name, or Flux is not installed there | Create it, or fix `kustomizationRef`; an omitted namespace is the `GitTarget`'s |
 | `ApplierConfigured=False`, `SourceMismatch` | The message names the broken [`GitRepository` rule](#the-gitrepository) | Fix the `GitRepository`; the request it was holding is delivered afterward |
 | `ApplierConfigured=False`, `Forbidden` | The identity lacks one of the [permissions](#permissions) | Grant it, or set `applierAccess.flux: true` |
-| A Warning `ApplyRequestFailed` Event | A request could not be delivered; the message says why | GitOps Reverser keeps asking on a quiet branch, at most every five minutes. It is recorded once per failing request |
+| A Warning `ApplyRequestFailed` Event | A request could not be delivered; the message says why | GitOps Reverser keeps asking on a quiet branch, at most every five minutes. It is recorded for the first failure of a run |
 | Flux applies while edits are in flight | Something else still makes the source fetch: a short `interval`, a Flux `Receiver`, or someone running `flux reconcile` | Lengthen the intervals and remove the Flux `Receiver` |
 | A Git-side push takes minutes to reach the cluster | No receiver, so the refresh finds it | Configure [the webhook](#the-git-hosts-webhook) |
 | A refused edit is not reverted | The target is suspended, `onRefusal` is not `Reapply`, or the refusal is not eligible | See [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal) |
@@ -307,7 +321,7 @@ kubectl get kustomization checkout -n flux-system -o jsonpath='{.status.lastAppl
 GitOps Reverser becomes the only fast path to a deployment. While it is down, a Git-side push
 reaches the cluster through `flux reconcile kustomization <name> --with-source`, which is safe then
 because nothing is publishing, or through the 24h backstop. When it starts again, its first look at
-the remote owes every `Kustomization` a `CatchUp`, never a `ForeignCommit`: an apply on startup
+the remote owes every `Kustomization` a `CatchUp` and no `ForeignCommit`: an apply on startup
 could revert edits made while it was down, before its watches have caught them.
 
 ## What the tests prove
@@ -321,9 +335,10 @@ could revert edits made while it was down, before its watches have caught them.
 | With no receiver and no API edit, the refresh finds a Git-side push and Flux applies it | Manager Flux Applier |
 | Two API edits seconds apart end at the later value with no extra commit, and Flux catches up by itself | [Bi-directional (Flux)](../test/e2e/flux_bi_directional_e2e_test.go) |
 | A Git-side push with an API edit on top lands both, and Flux applies the replayed commit | Bi-directional (Flux) |
-| A new `GitRepository` revision alone makes the `Kustomization` apply, which is why the source must not fetch on its own | Bi-directional (Flux) |
+| A new `GitRepository` revision alone, from a commit outside the applied folder, makes the `Kustomization` apply, which is why the source must not fetch on its own | Bi-directional (Flux) |
 | A refused edit with `onRefusal: Reapply` is reverted by its `Kustomization`, with no commit, and settles | [Refusal reapply](../test/e2e/refusal_reapply_e2e_test.go) |
-| Every attempt checks the target again (admission, branch, consent) and the source binding before it stamps; a failed request goes back to the branch worker, which asks again | [`dispatcher_test.go`](../internal/applier/dispatcher_test.go), [`apply_handback_test.go`](../internal/git/apply_handback_test.go) |
+| Every attempt checks the target again (incarnation, branch, admission, consent) and the source binding before it stamps, and never asks for something weaker | [`dispatcher_test.go`](../internal/applier/dispatcher_test.go) |
+| A failed request is decided again on a quiet branch; a recovered refusal, withdrawn consent or recreated target is not retried; each `Kustomization` keeps its own backoff; a shared one is asked once; a sibling worker on the same repository holds the branch | [`apply_attempt_test.go`](../internal/git/apply_attempt_test.go) |
 
 `task test-e2e` runs the Manager specs, and `task test-e2e-bi-directional` runs the bi-directional
 corner. Not covered end to end yet: a remote source cluster, `Forbidden` against cluster RBAC, and the
