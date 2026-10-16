@@ -46,8 +46,8 @@ func bindReceiverFlags(fs *flag.FlagSet, cfg *appConfig) {
 			"points here plus a GitProvider's status.webhookPath (/git-push/<namespace>/<name>), so a "+
 			"foreign push is noticed in seconds instead of at the next refresh. Expose it through an "+
 			"Ingress or Gateway that terminates TLS. Default 0 serves no receiver; foreign pushes are "+
-			"then still found by the next rejected push or --git-refresh-interval. Served only on the "+
-			"elected replica, because a delivery drives a branch worker.")
+			"then still found by the next rejected push or --git-refresh-interval. Served by the pod that "+
+			"runs the branch workers, because a delivery drives one.")
 }
 
 // receiverEnabled reports whether a push receiver listener is configured.
@@ -118,8 +118,9 @@ func newReceiverServerRunnable(addr string, handler http.Handler) *receiverServe
 	}}
 }
 
-// NeedLeaderElection keeps the receiver on the elected replica. A delivery drives a branch worker,
-// and only the leader runs branch workers (WorkerManager needs leader election too): served on a
+// NeedLeaderElection keeps the receiver with the branch workers: a delivery drives a branch worker,
+// and the WorkerManager asks for leader election too. Leader election is not switched on today and
+// the chart runs one replica, so this only keeps the two together should it ever be: served on a
 // standby, every delivery would find no worker and answer matched=0 for a branch that is written.
 func (r *receiverServerRunnable) NeedLeaderElection() bool {
 	return true

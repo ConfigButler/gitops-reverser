@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -128,6 +129,9 @@ func genericBody(repository, branch string) string {
 	return string(body)
 }
 
+// formEncoded is a JSON body the way GitHub sends it with its default content type.
+func formEncoded(body string) string { return url.Values{"payload": {body}}.Encode() }
+
 func githubHeaders(event, body, token string) map[string]string {
 	return map[string]string{headerGitHubEvent: event, headerGitHubSignature: "sha256=" + hmacHex(body, token)}
 }
@@ -179,6 +183,19 @@ func receiverCases() map[string]receiverCase {
 			wantStatus: http.StatusAccepted, wantMatched: 0,
 			wantCall: &fakePushCall{receiverTestNamespace, "gh", "feature/x", receiverTestCommit},
 			wantType: "github", wantOutcome: deliveryUnmatched,
+		},
+		// GitHub's default content type wraps the JSON in a payload field, and signs the raw body.
+		"github form-encoded push reaches the worker": {
+			path: "/git-push/team-a/gh",
+			headers: func() map[string]string {
+				h := githubHeaders("push", formEncoded(mainPush), receiverTestToken)
+				h["Content-Type"] = "application/x-www-form-urlencoded"
+				return h
+			}(),
+			body:       formEncoded(mainPush),
+			wantStatus: http.StatusAccepted, wantMatched: 1,
+			wantCall: &fakePushCall{receiverTestNamespace, "gh", "main", receiverTestCommit},
+			wantType: "github", wantOutcome: deliveryNotified,
 		},
 		"github wrong signature is rejected": {
 			path: "/git-push/team-a/gh", headers: githubHeaders("push", mainPush, "not-the-token"), body: mainPush,

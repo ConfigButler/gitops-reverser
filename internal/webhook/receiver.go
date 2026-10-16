@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -237,7 +239,7 @@ func (h *ReceiverHandler) act(
 		return
 	}
 
-	delivery, err := parseDelivery(receiverType, body, provider.Spec.URL)
+	delivery, err := parseDelivery(receiverType, jsonBody(header, body), provider.Spec.URL)
 	switch {
 	case errors.Is(err, errDeliveryIgnored):
 		log.V(1).Info("Ignored a verified push delivery", "reason", err.Error())
@@ -429,14 +431,31 @@ type genericPushPayload struct {
 // with the reason) for a push that is deliberately not acted on, and any other error for a body
 // that cannot be read.
 //
-// after is optional in every shape. It is only ever logged, so refusing a delivery for lacking it
-// would turn a field nothing depends on into a reason for a host to disable the hook.
+// after is optional in every shape. It never decides whether the branch moved (it only spares an open
+// window a notice for the tip already observed), so refusing a delivery for lacking it would turn a
+// field nothing depends on into a reason for a host to disable the hook.
 //
 // The repository check is generic-hmac's alone. A host's own hook is configured on one repository
 // (or an organization), and a delivery from a sibling repository on an organization hook costs one
 // ref advertisement for a branch of the same name; comparing the host's repository URLs with
 // spec.url instead would silently drop every delivery for a provider that reaches the host by
 // another name (an SSH host alias, ssh.github.com:443), which is the worse failure.
+// jsonBody is the JSON document a delivery carries. GitHub's default content type for a webhook is
+// application/x-www-form-urlencoded, which wraps the same JSON in a payload field; the signature is
+// over the raw body, so this unwrapping happens only after it was verified. Flux accepts that form
+// too, so a hook moved over from a Flux Receiver keeps working.
+func jsonBody(header http.Header, body []byte) []byte {
+	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
+	if err != nil || mediaType != "application/x-www-form-urlencoded" {
+		return body
+	}
+	form, err := url.ParseQuery(string(body))
+	if err != nil || form.Get("payload") == "" {
+		return body
+	}
+	return []byte(form.Get("payload"))
+}
+
 func parseDelivery(receiverType v1alpha3.ReceiverType, body []byte, providerURL string) (pushDelivery, error) {
 	if receiverType == v1alpha3.ReceiverTypeGenericHMAC {
 		return parseGenericDelivery(body, providerURL)
