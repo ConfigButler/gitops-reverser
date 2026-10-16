@@ -208,6 +208,12 @@ For the operator's own cluster, install the chart with `applierAccess.flux: true
 [`config/rbac/flux-applier-role.yaml`](../config/rbac/flux-applier-role.yaml) and its binding. For
 a remote source cluster, grant the same to the identity in the `ClusterProvider`'s kubeconfig.
 
+The chart's grant is cluster-wide for convenience. Requests only ever read and patch the
+`Kustomization` and `GitRepository` a `GitTarget` names, so a `Role` in each namespace that holds
+them, bound to the same identity, is enough when you would rather not grant cluster-wide. The access
+review needs no grant of its own there: Kubernetes lets every authenticated identity create
+`selfsubjectaccessreviews` (the `system:basic-user` role).
+
 ## The Git host's webhook
 
 Point the Git host's push webhook at GitOps Reverser, so a push reaches the cluster in seconds,
@@ -248,7 +254,15 @@ reconcile tick).
 A request is what `flux reconcile kustomization --with-source` does, minus the waiting. GitOps
 Reverser merge-patches `reconcile.fluxcd.io/requestedAt` on the `GitRepository` when its artifact
 does not hold the commit; the new artifact then wakes the `Kustomization`. When the artifact
-already holds it, it stamps the `Kustomization` instead, and a `CatchUp` stamps nothing at all.
+already holds it, only a `Refusal` stamps the `Kustomization` (to revert drift at an unchanged
+commit); a `ForeignCommit` or `CatchUp` stamps nothing, because the artifact that holds the commit
+already woke the `Kustomization` when it arrived.
+
+Before it stamps, GitOps Reverser checks that its decision still holds: the commit is still
+the branch tip, and no edit is waiting to be published. When either changed since the request was
+decided, it stamps nothing and decides again at the next quiet moment. Without that check, a
+request decided at one commit could stamp the `Kustomization` after a newer push and re-apply the
+older commit over a published edit.
 
 **It is asynchronous.** The patch returns as soon as the API server accepts it, and nothing waits
 for Flux to fetch or apply. It runs off the branch worker, so a slow source cluster never holds a

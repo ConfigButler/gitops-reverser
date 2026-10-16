@@ -80,9 +80,8 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		cleanupNamespace(testNs)
 	})
 
-	// The review's findings 2 and 4 together, against the real thing: a Kustomization whose source
-	// follows another branch is reported, and a request for it never stamps that source, however
-	// it is triggered; and the request is not lost for it, but delivered once the source is fixed.
+	// A Kustomization whose source follows another branch is reported, and a request for it never
+	// stamps that source, however it is triggered; once the source is fixed, Flux reaches the tip.
 	It("reports the applier from the source cluster, and never stamps a source on another branch", func() {
 		By("naming a Kustomization that does not exist yet")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
@@ -126,21 +125,21 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 				"a GitRepository that follows another branch must never be stamped for this one")
 		}, 20*time.Second, 2*time.Second).Should(Succeed())
 
-		// A request that cannot be delivered goes back to the branch worker, which asks again on a
-		// quiet branch. Before, it was given up on, and nothing asked again until the next commit.
-		By("pointing the GitRepository at main, after which the handed-back request is delivered")
+		// The branch worker keeps the ForeignCommit and decides it again after its backoff. Changing
+		// the GitRepository's branch also makes Flux fetch on its own, so which of the two brings the
+		// artifact to the tip is a race: when Flux wins, the worker's retry finds the artifact
+		// current and rightly stamps nothing. Either way Flux must end at the tip, and the worker's
+		// half (an obligation kept across a rejected attempt) is proven in apply_attempt_test.go.
+		By("pointing the GitRepository at main, after which Flux reaches the tip")
+		head := remoteHeadSHA(Default, repo.CheckoutDir)
 		_, err = kubectlRunInNamespace("flux-system", "patch", "gitrepository", fluxName, "--type=merge", "-p",
 			`{"spec":{"ref":{"branch":"main"}}}`)
 		Expect(err).NotTo(HaveOccurred(), "failed to point the GitRepository at main")
 		verifyResourceCondition("gittarget", destName, testNs, "ApplierConfigured", "True", "Succeeded", "")
 		Eventually(func(g Gomega) {
-			g.Expect(gitTargetEventMessages(g, testNs, destName, "ApplyRequested")).
-				To(ContainSubstring("(ForeignCommit)"), "the ForeignCommit must not be lost to the failure")
-			g.Expect(fluxRequestStamps(fluxName)).NotTo(Equal("|"))
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
-		Eventually(func(g Gomega) {
+			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
 			g.Expect(appliedColor(g, appliedNs)).To(Equal("green"))
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	// With no receiver and no API edit, the only thing that can find a Git-side push is the

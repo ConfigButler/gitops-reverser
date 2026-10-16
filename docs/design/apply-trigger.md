@@ -119,10 +119,14 @@ flowchart LR
 - **Attempting.** The dispatcher re-reads each target. It asks only for those that are still the
   same incarnation, still name this applier on this branch, are still admitted by their
   `ClusterProvider`, and for a `Refusal` still consent. If no target still holds the request's
-  reason, it asks nothing (`Dropped`). Then Flux: stamp `reconcile.fluxcd.io/requestedAt` on the
-  `GitRepository` when its artifact lacks the commit, else on the `Kustomization`; a `CatchUp` whose
-  artifact holds the commit stamps nothing. A source on another repository or branch is `Rejected`.
-- **Settling.** A delivered attempt is done. Any other outcome gives back what the attempt carried,
+  reason, it asks nothing (`Dropped`). Just before the stamp it asks the worker whether the decision
+  still holds (the commit is still the tip, nothing is waiting to be published); if not, it stamps
+  nothing (`Stale`, no failure). Then Flux: stamp `reconcile.fluxcd.io/requestedAt` on the
+  `GitRepository` when its artifact lacks the commit; when the artifact holds it, only a `Refusal`
+  stamps the `Kustomization`, because the artifact already woke it for anything else. A source on
+  another repository or branch is `Rejected`.
+- **Settling.** A delivered attempt is done. A stale one gives back what it carried and is decided
+  again at the next quiet moment. Any other outcome gives back what the attempt carried,
   a refusal only if it still stands, and starts that applier's backoff (2s doubling to 5m, at least
   15s after a rejection). `ApplyRequestFailed` is recorded for the first failure of a run.
 - **Learning about pushes.** A push webhook into GitOps Reverser's receiver (seconds), a rejected
@@ -185,11 +189,53 @@ in-process plugin: it would run with every credential the operator holds.
 - **GitOps Reverser becomes the fast path to a deployment.** While it is down, a Git-side push
   reaches the cluster through `flux reconcile`, a manual sync, or the long backstop interval.
   Bi-directional editing already stops in that state.
-- **The receiver runs on the elected replica only.** A standby refuses deliveries; with more than
-  one replica they need routing to the leader.
+- **One replica.** The receiver, the branch workers and the dispatcher run in one pod, and the chart
+  refuses more than one replica. Leader election is not switched on; more than one replica needs
+  ownership coordination first, and deliveries routed to the pod that owns the branch.
 - **Every applier on the branch is asked on a `ForeignCommit`**, whether or not the push touched its
   folder. Harmless for Flux; for Argo CD it runs hooks. Narrowing it needs the applier's own source
   paths, so it waits for a measured complaint.
+
+## Where this goes next
+
+In order. Each step is one pull request, and the first three are what the first adopter, gitops-api,
+needs before it can drop its own gate.
+
+1. **Merge the Flux applier (#419).** Both reviews' findings and the customer review's blockers on
+   stale stamps and on a late webhook cutting a save's window are fixed, each with a regression test.
+2. **Find the applier in the `GitTarget`'s own cluster.** Today the `Kustomization` is looked up in
+   the source cluster. The usual way to run Flux against a remote cluster (gitops-api's kcp
+   workspaces, and every hub-and-spoke install) keeps it in the management cluster and applies
+   through `spec.kubeConfig`; such a target sits at `ApplierNotFound` forever. Proposed:
+   `spec.applier.cluster: Source | Local`, `Source` the default. `Local` resolves the reference with
+   the operator's own identity and only in the `GitTarget`'s own namespace, so it reaches nothing a
+   namespace-scoped `Role` does not grant. It is the same question as hub Argo CD, so it is settled
+   first and the Argo CD API follows it.
+3. **Harden the receiver.** Today a route answers 401 or 503 when its `GitProvider` exists and 404
+   when it does not, on a guessable `/git-push/<namespace>/<name>`, so it lists namespaces; and an
+   unsigned request reads a Secret and buffers up to 25 MiB with no limit on concurrent requests, in
+   the pod that also mirrors. Proposed: a path derived from a hash of the token, namespace and name,
+   as Flux's `Receiver` does; one answer for an unknown route and a bad signature; a small limit on
+   requests in flight and a lower body cap before verification.
+4. **Close the apply window's loop.** Report an attempt as delivered only once Flux has handled the
+   stamp (`status.lastHandledReconcileAt`), so the worker knows exactly when an apply is running, and
+   name an edit that lands inside one. Whether to also let the API win the window (option 3 above)
+   is a separate decision, because it changes what reaches Git.
+5. **The Argo CD applier**, as described above, once step 2 has decided where an applier lives.
+6. **The webhook applier.**
+7. **More than one replica.** Leader election is not switched on, and the chart runs one replica.
+   Standbys need ownership coordination first (the HA plan in `docs/future/`), and deliveries then
+   need routing to the pod that owns the branch.
+
+Test gaps to close along the way: a remote source cluster, `Forbidden` against real RBAC, the receiver
+and applier role installed by the Helm chart, two `GitTarget`s sharing one `Kustomization` in e2e,
+and `-race` in CI.
+
+**What adopting it changes for gitops-api.** Its gate shrinks to "one save, one window", which
+protects commit messages and has nothing to do with Flux. Its push handler relays each push to the
+`GitProvider`'s receiver instead of stamping Flux. And publications trail an editing session by at
+least `quietPeriod`, since Flux now applies GitOps Reverser's own commits only after the branch has
+been quiet; `quietPeriod` is the knob for that trade.
 
 ## What proves it
 

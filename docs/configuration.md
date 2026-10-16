@@ -1147,9 +1147,12 @@ cluster already holds; an artifact left behind would revert edits that are alrea
 apply reaches all their folders, and it is asked once for all of them.
 
 **What a request does.** What `flux reconcile kustomization --with-source` does: stamp
-`reconcile.fluxcd.io/requestedAt` on the `GitRepository`, and on the `Kustomization` instead when
-the artifact already holds the requested commit. A new artifact wakes the `Kustomization` by itself.
-A `CatchUp` whose artifact already holds the commit stamps nothing.
+`reconcile.fluxcd.io/requestedAt` on the `GitRepository` when its artifact does not hold the
+requested commit; the new artifact wakes the `Kustomization` by itself. When the artifact already
+holds the commit, only a `Refusal` stamps the `Kustomization`, to revert drift at an unchanged
+commit; a `ForeignCommit` or `CatchUp` stamps nothing, since that artifact already woke it. Nothing
+is stamped when, by the time of the patch, the commit is no longer the branch tip or an edit is
+waiting to be published: the request is decided again at the next quiet moment.
 
 A request asks; it never claims the apply happened. It runs off the publication path, and a failed
 request never fails a publication that succeeded. Read the `Kustomization`'s
@@ -2496,8 +2499,9 @@ Git host with an Ingress or a Gateway route of your own that terminates TLS, the
 `webhook-receiver` Service is exposed. Every request still has to carry a valid signature for the
 route it names; a route whose `GitProvider` has no `spec.receiver` does not serve.
 
-Like everything that drives a branch worker, the listener runs on the elected replica only; a
-standby refuses the connection. With the chart's default single replica that is the only pod. The
+The listener runs in the pod that runs the branch workers. The chart runs exactly one replica (it
+refuses `replicaCount` above `1`), so that is the only pod; running more than one needs ownership
+coordination first, and a delivery would then have to reach the pod that owns the branch. The
 Service targets port `receiver` and is exposed on `service.ports.receiver` (`80` by default).
 
 ## Quickstart vs hand-managed resources

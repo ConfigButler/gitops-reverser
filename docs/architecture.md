@@ -675,8 +675,10 @@ What each applier is owed lives on the worker, per applier: one attempt out at a
 retry clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
 reports back. It reads each `GitTarget` again first (the same incarnation by uid, still naming this
 applier on this branch, still admitted, still consenting to a `Refusal`), checks that the
-`Kustomization`'s source fetches this repository and branch, and stamps
-`reconcile.fluxcd.io/requestedAt` on the `GitRepository` or the `Kustomization`. It never retries:
+`Kustomization`'s source fetches this repository and branch, asks the worker whether its decision
+still holds (the commit is still the tip and nothing is waiting to be published), and only then
+stamps `reconcile.fluxcd.io/requestedAt` on the `GitRepository`, or, for a `Refusal` at an artifact
+that already holds the commit, on the `Kustomization`. It never retries:
 an attempt that does not deliver gives the worker back what it carried, a refusal only while it still
 stands, and the worker decides the retry on a quiet branch after that applier's backoff. A delivered
 request records an `ApplyRequested` Event and `status.applier`. A failed request never reaches back
@@ -1657,8 +1659,9 @@ as one funnel and its loss paths as one selector:
 **Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
 attempt the worker decided to send (`applier_kind` is `kustomization`; `reason` is
 `ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
-`sent` from `failed` (the worker decides the retry) and `dropped` (no target may still ask for that
-reason). It counts attempts, not obligations.
+`sent` from `failed` (the worker decides the retry), `dropped` (no target may still ask for that
+reason) and `stale` (the decision no longer held at the patch). It counts attempts, not
+obligations.
 `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`, `unmatched`,
 `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the
