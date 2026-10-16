@@ -79,7 +79,7 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 		seedRenderedFolderIntoRepo(repo, testNs, seedFolder, "apps/checkout")
 
 		By("letting Flux apply the overlay once, then leaving it on a 24h interval")
-		applyRefusalFluxApplier(testNs, repo, fluxName, fluxSecretName, "./"+gitPath)
+		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "main", "./"+gitPath)
 		Eventually(func(g Gomega) {
 			g.Expect(checkoutLogLevel(g, testNs)).To(Equal("info"))
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
@@ -169,34 +169,6 @@ var _ = Describe("Manager Refusal Reapply", Label("manager", "refusal-reapply"),
 		Expect(emptyCommitCount(repo.CheckoutDir)).To(Equal(emptyBefore))
 	})
 })
-
-// applyRefusalFluxApplier creates a GitRepository and a Kustomization for path on the spec's
-// repository, both on a 24h interval, and waits for the first apply.
-func applyRefusalFluxApplier(testNs string, repo *RepoArtifacts, name, secretName, path string) {
-	GinkgoHelper()
-	// The in-cluster Gitea test credential, read from the cluster at runtime.
-	checkout := gitCheckout{secretNamespace: testNs, gitSecretName: repo.GitSecretHTTP}
-	username, password := checkout.readGitCredentialSecretDataBase64()
-	Expect(applyFromTemplate("test/e2e/templates/bi-directional/flux-gitrepository-http.tmpl", struct {
-		Namespace, SecretName, Name, RepoURL, Branch, Interval, Username, Password string
-	}{
-		Namespace: "flux-system", SecretName: secretName, Name: name, RepoURL: repo.RepoURLHTTP,
-		Branch: "main", Interval: "24h", Username: username,
-		Password: password,
-	}, "flux-system")).To(Succeed(), "failed to apply the Flux GitRepository")
-	Expect(applyFromTemplate("test/e2e/templates/bi-directional/flux-kustomization.tmpl", struct {
-		Namespace, Name, Path, SourceName, Interval, DependsOn string
-		Prune, Wait                                            bool
-		TargetNS                                               string
-		HasTargetNS                                            bool
-		DecryptionProvider, DecryptionSecretName               string
-	}{
-		Namespace: "flux-system", Name: name, Path: path, SourceName: name, Interval: "24h",
-	}, "flux-system")).To(Succeed(), "failed to apply the Flux Kustomization")
-	_, err := kubectlRunInNamespace("flux-system", "wait", "--for=condition=Ready",
-		"kustomization/"+name, "--timeout=3m")
-	Expect(err).NotTo(HaveOccurred(), "the Kustomization must apply the overlay once")
-}
 
 // applyRequestedMessages is every ApplyRequested Event message recorded on a GitTarget.
 func applyRequestedMessages(g Gomega, testNs, gitTarget string) string {

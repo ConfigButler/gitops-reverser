@@ -221,19 +221,21 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 const fluxApplierFolder = "flux/applier"
 
 // applyFluxApplier creates a GitRepository following branch and a Kustomization applying path from
-// it, both on a 24h interval, and waits for the Kustomization's first apply.
+// it, both on a 24h interval, and waits for the Kustomization's first apply. The Flux specs share it.
 func applyFluxApplier(testNs string, repo *RepoArtifacts, name, secretName, branch, path string) {
 	GinkgoHelper()
-	// The in-cluster Gitea test credential, read from the cluster at runtime.
-	checkout := gitCheckout{secretNamespace: testNs, gitSecretName: repo.GitSecretHTTP}
-	username, password := checkout.readGitCredentialSecretDataBase64()
-	Expect(applyFromTemplate("test/e2e/templates/bi-directional/flux-gitrepository-http.tmpl", struct {
+	// The in-cluster Gitea test credential, read from the cluster at runtime, base64-encoded as the
+	// template's Secret expects.
+	fields := struct {
 		Namespace, SecretName, Name, RepoURL, Branch, Interval, Username, Password string
 	}{
 		Namespace: "flux-system", SecretName: secretName, Name: name, RepoURL: repo.RepoURLHTTP,
-		Branch: branch, Interval: "24h", Username: username,
-		Password: password,
-	}, "flux-system")).To(Succeed(), "failed to apply the Flux GitRepository")
+		Branch: branch, Interval: "24h",
+	}
+	checkout := gitCheckout{secretNamespace: testNs, gitSecretName: repo.GitSecretHTTP}
+	fields.Username, fields.Password = checkout.readGitCredentialSecretDataBase64()
+	Expect(applyFromTemplate("test/e2e/templates/bi-directional/flux-gitrepository-http.tmpl", fields,
+		"flux-system")).To(Succeed(), "failed to apply the Flux GitRepository")
 	Expect(applyFromTemplate("test/e2e/templates/bi-directional/flux-kustomization.tmpl", struct {
 		Namespace, Name, Path, SourceName, Interval, DependsOn string
 		Prune, Wait                                            bool

@@ -1217,7 +1217,7 @@ spec:
 | Value | What happens |
 | --- | --- |
 | `Ignore` (default) | The refusal is reported and nothing else happens |
-| `Reapply` | Once the branch is quiet, this target's [applier](#who-applies-this-folder-specapplier) is asked to apply the current tip, with reason `Refusal`. The refused edit is reverted |
+| `Reapply` | Once the branch is quiet, this target's [applier](#who-applies-this-folder-specapplier) is asked to apply the current tip, with reason `Refusal`. The refused edit is reverted when the applier applies it; the request asks, and the applier's own status says whether it did |
 
 `Reapply` requires `spec.applier`; a target without one is rejected at admission. The request goes
 to this target's applier alone, and it waits for a quiet branch, so an allowed edit still in a commit
