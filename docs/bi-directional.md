@@ -418,11 +418,15 @@ until something applies Git over it.
 | Policy | Response to a refused edit | Operator's trade |
 | --- | --- | --- |
 | `Ignore` (default) | Report the refusal | Leave recovery to a human or a later apply |
-| `Reapply` | Ask the target's applier to apply the current tip, once the branch is quiet | The refused edit is reverted; nothing else on the branch is |
+| `Reapply` | Ask the target's applier to apply the current tip, once the branch is quiet | The refused edit is reverted; nothing still waiting to be published is |
 
-`Reapply` needs a declared applier, and the request goes to that applier alone: other folders on
-the branch are not woken. Waiting for a quiet branch means an allowed edit still in a commit window
-is published first, so the apply reverts only what has no home in Git.
+`Reapply` needs a declared applier, and the request goes to that applier alone. When the applier's
+`GitRepository` has to fetch to reach the tip, though, every `Kustomization` on that
+`GitRepository` applies the new revision, exactly as it would for any push: moving the source is
+the only way to apply the tip, and Flux wakes everything that reads it. Give the folder its own
+`GitRepository` if the apply must reach that folder alone. Waiting for a quiet branch means an
+allowed edit still in a commit window is published first, so the apply reverts only what has no
+home in Git.
 
 Eligibility is narrow: the folder must be accepted, the refused edit must concern a document the
 folder already holds, and the write must remove no document, because re-applying would put back an

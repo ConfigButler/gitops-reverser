@@ -303,10 +303,16 @@ in-process plugin, because it would run with every credential the operator holds
 - A request asks and never reports. Nothing GitOps Reverser publishes claims the apply happened;
   the applier's own status says that.
 - It runs off the worker's queue, in `internal/applier`, so a slow applier never holds the branch.
-- It retries with backoff, and a newer request for the same applier supersedes one not yet sent.
+- Every attempt reads its targets again: one that no longer names the applier on this branch, or
+  that its `ClusterProvider` no longer admits, is dropped, and a `Refusal` needs consent at the
+  attempt, not only when it was decided. The request checks the source binding before it stamps.
+- It retries briefly, for about one `quietPeriod`, because a retry is the worker's decision
+  replayed without the quiet check. Then it is handed back to the worker, which owes it again and
+  sends it on a quiet branch, with a backoff of its own. A newer request for the same applier
+  supersedes one not yet sent.
 - A failed request never fails the publication that caused it.
 - Each request records an `ApplyRequested` Event and updates `status.applier`. A request that
-  keeps failing records `ApplyRequestFailed`.
+  could not be delivered records `ApplyRequestFailed` once.
 
 ### 3.7 Refusals: `onRefusal: Reapply`
 
@@ -426,7 +432,7 @@ status:
 
 | Family | Labels | Reads as |
 | --- | --- | --- |
-| `gitopsreverser_apply_requests_total` | `applier_kind`, `reason`, `outcome` | Requests decided. `outcome`: `sent`, `failed`, `superseded` |
+| `gitopsreverser_apply_requests_total` | `applier_kind`, `reason`, `outcome` | Requests decided. `outcome`: `sent`, `failed`, `superseded`, `dropped` |
 | `gitopsreverser_receiver_deliveries_total` | `type`, `outcome` | Deliveries. `outcome`: `notified`, `unmatched`, `ignored`, `rejected`, `invalid`. Foreign or own is the worker's call, not the receiver's |
 | `gitopsreverser_git_fetches_total` | `reason` | Unchanged. A delivery that finds a foreign tip on an idle branch fetches under `refresh` |
 
@@ -453,7 +459,9 @@ In the bi-directional corner, against real Flux and Argo CD configured as the gu
 4. **Catch-up.** After `quietPeriod` the `GitRepository` artifact holds the tip, and a forced
    `Kustomization` reconcile changes nothing and produces no commit.
 5. **Refusal.** An eligible refused edit is reverted by `Reapply`, only its own applier is asked,
-   and an allowed edit made just before it reaches Git.
+   and an allowed edit made just before it reaches Git. A `Kustomization` sharing that applier's
+   `GitRepository` applies too when the source has to fetch, which is Flux's behavior and not a
+   failure of the request.
 6. **No receiver.** A foreign push with no delivery at all is still applied once the refresh finds
    it. This is the guarantee that a missing webhook degrades to latency, never to loss, and it must
    stay green for the life of the feature.

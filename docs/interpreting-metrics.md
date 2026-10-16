@@ -822,7 +822,7 @@ and the push receiver tells it that somebody else pushed. See
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `apply_requests_total` | counter | `applier_kind`, `reason`, `outcome` | One per applier per request the branch worker decided to send. `applier_kind` is `kustomization`; `reason` is `ForeignCommit` / `Refusal` / `CatchUp`; `outcome` is `sent` (delivered, or a `CatchUp` that found Flux already current), `failed` (attempts exhausted, or the `Kustomization` cannot take a request) or `superseded` (a newer request for the same `Kustomization` replaced it before it went out) |
+| `apply_requests_total` | counter | `applier_kind`, `reason`, `outcome` | One per applier per request the branch worker decided to send. `applier_kind` is `kustomization`; `reason` is `ForeignCommit` / `Refusal` / `CatchUp`; `outcome` is `sent` (delivered, or a `CatchUp` that found Flux already current), `failed` (could not be delivered and handed back to the branch worker, which asks again once the branch is quiet; one per hand-back), `superseded` (a newer request for the same `Kustomization` replaced it before it went out) or `dropped` (no `GitTarget` may still ask: each was deleted, moved to another branch or applier, or is no longer admitted by its `ClusterProvider`) |
 | `receiver_deliveries_total` | counter | `type`, `outcome` | One per verified-or-refused delivery to `/git-push/`. `type` is the `GitProvider.spec.receiver.type`; `outcome` is `notified` (handed to the branch worker), `unmatched` (no worker for that branch), `ignored` (a ping, a tag, another branch's event type, or a `generic-hmac` body naming another repository), `rejected` (bad signature or an oversized body) or `invalid` (verified but unparseable) |
 
 A delivery counted `notified` is only a hint: the worker reads the advertisement, and fetches under
@@ -831,7 +831,8 @@ follows when it did. So on a branch where only GitOps Reverser pushes, `notified
 followed by `CatchUp` requests and never by `ForeignCommit`.
 
 ```promql
-# Requests that could not be delivered, by reason.
+# Requests that could not be delivered, by reason. A failure that persists keeps counting, at the
+# worker's backoff of up to a few minutes, until the applier is fixed.
 sum by (reason) (rate(gitopsreverser_apply_requests_total{outcome="failed"}[15m]))
 # A receiver a Git host is calling with the wrong secret.
 sum by (type) (rate(gitopsreverser_receiver_deliveries_total{outcome="rejected"}[15m])) > 0

@@ -13,22 +13,29 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 GitOps Reverser no longer moves the branch with an empty commit when an edit is refused. With
 `Reapply` it asks the target's applier, the Flux `Kustomization` named in the new
 `spec.applier.kustomizationRef`, to apply the current tip once the branch holds no open commit window
-and no pending writes. Only that applier is asked, so other folders on the branch are no longer woken,
-and an allowed edit still in a commit window is published before the apply instead of being reverted
+and no pending writes. Only that applier is asked, rather than every applier watching the branch,
+though a `GitRepository` that has to fetch the tip still wakes every `Kustomization` that reads it.
+An allowed edit still in a commit window is published before the apply instead of being reverted
 with the refused one. The API rejects `Reapply` without `spec.applier`.
 
 A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`, and any update to it is
-rejected until the field changes. Before upgrading, set `onRefusal: Ignore` on those targets, or
-`onRefusal: Reapply` together with `spec.applier`. See
-[reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
+rejected until the field changes. The old CRD rejects `Reapply`, so move in this order:
+
+1. Before upgrading, set `onRefusal: Ignore` on those targets.
+2. Upgrade the CRDs, the controller and its permissions.
+3. Set `spec.applier` on each target and wait for `ApplierConfigured=True`.
+4. Set `onRefusal: Reapply` where you want it.
+
+See [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
 
 `spec.applier` also changes what else applies the folder: GitOps Reverser asks the Kustomization to
 apply when somebody else pushes to the branch, and to catch up with its own pushes once the branch
 has been quiet for `spec.applier.quietPeriod`. Lengthen the `GitRepository` and `Kustomization`
 intervals and remove any Git-host webhook into a Flux `Receiver` for the repository, as the
 [bi-directional guide](bi-directional.md#configure-flux) describes, or Flux keeps applying on its own
-schedule as well. The operator needs `get` and `patch` on `kustomizations` and `gitrepositories` in
-the source cluster: Helm `applierAccess.flux: true` grants it for the operator's own cluster.
+schedule as well. The operator needs `get` and `patch` on `kustomizations` and `gitrepositories`,
+and `create` on `selfsubjectaccessreviews`, in the source cluster: Helm `applierAccess.flux: true`
+grants them for the operator's own cluster.
 
 ## `git_queue_drops_total` is now `git_queue_refusals_total`
 

@@ -1533,9 +1533,9 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   Namespace label changes re-check provider-reference access. Rule changes re-resolve selected
   collections. It deliberately does **not** watch encryption Secrets, so their recovery is picked up
   by periodic reconciliation without retaining
-  every Secret value in the control-plane cache. Nor does it watch appliers: it reads the
-  `Kustomization` or `Application` on its tick to set `ApplierConfigured`, so a cluster without the
-  Flux or Argo CD CRDs needs no informer for them.
+  every Secret value in the control-plane cache. Nor does it watch appliers: it reads the Flux
+  `Kustomization` on its tick to set `ApplierConfigured`, so a cluster without the Flux CRDs needs no
+  informer for them.
 - `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
   RuleStore, and trigger the rule-change reconcile.
 - `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
@@ -1641,9 +1641,10 @@ as one funnel and its loss paths as one selector:
 **Apply requests.** `apply_requests_total{applier_kind,reason,outcome}` counts every
 request the worker decided to send (`applier_kind` is `kustomization`; `reason` is
 `ForeignCommit`, `Refusal` or `CatchUp`), with `outcome` separating
-`sent` from `failed` and `superseded` (a newer request for the same applier replaced it before it
-went out). `receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`,
-`unmatched`, `ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
+`sent` from `failed` (handed back to the branch worker), `superseded` (a newer request for the same
+applier replaced it before it went out) and `dropped` (no target may still ask).
+`receiver_deliveries_total{type,outcome}` counts receiver deliveries: `notified`, `unmatched`,
+`ignored` (a ping, a tag, another event type), `rejected` (bad signature) and `invalid`.
 The receiver cannot tell a foreign push from an own one; the worker decides that from the
 advertisement, which is why a `notified` delivery on an otherwise quiet branch is followed by a
 `CatchUp` and only a genuinely foreign one by a `ForeignCommit`. See

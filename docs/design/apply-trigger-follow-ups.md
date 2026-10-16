@@ -5,10 +5,9 @@
 > The design this continues: [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md).
 > The user-facing model: [`../bi-directional.md`](../bi-directional.md).
 
-The branch makes GitOps Reverser decide when a Flux `Kustomization` applies a folder. This page is
-what comes next, in order: the fixes the 2026-10-16 review found, which block the merge; Argo CD;
-the breaking change; the smaller loose ends; and the parts of the feature the tests do not reach
-yet.
+The branch makes GitOps Reverser decide when a Flux `Kustomization` applies a folder. This page
+records how the 2026-10-16 review's findings were fixed, then what comes next: Argo CD, the
+breaking change, the smaller loose ends, and the parts of the feature the tests do not reach yet.
 
 ## 1. Where the branch stands
 
@@ -23,176 +22,77 @@ Built and tested:
   `Refusal` request ([`refusal_reapply.go`](../../internal/git/refusal_reapply.go)).
 - **Delivery**, in [`internal/applier`](../../internal/applier/): the Flux client (stamp the
   `GitRepository`, or the `Kustomization` when the artifact already holds the commit), the
-  `Validate` behind `ApplierConfigured`, and the dispatcher (per-applier superseding, retry with
-  backoff, Events, the ledger behind `status.applier`).
+  `Validate` behind `ApplierConfigured`, and the dispatcher (per-applier superseding, a check of
+  every target before every attempt, a short retry and then a hand-back to the worker, Events, the
+  ledger behind `status.applier`).
 - **The receiver**, `GitProvider.spec.receiver` on `--receiver-bind-address`
   ([`receiver.go`](../../internal/webhook/receiver.go)), which turns a verified delivery into a
   refresh that always reaches the remote.
 
 Not built: the Argo CD applier, the webhook applier. The API accepts `kustomizationRef` only.
 
-## 2. Before merge: what the review found
+## 2. The review's findings, fixed
 
 The review of `21df16be` (`docs/reviews/20261016-review.md`, kept out of the tree) found six
-problems. Five hold as reported, and one holds only for its wording. They have one cause: the
-worker decides a request once, and nothing after that decision checks it again. The dispatcher
-attempts it for up to four minutes after the worker decided, against whatever the cluster, the
-`GitTarget` and the branch have become in the meantime. GitOps Reverser now controls when
-deployments happen, so each decision has to hold both when it is made and when a patch is sent.
+problems with one cause: the worker decided a request once, and nothing after that decision checked
+it again. The dispatcher attempted it for up to four minutes later, against whatever the cluster,
+the `GitTarget` and the branch had become. GitOps Reverser now controls when deployments happen, so
+each decision has to hold both when it is made and when a patch is sent. All six are fixed on the
+branch, each with the reviewer's reproduction kept as a regression test.
 
-### 2.1 A target the ClusterProvider denies still drives its applier (finding 1)
+### 2.1 Every attempt checks again (findings 1, 2, 3)
 
-`appliersOnBranch` lists every `GitTarget` on the provider and branch that names an applier, and
-`Dispatcher.resolve` checks nothing more. `SourceDynamicClient` hands out a cluster's client when
-**any** target declared that cluster, so a target with `Validated=False/NamespaceNotAuthorized`
-rides on another target's declaration. That target can be kept on a running worker by any
-legitimate target in its namespace on the same branch. The reviewer reproduced the patch.
+Before each attempt, retries included, the dispatcher reads each `GitTarget` in the job again and
+keeps only those that still name this applier on this branch and that `authz.GitTargetAdmitted`
+admits (finding 1: a shared source client is no permission to use it). A `Refusal` needs
+`git.ConsentsToReapply` at the attempt; a target that withdrew consent is asked a `CatchUp` instead.
+For that, a job keeps each target's own reason, merged with `git.StrongerApplyReason`. A job with no
+target left is dropped and counted `outcome="dropped"`.
 
-The damage is bounded: the request is a reconcile annotation, and once §2.2 is fixed it reaches only
-a `Kustomization` that applies this repository and branch. It is still an authorization bypass,
-and the fix is cheap. The dispatcher calls `authz.GitTargetAdmitted` for every target in a job,
-on every attempt (see §2.4), and drops a target it denies. A client being available is not
-permission to use it.
+Then `Flux.Request` checks the source binding (`Binding{RepositoryURL, Branch}`, read from the
+`GitProvider` at the attempt) against the objects it is about to stamp, and returns a permanent
+error on a mismatch (finding 2). `Validate` takes the same `Binding`, which is the shape §3.2's
+`Applier` interface needs.
 
-One more gap sits at the same fix site, and the review did not raise it: `kustomizationRef.namespace`
-is unrestricted, so an admitted target can name a `Kustomization` in any namespace of the source
-cluster, while the operator's `flux-applier` role grants `patch` cluster-wide. A WatchRule needs
-`allowAnySourceNamespace` on its ClusterProvider to reach outside its own namespace, and the applier
-reference should be held to the same rule.
+**Decided: no namespace gate on `kustomizationRef`.** The earlier draft held a `kustomizationRef`
+in another namespace to the WatchRule rule (`allowAnySourceNamespace`). It is not gated: once the
+source binding is checked at the patch, a request reaches only a `Kustomization` that applies this
+`GitProvider`'s repository and branch. Whoever can create a `GitTarget` on that `GitProvider` can
+already write what that `Kustomization` applies, so an early reconcile adds no power, and Flux's
+usual layout (`Kustomization`s in `flux-system`) keeps working without widening WatchRule
+delegation.
 
-### 2.2 A `SourceMismatch` applier is still driven (finding 2)
+### 2.2 A waiting refusal is checked when it stops waiting (finding 3)
 
-`Flux.Validate` checks the `GitRepository`'s URL and branch, but `Flux.Request` does not, and the
-dispatcher never reads the verdict. A target that publishes `main` and names a `Kustomization` whose
-source follows `release` reports `ApplierConfigured=False/SourceMismatch`, yet every foreign commit
-on `main` still stamps that `release` source. The reviewer reproduced this as well.
+`reapplyOwed` is keyed by `refusalKey`, and `refusalRecovered` cancels the matching entries as it
+does `refusalPending`. `serviceRefusals` reads consent again before it sends.
 
-`Request` already reads both objects, so it runs `sourceMismatch` on them before it stamps and
-returns a `permanentError` on a mismatch. Reading the published condition instead would leave the
-race between the check and the patch. This means `Request` needs the expected repository URL and
-branch, which the job does not carry today. The dispatcher reads the `GitProvider` when it resolves
-the job. This also shapes the `Applier` interface in §3.2: the expected source binding is an input
-to `Request`, not only to `Validate`.
+### 2.3 A request that cannot be delivered goes back to the worker (finding 4)
 
-### 2.3 A delayed Refusal outlives its consent and its recovery (finding 3)
+The dispatcher retries for about the shortest `quietPeriod` of the job's targets (immediately for a
+permanent error), then hands every target back with its reason (`git.ApplyHandBack`, implemented by
+the `WorkerManager`). A retry is the worker's decision replayed without the quiet check, so it is
+kept short; the worker is what can tell whether the branch is quiet.
 
-There are two waiting places for a refusal, and only one of them checks again. `flushPendingReapply`,
-which handles the rate-limit trailer, calls `refusalConsent`, as that function's comment promises.
-`reapplyOwed` does not. A refusal owed while the branch is busy, behind an open window or a
-publication outage, is sent by `serviceRefusals` once the branch is quiet, and the only check left
-is whether the target still names an applier. So it goes out after the target is suspended or set to
-`Ignore`.
+The worker keeps hand-backs in its `applyDebt` (written from the dispatcher's goroutine, then a wake
+on the queue), due after a backoff of 15 seconds doubling to 5 minutes. When due and the branch is
+quiet: a `ForeignCommit` is sent to those targets; a `Refusal` is owed again only while the refusal
+stands (an entry in `coveredRefusal`, which is now recorded even for an empty observation), and so
+only with consent; anything else becomes a `CatchUp` and waits for the quiet period.
 
-`refusalRecovered` cancels `refusalPending` but leaves `reapplyOwed` alone, because `reapplyOwed` is
-keyed by target and has lost the collection it would have to match. A refusal that has recovered,
-which means its edit was accepted and is now pending, still asks for an apply once the branch is
-quiet. By then the tip carries the accepted edit, so the apply is harmless, but it is still a
-request made for a refusal that no longer exists.
+`ApplyRequest.HandBacks` carries the count through the worker and back, so the backoff grows and
+`ApplyRequestFailed` is recorded only for a request at zero: once per failing request.
 
-Fix both in the worker:
+### 2.4 The refusal promise is narrowed (finding 5)
 
-- Key `reapplyOwed` by `refusalKey`, and have `refusalRecovered` delete the matching entries the way
-  it already does for `refusalPending`.
-- Have `serviceRefusals` call `refusalConsent` before it sends.
+The five places now say that only this target's applier is asked, that a `GitRepository` that has
+to fetch wakes every `Kustomization` reading it, as for any push, and that a folder needing strict
+isolation gets its own `GitRepository`.
 
-The dispatcher has to check consent again on its own attempts (see §2.4). A job's reason is per
-applier, but consent is per target: a `Refusal` job can have absorbed a `CatchUp` for a sibling
-target (`supersedingReason`). The job therefore has to keep each target's own reason. When the only
-target that consented drops out, the job falls back to `CatchUp` for the rest rather than being
-dropped.
+### 2.5 Validation is bounded (finding 6)
 
-### 2.4 One rule for all three: check again at the patch
-
-§2.1 to §2.3 need the same check, so it should be written once. Before each attempt, the dispatcher
-reads each target in the job again from the cache and keeps only the targets that:
-
-- still name this applier, as `resolve` already checks once,
-- `authz.GitTargetAdmitted` admits (§2.1),
-- consent to a refusal, for a target that is in the job only for a `Refusal` (§2.3).
-
-Then `Request` checks the source binding (§2.2). A job with no target left is dropped and counted.
-This is the last gate before the patch, so the retries go through it too, which is the point the
-review makes about "including retries".
-
-### 2.5 A request given up on is lost (finding 4)
-
-After eight failed attempts the dispatcher emits `ApplyRequestFailed` and discards the job, while
-the worker cleared its debt when it sent the request. The `DefaultBackoff` comment reads "Nothing is
-lost by giving up", but that assumes another request comes, and none has to. A refresh that sees
-the same tip owes nothing, so a `ForeignCommit` that failed while the source API was down waits for
-the next commit or for Flux's long backstop interval. A failed `Refusal` is worse: `oweReapply`
-marks the observation as covered when the request is owed, so the same standing refusal never owes
-another request until it recovers.
-
-The review asks to "retain or reconstruct" the request, and I would reconstruct it in the worker
-rather than make the dispatcher retry forever. The reason is one the review does not raise: **a
-retry is a request sent without the quiet check.** The worker decided it on a quiet branch, and the
-dispatcher replays that decision up to four minutes later. Flux cannot pin a commit, so the retry
-applies whatever the tip is then, and live edits waiting in an open window by that time are
-reverted. That is the hazard this whole design exists to close. Retrying for longer makes the
-window longer.
-
-The shape I propose:
-
-- The dispatcher keeps its short retries for a blip of a few seconds, since a request decided a
-  moment ago is still sound. It hands a job back to the worker once the job has failed for longer
-  than about one `quietPeriod`, or permanently, instead of giving up. "Handing back" is a new call on
-  the requester's side of `git.ApplyRequester`, delivered as an event on the worker's loop.
-- The worker puts the debt back (`applyDebt.restore`, or `reapplyOwed` for a refusal). It re-sends
-  only on a quiet branch, with its own backoff capped at a few minutes so that a permanent failure
-  does not produce a tight loop.
-- `ApplyRequestFailed` stays, emitted once each time a request goes from delivering to failing,
-  not on every attempt.
-
-A `permanentError`, which is a misconfigured `Kustomization` and now also a source mismatch, then
-stays owed and is delivered once the configuration is fixed, rather than being forgotten. A
-restart loses the hand-back state, which is fine: the first observation owes a `CatchUp`, and that
-stamps the source when its artifact is behind.
-
-### 2.6 A Refusal can wake folders that share the GitRepository (finding 5)
-
-This one is a contract problem, and no reason to enforce isolation. When the artifact
-is behind the tip, `Request` stamps the `GitRepository`, the new revision wakes every
-`Kustomization` on it, and those reapply as well. A `Kustomization` that stamped only itself would be
-worse: it reconciles from the old artifact and reverts edits that are already in Git. So the source
-has to move, and moving the source wakes everything that consumes it. That is how Flux works, not
-something GitOps Reverser can avoid.
-
-The harm is small. The branch is quiet, because a Refusal is sent only then, so the woken siblings
-apply a tip with nothing live left out of it. They would have applied the same tip at their own
-`CatchUp` one `quietPeriod` later. A `Kustomization` that GitOps Reverser does not know about would
-apply it at its next interval. What is wrong is the promise. Five places say a refusal wakes no
-other folder:
-
-- the `onRefusal` doc comment in `gittarget_types.go`,
-- [`bi-directional.md`](../bi-directional.md),
-- [`configuration.md`](../configuration.md),
-- [`UPGRADING.md`](../UPGRADING.md),
-- §4.5 of the trigger design.
-
-The fix is to narrow all five: only this target's applier is asked, and if its `GitRepository` has
-to fetch to reach the tip, every `Kustomization` on that `GitRepository` applies the new revision, as
-it would for any push. Give the folder its own `GitRepository` for strict isolation.
-
-### 2.7 Validation can hold the GitTarget controller indefinitely (finding 6)
-
-`applierVerdict` calls `ApplierClients` and `Validate` with the reconcile context, which has no
-deadline. The source client has no request timeout either, by design, because it carries the
-watches. The GitTarget controller runs one reconcile worker, so an API server that accepts the
-connection and never answers stops every GitTarget's reconcile, not only this target's. Wrap both
-calls in a bounded context. About 10 seconds is enough: `Validate` makes two GETs and two access
-reviews, and a timeout is already `ReasonCheckFailed`, so `keptOrUnknown` keeps the previous verdict.
-This is the same fix site as the per-reconcile cost in §6. Do the caching there together with this.
-
-### 2.8 Validation the review ran
-
-The review ran `task lint`, `task test` and `task test-e2e-bi-directional`, and all three were
-green. `task test-e2e` failed one spec, audit-route attribution, which passed on its own. That spec
-is the known flaky one: it has failed twice in CI on comment-only commits, and both passed on a
-rerun. It is not evidence against this branch. Each fix above gets a unit test:
-
-- the reviewer's reproductions for findings 1 to 4 and 6, kept as regression tests,
-- a test that a hand-back is re-sent only on a quiet branch.
+`applierVerdict` runs the client lookup and `Validate` under a 10-second deadline. A timeout is
+`ReasonCheckFailed`, so the published verdict is kept. The per-reconcile cost (§6) is still open.
 
 ## 3. Next: the Argo CD applier
 
@@ -299,12 +199,11 @@ Three properties make it different from Flux, and each one has to survive into t
 
 `onRefusal: PushEmptyCommit` is gone, and `Reapply` needs a Flux applier, so until §3 lands a
 folder that Argo CD applies has no automatic revert. GitOps Reverser has no users yet, so there is
-nothing to migrate and no reason to hold the merge for Argo CD. The branch merges once §2 is done,
-and Argo CD can come in its own PR. Do not bring `PushEmptyCommit` back as a fallback.
+nothing to migrate and no reason to hold the merge for Argo CD, which can come in its own PR. Do not
+bring `PushEmptyCommit` back as a fallback.
 
-One fix in [`UPGRADING.md`](../UPGRADING.md): its entry says to set `onRefusal: Reapply` before
-upgrading, which the old CRD rejects. The order is `Ignore`, then upgrade, then set
-`spec.applier`, then `Reapply`.
+[`UPGRADING.md`](../UPGRADING.md) gives the order the old CRD allows: `Ignore`, then upgrade, then
+set `spec.applier`, then `Reapply`.
 
 ## 5. The webhook applier
 
@@ -327,13 +226,13 @@ other end does not apply on its own. No in-process plugin, for the reason the tr
 - **`ApplierConfigured` reads the source cluster on every reconcile**: two GETs and two access
   reviews. A target that is not converged reconciles every ten seconds, so a broken target costs
   that much. Cache the verdict per `(cluster, applier, generation)` for a minute, or check only on
-  the steady tick and on spec changes. Do this together with the deadline in §2.7.
+  the steady tick and on spec changes. The deadline is in place (§2.5).
 - **`SourceDynamicClient` serves only declared source clusters.** The dispatcher retries until the
   GitTarget's watches have declared the cluster, which covers startup. A target whose declaration
   keeps failing therefore never gets its requests delivered, and only the retry log says why. Count
   it in `apply_requests_total{outcome="failed"}` with a reason, or surface it in `ApplierConfigured`.
-  This check answers whether the cluster has a client yet. It does not answer whether this target
-  may use that client, which is §2.1.
+  This check answers whether the cluster has a client yet. Whether this target may use that client
+  is §2.1.
 - **The dispatcher's inbox is capped at 1024 and drops the oldest with a log line only.** That
   can only fill if the loop is wedged, but a drop there is a lost `ForeignCommit`. Count it.
 - **A catch-up when nothing was pushed since the last one.** The first observation after a restart
@@ -377,7 +276,7 @@ Ordered by how much I would worry about each.
 7. **A foreign commit while the remote is unreachable.** The rule is that the request waits with
    the pending writes (§3.4 of the design). Nothing tests that it does not go out during the
    outage, or that it goes out once the push lands. The same test with a `Refusal` owed during the
-   outage, and the target set to `Ignore` before the outage ends, covers §2.3.
+   outage, and the target set to `Ignore` before the outage ends, covers §2.2 end to end.
 8. **A foreign commit closing a window a `CommitRequest` is attached to.**
    `closeWindowForForeignCommit` finalizes it early; the request should resolve `Committed` with
    the replayed commit. Untested.

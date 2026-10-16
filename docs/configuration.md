@@ -1139,9 +1139,23 @@ cluster already holds; an artifact left behind would revert edits that are alrea
 the artifact already holds the requested commit. A new artifact wakes the `Kustomization` by itself.
 A `CatchUp` whose artifact already holds the commit stamps nothing.
 
-A request asks; it never claims the apply happened. It runs off the publication path, is retried
-with backoff on its own, and a failed request never fails a publication that succeeded. Read the
-`Kustomization`'s `status.lastAppliedRevision` for what it applied.
+A request asks; it never claims the apply happened. It runs off the publication path, and a failed
+request never fails a publication that succeeded. Read the `Kustomization`'s
+`status.lastAppliedRevision` for what it applied.
+
+**Every attempt checks again.** A request is decided once, on a quiet branch, and can be attempted
+later. So before every attempt, retries included, GitOps Reverser reads the `GitTarget` again and
+asks nothing for it when it no longer names this applier on this branch or its `ClusterProvider` no
+longer admits its namespace. A `Refusal` is asked only while the target still consents
+(`onRefusal: Reapply`, not suspended); otherwise its applier is asked a `CatchUp`. And nothing is
+stamped unless the `Kustomization`'s `GitRepository` fetches this repository and branch, whatever
+`ApplierConfigured` last said.
+
+**A request that fails** is retried for about one `quietPeriod`, or not at all when the
+`Kustomization` cannot take a request, and then goes back to the branch worker, which asks again
+once the branch is quiet, waiting longer each time up to a few minutes. It is not retried for
+longer than that because a retry skips the quiet check: Flux applies whatever the tip is when the
+retry lands, and by then live edits may be waiting to be published.
 
 **What it reports.**
 
@@ -1168,7 +1182,8 @@ status:
 
 It is checked on the target's reconcile tick rather than watched, so a cluster without the Flux CRDs
 installed costs nothing. Each delivered request also records an `ApplyRequested` Event on the
-`GitTarget`, and a request that keeps failing records `ApplyRequestFailed`.
+`GitTarget`, and a request that could not be delivered records `ApplyRequestFailed` once, not again
+each time the worker asks again.
 
 ### Reverting a refused edit (`spec.onRefusal`)
 
@@ -1190,9 +1205,11 @@ spec:
 | `Reapply` | Once the branch is quiet, this target's [applier](#who-applies-this-folder-specapplier) is asked to apply the current tip, with reason `Refusal`. The refused edit is reverted |
 
 `Reapply` requires `spec.applier`; a target without one is rejected at admission. The request goes
-to this target's applier alone, so other folders on the branch are not woken, and it waits for a
-quiet branch, so an allowed edit still in a commit window is published before the apply and is not
-reverted with the refused one. The [bi-directional guide](bi-directional.md#choosing-speconrefusal)
+to this target's applier alone, and it waits for a quiet branch, so an allowed edit still in a commit
+window is published before the apply and is not reverted with the refused one. When the applier's
+`GitRepository` has to fetch to reach the tip, every `Kustomization` on that `GitRepository` applies
+the new revision, as it would for any push; give the folder its own `GitRepository` if the apply
+must reach it alone. The [bi-directional guide](bi-directional.md#choosing-speconrefusal)
 covers when to choose it.
 
 **It only fires for an edit to a document the folder already holds, and never for a write that
