@@ -239,6 +239,42 @@ func TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod(t
 	assert.NotNil(t, loop.applierTimer)
 }
 
+// TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt is the other half of the race the
+// bi-directional e2e spec covers with real timers: two API edits a few seconds apart, each decided
+// and pushed in one wake. The catch-up owed for the first push must not go out between them, and
+// when it goes out it names the second push.
+func TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt(t *testing.T) {
+	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true, func(g *configv1alpha3.GitTarget) {
+		g.Spec.Applier.QuietPeriod = &metav1.Duration{Duration: time.Minute}
+	}))
+	loop.w.debt.observe(RemoteObservation{Commit: "base", By: ObservedByFetch})
+	loop.w.debt.take()
+
+	pushInOneWake := func(commit string) {
+		loop.decide(PendingWrite{})
+		loop.pendingWrites, loop.pendingWritesBytes = nil, 0
+		loop.w.debt.observe(RemoteObservation{Commit: commit, By: ObservedByPush})
+		loop.serviceAppliers()
+	}
+
+	pushInOneWake("first")
+	loop.quietSince = time.Now().Add(-50 * time.Second) // ten seconds short of the quiet period
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "the first push's catch-up is not due yet")
+
+	pushInOneWake("second")
+	loop.quietSince = time.Now().Add(-50 * time.Second) // past the first push's period, not the second's
+	loop.serviceAppliers()
+	assert.Empty(t, requester.taken(), "the second write restarted the quiet period")
+
+	loop.quietSince = time.Now().Add(-time.Minute)
+	loop.serviceAppliers()
+	requests := requester.taken()
+	require.Len(t, requests, 1)
+	assert.Equal(t, configv1alpha3.ApplyReasonCatchUp, requests[0].Reason)
+	assert.Equal(t, "second", requests[0].Commit, "the catch-up names the later push, never the earlier")
+}
+
 func TestServiceAppliers_AForeignCommitAnswersEverythingElseOwed(t *testing.T) {
 	loop, requester := applyTriggerLoop(t, applierTestTarget("alpha", true))
 	loop.oweReapply(refusalKeyFor(itypes.NewResourceReference("alpha", "team-a"), "deployments"), "refused", "obs")

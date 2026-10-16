@@ -200,11 +200,7 @@ func applyRefusalFluxApplier(testNs string, repo *RepoArtifacts, name, secretNam
 
 // applyRequestedMessages is every ApplyRequested Event message recorded on a GitTarget.
 func applyRequestedMessages(g Gomega, testNs, gitTarget string) string {
-	out, err := kubectlRunInNamespace(testNs, "get", "events", "--field-selector",
-		"involvedObject.kind=GitTarget,involvedObject.name="+gitTarget+",reason=ApplyRequested",
-		"-o", "jsonpath={.items[*].message}")
-	g.Expect(err).NotTo(HaveOccurred())
-	return out
+	return gitTargetEventMessages(g, testNs, gitTarget, "ApplyRequested")
 }
 
 // checkoutLogLevel reads the LOG_LEVEL env var of the live checkout Deployment.
