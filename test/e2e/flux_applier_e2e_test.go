@@ -18,8 +18,8 @@ import (
 // GitTarget spec.applier against a real Flux, from what a request is allowed to do to how GitOps
 // Reverser learns that it has to make one. See docs/design/apply-trigger-follow-ups.md.
 //
-// The Kustomization applies its own folder (fluxFolder) into a namespace the WatchRule does not
-// watch, so nothing Flux applies is mirrored back and every commit on the branch is either this
+// The Kustomization applies its own folder (fluxApplierFolder) into a namespace the WatchRule does
+// not watch, so nothing Flux applies is mirrored back and every commit on the branch is either this
 // spec's API edit or this spec's Git-side push. Its GitRepository and Kustomization sit on a 24h
 // interval and no Flux Receiver is wired to the repository, so any fetch or apply inside the spec
 // is one GitOps Reverser asked for.
@@ -29,7 +29,6 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		destName     = "flux-applier-dest"
 		ruleName     = "flux-applier-rule"
 		gitPath      = "apps/applier"
-		fluxFolder   = "flux/applier"
 	)
 	var (
 		testNs, appliedNs        string
@@ -59,7 +58,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		configureRepoOriginWithCredentials(repo, testNs)
 
 		By("seeding the folder Flux applies, on main and on a release branch")
-		pushAppliedColorFromOutside(repo, fluxFolder, appliedNs, "blue")
+		pushAppliedColorFromOutside(repo, appliedNs, "blue")
 		Expect(runGitIn(repo.CheckoutDir, "push", "origin", "HEAD:refs/heads/release")).To(Succeed())
 	})
 
@@ -94,7 +93,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 			"not found in the source cluster")
 
 		By("creating it, with a GitRepository that follows the release branch")
-		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "release", "./"+fluxFolder)
+		applyFluxApplier(testNs, repo, fluxName, fluxSecretName, "release", "./"+fluxApplierFolder)
 		verifyResourceCondition("gittarget", destName, testNs, "ApplierConfigured", "False", "SourceMismatch",
 			`fetches branch "release", not main`)
 		Expect(fluxRequestStamps(fluxName)).To(Equal("|"), "nothing has asked Flux for anything yet")
@@ -113,7 +112,7 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		// GitOps Reverser finds the Git-side push the hard way: its next push is rejected, and the
 		// fetch that follows is a ForeignCommit, which asks every applier on the branch.
 		By("pushing a Git-side change, then an API edit that finds it")
-		pushAppliedColorFromOutside(repo, fluxFolder, appliedNs, "green")
+		pushAppliedColorFromOutside(repo, appliedNs, "green")
 		applyConfigMap(testNs, "applier-second-edit")
 
 		By("the ForeignCommit is refused at the patch, and the source on release is never stamped")
@@ -142,6 +141,31 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		Eventually(func(g Gomega) {
 			g.Expect(appliedColor(g, appliedNs)).To(Equal("green"))
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
+
+	// With no receiver and no API edit, the only thing that can find a Git-side push is the
+	// refresher on the GitTarget's steady tick. This is the guarantee that a missing webhook costs
+	// latency and never an apply (docs/design/push-notification-and-reconcile-trigger.md §4.5 item 6).
+	// The e2e install refreshes after 30s, so the wait is the control plane's reconcile cadence of
+	// about five minutes, as in the refresh-remote spec.
+	It("applies a Git-side push the refresher finds, with no receiver and no API edit", func() {
+		Eventually(func(g Gomega) {
+			g.Expect(appliedColor(g, appliedNs)).To(Equal("green"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed(), "the previous spec left Flux at the tip")
+		foreignBefore := strings.Count(
+			gitTargetEventMessages(Default, testNs, destName, "ApplyRequested"), "(ForeignCommit)")
+
+		By("pushing a Git-side change, and nothing else")
+		head := pushAppliedColorFromOutside(repo, appliedNs, "orange")
+
+		By("the steady tick's refresh finds it, and Flux applies it")
+		Eventually(func(g Gomega) {
+			g.Expect(fluxLastAppliedRevision(g, fluxName)).To(ContainSubstring(head))
+			g.Expect(appliedColor(g, appliedNs)).To(Equal("orange"))
+		}, 7*time.Minute, 5*time.Second).Should(Succeed())
+		Expect(strings.Count(gitTargetEventMessages(Default, testNs, destName, "ApplyRequested"),
+			"(ForeignCommit)")).To(BeNumerically(">", foreignBefore),
+			"the apply must come from a ForeignCommit request, not from Flux's own schedule")
 	})
 
 	// The receiver's handler and the worker's discovery of a foreign push were each unit-tested, and
@@ -175,13 +199,13 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 		receiverHookID = hook.ID
 
 		Eventually(func(g Gomega) {
-			g.Expect(appliedColor(g, appliedNs)).To(Equal("green"))
+			g.Expect(appliedColor(g, appliedNs)).To(Equal("orange"))
 		}, 2*time.Minute, 2*time.Second).Should(Succeed(), "the previous spec left Flux at the tip")
 		foreignBefore := strings.Count(
 			gitTargetEventMessages(Default, testNs, destName, "ApplyRequested"), "(ForeignCommit)")
 
 		By("pushing a Git-side change, and nothing else")
-		head := pushAppliedColorFromOutside(repo, fluxFolder, appliedNs, "purple")
+		head := pushAppliedColorFromOutside(repo, appliedNs, "purple")
 
 		By("Flux applies it, because GitOps Reverser was told and asked")
 		Eventually(func(g Gomega) {
@@ -193,6 +217,9 @@ var _ = Describe("Manager Flux Applier", Label("manager", "flux-applier"), Order
 			"the apply must come from a ForeignCommit request, not from Flux's own schedule")
 	})
 })
+
+// fluxApplierFolder is the folder the Manager Flux Applier spec's Kustomization applies.
+const fluxApplierFolder = "flux/applier"
 
 // applyFluxApplier creates a GitRepository following branch and a Kustomization applying path from
 // it, both on a 24h interval, and waits for the Kustomization's first apply.
@@ -226,7 +253,7 @@ func applyFluxApplier(testNs string, repo *RepoArtifacts, name, secretName, bran
 // color, and pushes it to main the way another writer would, leaving it checked out, and returns
 // the commit it pushed. It retries, because GitOps Reverser may move the tip at any moment and losing that race says nothing
 // about the behavior under test.
-func pushAppliedColorFromOutside(repo *RepoArtifacts, folder, appliedNs, color string) string {
+func pushAppliedColorFromOutside(repo *RepoArtifacts, appliedNs, color string) string {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: v1
 kind: ConfigMap
@@ -248,7 +275,7 @@ data:
 				return fmt.Errorf("git %v: %w: %s", args, err, out)
 			}
 		}
-		dest := filepath.Join(repo.CheckoutDir, folder)
+		dest := filepath.Join(repo.CheckoutDir, fluxApplierFolder)
 		if err := os.MkdirAll(dest, 0o750); err != nil {
 			return err
 		}
@@ -256,7 +283,7 @@ data:
 			return err
 		}
 		for _, args := range [][]string{
-			{"add", folder},
+			{"add", fluxApplierFolder},
 			{"commit", "-m", "e2e: another writer sets the applied color to " + color},
 			{"push", "origin", "HEAD:main"},
 		} {

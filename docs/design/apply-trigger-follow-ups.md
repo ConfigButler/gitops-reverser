@@ -239,44 +239,40 @@ other end does not apply on its own. No in-process plugin, for the reason the tr
 
 ## 7. What the tests do not reach yet
 
-Ordered by how much I would worry about each. Two items left this list on 2026-10-16:
-`Manager Flux Applier` (`test/e2e/flux_applier_e2e_test.go`) proves the receiver end to end (Gitea
+Ordered by how much I would worry about each. Three items left this list on 2026-10-16, all proved
+by `Manager Flux Applier` (`test/e2e/flux_applier_e2e_test.go`): the receiver end to end (Gitea
 delivers a signed push event to the operator's receiver Service, and Flux applies the push with
-nothing else on the branch), and that a request for a `SourceMismatch` applier never stamps the
-other branch's source and is delivered once the source is fixed.
+nothing else on the branch); a foreign push found by the refresher alone, with no receiver and no
+API edit, on the steady tick of about five minutes; and a request for a `SourceMismatch` applier,
+which never stamps the other branch's source and is delivered once the source is fixed.
 
-1. **A foreign push found by the refresher.** The Flux spec finds the foreign push through a
-   rejected push, because the e2e refresh rides the five-minute reconcile tick. An idle branch with
-   no receiver depends entirely on the refresh path, and nothing exercises it end to end. A
-   reconcile-request annotation would not do (it forces a resync, the hazard of §2.2 of the design);
-   the test needs a way to fire the refresh, or a shorter tick under test.
-2. **The race spec's margin.** It edits twice a few seconds apart and asserts no extra commit for
+1. **The race spec's margin.** It edits twice a few seconds apart and asserts no extra commit for
    30 seconds, which depends on the corner's commit window and push cooldown. The unit equivalent
    now exists in two halves:
    `TestServiceAppliers_AWriteDecidedAndPushedInOneWakeRestartsTheQuietPeriod` and
    `TestServiceAppliers_ASecondWriteInsideTheQuietPeriodRestartsIt`. Both move `quietSince` by hand
    rather than injecting a clock.
-3. **A remote source cluster.** Every test of the applier uses the operator's own cluster. A
+2. **A remote source cluster.** Every test of the applier uses the operator's own cluster. A
    `ClusterProvider` with a kubeconfig, a `Kustomization` in that cluster, and the
    `Forbidden` path when the kubeconfig's identity lacks the grant, are all untested.
-4. **`ApplierConfigured` against real RBAC.** `ApplierNotFound` and `SourceMismatch` are covered
+3. **`ApplierConfigured` against real RBAC.** `ApplierNotFound` and `SourceMismatch` are covered
    end to end by `Manager Flux Applier`. `Forbidden` (drop the flux-applier binding) is unit-tested
    with a fake access check only.
-5. **Several GitTargets naming one `Kustomization`.** The dispatcher's dedupe is unit-tested; no
+4. **Several GitTargets naming one `Kustomization`.** The dispatcher's dedupe is unit-tested; no
    e2e has two folders on one branch applied by one `Kustomization`.
-6. **A foreign commit while the remote is unreachable.** The rule is that the request waits with
+5. **A foreign commit while the remote is unreachable.** The rule is that the request waits with
    the pending writes (§3.4 of the design). Nothing tests that it does not go out during the
    outage, or that it goes out once the push lands. The same test with a `Refusal` owed during the
    outage, and the target set to `Ignore` before the outage ends, covers §2.2 end to end.
-7. **A foreign commit closing a window a `CommitRequest` is attached to.**
+6. **A foreign commit closing a window a `CommitRequest` is attached to.**
    `closeWindowForForeignCommit` finalizes it early; the request should resolve `Committed` with
    the replayed commit. Untested.
-8. **The CEL rule rejecting `Reapply` without an applier** is not exercised by an envtest. A stored
+7. **The CEL rule rejecting `Reapply` without an applier** is not exercised by an envtest. A stored
    `PushEmptyCommit` needs no test, because no user has one (§4).
-9. **The Helm install.** Local e2e is `INSTALL_MODE=config-dir`, so the chart's receiver flag,
+8. **The Helm install.** Local e2e is `INSTALL_MODE=config-dir`, so the chart's receiver flag,
    `Service` and `applierAccess.flux` role are covered by `helm template` tests only. CI's
    quickstart leg installs the chart, but with neither value set.
-10. **The race detector in CI.** `applyDebt` is fed from `publishObservation`, which can run off
-    the loop goroutine (the first clone), and the dispatcher delivers on goroutines of its own. Both
-    are lock-guarded, and their tests pass under `-race -count=3` locally (2026-10-16), but CI does
-    not run `-race`, so a later change can regress this unnoticed.
+9. **The race detector in CI.** `applyDebt` is fed from `publishObservation`, which can run off
+   the loop goroutine (the first clone), and the dispatcher delivers on goroutines of its own. Both
+   are lock-guarded, and their tests pass under `-race -count=3` locally (2026-10-16), but CI does
+   not run `-race`, so a later change can regress this unnoticed.
