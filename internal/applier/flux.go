@@ -58,7 +58,7 @@ const ReasonSuspendOwnedElsewhere = "SuspendOwnedElsewhere"
 
 // Flux holds a Flux Kustomization suspended, and resumes it for each apply GitOps Reverser asks of
 // it, in one source cluster. See "The Flux operation, suspended" in
-// docs/design/suspended-appliers-plan.md: every fact about kustomize-controller this relies on is
+// docs/design/apply-trigger.md: every fact about kustomize-controller this relies on is
 // listed there, read in v1.9.6.
 type Flux struct {
 	client dynamic.Interface
@@ -302,7 +302,7 @@ func (f *Flux) fence(ctx context.Context, ref types.NamespacedName, s *Stamped) 
 }
 
 // applyVerdict reads the outcome of a Kustomization's last reconcile, once the token of the apply
-// it was asked for is handled (the outcome table in docs/design/suspended-appliers-plan.md).
+// it was asked for is handled (the outcome table in docs/design/apply-trigger.md).
 func applyVerdict(ks *unstructured.Unstructured, commit string) Progress {
 	applied := statusString(ks, "lastAppliedRevision")
 	ready, found := readyCondition(ks)

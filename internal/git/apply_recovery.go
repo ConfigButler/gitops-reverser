@@ -9,7 +9,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// Restart recovery, step 5 of docs/design/suspended-appliers-plan.md. The worker's attempts live
+// Restart recovery (docs/design/apply-trigger.md, "Restart recovery"). The worker's attempts live
 // in memory, and the trigger's status.operation is their durable record: the worker writes it
 // before an apply can start (ApplyRequest.Record). So a process that starts reads it back, before
 // its first live event is mirrored:

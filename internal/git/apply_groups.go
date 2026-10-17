@@ -8,7 +8,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// Shared sources, step 6 of docs/design/suspended-appliers-plan.md.
+// Shared sources (docs/design/apply-trigger.md, "Shared sources and prefetch").
 //
 // Flux appliers on one branch that apply one GitRepository form a group, and a group has one
 // operation at a time: the artifact is shared, and an operation reads it again just before it

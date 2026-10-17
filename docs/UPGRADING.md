@@ -14,9 +14,9 @@ GitOps Reverser no longer moves the branch with an empty commit when an edit is 
 `Reapply` it asks the target's applier to apply the current tip once the branch holds no open
 commit window and no pending writes. The applier is the Flux `Kustomization` a `FluxTrigger` holds,
 or the Argo CD `Application` an `ArgoCDTrigger` holds, and the `GitTarget` names the trigger in the
-new `spec.applyTriggerRef`. Only that applier is asked, rather than every applier watching the
-branch, though a `GitRepository` that has to fetch the tip still wakes every `Kustomization` that
-reads it. An allowed edit still in a commit window is published before the apply instead of being
+new `spec.applyTriggerRef`. Only that applier applies, rather than every applier watching the
+branch; a `GitRepository` that has to fetch the tip wakes only the consumers no trigger holds. An
+allowed edit still in a commit window is published before the apply instead of being
 reverted with the refused one. The API rejects `Reapply` without `spec.applyTriggerRef`.
 
 A stored `GitTarget` that still says `PushEmptyCommit` reads as `Ignore`, and any update to it is
@@ -31,14 +31,17 @@ rejected until the field changes. The old CRD rejects `Reapply`, so move in this
 See [who applies this folder](configuration.md#who-applies-this-folder-specapplytriggerref) and
 [reverting a refused edit](configuration.md#reverting-a-refused-edit-speconrefusal).
 
-A trigger also changes what else applies the folder: GitOps Reverser asks the `Kustomization` to
-apply when somebody else pushes to the branch, and to catch up with its own pushes once the branch
-has been quiet for the trigger's `quietPeriod`. Lengthen the `GitRepository` and `Kustomization`
-intervals and remove any Git-host webhook into a Flux `Receiver` for the repository, as the
-[bi-directional guide](bi-directional.md#configure-flux) describes, or Flux keeps applying on its own
-schedule as well. The operator needs `get` and `patch` on `kustomizations` and `gitrepositories`,
-and `create` on `selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true`
-grants them for the operator's own cluster.
+A trigger also changes what else applies the folder. A `FluxTrigger` holds its `Kustomization`
+suspended, so Flux applies it only when GitOps Reverser resumes it: when somebody else pushes to the
+branch, after a refusal or a reverted edit, and to catch up with its own pushes once the branch has
+been quiet for the trigger's `quietPeriod`. `flux get ks` shows it `Suspended`, and while the
+operator is down nothing applies it. Remove `spec.suspend` from whatever applies the
+`Kustomization`'s manifest (the trigger reports `SuspendOwnedElsewhere` otherwise) and any Git-host
+webhook into a Flux `Receiver` for the repository, as [the Flux guide](flux.md) describes. Deleting
+the trigger hands the `Kustomization` back to Flux. The operator needs `get`, `list` and `patch` on
+`kustomizations`, `list` on `helmreleases`, `get` and `patch` on `gitrepositories`, and `create` on
+`selfsubjectaccessreviews`, in the trigger's cluster: Helm `applierAccess.flux: true` grants them for
+the operator's own cluster.
 
 For an Argo CD `Application`, GitOps Reverser starts every sync, so switch its automated sync off
 (`spec.syncPolicy.automated.enabled: false`, keeping `prune`) before its trigger holds it; one with

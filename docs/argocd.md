@@ -50,9 +50,9 @@ An `Application` with automated sync on makes its trigger report `Configured=Fal
 `AutomatedSyncEnabled`, and GitOps Reverser never syncs it. It is a misconfiguration to fix, and
 stalls the trigger and the `GitTarget`: an `Application` that syncs on its own is outside GitOps Reverser's control.
 
-**There is no catch-up.** Flux needs one, because it applies on its own timers and on a restart
-from whatever artifact it holds, and a stale artifact would revert edits already in Git. With
-automated sync off, Argo CD applies nothing on its own, so nothing it holds can go stale. GitOps
+**There is no catch-up.** Flux keeps one so its inventory learns of objects GitOps Reverser
+published, which a later Git-side deletion then prunes. With automated sync off, Argo CD applies
+nothing on its own, as a suspended `Kustomization` does not, so nothing it holds can go stale. GitOps
 Reverser's own commits are already live (they were read from the cluster), and after its next
 refresh the `Application` reports them `Synced`. So an `ArgoCDTrigger` has no `quietPeriod`.
 

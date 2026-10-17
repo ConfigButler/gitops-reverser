@@ -2,7 +2,7 @@
 
 package git
 
-// Shared sources, step 6 of docs/design/suspended-appliers-plan.md: Flux appliers that apply one
+// Shared sources (docs/design/apply-trigger.md, "Shared sources and prefetch"): Flux appliers that apply one
 // GitRepository have one operation at a time, and a push somebody else made is fetched ahead of the
 // apply while the branch is busy, when every consumer of the source is held.
 

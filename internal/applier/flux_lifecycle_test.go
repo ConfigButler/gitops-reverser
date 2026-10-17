@@ -4,7 +4,7 @@ package applier
 
 // The suspended Flux lifecycle, against fluxSim: a resume with a token, the outcome read once the
 // reconcile that read it ended, the suspend fence, and the hand-back. The first tests are the third
-// review's probes and the measurement points of docs/design/flux-suspend-lifecycle.md, each of which
+// review's probes and the measurements of docs/design/apply-trigger.md, each of which
 // failed against the request-based client this replaced.
 
 import (

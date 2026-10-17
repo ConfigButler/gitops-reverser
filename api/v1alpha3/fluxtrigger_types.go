@@ -98,7 +98,7 @@ type FluxTriggerSource struct {
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
-	// Why information only (decision 2 of docs/design/suspended-appliers-plan.md): one
+	// Why information only (decision 2 in docs/design/apply-trigger.md): one
 	// GitRepository for several Kustomizations is a normal setup, and a consumer no trigger names
 	// applies a folder that has no promise of protection anyway.
 

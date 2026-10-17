@@ -10,7 +10,7 @@ Two kinds are served, behind one Client: a Flux Kustomization whose sourceRef is
 (a FluxTrigger's spec.kustomizationRef, flux.go), held suspended while idle and resumed for each
 apply, and an Argo CD Application with automated sync off (an ArgoCDTrigger's
 spec.applicationRef, argocd.go). Either way the applier applies only when GitOps Reverser asks.
-See docs/design/apply-trigger.md and docs/design/suspended-appliers-plan.md.
+See docs/design/apply-trigger.md, "The Flux applier, suspended".
 
 Each request starts one operation, which the dispatcher follows until the applier's own status
 (the handled tokens and Ready of a Kustomization, status.operationState of an Application) says it

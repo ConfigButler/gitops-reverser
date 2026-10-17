@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Restart recovery for a FluxTrigger (docs/design/suspended-appliers-plan.md, step 5). The
+// Restart recovery for a FluxTrigger (docs/design/apply-trigger.md, "Restart recovery"). The
 // operation an apply runs as is recorded on the trigger before the Kustomization is resumed, so a
 // manager that restarts while the apply runs follows that same operation to its end, suspends the
 // Kustomization again, and asks for nothing new until it has.

@@ -1231,21 +1231,26 @@ the branch worker, or on any other worker writing the same repository and branch
 | --- | --- | --- |
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. Open windows are closed and pending writes replayed and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier |
 | `Refusal` | An eligible refused edit, with `spec.onRefusal: Reapply` | This target's applier |
+| `Repair` | An apply reverted an API edit made after it was asked for; Git kept the edit | That applier |
 | `CatchUp` | The branch has been quiet for `quietPeriod` since GitOps Reverser's own pushes, or since the operator started | Every `Kustomization` declared on the branch; never an `Application` |
 
-Flux applies on its own timers and on a controller restart, from whatever artifact the
-`GitRepository` holds. `CatchUp` keeps that artifact at the tip, so such an apply applies values the
-cluster already holds; an artifact left behind would revert edits that are already in Git.
-`quietPeriod` keeps the catch-up out of an editing session: every new write restarts it. It is the
-trigger's, so every `GitTarget` naming the trigger waits for the same one.
+A held `Kustomization` is suspended, so it never applies a stale artifact on its own. `CatchUp`
+keeps it converged: Flux's inventory learns of an object only from an apply of a commit that holds
+it, so an object created through the API is pruned when Git later deletes it only once Flux has
+applied it. `quietPeriod` keeps the catch-up out of an editing session: every new write restarts
+it. It is the trigger's, so every `GitTarget` naming the trigger waits for the same one.
 
-**What a request does to a `Kustomization`.** What `flux reconcile kustomization --with-source` does: stamp
-`reconcile.fluxcd.io/requestedAt` on the `GitRepository` when its artifact does not hold the
-requested commit; the new artifact wakes the `Kustomization` by itself. When the artifact already
-holds the commit, only a `Refusal` stamps the `Kustomization`, to revert drift at an unchanged
-commit; a `ForeignCommit` or `CatchUp` stamps nothing, since that artifact already woke it. Nothing
-is stamped when, by the time of the patch, the commit is no longer the branch tip or an edit is
-waiting to be published: the request is decided again at the next quiet moment.
+**What a request does to a `Kustomization`.** The `FluxTrigger` holds it suspended. A request
+makes the `GitRepository`'s artifact hold the commit (stamping `reconcile.fluxcd.io/requestedAt` on
+it and waiting for the fetch when it does not), reads the artifact again, records the operation on
+the trigger's `status.operation`, and then resumes the `Kustomization` with one server-side apply
+of `spec.suspend: false` and a new `requestedAt`. Once the `Kustomization` reports that token
+handled, its `Ready` is the outcome, and the `Kustomization` is suspended again with another token;
+the operation completes when that one is handled. A `ForeignCommit` or `CatchUp` asks nothing when
+the `Kustomization` is suspended and has applied the commit already. Nothing is asked when, by the
+time of the resume, the commit is no longer the branch tip or an edit is waiting to be published:
+the request is decided again at the next quiet moment. The full lifecycle is in [the Flux
+guide](flux.md#what-gitops-reverser-asks-and-when).
 
 **What a request does to an `Application`.** It sets the `Application`'s `operation` to the sync
 Argo CD's automated sync would start (`prune` from `syncPolicy.automated`, `syncOptions` and `retry`
@@ -1253,9 +1258,10 @@ from `syncPolicy`), with `revision` pinned to the requested commit and `initiate
 `{username: gitops-reverser, automated: true}`. It never replaces an operation already running: it
 waits for it to end, at most 5 minutes. The details are in [the Argo CD guide](argocd.md#what-gitops-reverser-asks-and-when).
 
-A request asks; it never claims the apply happened. It runs off the publication path, and a failed
-request never fails a publication that succeeded. Read the `Kustomization`'s
-`status.lastAppliedRevision`, or the `Application`'s `status.operationState`, for what it applied.
+A request starts an operation, which GitOps Reverser follows until the applier's own status proves
+it ended, and records on the trigger's `status.operation` (`appliedRevision` is what the applier
+reports it applied). It runs off the publication path, and a failed request never fails a
+publication that succeeded.
 
 **Every attempt checks again.** Just before it patches, GitOps Reverser reads each `GitTarget` again
 and asks nothing for one that has been deleted or recreated, no longer names this applier on this

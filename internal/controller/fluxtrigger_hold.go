@@ -25,7 +25,7 @@ import (
 
 // A FluxTrigger holds its Kustomization suspended while idle; the branch workers resume it for each
 // apply and suspend it again (internal/applier/flux.go). The reconciler does the rest of the
-// lifecycle, from docs/design/suspended-appliers-plan.md ("Who owns spec.suspend"):
+// lifecycle, from docs/design/apply-trigger.md ("Who owns spec.suspend"):
 //
 //   - Adoption: a Configured trigger suspends its Kustomization, under GitOps Reverser's field
 //     manager, with a token; Suspended (and so Ready) waits until the Kustomization handled it.

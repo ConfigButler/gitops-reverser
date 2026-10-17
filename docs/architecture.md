@@ -687,10 +687,13 @@ What each applier is owed lives on the worker, per applier: one attempt out at a
 retry clock. The dispatcher in `internal/applier` carries out one attempt off the worker's queue and
 reports back. It reads each `GitTarget` again first (the same incarnation by uid, still naming this
 applier through its trigger on this branch, still admitted, still consenting to a `Refusal`), checks that the
-`Kustomization`'s source fetches this repository and branch, asks the worker whether its decision
-still holds (the commit is still the tip and nothing is waiting to be published), and only then
-stamps `reconcile.fluxcd.io/requestedAt` on the `GitRepository`, or, for a `Refusal` at an artifact
-that already holds the commit, on the `Kustomization`. It never retries:
+`Kustomization`'s source fetches this repository and branch, has the `GitRepository` fetch the
+commit when its artifact lacks it, asks the worker whether its decision still holds (the commit is
+still the tip and nothing is waiting to be published), writes the operation through to the trigger's
+`status.operation`, and only then resumes the `Kustomization` the trigger holds suspended, with a
+`requestedAt` token. It follows the apply until that token is handled, suspends the `Kustomization`
+again with a second token, and reports the operation complete once that one is handled
+([`apply-trigger.md`](design/apply-trigger.md#the-flux-applier-suspended)). It never retries:
 an attempt that does not deliver gives the worker back what it carried, a refusal only while it still
 stands, and the worker decides the retry on a quiet branch after that applier's backoff. A delivered
 request records an `ApplyRequested` Event, and the worker records the operation on the trigger's
@@ -1751,9 +1754,10 @@ Current limitations:
   is refused with more than one replica, and it loses every unjoined fact on restart by design; a
   multi-replica install must use the Redis transport.
 - **No pull request creation;** the operator writes directly to branches.
-- **GitOps Reverser is the fast path to a deployment.** With an apply trigger, the applier's own
-  triggers are off, so while the operator is down a Git-side push reaches the cluster only through a
-  manual sync, `flux reconcile`, or Flux's long backstop interval.
+- **GitOps Reverser is the only path to a deployment.** With an apply trigger, the applier applies
+  nothing on its own (a `Kustomization` is held suspended, an `Application` has automated sync
+  off), so while the operator is down a Git-side push reaches the cluster only through a manual
+  sync or `flux resume`, which the operator suspends again when it starts.
 - **Only Flux and Argo CD can be appliers yet,** and an Argo CD `Application` only with automated
   sync off: one that syncs on its own is refused, not driven. The applier may live in any cluster a
   `ClusterProvider` reaches (the trigger's `spec.clusterProviderRef`), such as a management cluster.

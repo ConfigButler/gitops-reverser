@@ -2,7 +2,7 @@
 
 /*
 Package fluxsim is a fake source cluster running kustomize-controller and source-controller, for
-tests of code that drives Flux. It applies the source facts docs/design/suspended-appliers-plan.md
+tests of code that drives Flux. It applies the source facts docs/design/apply-trigger.md
 lists (kustomize-controller v1.9.6), and nothing more.
 */
 package fluxsim
@@ -27,7 +27,7 @@ import (
 )
 
 // Sim is a source cluster running kustomize-controller and source-controller, as far as the
-// source facts in docs/design/suspended-appliers-plan.md go (kustomize-controller v1.9.6,
+// source facts in docs/design/apply-trigger.md go (kustomize-controller v1.9.6,
 // internal/controller/kustomization_controller.go). It is what the Flux client's lifecycle is tested
 // against, so each fact it relies on is one this fake applies:
 //

@@ -2,7 +2,7 @@
 
 package git
 
-// Restart recovery, step 5 of docs/design/suspended-appliers-plan.md: the trigger's
+// Restart recovery (docs/design/apply-trigger.md, "Restart recovery"): the trigger's
 // status.operation is the durable record of an apply in flight, written before the apply could
 // start, and a worker that starts follows what it finds there, with the apply window open, before
 // it mirrors a live event.

@@ -229,13 +229,12 @@ field from GitOps Reverser's whole-object replay.
 ## Configure Flux
 
 [Using GitOps Reverser with Flux](flux.md) is the complete setup, with a worked example a unit test
-holds to the code. In short: Flux has no fetch-only mode (a new `GitRepository` artifact makes every
-`Kustomization` reading it apply, and `suspend: true` also blocks GitOps Reverser's requests), so
-set both intervals to a long backstop such as `24h`, keep the `Kustomization` unsuspended, and
-remove any Git-host webhook into a Flux `Receiver` for the repository. GitOps Reverser then asks the
-`GitRepository` to fetch: after a foreign push, after a refusal, and, once the branch has been
-quiet for the trigger's `quietPeriod` (`30s` by default), to catch up with its own pushes, so a
-Flux restart never applies a stale artifact.
+holds to the code. In short: the `FluxTrigger` holds the `Kustomization` suspended, so it never
+applies on its own, and resumes it for one apply at a time: after a foreign push, after a refusal,
+after a reverted edit, and, once the branch has been quiet for the trigger's `quietPeriod` (`30s` by
+default), to catch up with its own pushes. Omit `spec.suspend` from the `Kustomization`'s manifest,
+since the trigger holds that field, and remove any Git-host webhook into a Flux `Receiver` for the
+repository: GitOps Reverser's receiver takes the push instead.
 
 Flux's equivalent of split ownership is `Kustomization.spec.ignore`, added in kustomize-controller
 `v1.9.0`, with the same trade as Argo CD's. The
@@ -378,9 +377,9 @@ the seconds an apply takes:
   commit. That happens only after somebody else pushed, after a refusal with `Reapply`, or after a
   `quietPeriod` of silence on a Flux branch. It no longer follows every commit GitOps Reverser
   makes.
-- **Flux's backstop timers** still apply on their own, at the tip as the last catch-up left it.
-  Argo CD with automated sync off has none.
-- **A human** running `flux reconcile` or pressing Sync applies whenever they do.
+- **A human** running `flux resume` or pressing Sync applies whenever they do. GitOps Reverser
+  suspends a resumed `Kustomization` again within a minute, with an Event. A suspended
+  `Kustomization` and an `Application` with automated sync off apply nothing else on their own.
 
 ## Why the loop stops
 
@@ -462,10 +461,10 @@ observations: the live resource has the intended value, and the `GitTarget` retu
 
 ## What it costs
 
-**GitOps Reverser becomes the only fast path to a deployment.** While it is down, a push by a
-human reaches the cluster only through a manual sync, `flux reconcile`, or Flux's backstop
-interval. Bi-directional editing is already stopped in that state; Git-side deployments now slow
-down with it. Monitor the operator the way you monitor the applier.
+**GitOps Reverser becomes the only path to a deployment.** While it is down, nothing applies: a
+push by a human reaches the cluster only through a manual sync or `flux resume`, which GitOps
+Reverser suspends again when it starts. Bi-directional editing is already stopped in that state;
+Git-side deployments now stop with it. Monitor the operator the way you monitor the applier.
 
 **Round trips to the Git host are the seconds you wait through.** An uncontended publication talks
 to the remote twice, and a foreign push costs a fetch, a replay on a checkout already on disk, and
@@ -485,7 +484,7 @@ concurrent writers.
 | A Git-side push with an API edit on top lands both, and Flux applies the replayed commit without being reconciled by hand | Flux |
 | A new `GitRepository` revision, from a commit outside the applied folder, is enough for the `Kustomization` to apply and revert drift | Flux |
 | A refused edit with `onRefusal: Reapply` is reverted by its `Kustomization`, with no commit, and settles instead of repeating | [Refusal reapply](../test/e2e/refusal_reapply_e2e_test.go) |
-| A `SourceMismatch` applier is never stamped, a push the Git host reports or the refresh finds is applied, without the corner | [Manager Flux Applier](../test/e2e/flux_applier_e2e_test.go), and [the Flux guide](flux.md#what-the-tests-prove) |
+| A `SourceMismatch` applier is never resumed, a push the Git host reports or the refresh finds is applied, a held `Kustomization` stays suspended, without the corner | [Manager Flux Applier](../test/e2e/flux_applier_e2e_test.go), and [the Flux guide](flux.md#what-the-tests-prove) |
 | A Git to cluster to Git round trip settles without a commit loop | Flux |
 | A SOPS-encrypted Secret round-trips without a reverse commit | Flux |
 | A Git revert removes the live object and the committed file | Flux |

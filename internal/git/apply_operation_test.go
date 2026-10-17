@@ -6,7 +6,7 @@ package git
 // it completes: Requested, Running, Settling, then Succeeded or Failed. An operation the dispatcher
 // stopped expecting to finish soon is Unresolved, never "delivered anyway", because a timer that
 // closes the window does not stop the apply. A late apply the window withheld leaves the cluster on
-// an older value than Git, and owes a Repair. See docs/design/suspended-appliers-plan.md.
+// an older value than Git, and owes a Repair. See docs/design/apply-trigger.md.
 
 import (
 	"context"

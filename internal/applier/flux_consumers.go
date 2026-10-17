@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// A GitRepository's consumers, and prefetching it (step 6 of docs/design/suspended-appliers-plan.md).
+// A GitRepository's consumers, and prefetching it (docs/design/apply-trigger.md, "Shared sources and prefetch").
 // A suspended Kustomization ignores a new artifact, so a GitRepository whose every consumer is held
 // suspended by a FluxTrigger can fetch on every push without applying anything. One consumer that is
 // not held applies each new artifact the moment it arrives, so then the source is never prefetched.

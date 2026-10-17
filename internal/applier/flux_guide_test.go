@@ -66,18 +66,11 @@ func TestFluxGuide_TheCompleteExampleIsAccepted(t *testing.T) {
 	assert.LessOrEqual(t, trigger.EffectiveQuietPeriod(), time.Hour)
 
 	// The Flux objects follow the guide's advice.
-	for _, obj := range []*unstructured.Unstructured{repository, kustomization} {
-		interval, _, _ := unstructured.NestedString(obj.Object, "spec", "interval")
-		d, err := time.ParseDuration(interval)
-		require.NoError(t, err, "%s spec.interval", obj.GetKind())
-		assert.GreaterOrEqual(
-			t,
-			d,
-			time.Hour,
-			"%s: a short interval fetches, and so applies, on its own",
-			obj.GetKind(),
-		)
-	}
+	interval, _, _ := unstructured.NestedString(repository.Object, "spec", "interval")
+	d, err := time.ParseDuration(interval)
+	require.NoError(t, err, "GitRepository spec.interval")
+	assert.GreaterOrEqual(t, d, time.Hour,
+		"a source that fetches often can move the artifact between the recheck and the resume")
 	_, setsSuspend, _ := unstructured.NestedFieldNoCopy(kustomization.Object, "spec", "suspend")
 	assert.False(t, setsSuspend, "the manifest omits spec.suspend, which GitOps Reverser holds")
 
