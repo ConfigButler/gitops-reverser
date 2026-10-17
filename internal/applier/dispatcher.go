@@ -193,8 +193,51 @@ func (d *Dispatcher) RequestApply(req git.ApplyRequest) {
 	}
 	go func() {
 		defer d.attempts.Done()
+		if req.Recovered != nil {
+			d.followRecovered(ctx, req)
+			return
+		}
 		d.carryOut(ctx, req)
 	}()
+}
+
+// followRecovered follows an operation recorded on the trigger to its end, asking the applier for
+// nothing: the request was made by an earlier process, or by somebody else. A cluster that cannot
+// be reached is tried again until the worker abandons the attempt, because the record can only be
+// completed by following it.
+func (d *Dispatcher) followRecovered(ctx context.Context, req git.ApplyRequest) {
+	log := d.log.WithValues("applier", req.Applier.String(), "branch", req.Branch.String(),
+		"reason", req.Reason, "commit", req.Commit, "recovered", true)
+	interval := d.PollInterval
+	for {
+		sourceClient, err := d.sourceClients(ctx, req.Applier.Cluster)
+		if err == nil {
+			applier := d.client(req.Applier.Kind, sourceClient)
+			op := &operation{applier: applier, ref: applierName(req.Applier), stamped: recoveredStamped(req), log: log}
+			if res, followed := d.follow(ctx, req, op); followed {
+				req.Report(res)
+			}
+			return
+		}
+		log.V(1).Info("cannot reach the applier's cluster to follow a recorded operation", "error", err.Error())
+		interval = min(unresolvedBackoff*interval, max(d.UnresolvedPollMax, d.PollInterval))
+		if !wait(ctx, req.Abandoned, interval) {
+			return
+		}
+	}
+}
+
+// recoveredStamped is what a Request would have returned for the operation a recovered attempt
+// follows, from its record.
+func recoveredStamped(req git.ApplyRequest) Stamped {
+	outcome := OutcomeResumed
+	if req.Applier.Kind == v1alpha3.ApplierKindApplication {
+		outcome = OutcomeSyncRequested
+	}
+	return Stamped{
+		Outcome: outcome, Token: req.Recovered.Token, FenceToken: req.Recovered.FenceToken,
+		Commit: req.Recovered.Commit, Recovered: true,
+	}
 }
 
 // carryOut runs one attempt and follows the operation it started, reporting each step.

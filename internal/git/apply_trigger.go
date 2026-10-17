@@ -152,6 +152,10 @@ type branchTarget struct {
 	quietPeriod time.Duration
 	// consents is whether it asks for a Refusal request now (ConsentsToReapply).
 	consents bool
+	// recorded and repairOwed are the trigger's status.operation and status.repairOwed, as listed:
+	// what an earlier process, or the trigger's reconciler, recorded (apply_recovery.go).
+	recorded   *v1alpha3.ApplyOperation
+	repairOwed bool
 }
 
 // appliersOnBranch lists the GitTargets on this worker's (provider, branch) that name an apply
@@ -184,6 +188,8 @@ func (w *BranchWorker) appliersOnBranch(ctx context.Context) ([]branchTarget, er
 			applier:     ApplierOf(trigger),
 			quietPeriod: trigger.EffectiveQuietPeriod(),
 			consents:    ConsentsToReapply(target),
+			recorded:    trigger.Operation(),
+			repairOwed:  trigger.RepairOwed(),
 		})
 	}
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ref.String() < listed[j].ref.String() })
@@ -215,6 +221,11 @@ type applierState struct {
 	operationID uint64
 	// published is what was last handed to the trigger status writer, nil before the first.
 	published *ApplyTriggerStatus
+	// recovered is whether the trigger's recorded status was read back for this applier, once,
+	// when this process first listed it; followedFence is the fence token of the last operation
+	// the trigger's reconciler recorded that this worker followed (apply_recovery.go).
+	recovered     bool
+	followedFence string
 }
 
 // repairOwed reports whether a Repair is owed: not yet carried, or carried by the attempt out.
@@ -240,6 +251,9 @@ type inflightAttempt struct {
 	// put back should this attempt ask for no apply.
 	previous   *v1alpha3.ApplyOperation
 	previousID uint64
+	// recovered is an attempt that asks nothing: it follows an operation recorded on the trigger,
+	// by an earlier process or by the trigger's reconciler, to its end (apply_recovery.go).
+	recovered bool
 	// abandon closes the request's Abandoned channel.
 	abandon context.CancelFunc
 }
@@ -291,6 +305,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	defer l.publishTriggerStatus()
 	now := time.Now()
 	l.settleApplyResults(now)
+	l.followRecordedOperations(now)
 	if !l.branchQuiet(now) || len(w.eventQueue) > 0 {
 		// Queued work: the next wake looks again. The branch is still quiet until that work opens
 		// a window, so quietSince is kept.

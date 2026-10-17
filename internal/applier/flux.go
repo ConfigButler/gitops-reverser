@@ -235,7 +235,9 @@ func (f *Flux) fetch(ctx context.Context, sourceRef types.NamespacedName) (*unst
 // An Overdue operation (Unresolved) is suspended at once, without waiting for its token: the
 // suspend does not stop an apply already running, but it stops whatever would follow, and the fence
 // still decides when the operation completes. A Kustomization found resumed after the fence (by
-// `flux resume`) is fenced again. Nothing else is asked: an OutcomeCurrent request is finished.
+// `flux resume`) is fenced again. A Recovered operation whose token is nowhere on the Kustomization
+// is suspended and ends Failed: whether its resume was made cannot be told. Nothing else is asked:
+// an OutcomeCurrent request is finished.
 func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Stamped) (Progress, error) {
 	if s.Outcome != OutcomeResumed {
 		return Progress{Outcome: git.ApplySucceeded}, nil
@@ -245,16 +247,29 @@ func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Stampe
 		return Progress{}, fmt.Errorf("get %s %s: %w", kindKustomization, ref, err)
 	}
 	if s.FenceToken == "" {
-		if !tokenHandled(ks, s.Token) {
-			if !s.Overdue {
-				return Progress{Outcome: git.ApplyRunning}, nil
-			}
-		} else {
+		switch {
+		case s.Recovered && !carriesToken(ks, s.Token):
+			// Recorded, and its token is nowhere on the Kustomization: the process stopped between
+			// the record and the resume, or a suspend it never reported came after. Either way no
+			// outcome of it can be read; it is suspended, and ends Failed, and the worker decides.
+			s.verdict = &Progress{Outcome: git.ApplyFailed, AppliedRevision: statusString(ks, "lastAppliedRevision"),
+				Message: "recovered after a restart, with no sign of its resume on the Kustomization"}
+		case tokenHandled(ks, s.Token):
 			read := applyVerdict(ks, s.Commit)
 			s.verdict = &read
+		case !s.Overdue:
+			return Progress{Outcome: git.ApplyRunning}, nil
 		}
 		return f.fence(ctx, ref, s)
 	}
+	return f.settled(ctx, ref, ks, s)
+}
+
+// settled is Progress once the Kustomization was suspended again: fenced again when it was found
+// resumed, Settling until the fence is handled, and then the outcome.
+func (f *Flux) settled(
+	ctx context.Context, ref types.NamespacedName, ks *unstructured.Unstructured, s *Stamped,
+) (Progress, error) {
 	if !suspended(ks) {
 		return f.fence(ctx, ref, s)
 	}
@@ -265,7 +280,7 @@ func (f *Flux) Progress(ctx context.Context, ref types.NamespacedName, s *Stampe
 		// The resume's own reconcile was not seen to end before the suspend: what the
 		// Kustomization reports now is its last apply, which may be that one.
 		read := applyVerdict(ks, s.Commit)
-		if read.Outcome != git.ApplySucceeded || !revisionHolds(read.AppliedRevision, s.Commit) {
+		if read.Outcome != git.ApplySucceeded || (s.Commit != "" && !revisionHolds(read.AppliedRevision, s.Commit)) {
 			read = Progress{Outcome: git.ApplyFailed, AppliedRevision: read.AppliedRevision,
 				Message: "the Kustomization was suspended again before an apply of the commit was seen to end"}
 		}
@@ -294,7 +309,7 @@ func applyVerdict(ks *unstructured.Unstructured, commit string) Progress {
 	switch {
 	case found && ready.Status == metav1.ConditionTrue:
 		read := Progress{Outcome: git.ApplySucceeded, AppliedRevision: applied}
-		if !revisionHolds(applied, commit) {
+		if commit != "" && !revisionHolds(applied, commit) {
 			read.Message = fmt.Sprintf("Flux applied %s, not commit %s", applied, commit)
 		}
 		return read
@@ -334,6 +349,12 @@ func tokenHandled(ks *unstructured.Unstructured, token string) bool {
 	handled := statusString(ks, "lastHandledReconcileAt")
 	stamped := ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation]
 	return handled == token || (stamped != token && stamped != "" && handled == stamped)
+}
+
+// carriesToken reports whether token is the Kustomization's requestedAt, or the one it last handled.
+func carriesToken(ks *unstructured.Unstructured, token string) bool {
+	return token != "" && (ks.GetAnnotations()[fluxmeta.ReconcileRequestAnnotation] == token ||
+		statusString(ks, "lastHandledReconcileAt") == token)
 }
 
 // suspended reports a Kustomization's spec.suspend.

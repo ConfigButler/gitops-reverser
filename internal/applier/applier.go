@@ -200,6 +200,9 @@ type Stamped struct {
 	// Overdue is set by the dispatcher once the operation is Unresolved. A Flux Kustomization is
 	// then suspended at once, rather than once its apply was seen to end.
 	Overdue bool
+	// Recovered is an operation read back from the trigger's record rather than started by this
+	// process: its resume may never have been made, and the record says nothing of that.
+	Recovered bool
 	// verdict is the outcome of a Flux apply, read once the resume's token was handled and kept
 	// until the fence is.
 	verdict *Progress

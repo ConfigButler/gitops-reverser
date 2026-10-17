@@ -1,6 +1,6 @@
 # Suspended appliers: the plan
 
-> **design, being built.** Steps 1 to 4 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
+> **design, being built.** Steps 1 to 5 are built. Written 2026-10-17 against `6efbf4d0`, the head of #419, and built
 > as a stack on top of it (branch `feat/suspended-appliers`); the two release together. Inputs: the
 > third review of #419 (five findings, summarized in the table below) and
 > [`flux-suspend-lifecycle.md`](flux-suspend-lifecycle.md) (the measurement). It settles the
@@ -444,6 +444,26 @@ As built, step 4 settled these, where the plan above was silent or measured othe
   identity may not make (a `Warning` Event), lets the trigger go.
 - **"Logged and counted"** is `apply_revision_mismatches_total{applier_kind}`.
 - The fake is `internal/applier/fluxsim`, tested against the source facts on its own.
+
+As built, step 5 settled these:
+
+- **Recovery runs before the loop's first item,** so no live event is mirrored before the windows
+  of the operations it finds are open. A listing that fails is tried again on the next wake.
+- **A worker's own record is read back once,** when this process first lists the applier; later
+  reads can lag the worker's own writes. `repairOwed` is restored then too. An operation recorded
+  with no request token (an external resume the reconciler suspended) is followed whenever it is
+  listed, once per fence token, so its window opens while the process runs as well.
+- **A recovered attempt asks nothing and carries nothing** (`ApplyRequest.Recovered`). The
+  requester builds the operation from the record and follows it, retrying an unreachable cluster
+  until the worker abandons it, because only following it completes the record. The window opens
+  at the recovery: this process's watches see nothing from before it.
+- **A recorded token that is nowhere on the Kustomization** (neither its `requestedAt` nor the
+  last handled) means the process stopped between the record and the resume, or a suspend it
+  never reported followed. No outcome can be read: the Kustomization is suspended, and the
+  operation ends `Failed`. The worker's baseline `CatchUp` follows on the quiet branch.
+- e2e: `Flux Restart Recovery` (Serial) restarts the manager while a `wait: true` apply waits on a
+  Deployment that cannot schedule yet, then lets it schedule: the new process completes the same
+  operation (same token) and leaves the Kustomization suspended.
 
 Steps 1 and 2 do not depend on the API. Steps 4 to 6 need step 3's status. Step 4 is the large one,
 and the step to run a local e2e on before pushing (AGENTS.md, "When to push").

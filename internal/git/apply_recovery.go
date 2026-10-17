@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package git
+
+import (
+	"context"
+	"time"
+
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+)
+
+// Restart recovery, step 5 of docs/design/suspended-appliers-plan.md. The worker's attempts live
+// in memory, and the trigger's status.operation is their durable record: the worker writes it
+// before an apply can start (ApplyRequest.Record). So a process that starts reads it back, before
+// its first live event is mirrored:
+//
+//   - An operation that has not completed is followed to its end, by its recorded tokens, with its
+//     apply window open, exactly as if this process had sent it: the apply may still be running, or
+//     the Kustomization may have been left resumed, and the follow suspends it again.
+//   - repairOwed is restored.
+//
+// The trigger's reconciler records an apply somebody else started (`flux resume`) the same way, as
+// an operation with no request token. The worker follows such a record whenever it lists one, not
+// only on start, so its apply window opens for an apply nobody checked.
+//
+// The first observation of the branch is still a baseline that owes a CatchUp: a recovered
+// operation decides nothing about what is owed, and asks the applier for nothing.
+
+// followRecordedOperations reads the triggers' recorded status, on the first pass of this process
+// and on every pass while the branch has appliers, and follows what it finds. A listing that
+// fails on the first pass is tried again on the next.
+func (l *branchWorkerEventLoop) followRecordedOperations(now time.Time) {
+	w := l.w
+	if w.applyRequester == nil || (l.recoveryListed && len(l.appliers) == 0) {
+		return
+	}
+	targets, err := w.appliersOnBranch(w.ctx)
+	if err != nil {
+		w.Log.Error(err, "Cannot read the apply triggers' recorded operations; retrying", "branch", w.Branch)
+		l.resetApplierTimer(applierRetryInterval)
+		return
+	}
+	l.recoveryListed = true
+	l.syncAppliers(targets)
+	for _, ref := range l.sortedAppliers() {
+		l.followRecordedFor(l.appliers[ref], now)
+	}
+}
+
+// followRecordedFor follows what one applier's trigger records: anything in flight, and the
+// repair owed, the first time this process lists it; afterwards only an apply started elsewhere.
+func (l *branchWorkerEventLoop) followRecordedFor(state *applierState, now time.Time) {
+	recorded, repairOwed := recordedStatus(state)
+	inFlight := recorded != nil && !recorded.Phase.Completed() && state.inflight == nil
+	if !state.recovered {
+		state.recovered = true
+		state.repair = state.repair || repairOwed
+		if inFlight {
+			l.followRecorded(state, recorded, now)
+		}
+		return
+	}
+	if inFlight && recorded.Token == "" && recorded.FenceToken != state.followedFence {
+		l.followRecorded(state, recorded, now)
+	}
+}
+
+// recordedStatus is the operation and repairOwed recorded on an applier's trigger, as listed with
+// any GitTarget naming it: they all name the same trigger.
+func recordedStatus(state *applierState) (*v1alpha3.ApplyOperation, bool) {
+	for _, target := range state.targets {
+		return target.recorded, target.repairOwed
+	}
+	return nil, false
+}
+
+// followRecorded hands the requester an attempt that follows a recorded operation instead of asking
+// for one, and opens its applier's apply window from now: the watches of this process see nothing
+// from before it. The attempt carries no obligation, so whatever it ends with, nothing is given
+// back.
+func (l *branchWorkerEventLoop) followRecorded(state *applierState, recorded *v1alpha3.ApplyOperation, now time.Time) {
+	w := l.w
+	l.nextApplyID++
+	abandoned, abandon := context.WithCancel(w.ctx)
+	attempt := &inflightAttempt{
+		id: l.nextApplyID, reason: recorded.Reason, commit: recorded.Commit, sentAt: now,
+		abandon: abandon, recovered: true,
+		previous: state.operation, previousID: state.operationID,
+	}
+	state.inflight = attempt
+	state.followedFence = recorded.FenceToken
+	state.openApplyWindow(attempt.id, recorded.Commit, now)
+	state.operation, state.operationID = recorded.DeepCopy(), attempt.id
+
+	targets := make([]ApplyTarget, 0, len(state.targets))
+	for _, target := range state.targets {
+		targets = append(targets, ApplyTarget{Ref: target.ref, UID: target.uid, Reason: recorded.Reason})
+	}
+	w.Log.Info("Following an apply recorded on the trigger, with its apply window open",
+		"branch", w.Branch, "applier", state.ref.String(), "phase", string(recorded.Phase),
+		"reason", string(recorded.Reason), "commit", recorded.Commit, "startedElsewhere", recorded.Token == "")
+	w.applyRequester.RequestApply(ApplyRequest{
+		ID:        attempt.id,
+		Branch:    BranchKey{RepoNamespace: w.GitProviderNamespace, RepoName: w.GitProviderRef, Branch: w.Branch},
+		Applier:   state.ref,
+		Reason:    recorded.Reason,
+		Commit:    recorded.Commit,
+		Token:     recorded.Token,
+		Targets:   targets,
+		Recovered: recorded.DeepCopy(),
+		Report:    w.reportApplyResult,
+		Abandoned: abandoned.Done(),
+	})
+}

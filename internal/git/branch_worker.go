@@ -1182,6 +1182,9 @@ type branchWorkerEventLoop struct {
 	nextApplyID  uint64
 	quietSince   time.Time
 	applierTimer *time.Timer
+	// recoveryListed is whether the triggers' recorded operations were read once by this process,
+	// which happens before the loop handles its first item (apply_recovery.go).
+	recoveryListed bool
 	// pushHinted records that a Git host reported a push while the branch was busy. The wake closes
 	// the open window so its publication finds the move (closeWindowForForeignCommit).
 	pushHinted bool
@@ -1215,6 +1218,10 @@ func newBranchWorkerEventLoop(w *BranchWorker, defaultIdleTimeout time.Duration)
 func (l *branchWorkerEventLoop) run() {
 	defer l.stopTimers()
 
+	// Before the first live event can be mirrored: an operation an earlier process left in flight
+	// is followed again, with its apply window open.
+	l.followRecordedOperations(time.Now())
+	l.publishTriggerStatus()
 	l.publishLoopState(0)
 	for {
 		commitC, pushC, attachC, refusalC := l.timerChannels()

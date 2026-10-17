@@ -962,3 +962,101 @@ func TestApplyVerdict_ReadsTheReconcileThatHandledTheToken(t *testing.T) {
 	none := applyVerdict(kustomizationObj(fluxSystemNS, "checkout", nil), testCommit)
 	assert.Equal(t, git.ApplyFailed, none.Outcome)
 }
+
+// recoveredRequest follows the recorded operation instead of asking.
+func recoveredRequest(recorded *v1alpha3.ApplyOperation) git.ApplyRequest {
+	req := request(checkout, recorded.Reason, "a")
+	req.Commit, req.Token, req.Recovered = recorded.Commit, recorded.Token, recorded
+	return req
+}
+
+// followToEnd runs RequestApply and returns the report that ends the attempt.
+func (f *dispatcherFixture) followToEnd(t *testing.T, req git.ApplyRequest) git.ApplyResult {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = f.dispatcher.Start(ctx) }()
+	require.Eventually(t, func() bool {
+		f.dispatcher.runMu.RLock()
+		defer f.dispatcher.runMu.RUnlock()
+		return f.dispatcher.run != nil
+	}, 5*time.Second, time.Millisecond)
+	reports := make(chan git.ApplyResult, 64)
+	req.Report = func(res git.ApplyResult) { reports <- res }
+	f.dispatcher.RequestApply(req)
+	res := next(t, reports)
+	for !res.Outcome.Ends() {
+		res = next(t, reports)
+	}
+	return res
+}
+
+// resumedSource is flux-system/checkout resumed with token, as a process that stopped mid-apply
+// leaves it, with its GitRepository at testCommit.
+func resumedSource(t *testing.T, token string) []runtime.Object {
+	ks := kustomizationObj(fluxSystemNS, "checkout", gitRepoSourceRef("platform"))
+	ks = fluxsim.OwnSuspend(t, ks, false, SuspendFieldManager, metav1.ManagedFieldsOperationApply)
+	ks.SetAnnotations(map[string]string{fluxmeta.ReconcileRequestAnnotation: token})
+	ks.SetGeneration(2)
+	return []runtime.Object{
+		ks, gitRepositoryObj(fluxSystemNS, "platform", testRepoURL, branchRef(testBranch), "main@sha1:"+testCommit),
+	}
+}
+
+// TestDispatcher_ARecoveredOperationIsFollowedAndSuspended is step 5: a process stopped while the
+// Kustomization was resumed for its operation. The next one follows that operation by its recorded
+// token, asks for nothing, and suspends the Kustomization again before the operation completes.
+func TestDispatcher_ARecoveredOperationIsFollowedAndSuspended(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, resumedSource(t, "T1")...)
+	f.sim.Requeue(checkoutKey) // the reconcile the resume enqueued, still to run
+
+	res := f.followToEnd(t, recoveredRequest(&v1alpha3.ApplyOperation{
+		Phase: v1alpha3.ApplyOperationRunning, Reason: v1alpha3.ApplyReasonRefusal, Commit: testCommit, Token: "T1",
+	}))
+
+	assert.Equal(t, git.ApplySucceeded, res.Outcome)
+	assert.NotEmpty(t, res.FenceToken)
+	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)), "suspended again")
+	for _, write := range f.patches() {
+		assert.NotContains(t, write, "suspend=false", "nothing is resumed for a recovered operation")
+		assert.NotContains(t, write, "gitrepositories", "and nothing is fetched")
+	}
+	assert.Empty(t, f.events(), "and it records no ApplyRequested")
+}
+
+// TestDispatcher_ARecoveredOperationThatNeverResumedFails: the record is written before the resume,
+// so a process can stop between the two. Its token is nowhere on the Kustomization; no outcome can
+// be read, so it ends Failed (after a fence) and the worker decides again.
+func TestDispatcher_ARecoveredOperationThatNeverResumedFails(t *testing.T) {
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, behindSource()...)
+
+	res := f.followToEnd(t, recoveredRequest(&v1alpha3.ApplyOperation{
+		Phase: v1alpha3.ApplyOperationRequested, Reason: v1alpha3.ApplyReasonCatchUp, Commit: testCommit, Token: "T1",
+	}))
+
+	assert.Equal(t, git.ApplyFailed, res.Outcome)
+	require.ErrorContains(t, res.Err, "no sign of its resume")
+	assert.Empty(t, f.sim.Applied())
+	assert.True(t, suspended(f.sim.Kustomization(checkoutKey)))
+}
+
+// TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsFence: the trigger's reconciler recorded a
+// `flux resume` it suspended again, with the fence token and no request token; following it ends
+// once that fence is handled.
+func TestDispatcher_AnApplyStartedElsewhereIsFollowedByItsFence(t *testing.T) {
+	objs := resumedSource(t, "F1")
+	_ = unstructured.SetNestedField(objs[0].(*unstructured.Unstructured).Object, true, "spec", "suspend")
+	f := newDispatcherFixture(t, []client.Object{gitTarget("a", checkoutRef(), "")}, objs...)
+	f.sim.Requeue(checkoutKey)
+
+	res := f.followToEnd(t, recoveredRequest(&v1alpha3.ApplyOperation{
+		Phase: v1alpha3.ApplyOperationUnresolved, FenceToken: "F1",
+	}))
+
+	assert.Equal(t, git.ApplyFailed, res.Outcome,
+		"the Kustomization reports no Ready: nothing of that apply can be read")
+	assert.Equal(t, "F1", res.FenceToken)
+	for _, write := range f.patches() {
+		assert.NotContains(t, write, "kustomizations", "the fence was the reconciler's; nothing is written")
+	}
+}

@@ -125,6 +125,10 @@ type ApplyRequest struct {
 	// that ends it (ApplyOutcome.Ends); one that asked nothing reports once, with an outcome that
 	// ends it.
 	Report func(ApplyResult)
+	// Recovered, when set, is an operation recorded on the trigger (by an earlier process, or by the
+	// trigger's reconciler for an apply somebody else started) that the attempt follows to its end
+	// instead of asking the applier for anything. Its token and fence token are the ones to read.
+	Recovered *v1alpha3.ApplyOperation
 	// Abandoned is closed when the worker stops following the attempt: no GitTarget names its
 	// applier any more, or the worker stopped. The requester stops following the operation then,
 	// and reports nothing more. Nil is never closed.
